@@ -32,6 +32,9 @@ const ACTION_LABELS: Record<string, string> = {
   stake: "Stake",
   unstake: "Unstake",
   transfer: "Transfer",
+  claim_rewards: "Claim rewards",
+  liquidate: "Liquidate",
+  create_obligation: "Create obligation",
 };
 
 function formatAction(action: string, protocol: string | null, typeArgs: string[]): string {

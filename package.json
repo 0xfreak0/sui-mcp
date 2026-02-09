@@ -10,7 +10,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "generate": "echo 'No codegen needed - using @mysten/sui SDK'"
+    "generate": "echo 'No codegen needed - using @mysten/sui SDK'",
+    "build:decompiler": "bash scripts/build-decompiler.sh"
   },
   "keywords": ["sui", "mcp", "blockchain"],
   "license": "MIT",

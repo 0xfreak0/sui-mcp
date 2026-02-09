@@ -5,6 +5,8 @@ import { registerTransactionTools } from "./transactions.js";
 import { registerEventTools } from "./events.js";
 import { registerPackageTools } from "./packages.js";
 import { registerExecuteTools } from "./execute.js";
+import { registerNameTools } from "./names.js";
+import { registerWorkflowTools } from "./workflow.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -15,4 +17,6 @@ export function registerAllTools(server: McpServer) {
   registerEventTools(server);
   registerPackageTools(server);
   registerExecuteTools(server);
+  registerNameTools(server);
+  registerWorkflowTools(server);
 }

@@ -9,3 +9,7 @@ dist/
 .env.*
 
 *.tsbuildinfo
+
+# Decompiler
+bin/
+revela_sui/

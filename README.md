@@ -1,8 +1,8 @@
 # sui-mcp
 
-MCP server for querying the Sui blockchain. Provides 19 tools for reading chain state, transactions, objects, coins, packages, events, SuiNS names, and more.
+MCP server for querying the Sui blockchain. Provides tools for reading chain state, transactions, objects, coins, packages, events, SuiNS names, wallet analysis, and decompiling Move bytecode back to source code.
 
-Connects to Sui mainnet public endpoints — no API keys or environment variables required.
+Connects to Sui mainnet public endpoints — no API keys required.
 
 ## Setup
 
@@ -13,9 +13,31 @@ npm install
 npm run build
 ```
 
+### Move Decompiler (optional)
+
+The `decompile_module` and `decompile_package` tools require the Revela `move-decompiler` binary. Requires a Rust toolchain ([rustup.rs](https://rustup.rs/)).
+
+**Quick setup:**
+
+```bash
+npm run build:decompiler
+```
+
+This clones [verichains/revela_sui](https://github.com/verichains/revela_sui), builds the decompiler, and copies the binary to `bin/move-decompiler`.
+
+**Manual setup:**
+
+```bash
+git clone --depth 1 https://github.com/verichains/revela_sui.git
+cd revela_sui/external-crates/move
+cargo build --release --bin move-decompiler
+```
+
+Then set `SUI_DECOMPILER_PATH` to the binary path.
+
 ## Installation
 
-Add to your MCP client config:
+Add to your MCP client config. All tools except `decompile_module` and `decompile_package` work without the decompiler — omit the `env` block if you don't need decompilation.
 
 **Claude Code** (`~/.claude/settings.json` or project `.mcp.json`):
 
@@ -24,7 +46,10 @@ Add to your MCP client config:
   "mcpServers": {
     "sui": {
       "command": "node",
-      "args": ["/absolute/path/to/sui-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/sui-mcp/dist/index.js"],
+      "env": {
+        "SUI_DECOMPILER_PATH": "/absolute/path/to/sui-mcp/bin/move-decompiler"
+      }
     }
   }
 }
@@ -37,7 +62,10 @@ Add to your MCP client config:
   "mcpServers": {
     "sui": {
       "command": "node",
-      "args": ["/absolute/path/to/sui-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/sui-mcp/dist/index.js"],
+      "env": {
+        "SUI_DECOMPILER_PATH": "/absolute/path/to/sui-mcp/bin/move-decompiler"
+      }
     }
   }
 }
@@ -50,13 +78,16 @@ Add to your MCP client config:
   "mcpServers": {
     "sui": {
       "command": "node",
-      "args": ["/absolute/path/to/sui-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/sui-mcp/dist/index.js"],
+      "env": {
+        "SUI_DECOMPILER_PATH": "/absolute/path/to/sui-mcp/bin/move-decompiler"
+      }
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/sui-mcp` with the actual path to this repository.
+Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The `env` block is only needed for decompilation tools.
 
 ## Tools
 
@@ -81,3 +112,5 @@ Replace `/absolute/path/to/sui-mcp` with the actual path to this repository.
 | `resolve_name` | SuiNS name resolution (forward and reverse) |
 | `explain_transaction` | Human-readable transaction summary |
 | `analyze_wallet` | Comprehensive wallet overview (balances, staking, activity) |
+| `decompile_module` | Decompile a single Move module to source (or list modules) |
+| `decompile_package` | Decompile all modules in a package to source |

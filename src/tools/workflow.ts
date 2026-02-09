@@ -4,35 +4,7 @@ import { formatStatus, formatGas, bigintToString, timestampToIso } from "../util
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-function summarizeCommand(cmd: GrpcTypes.Command): string {
-  const c = cmd.command;
-  switch (c.oneofKind) {
-    case "moveCall": {
-      const mc = c.moveCall;
-      const pkg = mc.package ?? "?";
-      const mod = mc.module ?? "?";
-      const fn = mc.function ?? "?";
-      return `Call ${pkg}::${mod}::${fn}`;
-    }
-    case "transferObjects": {
-      const count = c.transferObjects.objects.length;
-      return `Transfer ${count} object${count !== 1 ? "s" : ""}`;
-    }
-    case "splitCoins":
-      return `Split coins (${c.splitCoins.amounts.length} split${c.splitCoins.amounts.length !== 1 ? "s" : ""})`;
-    case "mergeCoins":
-      return `Merge ${c.mergeCoins.coinsToMerge.length} coin${c.mergeCoins.coinsToMerge.length !== 1 ? "s" : ""}`;
-    case "publish":
-      return "Publish new package";
-    case "upgrade":
-      return "Upgrade package";
-    case "makeMoveVector":
-      return "Construct vector";
-    default:
-      return "Unknown command";
-  }
-}
+import { decodeTransaction } from "../protocols/decoder.js";
 
 export function registerWorkflowTools(server: McpServer) {
   server.tool(
@@ -62,22 +34,25 @@ export function registerWorkflowTools(server: McpServer) {
       const effects = tx?.effects;
       const transaction = tx?.transaction;
       const kind = transaction?.kind;
+      const sender = transaction?.sender;
 
-      const summary: string[] = [];
+      let decoded;
       if (kind?.data.oneofKind === "programmableTransaction") {
         const ptb = kind.data.programmableTransaction;
-        for (const cmd of ptb.commands) {
-          summary.push(summarizeCommand(cmd));
-        }
+        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
       } else if (kind?.data.oneofKind) {
-        summary.push(`System transaction: ${kind.data.oneofKind}`);
+        decoded = {
+          protocols: [] as string[],
+          actions: [`System transaction: ${kind.data.oneofKind}`],
+          token_flow: [] as { coin: string; amount: string; raw_type: string }[],
+        };
+      } else {
+        decoded = {
+          protocols: [] as string[],
+          actions: [] as string[],
+          token_flow: [] as { coin: string; amount: string; raw_type: string }[],
+        };
       }
-
-      const balanceChanges = tx?.balanceChanges?.map((bc: GrpcTypes.BalanceChange) => ({
-        address: bc.address,
-        coin_type: bc.coinType,
-        amount: bc.amount,
-      }));
 
       const eventCount = tx?.events?.events?.length ?? 0;
 
@@ -88,13 +63,13 @@ export function registerWorkflowTools(server: McpServer) {
             text: JSON.stringify(
               {
                 digest: tx?.digest,
-                sender: transaction?.sender,
+                sender,
                 status: formatStatus(effects?.status),
                 timestamp: timestampToIso(tx?.timestamp),
-                checkpoint: bigintToString(tx?.checkpoint),
-                summary,
+                protocols: decoded.protocols,
+                actions: decoded.actions,
+                token_flow: decoded.token_flow,
                 gas: formatGas(effects?.gasUsed),
-                balance_changes: balanceChanges,
                 event_count: eventCount,
               },
               null,

@@ -1,0 +1,26 @@
+{
+  "name": "sui-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for querying the Sui blockchain",
+  "type": "module",
+  "bin": {
+    "sui-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "generate": "echo 'No codegen needed - using @mysten/sui SDK'"
+  },
+  "keywords": ["sui", "mcp", "blockchain"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@mysten/sui": "^2.3.1",
+    "graphql-request": "^7.1.2",
+    "zod": "^3.25.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

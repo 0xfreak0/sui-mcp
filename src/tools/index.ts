@@ -14,6 +14,7 @@ import { registerNftTools } from "./nft.js";
 import { registerPtbTools } from "./ptb.js";
 import { registerStakingTools } from "./staking.js";
 import { registerPortfolioTools } from "./portfolio.js";
+import { registerHistoryTools } from "./history.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -33,4 +34,5 @@ export function registerAllTools(server: McpServer) {
   registerPtbTools(server);
   registerStakingTools(server);
   registerPortfolioTools(server);
+  registerHistoryTools(server);
 }

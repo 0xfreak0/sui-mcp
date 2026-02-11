@@ -83,12 +83,12 @@ export function registerWorkflowTools(server: McpServer) {
 
   server.tool(
     "analyze_wallet",
-    "Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, and recent transactions.",
+    "Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions.",
     {
       address: z.string().describe("Wallet address (0x...)"),
     },
     async ({ address }) => {
-      const [balancesResult, nameResult, objectsResult, txResult] =
+      const [balancesResult, nameResult, objectsResult, kioskResult, txResult] =
         await Promise.all([
           // All token balances
           sui.listBalances({ owner: address, limit: 50, cursor: null }),
@@ -106,6 +106,14 @@ export function registerWorkflowTools(server: McpServer) {
             limit: 50,
             cursor: null,
           }),
+
+          // Kiosk count via KioskOwnerCap
+          sui.listOwnedObjects({
+            owner: address,
+            type: "0x2::kiosk::KioskOwnerCap",
+            limit: 50,
+            cursor: null,
+          }).catch(() => ({ objects: [] })),
 
           // Recent transactions via GraphQL
           gqlQuery<{
@@ -158,6 +166,7 @@ export function registerWorkflowTools(server: McpServer) {
                 sui_name: nameResult,
                 balances,
                 staked_sui_count: objectsResult.objects.length,
+                kiosk_count: kioskResult.objects.length,
                 recent_transactions: recentTransactions,
               },
               null,

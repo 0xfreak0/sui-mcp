@@ -11,12 +11,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface ObjectsPage {
+// Owner node types for nested kiosk resolution
+interface OwnerNode {
+  address?: {
+    address?: string;
+    asObject?: {
+      owner?: OwnerNode;
+      asMoveObject?: {
+        contents?: { json?: { owner?: string } };
+      };
+    };
+  };
+}
+
+interface NftObjectsPage {
+  objects: {
+    nodes: Array<{ owner?: OwnerNode }>;
+    pageInfo: { hasNextPage: boolean; endCursor?: string };
+  };
+}
+
+interface CoinObjectsPage {
   objects: {
     nodes: Array<{
-      owner?: {
-        address?: { address: string };
-      };
+      owner?: { address?: { address: string } };
       asMoveObject?: {
         asCoin?: { coinBalance?: string };
       };
@@ -25,6 +43,25 @@ interface ObjectsPage {
   };
 }
 
+// Resolves owner address for both directly-owned and kiosk-stored NFTs.
+// Chain: NFT -> ObjectOwner(wrapper) -> ObjectOwner(kiosk) -> kiosk.contents.json.owner
+function extractNftOwner(node: { owner?: OwnerNode }): string | null {
+  const addr = node.owner?.address;
+  // Direct AddressOwner (no asObject means it's a plain address, not an object ref)
+  if (addr?.address && !addr.asObject) return addr.address;
+  // ObjectOwner path: follow through wrapper to kiosk
+  const inner = addr?.asObject?.owner?.address;
+  // Wrapper owned by AddressOwner
+  if (inner?.address && !inner.asObject) return inner.address;
+  // Wrapper owned by ObjectOwner (kiosk) - read kiosk contents for owner field
+  const kioskOwner =
+    inner?.asObject?.asMoveObject?.contents?.json?.owner;
+  if (kioskOwner) return kioskOwner;
+  return null;
+}
+
+// NFT query with nested owner resolution for kiosk-stored NFTs.
+// Resolves: AddressOwner directly, or ObjectOwner -> ObjectOwner -> Kiosk contents
 const NFT_OBJECTS_QUERY = `
   query($type: String!, $first: Int, $after: String) {
     objects(filter: { type: $type }, first: $first, after: $after) {
@@ -32,6 +69,24 @@ const NFT_OBJECTS_QUERY = `
         owner {
           ... on AddressOwner {
             address { address }
+          }
+          ... on ObjectOwner {
+            address {
+              asObject {
+                owner {
+                  ... on ObjectOwner {
+                    address {
+                      asObject {
+                        asMoveObject { contents { json } }
+                      }
+                    }
+                  }
+                  ... on AddressOwner {
+                    address { address }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -61,7 +116,7 @@ const COIN_OBJECTS_QUERY = `
 export function registerHolderTools(server: McpServer) {
   server.tool(
     "get_nft_collection_holders",
-    "Scan all objects of an NFT collection type, aggregate by owner, and return top holders ranked by count.",
+    "Scan all objects of an NFT collection type, aggregate by owner, and return top holders ranked by count. Resolves kiosk-stored NFTs to the actual wallet owner.",
     {
       collection_type: z
         .string()
@@ -90,14 +145,14 @@ export function registerHolderTools(server: McpServer) {
         const remaining = maxScan - totalScanned;
         const first = Math.min(GQL_PAGE_SIZE, remaining);
 
-        const data = await gqlQuery<ObjectsPage>(NFT_OBJECTS_QUERY, {
+        const data = await gqlQuery<NftObjectsPage>(NFT_OBJECTS_QUERY, {
           type: collection_type,
           first,
           after: cursor ?? undefined,
         });
 
         for (const node of data.objects.nodes) {
-          const addr = node.owner?.address?.address;
+          const addr = extractNftOwner(node);
           if (addr) {
             holderCounts.set(addr, (holderCounts.get(addr) ?? 0) + 1);
           }
@@ -184,7 +239,7 @@ export function registerHolderTools(server: McpServer) {
         const remaining = maxScan - totalScanned;
         const first = Math.min(GQL_PAGE_SIZE, remaining);
 
-        const data = await gqlQuery<ObjectsPage>(COIN_OBJECTS_QUERY, {
+        const data = await gqlQuery<CoinObjectsPage>(COIN_OBJECTS_QUERY, {
           type: fullType,
           first,
           after: cursor ?? undefined,

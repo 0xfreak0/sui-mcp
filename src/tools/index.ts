@@ -11,6 +11,9 @@ import { registerWorkflowTools } from "./workflow.js";
 import { registerPriceTools } from "./prices.js";
 import { registerDefiTools } from "./defi.js";
 import { registerNftTools } from "./nft.js";
+import { registerPtbTools } from "./ptb.js";
+import { registerStakingTools } from "./staking.js";
+import { registerPortfolioTools } from "./portfolio.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -27,4 +30,7 @@ export function registerAllTools(server: McpServer) {
   registerPriceTools(server);
   registerDefiTools(server);
   registerNftTools(server);
+  registerPtbTools(server);
+  registerStakingTools(server);
+  registerPortfolioTools(server);
 }

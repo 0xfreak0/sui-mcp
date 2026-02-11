@@ -1,6 +1,6 @@
 export interface ProtocolInfo {
   name: string;
-  type: "dex" | "lending" | "stablecoin" | "system";
+  type: "dex" | "lending" | "stablecoin" | "liquid_staking" | "perps" | "system";
 }
 
 export interface OperationInfo {
@@ -35,6 +35,21 @@ const PROTOCOL_MAP: Record<string, ProtocolInfo> = {
   // Bucket
   "0x9f835c21d21f8ce519fec17d679cd38243ef2643ad879e7048ba77374be4036e": { name: "Bucket", type: "stablecoin" },
   "0x665188033384920a5bb5dcfb2ef21f54b4568d08b431718b97e02e5c184b92cc": { name: "Bucket", type: "stablecoin" },
+  // Turbos Finance
+  "0xa5a0c25c79e428eba04fb98b3fb2a34db45ab26d4c8faf0d7e39d66a63891e64": { name: "Turbos", type: "dex" },
+  "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1": { name: "Turbos", type: "dex" },
+  // Aftermath Finance
+  "0xc4049b2d1cc0f6e017fda8260e4377cecd236bd7f56a54fee120816e72e2e0dd": { name: "Aftermath", type: "dex" },
+  "0x8d8bba50c626753589aa5abbc006c9fa07736f55f4e6fb57481682997c0b0d52": { name: "Aftermath", type: "dex" },
+  "0xefe170ec0be4d762196bedecd7a065816576198a6527c99282a2551aaa7da38c": { name: "Aftermath", type: "dex" },
+  "0x1575034d2729907aefca1ac757d6ccfcd3fc7e9e77927523c06007d8353ad836": { name: "Aftermath", type: "liquid_staking" },
+  "0xf325ce1300e8dac124071d3152c5c5ee6174914f8bc2161e88329cf579246efc": { name: "Aftermath", type: "liquid_staking" },
+  // Haedal
+  "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d": { name: "Haedal", type: "liquid_staking" },
+  // Bluefin
+  "0x039146aa464eb40568353e0d8e4c38455ef5781d964ffc9fef4eb5ae023cac58": { name: "Bluefin", type: "perps" },
+  "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267": { name: "Bluefin", type: "dex" },
+  "0x6c796c3ab3421a68158e0df18e4657b2827b1f8fed5ed4b82dba9c935988711b": { name: "Bluefin", type: "dex" },
   // Sui System
   "0x0000000000000000000000000000000000000000000000000000000000000003": { name: "Sui System", type: "system" },
   "0x3": { name: "Sui System", type: "system" },
@@ -97,6 +112,28 @@ const OPERATION_PATTERNS: OperationPattern[] = [
   // SpringSui: liquid staking
   { module: "liquid_staking", fnPrefix: "mint", operation: { action: "stake" } },
   { module: "liquid_staking", fnPrefix: "redeem", operation: { action: "unstake" } },
+
+  // Turbos: swap + position management
+  { module: "swap_router", fnPrefix: "swap", operation: { action: "swap" } },
+  { module: "position_manager", fnPrefix: "mint", operation: { action: "open_position" } },
+  { module: "position_manager", fnPrefix: "increase_liquidity", operation: { action: "add_liquidity" } },
+  { module: "position_manager", fnPrefix: "decrease_liquidity", operation: { action: "remove_liquidity" } },
+  { module: "position_manager", fnPrefix: "collect", operation: { action: "claim_rewards" } },
+  { module: "position_manager", fnPrefix: "burn", operation: { action: "close_position" } },
+  { module: "pool_fetcher", fnPrefix: "compute_swap_result", operation: { action: "quote", skip: true } },
+
+  // Aftermath: swap + liquidity
+  { module: "swap", fnPrefix: "swap", operation: { action: "swap" } },
+  { module: "deposit", fnPrefix: "deposit", operation: { action: "add_liquidity" } },
+  { module: "withdraw", fnPrefix: "", operation: { action: "remove_liquidity" } },
+
+  // Haedal: liquid staking
+  { module: "hasui", fnPrefix: "request_stake", operation: { action: "stake" } },
+  { module: "hasui", fnPrefix: "request_unstake", operation: { action: "unstake" } },
+
+  // Bluefin: perps settlement
+  { module: "settlement", fnPrefix: "", operation: { action: "settle" } },
+  { module: "margin", fnPrefix: "", operation: { action: "manage_margin" } },
 
   // Staking
   { module: "staking_pool", fnPrefix: "request_add_stake", operation: { action: "stake" } },

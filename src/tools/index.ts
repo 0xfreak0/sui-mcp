@@ -16,6 +16,7 @@ import { registerStakingTools } from "./staking.js";
 import { registerPortfolioTools } from "./portfolio.js";
 import { registerHistoryTools } from "./history.js";
 import { registerTokenSearchTools } from "./token-search.js";
+import { registerMonitorTools } from "./monitor.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -37,4 +38,5 @@ export function registerAllTools(server: McpServer) {
   registerPortfolioTools(server);
   registerHistoryTools(server);
   registerTokenSearchTools(server);
+  registerMonitorTools(server);
 }

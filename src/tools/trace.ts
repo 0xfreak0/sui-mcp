@@ -1,9 +1,5 @@
 import { z } from "zod";
-import { sui, archive } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { errorResult } from "../utils/errors.js";
-import { timestampToIso } from "../utils/formatting.js";
-import type { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface BalanceChangeInfo {
@@ -17,27 +13,75 @@ interface HopResult {
   digest: string;
   sender: string | null;
   balance_changes: BalanceChangeInfo[];
-  timestamp: string | undefined;
-  checkpoint: string | undefined;
+  timestamp: string | null;
+  checkpoint: string | null;
 }
 
-async function fetchTx(digest: string) {
-  const req = {
-    digest,
-    readMask: {
-      paths: [
-        "digest", "transaction", "effects",
-        "checkpoint", "timestamp", "balance_changes",
-      ],
-    },
-  };
-  let res: GrpcTypes.GetTransactionResponse;
-  try {
-    ({ response: res } = await sui.ledgerService.getTransaction(req));
-  } catch {
-    ({ response: res } = await archive.ledgerService.getTransaction(req));
+// Use GraphQL to fetch transactions — gRPC archive doesn't return balance_changes
+const TX_QUERY = `
+  query($digest: String!) {
+    transaction(digest: $digest) {
+      digest
+      sender { address }
+      effects {
+        status
+        timestamp
+        checkpoint { sequenceNumber }
+        balanceChanges {
+          nodes {
+            coinType { repr }
+            amount
+            owner { address }
+          }
+        }
+      }
+    }
   }
-  return res.transaction;
+`;
+
+interface GqlTxResult {
+  transaction: {
+    digest: string;
+    sender?: { address: string };
+    effects?: {
+      status: string;
+      timestamp?: string;
+      checkpoint?: { sequenceNumber: number };
+      balanceChanges?: {
+        nodes: Array<{
+          coinType?: { repr: string };
+          amount?: string;
+          owner?: { address: string };
+        }>;
+      };
+    };
+  } | null;
+}
+
+interface FetchedTx {
+  sender: string | null;
+  balanceChanges: BalanceChangeInfo[];
+  timestamp: string | null;
+  checkpoint: number | null;
+}
+
+async function fetchTx(digest: string): Promise<FetchedTx | null> {
+  const data = await gqlQuery<GqlTxResult>(TX_QUERY, { digest });
+  const tx = data.transaction;
+  if (!tx) return null;
+
+  const balanceChanges = (tx.effects?.balanceChanges?.nodes ?? []).map((n) => ({
+    address: n.owner?.address ?? "",
+    coin_type: n.coinType?.repr ?? "",
+    amount: n.amount ?? "0",
+  }));
+
+  return {
+    sender: tx.sender?.address ?? null,
+    balanceChanges,
+    timestamp: tx.effects?.timestamp ?? null,
+    checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
+  };
 }
 
 interface TxQueryPage {
@@ -58,30 +102,30 @@ async function findNextTx(
   afterCheckpoint?: number,
   direction: "forward" | "backward" = "forward",
 ): Promise<string | null> {
-  // Query transactions affecting this address near the given checkpoint
-  const query = `
-    query($address: SuiAddress!, $first: Int, $last: Int, $afterCheckpoint: Int, $beforeCheckpoint: Int) {
-      transactions(
-        filter: {
-          affectedAddress: $address
-          ${direction === "forward" ? "afterCheckpoint: $afterCheckpoint" : "beforeCheckpoint: $beforeCheckpoint"}
+  // Build query with only the variables actually used to avoid GraphQL validation errors
+  const isForward = direction === "forward";
+  const query = isForward
+    ? `query($address: SuiAddress!, $first: Int, $afterCheckpoint: Int) {
+        transactions(
+          filter: { affectedAddress: $address, afterCheckpoint: $afterCheckpoint }
+          first: $first
+        ) {
+          nodes { digest effects { checkpoint { sequenceNumber } timestamp } }
+          pageInfo { hasNextPage endCursor }
         }
-        ${direction === "forward" ? "first: $first" : "last: $last"}
-      ) {
-        nodes {
-          digest
-          effects {
-            checkpoint { sequenceNumber }
-            timestamp
-          }
+      }`
+    : `query($address: SuiAddress!, $last: Int, $beforeCheckpoint: Int) {
+        transactions(
+          filter: { affectedAddress: $address, beforeCheckpoint: $beforeCheckpoint }
+          last: $last
+        ) {
+          nodes { digest effects { checkpoint { sequenceNumber } timestamp } }
+          pageInfo { hasNextPage endCursor }
         }
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-  `;
+      }`;
 
   const variables: Record<string, unknown> = { address };
-  if (direction === "forward") {
+  if (isForward) {
     variables.first = 1;
     variables.afterCheckpoint = afterCheckpoint;
   } else {
@@ -121,29 +165,22 @@ export function registerTraceTools(server: McpServer) {
         const tx = await fetchTx(currentDigest);
         if (!tx) break;
 
-        const sender = tx.transaction?.sender ?? null;
-        let changes: BalanceChangeInfo[] = (tx.balanceChanges ?? []).map(
-          (bc: GrpcTypes.BalanceChange) => ({
-            address: bc.address ?? "",
-            coin_type: bc.coinType ?? "",
-            amount: bc.amount ?? "0",
-          })
-        );
+        const sender = tx.sender;
+        let changes = tx.balanceChanges;
 
         if (coin_type) {
           changes = changes.filter((c) => c.coin_type === coin_type);
         }
 
-        const checkpoint = tx.checkpoint?.toString();
-        const checkpointNum = tx.checkpoint ? Number(tx.checkpoint) : undefined;
+        const checkpointNum = tx.checkpoint ?? undefined;
 
         traceHops.push({
           hop: hop + 1,
           digest: currentDigest,
           sender,
           balance_changes: changes,
-          timestamp: timestampToIso(tx.timestamp),
-          checkpoint,
+          timestamp: tx.timestamp,
+          checkpoint: tx.checkpoint?.toString() ?? null,
         });
 
         // Determine next address to follow

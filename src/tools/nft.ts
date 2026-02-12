@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
-import { formatOwner } from "../utils/formatting.js";
 import { protoValueToJson } from "../utils/proto.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -386,54 +385,4 @@ export function registerNftTools(server: McpServer) {
     }
   );
 
-  server.tool(
-    "get_nft_details",
-    "Get full details of a specific NFT object including display metadata, owner, and raw content.",
-    {
-      object_id: z.string().describe("The NFT object ID (0x...)"),
-    },
-    async ({ object_id }) => {
-      const { response } = await sui.ledgerService.getObject({
-        objectId: object_id,
-        readMask: {
-          paths: [
-            "object_id",
-            "version",
-            "digest",
-            "object_type",
-            "owner",
-            "previous_transaction",
-            "storage_rebate",
-            "json",
-          ],
-        },
-      });
-
-      const obj = response.object;
-      const content = protoValueToJson(obj?.json);
-      const display = extractDisplay(content);
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                object_id: obj?.objectId,
-                type: obj?.objectType,
-                version: obj?.version?.toString(),
-                digest: obj?.digest,
-                owner: formatOwner(obj?.owner),
-                previous_transaction: obj?.previousTransaction,
-                display,
-                content,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
 }

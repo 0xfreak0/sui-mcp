@@ -105,7 +105,7 @@ function parseGenericPool(json: Record<string, unknown>, typeParams: string[], p
 export function registerPoolTools(server: McpServer) {
   server.tool(
     "get_pool_stats",
-    "Get stats for a DeFi liquidity pool on Sui. Auto-detects the protocol (Cetus, DeepBook, Turbos, etc.) and returns token pair, reserves, fees, and prices.",
+    "Get stats for a DeFi liquidity pool on Sui given its object ID. Auto-detects the protocol (Cetus, DeepBook, Turbos, etc.) and returns token pair, reserves, fees, and current prices.",
     {
       pool_id: z.string().describe("Pool object ID (0x...)"),
       protocol: z

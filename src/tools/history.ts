@@ -179,7 +179,7 @@ const HISTORY_QUERY = `
 export function registerHistoryTools(server: McpServer) {
   server.tool(
     "get_transaction_history",
-    "Get decoded transaction history for a Sui wallet address. Combines transaction queries with protocol-aware decoding to return a human-readable activity feed with protocol names, action descriptions, and token flow.",
+    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet. Returns a human-readable activity feed with protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI'), and token flow. Prefer this over query_transactions when exploring what a wallet has been doing.",
     {
       address: z.string().describe("Sui wallet address (0x...)"),
       limit: z

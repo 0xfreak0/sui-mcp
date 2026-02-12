@@ -8,7 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerMonitorTools(server: McpServer) {
   server.tool(
     "check_activity",
-    "Check for recent activity on a Sui address or object. For an address: returns new transactions since a checkpoint or timestamp. For an object: checks if its version has changed since a given version.",
+    "(Monitoring/polling) Check whether new activity has occurred on a Sui address or object since a known checkpoint, timestamp, or version. Not for viewing transaction history — use get_transaction_history for that. This tool is for detecting changes since a previous check.",
     {
       address: z
         .string()

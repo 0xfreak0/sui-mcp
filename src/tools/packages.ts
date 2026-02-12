@@ -74,7 +74,7 @@ function abilityName(a: GrpcTypes.Ability): string {
 export function registerPackageTools(server: McpServer) {
   server.tool(
     "get_package",
-    "Get a Sui Move package by its ID. Returns modules with structs categorized by abilities, and functions categorized by visibility (entry, public, friend, private).",
+    "(Developer) Get a Sui Move package by its ID. Returns modules with structs categorized by abilities, and functions categorized by visibility (entry, public, friend, private).",
     {
       package_id: z.string().describe("Package ID (0x...)"),
     },
@@ -166,7 +166,7 @@ export function registerPackageTools(server: McpServer) {
 
   server.tool(
     "get_move_function",
-    "Get a specific Move function signature from a Sui package.",
+    "(Developer) Get a specific Move function signature from a Sui package. Returns parameters, type parameters, return type, and visibility.",
     {
       package_id: z.string().describe("Package ID (0x...)"),
       module_name: z.string().describe("Module name"),

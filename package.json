@@ -7,7 +7,7 @@
     "sui-mcp": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/data dist/",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "generate": "echo 'No codegen needed - using @mysten/sui SDK'",

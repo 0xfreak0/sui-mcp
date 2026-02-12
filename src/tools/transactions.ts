@@ -219,4 +219,91 @@ export function registerTransactionTools(server: McpServer) {
       };
     }
   );
+
+  server.tool(
+    "batch_get_transactions",
+    "Fetch multiple Sui transactions by their digests in a single batch call. More efficient than calling get_transaction multiple times. Returns sender, effects, events, gas, and balance changes for each transaction.",
+    {
+      digests: z
+        .array(z.string())
+        .min(1)
+        .max(50)
+        .describe("Array of transaction digests (Base58). Max 50."),
+    },
+    async ({ digests }) => {
+      const readMask = {
+        paths: [
+          "digest", "transaction", "effects", "events",
+          "checkpoint", "timestamp", "balance_changes",
+        ],
+      };
+
+      // Fetch all transactions in parallel
+      const txResults = await Promise.allSettled(
+        digests.map(async (digest) => {
+          const req = { digest, readMask };
+          let res: GrpcTypes.GetTransactionResponse;
+          try {
+            ({ response: res } = await sui.ledgerService.getTransaction(req));
+          } catch {
+            ({ response: res } = await archive.ledgerService.getTransaction(req));
+          }
+          return res.transaction;
+        })
+      );
+
+      const results = txResults.map((result, i) => {
+        if (result.status === "rejected") {
+          return {
+            digest: digests[i],
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          };
+        }
+        const tx = result.value;
+        if (!tx) {
+          return { digest: digests[i], error: "Transaction not found" };
+        }
+        const effects = tx.effects;
+        const events = tx.events?.events?.map((e: GrpcTypes.Event) => ({
+          package_id: e.packageId,
+          module: e.module,
+          event_type: e.eventType,
+          sender: e.sender,
+        }));
+        const balanceChanges = tx.balanceChanges?.map((bc: GrpcTypes.BalanceChange) => ({
+          address: bc.address,
+          coin_type: bc.coinType,
+          amount: bc.amount,
+        }));
+
+        return {
+          digest: tx.digest,
+          sender: tx.transaction?.sender,
+          status: formatStatus(effects?.status),
+          gas: formatGas(effects?.gasUsed),
+          epoch: bigintToString(effects?.epoch),
+          checkpoint: bigintToString(tx.checkpoint),
+          timestamp: timestampToIso(tx.timestamp),
+          events,
+          balance_changes: balanceChanges,
+        };
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                count: results.length,
+                transactions: results,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
 }

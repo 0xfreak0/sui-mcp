@@ -30,6 +30,21 @@
     "0x0000000000000000000000000000000000000000000000000000000000000003": { "name": "Sui System", "type": "system" },
     "0x3": { "name": "Sui System", "type": "system" },
     "0x0000000000000000000000000000000000000000000000000000000000000002": { "name": "Sui Framework", "type": "system" },
-    "0x2": { "name": "Sui Framework", "type": "system" }
+    "0x2": { "name": "Sui Framework", "type": "system" },
+
+    "0x71af035413ed499710980ed8adb010bbf2cc5cacf4ab37c7710a4bb87eb58ba5": { "name": "SuiNS", "type": "name_service" },
+    "0x863d5f9760f302495398c8e4c6e9784bc17c44b079c826a1813715ef08cbe41a": { "name": "SuiNS", "type": "name_service" },
+
+    "0xfdc88f7d7cf30afab2f82e8380d11ee8f70efb90e863d1de8616fae1bb09ea77": { "name": "Walrus", "type": "storage" },
+    "0xd843c37d213ea683ec3519abe4646fd618f52d7fce1c4e9875a4144d53e21ebc": { "name": "Walrus", "type": "storage" },
+
+    "0xe10f85f47c6d11f63e650aa7daf168c55ead9abb6da4227eba5dd5e4f8d890b1": { "name": "Kriya", "type": "dex" },
+
+    "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497": { "name": "DeepBook", "type": "dex" },
+    "0x000000000000000000000000000000000000000000000000000000000000dee9": { "name": "DeepBook", "type": "dex" },
+    "0xdee9": { "name": "DeepBook", "type": "dex" },
+
+    "0x4b0f4ee1a40ce37ec81c987cc4e76a665419e74b863319492fc7d26f708b835a": { "name": "Typus", "type": "options" },
+    "0x0624b66825d66821a57a49491fe1b31bc4f522459051a587aeb43828075f438a": { "name": "Typus", "type": "options" }
   }
 }

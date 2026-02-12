@@ -3,6 +3,30 @@ import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+interface ValidatorJson {
+  metadata?: {
+    sui_address?: string;
+    name?: string;
+    description?: string;
+    image_url?: string;
+    project_url?: string;
+    net_address?: string;
+    p2p_address?: string;
+    primary_address?: string;
+    worker_address?: string;
+  };
+  voting_power?: string;
+  gas_price?: string;
+  staking_pool?: {
+    id?: string;
+    activation_epoch?: string;
+    sui_balance?: string;
+  };
+  commission_rate?: string;
+  next_epoch_stake?: string;
+  next_epoch_commission_rate?: string;
+}
+
 export function registerStakingTools(server: McpServer) {
   server.tool(
     "get_validators",
@@ -27,19 +51,11 @@ export function registerStakingTools(server: McpServer) {
           validatorSet: {
             activeValidators: {
               nodes: Array<{
-                name: string;
-                description?: string;
-                address: { address: string };
-                stakingPoolSuiBalance?: string;
-                commissionRate?: number;
-                nextEpochCommissionRate?: number;
-                votingPower?: number;
                 atRisk?: number;
-                apy?: number;
-                stakingPoolActivationEpoch?: number;
+                contents?: { json: ValidatorJson };
               }>;
             };
-            totalStake?: string;
+            contents?: { json: { total_stake?: string } };
           };
         };
       }>(
@@ -49,19 +65,11 @@ export function registerStakingTools(server: McpServer) {
             validatorSet {
               activeValidators(first: $first) {
                 nodes {
-                  name
-                  description
-                  address { address }
-                  stakingPoolSuiBalance
-                  commissionRate
-                  nextEpochCommissionRate
-                  votingPower
                   atRisk
-                  apy
-                  stakingPoolActivationEpoch
+                  contents { json }
                 }
               }
-              totalStake
+              contents { json }
             }
           }
         }`,
@@ -70,17 +78,22 @@ export function registerStakingTools(server: McpServer) {
 
       const nodes = data.epoch.validatorSet.activeValidators.nodes;
 
-      const validators = nodes.map((v) => ({
-        name: v.name,
-        address: v.address.address,
-        description: v.description ?? null,
-        staking_pool_sui_balance: v.stakingPoolSuiBalance ?? null,
-        commission_rate_bps: v.commissionRate ?? null,
-        next_epoch_commission_rate_bps: v.nextEpochCommissionRate ?? null,
-        voting_power: v.votingPower ?? null,
-        apy: v.apy ?? null,
-        at_risk: v.atRisk ?? null,
-      }));
+      const validators = nodes.map((v) => {
+        const json = v.contents?.json;
+        const meta = json?.metadata;
+        const pool = json?.staking_pool;
+        return {
+          name: meta?.name ?? null,
+          address: meta?.sui_address ?? null,
+          description: meta?.description ?? null,
+          staking_pool_sui_balance: pool?.sui_balance ?? null,
+          commission_rate_bps: json?.commission_rate != null ? Number(json.commission_rate) : null,
+          next_epoch_commission_rate_bps: json?.next_epoch_commission_rate != null ? Number(json.next_epoch_commission_rate) : null,
+          voting_power: json?.voting_power != null ? Number(json.voting_power) : null,
+          gas_price: json?.gas_price ?? null,
+          at_risk: v.atRisk ?? null,
+        };
+      });
 
       if (sortField === "stake") {
         validators.sort((a, b) => {
@@ -89,13 +102,20 @@ export function registerStakingTools(server: McpServer) {
           return bStake > aStake ? 1 : bStake < aStake ? -1 : 0;
         });
       } else if (sortField === "apy") {
-        validators.sort((a, b) => (b.apy ?? 0) - (a.apy ?? 0));
+        // APY not directly available from GraphQL, sort by stake as fallback
+        validators.sort((a, b) => {
+          const aStake = BigInt(a.staking_pool_sui_balance ?? "0");
+          const bStake = BigInt(b.staking_pool_sui_balance ?? "0");
+          return bStake > aStake ? 1 : bStake < aStake ? -1 : 0;
+        });
       } else if (sortField === "commission") {
         validators.sort(
           (a, b) =>
             (a.commission_rate_bps ?? 10000) - (b.commission_rate_bps ?? 10000)
         );
       }
+
+      const totalStake = data.epoch.validatorSet.contents?.json?.total_stake ?? null;
 
       return {
         content: [
@@ -104,7 +124,7 @@ export function registerStakingTools(server: McpServer) {
             text: JSON.stringify(
               {
                 epoch: data.epoch.epochId,
-                total_stake: data.epoch.validatorSet.totalStake ?? null,
+                total_stake: totalStake,
                 validator_count: validators.length,
                 validators,
               },
@@ -119,108 +139,47 @@ export function registerStakingTools(server: McpServer) {
 
   server.tool(
     "get_validator_detail",
-    "Get detailed info about a specific Sui validator including credentials, staking stats, commission, APY, and network addresses.",
+    "Get detailed info about a specific Sui validator including credentials, staking stats, commission, and network addresses.",
     {
       address: z.string().describe("Validator address (0x...)"),
     },
     async ({ address }) => {
       const data = await gqlQuery<{
-        address: {
-          address: string;
-          validatorCredentials?: {
-            name?: string;
-            description?: string;
-            imageUrl?: string;
-            projectUrl?: string;
-            netAddress?: string;
-            p2pAddress?: string;
-            primaryAddress?: string;
-            workerAddress?: string;
-            protocolPubKey?: string;
-            networkPubKey?: string;
-            workerPubKey?: string;
-            proofOfPossession?: string;
-            operationCap?: { address: string };
-            stakingPoolId?: string;
-          };
-        } | null;
         epoch: {
           epochId: number;
           validatorSet: {
             activeValidators: {
               nodes: Array<{
-                name: string;
-                address: { address: string };
-                stakingPoolSuiBalance?: string;
-                commissionRate?: number;
-                nextEpochCommissionRate?: number;
-                votingPower?: number;
                 atRisk?: number;
-                apy?: number;
+                contents?: { json: ValidatorJson };
               }>;
             };
           };
         };
       }>(
-        `query($address: SuiAddress!) {
-          address(address: $address) {
-            address
-            validatorCredentials {
-              name
-              description
-              imageUrl
-              projectUrl
-              netAddress
-              p2pAddress
-              primaryAddress
-              workerAddress
-              protocolPubKey
-              networkPubKey
-              workerPubKey
-              proofOfPossession
-              operationCap { address }
-              stakingPoolId
-            }
-          }
+        `query {
           epoch {
             epochId
             validatorSet {
               activeValidators(first: 200) {
                 nodes {
-                  name
-                  address { address }
-                  stakingPoolSuiBalance
-                  commissionRate
-                  nextEpochCommissionRate
-                  votingPower
                   atRisk
-                  apy
+                  contents { json }
                 }
               }
             }
           }
-        }`,
-        { address }
+        }`
       );
 
-      const credentials = data.address?.validatorCredentials ?? null;
       const activeValidator =
         data.epoch.validatorSet.activeValidators.nodes.find(
-          (v) => v.address.address === address
+          (v) => v.contents?.json?.metadata?.sui_address === address
         );
 
-      const stakingStats = activeValidator
-        ? {
-            staking_pool_sui_balance:
-              activeValidator.stakingPoolSuiBalance ?? null,
-            commission_rate_bps: activeValidator.commissionRate ?? null,
-            next_epoch_commission_rate_bps:
-              activeValidator.nextEpochCommissionRate ?? null,
-            voting_power: activeValidator.votingPower ?? null,
-            apy: activeValidator.apy ?? null,
-            at_risk: activeValidator.atRisk ?? null,
-          }
-        : null;
+      const json = activeValidator?.contents?.json;
+      const meta = json?.metadata;
+      const pool = json?.staking_pool;
 
       const result: Record<string, unknown> = {
         address,
@@ -228,22 +187,31 @@ export function registerStakingTools(server: McpServer) {
         in_active_set: !!activeValidator,
       };
 
-      if (credentials) {
+      if (meta) {
         result.credentials = {
-          name: credentials.name ?? null,
-          description: credentials.description ?? null,
-          image_url: credentials.imageUrl ?? null,
-          project_url: credentials.projectUrl ?? null,
-          net_address: credentials.netAddress ?? null,
-          p2p_address: credentials.p2pAddress ?? null,
-          primary_address: credentials.primaryAddress ?? null,
-          worker_address: credentials.workerAddress ?? null,
-          staking_pool_id: credentials.stakingPoolId ?? null,
+          name: meta.name ?? null,
+          description: meta.description ?? null,
+          image_url: meta.image_url ?? null,
+          project_url: meta.project_url ?? null,
+          net_address: meta.net_address ?? null,
+          p2p_address: meta.p2p_address ?? null,
+          primary_address: meta.primary_address ?? null,
+          worker_address: meta.worker_address ?? null,
         };
       }
 
-      if (stakingStats) {
-        result.staking_stats = stakingStats;
+      if (json) {
+        result.staking_stats = {
+          staking_pool_sui_balance: pool?.sui_balance ?? null,
+          staking_pool_id: pool?.id ?? null,
+          activation_epoch: pool?.activation_epoch ?? null,
+          commission_rate_bps: json.commission_rate != null ? Number(json.commission_rate) : null,
+          next_epoch_commission_rate_bps: json.next_epoch_commission_rate != null ? Number(json.next_epoch_commission_rate) : null,
+          voting_power: json.voting_power != null ? Number(json.voting_power) : null,
+          gas_price: json.gas_price ?? null,
+          next_epoch_stake: json.next_epoch_stake ?? null,
+          at_risk: activeValidator?.atRisk ?? null,
+        };
       } else {
         result.note =
           "Validator not found in active set. They may be pending, inactive, or the address may not be a validator.";

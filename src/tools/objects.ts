@@ -23,10 +23,17 @@ export function registerObjectTools(server: McpServer) {
         version: version ? BigInt(version) : undefined,
         readMask,
       };
-      let { response: res } = await sui.ledgerService.getObject(req);
-      // Fall back to archive for pruned data
-      if (!res.object && version) {
+      let res;
+      try {
+        ({ response: res } = await sui.ledgerService.getObject(req));
+      } catch {
         ({ response: res } = await archive.ledgerService.getObject(req));
+      }
+      // Fall back to archive if fullnode returned empty data for a versioned request
+      if (!res.object && version) {
+        try {
+          ({ response: res } = await archive.ledgerService.getObject(req));
+        } catch { /* keep fullnode result */ }
       }
       const obj = res.object;
       return {

@@ -54,11 +54,22 @@ export function registerChainTools(server: McpServer) {
         : digest
           ? { oneofKind: "digest" as const, digest }
           : { oneofKind: undefined };
-      const req = { checkpointId };
-      let { response: res } = await sui.ledgerService.getCheckpoint(req);
-      // Fall back to archive for pruned checkpoints
-      if (!res.checkpoint && (sequence_number || digest)) {
+      const req = {
+        checkpointId,
+        // Archive defaults to "sequence_number,digest" only without explicit readMask
+        readMask: { paths: ["sequence_number", "digest", "summary"] },
+      };
+      let res;
+      try {
+        ({ response: res } = await sui.ledgerService.getCheckpoint(req));
+      } catch {
         ({ response: res } = await archive.ledgerService.getCheckpoint(req));
+      }
+      // Fall back to archive if fullnode returned pruned/partial data
+      if ((sequence_number || digest) && !res.checkpoint?.summary) {
+        try {
+          ({ response: res } = await archive.ledgerService.getCheckpoint(req));
+        } catch { /* keep fullnode result */ }
       }
       const cp = res.checkpoint;
       return {
@@ -92,7 +103,7 @@ export function registerChainTools(server: McpServer) {
       epoch: z.string().optional().describe("Epoch number"),
     },
     async ({ epoch }) => {
-      const { response: res } = await sui.ledgerService.getEpoch({
+      const req = {
         epoch: epoch ? BigInt(epoch) : undefined,
         readMask: {
           paths: [
@@ -100,7 +111,19 @@ export function registerChainTools(server: McpServer) {
             "start", "end", "reference_gas_price", "protocol_config",
           ],
         },
-      });
+      };
+      let res;
+      try {
+        ({ response: res } = await sui.ledgerService.getEpoch(req));
+      } catch {
+        ({ response: res } = await archive.ledgerService.getEpoch(req));
+      }
+      // Fall back to archive if fullnode returned incomplete data
+      if (epoch && !res.epoch?.firstCheckpoint) {
+        try {
+          ({ response: res } = await archive.ledgerService.getEpoch(req));
+        } catch { /* keep fullnode result */ }
+      }
       const ep = res.epoch;
       return {
         content: [

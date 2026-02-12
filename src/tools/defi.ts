@@ -8,6 +8,8 @@ const POSITION_TYPES = {
   navi: "0x834a86970ae93a73faf4fff16ae40bdb72b91c47be585fff19a2af60a19ddca3::storage::Obligation",
   scallop: "0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf::obligation::Obligation",
   staked_sui: "0x3::staking_pool::StakedSui",
+  bluefin: "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::position::Position",
+  bucket: "0x665188033384920a5bb5dcfb2ef21f54b4568d08b431718b97e02e5c184b92cc::account::Account",
 } as const;
 
 type ProtocolName = keyof typeof POSITION_TYPES;
@@ -105,13 +107,14 @@ async function fetchPositions(
 export function registerDefiTools(server: McpServer) {
   server.tool(
     "get_defi_positions",
-    "Find DeFi positions owned by a Sui wallet across major protocols: Suilend, Cetus LP, NAVI, Scallop, and staked SUI. Returns position objects with their on-chain content.",
+    "Find DeFi positions owned by a Sui wallet across major protocols: Suilend, Cetus LP, NAVI, Scallop, Bluefin, Bucket, and staked SUI. Returns position objects with their on-chain content.",
     {
       address: z.string().describe("Wallet address (0x...)"),
     },
     async ({ address }) => {
       const protocols: ProtocolName[] = [
         "suilend", "cetus_lp", "navi", "scallop", "staked_sui",
+        "bluefin", "bucket",
       ];
 
       const results = await Promise.allSettled(

@@ -28,6 +28,18 @@ const NFT_COLLECTION_REGISTRY: NftCollectionInfo[] = [
     name: "Gawblenz",
     slug: "gawblenz",
   },
+  {
+    collection_type:
+      "0x9f48e186b1527bd164960a03f392c14669acfd1ef560fb6138ad0918e6e712a3::doonies::NFT",
+    name: "Doonies",
+    slug: "doonies",
+  },
+  {
+    collection_type:
+      "0x034c162f6b594cb5a1805264dd01ca5d80ce3eca6522e6ee37fd9ebfb9d3ddca::factory::PrimeMachin",
+    name: "Prime Machin",
+    slug: "prime-machin",
+  },
 ];
 
 function resolveCollectionType(name: string): string | null {

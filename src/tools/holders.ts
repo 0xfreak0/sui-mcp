@@ -248,7 +248,7 @@ export async function scanTokenTopHolders(
 export function registerHolderTools(server: McpServer) {
   server.tool(
     "get_top_holders",
-    "Scan objects of a given type and return top holders. Works for both NFT collections (ranked by count) and tokens/coins (ranked by balance). For NFTs: resolves kiosk-stored NFTs to actual wallet owner. Accepts a full Move type, a coin type, or a collection name from the built-in registry.",
+    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance). Resolves kiosk-stored NFTs to actual wallet owner. Accepts a Move type, coin type, or collection name. Results cached 24h.",
     {
       type: z
         .string()

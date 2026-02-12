@@ -15,7 +15,7 @@ const TOKEN_REGISTRY: TokenInfo[] = tokensData.tokens;
 export function registerTokenSearchTools(server: McpServer) {
   server.tool(
     "search_token",
-    "Search for Sui tokens/coins by name or symbol. Returns matching tokens with their full coin type, which can be used with other tools like get_balance or get_coin_info.",
+    "Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). Returns matching tokens with their full coin type. Use this when you have a token name but need the coin type for get_balance, get_coin_info, or get_token_prices.",
     {
       query: z.string().describe("Search query (e.g. 'USDC', 'SUI', 'staked')"),
       verify_onchain: z

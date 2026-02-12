@@ -1,4 +1,6 @@
-import protocolsData from "../data/protocols.json" with { type: "json" };
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const protocolsData = require("../data/protocols.json");
 
 export interface ProtocolInfo {
   name: string;

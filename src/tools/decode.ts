@@ -144,7 +144,7 @@ function formatPureInput(input: { $kind: string } & Record<string, unknown>): Re
 export function registerDecodeTools(server: McpServer) {
   server.tool(
     "decode_ptb",
-    "Decode a Programmable Transaction Block (PTB) from base64 BCS bytes. Returns the list of commands, inputs, and protocol annotations without executing the transaction.",
+    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes. Returns the list of commands, inputs, and protocol annotations without executing. Use get_transaction with a digest instead if you want to inspect an already-executed transaction.",
     {
       transaction_bcs: z
         .string()

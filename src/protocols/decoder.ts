@@ -35,6 +35,12 @@ const ACTION_LABELS: Record<string, string> = {
   claim_rewards: "Claim rewards",
   liquidate: "Liquidate",
   create_obligation: "Create obligation",
+  register: "Register",
+  renew: "Renew",
+  register_blob: "Register blob",
+  certify_blob: "Certify blob",
+  place_order: "Place order",
+  cancel_order: "Cancel order",
 };
 
 function formatAction(action: string, protocol: string | null, typeArgs: string[]): string {

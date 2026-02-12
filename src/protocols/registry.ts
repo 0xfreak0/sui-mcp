@@ -4,7 +4,7 @@ const protocolsData = require("../data/protocols.json");
 
 export interface ProtocolInfo {
   name: string;
-  type: "dex" | "lending" | "stablecoin" | "liquid_staking" | "perps" | "system";
+  type: "dex" | "lending" | "stablecoin" | "liquid_staking" | "perps" | "system" | "name_service" | "storage" | "options";
 }
 
 export interface OperationInfo {
@@ -91,6 +91,44 @@ const OPERATION_PATTERNS: OperationPattern[] = [
   // Bluefin: perps settlement
   { module: "settlement", fnPrefix: "", operation: { action: "settle" } },
   { module: "margin", fnPrefix: "", operation: { action: "manage_margin" } },
+
+  // SuiNS: name service
+  { module: "payment", fnPrefix: "register", operation: { action: "register" } },
+  { module: "payment", fnPrefix: "renew", operation: { action: "renew" } },
+  { module: "payment", fnPrefix: "init_registration", operation: { action: "register", skip: true } },
+  { module: "payment", fnPrefix: "init_renewal", operation: { action: "renew", skip: true } },
+  { module: "controller", fnPrefix: "set_target_address", operation: { action: "set_address", skip: true } },
+  { module: "controller", fnPrefix: "set_reverse_lookup", operation: { action: "set_reverse_lookup", skip: true } },
+  { module: "controller", fnPrefix: "set_user_data", operation: { action: "set_user_data", skip: true } },
+  { module: "register", fnPrefix: "register", operation: { action: "register" } },
+  { module: "direct_setup", fnPrefix: "set_target_address", operation: { action: "set_address", skip: true } },
+  { module: "direct_setup", fnPrefix: "set_reverse_lookup", operation: { action: "set_reverse_lookup", skip: true } },
+
+  // SuiNS: payments helper (skip — internal price calculations)
+  { module: "payments", fnPrefix: "calculate_price", operation: { action: "calculate_price", skip: true } },
+  { module: "payments", fnPrefix: "handle_payment", operation: { action: "handle_payment", skip: true } },
+
+  // Walrus: storage
+  { module: "staking", fnPrefix: "stake_with_pool", operation: { action: "stake" } },
+  { module: "staking", fnPrefix: "request_withdraw_stake", operation: { action: "unstake" } },
+  { module: "blob", fnPrefix: "register", operation: { action: "register_blob" } },
+  { module: "blob", fnPrefix: "certify", operation: { action: "certify_blob" } },
+
+  // Kriya: DEX
+  { module: "spot_dex", fnPrefix: "swap", operation: { action: "swap" } },
+  { module: "spot_dex", fnPrefix: "add_liquidity", operation: { action: "add_liquidity" } },
+  { module: "spot_dex", fnPrefix: "remove_liquidity", operation: { action: "remove_liquidity" } },
+
+  // DeepBook v3: order book
+  { module: "pool", fnPrefix: "place_limit_order", operation: { action: "place_order" } },
+  { module: "pool", fnPrefix: "place_market_order", operation: { action: "swap" } },
+  { module: "pool", fnPrefix: "cancel_order", operation: { action: "cancel_order" } },
+  { module: "balance_manager", fnPrefix: "deposit", operation: { action: "deposit" } },
+  { module: "balance_manager", fnPrefix: "withdraw", operation: { action: "withdraw" } },
+
+  // Typus: options / structured products
+  { module: "tails_staking", fnPrefix: "stake", operation: { action: "stake" } },
+  { module: "tails_staking", fnPrefix: "unstake", operation: { action: "unstake" } },
 
   // Staking
   { module: "staking_pool", fnPrefix: "request_add_stake", operation: { action: "stake" } },

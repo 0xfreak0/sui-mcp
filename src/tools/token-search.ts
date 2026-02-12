@@ -135,18 +135,14 @@ export function registerTokenSearchTools(server: McpServer) {
           t.symbol.toLowerCase().includes(q)
       );
 
-      // If no static matches, try dynamic discovery
-      let dynamicMatches: DiscoveredToken[] = [];
-      if (registryMatches.length === 0) {
-        const discovered = await fetchDiscoveryTokens();
-        // Filter out tokens already in registry to avoid duplicates
-        const registryTypes = new Set(TOKEN_REGISTRY.map((t) => t.coin_type));
-        dynamicMatches = discovered.filter(
-          (t) =>
-            !registryTypes.has(t.coin_type) &&
-            (t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q))
-        );
-      }
+      // Always try dynamic discovery and merge (Aftermath results are cached 6h)
+      const discovered = await fetchDiscoveryTokens();
+      const registryTypes = new Set(TOKEN_REGISTRY.map((t) => t.coin_type));
+      const dynamicMatches = discovered.filter(
+        (t) =>
+          !registryTypes.has(t.coin_type) &&
+          (t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q))
+      );
 
       const allMatches = [
         ...registryMatches.map((t) => ({ ...t, source: "registry" as const })),

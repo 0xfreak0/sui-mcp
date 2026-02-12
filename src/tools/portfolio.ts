@@ -37,6 +37,7 @@ export function registerPortfolioTools(server: McpServer) {
         limit: 50,
         cursor: null,
       });
+      const balancesTruncated = balanceRes.hasNextPage ?? false;
       const balances = balanceRes.balances.filter((b) => b.balance !== "0");
       const coinTypes = balances.map((b) => b.coinType);
 
@@ -159,6 +160,7 @@ export function registerPortfolioTools(server: McpServer) {
                 sui_name: suiName,
                 total_value_usd: totalValueUsd,
                 holdings,
+                holdings_truncated: balancesTruncated,
                 staked_sui_count: stakedSuiCount,
                 unpriced_tokens: unpricedTokens,
               },

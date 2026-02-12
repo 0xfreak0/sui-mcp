@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
 import { DECOMPILER_PATH } from "../config.js";
+import { errorResult } from "../utils/errors.js";
 import { execFile } from "node:child_process";
 import { writeFile, unlink, mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
@@ -32,13 +33,6 @@ function runDecompiler(bytecodeFile: string): Promise<string> {
       }
     );
   });
-}
-
-function errorResult(message: string) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
-    isError: true,
-  };
 }
 
 async function fetchPackageModules(packageId: string) {

@@ -46,7 +46,7 @@ interface PackageNode {
 export function registerDependencyTools(server: McpServer) {
   server.tool(
     "get_package_dependency_graph",
-    "Get the dependency graph of a Sui Move package. Analyzes function signatures to discover which other packages it depends on, with optional recursive traversal.",
+    "(Developer) Get the dependency graph of a Sui Move package. Analyzes function signatures to discover which other packages it depends on, with optional recursive traversal up to depth 3.",
     {
       package_id: z.string().describe("Package ID (0x...)"),
       depth: z

@@ -11,7 +11,7 @@ function extractSymbol(coinType: string): string {
 export function registerWorkflowTools(server: McpServer) {
   server.tool(
     "get_wallet_overview",
-    "Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions. Set include_prices=true to also get USD values and total portfolio value.",
+    "(Recommended first tool for wallets) Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions. Set include_prices=true for USD values and total portfolio value. Start here before drilling into specific tools.",
     {
       address: z.string().describe("Wallet address (0x...)"),
       include_prices: z

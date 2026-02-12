@@ -59,7 +59,7 @@ async function decompileModule(
 export function registerDecompilerTools(server: McpServer) {
   server.tool(
     "decompile_module",
-    "Decompile Move module(s) from a Sui package into readable source code. If module_name is omitted, lists available modules. Set all_modules=true to decompile the entire package.",
+    "(Developer) Decompile Move module(s) from a Sui package into readable source code. Requires external move-decompiler binary. If module_name is omitted, lists available modules. Set all_modules=true to decompile the entire package.",
     {
       package_id: z.string().describe("Package ID (0x...)"),
       module_name: z

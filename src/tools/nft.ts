@@ -162,7 +162,7 @@ async function scanKioskCollections(kioskId: string): Promise<string[]> {
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "List NFTs owned by a wallet address, including kiosk-stored NFTs. Discovers kiosks via KioskOwnerCap, scans their contents, and also finds directly-owned non-coin objects. Returns display metadata like name, description, and image URL.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Discovers kiosks, scans their contents, and finds directly-owned non-coin objects. Returns display metadata (name, description, image URL). Use list_nft_collections for a cheaper count-only summary.",
     {
       address: z.string().describe("Owner wallet address (0x...)"),
       limit: z

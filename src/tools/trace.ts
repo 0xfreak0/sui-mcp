@@ -97,7 +97,7 @@ async function findNextTx(
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Follows balance changes across transaction hops.",
+    "(Advanced — multi-hop) Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Makes sequential API calls per hop (up to 10).",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z

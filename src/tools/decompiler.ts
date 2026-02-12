@@ -59,20 +59,24 @@ async function decompileModule(
 export function registerDecompilerTools(server: McpServer) {
   server.tool(
     "decompile_module",
-    "Decompile a single Move module from a Sui package into readable source code. If module_name is omitted, lists available modules in the package.",
+    "Decompile Move module(s) from a Sui package into readable source code. If module_name is omitted, lists available modules. Set all_modules=true to decompile the entire package.",
     {
       package_id: z.string().describe("Package ID (0x...)"),
       module_name: z
         .string()
         .optional()
-        .describe("Module name. If omitted, lists available modules."),
+        .describe("Module name to decompile. If omitted, lists available modules."),
+      all_modules: z
+        .boolean()
+        .optional()
+        .describe("Decompile all modules in the package (default: false)"),
     },
-    async ({ package_id, module_name }) => {
+    async ({ package_id, module_name, all_modules }) => {
       const pkg = await fetchPackageModules(package_id);
       if (!pkg) return errorResult("Package not found");
 
-      // If no module name given, list available modules
-      if (!module_name) {
+      // List modules if no target specified
+      if (!module_name && !all_modules) {
         const modules = pkg.modules.map((m) => m.name);
         return {
           content: [
@@ -88,6 +92,49 @@ export function registerDecompilerTools(server: McpServer) {
         };
       }
 
+      const dir = await mkdtemp(join(tmpdir(), "sui-decompile-"));
+
+      // Decompile all modules
+      if (all_modules) {
+        const modulesWithBytecode = pkg.modules.filter(
+          (m) => m.contents && m.contents.length > 0
+        );
+        if (modulesWithBytecode.length === 0) {
+          return errorResult("Package has no modules with bytecode");
+        }
+
+        const results: { module: string; source: string }[] = [];
+        for (const mod of modulesWithBytecode) {
+          try {
+            const source = await decompileModule(mod, dir);
+            results.push({ module: mod.name!, source });
+          } catch (err) {
+            results.push({
+              module: mod.name!,
+              source: `// Error decompiling: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  package_id: pkg.storageId,
+                  module_count: results.length,
+                  modules: results,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // Decompile single module
       const mod = pkg.modules.find((m) => m.name === module_name);
       if (!mod) {
         const available = pkg.modules.map((m) => m.name);
@@ -113,7 +160,6 @@ export function registerDecompilerTools(server: McpServer) {
         return errorResult("Module has no bytecode");
       }
 
-      const dir = await mkdtemp(join(tmpdir(), "sui-decompile-"));
       const source = await decompileModule(mod, dir);
 
       return {
@@ -122,58 +168,6 @@ export function registerDecompilerTools(server: McpServer) {
             type: "text" as const,
             text: JSON.stringify(
               { package_id: pkg.storageId, module: module_name, source },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "decompile_package",
-    "Decompile all modules in a Sui Move package into readable source code. Returns the full decompiled source for every module in the package.",
-    {
-      package_id: z.string().describe("Package ID (0x...)"),
-    },
-    async ({ package_id }) => {
-      const pkg = await fetchPackageModules(package_id);
-      if (!pkg) return errorResult("Package not found");
-
-      const modulesWithBytecode = pkg.modules.filter(
-        (m) => m.contents && m.contents.length > 0
-      );
-      if (modulesWithBytecode.length === 0) {
-        return errorResult("Package has no modules with bytecode");
-      }
-
-      const dir = await mkdtemp(join(tmpdir(), "sui-decompile-"));
-      const results: { module: string; source: string }[] = [];
-
-      // Decompile modules sequentially to avoid overwhelming the system
-      for (const mod of modulesWithBytecode) {
-        try {
-          const source = await decompileModule(mod, dir);
-          results.push({ module: mod.name!, source });
-        } catch (err) {
-          results.push({
-            module: mod.name!,
-            source: `// Error decompiling: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        }
-      }
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                package_id: pkg.storageId,
-                module_count: results.length,
-                modules: results,
-              },
               null,
               2
             ),

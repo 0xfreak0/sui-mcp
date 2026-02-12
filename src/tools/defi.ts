@@ -19,11 +19,156 @@ const READ_MASK = {
   paths: ["object_id", "version", "digest", "object_type", "owner", "json"],
 };
 
+// ---------------------------------------------------------------------------
+// Per-protocol extractors: pull actionable fields from raw on-chain JSON
+// ---------------------------------------------------------------------------
+
+type RawJson = Record<string, unknown>;
+
+function extractSuilend(json: RawJson): Record<string, unknown> {
+  // Obligation has deposits, borrows, and deposit/borrow values
+  const deposits = json.deposits as unknown[] | undefined;
+  const borrows = json.borrows as unknown[] | undefined;
+  return {
+    deposit_count: Array.isArray(deposits) ? deposits.length : 0,
+    borrow_count: Array.isArray(borrows) ? borrows.length : 0,
+    deposits: Array.isArray(deposits)
+      ? deposits.map((d: unknown) => {
+          const dep = d as RawJson;
+          return {
+            coin_type: dep.coin_type ?? dep.deposit_reserve,
+            deposited_ctoken_amount: dep.deposited_ctoken_amount,
+            market_value_usd: dep.market_value,
+          };
+        })
+      : [],
+    borrows: Array.isArray(borrows)
+      ? borrows.map((b: unknown) => {
+          const bor = b as RawJson;
+          return {
+            coin_type: bor.coin_type ?? bor.borrow_reserve,
+            borrowed_amount: bor.borrowed_amount,
+            market_value_usd: bor.market_value,
+          };
+        })
+      : [],
+    weighted_borrowed_value_usd: json.weighted_borrowed_value,
+    allowed_borrow_value_usd: json.allowed_borrow_value,
+    unhealthy_borrow_value_usd: json.unhealthy_borrow_value,
+  };
+}
+
+function extractNavi(json: RawJson): Record<string, unknown> {
+  // NAVI Obligation: similar structure to Suilend
+  const supplies = json.supplies as unknown[] | undefined;
+  const borrows = json.borrows as unknown[] | undefined;
+  return {
+    supply_count: Array.isArray(supplies) ? supplies.length : 0,
+    borrow_count: Array.isArray(borrows) ? borrows.length : 0,
+    supplies: Array.isArray(supplies)
+      ? supplies.map((s: unknown) => {
+          const sup = s as RawJson;
+          return {
+            pool_id: sup.pool_id ?? sup.asset,
+            amount: sup.amount ?? sup.balance,
+          };
+        })
+      : [],
+    borrows: Array.isArray(borrows)
+      ? borrows.map((b: unknown) => {
+          const bor = b as RawJson;
+          return {
+            pool_id: bor.pool_id ?? bor.asset,
+            amount: bor.amount ?? bor.balance,
+          };
+        })
+      : [],
+  };
+}
+
+function extractScallop(json: RawJson): Record<string, unknown> {
+  // Scallop Obligation: collaterals and debts
+  const collaterals = json.collaterals as unknown[] | undefined;
+  const debts = json.debts as unknown[] | undefined;
+  return {
+    collateral_count: Array.isArray(collaterals) ? collaterals.length : 0,
+    debt_count: Array.isArray(debts) ? debts.length : 0,
+    collaterals: Array.isArray(collaterals)
+      ? collaterals.map((c: unknown) => {
+          const col = c as RawJson;
+          return { asset: col.type ?? col.asset, amount: col.amount };
+        })
+      : [],
+    debts: Array.isArray(debts)
+      ? debts.map((d: unknown) => {
+          const debt = d as RawJson;
+          return { asset: debt.type ?? debt.asset, amount: debt.amount };
+        })
+      : [],
+    lock_key: json.lock_key,
+  };
+}
+
+function extractCetusLp(json: RawJson): Record<string, unknown> {
+  // Cetus LP Position: pool, liquidity, ticks, fee owed
+  return {
+    pool: json.pool,
+    liquidity: json.liquidity,
+    tick_lower_index: json.tick_lower_index,
+    tick_upper_index: json.tick_upper_index,
+    fee_owed_a: json.fee_owed_a,
+    fee_owed_b: json.fee_owed_b,
+    reward_amount_owed_0: json.reward_amount_owed_0,
+    reward_amount_owed_1: json.reward_amount_owed_1,
+    reward_amount_owed_2: json.reward_amount_owed_2,
+  };
+}
+
+function extractBluefin(json: RawJson): Record<string, unknown> {
+  return {
+    pool: json.pool,
+    liquidity: json.liquidity,
+    tick_lower_index: json.tick_lower_index,
+    tick_upper_index: json.tick_upper_index,
+    fee_growth_inside_a: json.fee_growth_inside_a,
+    fee_growth_inside_b: json.fee_growth_inside_b,
+  };
+}
+
+function extractStakedSui(json: RawJson): Record<string, unknown> {
+  return {
+    pool_id: json.pool_id,
+    principal: json.principal,
+    stake_activation_epoch: json.stake_activation_epoch,
+  };
+}
+
+function extractBucket(json: RawJson): Record<string, unknown> {
+  return {
+    collateral_amount: json.collateral_amount,
+    buck_amount: json.buck_amount,
+  };
+}
+
+const EXTRACTORS: Record<ProtocolName, (json: RawJson) => Record<string, unknown>> = {
+  suilend: extractSuilend,
+  navi: extractNavi,
+  scallop: extractScallop,
+  cetus_lp: extractCetusLp,
+  bluefin: extractBluefin,
+  staked_sui: extractStakedSui,
+  bucket: extractBucket,
+};
+
+// ---------------------------------------------------------------------------
+// Position entry (now with extracted summary)
+// ---------------------------------------------------------------------------
+
 interface PositionEntry {
   object_id: string;
   type: string;
   version?: string;
-  content: unknown;
+  summary: Record<string, unknown>;
 }
 
 async function fetchPositions(
@@ -43,6 +188,7 @@ async function fetchPositions(
     }
 
     const truncated = listResult.hasNextPage ?? false;
+    const extractor = EXTRACTORS[protocol];
 
     const positions = await Promise.all(
       listResult.objects.map(async (obj): Promise<PositionEntry> => {
@@ -52,18 +198,19 @@ async function fetchPositions(
             readMask: READ_MASK,
           });
           const full = response.object;
+          const rawJson = protoValueToJson(full?.json) as RawJson | null;
           return {
             object_id: obj.objectId,
             type: full?.objectType ?? obj.type ?? POSITION_TYPES[protocol],
             version: full?.version?.toString() ?? obj.version?.toString(),
-            content: protoValueToJson(full?.json),
+            summary: rawJson ? extractor(rawJson) : {},
           };
         } catch {
           return {
             object_id: obj.objectId,
             type: obj.type ?? POSITION_TYPES[protocol],
             version: obj.version?.toString(),
-            content: null,
+            summary: {},
           };
         }
       }),
@@ -83,7 +230,7 @@ async function fetchPositions(
 export function registerDefiTools(server: McpServer) {
   server.tool(
     "get_defi_positions",
-    "Find DeFi positions owned by a Sui wallet across major protocols: Suilend, Cetus LP, NAVI, Scallop, Bluefin, Bucket, and staked SUI. Returns position objects with their on-chain content.",
+    "Find DeFi positions owned by a Sui wallet across major protocols: Suilend, Cetus LP, NAVI, Scallop, Bluefin, Bucket, and staked SUI. Returns extracted position summaries (deposits, borrows, liquidity, fees) instead of raw on-chain data.",
     {
       address: z.string().describe("Wallet address (0x...)"),
     },
@@ -105,7 +252,9 @@ export function registerDefiTools(server: McpServer) {
       for (const result of results) {
         if (result.status === "fulfilled") {
           const { protocol, positions: pos, truncated, error } = result.value;
-          positions[protocol] = pos;
+          if (pos.length > 0) {
+            positions[protocol] = pos;
+          }
           totalPositions += pos.length;
           if (truncated) truncatedProtocols.push(protocol);
           if (error) errors[protocol] = error;
@@ -114,8 +263,8 @@ export function registerDefiTools(server: McpServer) {
 
       const output: Record<string, unknown> = {
         address,
-        positions,
         total_positions: totalPositions,
+        positions,
       };
       if (truncatedProtocols.length > 0) {
         output.truncated_protocols = truncatedProtocols;

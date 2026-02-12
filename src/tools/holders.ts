@@ -95,17 +95,11 @@ interface CoinObjectsPage {
   };
 }
 
-// Resolves owner address for both directly-owned and kiosk-stored NFTs.
-// Chain: NFT -> ObjectOwner(wrapper) -> ObjectOwner(kiosk) -> kiosk.contents.json.owner
 function extractNftOwner(node: { owner?: OwnerNode }): string | null {
   const addr = node.owner?.address;
-  // Direct AddressOwner (no asObject means it's a plain address, not an object ref)
   if (addr?.address && !addr.asObject) return addr.address;
-  // ObjectOwner path: follow through wrapper to kiosk
   const inner = addr?.asObject?.owner?.address;
-  // Wrapper owned by AddressOwner
   if (inner?.address && !inner.asObject) return inner.address;
-  // Wrapper owned by ObjectOwner (kiosk) - read kiosk contents for owner field
   const kioskOwner =
     inner?.asObject?.asMoveObject?.contents?.json?.owner;
   if (kioskOwner) return kioskOwner;
@@ -116,8 +110,6 @@ function extractNftOwner(node: { owner?: OwnerNode }): string | null {
 // GraphQL queries
 // ---------------------------------------------------------------------------
 
-// NFT query with nested owner resolution for kiosk-stored NFTs.
-// Resolves: AddressOwner directly, or ObjectOwner -> ObjectOwner -> Kiosk contents
 const NFT_OBJECTS_QUERY = `
   query($type: String!, $first: Int, $after: String) {
     objects(filter: { type: $type }, first: $first, after: $after) {
@@ -255,21 +247,25 @@ export async function scanTokenTopHolders(
 
 export function registerHolderTools(server: McpServer) {
   server.tool(
-    "get_nft_collection_holders",
-    "Scan all objects of an NFT collection type, aggregate by owner, and return top holders ranked by count. Resolves kiosk-stored NFTs to the actual wallet owner. Accepts either a full Move type or a collection name from the built-in registry.",
+    "get_top_holders",
+    "Scan objects of a given type and return top holders. Works for both NFT collections (ranked by count) and tokens/coins (ranked by balance). For NFTs: resolves kiosk-stored NFTs to actual wallet owner. Accepts a full Move type, a coin type, or a collection name from the built-in registry.",
     {
-      collection_type: z
+      type: z
         .string()
         .optional()
         .describe(
-          "Full Move type of the NFT (e.g. 0xabc::module::NFT). Optional if collection_name is provided."
+          "Full Move type of the NFT or coin type (e.g. '0xabc::module::NFT' or '0x2::sui::SUI'). Auto-wraps coins in Coin<...> if needed."
         ),
       collection_name: z
         .string()
         .optional()
         .describe(
-          "Collection name or slug to look up in the registry (e.g. 'gawblenz'). Optional if collection_type is provided."
+          "NFT collection name or slug to look up in the registry (e.g. 'gawblenz'). Alternative to 'type'."
         ),
+      mode: z
+        .enum(["nft", "token"])
+        .optional()
+        .describe("'nft' ranks by count, 'token' ranks by balance. Auto-detected from type if omitted (Coin<...> = token, otherwise nft)."),
       limit: z
         .number()
         .optional()
@@ -279,27 +275,33 @@ export function registerHolderTools(server: McpServer) {
         .optional()
         .describe("Max objects to scan (default 5000, max 50000)"),
     },
-    async ({ collection_type, collection_name, limit, max_scan }) => {
-      // Resolve collection type
-      let resolvedType = collection_type;
+    async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
+      // Resolve type
+      let resolvedType = rawType;
       if (!resolvedType && collection_name) {
         resolvedType = resolveCollectionType(collection_name) ?? undefined;
         if (!resolvedType) {
           const known = NFT_COLLECTION_REGISTRY.map((c) => c.slug).join(", ");
           return errorResult(
-            `Collection "${collection_name}" not found in registry. Known: ${known}. Use collection_type with the full Move type instead.`
+            `Collection "${collection_name}" not found in registry. Known: ${known}. Use 'type' with the full Move type instead.`
           );
         }
       }
       if (!resolvedType) {
-        return errorResult("Either collection_type or collection_name must be provided.");
+        return errorResult("Either 'type' or 'collection_name' must be provided.");
       }
 
       const topN = Math.min(limit ?? 20, 100);
       const maxScan = Math.min(max_scan ?? DEFAULT_MAX_SCAN, MAX_SCAN_LIMIT);
 
-      // Check cache
-      const cacheKey = `nft:${resolvedType}:${maxScan}`;
+      // Auto-detect mode: if it looks like a coin type, use token mode
+      const effectiveMode = mode ?? (
+        resolvedType.includes("::coin::Coin<") || resolvedType.includes("::sui::SUI") || resolvedType.includes("::usdc::USDC")
+          ? "token"
+          : "nft"
+      );
+
+      const cacheKey = `${effectiveMode}:${resolvedType}:${maxScan}`;
       const cached = getCached(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
@@ -311,6 +313,26 @@ export function registerHolderTools(server: McpServer) {
         };
       }
 
+      if (effectiveMode === "token") {
+        const scan = await scanTokenTopHolders(resolvedType, topN, maxScan);
+        const result = {
+          mode: "token",
+          type: resolvedType,
+          total_scanned: scan.total_scanned,
+          unique_holders: scan.unique_holders,
+          truncated: scan.truncated,
+          cached: false,
+          top_holders: scan.holders,
+        };
+        setCache(cacheKey, JSON.stringify(result));
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(result, null, 2) },
+          ],
+        };
+      }
+
+      // NFT mode
       const holderCounts = new Map<string, number>();
       let cursor: string | undefined;
       let totalScanned = 0;
@@ -357,74 +379,13 @@ export function registerHolderTools(server: McpServer) {
       }));
 
       const result = {
-        collection_type: resolvedType,
+        mode: "nft",
+        type: resolvedType,
         total_scanned: totalScanned,
         unique_holders: holderCounts.size,
         truncated,
         cached: false,
         top_holders: topHolders,
-      };
-
-      setCache(cacheKey, JSON.stringify(result));
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "get_token_top_holders",
-    "Scan coin objects of a given type, aggregate balance by owner, and return top holders ranked by total balance.",
-    {
-      coin_type: z
-        .string()
-        .describe(
-          "Coin type (e.g. 0x2::sui::SUI). Auto-wraps in 0x2::coin::Coin<...> if needed."
-        ),
-      limit: z
-        .number()
-        .optional()
-        .describe("Top N holders to return (default 20, max 100)"),
-      max_scan: z
-        .number()
-        .optional()
-        .describe("Max coin objects to scan (default 5000, max 50000)"),
-    },
-    async ({ coin_type, limit, max_scan }) => {
-      const topN = Math.min(limit ?? 20, 100);
-      const maxScan = Math.min(max_scan ?? DEFAULT_MAX_SCAN, MAX_SCAN_LIMIT);
-
-      // Check cache
-      const fullType = coin_type.startsWith("0x2::coin::Coin<")
-        ? coin_type
-        : `0x2::coin::Coin<${coin_type}>`;
-      const cacheKey = `token:${fullType}:${maxScan}`;
-      const cached = getCached(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        parsed.cached = true;
-        return {
-          content: [
-            { type: "text" as const, text: JSON.stringify(parsed, null, 2) },
-          ],
-        };
-      }
-
-      const scan = await scanTokenTopHolders(coin_type, topN, maxScan);
-
-      const result = {
-        coin_type,
-        total_scanned: scan.total_scanned,
-        unique_holders: scan.unique_holders,
-        truncated: scan.truncated,
-        cached: false,
-        top_holders: scan.holders,
       };
 
       setCache(cacheKey, JSON.stringify(result));

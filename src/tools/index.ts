@@ -13,19 +13,14 @@ import { registerDefiTools } from "./defi.js";
 import { registerNftTools } from "./nft.js";
 import { registerPtbTools } from "./ptb.js";
 import { registerStakingTools } from "./staking.js";
-import { registerPortfolioTools } from "./portfolio.js";
 import { registerHistoryTools } from "./history.js";
 import { registerTokenSearchTools } from "./token-search.js";
 import { registerMonitorTools } from "./monitor.js";
 import { registerHolderTools } from "./holders.js";
-import { registerGasTools } from "./gas.js";
-import { registerCompareTools } from "./compare.js";
 import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
 import { registerPoolTools } from "./pools.js";
-import { registerExplainTools } from "./explain.js";
 import { registerDependencyTools } from "./dependencies.js";
-import { registerSubscriptionTools } from "./subscriptions.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -44,17 +39,12 @@ export function registerAllTools(server: McpServer) {
   registerNftTools(server);
   registerPtbTools(server);
   registerStakingTools(server);
-  registerPortfolioTools(server);
   registerHistoryTools(server);
   registerTokenSearchTools(server);
   registerMonitorTools(server);
   registerHolderTools(server);
-  registerGasTools(server);
-  registerCompareTools(server);
   registerDecodeTools(server);
   registerTraceTools(server);
   registerPoolTools(server);
-  registerExplainTools(server);
   registerDependencyTools(server);
-  registerSubscriptionTools(server);
 }

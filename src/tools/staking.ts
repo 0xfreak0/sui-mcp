@@ -242,6 +242,19 @@ export function registerStakingTools(server: McpServer) {
         cursor: null,
       });
 
+      // Fetch all staking objects in parallel instead of sequentially
+      const objectResults = await Promise.all(
+        ownedRes.objects.map(async (obj) => {
+          const { response: objRes } = await sui.ledgerService.getObject({
+            objectId: obj.objectId,
+            readMask: {
+              paths: ["object_id", "version", "object_type", "json"],
+            },
+          });
+          return { objectId: obj.objectId, object: objRes.object };
+        })
+      );
+
       const positions: Array<{
         object_id: string;
         pool_id: string | null;
@@ -251,15 +264,8 @@ export function registerStakingTools(server: McpServer) {
 
       let totalStakedMist = BigInt(0);
 
-      for (const obj of ownedRes.objects) {
-        const { response: objRes } = await sui.ledgerService.getObject({
-          objectId: obj.objectId,
-          readMask: {
-            paths: ["object_id", "version", "object_type", "json"],
-          },
-        });
-
-        const json = protoValueToJson(objRes.object?.json) as Record<
+      for (const { objectId, object: fullObj } of objectResults) {
+        const json = protoValueToJson(fullObj?.json) as Record<
           string,
           unknown
         > | null;
@@ -274,7 +280,7 @@ export function registerStakingTools(server: McpServer) {
         }
 
         positions.push({
-          object_id: obj.objectId,
+          object_id: objectId,
           pool_id: poolId,
           principal_mist: principal,
           stake_activation_epoch: activationEpoch,

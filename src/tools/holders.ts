@@ -105,7 +105,7 @@ interface CoinObjectsPage {
     nodes: Array<{
       owner?: { address?: { address: string } };
       asMoveObject?: {
-        asCoin?: { coinBalance?: string };
+        contents?: { json?: { balance?: string } };
       };
     }>;
     pageInfo: { hasNextPage: boolean; endCursor?: string };
@@ -178,7 +178,7 @@ const COIN_OBJECTS_QUERY = `
           }
         }
         asMoveObject {
-          asCoin { coinBalance }
+          contents { json }
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -401,7 +401,7 @@ export function registerHolderTools(server: McpServer) {
 
         for (const node of data.objects.nodes) {
           const addr = node.owner?.address?.address;
-          const balanceStr = node.asMoveObject?.asCoin?.coinBalance;
+          const balanceStr = node.asMoveObject?.contents?.json?.balance;
           if (addr && balanceStr) {
             const bal = BigInt(balanceStr);
             holderBalances.set(

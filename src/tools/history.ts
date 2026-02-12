@@ -8,15 +8,18 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 interface GqlBalanceChangeNode {
   coinType?: { repr: string };
   amount?: string;
-  owner?: { asAddress?: { address: string } };
+  owner?: { address: string };
 }
 
 interface GqlCommandNode {
   __typename: string;
-  package?: string;
-  module?: string;
-  function?: string;
-  typeArguments?: string[];
+  function?: {
+    name: string;
+    module: {
+      name: string;
+      package: { address: string };
+    };
+  };
 }
 
 interface GqlTransactionNode {
@@ -29,7 +32,7 @@ interface GqlTransactionNode {
       nodes: GqlBalanceChangeNode[];
     };
   };
-  programmableTransaction?: {
+  kind?: {
     commands?: {
       nodes: GqlCommandNode[];
     };
@@ -60,10 +63,10 @@ function adaptCommands(nodes: GqlCommandNode[]): GrpcTypes.Command[] {
           command: {
             oneofKind: "moveCall",
             moveCall: {
-              package: node.package ?? "",
-              module: node.module ?? "",
-              function: node.function ?? "",
-              typeArguments: node.typeArguments ?? [],
+              package: node.function?.module.package.address ?? "",
+              module: node.function?.module.name ?? "",
+              function: node.function?.name ?? "",
+              typeArguments: [],
             },
           },
         });
@@ -106,7 +109,7 @@ function adaptCommands(nodes: GqlCommandNode[]): GrpcTypes.Command[] {
  */
 function adaptBalanceChanges(nodes: GqlBalanceChangeNode[]): GrpcTypes.BalanceChange[] {
   const changes: unknown[] = nodes.map((node) => ({
-    address: node.owner?.asAddress?.address ?? "",
+    address: node.owner?.address ?? "",
     coinType: node.coinType?.repr ?? "",
     amount: node.amount ?? "0",
   }));
@@ -127,34 +130,39 @@ const HISTORY_QUERY = `
             nodes {
               coinType { repr }
               amount
-              owner { asAddress { address } }
+              owner { address }
             }
           }
         }
-        programmableTransaction {
-          commands {
-            nodes {
-              ... on MoveCallCommand {
-                __typename
-                package
-                module
-                function
-                typeArguments
-              }
-              ... on TransferObjectsCommand {
-                __typename
-              }
-              ... on SplitCoinsCommand {
-                __typename
-              }
-              ... on MergeCoinsCommand {
-                __typename
-              }
-              ... on PublishCommand {
-                __typename
-              }
-              ... on UpgradeCommand {
-                __typename
+        kind {
+          ... on ProgrammableTransaction {
+            commands {
+              nodes {
+                ... on MoveCallCommand {
+                  __typename
+                  function {
+                    name
+                    module {
+                      name
+                      package { address }
+                    }
+                  }
+                }
+                ... on TransferObjectsCommand {
+                  __typename
+                }
+                ... on SplitCoinsCommand {
+                  __typename
+                }
+                ... on MergeCoinsCommand {
+                  __typename
+                }
+                ... on PublishCommand {
+                  __typename
+                }
+                ... on UpgradeCommand {
+                  __typename
+                }
               }
             }
           }
@@ -197,7 +205,7 @@ export function registerHistoryTools(server: McpServer) {
 
       const transactions = data.transactions.nodes.map((node) => {
         const sender = node.sender?.address;
-        const commandNodes = node.programmableTransaction?.commands?.nodes ?? [];
+        const commandNodes = node.kind?.commands?.nodes ?? [];
         const balanceChangeNodes = node.effects?.balanceChanges?.nodes ?? [];
 
         const commands = adaptCommands(commandNodes);

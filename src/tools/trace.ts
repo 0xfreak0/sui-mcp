@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
+import { batchResolveNames } from "../utils/names.js";
+import { lookupProtocol } from "../protocols/registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface BalanceChangeInfo {
@@ -208,6 +210,42 @@ export function registerTraceTools(server: McpServer) {
         );
       }
 
+      // Collect all unique addresses from hops
+      const allAddresses = new Set<string>();
+      for (const hop of traceHops) {
+        if (hop.sender) allAddresses.add(hop.sender);
+        for (const bc of hop.balance_changes) {
+          if (bc.address) allAddresses.add(bc.address);
+        }
+      }
+
+      // Batch-resolve SuiNS names
+      const nameMap = await batchResolveNames([...allAddresses]);
+
+      // Build protocol labels from known package IDs in balance change coin types
+      const addressLabels: Record<string, { name?: string; protocol?: string }> = {};
+      for (const addr of allAddresses) {
+        const label: { name?: string; protocol?: string } = {};
+        const name = nameMap.get(addr);
+        if (name) label.name = name;
+        const proto = lookupProtocol(addr);
+        if (proto) label.protocol = proto.name;
+        if (label.name || label.protocol) {
+          addressLabels[addr] = label;
+        }
+      }
+
+      // Enrich hops with names and protocol labels
+      const enrichedHops = traceHops.map((hop) => ({
+        ...hop,
+        sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,
+        balance_changes: hop.balance_changes.map((bc) => ({
+          ...bc,
+          name: nameMap.get(bc.address) ?? null,
+          protocol: lookupProtocol(bc.address)?.name ?? null,
+        })),
+      }));
+
       return {
         content: [
           {
@@ -217,8 +255,9 @@ export function registerTraceTools(server: McpServer) {
                 starting_digest: digest,
                 direction,
                 coin_type: coin_type ?? "all",
-                hop_count: traceHops.length,
-                hops: traceHops,
+                hop_count: enrichedHops.length,
+                hops: enrichedHops,
+                address_labels: addressLabels,
               },
               null,
               2

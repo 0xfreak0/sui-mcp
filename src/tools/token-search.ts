@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
-import tokensData from "../data/tokens.json" with { type: "json" };
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const tokensData = require("../data/tokens.json");
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface TokenInfo {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
+import { protoValueToJson } from "../utils/proto.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const POSITION_TYPES = {
@@ -13,34 +14,6 @@ const POSITION_TYPES = {
 } as const;
 
 type ProtocolName = keyof typeof POSITION_TYPES;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function protoValueToJson(val?: any): unknown {
-  if (!val) return undefined;
-  const kind = val.kind;
-  if (!kind) return null;
-  switch (kind.oneofKind) {
-    case "nullValue":
-      return null;
-    case "numberValue":
-      return kind.numberValue;
-    case "stringValue":
-      return kind.stringValue;
-    case "boolValue":
-      return kind.boolValue;
-    case "structValue": {
-      const obj: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(kind.structValue.fields)) {
-        obj[k] = protoValueToJson(v);
-      }
-      return obj;
-    }
-    case "listValue":
-      return kind.listValue.values.map(protoValueToJson);
-    default:
-      return null;
-  }
-}
 
 const READ_MASK = {
   paths: ["object_id", "version", "digest", "object_type", "owner", "json"],
@@ -56,7 +29,7 @@ interface PositionEntry {
 async function fetchPositions(
   address: string,
   protocol: ProtocolName,
-): Promise<{ protocol: ProtocolName; positions: PositionEntry[]; error?: string }> {
+): Promise<{ protocol: ProtocolName; positions: PositionEntry[]; truncated: boolean; error?: string }> {
   try {
     const listResult = await sui.listOwnedObjects({
       owner: address,
@@ -66,8 +39,10 @@ async function fetchPositions(
     });
 
     if (listResult.objects.length === 0) {
-      return { protocol, positions: [] };
+      return { protocol, positions: [], truncated: false };
     }
+
+    const truncated = listResult.hasNextPage ?? false;
 
     const positions = await Promise.all(
       listResult.objects.map(async (obj): Promise<PositionEntry> => {
@@ -94,11 +69,12 @@ async function fetchPositions(
       }),
     );
 
-    return { protocol, positions };
+    return { protocol, positions, truncated };
   } catch (err) {
     return {
       protocol,
       positions: [],
+      truncated: false,
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -123,13 +99,15 @@ export function registerDefiTools(server: McpServer) {
 
       const positions: Record<string, PositionEntry[]> = {};
       const errors: Record<string, string> = {};
+      const truncatedProtocols: string[] = [];
       let totalPositions = 0;
 
       for (const result of results) {
         if (result.status === "fulfilled") {
-          const { protocol, positions: pos, error } = result.value;
+          const { protocol, positions: pos, truncated, error } = result.value;
           positions[protocol] = pos;
           totalPositions += pos.length;
+          if (truncated) truncatedProtocols.push(protocol);
           if (error) errors[protocol] = error;
         }
       }
@@ -139,6 +117,9 @@ export function registerDefiTools(server: McpServer) {
         positions,
         total_positions: totalPositions,
       };
+      if (truncatedProtocols.length > 0) {
+        output.truncated_protocols = truncatedProtocols;
+      }
       if (Object.keys(errors).length > 0) {
         output.errors = errors;
       }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Transaction } from "@mysten/sui/transactions";
 import { sui } from "../clients/grpc.js";
+import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerPtbTools(server: McpServer) {
@@ -63,24 +64,7 @@ export function registerPtbTools(server: McpServer) {
 
       const coins = listResult.objects;
       if (!coins || coins.length === 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  error:
-                    "No coins of type " +
-                    coin_type +
-                    " found for address " +
-                    sender,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return errorResult(`No coins of type ${coin_type} found for address ${sender}`);
       }
 
       const sortedCoins = [...coins].sort((a, b) => {
@@ -98,28 +82,9 @@ export function registerPtbTools(server: McpServer) {
       }
 
       if (accumulated < targetAmount) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  error:
-                    "Insufficient balance. Needed " +
-                    amount +
-                    " but only found " +
-                    accumulated.toString() +
-                    " across " +
-                    coins.length +
-                    " coins of type " +
-                    coin_type,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return errorResult(
+          `Insufficient balance. Needed ${amount} but only found ${accumulated.toString()} across ${coins.length} coins of type ${coin_type}`
+        );
       }
 
       const tx = new Transaction();

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sui, archive } from "../clients/grpc.js";
 import { formatStatus, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
+import { errorResult } from "../utils/errors.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -114,20 +115,9 @@ export function registerTransactionTools(server: McpServer) {
       ].filter(Boolean);
 
       if (exclusiveFilters.length > 1) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  error: `Only one of [affected_address, affected_object, function] can be specified per query. Got: ${exclusiveFilters.join(", ")}. Use separate queries for each filter.`,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return errorResult(
+          `Only one of [affected_address, affected_object, function] can be specified per query. Got: ${exclusiveFilters.join(", ")}. Use separate queries for each filter.`
+        );
       }
 
       const filterParts: Record<string, unknown> = {};

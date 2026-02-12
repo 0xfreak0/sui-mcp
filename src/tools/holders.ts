@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
+import { errorResult } from "../utils/errors.js";
+import collectionsData from "../data/nft-collections.json" with { type: "json" };
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const GQL_PAGE_SIZE = 50;
@@ -12,7 +14,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// NFT Collection Registry
+// NFT Collection Registry (loaded from src/data/nft-collections.json)
 // ---------------------------------------------------------------------------
 
 interface NftCollectionInfo {
@@ -21,56 +23,7 @@ interface NftCollectionInfo {
   slug: string;
 }
 
-const NFT_COLLECTION_REGISTRY: NftCollectionInfo[] = [
-  {
-    collection_type:
-      "0x70361cdc41d44c2e1f9c30c81837f7cf08c9bf0eaf30d178000070fda9c58b83::gawblenz::Gawblen",
-    name: "Gawblenz",
-    slug: "gawblenz",
-  },
-  {
-    collection_type:
-      "0x9f48e186b1527bd164960a03f392c14669acfd1ef560fb6138ad0918e6e712a3::doonies::NFT",
-    name: "Doonies",
-    slug: "doonies",
-  },
-  {
-    collection_type:
-      "0x034c162f6b594cb5a1805264dd01ca5d80ce3eca6522e6ee37fd9ebfb9d3ddca::factory::PrimeMachin",
-    name: "Prime Machin",
-    slug: "prime-machin",
-  },
-  {
-    collection_type:
-      "0xb1d045729c663c8fc173e435912329013130476765af3502d7c1dc421e970343::token::Nftestes",
-    name: "NFTestes",
-    slug: "nftestes",
-  },
-  {
-    collection_type:
-      "0xb908f3c6fea6865d32e2048c520cdfe3b5c5bbcebb658117c41bad70f52b7ccc::popkins_nft::Popkins",
-    name: "Popkins",
-    slug: "popkins",
-  },
-  {
-    collection_type:
-      "0xb07b09b016d28f989b6adda8069096da0c0a0ff6490f6e0866858c023b061bee::mystic_yeti::MysticYeti",
-    name: "Mystic Yeti",
-    slug: "mystic-yeti",
-  },
-  {
-    collection_type:
-      "0xd2197b1ce2096e96e726c29fa2c138c5c6748da169b81d34927c522b7499f1d7::ika_chan_nft::IkaChanNft",
-    name: "Ika-chan",
-    slug: "ika-chan",
-  },
-  {
-    collection_type:
-      "0xdf87ec097d3791bf30f3cb529816963122a924ab008659458ee6d693ea51e4b8::storage::ZenFrogs",
-    name: "ZenFrogs",
-    slug: "zenfrogs",
-  },
-];
+const NFT_COLLECTION_REGISTRY: NftCollectionInfo[] = collectionsData.collections;
 
 function resolveCollectionType(name: string): string | null {
   const q = name.toLowerCase();
@@ -252,42 +205,14 @@ export function registerHolderTools(server: McpServer) {
       if (!resolvedType && collection_name) {
         resolvedType = resolveCollectionType(collection_name) ?? undefined;
         if (!resolvedType) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify(
-                  {
-                    error: `Collection "${collection_name}" not found in registry. Use collection_type with the full Move type instead.`,
-                    known_collections: NFT_COLLECTION_REGISTRY.map((c) => ({
-                      name: c.name,
-                      slug: c.slug,
-                    })),
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
-          };
+          const known = NFT_COLLECTION_REGISTRY.map((c) => c.slug).join(", ");
+          return errorResult(
+            `Collection "${collection_name}" not found in registry. Known: ${known}. Use collection_type with the full Move type instead.`
+          );
         }
       }
       if (!resolvedType) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  error:
-                    "Either collection_type or collection_name must be provided.",
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return errorResult("Either collection_type or collection_name must be provided.");
       }
 
       const topN = Math.min(limit ?? 20, 100);

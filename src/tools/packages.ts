@@ -3,7 +3,7 @@ import { sui } from "../clients/grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-function formatVisibility(v?: GrpcTypes.FunctionDescriptor_Visibility): string {
+export function formatVisibility(v?: GrpcTypes.FunctionDescriptor_Visibility): string {
   switch (v) {
     case GrpcTypes.FunctionDescriptor_Visibility.PUBLIC:
       return "public";
@@ -16,7 +16,7 @@ function formatVisibility(v?: GrpcTypes.FunctionDescriptor_Visibility): string {
   }
 }
 
-function formatSignatureBody(body: GrpcTypes.OpenSignatureBody): string {
+export function formatSignatureBody(body: GrpcTypes.OpenSignatureBody): string {
   switch (body.type) {
     case GrpcTypes.OpenSignatureBody_Type.TYPE_PARAMETER:
       return `T${body.typeParameter ?? 0}`;
@@ -52,7 +52,7 @@ function formatSignatureBody(body: GrpcTypes.OpenSignatureBody): string {
   }
 }
 
-function formatSignature(sig: GrpcTypes.OpenSignature): string {
+export function formatSignature(sig: GrpcTypes.OpenSignature): string {
   if (!sig.body) return "unknown";
   return formatSignatureBody(sig.body);
 }

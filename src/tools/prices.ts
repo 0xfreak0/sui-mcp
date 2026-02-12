@@ -25,7 +25,7 @@ function extractSymbol(coinType: string): string {
   return parts.length >= 3 ? parts[parts.length - 1] : coinType;
 }
 
-interface AftermathPriceEntry {
+export interface AftermathPriceEntry {
   price: number;
   priceChange24HoursPercentage: number;
 }
@@ -52,7 +52,7 @@ interface PriceResult {
  * Fetch prices from Aftermath Finance API.
  * Accepts Sui coin types directly. Returns null on failure.
  */
-async function fetchAftermathPrices(
+export async function fetchAftermathPrices(
   coinTypes: string[]
 ): Promise<Record<string, AftermathPriceEntry> | null> {
   try {

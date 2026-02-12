@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
+import { sui } from "../clients/grpc.js";
+import { batchResolveNames } from "../utils/names.js";
 import { errorResult } from "../utils/errors.js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -317,14 +319,36 @@ export function registerHolderTools(server: McpServer) {
 
       if (effectiveMode === "token") {
         const scan = await scanTokenTopHolders(resolvedType, topN, maxScan);
+
+        // Fetch total supply and resolve names in parallel
+        const [supplyResult, nameMap] = await Promise.all([
+          sui.stateService
+            .getCoinInfo({ coinType: resolvedType })
+            .then(({ response }) => response.treasury?.totalSupply?.toString() ?? null)
+            .catch(() => null),
+          batchResolveNames(scan.holders.map((h) => h.address)),
+        ]);
+
+        const totalSupply = supplyResult ? BigInt(supplyResult) : null;
+
+        const enrichedHolders = scan.holders.map((h) => ({
+          ...h,
+          name: nameMap.get(h.address) ?? null,
+          percentage:
+            totalSupply && totalSupply > 0n
+              ? `${(Number(BigInt(h.balance)) / Number(totalSupply) * 100).toFixed(4)}%`
+              : null,
+        }));
+
         const result = {
           mode: "token",
           type: resolvedType,
+          total_supply: supplyResult,
           total_scanned: scan.total_scanned,
           unique_holders: scan.unique_holders,
           truncated: scan.truncated,
           cached: false,
-          top_holders: scan.holders,
+          top_holders: enrichedHolders,
         };
         setCache(cacheKey, JSON.stringify(result));
         return {
@@ -374,9 +398,13 @@ export function registerHolderTools(server: McpServer) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, topN);
 
+      // Resolve SuiNS names for top holders
+      const nameMap = await batchResolveNames(sorted.map(([addr]) => addr));
+
       const topHolders = sorted.map(([address, count], i) => ({
         rank: i + 1,
         address,
+        name: nameMap.get(address) ?? null,
         count,
       }));
 

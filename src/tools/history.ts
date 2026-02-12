@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { decodeTransaction } from "../protocols/decoder.js";
+import { batchResolveNames } from "../utils/names.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -203,7 +204,10 @@ export function registerHistoryTools(server: McpServer) {
 
       const data = await gqlQuery<GqlTransactionsResponse>(HISTORY_QUERY, variables);
 
-      const transactions = data.transactions.nodes.map((node) => {
+      // First pass: decode transactions and extract counterparty addresses
+      const allCounterpartyAddresses = new Set<string>();
+
+      const decodedNodes = data.transactions.nodes.map((node) => {
         const sender = node.sender?.address;
         const commandNodes = node.kind?.commands?.nodes ?? [];
         const balanceChangeNodes = node.effects?.balanceChanges?.nodes ?? [];
@@ -213,18 +217,41 @@ export function registerHistoryTools(server: McpServer) {
 
         const decoded = decodeTransaction(commands, balanceChanges, sender);
 
-        return {
-          digest: node.digest,
-          timestamp: node.effects?.timestamp ?? null,
-          sender: sender ?? null,
-          status: node.effects?.status?.toLowerCase() === "success"
-            ? "success"
-            : (node.effects?.status?.toLowerCase() ?? "unknown"),
-          protocols: decoded.protocols,
-          actions: decoded.actions,
-          token_flow: decoded.token_flow,
-        };
+        // Extract counterparties: addresses with positive balance changes that aren't the sender
+        const counterpartyAddrs: string[] = [];
+        for (const bc of balanceChangeNodes) {
+          const addr = bc.owner?.address;
+          const amount = bc.amount;
+          if (addr && addr !== sender && amount && BigInt(amount) > 0n) {
+            if (!counterpartyAddrs.includes(addr)) {
+              counterpartyAddrs.push(addr);
+              allCounterpartyAddresses.add(addr);
+            }
+          }
+        }
+
+        return { node, sender, decoded, counterpartyAddrs };
       });
+
+      // Batch-resolve SuiNS names for all counterparty addresses
+      const nameMap = await batchResolveNames([...allCounterpartyAddresses]);
+
+      // Second pass: build output with counterparties
+      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs }) => ({
+        digest: node.digest,
+        timestamp: node.effects?.timestamp ?? null,
+        sender: sender ?? null,
+        status: node.effects?.status?.toLowerCase() === "success"
+          ? "success"
+          : (node.effects?.status?.toLowerCase() ?? "unknown"),
+        protocols: decoded.protocols,
+        actions: decoded.actions,
+        token_flow: decoded.token_flow,
+        counterparties: counterpartyAddrs.map((addr) => ({
+          address: addr,
+          name: nameMap.get(addr) ?? null,
+        })),
+      }));
 
       const result = {
         address,

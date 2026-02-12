@@ -38,7 +38,7 @@ export function registerCoinTools(server: McpServer) {
 
   server.tool(
     "get_coin_info",
-    "Look up a token/coin on Sui by its full coin type. Returns name, symbol, decimals, description, icon URL, and total supply. Use this to find token info — requires the exact coin type string (e.g. '0x2::sui::SUI').",
+    "Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). Returns name, symbol, decimals, description, icon URL, and total supply. If you only have a name or symbol, use search_token first to find the coin type.",
     {
       coin_type: z
         .string()

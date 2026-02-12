@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
-import collectionsData from "../data/nft-collections.json" with { type: "json" };
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const collectionsData = require("../data/nft-collections.json");
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const GQL_PAGE_SIZE = 50;

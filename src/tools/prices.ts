@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { errorResult } from "../utils/errors.js";
-import priceFeedsData from "../data/price-feeds.json" with { type: "json" };
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const priceFeedsData = require("../data/price-feeds.json");
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Aftermath Finance public price API

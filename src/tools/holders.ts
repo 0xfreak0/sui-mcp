@@ -170,6 +170,86 @@ const COIN_OBJECTS_QUERY = `
 `;
 
 // ---------------------------------------------------------------------------
+// Shared helper: scan token top holders
+// ---------------------------------------------------------------------------
+
+export interface TokenHolder {
+  rank: number;
+  address: string;
+  balance: string;
+  count: number;
+}
+
+export interface TokenHolderResult {
+  holders: TokenHolder[];
+  total_scanned: number;
+  unique_holders: number;
+  truncated: boolean;
+}
+
+export async function scanTokenTopHolders(
+  coinType: string,
+  topN: number,
+  maxScan: number,
+): Promise<TokenHolderResult> {
+  const fullType = coinType.startsWith("0x2::coin::Coin<")
+    ? coinType
+    : `0x2::coin::Coin<${coinType}>`;
+
+  const holderBalances = new Map<string, bigint>();
+  const holderCounts = new Map<string, number>();
+  let cursor: string | undefined;
+  let totalScanned = 0;
+  let truncated = false;
+
+  while (totalScanned < maxScan) {
+    const remaining = maxScan - totalScanned;
+    const first = Math.min(GQL_PAGE_SIZE, remaining);
+
+    const data = await gqlQuery<CoinObjectsPage>(COIN_OBJECTS_QUERY, {
+      type: fullType,
+      first,
+      after: cursor ?? undefined,
+    });
+
+    for (const node of data.objects.nodes) {
+      const addr = node.owner?.address?.address;
+      const balanceStr = node.asMoveObject?.contents?.json?.balance;
+      if (addr && balanceStr) {
+        const bal = BigInt(balanceStr);
+        holderBalances.set(addr, (holderBalances.get(addr) ?? 0n) + bal);
+        holderCounts.set(addr, (holderCounts.get(addr) ?? 0) + 1);
+      }
+    }
+
+    totalScanned += data.objects.nodes.length;
+
+    if (!data.objects.pageInfo.hasNextPage) break;
+    cursor = data.objects.pageInfo.endCursor ?? undefined;
+
+    if (totalScanned >= maxScan) {
+      truncated = true;
+      break;
+    }
+
+    await sleep(PAGE_DELAY_MS);
+  }
+
+  const sorted = [...holderBalances.entries()]
+    .sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0))
+    .slice(0, topN);
+
+  const holders = sorted.map(([address, balance], i) => ({
+    rank: i + 1,
+    address,
+    balance: balance.toString(),
+    count: holderCounts.get(address) ?? 0,
+  }));
+
+  return { holders, total_scanned: totalScanned, unique_holders: holderBalances.size, truncated };
+}
+
+// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
@@ -320,12 +400,10 @@ export function registerHolderTools(server: McpServer) {
       const topN = Math.min(limit ?? 20, 100);
       const maxScan = Math.min(max_scan ?? DEFAULT_MAX_SCAN, MAX_SCAN_LIMIT);
 
-      // Auto-wrap in Coin<> if not already wrapped
+      // Check cache
       const fullType = coin_type.startsWith("0x2::coin::Coin<")
         ? coin_type
         : `0x2::coin::Coin<${coin_type}>`;
-
-      // Check cache
       const cacheKey = `token:${fullType}:${maxScan}`;
       const cached = getCached(cacheKey);
       if (cached) {
@@ -338,66 +416,15 @@ export function registerHolderTools(server: McpServer) {
         };
       }
 
-      const holderBalances = new Map<string, bigint>();
-      const holderCounts = new Map<string, number>();
-      let cursor: string | undefined;
-      let totalScanned = 0;
-      let truncated = false;
-
-      while (totalScanned < maxScan) {
-        const remaining = maxScan - totalScanned;
-        const first = Math.min(GQL_PAGE_SIZE, remaining);
-
-        const data = await gqlQuery<CoinObjectsPage>(COIN_OBJECTS_QUERY, {
-          type: fullType,
-          first,
-          after: cursor ?? undefined,
-        });
-
-        for (const node of data.objects.nodes) {
-          const addr = node.owner?.address?.address;
-          const balanceStr = node.asMoveObject?.contents?.json?.balance;
-          if (addr && balanceStr) {
-            const bal = BigInt(balanceStr);
-            holderBalances.set(
-              addr,
-              (holderBalances.get(addr) ?? 0n) + bal
-            );
-            holderCounts.set(addr, (holderCounts.get(addr) ?? 0) + 1);
-          }
-        }
-
-        totalScanned += data.objects.nodes.length;
-
-        if (!data.objects.pageInfo.hasNextPage) break;
-        cursor = data.objects.pageInfo.endCursor ?? undefined;
-
-        if (totalScanned >= maxScan) {
-          truncated = true;
-          break;
-        }
-
-        await sleep(PAGE_DELAY_MS);
-      }
-
-      const sorted = [...holderBalances.entries()]
-        .sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0))
-        .slice(0, topN);
-
-      const topHolders = sorted.map(([address, balance], i) => ({
-        rank: i + 1,
-        address,
-        balance: balance.toString(),
-        count: holderCounts.get(address) ?? 0,
-      }));
+      const scan = await scanTokenTopHolders(coin_type, topN, maxScan);
 
       const result = {
         coin_type,
-        total_scanned: totalScanned,
-        unique_holders: holderBalances.size,
-        truncated,
+        total_scanned: scan.total_scanned,
+        unique_holders: scan.unique_holders,
+        truncated: scan.truncated,
         cached: false,
-        top_holders: topHolders,
+        top_holders: scan.holders,
       };
 
       setCache(cacheKey, JSON.stringify(result));

@@ -21,6 +21,8 @@ import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
 import { registerPoolTools } from "./pools.js";
 import { registerDependencyTools } from "./dependencies.js";
+import { registerIdentifyTools } from "./identify.js";
+import { registerAnalyzeTokenTools } from "./analyze-token.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -47,4 +49,6 @@ export function registerAllTools(server: McpServer) {
   registerTraceTools(server);
   registerPoolTools(server);
   registerDependencyTools(server);
+  registerIdentifyTools(server);
+  registerAnalyzeTokenTools(server);
 }

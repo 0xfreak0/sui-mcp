@@ -70,21 +70,21 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query Sui transactions with filters. Uses GraphQL for rich filtering by address, object, function, checkpoint range.",
+    "Query Sui transactions with filters. Uses GraphQL for rich filtering by sender, address, object, function, and checkpoint range. Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). sender and checkpoint filters can be combined with any of them.",
     {
       sender: z.string().optional().describe("Filter by sender address"),
       affected_address: z
         .string()
         .optional()
-        .describe("Filter by affected address (sender, sponsor, or recipient)"),
+        .describe("Filter by affected address (sender, sponsor, or recipient). Mutually exclusive with affected_object and function."),
       affected_object: z
         .string()
         .optional()
-        .describe("Filter by affected object ID"),
+        .describe("Filter by affected object ID. Mutually exclusive with affected_address and function."),
       function: z
         .string()
         .optional()
-        .describe("Filter by Move function (e.g. 0x2::coin::transfer or 0x2::pay)"),
+        .describe("Filter by Move function (e.g. 0x2::coin::transfer or 0x2::pay). Mutually exclusive with affected_address and affected_object."),
       after_checkpoint: z
         .string()
         .optional()
@@ -106,6 +106,30 @@ export function registerTransactionTools(server: McpServer) {
       limit,
       after,
     }) => {
+      // Sui GraphQL only allows one of these per query
+      const exclusiveFilters = [
+        affected_address && "affected_address",
+        affected_object && "affected_object",
+        fn && "function",
+      ].filter(Boolean);
+
+      if (exclusiveFilters.length > 1) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  error: `Only one of [affected_address, affected_object, function] can be specified per query. Got: ${exclusiveFilters.join(", ")}. Use separate queries for each filter.`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
       const filterParts: Record<string, unknown> = {};
       if (sender) filterParts.sentAddress = sender;
       if (affected_address) filterParts.affectedAddress = affected_address;

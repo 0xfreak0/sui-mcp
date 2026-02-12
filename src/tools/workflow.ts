@@ -1,105 +1,34 @@
 import { z } from "zod";
-import { sui, archive } from "../clients/grpc.js";
-import { formatStatus, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
-import type { GrpcTypes } from "@mysten/sui/grpc";
+import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { fetchAftermathPrices } from "./prices.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { decodeTransaction } from "../protocols/decoder.js";
+
+function extractSymbol(coinType: string): string {
+  return coinType.split("::").pop() ?? coinType;
+}
 
 export function registerWorkflowTools(server: McpServer) {
   server.tool(
-    "explain_transaction",
-    "Get a human-readable explanation of a Sui transaction. Returns a summary of each command (Move calls, transfers, splits, etc.), gas costs, balance changes, and event count.",
-    {
-      digest: z.string().describe("Transaction digest (Base58)"),
-    },
-    async ({ digest }) => {
-      const req = {
-        digest,
-        readMask: {
-          paths: [
-            "digest", "transaction", "effects", "events",
-            "checkpoint", "timestamp", "balance_changes",
-          ],
-        },
-      };
-      let res: GrpcTypes.GetTransactionResponse;
-      try {
-        ({ response: res } = await sui.ledgerService.getTransaction(req));
-      } catch {
-        ({ response: res } = await archive.ledgerService.getTransaction(req));
-      }
-
-      const tx = res.transaction;
-      const effects = tx?.effects;
-      const transaction = tx?.transaction;
-      const kind = transaction?.kind;
-      const sender = transaction?.sender;
-
-      let decoded;
-      if (kind?.data.oneofKind === "programmableTransaction") {
-        const ptb = kind.data.programmableTransaction;
-        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
-      } else if (kind?.data.oneofKind) {
-        decoded = {
-          protocols: [] as string[],
-          actions: [`System transaction: ${kind.data.oneofKind}`],
-          token_flow: [] as { coin: string; amount: string; raw_type: string }[],
-        };
-      } else {
-        decoded = {
-          protocols: [] as string[],
-          actions: [] as string[],
-          token_flow: [] as { coin: string; amount: string; raw_type: string }[],
-        };
-      }
-
-      const eventCount = tx?.events?.events?.length ?? 0;
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                digest: tx?.digest,
-                sender,
-                status: formatStatus(effects?.status),
-                timestamp: timestampToIso(tx?.timestamp),
-                protocols: decoded.protocols,
-                actions: decoded.actions,
-                token_flow: decoded.token_flow,
-                gas: formatGas(effects?.gasUsed),
-                event_count: eventCount,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "analyze_wallet",
-    "Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions.",
+    "get_wallet_overview",
+    "Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions. Set include_prices=true to also get USD values and total portfolio value.",
     {
       address: z.string().describe("Wallet address (0x...)"),
+      include_prices: z
+        .boolean()
+        .optional()
+        .describe("Include USD prices and portfolio value (default: false)"),
     },
-    async ({ address }) => {
+    async ({ address, include_prices }) => {
       const [balancesResult, nameResult, objectsResult, kioskResult, txResult] =
         await Promise.all([
-          // All token balances
           sui.listBalances({ owner: address, limit: 50, cursor: null }),
 
-          // SuiNS reverse lookup (optional, may fail)
           sui.nameService
             .reverseLookupName({ address })
             .then(({ response }) => response.record?.name ?? null)
             .catch(() => null),
 
-          // Owned objects to find StakedSui
           sui.listOwnedObjects({
             owner: address,
             type: "0x3::staking_pool::StakedSui",
@@ -107,7 +36,6 @@ export function registerWorkflowTools(server: McpServer) {
             cursor: null,
           }),
 
-          // Kiosk count via KioskOwnerCap
           sui.listOwnedObjects({
             owner: address,
             type: "0x2::kiosk::KioskOwnerCap",
@@ -115,7 +43,6 @@ export function registerWorkflowTools(server: McpServer) {
             cursor: null,
           }).catch(() => ({ objects: [] })),
 
-          // Recent transactions via GraphQL
           gqlQuery<{
             transactions: {
               nodes: Array<{
@@ -144,10 +71,77 @@ export function registerWorkflowTools(server: McpServer) {
           ).catch(() => null),
         ]);
 
-      const balances = balancesResult.balances.map((b) => ({
-        coin_type: b.coinType,
-        balance: b.balance,
-      }));
+      const rawBalances = balancesResult.balances.filter((b) => b.balance !== "0");
+      const coinTypes = rawBalances.map((b) => b.coinType);
+
+      // Optionally fetch prices and metadata
+      let priceData: Record<string, { price: number; priceChange24HoursPercentage: number }> | null = null;
+      let metaMap = new Map<string, { decimals: number; symbol: string }>();
+
+      if (include_prices && coinTypes.length > 0) {
+        const [prices, metaResults] = await Promise.all([
+          fetchAftermathPrices(coinTypes),
+          Promise.allSettled(
+            coinTypes.map((ct) =>
+              sui.stateService.getCoinInfo({ coinType: ct })
+            )
+          ),
+        ]);
+        priceData = prices;
+
+        for (let i = 0; i < coinTypes.length; i++) {
+          const result = metaResults[i];
+          if (result.status === "fulfilled") {
+            const meta = result.value.response.metadata;
+            if (meta) {
+              metaMap.set(coinTypes[i], {
+                decimals: meta.decimals ?? 9,
+                symbol: meta.symbol ?? extractSymbol(coinTypes[i]),
+              });
+            }
+          }
+        }
+      }
+
+      // Build holdings
+      const holdings = rawBalances.map((b) => {
+        const meta = metaMap.get(b.coinType);
+        const decimals = meta?.decimals ?? 9;
+        const symbol = meta?.symbol ?? extractSymbol(b.coinType);
+
+        const base: Record<string, unknown> = {
+          coin_type: b.coinType,
+          symbol,
+          balance: b.balance,
+        };
+
+        if (include_prices) {
+          const humanAmount = Number(BigInt(b.balance)) / 10 ** decimals;
+          const afEntry = priceData?.[b.coinType];
+          const priceUsd = afEntry && afEntry.price >= 0 ? afEntry.price : null;
+          const valueUsd = priceUsd != null
+            ? Math.round(humanAmount * priceUsd * 100) / 100
+            : null;
+          base.balance_human = humanAmount.toString();
+          base.decimals = decimals;
+          base.price_usd = priceUsd;
+          base.value_usd = valueUsd;
+        }
+
+        return base;
+      });
+
+      // Sort by value if prices included
+      if (include_prices) {
+        holdings.sort((a, b) => {
+          const aVal = a.value_usd as number | null;
+          const bVal = b.value_usd as number | null;
+          if (aVal == null && bVal == null) return 0;
+          if (aVal == null) return 1;
+          if (bVal == null) return -1;
+          return bVal - aVal;
+        });
+      }
 
       const recentTransactions = txResult?.transactions.nodes.map((n) => ({
         digest: n.digest,
@@ -156,24 +150,28 @@ export function registerWorkflowTools(server: McpServer) {
         timestamp: n.effects?.timestamp,
       })) ?? [];
 
+      const result: Record<string, unknown> = {
+        address,
+        sui_name: nameResult,
+        holdings,
+        holdings_truncated: balancesResult.hasNextPage ?? false,
+        staked_sui_count: objectsResult.objects.length,
+        kiosk_count: kioskResult.objects.length,
+        recent_transactions: recentTransactions,
+      };
+
+      if (include_prices) {
+        const totalValueUsd = Math.round(
+          holdings.reduce((sum, h) => sum + ((h.value_usd as number) ?? 0), 0) * 100
+        ) / 100;
+        result.total_value_usd = totalValueUsd;
+      }
+
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                address,
-                sui_name: nameResult,
-                balances,
-                balances_truncated: balancesResult.hasNextPage ?? false,
-                staked_sui_count: objectsResult.objects.length,
-                staked_sui_truncated: objectsResult.hasNextPage ?? false,
-                kiosk_count: kioskResult.objects.length,
-                recent_transactions: recentTransactions,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify(result, null, 2),
           },
         ],
       };

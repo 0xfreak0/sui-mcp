@@ -2,12 +2,30 @@ import { z } from "zod";
 import { sui, archive } from "../clients/grpc.js";
 import { clampPageSize } from "../utils/pagination.js";
 import { protoValueToJson } from "../utils/proto.js";
+import { formatOwner } from "../utils/formatting.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+function extractDisplay(content: unknown): Record<string, string | null> | null {
+  if (!content || typeof content !== "object" || Array.isArray(content)) return null;
+  const c = content as Record<string, unknown>;
+  const display: Record<string, string | null> = {};
+  let hasAny = false;
+  if (typeof c.name === "string") { display.name = c.name; hasAny = true; }
+  if (typeof c.description === "string") { display.description = c.description; hasAny = true; }
+  for (const field of ["image_url", "img_url", "url", "thumbnail"]) {
+    if (typeof c[field] === "string" && !display.image_url) {
+      display.image_url = c[field] as string;
+      hasAny = true;
+    }
+  }
+  if (typeof c.project_url === "string") { display.project_url = c.project_url; hasAny = true; }
+  return hasAny ? display : null;
+}
 
 export function registerObjectTools(server: McpServer) {
   server.tool(
     "get_object",
-    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest.",
+    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs.",
     {
       object_id: z.string().describe("The object ID (0x...)"),
       version: z.string().optional().describe("Specific version to fetch"),
@@ -30,32 +48,36 @@ export function registerObjectTools(server: McpServer) {
       } catch {
         ({ response: res } = await archive.ledgerService.getObject(req));
       }
-      // Fall back to archive if fullnode returned empty data for a versioned request
       if (!res.object && version) {
         try {
           ({ response: res } = await archive.ledgerService.getObject(req));
         } catch { /* keep fullnode result */ }
       }
       const obj = res.object;
+      const content = protoValueToJson(obj?.json);
+      const display = extractDisplay(content);
+
+      const result: Record<string, unknown> = {
+        object_id: obj?.objectId,
+        version: obj?.version?.toString(),
+        digest: obj?.digest,
+        object_type: obj?.objectType,
+        owner: formatOwner(obj?.owner),
+        previous_transaction: obj?.previousTransaction,
+        storage_rebate: obj?.storageRebate?.toString(),
+        content,
+        balance: obj?.balance?.toString(),
+      };
+
+      if (display) {
+        result.display = display;
+      }
+
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                object_id: obj?.objectId,
-                version: obj?.version?.toString(),
-                digest: obj?.digest,
-                object_type: obj?.objectType,
-                owner: formatOwner(obj?.owner),
-                previous_transaction: obj?.previousTransaction,
-                storage_rebate: obj?.storageRebate?.toString(),
-                content: protoValueToJson(obj?.json),
-                balance: obj?.balance?.toString(),
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify(result, null, 2),
           },
         ],
       };
@@ -142,9 +164,6 @@ export function registerObjectTools(server: McpServer) {
   );
 }
 
-import { formatOwner } from "../utils/formatting.js";
-
-
 function formatOwnerSdk(owner: import("@mysten/sui/client").SuiClientTypes.ObjectOwner): string {
   switch (owner.$kind) {
     case "AddressOwner":
@@ -161,4 +180,3 @@ function formatOwnerSdk(owner: import("@mysten/sui/client").SuiClientTypes.Objec
       return "unknown";
   }
 }
-

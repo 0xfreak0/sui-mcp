@@ -11,6 +11,8 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "generate": "echo 'No codegen needed - using @mysten/sui SDK'",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build:decompiler": "bash scripts/build-decompiler.sh"
   },
   "keywords": [
@@ -28,6 +30,7 @@
     "zod": "^3.25.3"
   },
   "devDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.0.18"
   }
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
+import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerNameTools(server: McpServer) {
@@ -18,19 +19,7 @@ export function registerNameTools(server: McpServer) {
     },
     async ({ name, address }) => {
       if (!name && !address) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                { error: "At least one of 'name' or 'address' must be provided" },
-                null,
-                2
-              ),
-            },
-          ],
-          isError: true,
-        };
+        return errorResult("At least one of 'name' or 'address' must be provided");
       }
 
       const result: Record<string, string | null> = {};

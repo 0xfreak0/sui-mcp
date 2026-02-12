@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { protoValueToJson } from "../utils/proto.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface ValidatorJson {
@@ -30,16 +31,16 @@ interface ValidatorJson {
 export function registerStakingTools(server: McpServer) {
   server.tool(
     "get_validators",
-    "List current Sui validators with staking info: stake, APY, commission, voting power. Supports sorting by stake, apy, or commission.",
+    "List current Sui validators with staking info: stake, commission, voting power. Supports sorting by stake or commission.",
     {
       limit: z
         .number()
         .optional()
         .describe("Max validators to return (default 50, max 150)"),
       sort_by: z
-        .enum(["stake", "apy", "commission"])
+        .enum(["stake", "commission"])
         .optional()
-        .describe("Sort field: stake (default), apy, or commission"),
+        .describe("Sort field: stake (default) or commission"),
     },
     async ({ limit, sort_by }) => {
       const first = Math.min(Math.max(limit ?? 50, 1), 150);
@@ -96,13 +97,6 @@ export function registerStakingTools(server: McpServer) {
       });
 
       if (sortField === "stake") {
-        validators.sort((a, b) => {
-          const aStake = BigInt(a.staking_pool_sui_balance ?? "0");
-          const bStake = BigInt(b.staking_pool_sui_balance ?? "0");
-          return bStake > aStake ? 1 : bStake < aStake ? -1 : 0;
-        });
-      } else if (sortField === "apy") {
-        // APY not directly available from GraphQL, sort by stake as fallback
         validators.sort((a, b) => {
           const aStake = BigInt(a.staking_pool_sui_balance ?? "0");
           const bStake = BigInt(b.staking_pool_sui_balance ?? "0");
@@ -241,6 +235,7 @@ export function registerStakingTools(server: McpServer) {
         limit: 50,
         cursor: null,
       });
+      const truncated = ownedRes.hasNextPage ?? false;
 
       // Fetch all staking objects in parallel instead of sequentially
       const objectResults = await Promise.all(
@@ -296,6 +291,7 @@ export function registerStakingTools(server: McpServer) {
                 address,
                 total_staked_mist: totalStakedMist.toString(),
                 position_count: positions.length,
+                truncated,
                 positions,
               },
               null,
@@ -308,30 +304,3 @@ export function registerStakingTools(server: McpServer) {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function protoValueToJson(val?: any): unknown {
-  if (!val) return undefined;
-  const kind = val.kind;
-  if (!kind) return null;
-  switch (kind.oneofKind) {
-    case "nullValue":
-      return null;
-    case "numberValue":
-      return kind.numberValue;
-    case "stringValue":
-      return kind.stringValue;
-    case "boolValue":
-      return kind.boolValue;
-    case "structValue": {
-      const obj: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(kind.structValue.fields)) {
-        obj[k] = protoValueToJson(v);
-      }
-      return obj;
-    }
-    case "listValue":
-      return kind.listValue.values.map(protoValueToJson);
-    default:
-      return null;
-  }
-}

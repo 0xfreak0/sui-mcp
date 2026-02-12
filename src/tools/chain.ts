@@ -6,9 +6,59 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerChainTools(server: McpServer) {
   server.tool(
     "get_chain_info",
-    "Get current Sui network info: chain ID, epoch, checkpoint height, timestamp",
-    {},
-    async () => {
+    "Get current Sui network info: chain ID, epoch, checkpoint height, timestamp, and reference gas price. Optionally pass an epoch number to get details for a specific epoch.",
+    {
+      epoch: z.string().optional().describe("Epoch number to query. Returns current epoch info if omitted."),
+    },
+    async ({ epoch }) => {
+      if (epoch) {
+        // Epoch-specific query
+        const req = {
+          epoch: BigInt(epoch),
+          readMask: {
+            paths: [
+              "epoch", "first_checkpoint", "last_checkpoint",
+              "start", "end", "reference_gas_price", "protocol_config",
+            ],
+          },
+        };
+        let res;
+        try {
+          ({ response: res } = await sui.ledgerService.getEpoch(req));
+        } catch {
+          ({ response: res } = await archive.ledgerService.getEpoch(req));
+        }
+        if (!res.epoch?.firstCheckpoint) {
+          try {
+            ({ response: res } = await archive.ledgerService.getEpoch(req));
+          } catch { /* keep fullnode result */ }
+        }
+        const ep = res.epoch;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  epoch: bigintToString(ep?.epoch),
+                  first_checkpoint: bigintToString(ep?.firstCheckpoint),
+                  last_checkpoint: bigintToString(ep?.lastCheckpoint),
+                  start: timestampToIso(ep?.start),
+                  end: timestampToIso(ep?.end),
+                  reference_gas_price: bigintToString(ep?.referenceGasPrice),
+                  protocol_version: bigintToString(
+                    ep?.protocolConfig?.protocolVersion
+                  ),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // Default: current chain info
       const { response: res } = await sui.ledgerService.getServiceInfo({});
       return {
         content: [
@@ -56,7 +106,6 @@ export function registerChainTools(server: McpServer) {
           : { oneofKind: undefined };
       const req = {
         checkpointId,
-        // Archive defaults to "sequence_number,digest" only without explicit readMask
         readMask: { paths: ["sequence_number", "digest", "summary"] },
       };
       let res;
@@ -65,7 +114,6 @@ export function registerChainTools(server: McpServer) {
       } catch {
         ({ response: res } = await archive.ledgerService.getCheckpoint(req));
       }
-      // Fall back to archive if fullnode returned pruned/partial data
       if ((sequence_number || digest) && !res.checkpoint?.summary) {
         try {
           ({ response: res } = await archive.ledgerService.getCheckpoint(req));
@@ -86,60 +134,6 @@ export function registerChainTools(server: McpServer) {
                   cp?.summary?.totalNetworkTransactions
                 ),
                 previous_digest: cp?.summary?.previousDigest,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "get_epoch",
-    "Get Sui epoch info. Returns current epoch if no epoch number specified.",
-    {
-      epoch: z.string().optional().describe("Epoch number"),
-    },
-    async ({ epoch }) => {
-      const req = {
-        epoch: epoch ? BigInt(epoch) : undefined,
-        readMask: {
-          paths: [
-            "epoch", "first_checkpoint", "last_checkpoint",
-            "start", "end", "reference_gas_price", "protocol_config",
-          ],
-        },
-      };
-      let res;
-      try {
-        ({ response: res } = await sui.ledgerService.getEpoch(req));
-      } catch {
-        ({ response: res } = await archive.ledgerService.getEpoch(req));
-      }
-      // Fall back to archive if fullnode returned incomplete data
-      if (epoch && !res.epoch?.firstCheckpoint) {
-        try {
-          ({ response: res } = await archive.ledgerService.getEpoch(req));
-        } catch { /* keep fullnode result */ }
-      }
-      const ep = res.epoch;
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                epoch: bigintToString(ep?.epoch),
-                first_checkpoint: bigintToString(ep?.firstCheckpoint),
-                last_checkpoint: bigintToString(ep?.lastCheckpoint),
-                start: timestampToIso(ep?.start),
-                end: timestampToIso(ep?.end),
-                reference_gas_price: bigintToString(ep?.referenceGasPrice),
-                protocol_version: bigintToString(
-                  ep?.protocolConfig?.protocolVersion
-                ),
               },
               null,
               2

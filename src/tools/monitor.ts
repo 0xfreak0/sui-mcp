@@ -2,32 +2,82 @@ import { z } from "zod";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { formatOwner } from "../utils/formatting.js";
+import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerMonitorTools(server: McpServer) {
   server.tool(
-    "check_address_activity",
-    "Check for new transactions on a Sui address since a given checkpoint or timestamp.",
+    "check_activity",
+    "Check for recent activity on a Sui address or object. For an address: returns new transactions since a checkpoint or timestamp. For an object: checks if its version has changed since a given version.",
     {
-      address: z.string().describe("Sui address to monitor"),
+      address: z
+        .string()
+        .optional()
+        .describe("Sui address to check for new transactions. Provide either address or object_id."),
+      object_id: z
+        .string()
+        .optional()
+        .describe("Object ID to check for version changes. Provide either address or object_id."),
       since_checkpoint: z
         .number()
         .optional()
-        .describe("Only show activity after this checkpoint number"),
+        .describe("(address mode) Only show activity after this checkpoint number"),
       since_timestamp: z
         .string()
         .optional()
-        .describe(
-          'Only show activity after this ISO timestamp (e.g. "2024-01-15T00:00:00Z")'
-        ),
+        .describe('(address mode) Only show activity after this ISO timestamp (e.g. "2024-01-15T00:00:00Z")'),
+      since_version: z
+        .string()
+        .optional()
+        .describe("(object mode) Only report if version is newer than this"),
       limit: z
         .number()
         .optional()
-        .describe("Max results (default 20, max 50)"),
+        .describe("(address mode) Max results (default 20, max 50)"),
     },
-    async ({ address, since_checkpoint, since_timestamp, limit }) => {
-      const first = Math.min(limit ?? 20, 50);
+    async ({ address, object_id, since_checkpoint, since_timestamp, since_version, limit }) => {
+      if (!address && !object_id) {
+        return errorResult("Provide either 'address' or 'object_id'.");
+      }
 
+      // Object mode: check version change
+      if (object_id) {
+        const { response: res } = await sui.ledgerService.getObject({
+          objectId: object_id,
+          readMask: {
+            paths: ["object_id", "version", "digest", "object_type", "owner"],
+          },
+        });
+        const obj = res.object;
+        const currentVersion = obj?.version?.toString();
+        const hasChanged = since_version && currentVersion
+          ? BigInt(currentVersion) > BigInt(since_version)
+          : false;
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  object_id: obj?.objectId,
+                  current_version: currentVersion,
+                  since_version: since_version ?? null,
+                  has_changed: hasChanged,
+                  type: obj?.objectType,
+                  owner: formatOwner(obj?.owner),
+                  digest: obj?.digest,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // Address mode: check for new transactions
+      const first = Math.min(limit ?? 20, 50);
       const query = `
         query($address: SuiAddress!, $first: Int, $afterCheckpoint: Int) {
           transactions(
@@ -80,7 +130,6 @@ export function registerMonitorTools(server: McpServer) {
         timestamp: n.effects?.timestamp,
       }));
 
-      // Client-side filter by timestamp if provided
       if (since_timestamp) {
         const sinceMs = new Date(since_timestamp).getTime();
         transactions = transactions.filter((tx) => {
@@ -110,53 +159,6 @@ export function registerMonitorTools(server: McpServer) {
                 transactions,
                 has_more: data.transactions.pageInfo.hasNextPage,
                 next_cursor: data.transactions.pageInfo.endCursor ?? null,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "check_object_changes",
-    "Check if a specific Sui object has been modified since a given version.",
-    {
-      object_id: z.string().describe("Object ID to monitor"),
-      since_version: z
-        .string()
-        .optional()
-        .describe("Only report if version is newer than this"),
-    },
-    async ({ object_id, since_version }) => {
-      const { response: res } = await sui.ledgerService.getObject({
-        objectId: object_id,
-        readMask: {
-          paths: ["object_id", "version", "digest", "object_type", "owner"],
-        },
-      });
-      const obj = res.object;
-
-      const currentVersion = obj?.version?.toString();
-      const hasChanged = since_version && currentVersion
-        ? BigInt(currentVersion) > BigInt(since_version)
-        : false;
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                object_id: obj?.objectId,
-                current_version: currentVersion,
-                since_version: since_version ?? null,
-                has_changed: hasChanged,
-                type: obj?.objectType,
-                owner: formatOwner(obj?.owner),
-                digest: obj?.digest,
               },
               null,
               2

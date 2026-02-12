@@ -40,6 +40,36 @@ const NFT_COLLECTION_REGISTRY: NftCollectionInfo[] = [
     name: "Prime Machin",
     slug: "prime-machin",
   },
+  {
+    collection_type:
+      "0xb1d045729c663c8fc173e435912329013130476765af3502d7c1dc421e970343::token::Nftestes",
+    name: "NFTestes",
+    slug: "nftestes",
+  },
+  {
+    collection_type:
+      "0xb908f3c6fea6865d32e2048c520cdfe3b5c5bbcebb658117c41bad70f52b7ccc::popkins_nft::Popkins",
+    name: "Popkins",
+    slug: "popkins",
+  },
+  {
+    collection_type:
+      "0xb07b09b016d28f989b6adda8069096da0c0a0ff6490f6e0866858c023b061bee::mystic_yeti::MysticYeti",
+    name: "Mystic Yeti",
+    slug: "mystic-yeti",
+  },
+  {
+    collection_type:
+      "0xd2197b1ce2096e96e726c29fa2c138c5c6748da169b81d34927c522b7499f1d7::ika_chan_nft::IkaChanNft",
+    name: "Ika-chan",
+    slug: "ika-chan",
+  },
+  {
+    collection_type:
+      "0xdf87ec097d3791bf30f3cb529816963122a924ab008659458ee6d693ea51e4b8::storage::ZenFrogs",
+    name: "ZenFrogs",
+    slug: "zenfrogs",
+  },
 ];
 
 function resolveCollectionType(name: string): string | null {

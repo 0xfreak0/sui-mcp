@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerPtbTools(server: McpServer) {
   server.tool(
     "build_transfer_sui",
-    "Build an unsigned transaction to transfer SUI from one address to another. Returns base64-encoded BCS bytes for signing and execution via execute_transaction.",
+    "Build an unsigned transaction to transfer SUI from one address to another. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
       sender: z.string().describe("Sender address (0x...)"),
       recipient: z.string().describe("Recipient address (0x...)"),
@@ -41,7 +41,7 @@ export function registerPtbTools(server: McpServer) {
 
   server.tool(
     "build_transfer_coin",
-    "Build an unsigned transaction to transfer any coin type from one address to another. Automatically selects and merges coins to cover the requested amount. Returns base64-encoded BCS bytes for signing and execution via execute_transaction.",
+    "Build an unsigned transaction to transfer any coin type from one address to another. Automatically selects and merges coins to cover the requested amount. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
       sender: z.string().describe("Sender address (0x...)"),
       recipient: z.string().describe("Recipient address (0x...)"),
@@ -132,7 +132,7 @@ export function registerPtbTools(server: McpServer) {
 
   server.tool(
     "build_stake_sui",
-    "Build an unsigned transaction to stake SUI with a validator. Returns base64-encoded BCS bytes for signing and execution via execute_transaction.",
+    "Build an unsigned transaction to stake SUI with a validator. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
       sender: z.string().describe("Sender address (0x...)"),
       validator_address: z
@@ -175,7 +175,7 @@ export function registerPtbTools(server: McpServer) {
 
   server.tool(
     "build_unstake_sui",
-    "Build an unsigned transaction to unstake (withdraw) a StakedSui object. Returns base64-encoded BCS bytes for signing and execution via execute_transaction.",
+    "Build an unsigned transaction to unstake (withdraw) a StakedSui object. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
       sender: z.string().describe("Sender address (0x...)"),
       staked_sui_id: z

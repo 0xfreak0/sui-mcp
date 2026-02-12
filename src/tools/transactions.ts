@@ -99,7 +99,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query Sui transactions with filters. Uses GraphQL for rich filtering by sender, address, object, function, and checkpoint range. Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). sender and checkpoint filters can be combined with any of them.",
+    "Query raw Sui transactions with specific filters (sender, affected address/object, function, checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). For human-readable wallet activity, prefer get_transaction_history instead.",
     {
       sender: z.string().optional().describe("Filter by sender address"),
       affected_address: z

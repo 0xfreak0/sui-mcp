@@ -86,7 +86,7 @@ export function registerObjectTools(server: McpServer) {
 
   server.tool(
     "list_owned_objects",
-    "List objects owned by a Sui address. Supports type filtering and pagination.",
+    "List raw objects owned by a Sui address with optional type filter and pagination. For NFTs specifically, prefer list_nfts (resolves kiosk storage, extracts display metadata). For a wallet summary, prefer get_wallet_overview.",
     {
       owner: z.string().describe("Owner address (0x...)"),
       object_type: z
@@ -127,7 +127,7 @@ export function registerObjectTools(server: McpServer) {
 
   server.tool(
     "list_dynamic_fields",
-    "List dynamic fields of a Sui object. Returns field names, types, and values.",
+    "(Developer) List dynamic fields of a Sui object. Returns field names, types, and values. Useful for inspecting on-chain tables, kiosk contents, or other dynamic collections.",
     {
       parent_id: z.string().describe("Parent object ID (0x...)"),
       limit: z.number().optional().describe("Max results (default 50, max 1000)"),

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
 import { protoValueToJson } from "../utils/proto.js";
+import { registerCollection } from "../discovery-nft.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 function extractDisplay(content: unknown): Record<string, string | null> {
@@ -96,10 +97,9 @@ async function scanKioskItems(kioskId: string): Promise<KioskNftEntry[]> {
     for (const df of res.dynamicFields) {
       // kiosk::Item entries hold the NFTs; kiosk::Lock entries are bool locks
       if (df.type?.includes("kiosk::Item") && !df.valueType?.includes("bool")) {
-        fieldEntries.push({
-          fieldId: df.fieldId,
-          collection: df.valueType ?? "unknown",
-        });
+        const collection = df.valueType ?? "unknown";
+        fieldEntries.push({ fieldId: df.fieldId, collection });
+        if (collection !== "unknown") registerCollection(collection);
       }
     }
     cursor = res.hasNextPage ? (res.cursor ?? null) : null;
@@ -151,7 +151,9 @@ async function scanKioskCollections(kioskId: string): Promise<string[]> {
     });
     for (const df of res.dynamicFields) {
       if (df.type?.includes("kiosk::Item") && !df.valueType?.includes("bool")) {
-        collections.push(df.valueType ?? "unknown");
+        const collection = df.valueType ?? "unknown";
+        collections.push(collection);
+        if (collection !== "unknown") registerCollection(collection);
       }
     }
     cursor = res.hasNextPage ? (res.cursor ?? null) : null;

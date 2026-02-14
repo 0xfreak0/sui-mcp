@@ -3,6 +3,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
 import { batchResolveNames } from "../utils/names.js";
 import { errorResult } from "../utils/errors.js";
+import { resolveCollectionType, knownSlugs } from "../discovery-nft.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const GQL_PAGE_SIZE = 50;
@@ -229,12 +230,19 @@ export async function scanTokenTopHolders(
 export function registerHolderTools(server: McpServer) {
   server.tool(
     "get_top_holders",
-    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance). Resolves kiosk-stored NFTs to actual wallet owner. Use list_nft_collections to discover collection types. Results cached 24h.",
+    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance). Resolves kiosk-stored NFTs to actual wallet owner. Accepts a Move type, coin type, or collection name. Results cached 24h.",
     {
       type: z
         .string()
+        .optional()
         .describe(
           "Full Move type of the NFT or coin type (e.g. '0xabc::module::NFT' or '0x2::sui::SUI'). Auto-wraps coins in Coin<...> if needed."
+        ),
+      collection_name: z
+        .string()
+        .optional()
+        .describe(
+          "NFT collection name or slug to look up in the registry (e.g. 'gawblenz'). Alternative to 'type'."
         ),
       mode: z
         .enum(["nft", "token"])
@@ -249,7 +257,19 @@ export function registerHolderTools(server: McpServer) {
         .optional()
         .describe("Max objects to scan (default 5000, max 50000)"),
     },
-    async ({ type: resolvedType, mode, limit, max_scan }) => {
+    async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
+      let resolvedType = rawType;
+      if (!resolvedType && collection_name) {
+        resolvedType = resolveCollectionType(collection_name) ?? undefined;
+        if (!resolvedType) {
+          const known = knownSlugs().join(", ");
+          return errorResult(`Collection "${collection_name}" not found in registry. Known: ${known}. Use 'type' with the full Move type instead.`);
+        }
+      }
+      if (!resolvedType) {
+        return errorResult("Either 'type' or 'collection_name' must be provided.");
+      }
+
       const topN = Math.min(limit ?? 20, 100);
       const maxScan = Math.min(max_scan ?? DEFAULT_MAX_SCAN, MAX_SCAN_LIMIT);
 

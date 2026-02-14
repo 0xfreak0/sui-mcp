@@ -4,20 +4,8 @@ import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { lookupProtocol } from "../protocols/registry.js";
 import { errorResult } from "../utils/errors.js";
-import { createRequire } from "node:module";
+import { resolveTokenType } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-const require = createRequire(import.meta.url);
-const tokensData = require("../data/tokens.json");
-
-interface TokenEntry {
-  coin_type: string;
-  name: string;
-  symbol: string;
-  decimals: number;
-}
-
-const POOL_TOKEN_REGISTRY: TokenEntry[] = tokensData.tokens;
 
 // Extract generic type parameters from a Move type string
 function extractTypeParams(typeStr: string): string[] {
@@ -254,17 +242,6 @@ export function registerPoolTools(server: McpServer) {
     },
   };
 
-  function resolveTokenType(query: string): string | null {
-    const q = query.toLowerCase().trim();
-    // If it's already a full type, return as-is
-    if (q.includes("::")) return query.trim();
-    // Look up in static registry
-    const match = POOL_TOKEN_REGISTRY.find(
-      (t) => t.symbol.toLowerCase() === q || t.name.toLowerCase() === q
-    );
-    return match?.coin_type ?? null;
-  }
-
   server.tool(
     "find_pools",
     "Find DeFi liquidity pools by token pair. Searches Cetus, DeepBook, and Turbos for pools matching the given tokens. Use get_pool_stats on a returned pool_id for detailed stats.",
@@ -277,8 +254,10 @@ export function registerPoolTools(server: McpServer) {
         .describe("Filter by protocol: 'cetus', 'deepbook', or 'turbos'. Searches all if omitted."),
     },
     async ({ token_a, token_b, protocol: protocolFilter }) => {
-      const typeA = resolveTokenType(token_a);
-      const typeB = resolveTokenType(token_b);
+      const [typeA, typeB] = await Promise.all([
+        resolveTokenType(token_a),
+        resolveTokenType(token_b),
+      ]);
 
       if (!typeA) return errorResult(`Could not resolve token: ${token_a}. Provide the full coin type (0x...::module::TYPE).`);
       if (!typeB) return errorResult(`Could not resolve token: ${token_b}. Provide the full coin type (0x...::module::TYPE).`);

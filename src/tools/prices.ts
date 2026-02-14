@@ -1,8 +1,6 @@
 import { z } from "zod";
 import { errorResult } from "../utils/errors.js";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const priceFeedsData = require("../data/price-feeds.json");
+import { buildPythFeedMap } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Aftermath Finance public price API
@@ -10,16 +8,6 @@ const AFTERMATH_PRICE_URL = "https://aftermath.finance/api/price-info";
 
 // Pyth Network Hermes API (free, public, no auth)
 const PYTH_HERMES_URL = "https://hermes.pyth.network";
-
-// Pyth feed IDs loaded from src/data/price-feeds.json
-const COIN_TYPE_TO_PYTH: Record<string, string> = priceFeedsData.pyth;
-
-// CoinGecko free API for supplementary market data
-const COINGECKO_PRICE_URL =
-  "https://api.coingecko.com/api/v3/simple/price";
-
-// CoinGecko IDs loaded from src/data/price-feeds.json
-const COIN_TYPE_TO_COINGECKO: Record<string, string> = priceFeedsData.coingecko;
 
 // Extract short symbol from full coin type string (e.g. "0x2::sui::SUI" -> "SUI")
 function extractSymbol(coinType: string): string {
@@ -32,20 +20,11 @@ export interface AftermathPriceEntry {
   priceChange24HoursPercentage: number;
 }
 
-interface CoinGeckoEntry {
-  usd: number;
-  usd_market_cap?: number;
-  usd_24h_vol?: number;
-  usd_24h_change?: number;
-}
-
 interface PriceResult {
   coin_type: string;
   symbol: string;
   price_usd: number | null;
   price_change_24h_percent: number | null;
-  market_cap_usd: number | null;
-  volume_24h_usd: number | null;
   source: string;
   note?: string;
 }
@@ -66,27 +45,6 @@ export async function fetchAftermathPrices(
     });
     if (!resp.ok) return null;
     return (await resp.json()) as Record<string, AftermathPriceEntry>;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Fetch supplementary market data from CoinGecko for known tokens.
- * Returns null on failure.
- */
-async function fetchCoinGeckoData(
-  geckoIds: string[]
-): Promise<Record<string, CoinGeckoEntry> | null> {
-  if (geckoIds.length === 0) return null;
-  try {
-    const ids = geckoIds.join(",");
-    const url = `${COINGECKO_PRICE_URL}?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`;
-    const resp = await fetch(url, {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) return null;
-    return (await resp.json()) as Record<string, CoinGeckoEntry>;
   } catch {
     return null;
   }
@@ -131,77 +89,29 @@ async function fetchPythPrices(
   }
 }
 
-/**
- * Build Pyth reverse mapping: collect unique feed IDs and map them back to coin types.
- */
-function buildPythReverse(
-  coinTypes: string[],
-): { feedIds: string[]; reverseMap: Map<string, string[]> } {
-  const reverseMap = new Map<string, string[]>();
-  for (const ct of coinTypes) {
-    const fid = COIN_TYPE_TO_PYTH[ct];
-    if (fid) {
-      const existing = reverseMap.get(fid) ?? [];
-      existing.push(ct);
-      reverseMap.set(fid, existing);
-    }
-  }
-  return { feedIds: [...reverseMap.keys()], reverseMap };
-}
-
-/**
- * Build a reverse mapping from CoinGecko ID back to the coin types that
- * requested it. Multiple coin types may map to the same CoinGecko ID.
- */
-function buildGeckoReverse(
-  coinTypes: string[]
-): { geckoIds: string[]; reverseMap: Map<string, string[]> } {
-  const reverseMap = new Map<string, string[]>();
-  for (const ct of coinTypes) {
-    const gid = COIN_TYPE_TO_COINGECKO[ct];
-    if (gid) {
-      const existing = reverseMap.get(gid) ?? [];
-      existing.push(ct);
-      reverseMap.set(gid, existing);
-    }
-  }
-  return { geckoIds: [...reverseMap.keys()], reverseMap };
-}
-
 export function registerPriceTools(server: McpServer) {
   server.tool(
     "get_token_prices",
-    "Get current USD prices for Sui tokens. Accepts full coin type strings (e.g. 0x2::sui::SUI). Returns price, 24h change, and market data when available. Uses Aftermath Finance as the primary price source with CoinGecko enrichment for well-known tokens.",
+    "Get current USD prices for Sui tokens. Accepts full coin type strings (e.g. 0x2::sui::SUI). Returns price, 24h change, and market data when available. Uses Aftermath Finance as the primary price source with Pyth Network as fallback.",
     {
       coin_types: z
         .array(z.string())
         .min(1)
         .max(100)
         .describe(
-          "Array of full coin type strings (e.g. [\x270x2::sui::SUI\x27, \x270xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC\x27])"
+          "Array of full coin type strings (e.g. ['0x2::sui::SUI', '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'])"
         ),
     },
     async ({ coin_types }) => {
-      // Build reverse mappings for supplementary sources
-      const { geckoIds, reverseMap: geckoReverse } = buildGeckoReverse(coin_types);
-      const { feedIds: pythFeedIds, reverseMap: pythReverse } = buildPythReverse(coin_types);
+      // Dynamically resolve Pyth feed IDs
+      const { feedIds: pythFeedIds, reverseMap: pythReverse } =
+        await buildPythFeedMap(coin_types);
 
-      // Fetch from all three sources in parallel
-      const [aftermathData, geckoData, pythData] = await Promise.all([
+      // Fetch from both sources in parallel
+      const [aftermathData, pythData] = await Promise.all([
         fetchAftermathPrices(coin_types),
-        fetchCoinGeckoData(geckoIds),
         fetchPythPrices(pythFeedIds),
       ]);
-
-      // Build per-coin-type lookups
-      const geckoForCoin = new Map<string, CoinGeckoEntry>();
-      if (geckoData) {
-        for (const [gid, entry] of Object.entries(geckoData)) {
-          for (const ct of geckoReverse.get(gid) ?? []) {
-            geckoForCoin.set(ct, entry);
-          }
-        }
-      }
 
       const pythForCoin = new Map<string, PythParsedPrice>();
       if (pythData) {
@@ -215,7 +125,6 @@ export function registerPriceTools(server: McpServer) {
       const prices: PriceResult[] = coin_types.map((ct) => {
         const symbol = extractSymbol(ct);
         const afEntry = aftermathData?.[ct];
-        const gkEntry = geckoForCoin.get(ct);
         const pyEntry = pythForCoin.get(ct);
 
         // Aftermath returns -1 for unknown coins
@@ -228,21 +137,14 @@ export function registerPriceTools(server: McpServer) {
 
         const pythPrice = pyEntry ? parsePythPrice(pyEntry) : null;
 
-        // Prefer Aftermath > Pyth > CoinGecko for price
-        const priceUsd = aftermathPrice ?? pythPrice ?? gkEntry?.usd ?? null;
-
-        // Prefer CoinGecko 24h change (most accurate), fall back to Aftermath
-        const change24h =
-          gkEntry?.usd_24h_change ?? aftermathChange ?? null;
-
-        const marketCap = gkEntry?.usd_market_cap ?? null;
-        const volume = gkEntry?.usd_24h_vol ?? null;
+        // Prefer Aftermath > Pyth for price
+        const priceUsd = aftermathPrice ?? pythPrice ?? null;
+        const change24h = aftermathChange ?? null;
 
         // Determine source attribution
         const sources: string[] = [];
         if (aftermathPrice != null) sources.push("aftermath");
         if (pythPrice != null) sources.push("pyth");
-        if (gkEntry) sources.push("coingecko");
         const source = sources.length > 0 ? sources.join("+") : "none";
 
         const result: PriceResult = {
@@ -250,8 +152,6 @@ export function registerPriceTools(server: McpServer) {
           symbol,
           price_usd: priceUsd,
           price_change_24h_percent: change24h,
-          market_cap_usd: marketCap,
-          volume_24h_usd: volume,
           source,
         };
 
@@ -276,7 +176,7 @@ export function registerPriceTools(server: McpServer) {
 
   server.tool(
     "get_historical_prices",
-    "Get historical USD prices for Sui tokens at a specific point in time using Pyth oracle data. Supports SUI, USDT, DEEP, NAVX, CETUS, BUCK, AFSUI, STSUI. Provide a Unix timestamp or ISO date string.",
+    "Get historical USD prices for Sui tokens at a specific point in time using Pyth oracle data. Dynamically resolves Pyth feed IDs via Hermes API. Provide a Unix timestamp or ISO date string.",
     {
       coin_types: z
         .array(z.string())
@@ -300,16 +200,20 @@ export function registerPriceTools(server: McpServer) {
         unixTs = Math.floor(parsed / 1000);
       }
 
-      const { feedIds, reverseMap } = buildPythReverse(coin_types);
-      const unsupported = coin_types.filter((ct) => !COIN_TYPE_TO_PYTH[ct]);
+      const { feedIds, reverseMap } = await buildPythFeedMap(coin_types);
+
+      // Identify coin types with no feed
+      const coinTypesWithFeed = new Set<string>();
+      for (const cts of reverseMap.values()) {
+        for (const ct of cts) coinTypesWithFeed.add(ct);
+      }
 
       const pythData = await fetchPythPrices(feedIds, unixTs);
 
       const prices = coin_types.map((ct) => {
         const symbol = extractSymbol(ct);
-        const fid = COIN_TYPE_TO_PYTH[ct];
 
-        if (!fid) {
+        if (!coinTypesWithFeed.has(ct)) {
           return {
             coin_type: ct,
             symbol,
@@ -320,7 +224,15 @@ export function registerPriceTools(server: McpServer) {
           };
         }
 
-        const entry = pythData?.get(fid);
+        // Find the feed ID for this coin type
+        let entry: PythParsedPrice | undefined;
+        for (const [fid, cts] of reverseMap) {
+          if (cts.includes(ct)) {
+            entry = pythData?.get(fid);
+            break;
+          }
+        }
+
         if (!entry) {
           return {
             coin_type: ct,

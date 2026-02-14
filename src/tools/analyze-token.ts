@@ -3,30 +3,8 @@ import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders } from "./holders.js";
 import { errorResult } from "../utils/errors.js";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const tokensData = require("../data/tokens.json");
+import { resolveTokenBySymbol } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-interface TokenInfo {
-  coin_type: string;
-  name: string;
-  symbol: string;
-  decimals: number;
-}
-
-const TOKEN_REGISTRY: TokenInfo[] = tokensData.tokens;
-
-function searchRegistry(query: string): TokenInfo | null {
-  const q = query.toLowerCase();
-  // Exact symbol match first
-  const exact = TOKEN_REGISTRY.find((t) => t.symbol.toLowerCase() === q);
-  if (exact) return exact;
-  // Then name or symbol contains
-  return TOKEN_REGISTRY.find(
-    (t) => t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q)
-  ) ?? null;
-}
 
 export function registerAnalyzeTokenTools(server: McpServer) {
   server.tool(
@@ -44,21 +22,25 @@ export function registerAnalyzeTokenTools(server: McpServer) {
     async ({ query, include_holders }) => {
       const wantHolders = include_holders !== false;
 
-      // Resolve coin type: if it looks like a type (contains ::), use directly; else search registry
+      // Resolve coin type: if it looks like a type (contains ::), use directly; else resolve dynamically
       let coinType: string;
-      let registryMatch: TokenInfo | null = null;
+      let discoveredName: string | null = null;
+      let discoveredSymbol: string | null = null;
+      let discoveredDecimals: number | null = null;
 
       if (query.includes("::")) {
         coinType = query;
-        registryMatch = TOKEN_REGISTRY.find((t) => t.coin_type === query) ?? null;
       } else {
-        registryMatch = searchRegistry(query);
-        if (!registryMatch) {
+        const match = await resolveTokenBySymbol(query);
+        if (!match) {
           return errorResult(
-            `Token "${query}" not found in registry. Try using the full coin type string (e.g. '0x...::module::TOKEN'), or use search_token for fuzzy search.`
+            `Token "${query}" not found. Try using the full coin type string (e.g. '0x...::module::TOKEN'), or use search_token for fuzzy search.`
           );
         }
-        coinType = registryMatch.coin_type;
+        coinType = match.coin_type;
+        discoveredName = match.name;
+        discoveredSymbol = match.symbol;
+        discoveredDecimals = match.decimals;
       }
 
       // Fetch metadata, price, and holders in parallel
@@ -78,9 +60,9 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       const meta = metaResult?.metadata;
       const treasury = metaResult?.treasury;
 
-      const symbol = meta?.symbol ?? registryMatch?.symbol ?? coinType.split("::").pop() ?? coinType;
-      const decimals = meta?.decimals ?? registryMatch?.decimals ?? 9;
-      const name = meta?.name ?? registryMatch?.name ?? null;
+      const symbol = meta?.symbol ?? discoveredSymbol ?? coinType.split("::").pop() ?? coinType;
+      const decimals = meta?.decimals ?? discoveredDecimals ?? 9;
+      const name = meta?.name ?? discoveredName ?? null;
       const description = meta?.description ?? null;
       const iconUrl = meta?.iconUrl ?? null;
       const totalSupplyRaw = treasury?.totalSupply?.toString() ?? null;

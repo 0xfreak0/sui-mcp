@@ -1,8 +1,14 @@
 # sui-mcp
 
-MCP server for querying the Sui blockchain. Provides 38 tools for reading chain state, transactions, objects, coins, packages, events, SuiNS names, wallet analysis, DeFi positions, token prices, NFTs, pool discovery, and decompiling Move bytecode back to source code.
+Read-only MCP server for Sui blockchain analytics. 38 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, and Move bytecode decompilation.
 
-Connects to Sui mainnet public endpoints — no API keys required.
+- **No API keys, no wallet, no private keys** — connects to public Sui mainnet endpoints
+- **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
+- **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
+- **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
+- **Kiosk-aware** — resolves NFT ownership through Sui's kiosk system to actual wallet addresses
+
+Transaction building tools return unsigned bytes for external signing — the server never handles keys.
 
 ## Setup
 
@@ -17,15 +23,14 @@ npm run build
 
 The `decompile_module` tool requires the Revela `move-decompiler` binary. Requires a Rust toolchain ([rustup.rs](https://rustup.rs/)).
 
-**Quick setup:**
-
 ```bash
 npm run build:decompiler
 ```
 
 This clones [verichains/revela_sui](https://github.com/verichains/revela_sui), builds the decompiler, and copies the binary to `bin/move-decompiler`.
 
-**Manual setup:**
+<details>
+<summary>Manual setup</summary>
 
 ```bash
 git clone --depth 1 https://github.com/verichains/revela_sui.git
@@ -34,12 +39,11 @@ cargo build --release --bin move-decompiler
 ```
 
 Then set `SUI_DECOMPILER_PATH` to the binary path.
+</details>
 
 ## Installation
 
-Add to your MCP client config. All tools except `decompile_module` work without the decompiler — omit the `env` block if you don't need decompilation.
-
-**Claude Code** (`~/.claude/settings.json` or project `.mcp.json`):
+Add to your MCP client config (Claude Code, Claude Desktop, Cursor, etc.):
 
 ```json
 {
@@ -55,39 +59,9 @@ Add to your MCP client config. All tools except `decompile_module` work without 
 }
 ```
 
-**Claude Desktop** (`claude_desktop_config.json`):
+Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The `env` block is only needed for the decompilation tool — omit it if you don't need `decompile_module`.
 
-```json
-{
-  "mcpServers": {
-    "sui": {
-      "command": "node",
-      "args": ["/absolute/path/to/sui-mcp/dist/index.js"],
-      "env": {
-        "SUI_DECOMPILER_PATH": "/absolute/path/to/sui-mcp/bin/move-decompiler"
-      }
-    }
-  }
-}
-```
-
-**Cursor** (`.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "sui": {
-      "command": "node",
-      "args": ["/absolute/path/to/sui-mcp/dist/index.js"],
-      "env": {
-        "SUI_DECOMPILER_PATH": "/absolute/path/to/sui-mcp/bin/move-decompiler"
-      }
-    }
-  }
-}
-```
-
-Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The `env` block is only needed for the decompilation tool.
+See [`.env.example`](.env.example) for optional environment variables (network selection, custom RPC endpoints).
 
 ## Tools (38)
 
@@ -189,3 +163,7 @@ Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The
 | `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes |
 | `trace_funds` | Multi-hop fund flow tracing (forward or backward) |
 | `check_activity` | Monitor address or object for new activity since a checkpoint |
+
+## License
+
+[MIT](LICENSE)

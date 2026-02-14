@@ -18,9 +18,26 @@
   "keywords": [
     "sui",
     "mcp",
-    "blockchain"
+    "blockchain",
+    "model-context-protocol",
+    "defi",
+    "nft",
+    "grpc",
+    "graphql"
   ],
+  "author": "0xfreak0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0xfreak0/sui-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/0xfreak0/sui-mcp/issues"
+  },
+  "homepage": "https://github.com/0xfreak0/sui-mcp#readme",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
     "@modelcontextprotocol/sdk": "^1.12.1",

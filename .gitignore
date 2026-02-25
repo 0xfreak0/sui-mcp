@@ -14,3 +14,7 @@ dist/
 # Decompiler
 bin/
 revela_sui/
+
+# Personal files
+nft-cost-basis*.json
+scripts/extract-nft-purchases*

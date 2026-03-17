@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 38 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, and Move bytecode decompilation.
+Read-only MCP server for Sui blockchain analytics. 39 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, and Move bytecode decompilation.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui mainnet endpoints
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
@@ -63,7 +63,7 @@ Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The
 
 See [`.env.example`](.env.example) for optional environment variables (network selection, custom RPC endpoints).
 
-## Tools (38)
+## Tools (39)
 
 ### Recommended Starting Points
 

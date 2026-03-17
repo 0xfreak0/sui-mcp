@@ -12,6 +12,4 @@ COPY . .
 # Build the project
 RUN npm run build
 
-# Expose port (if applicable) and start the server
-EXPOSE 8080
-CMD ["npm", "run", "start"]
+CMD ["node", "dist/index.js"]

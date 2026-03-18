@@ -2,6 +2,9 @@ import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { batchResolveNames } from "../utils/names.js";
 import { lookupProtocol } from "../protocols/registry.js";
+import { decodeTransaction } from "../protocols/decoder.js";
+import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
+import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface BalanceChangeInfo {
@@ -17,9 +20,11 @@ interface HopResult {
   balance_changes: BalanceChangeInfo[];
   timestamp: string | null;
   checkpoint: string | null;
+  protocols: string[];
+  actions: string[];
+  token_flow: { coin: string; amount: string; raw_type: string }[];
 }
 
-// Use GraphQL to fetch transactions — gRPC archive doesn't return balance_changes
 const TX_QUERY = `
   query($digest: String!) {
     transaction(digest: $digest) {
@@ -37,6 +42,29 @@ const TX_QUERY = `
           }
         }
       }
+      kind {
+        ... on ProgrammableTransaction {
+          commands {
+            nodes {
+              ... on MoveCallCommand {
+                __typename
+                function {
+                  name
+                  module {
+                    name
+                    package { address }
+                  }
+                }
+              }
+              ... on TransferObjectsCommand { __typename }
+              ... on SplitCoinsCommand { __typename }
+              ... on MergeCoinsCommand { __typename }
+              ... on PublishCommand { __typename }
+              ... on UpgradeCommand { __typename }
+            }
+          }
+        }
+      }
     }
   }
 `;
@@ -50,11 +78,12 @@ interface GqlTxResult {
       timestamp?: string;
       checkpoint?: { sequenceNumber: number };
       balanceChanges?: {
-        nodes: Array<{
-          coinType?: { repr: string };
-          amount?: string;
-          owner?: { address: string };
-        }>;
+        nodes: GqlBalanceChangeNode[];
+      };
+    };
+    kind?: {
+      commands?: {
+        nodes: GqlCommandNode[];
       };
     };
   } | null;
@@ -63,6 +92,8 @@ interface GqlTxResult {
 interface FetchedTx {
   sender: string | null;
   balanceChanges: BalanceChangeInfo[];
+  balanceChangeNodes: GqlBalanceChangeNode[];
+  commandNodes: GqlCommandNode[];
   timestamp: string | null;
   checkpoint: number | null;
 }
@@ -72,7 +103,8 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
   const tx = data.transaction;
   if (!tx) return null;
 
-  const balanceChanges = (tx.effects?.balanceChanges?.nodes ?? []).map((n) => ({
+  const bcNodes = tx.effects?.balanceChanges?.nodes ?? [];
+  const balanceChanges = bcNodes.map((n) => ({
     address: n.owner?.address ?? "",
     coin_type: n.coinType?.repr ?? "",
     amount: n.amount ?? "0",
@@ -81,6 +113,8 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
   return {
     sender: tx.sender?.address ?? null,
     balanceChanges,
+    balanceChangeNodes: bcNodes,
+    commandNodes: tx.kind?.commands?.nodes ?? [],
     timestamp: tx.effects?.timestamp ?? null,
     checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
   };
@@ -104,7 +138,6 @@ async function findNextTx(
   afterCheckpoint?: number,
   direction: "forward" | "backward" = "forward",
 ): Promise<string | null> {
-  // Build query with only the variables actually used to avoid GraphQL validation errors
   const isForward = direction === "forward";
   const query = isForward
     ? `query($address: SuiAddress!, $first: Int, $afterCheckpoint: Int) {
@@ -140,10 +173,146 @@ async function findNextTx(
   return node?.digest ?? null;
 }
 
+function shortCoinType(coinType: string): string {
+  const parts = coinType.split("::");
+  return parts.length >= 3 ? parts[parts.length - 1] : coinType;
+}
+
+function formatAmount(amount: string, coinType: string): string {
+  const val = BigInt(amount);
+  const coin = shortCoinType(coinType);
+  const abs = val < 0n ? -val : val;
+  const sign = val < 0n ? "-" : "+";
+
+  // Known decimals for common coins
+  const KNOWN_DECIMALS: Record<string, number> = {
+    SUI: 9, USDC: 6, USDT: 6, DEEP: 6, CETUS: 9, NS: 6,
+    WAL: 9, BUCK: 9, NAVX: 9, SCA: 9, BLUE: 9, WETH: 8,
+    WBTC: 8, IKA: 9, UP: 6,
+  };
+  const decimals = KNOWN_DECIMALS[coin];
+
+  if (decimals !== undefined) {
+    const divisor = 10n ** BigInt(decimals);
+    const whole = abs / divisor;
+    const frac = abs % divisor;
+    const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+    const formatted = fracStr ? `${whole}.${fracStr}` : whole.toString();
+    return `${sign}${formatted} ${coin}`;
+  }
+
+  return `${sign}${abs} ${coin} (raw)`;
+}
+
+function addrLabel(addr: string, nameMap: Map<string, string>): string {
+  return nameMap.get(addr) ?? `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function formatTimeSpan(ms: number): string {
+  const min = Math.round(ms / 60000);
+  if (min < 1) return "< 1 minute";
+  if (min < 60) return `${min} minute${min !== 1 ? "s" : ""}`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} hour${hr !== 1 ? "s" : ""}`;
+  const days = Math.round(hr / 24);
+  return `${days} day${days !== 1 ? "s" : ""}`;
+}
+
+function buildSummary(
+  hops: HopResult[],
+  direction: string,
+  nameMap: Map<string, string>,
+): string {
+  if (hops.length === 0) return "No hops traced.";
+
+  const lines: string[] = [];
+  const first = hops[0];
+  const last = hops[hops.length - 1];
+
+  // Header
+  lines.push(`FUND TRACE — ${direction.toUpperCase()}`);
+  lines.push(`Starting tx: ${first.digest}`);
+
+  // Time range
+  if (first.timestamp && last.timestamp && hops.length > 1) {
+    const diffMs = Math.abs(new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime());
+    lines.push(`Time span: ${formatTimeSpan(diffMs)} across ${hops.length} hops`);
+  } else {
+    lines.push(`Hops: ${hops.length}`);
+  }
+
+  // Protocols
+  const allProtocols = new Set<string>();
+  for (const hop of hops) for (const p of hop.protocols) allProtocols.add(p);
+  if (allProtocols.size > 0) {
+    lines.push(`Protocols: ${[...allProtocols].join(", ")}`);
+  }
+
+  lines.push("");
+
+  // Per-hop breakdown
+  for (const hop of hops) {
+    const sender = hop.sender ? addrLabel(hop.sender, nameMap) : "unknown";
+    const ts = hop.timestamp ? new Date(hop.timestamp).toISOString().replace("T", " ").slice(0, 19) + " UTC" : "";
+
+    lines.push(`--- Hop ${hop.hop} ${ts ? `(${ts})` : ""} ---`);
+    lines.push(`Tx:     ${hop.digest}`);
+    lines.push(`Sender: ${sender}`);
+
+    if (hop.actions.length > 0) {
+      lines.push(`Action: ${hop.actions.join(", ")}`);
+    }
+
+    // Balance changes — separate significant from gas
+    const significant: typeof hop.balance_changes = [];
+    const gasOnly: typeof hop.balance_changes = [];
+    for (const bc of hop.balance_changes) {
+      const abs = BigInt(bc.amount) < 0n ? -BigInt(bc.amount) : BigInt(bc.amount);
+      if (abs > 1_000_000n) {
+        significant.push(bc);
+      } else {
+        gasOnly.push(bc);
+      }
+    }
+
+    if (significant.length > 0) {
+      lines.push("Flows:");
+      for (const bc of significant) {
+        const who = addrLabel(bc.address, nameMap);
+        lines.push(`  ${who}: ${formatAmount(bc.amount, bc.coin_type)}`);
+      }
+    }
+
+    if (gasOnly.length > 0 && significant.length === 0) {
+      lines.push("Flows:  gas only");
+    }
+
+    lines.push("");
+  }
+
+  // End-state summary
+  const lastHop = hops[hops.length - 1];
+  const allCoinsTraced = new Set<string>();
+  for (const hop of hops) {
+    for (const bc of hop.balance_changes) {
+      const abs = BigInt(bc.amount) < 0n ? -BigInt(bc.amount) : BigInt(bc.amount);
+      if (abs > 1_000_000n) allCoinsTraced.add(shortCoinType(bc.coin_type));
+    }
+  }
+  if (allCoinsTraced.size > 0) {
+    lines.push(`Coins involved: ${[...allCoinsTraced].join(", ")}`);
+  }
+  if (lastHop.actions.length > 0) {
+    lines.push(`Final action: ${lastHop.actions.join(", ")}`);
+  }
+
+  return lines.join("\n");
+}
+
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "(Advanced — multi-hop) Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Makes sequential API calls per hop (up to 10).",
+    "(Advanced — multi-hop) Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Returns protocol-decoded actions and human-readable summary. Makes sequential API calls per hop (up to 10).",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z
@@ -176,6 +345,11 @@ export function registerTraceTools(server: McpServer) {
 
         const checkpointNum = tx.checkpoint ?? undefined;
 
+        // Decode protocol actions
+        const commands = adaptCommands(tx.commandNodes);
+        const grpcBc = adaptBalanceChanges(tx.balanceChangeNodes);
+        const decoded = decodeTransaction(commands, grpcBc, sender ?? undefined);
+
         traceHops.push({
           hop: hop + 1,
           digest: currentDigest,
@@ -183,12 +357,14 @@ export function registerTraceTools(server: McpServer) {
           balance_changes: changes,
           timestamp: tx.timestamp,
           checkpoint: tx.checkpoint?.toString() ?? null,
+          protocols: decoded.protocols,
+          actions: decoded.actions,
+          token_flow: decoded.token_flow,
         });
 
         // Determine next address to follow
         let nextAddress: string | null = null;
         if (direction === "forward") {
-          // Find recipient: address with positive balance change that isn't the sender
           for (const c of changes) {
             if (c.address !== sender && BigInt(c.amount) > 0n) {
               nextAddress = c.address;
@@ -196,13 +372,11 @@ export function registerTraceTools(server: McpServer) {
             }
           }
         } else {
-          // Follow the sender backwards
           nextAddress = sender;
         }
 
         if (!nextAddress) break;
 
-        // Find next transaction
         currentDigest = await findNextTx(
           nextAddress,
           checkpointNum,
@@ -235,33 +409,38 @@ export function registerTraceTools(server: McpServer) {
         }
       }
 
-      // Enrich hops with names and protocol labels
+      // Enrich hops with names, protocol labels, and formatted amounts
       const enrichedHops = traceHops.map((hop) => ({
         ...hop,
         sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,
         balance_changes: hop.balance_changes.map((bc) => ({
           ...bc,
+          formatted: formatAmount(bc.amount, bc.coin_type),
           name: nameMap.get(bc.address) ?? null,
           protocol: lookupProtocol(bc.address)?.name ?? null,
         })),
       }));
 
+      const summary = buildSummary(traceHops, direction, nameMap);
+
+      const fullData = {
+        starting_digest: digest,
+        direction,
+        coin_type: coin_type ?? "all",
+        hop_count: enrichedHops.length,
+        hops: enrichedHops,
+        address_labels: addressLabels,
+      };
+
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                starting_digest: digest,
-                direction,
-                coin_type: coin_type ?? "all",
-                hop_count: enrichedHops.length,
-                hops: enrichedHops,
-                address_labels: addressLabels,
-              },
-              null,
-              2
-            ),
+            text: summary,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(fullData, null, 2),
           },
         ],
       };

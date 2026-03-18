@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-If you discover a security vulnerability, please report it privately by emailing **noreply@users.noreply.github.com** rather than opening a public issue.
+If you discover a security vulnerability, please report it privately via [GitHub Security Advisories](https://github.com/0xfreak0/sui-mcp/security/advisories/new) rather than opening a public issue.
 
 Include:
 - Description of the vulnerability

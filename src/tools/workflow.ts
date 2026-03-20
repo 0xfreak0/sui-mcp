@@ -20,14 +20,57 @@ export function registerWorkflowTools(server: McpServer) {
         .describe("Include USD prices and portfolio value (default: false)"),
     },
     async ({ address, include_prices }) => {
-      const [balancesResult, nameResult, objectsResult, kioskResult, txResult] =
+      const [gqlResult, objectsResult, kioskResult] =
         await Promise.all([
-          sui.listBalances({ owner: address, limit: 50, cursor: null }),
-
-          sui.nameService
-            .reverseLookupName({ address })
-            .then(({ response }) => response.record?.name ?? null)
-            .catch(() => null),
+          gqlQuery<{
+            address: {
+              defaultNameRecord: { domain: string } | null;
+              balances: {
+                nodes: Array<{
+                  coinType: { repr: string };
+                  totalBalance: string;
+                }>;
+                pageInfo: { hasNextPage: boolean };
+              };
+            } | null;
+            transactions: {
+              nodes: Array<{
+                digest: string;
+                sender?: { address: string };
+                effects?: {
+                  status: string;
+                  timestamp?: string;
+                };
+              }>;
+            };
+          }>(
+            `query($address: SuiAddress!, $first: Int, $txFirst: Int) {
+              address(address: $address) {
+                defaultNameRecord { domain }
+                balances(first: $first) {
+                  nodes {
+                    coinType { repr }
+                    totalBalance
+                  }
+                  pageInfo { hasNextPage }
+                }
+              }
+              transactions(filter: { affectedAddress: $address }, first: $txFirst) {
+                nodes {
+                  digest
+                  sender { address }
+                  effects {
+                    status
+                    timestamp
+                  }
+                }
+              }
+            }`,
+            { address, first: 50, txFirst: 5 }
+          ).catch(() => ({
+            address: null,
+            transactions: { nodes: [] as Array<{ digest: string; sender?: { address: string }; effects?: { status: string; timestamp?: string } }> },
+          })),
 
           sui.listOwnedObjects({
             owner: address,
@@ -42,36 +85,15 @@ export function registerWorkflowTools(server: McpServer) {
             limit: 50,
             cursor: null,
           }).catch(() => ({ objects: [] })),
-
-          gqlQuery<{
-            transactions: {
-              nodes: Array<{
-                digest: string;
-                sender?: { address: string };
-                effects?: {
-                  status: string;
-                  timestamp?: string;
-                };
-              }>;
-            };
-          }>(
-            `query($address: SuiAddress!, $first: Int) {
-              transactions(filter: { affectedAddress: $address }, first: $first) {
-                nodes {
-                  digest
-                  sender { address }
-                  effects {
-                    status
-                    timestamp
-                  }
-                }
-              }
-            }`,
-            { address, first: 5 }
-          ).catch(() => null),
         ]);
 
-      const rawBalances = balancesResult.balances.filter((b) => b.balance !== "0");
+      const addrData = gqlResult.address;
+      const nameResult = addrData?.defaultNameRecord?.domain ?? null;
+      const rawBalances = (addrData?.balances.nodes ?? [])
+        .filter((b) => b.totalBalance !== "0")
+        .map((b) => ({ coinType: b.coinType.repr, balance: b.totalBalance }));
+      const hasNextPage = addrData?.balances.pageInfo.hasNextPage ?? false;
+      const txResult = gqlResult;
       const coinTypes = rawBalances.map((b) => b.coinType);
 
       // Optionally fetch prices and metadata
@@ -154,7 +176,7 @@ export function registerWorkflowTools(server: McpServer) {
         address,
         sui_name: nameResult,
         holdings,
-        holdings_truncated: balancesResult.hasNextPage ?? false,
+        holdings_truncated: hasNextPage,
         staked_sui_count: objectsResult.objects.length,
         kiosk_count: kioskResult.objects.length,
         recent_transactions: recentTransactions,

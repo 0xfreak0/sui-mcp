@@ -1,19 +1,54 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
+import { gqlQuery } from "../clients/graphql.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerCoinTools(server: McpServer) {
   server.tool(
     "get_balance",
-    "Get the balance of a specific coin type for a Sui address. Defaults to SUI.",
+    "Get the balance of a specific coin type for a Sui address. Defaults to SUI. Optionally query balance at a historical checkpoint.",
     {
       owner: z.string().describe("Owner address (0x...)"),
       coin_type: z
         .string()
         .optional()
         .describe("Coin type (default: 0x2::sui::SUI)"),
+      at_checkpoint: z
+        .number()
+        .optional()
+        .describe("Query balance at a specific checkpoint (for historical balances)"),
     },
-    async ({ owner, coin_type }) => {
+    async ({ owner, coin_type, at_checkpoint }) => {
+      if (at_checkpoint != null) {
+        const coinType = coin_type ?? "0x2::sui::SUI";
+        const data = await gqlQuery<{
+          address: {
+            balance: { coinType: { repr: string }; totalBalance: string } | null;
+          } | null;
+        }>(
+          `query($owner: SuiAddress!, $coinType: String!, $checkpoint: UInt53) {
+            address(address: $owner, atCheckpoint: $checkpoint) {
+              balance(coinType: $coinType) {
+                coinType { repr }
+                totalBalance
+              }
+            }
+          }`,
+          { owner, coinType, checkpoint: at_checkpoint }
+        );
+        const bal = data.address?.balance;
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              coin_type: bal?.coinType.repr ?? coinType,
+              balance: bal?.totalBalance ?? "0",
+              at_checkpoint,
+            }, null, 2),
+          }],
+        };
+      }
+
       const res = await sui.getBalance({
         owner,
         coinType: coin_type,

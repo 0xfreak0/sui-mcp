@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
+import { suivisionPackageUrl } from "../config.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -145,6 +146,7 @@ export function registerPackageTools(server: McpServer) {
                 package_id: pkg?.storageId,
                 original_id: pkg?.originalId,
                 version: pkg?.version?.toString(),
+                suivision_url: suivisionPackageUrl(package_id),
                 summary: {
                   module_count: modules.length,
                   total_entry_functions: totalEntryFns,

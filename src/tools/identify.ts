@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -100,6 +101,7 @@ export function registerIdentifyTools(server: McpServer) {
               module_count: modules.length,
               modules: modules.slice(0, 20),
               modules_truncated: modules.length > 20,
+              suivision_url: suivisionPackageUrl(address),
               hint: "Use get_package for full module details, or decompile_module for source code.",
             }, null, 2),
           }],

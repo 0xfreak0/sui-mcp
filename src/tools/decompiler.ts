@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { sui } from "../clients/grpc.js";
-import { DECOMPILER_PATH } from "../config.js";
+import { DECOMPILER_PATH, suivisionPackageUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { execFile } from "node:child_process";
 import { writeFile, unlink, mkdtemp } from "node:fs/promises";
@@ -83,7 +83,7 @@ export function registerDecompilerTools(server: McpServer) {
             {
               type: "text" as const,
               text: JSON.stringify(
-                { package_id: pkg.storageId, modules },
+                { package_id: pkg.storageId, modules, suivision_url: suivisionPackageUrl(package_id) },
                 null,
                 2
               ),
@@ -124,6 +124,7 @@ export function registerDecompilerTools(server: McpServer) {
                 {
                   package_id: pkg.storageId,
                   module_count: results.length,
+                  suivision_url: suivisionPackageUrl(package_id),
                   modules: results,
                 },
                 null,
@@ -167,7 +168,7 @@ export function registerDecompilerTools(server: McpServer) {
           {
             type: "text" as const,
             text: JSON.stringify(
-              { package_id: pkg.storageId, module: module_name, source },
+              { package_id: pkg.storageId, module: module_name, suivision_url: suivisionPackageUrl(package_id), source },
               null,
               2
             ),

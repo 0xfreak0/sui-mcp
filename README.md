@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 39 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, and Move bytecode decompilation.
+Read-only MCP server for Sui blockchain analytics. 44 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move bytecode decompilation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui mainnet endpoints
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
@@ -63,7 +63,7 @@ Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The
 
 See [`.env.example`](.env.example) for optional environment variables (network selection, custom RPC endpoints).
 
-## Tools (39)
+## Tools (44)
 
 ### Recommended Starting Points
 
@@ -136,6 +136,25 @@ See [`.env.example`](.env.example) for optional environment variables (network s
 | Tool | Description |
 |---|---|
 | `resolve_name` | SuiNS name resolution (forward and reverse) |
+
+### Move Registry (MVR)
+
+The [Move Registry](https://www.moveregistry.com) maps human-readable package names like `@suins/core` or `@deepbook/core` to on-chain package addresses. Backed by `mainnet.mvr.mystenlabs.com/v1` (or `testnet.mvr...` when `SUI_NETWORK=testnet`).
+
+| Tool | Description |
+|---|---|
+| `mvr_resolve` | Resolve one or many MVR names → package IDs. Accepts version-pinned names like `@suins/core/3`. |
+| `mvr_reverse_resolve` | Reverse-lookup: package addresses → MVR names. Useful for enriching raw addresses anywhere. |
+| `mvr_get_package_info` | Full record for a name: metadata, version, package_address, package_info ID, git source. |
+| `mvr_search` | Browse / search the registry. Supports substring search, pagination, and an `is_linked` filter for published packages. |
+| `mvr_resolve_struct` | Resolve `@org/app::module::Type` → canonical type tag at the type's defining-package address. |
+
+**Typical flows:**
+
+- *"What's the package for `@deepbook/core`?"* → `mvr_resolve(['@deepbook/core'])` → `0x4874e1...`. Hand the address to `get_package` for module/function details.
+- *"What is package `0xf22f…`?"* → `mvr_reverse_resolve(['0xf22f…'])` → `@suins/core`.
+- *"Find DeepBook-related packages"* → `mvr_search('deepbook', limit=20, is_linked=true)` → paginated list.
+- *"Pin to a specific version"* → `mvr_resolve(['@suins/core/3'])` returns the v3 package address rather than the latest.
 
 ### Packages (Developer)
 

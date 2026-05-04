@@ -23,6 +23,7 @@ import { registerPoolTools } from "./pools.js";
 import { registerDependencyTools } from "./dependencies.js";
 import { registerIdentifyTools } from "./identify.js";
 import { registerAnalyzeTokenTools } from "./analyze-token.js";
+import { registerMvrTools } from "./mvr.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(server: McpServer) {
@@ -51,4 +52,5 @@ export function registerAllTools(server: McpServer) {
   registerDependencyTools(server);
   registerIdentifyTools(server);
   registerAnalyzeTokenTools(server);
+  registerMvrTools(server);
 }

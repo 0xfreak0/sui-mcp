@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { registerCollection } from "../discovery-nft.js";
+import { clampPageSize } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // GraphQL returns canonical (zero-padded) addresses, so type checks use
@@ -178,53 +179,94 @@ interface KioskFieldsResponse {
   } | null;
 }
 
+type KioskDynamicFieldNode = NonNullable<KioskFieldsResponse["object"]>["dynamicFields"]["nodes"][number];
+
+function buildKioskNftEntry(
+  node: KioskDynamicFieldNode,
+  kioskId: string,
+  withDetails: boolean,
+): NftEntry | null {
+  if (!node.name.type.repr.includes(KIOSK_ITEM_TYPE_SUBSTR)) return null;
+  if (node.value.__typename !== "MoveObject") return null;
+  const objectId = node.value.address;
+  const contents = node.value.contents;
+  const collection = contents?.type.repr ?? "unknown";
+  if (collection !== "unknown") registerCollection(collection);
+  if (!withDetails) {
+    return {
+      object_id: objectId,
+      type: collection,
+      collection,
+      kiosk_id: kioskId,
+      name: null,
+      description: null,
+      image_url: null,
+      content: null,
+    };
+  }
+  const display = pickDisplay(contents?.display?.output ?? null, contents?.json);
+  return {
+    object_id: objectId,
+    type: collection,
+    collection,
+    kiosk_id: kioskId,
+    name: display.name,
+    description: display.description,
+    image_url: display.image_url,
+    content: contents?.json ?? null,
+  };
+}
+
 /**
- * Scan a single kiosk's dynamic fields via GraphQL. Returns one entry per
- * `kiosk::Item` (skipping `kiosk::Lock` boolean entries). Each entry already
- * carries display + raw struct contents — no follow-up object fetch needed.
+ * Walk a single kiosk's `dynamicFields` until at least `target` items are
+ * collected or the kiosk is exhausted. Returns whatever the GraphQL page
+ * boundary contained — may overshoot `target` (we don't break mid-page).
+ *
+ * `innerCursor` is the GraphQL cursor inside this kiosk; pass `null` to start
+ * from the beginning. The returned `nextInnerCursor` is null when the kiosk
+ * is fully drained.
  */
-async function scanKioskItems(kioskId: string, opts: { withDetails: boolean }): Promise<NftEntry[]> {
+async function scanKioskPage(
+  kioskId: string,
+  innerCursor: string | null,
+  target: number,
+  withDetails: boolean,
+): Promise<{ items: NftEntry[]; nextInnerCursor: string | null }> {
   const items: NftEntry[] = [];
-  let cursor: string | null = null;
-  do {
+  let cursor = innerCursor;
+  while (items.length < target) {
     const data: KioskFieldsResponse = await gqlQuery<KioskFieldsResponse>(KIOSK_FIELDS_QUERY, { kioskId, cursor });
     const conn = data.object?.dynamicFields;
-    if (!conn) break;
-    for (const node of conn.nodes) {
-      if (!node.name.type.repr.includes(KIOSK_ITEM_TYPE_SUBSTR)) continue;
-      if (node.value.__typename !== "MoveObject") continue;
-      const objectId = node.value.address;
-      const contents = node.value.contents;
-      const collection = contents?.type.repr ?? "unknown";
-      if (collection !== "unknown") registerCollection(collection);
-      if (!opts.withDetails) {
-        items.push({
-          object_id: objectId,
-          type: collection,
-          collection,
-          kiosk_id: kioskId,
-          name: null,
-          description: null,
-          image_url: null,
-          content: null,
-        });
-        continue;
-      }
-      const display = pickDisplay(contents?.display?.output ?? null, contents?.json);
-      items.push({
-        object_id: objectId,
-        type: collection,
-        collection,
-        kiosk_id: kioskId,
-        name: display.name,
-        description: display.description,
-        image_url: display.image_url,
-        content: contents?.json ?? null,
-      });
+    if (!conn) {
+      cursor = null;
+      break;
     }
-    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+    for (const node of conn.nodes) {
+      const entry = buildKioskNftEntry(node, kioskId, withDetails);
+      if (entry) items.push(entry);
+    }
+    if (!conn.pageInfo.hasNextPage) {
+      cursor = null;
+      break;
+    }
+    cursor = conn.pageInfo.endCursor;
+  }
+  return { items, nextInnerCursor: cursor };
+}
+
+/**
+ * Drain a kiosk fully. Used by `list_nft_collections` where we always want
+ * complete counts.
+ */
+async function scanKioskAll(kioskId: string, withDetails: boolean): Promise<NftEntry[]> {
+  const out: NftEntry[] = [];
+  let cursor: string | null = null;
+  do {
+    const { items, nextInnerCursor } = await scanKioskPage(kioskId, cursor, Number.POSITIVE_INFINITY, withDetails);
+    out.push(...items);
+    cursor = nextInnerCursor;
   } while (cursor);
-  return items;
+  return out;
 }
 
 const DIRECT_OBJECTS_QUERY = `query($owner: SuiAddress!, $cursor: String, $withDetails: Boolean!) {
@@ -268,20 +310,30 @@ function isLikelyNft(typeRepr: string): boolean {
 }
 
 /**
- * Fetch directly-owned (non-kiosk) objects. Excludes coins, KioskOwnerCaps,
- * and staked SUI. Walks pages until the limit is hit.
+ * Walk directly-owned (non-kiosk) objects until at least `target` NFTs are
+ * collected or the address is exhausted. Excludes coins, KioskOwnerCaps,
+ * PersonalKioskCaps, and staked SUI. May overshoot `target` (we don't break
+ * mid-GraphQL-page).
  */
-async function listDirectNfts(owner: string, max: number, withDetails: boolean): Promise<NftEntry[]> {
+async function listDirectNftsPage(
+  owner: string,
+  startCursor: string | null,
+  target: number,
+  withDetails: boolean,
+): Promise<{ items: NftEntry[]; nextCursor: string | null }> {
   const out: NftEntry[] = [];
-  let cursor: string | null = null;
-  while (out.length < max) {
+  let cursor = startCursor;
+  while (out.length < target) {
     const data: DirectObjectsResponse = await gqlQuery<DirectObjectsResponse>(DIRECT_OBJECTS_QUERY, {
       owner,
       cursor,
       withDetails,
     });
     const conn = data.address?.objects;
-    if (!conn) break;
+    if (!conn) {
+      cursor = null;
+      break;
+    }
     for (const node of conn.nodes) {
       const typeRepr = node.contents?.type.repr ?? "unknown";
       if (typeRepr === "unknown" || !isLikelyNft(typeRepr)) continue;
@@ -310,87 +362,144 @@ async function listDirectNfts(owner: string, max: number, withDetails: boolean):
           content: node.contents?.json ?? null,
         });
       }
-      if (out.length >= max) break;
     }
-    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
-    if (!cursor) break;
+    if (!conn.pageInfo.hasNextPage) {
+      cursor = null;
+      break;
+    }
+    cursor = conn.pageInfo.endCursor;
   }
-  return out;
+  return { items: out, nextCursor: cursor };
+}
+
+/**
+ * Drain all directly-owned NFTs for an address. Used by `list_nft_collections`.
+ */
+async function listDirectNftsAll(owner: string, withDetails: boolean): Promise<NftEntry[]> {
+  const { items } = await listDirectNftsPage(owner, null, Number.POSITIVE_INFINITY, withDetails);
+  return items;
+}
+
+// ---------------------------------------------------------------------------
+// Cursor encoding for resumable list_nfts
+// ---------------------------------------------------------------------------
+
+interface ListNftsCursor {
+  v: 1;
+  // Kiosk IDs captured at first call. Stored on the cursor so subsequent
+  // pages don't re-discover (which protects ordering if the wallet mints
+  // a new kiosk mid-pagination).
+  kiosks: string[];
+  // Index of the kiosk currently being scanned. When >= kiosks.length we're
+  // past the kiosk phase and into direct-owned.
+  ki: number;
+  // GraphQL cursor inside the current kiosk's dynamicFields connection.
+  // null = start of that kiosk.
+  kc: string | null;
+  // GraphQL cursor for direct-owned objects pagination. Only consulted once
+  // ki >= kiosks.length.
+  dc: string | null;
+}
+
+function encodeCursor(c: ListNftsCursor): string {
+  return Buffer.from(JSON.stringify(c)).toString("base64url");
+}
+
+function decodeCursor(s: string): ListNftsCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(s, "base64url").toString("utf8")) as ListNftsCursor;
+    if (parsed.v !== 1 || !Array.isArray(parsed.kiosks) || typeof parsed.ki !== "number") {
+      throw new Error("malformed cursor");
+    }
+    return parsed;
+  } catch (err) {
+    throw new Error(`invalid cursor: ${(err as Error).message}`);
+  }
 }
 
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk, no fullnode rate-limit risk. Use list_nft_collections for a cheaper count-only summary.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. May slightly overshoot `limit` because GraphQL pages are 50-at-a-time and we don't break mid-page. Use list_nft_collections for a cheaper count-only summary.",
     {
       address: z.string().describe("Owner wallet address (0x...)"),
       limit: z
         .number()
         .optional()
-        .default(50)
-        .describe("Max NFTs to return (default 50, max 200)"),
+        .describe("Target page size (default 50, max 1000). Result may slightly exceed this at GraphQL page boundaries."),
+      cursor: z
+        .string()
+        .optional()
+        .describe("Opaque pagination token from a prior response's `next_cursor`. Omit on first call."),
     },
-    async ({ address, limit }) => {
-      const effectiveLimit = Math.min(Math.max(limit ?? 50, 1), 200);
+    async ({ address, limit, cursor }) => {
+      const target = clampPageSize(limit);
 
-      // Step 1: Discover kiosks (1 GraphQL query, paginated).
-      const kioskIds = await discoverKiosks(address);
-
-      // Step 2: Scan each kiosk's items in parallel — one query per kiosk page.
-      // GraphQL public endpoint tolerates parallel queries; a wallet with 43
-      // kiosks fires 43 requests, far below the gRPC fan-out the old impl had.
-      const kioskScans = await Promise.allSettled(
-        kioskIds.map((id) => scanKioskItems(id, { withDetails: true })),
-      );
-      const allKioskNfts: NftEntry[] = [];
-      for (const r of kioskScans) {
-        if (r.status === "fulfilled") allKioskNfts.push(...r.value);
+      // Initialize state: either resume from cursor or discover kiosks fresh.
+      let state: ListNftsCursor;
+      if (cursor) {
+        state = decodeCursor(cursor);
+      } else {
+        const kiosks = await discoverKiosks(address);
+        state = { v: 1, kiosks, ki: 0, kc: null, dc: null };
       }
 
-      // Step 3: Take up to `limit` from kiosks first, then top up with direct-owned.
-      const kioskSlice = allKioskNfts.slice(0, effectiveLimit);
-      const remaining = effectiveLimit - kioskSlice.length;
-      const directNfts = remaining > 0 ? await listDirectNfts(address, remaining, true) : [];
-      const nfts = [...kioskSlice, ...directNfts];
-      const truncated = allKioskNfts.length > kioskSlice.length;
+      const nfts: NftEntry[] = [];
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                address,
-                nfts,
-                total_found: nfts.length,
-                kiosk_count: kioskIds.length,
-                total_kiosk_nfts: allKioskNfts.length,
-                truncated,
-                ...(truncated && {
-                  truncation_note:
-                    "Result was capped by `limit`. Raise `limit` (max 200) or call list_nft_collections for a complete summary.",
-                }),
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
+      // Phase 1: walk kiosks. Each iteration either fills the current kiosk's
+      // remaining items or advances to the next kiosk.
+      while (state.ki < state.kiosks.length && nfts.length < target) {
+        const remaining = target - nfts.length;
+        const kioskId = state.kiosks[state.ki];
+        try {
+          const { items, nextInnerCursor } = await scanKioskPage(kioskId, state.kc, remaining, true);
+          nfts.push(...items);
+          if (nextInnerCursor) {
+            // Hit the target mid-kiosk; pause here. The next call resumes
+            // exactly where we left off.
+            state.kc = nextInnerCursor;
+            return buildResponse(address, state, nfts, /*done*/ false);
+          }
+          // Kiosk drained — advance to the next one.
+          state.ki += 1;
+          state.kc = null;
+        } catch {
+          // Kiosk fetch failed (e.g. destroyed mid-pagination). Skip it
+          // rather than wedging the entire walk.
+          state.ki += 1;
+          state.kc = null;
+        }
+      }
+
+      // Phase 2: walk direct-owned objects. Only entered after every kiosk is
+      // drained. We rely on `state.dc` to resume across calls.
+      if (state.ki >= state.kiosks.length && nfts.length < target) {
+        const remaining = target - nfts.length;
+        const { items, nextCursor: nextDc } = await listDirectNftsPage(address, state.dc, remaining, true);
+        nfts.push(...items);
+        if (nextDc) {
+          state.dc = nextDc;
+          return buildResponse(address, state, nfts, /*done*/ false);
+        }
+        state.dc = null;
+      }
+
+      // Both phases drained.
+      return buildResponse(address, state, nfts, /*done*/ true);
     },
   );
 
   server.tool(
     "list_nft_collections",
-    "Get a lightweight summary of NFT collections owned by a wallet. Walks kiosks plus direct-owned objects and returns deduplicated collection types with counts. Backed by GraphQL.",
+    "Get a lightweight summary of NFT collections owned by a wallet. Walks all kiosks plus direct-owned objects and returns deduplicated collection types with counts. Backed by GraphQL.",
     {
       address: z.string().describe("Owner wallet address (0x...)"),
     },
     async ({ address }) => {
       const kioskIds = await discoverKiosks(address);
       const [kioskScans, directNfts] = await Promise.all([
-        Promise.allSettled(kioskIds.map((id) => scanKioskItems(id, { withDetails: false }))),
-        listDirectNfts(address, 200, false),
+        Promise.allSettled(kioskIds.map((id) => scanKioskAll(id, false))),
+        listDirectNftsAll(address, false),
       ]);
 
       const counts = new Map<string, number>();
@@ -426,4 +535,25 @@ export function registerNftTools(server: McpServer) {
       };
     },
   );
+}
+
+function buildResponse(address: string, state: ListNftsCursor, nfts: NftEntry[], done: boolean) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          {
+            address,
+            nfts,
+            page_size: nfts.length,
+            kiosk_count: state.kiosks.length,
+            ...(done ? {} : { next_cursor: encodeCursor(state) }),
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
 }

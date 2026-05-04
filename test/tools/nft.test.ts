@@ -48,9 +48,6 @@ describe("list_nfts — kiosk discovery", () => {
   });
 
   it("discovers kiosks held inside PersonalKioskCap and walks their items", async () => {
-    // Query 1: KioskOwnerCap → returns one standard kiosk
-    // Query 2: PersonalKioskCap → returns one personal kiosk wrapping a different kiosk id
-    // Query 3 + 4: dynamic fields for each kiosk
     mockGql.mockImplementation((query: string, _vars: Record<string, unknown>) => {
       if (query.includes("0x2::kiosk::KioskOwnerCap")) {
         return Promise.resolve({
@@ -74,7 +71,6 @@ describe("list_nfts — kiosk discovery", () => {
           },
         });
       }
-      // dynamicFields query: vars.kioskId tells us which kiosk
       if (query.includes("dynamicFields")) {
         const kioskId = (_vars as { kioskId: string }).kioskId;
         if (kioskId === STD_KIOSK_ID) {
@@ -101,7 +97,6 @@ describe("list_nfts — kiosk discovery", () => {
           });
         }
       }
-      // direct-owned objects (top-up step)
       if (query.includes("address(address: $owner)") && !query.includes("filter:")) {
         return Promise.resolve({ address: { objects: emptyPage } });
       }
@@ -113,9 +108,8 @@ describe("list_nfts — kiosk discovery", () => {
     const data = JSON.parse(result.content[0].text);
 
     expect(data.kiosk_count).toBe(2);
-    expect(data.total_kiosk_nfts).toBe(3);
     expect(data.nfts).toHaveLength(3);
-    expect(data.truncated).toBe(false);
+    expect(data.next_cursor).toBeUndefined();
 
     const kioskIds = new Set(data.nfts.map((n: { kiosk_id: string }) => n.kiosk_id));
     expect(kioskIds.has(STD_KIOSK_ID)).toBe(true);
@@ -170,11 +164,28 @@ describe("list_nfts — kiosk discovery", () => {
     const data = JSON.parse(result.content[0].text);
 
     expect(data.kiosk_count).toBe(1);
-    expect(data.total_kiosk_nfts).toBe(1);
+    expect(data.nfts).toHaveLength(1);
   });
 
-  it("sets truncated:true when limit caps the kiosk slice", async () => {
-    mockGql.mockImplementation((query: string, _vars: Record<string, unknown>) => {
+  it("returns next_cursor when limit caps the result, and resumes correctly", async () => {
+    // 5 NFTs in one kiosk, returned across two GraphQL pages of 3 + 2.
+    const KIOSK_PAGE_1 = {
+      pageInfo: { hasNextPage: true, endCursor: "page1-end" },
+      nodes: [
+        kioskItemNode(STD_KIOSK_ID, 1, nftCollection("Z")),
+        kioskItemNode(STD_KIOSK_ID, 2, nftCollection("Z")),
+        kioskItemNode(STD_KIOSK_ID, 3, nftCollection("Z")),
+      ],
+    };
+    const KIOSK_PAGE_2 = {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [
+        kioskItemNode(STD_KIOSK_ID, 4, nftCollection("Z")),
+        kioskItemNode(STD_KIOSK_ID, 5, nftCollection("Z")),
+      ],
+    };
+
+    mockGql.mockImplementation((query: string, vars: Record<string, unknown>) => {
       if (query.includes("0x2::kiosk::KioskOwnerCap")) {
         return Promise.resolve({
           address: {
@@ -189,13 +200,9 @@ describe("list_nfts — kiosk discovery", () => {
         return Promise.resolve({ address: { objects: emptyPage } });
       }
       if (query.includes("dynamicFields")) {
-        const nodes = Array.from({ length: 5 }, (_, i) =>
-          kioskItemNode(STD_KIOSK_ID, i, nftCollection("Z")),
-        );
+        const cursor = vars.cursor as string | null;
         return Promise.resolve({
-          object: {
-            dynamicFields: { pageInfo: { hasNextPage: false, endCursor: null }, nodes },
-          },
+          object: { dynamicFields: cursor === "page1-end" ? KIOSK_PAGE_2 : KIOSK_PAGE_1 },
         });
       }
       if (query.includes("address(address: $owner)") && !query.includes("filter:")) {
@@ -205,13 +212,23 @@ describe("list_nfts — kiosk discovery", () => {
     });
 
     const handler = tools.get("list_nfts")!;
-    const result = await handler({ address: OWNER, limit: 2 });
-    const data = JSON.parse(result.content[0].text);
 
-    expect(data.total_kiosk_nfts).toBe(5);
-    expect(data.nfts).toHaveLength(2);
-    expect(data.truncated).toBe(true);
-    expect(data.truncation_note).toBeDefined();
+    // First page: target=2, but the GraphQL page has 3 items — we accept the
+    // overshoot (documented). Cursor must be present because page 2 has more.
+    const r1 = await handler({ address: OWNER, limit: 2 });
+    const d1 = JSON.parse(r1.content[0].text);
+    expect(d1.nfts).toHaveLength(3);
+    expect(d1.next_cursor).toBeDefined();
+
+    // Resume: should return the remaining 2 items and no further cursor.
+    const r2 = await handler({ address: OWNER, limit: 50, cursor: d1.next_cursor });
+    const d2 = JSON.parse(r2.content[0].text);
+    expect(d2.nfts).toHaveLength(2);
+    expect(d2.next_cursor).toBeUndefined();
+
+    // Together the two pages must cover items 1..5 with no overlap or gap.
+    const ids = [...d1.nfts, ...d2.nfts].map((n: { object_id: string }) => n.object_id);
+    expect(new Set(ids).size).toBe(5);
   });
 
   it("excludes PersonalKioskCap objects from direct-owned NFT results", async () => {
@@ -222,7 +239,6 @@ describe("list_nfts — kiosk discovery", () => {
       if (query.includes("personal_kiosk::PersonalKioskCap")) {
         return Promise.resolve({ address: { objects: emptyPage } });
       }
-      // Direct-owned: returns a Coin, a regular KioskOwnerCap, a PersonalKioskCap, and a real NFT
       if (query.includes("address(address: $owner)") && !query.includes("filter:")) {
         return Promise.resolve({
           address: {
@@ -271,5 +287,10 @@ describe("list_nfts — kiosk discovery", () => {
     expect(data.nfts).toHaveLength(1);
     expect(data.nfts[0].object_id).toBe("0xc04");
     expect(data.nfts[0].collection).toBe(nftCollection("Direct"));
+  });
+
+  it("rejects malformed cursor strings", async () => {
+    const handler = tools.get("list_nfts")!;
+    await expect(handler({ address: OWNER, cursor: "not-base64-json" })).rejects.toThrow(/invalid cursor/);
   });
 });

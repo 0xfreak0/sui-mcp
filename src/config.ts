@@ -1,20 +1,23 @@
 export type SuiNetwork = "mainnet" | "testnet" | "devnet";
 
-const NETWORK_URLS: Record<SuiNetwork, { fullnode: string; graphql: string; archive: string | null }> = {
+const NETWORK_URLS: Record<SuiNetwork, { fullnode: string; graphql: string; archive: string | null; mvr: string | null }> = {
   mainnet: {
     fullnode: "https://fullnode.mainnet.sui.io",
     graphql: "https://graphql.mainnet.sui.io/graphql",
     archive: "archive.mainnet.sui.io:443",
+    mvr: "https://mainnet.mvr.mystenlabs.com/v1",
   },
   testnet: {
     fullnode: "https://fullnode.testnet.sui.io",
     graphql: "https://graphql.testnet.sui.io/graphql",
     archive: null,
+    mvr: "https://testnet.mvr.mystenlabs.com/v1",
   },
   devnet: {
     fullnode: "https://fullnode.devnet.sui.io",
     graphql: "https://graphql.devnet.sui.io/graphql",
     archive: null,
+    mvr: null,
   },
 };
 
@@ -31,6 +34,7 @@ const urls = NETWORK_URLS[SUI_NETWORK];
 export const FULLNODE_URL = process.env.SUI_FULLNODE_URL ?? urls.fullnode;
 export const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? urls.graphql;
 export const ARCHIVE_HOST = urls.archive;
+export const MVR_URL = process.env.SUI_MVR_URL ?? urls.mvr;
 
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 1000;
@@ -39,4 +43,8 @@ export const DECOMPILER_PATH = process.env.SUI_DECOMPILER_PATH ?? "move-decompil
 
 export function suivisionPackageUrl(packageId: string): string {
   return `https://suivision.xyz/package/${packageId}?tab=Code`;
+}
+
+export function moveRegistryUrl(name: string): string {
+  return `https://www.moveregistry.com/package/${name}`;
 }

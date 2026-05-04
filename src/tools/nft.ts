@@ -89,7 +89,7 @@ async function scanKioskItems(kioskId: string): Promise<KioskNftEntry[]> {
   const fieldEntries: { fieldId: string; collection: string }[] = [];
   let cursor: string | null = null;
   do {
-    const res = await sui.listDynamicFields({
+    const res: Awaited<ReturnType<typeof sui.listDynamicFields>> = await sui.listDynamicFields({
       parentId: kioskId,
       limit: 50,
       cursor,
@@ -144,7 +144,7 @@ async function scanKioskCollections(kioskId: string): Promise<string[]> {
   const collections: string[] = [];
   let cursor: string | null = null;
   do {
-    const res = await sui.listDynamicFields({
+    const res: Awaited<ReturnType<typeof sui.listDynamicFields>> = await sui.listDynamicFields({
       parentId: kioskId,
       limit: 50,
       cursor,

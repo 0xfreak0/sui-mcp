@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 44 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move bytecode decompilation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 48 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move bytecode decompilation, Move Registry (MVR) name resolution, and DeepBook v3 order books.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui mainnet endpoints
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
@@ -63,7 +63,7 @@ Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The
 
 See [`.env.example`](.env.example) for optional environment variables (network selection, custom RPC endpoints).
 
-## Tools (44)
+## Tools (48)
 
 ### Recommended Starting Points
 
@@ -136,6 +136,26 @@ See [`.env.example`](.env.example) for optional environment variables (network s
 | Tool | Description |
 |---|---|
 | `resolve_name` | SuiNS name resolution (forward and reverse) |
+
+### DeepBook v3
+
+[DeepBook](https://deepbook.tech/) is Sui's on-chain central limit order book (CLOB). Unlike AMM pools, DeepBook gives you real bid/ask depth, so quotes account for size and slippage. Tools below are read-only and powered by the [`@mysten/deepbook-v3`](https://www.npmjs.com/package/@mysten/deepbook-v3) SDK against the configured network.
+
+| Tool | Description |
+|---|---|
+| `deepbook_get_pool_info` | List all DeepBook pools, or get full info for one: mid price, vault balances (base/quote/DEEP), trade params (taker/maker fees), book params (tick/lot/min size), DEEP price for fee calc, whitelisted/stable flags. |
+| `deepbook_orderbook` | L2 order book with `N` ticks of bids and asks around mid price. Real depth, not a single spot price. |
+| `deepbook_quote` | Price-impact-aware swap quote. Specify `base_to_quote` (e.g. SUI → USDC) or `quote_to_base` and an input amount; returns output, DEEP fee, effective price, and slippage % vs mid. |
+| `deepbook_get_wallet_positions` | Find a wallet's DeepBook footprint: every BalanceManager and MarginManager owned by the wallet, plus per-coin balances for each BalanceManager. |
+
+**Typical flows:**
+
+- *"What's the depth on SUI/USDC right now?"* → `deepbook_orderbook(pool='SUI_USDC', ticks=10)`.
+- *"What would I get for selling 5,000 SUI?"* → `deepbook_quote(pool='SUI_USDC', side='base_to_quote', amount=5000)`. Returns USDC out, DEEP fee, and slippage % vs mid.
+- *"Does this wallet trade on DeepBook?"* → `deepbook_get_wallet_positions(owner=<addr>)`. Empty arrays = no DeepBook activity.
+- *"What pools are available?"* → `deepbook_get_pool_info` with no args lists all 24 mainnet pools.
+
+Pools can be referenced by **key** (e.g. `SUI_USDC`, `DEEP_USDC`) or by **raw pool object address**. DeepBook tools require `SUI_NETWORK=mainnet` or `testnet`; devnet returns a clear error.
 
 ### Move Registry (MVR)
 

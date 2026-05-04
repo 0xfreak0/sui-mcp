@@ -1,170 +1,281 @@
 import { z } from "zod";
-import { sui } from "../clients/grpc.js";
-import { protoValueToJson } from "../utils/proto.js";
+import { gqlQuery } from "../clients/graphql.js";
 import { registerCollection } from "../discovery-nft.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-function extractDisplay(content: unknown): Record<string, string | null> {
-  const display: Record<string, string | null> = {
-    name: null,
-    description: null,
-    image_url: null,
-    project_url: null,
-  };
-  if (content && typeof content === "object" && !Array.isArray(content)) {
-    const c = content as Record<string, unknown>;
-    if (typeof c.name === "string") display.name = c.name;
-    if (typeof c.description === "string") display.description = c.description;
-    // Check multiple possible image fields
-    for (const field of ["image_url", "img_url", "url", "thumbnail"]) {
-      if (typeof c[field] === "string" && !display.image_url) {
-        display.image_url = c[field] as string;
-      }
-    }
-    if (typeof c.project_url === "string") display.project_url = c.project_url;
-  }
-  return display;
-}
+// GraphQL returns canonical (zero-padded) addresses, so type checks use
+// substring matches that work for both short and canonical forms.
+const KIOSK_CAP_TYPE = "0x2::kiosk::KioskOwnerCap";
+const KIOSK_CAP_TYPE_SUBSTR = "::kiosk::KioskOwnerCap";
+const KIOSK_ITEM_TYPE_SUBSTR = "::kiosk::Item";
+const STAKED_SUI_TYPE_SUBSTR = "::staking_pool::StakedSui";
+const COIN_TYPE_SUBSTR = "::coin::Coin<";
 
-const NFT_READ_MASK = {
-  paths: ["object_id", "version", "digest", "object_type", "json"],
-};
-
-interface KioskInfo {
-  kiosk_id: string;
-  cap_id: string;
+interface NftEntry {
+  object_id: string;
+  type: string;
+  collection: string;
+  kiosk_id: string | null;
+  name: string | null;
+  description: string | null;
+  image_url: string | null;
+  content: unknown;
 }
 
 /**
- * Discover all kiosks owned by an address by finding KioskOwnerCap objects
- * and extracting the kiosk ID from their `for` field.
+ * Pull display fields out of either:
+ *  - the rendered on-chain Display object (`value.contents.display.output`), preferred
+ *  - the raw Move struct fields (`value.contents.json`), as fallback for NFTs without a Display
  */
-async function discoverKiosks(address: string): Promise<KioskInfo[]> {
-  const caps = await sui.listOwnedObjects({
-    owner: address,
-    type: "0x2::kiosk::KioskOwnerCap",
-    limit: 50,
-    cursor: null,
-  });
-
-  const results = await Promise.allSettled(
-    caps.objects.map(async (cap) => {
-      const { response } = await sui.ledgerService.getObject({
-        objectId: cap.objectId,
-        readMask: { paths: ["object_id", "json"] },
-      });
-      const content = protoValueToJson(response.object?.json);
-      if (content && typeof content === "object" && !Array.isArray(content)) {
-        const forField = (content as Record<string, unknown>).for;
-        if (typeof forField === "string") {
-          return { kiosk_id: forField, cap_id: cap.objectId };
+function pickDisplay(
+  display: Record<string, unknown> | null | undefined,
+  rawJson: unknown,
+): { name: string | null; description: string | null; image_url: string | null } {
+  const out = { name: null as string | null, description: null as string | null, image_url: null as string | null };
+  if (display && typeof display === "object") {
+    if (typeof display.name === "string") out.name = display.name;
+    if (typeof display.description === "string") out.description = display.description;
+    for (const k of ["image_url", "img_url", "url", "thumbnail"]) {
+      if (typeof display[k] === "string" && !out.image_url) out.image_url = display[k] as string;
+    }
+  }
+  if ((!out.name || !out.description || !out.image_url) && rawJson && typeof rawJson === "object") {
+    const j = rawJson as Record<string, unknown>;
+    if (!out.name && typeof j.name === "string") out.name = j.name;
+    if (!out.description && typeof j.description === "string") out.description = j.description;
+    if (!out.image_url) {
+      for (const k of ["image_url", "img_url", "url", "thumbnail"]) {
+        if (typeof j[k] === "string") {
+          out.image_url = j[k] as string;
+          break;
         }
       }
-      return null;
-    })
-  );
-
-  const kiosks: KioskInfo[] = [];
-  for (const result of results) {
-    if (result.status === "fulfilled" && result.value) {
-      kiosks.push(result.value);
     }
   }
-  return kiosks;
+  return out;
 }
 
-interface KioskNftEntry {
-  object_id: string;
-  field_id: string;
-  collection: string;
-  kiosk_id: string;
+const KIOSK_CAPS_QUERY = `query($owner: SuiAddress!, $cursor: String) {
+  address(address: $owner) {
+    objects(first: 50, after: $cursor, filter: { type: "${KIOSK_CAP_TYPE}" }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { contents { json } }
+    }
+  }
+}`;
+
+interface KioskCapsResponse {
+  address: {
+    objects: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: Array<{ contents: { json: { for?: string } } | null }>;
+    };
+  } | null;
+}
+
+async function discoverKiosks(owner: string): Promise<string[]> {
+  const ids: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const data: KioskCapsResponse = await gqlQuery<KioskCapsResponse>(KIOSK_CAPS_QUERY, { owner, cursor });
+    const conn = data.address?.objects;
+    if (!conn) break;
+    for (const node of conn.nodes) {
+      const forField = node.contents?.json?.for;
+      if (typeof forField === "string") ids.push(forField);
+    }
+    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+  } while (cursor);
+  return ids;
+}
+
+const KIOSK_FIELDS_QUERY = `query($kioskId: SuiAddress!, $cursor: String) {
+  object(address: $kioskId) {
+    dynamicFields(first: 50, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name { type { repr } }
+        value {
+          __typename
+          ... on MoveObject {
+            address
+            contents {
+              type { repr }
+              json
+              display { output }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+interface KioskFieldsResponse {
+  object: {
+    dynamicFields: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: Array<{
+        name: { type: { repr: string } };
+        value:
+          | {
+              __typename: "MoveObject";
+              address: string;
+              contents: {
+                type: { repr: string };
+                json: unknown;
+                display: { output: Record<string, unknown> | null } | null;
+              } | null;
+            }
+          | { __typename: "MoveValue" };
+      }>;
+    };
+  } | null;
 }
 
 /**
- * Scan a kiosk's dynamic fields and return NFT items (filtering out Lock entries).
- * Resolves actual NFT object IDs from the wrapper field's `value`.
+ * Scan a single kiosk's dynamic fields via GraphQL. Returns one entry per
+ * `kiosk::Item` (skipping `kiosk::Lock` boolean entries). Each entry already
+ * carries display + raw struct contents — no follow-up object fetch needed.
  */
-async function scanKioskItems(kioskId: string): Promise<KioskNftEntry[]> {
-  // First, collect all Item field IDs and their collection types
-  const fieldEntries: { fieldId: string; collection: string }[] = [];
+async function scanKioskItems(kioskId: string, opts: { withDetails: boolean }): Promise<NftEntry[]> {
+  const items: NftEntry[] = [];
   let cursor: string | null = null;
   do {
-    const res = await sui.listDynamicFields({
-      parentId: kioskId,
-      limit: 50,
-      cursor,
-    });
-    for (const df of res.dynamicFields) {
-      // kiosk::Item entries hold the NFTs; kiosk::Lock entries are bool locks
-      if (df.type?.includes("kiosk::Item") && !df.valueType?.includes("bool")) {
-        const collection = df.valueType ?? "unknown";
-        fieldEntries.push({ fieldId: df.fieldId, collection });
-        if (collection !== "unknown") registerCollection(collection);
+    const data: KioskFieldsResponse = await gqlQuery<KioskFieldsResponse>(KIOSK_FIELDS_QUERY, { kioskId, cursor });
+    const conn = data.object?.dynamicFields;
+    if (!conn) break;
+    for (const node of conn.nodes) {
+      if (!node.name.type.repr.includes(KIOSK_ITEM_TYPE_SUBSTR)) continue;
+      if (node.value.__typename !== "MoveObject") continue;
+      const objectId = node.value.address;
+      const contents = node.value.contents;
+      const collection = contents?.type.repr ?? "unknown";
+      if (collection !== "unknown") registerCollection(collection);
+      if (!opts.withDetails) {
+        items.push({
+          object_id: objectId,
+          type: collection,
+          collection,
+          kiosk_id: kioskId,
+          name: null,
+          description: null,
+          image_url: null,
+          content: null,
+        });
+        continue;
       }
-    }
-    cursor = res.hasNextPage ? (res.cursor ?? null) : null;
-  } while (cursor);
-
-  // Resolve actual NFT object IDs by reading the wrapper field's `value`
-  const results = await Promise.allSettled(
-    fieldEntries.map(async (entry) => {
-      const { response } = await sui.ledgerService.getObject({
-        objectId: entry.fieldId,
-        readMask: { paths: ["json"] },
-      });
-      const content = protoValueToJson(response.object?.json);
-      let nftId = entry.fieldId; // fallback
-      if (content && typeof content === "object" && !Array.isArray(content)) {
-        const val = (content as Record<string, unknown>).value;
-        if (typeof val === "string") nftId = val;
-      }
-      return {
-        object_id: nftId,
-        field_id: entry.fieldId,
-        collection: entry.collection,
+      const display = pickDisplay(contents?.display?.output ?? null, contents?.json);
+      items.push({
+        object_id: objectId,
+        type: collection,
+        collection,
         kiosk_id: kioskId,
-      };
-    })
-  );
-
-  const items: KioskNftEntry[] = [];
-  for (const result of results) {
-    if (result.status === "fulfilled") {
-      items.push(result.value);
+        name: display.name,
+        description: display.description,
+        image_url: display.image_url,
+        content: contents?.json ?? null,
+      });
     }
-  }
+    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+  } while (cursor);
   return items;
 }
 
-/**
- * Lightweight kiosk scan that only returns collection types (no NFT ID resolution).
- * Used by list_nft_collections where we only need type counts.
- */
-async function scanKioskCollections(kioskId: string): Promise<string[]> {
-  const collections: string[] = [];
-  let cursor: string | null = null;
-  do {
-    const res = await sui.listDynamicFields({
-      parentId: kioskId,
-      limit: 50,
-      cursor,
-    });
-    for (const df of res.dynamicFields) {
-      if (df.type?.includes("kiosk::Item") && !df.valueType?.includes("bool")) {
-        const collection = df.valueType ?? "unknown";
-        collections.push(collection);
-        if (collection !== "unknown") registerCollection(collection);
+const DIRECT_OBJECTS_QUERY = `query($owner: SuiAddress!, $cursor: String, $withDetails: Boolean!) {
+  address(address: $owner) {
+    objects(first: 50, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        address
+        contents {
+          type { repr }
+          json @include(if: $withDetails)
+          display @include(if: $withDetails) { output }
+        }
       }
     }
-    cursor = res.hasNextPage ? (res.cursor ?? null) : null;
-  } while (cursor);
-  return collections;
+  }
+}`;
+
+interface DirectObjectsResponse {
+  address: {
+    objects: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: Array<{
+        address: string;
+        contents: {
+          type: { repr: string };
+          json?: unknown;
+          display?: { output: Record<string, unknown> | null } | null;
+        } | null;
+      }>;
+    };
+  } | null;
+}
+
+function isLikelyNft(typeRepr: string): boolean {
+  if (typeRepr.includes(COIN_TYPE_SUBSTR)) return false;
+  if (typeRepr.includes(STAKED_SUI_TYPE_SUBSTR)) return false;
+  if (typeRepr.includes(KIOSK_CAP_TYPE_SUBSTR)) return false;
+  return true;
+}
+
+/**
+ * Fetch directly-owned (non-kiosk) objects. Excludes coins, KioskOwnerCaps,
+ * and staked SUI. Walks pages until the limit is hit.
+ */
+async function listDirectNfts(owner: string, max: number, withDetails: boolean): Promise<NftEntry[]> {
+  const out: NftEntry[] = [];
+  let cursor: string | null = null;
+  while (out.length < max) {
+    const data: DirectObjectsResponse = await gqlQuery<DirectObjectsResponse>(DIRECT_OBJECTS_QUERY, {
+      owner,
+      cursor,
+      withDetails,
+    });
+    const conn = data.address?.objects;
+    if (!conn) break;
+    for (const node of conn.nodes) {
+      const typeRepr = node.contents?.type.repr ?? "unknown";
+      if (typeRepr === "unknown" || !isLikelyNft(typeRepr)) continue;
+      registerCollection(typeRepr);
+      if (!withDetails) {
+        out.push({
+          object_id: node.address,
+          type: typeRepr,
+          collection: typeRepr,
+          kiosk_id: null,
+          name: null,
+          description: null,
+          image_url: null,
+          content: null,
+        });
+      } else {
+        const display = pickDisplay(node.contents?.display?.output ?? null, node.contents?.json);
+        out.push({
+          object_id: node.address,
+          type: typeRepr,
+          collection: typeRepr,
+          kiosk_id: null,
+          name: display.name,
+          description: display.description,
+          image_url: display.image_url,
+          content: node.contents?.json ?? null,
+        });
+      }
+      if (out.length >= max) break;
+    }
+    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+    if (!cursor) break;
+  }
+  return out;
 }
 
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Discovers kiosks, scans their contents, and finds directly-owned non-coin objects. Returns display metadata (name, description, image URL). Use list_nft_collections for a cheaper count-only summary.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk, no fullnode rate-limit risk. Use list_nft_collections for a cheaper count-only summary.",
     {
       address: z.string().describe("Owner wallet address (0x...)"),
       limit: z
@@ -176,123 +287,25 @@ export function registerNftTools(server: McpServer) {
     async ({ address, limit }) => {
       const effectiveLimit = Math.min(Math.max(limit ?? 50, 1), 200);
 
-      // Step 1 & 2: Discover kiosks and direct-owned non-coin objects in parallel
-      const [kiosks, directRes] = await Promise.all([
-        discoverKiosks(address),
-        sui.listOwnedObjects({
-          owner: address,
-          limit: 200,
-          cursor: null,
-        }),
-      ]);
+      // Step 1: Discover kiosks (1 GraphQL query, paginated).
+      const kioskIds = await discoverKiosks(address);
 
-      // Step 2b: Filter direct-owned objects to non-coins, non-KioskOwnerCap
-      const directNfts = directRes.objects.filter(
-        (obj) =>
-          !obj.type?.includes("0x2::coin::Coin<") &&
-          !obj.type?.includes("0x2::kiosk::KioskOwnerCap") &&
-          !obj.type?.includes("0x3::staking_pool::StakedSui")
+      // Step 2: Scan each kiosk's items in parallel — one query per kiosk page.
+      // GraphQL public endpoint tolerates parallel queries; a wallet with 43
+      // kiosks fires 43 requests, far below the gRPC fan-out the old impl had.
+      const kioskScans = await Promise.allSettled(
+        kioskIds.map((id) => scanKioskItems(id, { withDetails: true })),
       );
-
-      // Step 3: Scan all kiosks for NFT items in parallel
-      const kioskResults = await Promise.allSettled(
-        kiosks.map((k) => scanKioskItems(k.kiosk_id))
-      );
-
-      const allKioskNfts: KioskNftEntry[] = [];
-      for (const result of kioskResults) {
-        if (result.status === "fulfilled") {
-          allKioskNfts.push(...result.value);
-        }
+      const allKioskNfts: NftEntry[] = [];
+      for (const r of kioskScans) {
+        if (r.status === "fulfilled") allKioskNfts.push(...r.value);
       }
 
-      // Step 4: Fetch full details for kiosk NFTs (up to limit)
-      const kioskNftsToFetch = allKioskNfts.slice(0, effectiveLimit);
-      const kioskNftDetails = await Promise.allSettled(
-        kioskNftsToFetch.map(async (entry) => {
-          try {
-            const { response } = await sui.ledgerService.getObject({
-              objectId: entry.object_id,
-              readMask: NFT_READ_MASK,
-            });
-            const full = response.object;
-            const content = protoValueToJson(full?.json);
-            const display = extractDisplay(content);
-            return {
-              object_id: full?.objectId ?? entry.object_id,
-              type: full?.objectType ?? entry.collection,
-              collection: entry.collection,
-              kiosk_id: entry.kiosk_id,
-              name: display.name,
-              description: display.description,
-              image_url: display.image_url,
-              content,
-            };
-          } catch {
-            return {
-              object_id: entry.object_id,
-              type: entry.collection,
-              collection: entry.collection,
-              kiosk_id: entry.kiosk_id,
-              name: null,
-              description: null,
-              image_url: null,
-              content: null,
-            };
-          }
-        })
-      );
-
-      const nfts: Record<string, unknown>[] = [];
-      for (const result of kioskNftDetails) {
-        if (result.status === "fulfilled") {
-          nfts.push(result.value);
-        }
-      }
-
-      // Also fetch details for direct-owned NFTs (fill remaining slots)
-      const directSlots = Math.max(0, effectiveLimit - nfts.length);
-      const directToFetch = directNfts.slice(0, directSlots);
-      const directDetails = await Promise.allSettled(
-        directToFetch.map(async (obj) => {
-          try {
-            const { response } = await sui.ledgerService.getObject({
-              objectId: obj.objectId,
-              readMask: NFT_READ_MASK,
-            });
-            const full = response.object;
-            const content = protoValueToJson(full?.json);
-            const display = extractDisplay(content);
-            return {
-              object_id: full?.objectId ?? obj.objectId,
-              type: full?.objectType ?? obj.type ?? "unknown",
-              collection: full?.objectType ?? obj.type ?? "unknown",
-              kiosk_id: null,
-              name: display.name,
-              description: display.description,
-              image_url: display.image_url,
-              content,
-            };
-          } catch {
-            return {
-              object_id: obj.objectId,
-              type: obj.type ?? "unknown",
-              collection: obj.type ?? "unknown",
-              kiosk_id: null,
-              name: null,
-              description: null,
-              image_url: null,
-              content: null,
-            };
-          }
-        })
-      );
-
-      for (const result of directDetails) {
-        if (result.status === "fulfilled") {
-          nfts.push(result.value);
-        }
-      }
+      // Step 3: Take up to `limit` from kiosks first, then top up with direct-owned.
+      const kioskSlice = allKioskNfts.slice(0, effectiveLimit);
+      const remaining = effectiveLimit - kioskSlice.length;
+      const directNfts = remaining > 0 ? await listDirectNfts(address, remaining, true) : [];
+      const nfts = [...kioskSlice, ...directNfts];
 
       return {
         content: [
@@ -303,66 +316,41 @@ export function registerNftTools(server: McpServer) {
                 address,
                 nfts,
                 total_found: nfts.length,
-                kiosk_count: kiosks.length,
+                kiosk_count: kioskIds.length,
                 total_kiosk_nfts: allKioskNfts.length,
               },
               null,
-              2
+              2,
             ),
           },
         ],
       };
-    }
+    },
   );
 
   server.tool(
     "list_nft_collections",
-    "Get a lightweight summary of NFT collections owned by a wallet. Discovers kiosks and returns deduplicated collection names with counts. Much cheaper than fetching full NFT details.",
+    "Get a lightweight summary of NFT collections owned by a wallet. Walks kiosks plus direct-owned objects and returns deduplicated collection types with counts. Backed by GraphQL.",
     {
       address: z.string().describe("Owner wallet address (0x...)"),
     },
     async ({ address }) => {
-      // Discover kiosks and direct-owned objects in parallel
-      const [kiosks, directRes] = await Promise.all([
-        discoverKiosks(address),
-        sui.listOwnedObjects({
-          owner: address,
-          limit: 200,
-          cursor: null,
-        }),
+      const kioskIds = await discoverKiosks(address);
+      const [kioskScans, directNfts] = await Promise.all([
+        Promise.allSettled(kioskIds.map((id) => scanKioskItems(id, { withDetails: false }))),
+        listDirectNfts(address, 200, false),
       ]);
 
-      // Scan all kiosks for collection types (lightweight, no ID resolution)
-      const kioskResults = await Promise.allSettled(
-        kiosks.map((k) => scanKioskCollections(k.kiosk_id))
-      );
-
-      // Count collections from kiosks
-      const collectionCounts = new Map<string, number>();
-      for (const result of kioskResults) {
-        if (result.status === "fulfilled") {
-          for (const collection of result.value) {
-            collectionCounts.set(
-              collection,
-              (collectionCounts.get(collection) ?? 0) + 1
-            );
-          }
+      const counts = new Map<string, number>();
+      const bump = (type: string) => counts.set(type, (counts.get(type) ?? 0) + 1);
+      for (const r of kioskScans) {
+        if (r.status === "fulfilled") {
+          for (const item of r.value) bump(item.collection);
         }
       }
+      for (const item of directNfts) bump(item.collection);
 
-      // Count direct-owned non-coin objects as collections
-      const directNfts = directRes.objects.filter(
-        (obj) =>
-          !obj.type?.includes("0x2::coin::Coin<") &&
-          !obj.type?.includes("0x2::kiosk::KioskOwnerCap") &&
-          !obj.type?.includes("0x3::staking_pool::StakedSui")
-      );
-      for (const obj of directNfts) {
-        const type = obj.type ?? "unknown";
-        collectionCounts.set(type, (collectionCounts.get(type) ?? 0) + 1);
-      }
-
-      const collections = Array.from(collectionCounts.entries())
+      const collections = Array.from(counts.entries())
         .map(([collection, count]) => ({ collection, count }))
         .sort((a, b) => b.count - a.count);
 
@@ -376,15 +364,14 @@ export function registerNftTools(server: McpServer) {
                 collections,
                 total_collections: collections.length,
                 total_nfts: collections.reduce((sum, c) => sum + c.count, 0),
-                kiosk_count: kiosks.length,
+                kiosk_count: kioskIds.length,
               },
               null,
-              2
+              2,
             ),
           },
         ],
       };
-    }
+    },
   );
-
 }

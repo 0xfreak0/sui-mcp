@@ -10,6 +10,14 @@ const KIOSK_CAP_TYPE_SUBSTR = "::kiosk::KioskOwnerCap";
 const KIOSK_ITEM_TYPE_SUBSTR = "::kiosk::Item";
 const STAKED_SUI_TYPE_SUBSTR = "::staking_pool::StakedSui";
 const COIN_TYPE_SUBSTR = "::coin::Coin<";
+// PersonalKioskCap wraps a KioskOwnerCap inside a `cap` field. The inner
+// KioskOwnerCap is owned by the PersonalKioskCap object, NOT the user's
+// address — so the address-filtered KioskOwnerCap query misses it. We must
+// query PersonalKioskCap separately and dereference `cap.for` to get the
+// underlying kiosk id.
+const PERSONAL_KIOSK_CAP_TYPE =
+  "0x0cb4bcc0560340eb1a1b929cabe56b33fc6449820ec8c1980d69bb98b649b802::personal_kiosk::PersonalKioskCap";
+const PERSONAL_KIOSK_CAP_TYPE_SUBSTR = "::personal_kiosk::PersonalKioskCap";
 
 interface NftEntry {
   object_id: string;
@@ -64,6 +72,15 @@ const KIOSK_CAPS_QUERY = `query($owner: SuiAddress!, $cursor: String) {
   }
 }`;
 
+const PERSONAL_KIOSK_CAPS_QUERY = `query($owner: SuiAddress!, $cursor: String) {
+  address(address: $owner) {
+    objects(first: 50, after: $cursor, filter: { type: "${PERSONAL_KIOSK_CAP_TYPE}" }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { contents { json } }
+    }
+  }
+}`;
+
 interface KioskCapsResponse {
   address: {
     objects: {
@@ -73,8 +90,19 @@ interface KioskCapsResponse {
   } | null;
 }
 
+interface PersonalKioskCapsResponse {
+  address: {
+    objects: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: Array<{ contents: { json: { cap?: { for?: string } } } | null }>;
+    };
+  } | null;
+}
+
 async function discoverKiosks(owner: string): Promise<string[]> {
-  const ids: string[] = [];
+  const ids = new Set<string>();
+
+  // Standard KioskOwnerCap (directly address-owned)
   let cursor: string | null = null;
   do {
     const data: KioskCapsResponse = await gqlQuery<KioskCapsResponse>(KIOSK_CAPS_QUERY, { owner, cursor });
@@ -82,11 +110,28 @@ async function discoverKiosks(owner: string): Promise<string[]> {
     if (!conn) break;
     for (const node of conn.nodes) {
       const forField = node.contents?.json?.for;
-      if (typeof forField === "string") ids.push(forField);
+      if (typeof forField === "string") ids.add(forField);
     }
     cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
   } while (cursor);
-  return ids;
+
+  // PersonalKioskCap (wraps a KioskOwnerCap; kiosk id is at cap.for)
+  cursor = null;
+  do {
+    const data: PersonalKioskCapsResponse = await gqlQuery<PersonalKioskCapsResponse>(
+      PERSONAL_KIOSK_CAPS_QUERY,
+      { owner, cursor },
+    );
+    const conn = data.address?.objects;
+    if (!conn) break;
+    for (const node of conn.nodes) {
+      const forField = node.contents?.json?.cap?.for;
+      if (typeof forField === "string") ids.add(forField);
+    }
+    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+  } while (cursor);
+
+  return [...ids];
 }
 
 const KIOSK_FIELDS_QUERY = `query($kioskId: SuiAddress!, $cursor: String) {
@@ -218,6 +263,7 @@ function isLikelyNft(typeRepr: string): boolean {
   if (typeRepr.includes(COIN_TYPE_SUBSTR)) return false;
   if (typeRepr.includes(STAKED_SUI_TYPE_SUBSTR)) return false;
   if (typeRepr.includes(KIOSK_CAP_TYPE_SUBSTR)) return false;
+  if (typeRepr.includes(PERSONAL_KIOSK_CAP_TYPE_SUBSTR)) return false;
   return true;
 }
 
@@ -306,6 +352,7 @@ export function registerNftTools(server: McpServer) {
       const remaining = effectiveLimit - kioskSlice.length;
       const directNfts = remaining > 0 ? await listDirectNfts(address, remaining, true) : [];
       const nfts = [...kioskSlice, ...directNfts];
+      const truncated = allKioskNfts.length > kioskSlice.length;
 
       return {
         content: [
@@ -318,6 +365,11 @@ export function registerNftTools(server: McpServer) {
                 total_found: nfts.length,
                 kiosk_count: kioskIds.length,
                 total_kiosk_nfts: allKioskNfts.length,
+                truncated,
+                ...(truncated && {
+                  truncation_note:
+                    "Result was capped by `limit`. Raise `limit` (max 200) or call list_nft_collections for a complete summary.",
+                }),
               },
               null,
               2,

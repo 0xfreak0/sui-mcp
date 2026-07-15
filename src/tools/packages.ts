@@ -62,7 +62,7 @@ function formatTypeParam(tp: GrpcTypes.TypeParameter) {
   return { constraints: tp.constraints, is_phantom: tp.isPhantom };
 }
 
-function abilityName(a: GrpcTypes.Ability): string {
+export function abilityName(a: GrpcTypes.Ability): string {
   switch (a) {
     case GrpcTypes.Ability.COPY: return "copy";
     case GrpcTypes.Ability.DROP: return "drop";
@@ -72,10 +72,30 @@ function abilityName(a: GrpcTypes.Ability): string {
   }
 }
 
+/**
+ * Ordered struct/enum-variant fields (name + type) in BCS declaration order.
+ *
+ * Field *order* is load-bearing: BCS serialization follows declaration order,
+ * so consumers decoding events/objects by position need this — a swapped pair
+ * decodes without error but yields garbage. gRPC's FieldDescriptor carries a
+ * `position`, which we sort on to guarantee canonical order regardless of how
+ * the descriptor list happens to arrive.
+ */
+export function formatDatatypeFields(
+  dt: GrpcTypes.DatatypeDescriptor
+): { name: string; type: string }[] {
+  return [...dt.fields]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((f) => ({
+      name: f.name ?? "",
+      type: f.type ? formatSignatureBody(f.type) : "unknown",
+    }));
+}
+
 export function registerPackageTools(server: McpServer) {
   server.tool(
     "get_package",
-    "(Developer) Get a Sui Move package by its ID. Returns modules with structs categorized by abilities, and functions categorized by visibility (entry, public, friend, private).",
+    "(Developer) Get a Sui Move package by its ID. Returns modules with structs (abilities + ordered fields in BCS declaration order) and functions categorized by visibility (entry, public, friend, private).",
     {
       package_id: z.string().describe("Package ID (0x...)"),
     },
@@ -123,6 +143,7 @@ export function registerPackageTools(server: McpServer) {
           name: dt.name,
           abilities: dt.abilities.map(abilityName),
           type_parameters: dt.typeParameters.map(formatTypeParam),
+          fields: formatDatatypeFields(dt),
         }));
         totalStructs += structs.length;
 

@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 44 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move bytecode decompilation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 46 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui mainnet endpoints
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
@@ -20,6 +20,8 @@ npm run build
 ```
 
 ### Move Decompiler (optional)
+
+Reading and analyzing Move code works out of the box with no extra setup: `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint, and `analyze_package` summarizes a package's API and runs a heuristic risk scan. The decompiler below is only needed if you want higher-level, source-like output.
 
 The `decompile_module` tool requires the Revela `move-decompiler` binary. Requires a Rust toolchain ([rustup.rs](https://rustup.rs/)).
 
@@ -160,9 +162,11 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `get_package` | Move package modules, structs, and functions |
+| `get_package` | Move package modules, structs (with ordered fields), and functions |
 | `get_move_function` | Specific Move function signature and parameters |
 | `get_package_dependency_graph` | Package dependency analysis with recursive traversal |
+| `analyze_package` | Summarize a package's API + heuristic risk scan (no binary; accepts 0x id or MVR name) |
+| `disassemble_module` | Disassemble Move bytecode via GraphQL (no binary; accepts 0x id or MVR name) |
 | `decompile_module` | Decompile Move bytecode to source (requires decompiler binary) |
 
 ### Transaction Building

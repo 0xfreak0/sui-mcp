@@ -6,6 +6,8 @@ import { registerEventTools } from "./events.js";
 import { registerPackageTools } from "./packages.js";
 import { registerExecuteTools } from "./execute.js";
 import { registerDecompilerTools } from "./decompiler.js";
+import { registerDisassemblyTools } from "./disassembly.js";
+import { registerAnalyzePackageTools } from "./analyze-package.js";
 import { registerNameTools } from "./names.js";
 import { registerWorkflowTools } from "./workflow.js";
 import { registerPriceTools } from "./prices.js";
@@ -35,6 +37,8 @@ export function registerAllTools(server: McpServer) {
   registerPackageTools(server);
   registerExecuteTools(server);
   registerDecompilerTools(server);
+  registerDisassemblyTools(server);
+  registerAnalyzePackageTools(server);
   registerNameTools(server);
   registerWorkflowTools(server);
   registerPriceTools(server);

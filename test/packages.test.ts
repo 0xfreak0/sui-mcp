@@ -3,6 +3,7 @@ import {
   formatVisibility,
   formatSignatureBody,
   formatSignature,
+  formatDatatypeFields,
 } from "../src/tools/packages.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 
@@ -110,6 +111,47 @@ describe("formatSignatureBody", () => {
         typeName: "0x2::object::UID",
       } as unknown as GrpcTypes.OpenSignatureBody)
     ).toBe("0x2::object::UID");
+  });
+});
+
+describe("formatDatatypeFields", () => {
+  const bodyU64 = {
+    type: GrpcTypes.OpenSignatureBody_Type.U64,
+    typeParameter: undefined,
+    typeParameterInstantiation: [],
+    typeName: undefined,
+  } as unknown as GrpcTypes.OpenSignatureBody;
+  const bodyAddr = {
+    type: GrpcTypes.OpenSignatureBody_Type.ADDRESS,
+    typeParameter: undefined,
+    typeParameterInstantiation: [],
+    typeName: undefined,
+  } as unknown as GrpcTypes.OpenSignatureBody;
+
+  it("returns fields in BCS declaration order regardless of descriptor order", () => {
+    const dt = {
+      fields: [
+        { name: "balance", position: 1, type: bodyU64 },
+        { name: "owner", position: 0, type: bodyAddr },
+      ],
+    } as unknown as GrpcTypes.DatatypeDescriptor;
+
+    expect(formatDatatypeFields(dt)).toEqual([
+      { name: "owner", type: "address" },
+      { name: "balance", type: "u64" },
+    ]);
+  });
+
+  it("handles missing field type gracefully", () => {
+    const dt = {
+      fields: [{ name: "x", position: 0, type: undefined }],
+    } as unknown as GrpcTypes.DatatypeDescriptor;
+    expect(formatDatatypeFields(dt)).toEqual([{ name: "x", type: "unknown" }]);
+  });
+
+  it("returns empty for a datatype with no fields (e.g. enum)", () => {
+    const dt = { fields: [] } as unknown as GrpcTypes.DatatypeDescriptor;
+    expect(formatDatatypeFields(dt)).toEqual([]);
   });
 });
 

@@ -1,0 +1,19 @@
+{
+  "_comment": "Example local override file for address labels. Copy to a private location, fill in your case/org attribution data, and point SUI_LABELS_FILE at it. Entries here override the shipped src/data/labeled-addresses.json for matching addresses. Same schema. Address keys may be short (0x2) or full 32-byte hex — they are normalized on load.",
+  "labels": {
+    "0xabc0000000000000000000000000000000000000000000000000000000000001": {
+      "label": "SomeCEX hot wallet",
+      "category": "cex",
+      "source": "override",
+      "confidence": "high",
+      "notes": "Confirmed exchange deposit sink for this investigation."
+    },
+    "0xdead0000000000000000000000000000000000000000000000000000000000002": {
+      "label": "Attacker wallet #1",
+      "category": "malicious",
+      "source": "override",
+      "confidence": "medium",
+      "notes": "First-seen funded from the CEX withdrawal above; primary drain recipient."
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 46 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 47 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan, no external binary), optional Move bytecode decompilation, address labeling for incident investigation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.

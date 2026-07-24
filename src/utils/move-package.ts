@@ -1,6 +1,6 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
-import { MVR_URL } from "../config.js";
+import { getMvrUrl } from "../config.js";
 
 /**
  * A "package reference" accepted by the developer tools can be either a raw
@@ -25,12 +25,13 @@ export async function resolvePackageId(ref: string): Promise<string> {
   if (!looksLikeMvrName(trimmed)) {
     return normalizeSuiAddress(trimmed);
   }
-  if (!MVR_URL) {
+  const mvrUrl = getMvrUrl();
+  if (!mvrUrl) {
     throw new Error(
       `'${trimmed}' looks like an MVR name, but the Move Registry is unavailable on this network. Pass the 0x package ID directly.`,
     );
   }
-  const res = await fetch(`${MVR_URL}/resolution/${trimmed}`, {
+  const res = await fetch(`${mvrUrl}/resolution/${trimmed}`, {
     headers: { "content-type": "application/json" },
   });
   if (!res.ok) {

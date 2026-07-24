@@ -1,6 +1,20 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type SuiNetwork = "mainnet" | "testnet" | "devnet";
 
-const NETWORK_URLS: Record<SuiNetwork, { fullnode: string; graphql: string; archive: string | null; mvr: string | null }> = {
+export const SUI_NETWORKS: readonly SuiNetwork[] = ["mainnet", "testnet", "devnet"];
+
+export interface NetworkConfig {
+  network: SuiNetwork;
+  fullnode: string;
+  graphql: string;
+  /** gRPC archive host (`host:port`), or null on networks without an archive. */
+  archive: string | null;
+  /** Move Registry base URL, or null on networks without MVR (devnet). */
+  mvr: string | null;
+}
+
+const NETWORK_URLS: Record<SuiNetwork, Omit<NetworkConfig, "network">> = {
   mainnet: {
     fullnode: "https://fullnode.mainnet.sui.io",
     graphql: "https://graphql.mainnet.sui.io/graphql",
@@ -21,20 +35,63 @@ const NETWORK_URLS: Record<SuiNetwork, { fullnode: string; graphql: string; arch
   },
 };
 
-function resolveNetwork(): SuiNetwork {
-  const env = process.env.SUI_NETWORK?.toLowerCase();
-  if (env === "testnet" || env === "devnet") return env;
-  return "mainnet";
+export function isSuiNetwork(value: unknown): value is SuiNetwork {
+  return typeof value === "string" && (SUI_NETWORKS as readonly string[]).includes(value);
 }
 
-export const SUI_NETWORK = resolveNetwork();
+/**
+ * The network used when a call doesn't specify one. Taken from `SUI_NETWORK`
+ * (mainnet if unset or unrecognized). Individual tool calls override this
+ * per-call via their `network` argument — nothing is bound at startup.
+ */
+export const DEFAULT_NETWORK: SuiNetwork = (() => {
+  const env = process.env.SUI_NETWORK?.toLowerCase();
+  return isSuiNetwork(env) ? env : "mainnet";
+})();
 
-const urls = NETWORK_URLS[SUI_NETWORK];
+/**
+ * Per-call network context. Each tool invocation runs inside
+ * {@link runWithNetwork}, so `getNetwork()` returns whatever that specific call
+ * asked for. Using AsyncLocalStorage (not a mutable global) keeps concurrent
+ * calls isolated — a parallel mainnet query and testnet query each see their
+ * own network, which is the whole point of per-call selection.
+ */
+const networkContext = new AsyncLocalStorage<SuiNetwork>();
 
-export const FULLNODE_URL = process.env.SUI_FULLNODE_URL ?? urls.fullnode;
-export const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL ?? urls.graphql;
-export const ARCHIVE_HOST = urls.archive;
-export const MVR_URL = process.env.SUI_MVR_URL ?? urls.mvr;
+/** Run `fn` with `network` as the active network for its entire async chain. */
+export function runWithNetwork<T>(network: SuiNetwork, fn: () => T): T {
+  return networkContext.run(network, fn);
+}
+
+/** The network for the current call, or {@link DEFAULT_NETWORK} outside a call. */
+export function getNetwork(): SuiNetwork {
+  return networkContext.getStore() ?? DEFAULT_NETWORK;
+}
+
+/**
+ * Resolve endpoint config for a network (defaults to the active one).
+ *
+ * `SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` / `SUI_MVR_URL` env overrides apply
+ * ONLY to {@link DEFAULT_NETWORK}. A call that targets a different network gets
+ * that network's canonical public endpoints — a custom mainnet fullnode URL
+ * must not silently be reused as the "testnet" endpoint.
+ */
+export function getNetworkConfig(network: SuiNetwork = getNetwork()): NetworkConfig {
+  const urls = NETWORK_URLS[network];
+  const isDefault = network === DEFAULT_NETWORK;
+  return {
+    network,
+    fullnode: (isDefault ? process.env.SUI_FULLNODE_URL : undefined) ?? urls.fullnode,
+    graphql: (isDefault ? process.env.SUI_GRAPHQL_URL : undefined) ?? urls.graphql,
+    archive: urls.archive,
+    mvr: (isDefault ? process.env.SUI_MVR_URL : undefined) ?? urls.mvr,
+  };
+}
+
+/** Move Registry base URL for the active network, or null if unavailable. */
+export function getMvrUrl(): string | null {
+  return getNetworkConfig().mvr;
+}
 
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 1000;

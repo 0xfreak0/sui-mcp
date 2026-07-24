@@ -26,8 +26,26 @@ src/
 └── resources.ts          # MCP resources
 ```
 
-Two gRPC client instances: `sui` (fullnode) and `archive` (archive.mainnet.sui.io).
-Archive fallback pattern: try fullnode first, catch and retry with archive.
+Per-call network selection. `SUI_NETWORK` sets only the *default* (mainnet if
+unset); every tool also takes an optional `network` arg ("mainnet" | "testnet"
+| "devnet"), so a single session can query multiple networks (e.g. compare a
+testnet value to mainnet).
+
+- `src/tools/with-network.ts` wraps `server.tool` once: it injects the `network`
+  arg into every tool's schema and runs each handler inside
+  `runWithNetwork(network)` (an `AsyncLocalStorage` context in `config.ts`).
+  Individual tool files are untouched.
+- `sui` / `archive` (grpc) and `gqlQuery` (graphql) are **proxies** over
+  per-network client caches (`getClients`, `getGraphqlClient`). They re-resolve
+  against `getNetwork()` on every access, so the same imported reference targets
+  whichever network the active call selected. Clients are built lazily and cached
+  per network. `getNetwork()` reads the async context, falling back to the default.
+- `archive` (native gRPC) exists on mainnet only; on testnet/devnet it falls back
+  to the fullnode. Archive fallback pattern: try fullnode first, catch and retry
+  with archive.
+- Never use JSON-RPC. Fullnode JSON-RPC is deprecated/removed; all on-chain reads
+  go through gRPC (`@mysten/sui/grpc`) or GraphQL. `@mysten/sui/client` may only be
+  imported for types (`import type`), never as a runtime client.
 
 ## Commands
 

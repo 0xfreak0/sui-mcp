@@ -2,7 +2,8 @@
 
 Read-only MCP server for Sui blockchain analytics. 46 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
 
-- **No API keys, no wallet, no private keys** — connects to public Sui mainnet endpoints
+- **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)
+- **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
 - **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface

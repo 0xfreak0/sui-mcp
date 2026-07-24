@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { MVR_URL, moveRegistryUrl } from "../config.js";
+import { getMvrUrl, moveRegistryUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 function requireMvr(): string | null {
-  return MVR_URL;
+  return getMvrUrl();
 }
 
 async function mvrFetch(path: string, init?: RequestInit): Promise<unknown> {

@@ -50,13 +50,13 @@ export async function fetchAftermathPrices(
   }
 }
 
-interface PythParsedPrice {
+export interface PythParsedPrice {
   id: string;
   price: { price: string; conf: string; expo: number; publish_time: number };
   ema_price: { price: string; conf: string; expo: number; publish_time: number };
 }
 
-function parsePythPrice(p: PythParsedPrice): number {
+export function parsePythPrice(p: PythParsedPrice): number {
   return Number(p.price.price) * 10 ** p.price.expo;
 }
 
@@ -64,7 +64,7 @@ function parsePythPrice(p: PythParsedPrice): number {
  * Fetch prices from Pyth Hermes API for tokens with known feed IDs.
  * Supports both latest and historical (by timestamp) queries.
  */
-async function fetchPythPrices(
+export async function fetchPythPrices(
   feedIds: string[],
   timestamp?: number,
 ): Promise<Map<string, PythParsedPrice> | null> {

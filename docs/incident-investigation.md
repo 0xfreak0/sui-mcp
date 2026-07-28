@@ -27,11 +27,18 @@ Turn raw hops into attribution.
 > real CEX/bridge/attacker tagging lives in the override file and community
 > feeds. `confidence` is a first-class field.
 
-### Slice 2 — Swap-aware, USD-valued tracing
-- Follow value across an asset swap (A→B on a DEX) instead of losing the trail.
-- Handle `Coin<T>` split/merge forks.
-- Value each hop in **USD at the block timestamp** via `get_historical_prices`,
-  so impact is quantified correctly ("$4.2M", not today's price).
+### Slice 2 — Swap-aware, USD-valued tracing  ← done
+- Follow value across an asset swap (A→B on a DEX) instead of losing the trail:
+  on a swap hop, keep following the *same actor* and switch the tracked coin to
+  what they received, rather than diving into the pool. Pool/protocol addresses
+  are treated as pass-through recipients and skipped when a real recipient
+  exists. (`src/utils/trace-hop.ts`, `chooseNextHop`.)
+- Value each hop in **USD at the block timestamp** via Pyth historical oracle
+  (`src/utils/valuation.ts`). Per-hop `usd_value` on each balance change and a
+  `usd_total`; summary reports origin + largest-hop (never a cross-hop sum,
+  which would overstate — same funds moving).
+- Follow-up: `Coin<T>` split/merge fork handling (trace currently follows one
+  path; multi-path fan-out is a later enhancement).
 
 ### Slice 3 — Exploit vs. rug root-cause
 - `diff_package_upgrade(pkg, vN, vN+1)` — disassemble both versions and diff to

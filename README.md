@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 48 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + upgrade diffing, no external binary), optional Move bytecode decompilation, address labeling for incident investigation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 49 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, incident investigation (labeled fund tracing, funding-source attribution), pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + capability audit + upgrade diffing, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
@@ -186,8 +186,16 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | Tool | Description |
 |---|---|
 | `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes |
-| `trace_funds` | Multi-hop fund flow tracing (forward or backward) |
 | `check_activity` | Monitor address or object for new activity since a checkpoint |
+
+### Incident Investigation
+
+| Tool | Description |
+|---|---|
+| `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing that stops at labeled sinks (forward or backward) |
+| `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
+| `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |
+| `diff_package_upgrade` | Diff two package versions to detect malicious upgrades / backdoors |
 
 ## License
 

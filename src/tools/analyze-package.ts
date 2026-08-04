@@ -13,6 +13,7 @@ import {
   resolvePackageId,
   fetchModuleDisassembly,
 } from "../utils/move-package.js";
+import { auditPackageCapabilities } from "../utils/capabilities.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // ---------------------------------------------------------------------------
@@ -214,7 +215,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly for deeper reading. NOTE: this is a surface scan to guide review, NOT a security audit.",
+    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit.",
     {
       package_id: z
         .string()
@@ -223,8 +224,12 @@ export function registerAnalyzePackageTools(server: McpServer) {
         .boolean()
         .optional()
         .describe("Include GraphQL disassembly for each module (default: false)"),
+      audit_capabilities: z
+        .boolean()
+        .optional()
+        .describe("Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true)"),
     },
-    async ({ package_id, include_disassembly }) => {
+    async ({ package_id, include_disassembly, audit_capabilities }) => {
       try {
         const packageId = await resolvePackageId(package_id);
         const { response: res } = await sui.movePackageService.getPackage({
@@ -250,6 +255,10 @@ export function registerAnalyzePackageTools(server: McpServer) {
             })),
           })),
         };
+
+        // Capability audit (default on). Best-effort — never breaks the analysis.
+        const capabilities =
+          audit_capabilities === false ? undefined : await auditPackageCapabilities(packageId);
 
         let disassembly: { module: string; disassembly: string }[] | undefined;
         if (include_disassembly) {
@@ -278,6 +287,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
                   suivision_url: suivisionPackageUrl(packageId),
                   finding_count: findings.length,
                   findings,
+                  ...(capabilities ? { capabilities } : {}),
                   overview,
                   ...(disassembly ? { disassembly } : {}),
                 },

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { batchResolveNames } from "../utils/names.js";
 import { lookupProtocol } from "../protocols/registry.js";
+import { getLabel, isSink } from "../utils/labels.js";
 import { decodeTransaction } from "../protocols/decoder.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
@@ -331,6 +332,9 @@ export function registerTraceTools(server: McpServer) {
       const maxHops = Math.min(hops ?? 3, 10);
       const traceHops: HopResult[] = [];
       let currentDigest: string | null = digest;
+      // Set when a hop's next address is a known fund sink (exchange, bridge,
+      // mixer, malicious wallet, burn) — following further would add noise.
+      let terminationReason: string | null = null;
 
       for (let hop = 0; hop < maxHops && currentDigest; hop++) {
         const tx = await fetchTx(currentDigest);
@@ -377,6 +381,14 @@ export function registerTraceTools(server: McpServer) {
 
         if (!nextAddress) break;
 
+        // Stop at known sinks: once funds reach an exchange, bridge, mixer,
+        // malicious wallet, or burn address, further hops are noise.
+        if (isSink(nextAddress)) {
+          const label = getLabel(nextAddress);
+          terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
+          break;
+        }
+
         currentDigest = await findNextTx(
           nextAddress,
           checkpointNum,
@@ -396,15 +408,30 @@ export function registerTraceTools(server: McpServer) {
       // Batch-resolve SuiNS names
       const nameMap = await batchResolveNames([...allAddresses]);
 
-      // Build protocol labels from known package IDs in balance change coin types
-      const addressLabels: Record<string, { name?: string; protocol?: string }> = {};
+      // Build labels from SuiNS names, protocol package IDs, and the
+      // attribution registry (exchanges, bridges, malicious wallets, ...).
+      const addressLabels: Record<
+        string,
+        { name?: string; protocol?: string; label?: string; category?: string; confidence?: string; source?: string; is_sink?: boolean }
+      > = {};
       for (const addr of allAddresses) {
-        const label: { name?: string; protocol?: string } = {};
+        const label: (typeof addressLabels)[string] = {};
         const name = nameMap.get(addr);
         if (name) label.name = name;
         const proto = lookupProtocol(addr);
         if (proto) label.protocol = proto.name;
-        if (label.name || label.protocol) {
+        const known = getLabel(addr);
+        if (known) {
+          label.label = known.label;
+          label.category = known.category;
+          label.confidence = known.confidence;
+          label.source = known.source;
+          label.is_sink = isSink(addr);
+          // Prefer explicit attribution over the short-hex fallback in the
+          // human summary — "Binance deposit" beats "0x1234…abcd".
+          if (!name) nameMap.set(addr, known.label);
+        }
+        if (label.name || label.protocol || label.label) {
           addressLabels[addr] = label;
         }
       }
@@ -421,13 +448,17 @@ export function registerTraceTools(server: McpServer) {
         })),
       }));
 
-      const summary = buildSummary(traceHops, direction, nameMap);
+      const baseSummary = buildSummary(traceHops, direction, nameMap);
+      const summary = terminationReason
+        ? `${baseSummary}\n\n⚠ ${terminationReason}`
+        : baseSummary;
 
       const fullData = {
         starting_digest: digest,
         direction,
         coin_type: coin_type ?? "all",
         hop_count: enrichedHops.length,
+        stopped_at_sink: terminationReason,
         hops: enrichedHops,
         address_labels: addressLabels,
       };

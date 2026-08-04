@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 47 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan, no external binary), optional Move bytecode decompilation, address labeling for incident investigation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 48 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, fund tracing, pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + upgrade diffing, no external binary), optional Move bytecode decompilation, address labeling for incident investigation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
@@ -169,6 +169,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `analyze_package` | Summarize a package's API + heuristic risk scan (no binary; accepts 0x id or MVR name) |
 | `disassemble_module` | Disassemble Move bytecode via GraphQL (no binary; accepts 0x id or MVR name) |
 | `decompile_module` | Decompile Move bytecode to source (requires decompiler binary) |
+| `diff_package_upgrade` | (Security) Diff two package versions to spot what an upgrade changed — malicious-upgrade / backdoor detection |
 
 ### Transaction Building
 

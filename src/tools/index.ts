@@ -29,6 +29,7 @@ import { registerMvrTools } from "./mvr.js";
 import { registerLabelTools } from "./labels.js";
 import { registerPackageAuditTools } from "./package-audit.js";
 import { registerFundingTools } from "./funding.js";
+import { registerTimelineTools } from "./timeline.js";
 import { withNetworkParam } from "./with-network.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -68,4 +69,5 @@ export function registerAllTools(rawServer: McpServer) {
   registerLabelTools(server);
   registerPackageAuditTools(server);
   registerFundingTools(server);
+  registerTimelineTools(server);
 }

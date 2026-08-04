@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Transaction } from "@mysten/sui/transactions";
 import { lookupProtocol, lookupOperation } from "../protocols/registry.js";
+import { flagPtbAnomalies, type FormattedCommand } from "../utils/ptb-anomalies.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 function formatInput(input: { $kind: string } & Record<string, unknown>): Record<string, unknown> {
@@ -144,7 +145,7 @@ function formatPureInput(input: { $kind: string } & Record<string, unknown>): Re
 export function registerDecodeTools(server: McpServer) {
   server.tool(
     "decode_ptb",
-    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes. Returns the list of commands, inputs, and protocol annotations without executing. Use get_transaction with a digest instead if you want to inspect an already-executed transaction.",
+    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes. Returns the list of commands, inputs, protocol annotations, and a heuristic anomaly-triage pass (flags publishes/upgrades, calls into unrecognized packages, flash-loan patterns, multi-package composition) — without executing. Use get_transaction with a digest instead if you want to inspect an already-executed transaction.",
     {
       transaction_bcs: z
         .string()
@@ -156,6 +157,7 @@ export function registerDecodeTools(server: McpServer) {
 
       const commands = data.commands.map(formatCommand);
       const inputs = data.inputs.map(formatPureInput);
+      const anomalies = flagPtbAnomalies(commands as FormattedCommand[]);
 
       return {
         content: [
@@ -169,6 +171,8 @@ export function registerDecodeTools(server: McpServer) {
                 expiration: data.expiration,
                 command_count: commands.length,
                 input_count: inputs.length,
+                anomaly_count: anomalies.length,
+                anomalies,
                 commands,
                 inputs,
               },

@@ -1,0 +1,12 @@
+{
+  "_comment": "Curated address labels for incident investigation. Only high-confidence, verifiable entries belong here — we do NOT ship fabricated attribution. Case-specific and org-maintained labels (CEX deposits, bridges, attacker wallets) belong in a local override file pointed to by SUI_LABELS_FILE (same shape). Categories cex|bridge|mixer|malicious|burn terminate fund tracing as sinks.",
+  "labels": {
+    "0x0000000000000000000000000000000000000000000000000000000000000000": {
+      "label": "Zero address",
+      "category": "burn",
+      "source": "curated",
+      "confidence": "high",
+      "notes": "Null/unset address; funds sent here are effectively burned or indicate an unset owner."
+    }
+  }
+}

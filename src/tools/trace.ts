@@ -3,6 +3,15 @@ import { gqlQuery } from "../clients/graphql.js";
 import { batchResolveNames } from "../utils/names.js";
 import { lookupProtocol } from "../protocols/registry.js";
 import { getLabel, isSink } from "../utils/labels.js";
+import { chooseNextHop } from "../utils/trace-hop.js";
+import {
+  decimalsForCoinType,
+  formatUsd,
+  PRICE_STALE_THRESHOLD_SEC,
+  priceUsdAtTime,
+  usdValue,
+  type PricePoint,
+} from "../utils/valuation.js";
 import { decodeTransaction } from "../protocols/decoder.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
@@ -24,6 +33,8 @@ interface HopResult {
   protocols: string[];
   actions: string[];
   token_flow: { coin: string; amount: string; raw_type: string }[];
+  /** Note about how the next hop was chosen (swap follow-through, pool skip). */
+  note?: string;
 }
 
 const TX_QUERY = `
@@ -313,7 +324,7 @@ function buildSummary(
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "(Advanced — multi-hop) Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Returns protocol-decoded actions and human-readable summary. Makes sequential API calls per hop (up to 10).",
+    "(Advanced — multi-hop) Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Swap-aware (follows value across DEX swaps instead of losing it in the pool), stops at known sinks (exchanges, bridges, mixers, malicious wallets — see manage_labels), and values each hop in USD at block time via Pyth. Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z
@@ -335,17 +346,28 @@ export function registerTraceTools(server: McpServer) {
       // Set when a hop's next address is a known fund sink (exchange, bridge,
       // mixer, malicious wallet, burn) — following further would add noise.
       let terminationReason: string | null = null;
+      // The coin we're following. May change mid-trace after a swap (A→B).
+      let trackedCoin: string | null = coin_type ?? null;
+
+      // A pool/protocol address is a pass-through, not a real destination —
+      // funds routed through a DEX belong to the actor, not the pool.
+      const isPassThrough = (addr: string): boolean => {
+        if (lookupProtocol(addr)) return true;
+        const cat = getLabel(addr)?.category;
+        return cat === "protocol" || cat === "defi";
+      };
 
       for (let hop = 0; hop < maxHops && currentDigest; hop++) {
         const tx = await fetchTx(currentDigest);
         if (!tx) break;
 
         const sender = tx.sender;
-        let changes = tx.balanceChanges;
-
-        if (coin_type) {
-          changes = changes.filter((c) => c.coin_type === coin_type);
-        }
+        const allChanges = tx.balanceChanges;
+        // Filter only for display/record; next-hop selection sees all changes
+        // so it can detect swaps (input + output legs).
+        const changes = trackedCoin
+          ? allChanges.filter((c) => c.coin_type === trackedCoin)
+          : allChanges;
 
         const checkpointNum = tx.checkpoint ?? undefined;
 
@@ -354,7 +376,7 @@ export function registerTraceTools(server: McpServer) {
         const grpcBc = adaptBalanceChanges(tx.balanceChangeNodes);
         const decoded = decodeTransaction(commands, grpcBc, sender ?? undefined);
 
-        traceHops.push({
+        const hopResult: HopResult = {
           hop: hop + 1,
           digest: currentDigest,
           sender,
@@ -364,20 +386,21 @@ export function registerTraceTools(server: McpServer) {
           protocols: decoded.protocols,
           actions: decoded.actions,
           token_flow: decoded.token_flow,
-        });
+        };
+        traceHops.push(hopResult);
 
-        // Determine next address to follow
-        let nextAddress: string | null = null;
-        if (direction === "forward") {
-          for (const c of changes) {
-            if (c.address !== sender && BigInt(c.amount) > 0n) {
-              nextAddress = c.address;
-              break;
-            }
-          }
-        } else {
-          nextAddress = sender;
-        }
+        // Swap-aware, pool-skipping next-hop selection.
+        const decision = chooseNextHop({
+          sender,
+          changes: allChanges,
+          actions: decoded.actions,
+          direction,
+          trackedCoin,
+          isPassThrough,
+        });
+        trackedCoin = decision.nextCoinType;
+        if (decision.note) hopResult.note = decision.note;
+        const nextAddress = decision.nextAddress;
 
         if (!nextAddress) break;
 
@@ -436,22 +459,86 @@ export function registerTraceTools(server: McpServer) {
         }
       }
 
-      // Enrich hops with names, protocol labels, and formatted amounts
-      const enrichedHops = traceHops.map((hop) => ({
-        ...hop,
-        sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,
-        balance_changes: hop.balance_changes.map((bc) => ({
-          ...bc,
-          formatted: formatAmount(bc.amount, bc.coin_type),
-          name: nameMap.get(bc.address) ?? null,
-          protocol: lookupProtocol(bc.address)?.name ?? null,
-        })),
-      }));
+      // Value each hop's flows in USD at that hop's block time (Pyth historical
+      // oracle). Best-effort: coins without a Pyth feed get a null usd_value,
+      // and pricing failures never break the trace.
+      const hopPrices: Array<Map<string, PricePoint>> = [];
+      const hopUnix: Array<number | null> = [];
+      for (const hop of traceHops) {
+        const coinTypes = hop.balance_changes.map((bc) => bc.coin_type);
+        const unixTs = hop.timestamp ? Math.floor(new Date(hop.timestamp).getTime() / 1000) : null;
+        hopUnix.push(unixTs);
+        hopPrices.push(await priceUsdAtTime(coinTypes, unixTs ?? undefined));
+      }
+
+      let anyStalePrice = false;
+
+      // Enrich hops with names, protocol labels, formatted amounts, and USD value
+      const enrichedHops = traceHops.map((hop, i) => {
+        const prices = hopPrices[i];
+        const blockUnix = hopUnix[i];
+        let hopUsd = 0;
+        const balance_changes = hop.balance_changes.map((bc) => {
+          const pp = prices.get(bc.coin_type) ?? null;
+          const price = pp?.price ?? null;
+          const usd = usdValue(bc.amount, decimalsForCoinType(bc.coin_type), price);
+          // Count inflows only so the -A/+A legs within a hop don't double-count.
+          if (price != null && BigInt(bc.amount) > 0n) hopUsd += usd;
+          // How far is the price we used from the actual block time?
+          const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
+          const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
+          if (stale) anyStalePrice = true;
+          return {
+            ...bc,
+            formatted: formatAmount(bc.amount, bc.coin_type),
+            name: nameMap.get(bc.address) ?? null,
+            protocol: lookupProtocol(bc.address)?.name ?? null,
+            usd_value: price != null ? Number(usd.toFixed(2)) : null,
+            // Unit price actually used and the exact Pyth sample time — makes the
+            // valuation auditable (it's the transaction-second price, not a daily avg).
+            price_usd: price != null ? Number(price.toFixed(price < 1 ? 6 : 4)) : null,
+            priced_at: pp ? new Date(pp.publishTime * 1000).toISOString() : null,
+            price_age_sec: ageSec,
+            price_stale: stale || undefined,
+          };
+        });
+        return {
+          ...hop,
+          sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,
+          usd_total: hopUsd > 0 ? Number(hopUsd.toFixed(2)) : null,
+          balance_changes,
+        };
+      });
+
+      // USD headline. We do NOT sum across hops — that's the same money moving,
+      // so a sum overstates impact. Report the origin and the largest hop.
+      const usdTotals = enrichedHops.map((h) => h.usd_total ?? 0);
+      const originUsd = usdTotals[0] ?? 0;
+      const peakUsd = usdTotals.length ? Math.max(...usdTotals) : 0;
 
       const baseSummary = buildSummary(traceHops, direction, nameMap);
-      const summary = terminationReason
-        ? `${baseSummary}\n\n⚠ ${terminationReason}`
-        : baseSummary;
+      const parts = [baseSummary];
+      if (peakUsd > 0) {
+        const usd = ["Value (USD, at transaction time — Pyth):"];
+        if (originUsd > 0) usd.push(`  Origin (hop 1): ${formatUsd(originUsd)}`);
+        usd.push(`  Largest single-hop flow: ${formatUsd(peakUsd)}`);
+        // Show the unit prices and their exact sample times, so it's visible
+        // these are transaction-second prices — not a daily average.
+        const shown = new Set<string>();
+        for (const bc of enrichedHops[0].balance_changes) {
+          if (bc.price_usd == null || shown.has(bc.coin_type)) continue;
+          shown.add(bc.coin_type);
+          const at = bc.priced_at ? ` (${bc.priced_at.replace("T", " ").slice(0, 19)} UTC)` : "";
+          usd.push(`  ${shortCoinType(bc.coin_type)} @ $${bc.price_usd}${at}${bc.price_stale ? " ⚠stale" : ""}`);
+        }
+        usd.push("  (Later hops are largely the same funds moving; values are not summed.)");
+        if (anyStalePrice) {
+          usd.push("  ⚠ Some prices are >1h from block time (illiquid feed / Pyth gap) — treat as approximate.");
+        }
+        parts.push(usd.join("\n"));
+      }
+      if (terminationReason) parts.push(`⚠ ${terminationReason}`);
+      const summary = parts.join("\n\n");
 
       const fullData = {
         starting_digest: digest,
@@ -459,6 +546,11 @@ export function registerTraceTools(server: McpServer) {
         coin_type: coin_type ?? "all",
         hop_count: enrichedHops.length,
         stopped_at_sink: terminationReason,
+        usd: {
+          origin: originUsd > 0 ? Number(originUsd.toFixed(2)) : null,
+          peak_hop: peakUsd > 0 ? Number(peakUsd.toFixed(2)) : null,
+          note: "Per-hop USD at transaction time (Pyth, per-second); not summed across hops (same funds moving). See each balance change's price_usd / priced_at / price_age_sec.",
+        },
         hops: enrichedHops,
         address_labels: addressLabels,
       };

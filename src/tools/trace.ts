@@ -4,7 +4,14 @@ import { batchResolveNames } from "../utils/names.js";
 import { lookupProtocol } from "../protocols/registry.js";
 import { getLabel, isSink } from "../utils/labels.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
-import { decimalsForCoinType, formatUsd, priceUsdAtTime, usdValue } from "../utils/valuation.js";
+import {
+  decimalsForCoinType,
+  formatUsd,
+  PRICE_STALE_THRESHOLD_SEC,
+  priceUsdAtTime,
+  usdValue,
+  type PricePoint,
+} from "../utils/valuation.js";
 import { decodeTransaction } from "../protocols/decoder.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
@@ -455,30 +462,44 @@ export function registerTraceTools(server: McpServer) {
       // Value each hop's flows in USD at that hop's block time (Pyth historical
       // oracle). Best-effort: coins without a Pyth feed get a null usd_value,
       // and pricing failures never break the trace.
-      const hopPrices: Array<Map<string, number>> = [];
+      const hopPrices: Array<Map<string, PricePoint>> = [];
+      const hopUnix: Array<number | null> = [];
       for (const hop of traceHops) {
         const coinTypes = hop.balance_changes.map((bc) => bc.coin_type);
-        const unixTs = hop.timestamp
-          ? Math.floor(new Date(hop.timestamp).getTime() / 1000)
-          : undefined;
-        hopPrices.push(await priceUsdAtTime(coinTypes, unixTs));
+        const unixTs = hop.timestamp ? Math.floor(new Date(hop.timestamp).getTime() / 1000) : null;
+        hopUnix.push(unixTs);
+        hopPrices.push(await priceUsdAtTime(coinTypes, unixTs ?? undefined));
       }
+
+      let anyStalePrice = false;
 
       // Enrich hops with names, protocol labels, formatted amounts, and USD value
       const enrichedHops = traceHops.map((hop, i) => {
         const prices = hopPrices[i];
+        const blockUnix = hopUnix[i];
         let hopUsd = 0;
         const balance_changes = hop.balance_changes.map((bc) => {
-          const price = prices.get(bc.coin_type) ?? null;
+          const pp = prices.get(bc.coin_type) ?? null;
+          const price = pp?.price ?? null;
           const usd = usdValue(bc.amount, decimalsForCoinType(bc.coin_type), price);
           // Count inflows only so the -A/+A legs within a hop don't double-count.
           if (price != null && BigInt(bc.amount) > 0n) hopUsd += usd;
+          // How far is the price we used from the actual block time?
+          const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
+          const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
+          if (stale) anyStalePrice = true;
           return {
             ...bc,
             formatted: formatAmount(bc.amount, bc.coin_type),
             name: nameMap.get(bc.address) ?? null,
             protocol: lookupProtocol(bc.address)?.name ?? null,
             usd_value: price != null ? Number(usd.toFixed(2)) : null,
+            // Unit price actually used and the exact Pyth sample time — makes the
+            // valuation auditable (it's the transaction-second price, not a daily avg).
+            price_usd: price != null ? Number(price.toFixed(price < 1 ? 6 : 4)) : null,
+            priced_at: pp ? new Date(pp.publishTime * 1000).toISOString() : null,
+            price_age_sec: ageSec,
+            price_stale: stale || undefined,
           };
         });
         return {
@@ -498,10 +519,22 @@ export function registerTraceTools(server: McpServer) {
       const baseSummary = buildSummary(traceHops, direction, nameMap);
       const parts = [baseSummary];
       if (peakUsd > 0) {
-        const usd = ["Value (USD, at block time — Pyth):"];
+        const usd = ["Value (USD, at transaction time — Pyth):"];
         if (originUsd > 0) usd.push(`  Origin (hop 1): ${formatUsd(originUsd)}`);
         usd.push(`  Largest single-hop flow: ${formatUsd(peakUsd)}`);
+        // Show the unit prices and their exact sample times, so it's visible
+        // these are transaction-second prices — not a daily average.
+        const shown = new Set<string>();
+        for (const bc of enrichedHops[0].balance_changes) {
+          if (bc.price_usd == null || shown.has(bc.coin_type)) continue;
+          shown.add(bc.coin_type);
+          const at = bc.priced_at ? ` (${bc.priced_at.replace("T", " ").slice(0, 19)} UTC)` : "";
+          usd.push(`  ${shortCoinType(bc.coin_type)} @ $${bc.price_usd}${at}${bc.price_stale ? " ⚠stale" : ""}`);
+        }
         usd.push("  (Later hops are largely the same funds moving; values are not summed.)");
+        if (anyStalePrice) {
+          usd.push("  ⚠ Some prices are >1h from block time (illiquid feed / Pyth gap) — treat as approximate.");
+        }
         parts.push(usd.join("\n"));
       }
       if (terminationReason) parts.push(`⚠ ${terminationReason}`);
@@ -516,7 +549,7 @@ export function registerTraceTools(server: McpServer) {
         usd: {
           origin: originUsd > 0 ? Number(originUsd.toFixed(2)) : null,
           peak_hop: peakUsd > 0 ? Number(peakUsd.toFixed(2)) : null,
-          note: "Per-hop USD at block time; not summed across hops (same funds moving).",
+          note: "Per-hop USD at transaction time (Pyth, per-second); not summed across hops (same funds moving). See each balance change's price_usd / priced_at / price_age_sec.",
         },
         hops: enrichedHops,
         address_labels: addressLabels,

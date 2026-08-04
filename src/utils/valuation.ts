@@ -59,11 +59,19 @@ export function formatUsd(value: number): string {
  * type → USD price; coins without a Pyth feed are simply absent. Never throws —
  * pricing is best-effort enrichment, not a hard dependency of tracing.
  */
+/** A USD price and the Pyth publish time it was actually sampled at. */
+export interface PricePoint {
+  /** USD unit price. */
+  price: number;
+  /** Unix seconds of the Pyth update this price came from. */
+  publishTime: number;
+}
+
 export async function priceUsdAtTime(
   coinTypes: string[],
   unixTs?: number,
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
+): Promise<Map<string, PricePoint>> {
+  const out = new Map<string, PricePoint>();
   const uniq = [...new Set(coinTypes)];
   if (uniq.length === 0) return out;
   try {
@@ -72,11 +80,16 @@ export async function priceUsdAtTime(
     const prices = await fetchPythPrices(feedIds, unixTs);
     if (!prices) return out;
     for (const [feedId, entry] of prices) {
-      const price = parsePythPrice(entry);
-      for (const ct of reverseMap.get(feedId) ?? []) out.set(ct, price);
+      const point: PricePoint = { price: parsePythPrice(entry), publishTime: entry.price.publish_time };
+      for (const ct of reverseMap.get(feedId) ?? []) out.set(ct, point);
     }
   } catch {
     // Best-effort: pricing failures must not break a trace.
   }
   return out;
 }
+
+// Beyond this gap between a price's Pyth publish time and the block time, the
+// nearest available price is too stale to trust as the transaction-time value
+// (illiquid feed, or a gap in Pyth history). We still report it, but flag it.
+export const PRICE_STALE_THRESHOLD_SEC = 3600;

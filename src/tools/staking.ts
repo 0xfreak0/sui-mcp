@@ -31,18 +31,71 @@ interface ValidatorJson {
 export function registerStakingTools(server: McpServer) {
   server.tool(
     "get_validators",
-    "List current Sui validators with staking info: stake, commission, voting power. Supports sorting by stake or commission.",
+    "List current Sui validators (stake, commission, voting power), or — when `address` is given — return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.",
     {
+      address: z
+        .string()
+        .optional()
+        .describe("If set, return details for this one validator instead of the full list (0x...)"),
       limit: z
         .number()
         .optional()
-        .describe("Max validators to return (default 50, max 150)"),
+        .describe("Max validators to return when listing (default 50, max 150)"),
       sort_by: z
         .enum(["stake", "commission"])
         .optional()
-        .describe("Sort field: stake (default) or commission"),
+        .describe("Sort field when listing: stake (default) or commission"),
     },
-    async ({ limit, sort_by }) => {
+    async ({ address, limit, sort_by }) => {
+      // Detail branch — a single validator.
+      if (address) {
+        const detail = await gqlQuery<{
+          epoch: { epochId: number; validatorSet: { activeValidators: { nodes: Array<{ atRisk?: number; contents?: { json: ValidatorJson } }> } } };
+        }>(
+          `query {
+            epoch {
+              epochId
+              validatorSet { activeValidators(first: 200) { nodes { atRisk contents { json } } } }
+            }
+          }`,
+        );
+        const av = detail.epoch.validatorSet.activeValidators.nodes.find(
+          (v) => v.contents?.json?.metadata?.sui_address === address,
+        );
+        const j = av?.contents?.json;
+        const m = j?.metadata;
+        const pool = j?.staking_pool;
+        const result: Record<string, unknown> = { address, epoch: detail.epoch.epochId, in_active_set: !!av };
+        if (m) {
+          result.credentials = {
+            name: m.name ?? null,
+            description: m.description ?? null,
+            image_url: m.image_url ?? null,
+            project_url: m.project_url ?? null,
+            net_address: m.net_address ?? null,
+            p2p_address: m.p2p_address ?? null,
+            primary_address: m.primary_address ?? null,
+            worker_address: m.worker_address ?? null,
+          };
+        }
+        if (j) {
+          result.staking_stats = {
+            staking_pool_sui_balance: pool?.sui_balance ?? null,
+            staking_pool_id: pool?.id ?? null,
+            activation_epoch: pool?.activation_epoch ?? null,
+            commission_rate_bps: j.commission_rate != null ? Number(j.commission_rate) : null,
+            next_epoch_commission_rate_bps: j.next_epoch_commission_rate != null ? Number(j.next_epoch_commission_rate) : null,
+            voting_power: j.voting_power != null ? Number(j.voting_power) : null,
+            gas_price: j.gas_price ?? null,
+            next_epoch_stake: j.next_epoch_stake ?? null,
+            at_risk: av?.atRisk ?? null,
+          };
+        } else {
+          result.note = "Validator not found in active set. They may be pending, inactive, or the address may not be a validator.";
+        }
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      }
+
       const first = Math.min(Math.max(limit ?? 50, 1), 150);
       const sortField = sort_by ?? "stake";
 
@@ -125,97 +178,6 @@ export function registerStakingTools(server: McpServer) {
               null,
               2
             ),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "get_validator_detail",
-    "Get detailed info about a specific Sui validator including credentials, staking stats, commission, and network addresses.",
-    {
-      address: z.string().describe("Validator address (0x...)"),
-    },
-    async ({ address }) => {
-      const data = await gqlQuery<{
-        epoch: {
-          epochId: number;
-          validatorSet: {
-            activeValidators: {
-              nodes: Array<{
-                atRisk?: number;
-                contents?: { json: ValidatorJson };
-              }>;
-            };
-          };
-        };
-      }>(
-        `query {
-          epoch {
-            epochId
-            validatorSet {
-              activeValidators(first: 200) {
-                nodes {
-                  atRisk
-                  contents { json }
-                }
-              }
-            }
-          }
-        }`
-      );
-
-      const activeValidator =
-        data.epoch.validatorSet.activeValidators.nodes.find(
-          (v) => v.contents?.json?.metadata?.sui_address === address
-        );
-
-      const json = activeValidator?.contents?.json;
-      const meta = json?.metadata;
-      const pool = json?.staking_pool;
-
-      const result: Record<string, unknown> = {
-        address,
-        epoch: data.epoch.epochId,
-        in_active_set: !!activeValidator,
-      };
-
-      if (meta) {
-        result.credentials = {
-          name: meta.name ?? null,
-          description: meta.description ?? null,
-          image_url: meta.image_url ?? null,
-          project_url: meta.project_url ?? null,
-          net_address: meta.net_address ?? null,
-          p2p_address: meta.p2p_address ?? null,
-          primary_address: meta.primary_address ?? null,
-          worker_address: meta.worker_address ?? null,
-        };
-      }
-
-      if (json) {
-        result.staking_stats = {
-          staking_pool_sui_balance: pool?.sui_balance ?? null,
-          staking_pool_id: pool?.id ?? null,
-          activation_epoch: pool?.activation_epoch ?? null,
-          commission_rate_bps: json.commission_rate != null ? Number(json.commission_rate) : null,
-          next_epoch_commission_rate_bps: json.next_epoch_commission_rate != null ? Number(json.next_epoch_commission_rate) : null,
-          voting_power: json.voting_power != null ? Number(json.voting_power) : null,
-          gas_price: json.gas_price ?? null,
-          next_epoch_stake: json.next_epoch_stake ?? null,
-          at_risk: activeValidator?.atRisk ?? null,
-        };
-      } else {
-        result.note =
-          "Validator not found in active set. They may be pending, inactive, or the address may not be a validator.";
-      }
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
           },
         ],
       };

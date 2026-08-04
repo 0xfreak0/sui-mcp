@@ -1,6 +1,6 @@
 # sui-mcp
 
-Read-only MCP server for Sui blockchain analytics. 51 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, incident investigation (labeled fund tracing, funding-source attribution, multi-address timelines, object provenance, PTB anomaly triage), pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + capability audit + upgrade diffing, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 47 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, incident investigation (labeled fund tracing, funding-source attribution, multi-address timelines, object provenance, PTB anomaly triage), pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + capability audit + upgrade diffing, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
@@ -99,8 +99,7 @@ See [`.env.example`](.env.example) for optional environment variables (network s
 | `get_balance` | Balance of a coin type for an address (defaults to SUI) |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
 | `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
-| `get_token_prices` | Current USD prices for tokens via Aftermath + CoinGecko |
-| `get_historical_prices` | Historical prices at a point in time via Pyth oracle |
+| `get_token_prices` | USD prices for tokens — current (Aftermath + Pyth), or historical via Pyth when `at` is set |
 
 ### Transactions & Events
 
@@ -130,8 +129,7 @@ See [`.env.example`](.env.example) for optional environment variables (network s
 
 | Tool | Description |
 |---|---|
-| `get_validators` | List validators with stake, commission, voting power |
-| `get_validator_detail` | Detailed validator info including credentials and stats |
+| `get_validators` | List validators (stake, commission, voting power), or full detail for one when `address` is set |
 | `get_staking_summary` | Wallet's staking positions and pools |
 
 ### Names
@@ -175,10 +173,8 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `build_transfer_sui` | Build unsigned SUI transfer transaction |
-| `build_transfer_coin` | Build unsigned coin transfer with auto coin selection |
-| `build_stake_sui` | Build unsigned staking transaction |
-| `build_unstake_sui` | Build unsigned unstake transaction |
+| `build_transfer` | Build an unsigned transfer of SUI or any coin (auto coin selection); returns BCS for `simulate_transaction` |
+| `build_staking` | Build an unsigned stake/unstake transaction (`action: stake\|unstake`) |
 | `simulate_transaction` | Dry-run a transaction to preview effects and gas cost |
 
 ### Advanced

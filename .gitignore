@@ -21,3 +21,7 @@ revela_sui/
 nft-cost-basis*.json
 scripts/extract-nft-purchases*
 .aider*
+
+# Scratch / working files (never commit)
+scratchpad/
+**/scratchpad/

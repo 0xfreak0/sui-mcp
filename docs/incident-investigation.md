@@ -40,11 +40,21 @@ Turn raw hops into attribution.
 - Follow-up: `Coin<T>` split/merge fork handling (trace currently follows one
   path; multi-path fan-out is a later enhancement).
 
-### Slice 3 — Exploit vs. rug root-cause
-- `diff_package_upgrade(pkg, vN, vN+1)` — disassemble both versions and diff to
-  surface an injected backdoor / changed auth check (malicious upgrade vector).
-- `audit_capabilities(pkg|coin)` — who holds `UpgradeCap` / `TreasuryCap` /
-  `AdminCap`; shared/frozen/owned; is mint authority renounced.
+### Slice 3 — Exploit vs. rug root-cause  ← in progress
+- `diff_package_upgrade(pkg, from_version?, to_version?)` — **done**. On Sui each
+  upgrade publishes a new package address; this resolves the two versions,
+  disassembles both, and diffs modules (added/removed/changed + per-module line
+  diff). Defaults to previous → latest.
+  - **Gotcha (load-bearing):** `package(address: <versionAddr>) { module }`
+    linkage-resolves to the LATEST version regardless of the historical address —
+    so fetching a version's bytecode that way makes every version look identical
+    (silent false-negative on backdoors). Version-specific bytecode MUST be read
+    through the `packageAt(version: N) { module }` node. See
+    `fetchAllModuleDisassemblyAtVersion` in `src/utils/move-package.ts`.
+- `audit_capabilities(pkg|coin)` — **not yet**. Who holds `UpgradeCap` /
+  `TreasuryCap` / `AdminCap`; shared/frozen/owned; is mint authority renounced.
+  Needs the publish-tx → created-cap → `getObject` reverse-lookup path; the
+  object-change GraphQL shape still needs pinning down.
 
 ### Slice 4 — Timeline + attribution primitives
 - `build_timeline(addresses[], from, to)` — merge multi-address activity into one

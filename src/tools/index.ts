@@ -27,6 +27,7 @@ import { registerIdentifyTools } from "./identify.js";
 import { registerAnalyzeTokenTools } from "./analyze-token.js";
 import { registerMvrTools } from "./mvr.js";
 import { registerLabelTools } from "./labels.js";
+import { registerPackageAuditTools } from "./package-audit.js";
 import { withNetworkParam } from "./with-network.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -64,4 +65,5 @@ export function registerAllTools(rawServer: McpServer) {
   registerAnalyzeTokenTools(server);
   registerMvrTools(server);
   registerLabelTools(server);
+  registerPackageAuditTools(server);
 }

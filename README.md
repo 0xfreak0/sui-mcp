@@ -1,5 +1,7 @@
 # sui-mcp
 
+[![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
+
 Read-only MCP server for Sui blockchain analytics. 47 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, incident investigation (labeled fund tracing, funding-source attribution, multi-address timelines, object provenance, PTB anomaly triage), pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + capability audit + upgrade diffing, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
 
 - **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)

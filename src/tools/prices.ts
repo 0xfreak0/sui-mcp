@@ -92,7 +92,7 @@ export async function fetchPythPrices(
 export function registerPriceTools(server: McpServer) {
   server.tool(
     "get_token_prices",
-    "Get current USD prices for Sui tokens. Accepts full coin type strings (e.g. 0x2::sui::SUI). Returns price, 24h change, and market data when available. Uses Aftermath Finance as the primary price source with Pyth Network as fallback.",
+    "Get USD prices for Sui tokens — current by default, or historical when `at` is set. Current prices use Aftermath (primary) + Pyth (fallback); historical prices use the Pyth oracle at the given time. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
     {
       coin_types: z
         .array(z.string())
@@ -101,8 +101,50 @@ export function registerPriceTools(server: McpServer) {
         .describe(
           "Array of full coin type strings (e.g. ['0x2::sui::SUI', '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'])"
         ),
+      at: z
+        .union([z.number(), z.string()])
+        .optional()
+        .describe("Optional: price AT this point in time — Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices."),
     },
-    async ({ coin_types }) => {
+    async ({ coin_types, at }) => {
+      // Historical branch — price at a specific time via the Pyth oracle.
+      if (at !== undefined) {
+        let unixTs: number;
+        if (typeof at === "number") {
+          unixTs = at;
+        } else {
+          const parsed = Date.parse(at);
+          if (isNaN(parsed)) return errorResult("Invalid `at`. Use Unix seconds or ISO 8601 format.");
+          unixTs = Math.floor(parsed / 1000);
+        }
+        const { feedIds, reverseMap } = await buildPythFeedMap(coin_types);
+        const coinTypesWithFeed = new Set<string>();
+        for (const cts of reverseMap.values()) for (const ct of cts) coinTypesWithFeed.add(ct);
+        const pythData = await fetchPythPrices(feedIds, unixTs);
+        const histPrices = coin_types.map((ct) => {
+          const symbol = extractSymbol(ct);
+          if (!coinTypesWithFeed.has(ct)) {
+            return { coin_type: ct, symbol, price_usd: null, confidence: null, timestamp: null, note: "No Pyth oracle feed available for this token." };
+          }
+          let entry: PythParsedPrice | undefined;
+          for (const [fid, cts] of reverseMap) {
+            if (cts.includes(ct)) { entry = pythData?.get(fid); break; }
+          }
+          if (!entry) {
+            return { coin_type: ct, symbol, price_usd: null, confidence: null, timestamp: unixTs, note: "Pyth oracle returned no data for this timestamp." };
+          }
+          const price = parsePythPrice(entry);
+          const confidence = Number(entry.price.conf) * 10 ** entry.price.expo;
+          return { coin_type: ct, symbol, price_usd: price, confidence, timestamp: entry.price.publish_time };
+        });
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ query_timestamp: unixTs, query_date: new Date(unixTs * 1000).toISOString(), prices: histPrices }, null, 2),
+          }],
+        };
+      }
+
       // Dynamically resolve Pyth feed IDs
       const { feedIds: pythFeedIds, reverseMap: pythReverse } =
         await buildPythFeedMap(coin_types);
@@ -170,101 +212,6 @@ export function registerPriceTools(server: McpServer) {
             text: JSON.stringify({ prices }, null, 2),
           },
         ],
-      };
-    }
-  );
-
-  server.tool(
-    "get_historical_prices",
-    "Get historical USD prices for Sui tokens at a specific point in time using Pyth oracle data. Dynamically resolves Pyth feed IDs via Hermes API. Provide a Unix timestamp or ISO date string.",
-    {
-      coin_types: z
-        .array(z.string())
-        .min(1)
-        .max(50)
-        .describe("Array of full coin type strings"),
-      timestamp: z
-        .union([z.number(), z.string()])
-        .describe("Unix timestamp (seconds) or ISO 8601 date string (e.g. '2025-01-15T00:00:00Z')"),
-    },
-    async ({ coin_types, timestamp }) => {
-      // Parse timestamp
-      let unixTs: number;
-      if (typeof timestamp === "number") {
-        unixTs = timestamp;
-      } else {
-        const parsed = Date.parse(timestamp);
-        if (isNaN(parsed)) {
-          return errorResult("Invalid timestamp. Use Unix seconds or ISO 8601 format.");
-        }
-        unixTs = Math.floor(parsed / 1000);
-      }
-
-      const { feedIds, reverseMap } = await buildPythFeedMap(coin_types);
-
-      // Identify coin types with no feed
-      const coinTypesWithFeed = new Set<string>();
-      for (const cts of reverseMap.values()) {
-        for (const ct of cts) coinTypesWithFeed.add(ct);
-      }
-
-      const pythData = await fetchPythPrices(feedIds, unixTs);
-
-      const prices = coin_types.map((ct) => {
-        const symbol = extractSymbol(ct);
-
-        if (!coinTypesWithFeed.has(ct)) {
-          return {
-            coin_type: ct,
-            symbol,
-            price_usd: null,
-            confidence: null,
-            timestamp: null,
-            note: "No Pyth oracle feed available for this token.",
-          };
-        }
-
-        // Find the feed ID for this coin type
-        let entry: PythParsedPrice | undefined;
-        for (const [fid, cts] of reverseMap) {
-          if (cts.includes(ct)) {
-            entry = pythData?.get(fid);
-            break;
-          }
-        }
-
-        if (!entry) {
-          return {
-            coin_type: ct,
-            symbol,
-            price_usd: null,
-            confidence: null,
-            timestamp: unixTs,
-            note: "Pyth oracle returned no data for this timestamp.",
-          };
-        }
-
-        const price = parsePythPrice(entry);
-        const confidence = Number(entry.price.conf) * 10 ** entry.price.expo;
-
-        return {
-          coin_type: ct,
-          symbol,
-          price_usd: price,
-          confidence,
-          timestamp: entry.price.publish_time,
-        };
-      });
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            query_timestamp: unixTs,
-            query_date: new Date(unixTs * 1000).toISOString(),
-            prices,
-          }, null, 2),
-        }],
       };
     }
   );

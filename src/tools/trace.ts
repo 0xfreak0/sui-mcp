@@ -6,6 +6,7 @@ import { getLabel, isSink } from "../utils/labels.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
 import {
   decimalsForCoinType,
+  dominantInflowUsd,
   formatUsd,
   PRICE_STALE_THRESHOLD_SEC,
   priceUsdAtTime,
@@ -337,7 +338,7 @@ export function registerTraceTools(server: McpServer) {
       coin_type: z
         .string()
         .optional()
-        .describe("Filter by coin type (e.g. 0x2::sui::SUI). If omitted, traces all coins."),
+        .describe("Restrict the DISPLAYED balance changes to this coin type (e.g. 0x2::sui::SUI). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown."),
     },
     async ({ digest, direction, hops, coin_type }) => {
       const maxHops = Math.min(hops ?? 3, 10);
@@ -363,10 +364,13 @@ export function registerTraceTools(server: McpServer) {
 
         const sender = tx.sender;
         const allChanges = tx.balanceChanges;
-        // Filter only for display/record; next-hop selection sees all changes
-        // so it can detect swaps (input + output legs).
-        const changes = trackedCoin
-          ? allChanges.filter((c) => c.coin_type === trackedCoin)
+        // What we DISPLAY for the hop. Filter only by the caller's explicit
+        // coin_type (a constant), NOT the mutable `trackedCoin`: when the trace
+        // auto-switches assets across a swap, the hop's real flows must still be
+        // shown — filtering by the switched coin would render swap-follow hops
+        // empty (the bug this fixes). Next-hop selection still sees allChanges.
+        const displayChanges = coin_type
+          ? allChanges.filter((c) => c.coin_type === coin_type)
           : allChanges;
 
         const checkpointNum = tx.checkpoint ?? undefined;
@@ -380,7 +384,7 @@ export function registerTraceTools(server: McpServer) {
           hop: hop + 1,
           digest: currentDigest,
           sender,
-          balance_changes: changes,
+          balance_changes: displayChanges,
           timestamp: tx.timestamp,
           checkpoint: tx.checkpoint?.toString() ?? null,
           protocols: decoded.protocols,
@@ -477,13 +481,12 @@ export function registerTraceTools(server: McpServer) {
       const enrichedHops = traceHops.map((hop, i) => {
         const prices = hopPrices[i];
         const blockUnix = hopUnix[i];
-        let hopUsd = 0;
+        const inflows: Array<{ address: string; usd: number }> = [];
         const balance_changes = hop.balance_changes.map((bc) => {
           const pp = prices.get(bc.coin_type) ?? null;
           const price = pp?.price ?? null;
           const usd = usdValue(bc.amount, decimalsForCoinType(bc.coin_type), price);
-          // Count inflows only so the -A/+A legs within a hop don't double-count.
-          if (price != null && BigInt(bc.amount) > 0n) hopUsd += usd;
+          if (price != null && BigInt(bc.amount) > 0n) inflows.push({ address: bc.address, usd });
           // How far is the price we used from the actual block time?
           const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
           const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
@@ -502,6 +505,7 @@ export function registerTraceTools(server: McpServer) {
             price_stale: stale || undefined,
           };
         });
+        const hopUsd = dominantInflowUsd(inflows);
         return {
           ...hop,
           sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,

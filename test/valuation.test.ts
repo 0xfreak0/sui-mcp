@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   decimalsForCoinType,
+  dominantInflowUsd,
   formatUsd,
   symbolOf,
   toHumanAmount,
@@ -37,6 +38,35 @@ describe("usdValue", () => {
   });
   it("uses magnitude regardless of sign", () => {
     expect(usdValue("-5000000000", 9, 2)).toBeCloseTo(10, 6);
+  });
+});
+
+describe("dominantInflowUsd", () => {
+  const atk = "0xattacker";
+  const pool = "0xpool";
+
+  it("sums multiple coins credited to the same recipient (drain origin)", () => {
+    // Attacker receives SUI ($24.16M) + HASUI ($44.23M) in one tx.
+    expect(
+      dominantInflowUsd([
+        { address: atk, usd: 24155583.53 },
+        { address: atk, usd: 44228001.15 },
+      ]),
+    ).toBeCloseTo(68383584.68, 2);
+  });
+
+  it("does NOT double-count a swap's input+output legs (different addresses)", () => {
+    // Actor receives $100 output; pool receives $100 input — max, not sum.
+    expect(dominantInflowUsd([{ address: atk, usd: 100 }, { address: pool, usd: 100 }])).toBe(100);
+  });
+
+  it("values a plain transfer by the recipient's gain", () => {
+    expect(dominantInflowUsd([{ address: "0xrecipient", usd: 50 }])).toBe(50);
+  });
+
+  it("ignores non-positive inflows and returns 0 when there are none", () => {
+    expect(dominantInflowUsd([])).toBe(0);
+    expect(dominantInflowUsd([{ address: atk, usd: 0 }])).toBe(0);
   });
 });
 

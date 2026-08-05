@@ -102,7 +102,7 @@ describe("get_validators", () => {
   });
 });
 
-describe("get_validator_detail", () => {
+describe("get_validators (detail via address)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns detail for known validator", async () => {
@@ -117,7 +117,7 @@ describe("get_validator_detail", () => {
       },
     });
 
-    const handler = tools.get("get_validator_detail")!;
+    const handler = tools.get("get_validators")!;
     const result = await handler({ address: "0xmyval" });
     const data = JSON.parse(result.content[0].text);
 
@@ -137,7 +137,7 @@ describe("get_validator_detail", () => {
       },
     });
 
-    const handler = tools.get("get_validator_detail")!;
+    const handler = tools.get("get_validators")!;
     const result = await handler({ address: "0xunknown" });
     const data = JSON.parse(result.content[0].text);
 

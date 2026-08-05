@@ -42,6 +42,21 @@ export function usdValue(raw: bigint | string, decimals: number, priceUsd: numbe
   return toHumanAmount(raw, decimals) * priceUsd;
 }
 
+/**
+ * The dominant recipient's total USD inflow for a hop, given per-change positive
+ * inflows `{address, usd}`. We group by address and take the MAX (not the sum)
+ * so a swap's input+output legs — which credit two different addresses (the
+ * actor and the pool) — aren't double-counted, while a plain transfer still
+ * reports the recipient's gain. Returns 0 when there are no positive inflows.
+ */
+export function dominantInflowUsd(inflows: Array<{ address: string; usd: number }>): number {
+  const byAddress = new Map<string, number>();
+  for (const { address, usd } of inflows) {
+    if (usd > 0) byAddress.set(address, (byAddress.get(address) ?? 0) + usd);
+  }
+  return byAddress.size ? Math.max(...byAddress.values()) : 0;
+}
+
 /** Format a USD number for human summaries ($1.23, $4.2K, $3.1M, $1.2B). */
 export function formatUsd(value: number): string {
   const abs = Math.abs(value);

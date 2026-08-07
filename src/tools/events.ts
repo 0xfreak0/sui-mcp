@@ -7,7 +7,7 @@ const EVENTS_QUERY = `
   query($filter: EventFilter, $first: Int, $after: String) {
     events(filter: $filter, first: $first, after: $after) {
       nodes {
-        contents { json }
+        contents { type { repr } json }
         sender { address }
         transactionModule { fullyQualifiedName }
         timestamp
@@ -24,7 +24,7 @@ const EVENTS_QUERY = `
 interface EventsPage {
   events: {
     nodes: Array<{
-      contents?: { json: unknown };
+      contents?: { type?: { repr: string }; json: unknown };
       sender?: { address: string };
       transactionModule?: { fullyQualifiedName: string };
       timestamp?: string;
@@ -85,7 +85,16 @@ export function registerEventTools(server: McpServer) {
       const data = await gqlQuery<EventsPage>(EVENTS_QUERY, variables);
 
       const events = data.events.nodes.map((n) => ({
-        type: n.transactionModule?.fullyQualifiedName,
+        // The event struct's own type (`0xpkg::module::EventName`). Previously
+        // this reported `transactionModule`, which is the module whose function
+        // was *called* — for anything routed through an aggregator those are
+        // different packages entirely, so a DeepBook OrderCanceled came back
+        // labelled with the router's module. Filtering by event_type still
+        // worked; reading the type back did not.
+        type: n.contents?.type?.repr ?? null,
+        // Kept, but named for what it is: useful for telling which protocol's
+        // entrypoint emitted an event inside a multi-leg PTB.
+        emitting_module: n.transactionModule?.fullyQualifiedName ?? null,
         sender: n.sender?.address,
         data: n.contents?.json,
         tx_digest: n.transaction?.digest,

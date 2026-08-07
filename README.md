@@ -30,6 +30,29 @@ The server has no credentials and no ability to move funds:
 - Every remaining tool is a read.
 - No provider accounts. RPC, indexing, and price data all come from public endpoints.
 
+### What the process actually does
+
+Supply-chain scanners report the capabilities a package uses, without the reason. Here is the full list for this one:
+
+| Capability | Where it's used |
+|---|---|
+| Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts). |
+| Filesystem | Temp files for `decompile_module`, and reading `SUI_LABELS_FILE` if you set it. |
+| Subprocess | One call, in [`src/tools/decompiler.ts`](src/tools/decompiler.ts), to the decompiler binary *you* build and point at. `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
+| Environment | Six variables, all prefixed `SUI_`, all listed in [`.env.example`](.env.example). Nothing else is read. |
+
+There is no `eval`, no dynamic `require`, no minified or obfuscated code, and no telemetry. Inputs that come from the chain are treated as untrusted: `decompile_module` validates module names before they reach a filesystem path, and bounds how many modules one call will process.
+
+Most of the dependency tree is the MCP SDK. This server speaks stdio only and imports just `server/mcp.js` and `server/stdio.js`, so the SDK's HTTP-transport dependencies are installed but never loaded.
+
+### Verifying a release
+
+Releases are published from CI with [npm provenance](https://docs.npmjs.com/generating-provenance-statements), so every tarball carries a signed attestation tying it to the commit and workflow run that produced it:
+
+```bash
+npm audit signatures
+```
+
 ## Capabilities
 
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.

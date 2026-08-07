@@ -1,27 +1,37 @@
 {
-  "name": "sui-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for querying the Sui blockchain",
+  "name": "sui-analytics-mcp",
+  "version": "1.0.0",
+  "description": "Read-only Sui blockchain analytics: 47 tools, protocol-aware tx decoding, no API keys or wallet.",
+  "mcpName": "io.github.0xfreak0/sui-mcp",
   "type": "module",
   "bin": {
-    "sui-mcp": "./dist/index.js"
+    "sui-analytics-mcp": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "!dist/**/*.map",
+    "labeled-addresses.example.json"
+  ],
   "scripts": {
-    "build": "tsc && cp -r src/data dist/",
+    "build": "tsc && cp -r src/data dist/ && chmod +x dist/index.js",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "generate": "echo 'No codegen needed - using @mysten/sui SDK'",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:decompiler": "bash scripts/build-decompiler.sh"
+    "build:decompiler": "bash scripts/build-decompiler.sh",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
     "sui",
     "mcp",
+    "mcp-server",
     "blockchain",
     "model-context-protocol",
     "defi",
     "nft",
+    "move",
+    "onchain-analytics",
     "grpc",
     "graphql"
   ],
@@ -40,7 +50,7 @@
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@mysten/sui": "^2.3.1",
     "@protobuf-ts/grpc-transport": "^2.11.1",
     "graphql-request": "^7.1.2",

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for Sui blockchain analytics. 47 tools for wallets, DeFi positions, NFTs, token prices, transaction decoding, Move package analysis, and incident investigation.
+Read-only MCP server for Sui blockchain analytics. 50 tools for wallets, DeFi positions, NFTs, token prices, transaction decoding, Move package analysis, and incident investigation.
 
 ## Install
 
@@ -20,6 +20,30 @@ Add this to your MCP client config — Claude Code, Claude Desktop, Cursor, or a
 ```
 
 No account, API key, or config file is required. The server reads public Sui endpoints and defaults to mainnet. Requires Node.js >= 20.
+
+## Tool profiles
+
+All 50 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+
+When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
+
+To start with more, set `SUI_TOOLS`:
+
+```json
+"env": { "SUI_TOOLS": "core,forensics" }
+```
+
+| Profile | Tools | Contents |
+|---|---|---|
+| `core` *(default)* | 17 | Wallets, balances, transactions, tokens, NFTs, DeFi positions, staking, pools, names |
+| `forensics` | 9 | Fund tracing, funding-source attribution, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
+| `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
+| `all` | 50 | Everything |
+
+Runtime switching relies on `notifications/tools/list_changed`. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
+
+Upgrading from 1.1.x, where every tool loaded at startup? Set `SUI_TOOLS=all` to keep that behaviour.
 
 ## No wallet, no keys
 
@@ -82,7 +106,7 @@ All environment variables are optional. See [`.env.example`](.env.example) for t
 
 ## Move decompiler (optional)
 
-46 of the 47 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+49 of the 50 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -117,7 +141,7 @@ Then add its absolute path to your client config:
 
 If you already cloned this repo, `npm run build:decompiler` does the same clone and build and copies the result to `bin/move-decompiler`.
 
-Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 46 tools are unaffected.
+Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 49 tools are unaffected.
 
 ## Running from source
 
@@ -145,7 +169,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (47)
+## Tools (50)
 
 ### Recommended Starting Points
 
@@ -194,7 +218,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 |---|---|
 | `get_defi_positions` | DeFi positions across Suilend, Cetus, NAVI, Scallop, Bluefin, Bucket |
 | `find_pools` | Discover liquidity pools by token pair (Cetus, DeepBook, Turbos) |
-| `get_pool_stats` | Pool reserves, fees, and prices for a given pool object ID |
+| `get_pool_stats` | Pool reserves, fees, and prices for a given pool object ID (AMMs; see below for DeepBook) |
+
+### DeepBook
+
+DeepBook v3 is a central limit order book, so it has no reserves — depth, spread and traded price come from the [DeepBook indexer](https://docs.sui.io/standards/deepbookv3-indexer) rather than from a pool object. Mainnet and testnet only.
+
+| Tool | Description |
+|---|---|
+| `deepbook_orderbook` | Live bid/ask depth, spread, mid price and resting-liquidity imbalance. Omit `pool_name` to list pools. |
+| `deepbook_trades` | Recent fills with maker/taker balance manager IDs — attribute trading to an account during an incident window |
+| `compare_oracle_price` | (Security) Pyth oracle price vs the price DeepBook actually traded at, over a window — detects stale feeds, manipulation windows, and liquidations priced at levels the market never printed |
 
 ### NFTs
 

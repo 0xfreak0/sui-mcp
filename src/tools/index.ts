@@ -22,6 +22,7 @@ import { registerHolderTools } from "./holders.js";
 import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
 import { registerPoolTools } from "./pools.js";
+import { registerDeepBookTools } from "./deepbook.js";
 import { registerDependencyTools } from "./dependencies.js";
 import { registerIdentifyTools } from "./identify.js";
 import { registerAnalyzeTokenTools } from "./analyze-token.js";
@@ -32,12 +33,22 @@ import { registerFundingTools } from "./funding.js";
 import { registerTimelineTools } from "./timeline.js";
 import { registerObjectHistoryTools } from "./object-history.js";
 import { withNetworkParam } from "./with-network.js";
+import {
+  applyProfiles,
+  collectToolHandles,
+  registerToolsetTool,
+  startupProfiles,
+  type ToolHandles,
+} from "./toolset.js";
+import { allProfiledTools, PROFILE_NAMES } from "./profiles.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAllTools(rawServer: McpServer) {
-  // Every tool gets an optional per-call `network` arg and runs inside that
-  // network's async context. See ./with-network.ts.
-  const server = withNetworkParam(rawServer);
+  // Two layers of proxy, both transparent to the tool files:
+  //   withNetworkParam  — injects the per-call `network` arg (./with-network.ts)
+  //   collectToolHandles — records each registration so profiles can toggle it
+  const handles: ToolHandles = new Map();
+  const server = collectToolHandles(withNetworkParam(rawServer), handles);
 
   registerChainTools(server);
   registerObjectTools(server);
@@ -63,6 +74,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerDecodeTools(server);
   registerTraceTools(server);
   registerPoolTools(server);
+  registerDeepBookTools(server);
   registerDependencyTools(server);
   registerIdentifyTools(server);
   registerAnalyzeTokenTools(server);
@@ -72,4 +84,13 @@ export function registerAllTools(rawServer: McpServer) {
   registerFundingTools(server);
   registerTimelineTools(server);
   registerObjectHistoryTools(server);
+
+  // Apply the startup profile, then register the switch that expands it.
+  // `enable_tools` goes on the raw server so it is never itself gated — it is
+  // the only way back to the tools the profile turned off.
+  const profiles = startupProfiles();
+  applyProfiles(handles, profiles, allProfiledTools());
+  registerToolsetTool(rawServer, handles, {
+    active: new Set(profiles ?? PROFILE_NAMES),
+  });
 }

@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.0xfreak0/sui-mcp",
   "title": "Sui Analytics",
-  "description": "Read-only Sui blockchain analytics: 47 tools, protocol-aware tx decoding, no API keys or wallet.",
-  "version": "1.1.1",
+  "description": "Read-only Sui blockchain analytics: 50 tools, protocol-aware tx decoding, no API keys or wallet.",
+  "version": "1.2.0",
   "repository": {
     "url": "https://github.com/0xfreak0/sui-mcp",
     "source": "github",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "sui-analytics-mcp",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -44,6 +44,13 @@
           "description": "Override the GraphQL endpoint for the default network only.",
           "isRequired": false,
           "format": "string"
+        },
+        {
+          "name": "SUI_TOOLS",
+          "description": "Tool profiles to load at startup, comma-separated, or 'all'. Defaults to 'core'.",
+          "isRequired": false,
+          "format": "string",
+          "default": "core"
         },
         {
           "name": "SUI_DECOMPILER_PATH",

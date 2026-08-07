@@ -7,6 +7,15 @@ name: Publish
 on:
   push:
     tags: ["v*"]
+  # Manual dry run: exercises checkout, install, build, test and prints auth
+  # diagnostics, then stops before anything is published. Lets release-auth
+  # problems be debugged without burning a version tag per attempt.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run everything except the publish steps"
+        type: boolean
+        default: true
 
 jobs:
   publish:
@@ -47,6 +56,7 @@ jobs:
       # cut — the registry would also reject the mismatched server.json later,
       # but by then npm has already been published and npm versions are permanent.
       - name: Check tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
@@ -73,7 +83,25 @@ jobs:
       # `npm audit signatures`. It is the strongest signal users have that a
       # release came from this repo and not from a stolen credential, so it is
       # explicit rather than left to whatever the default happens to be.
+      # npm's OIDC path is silent about why it didn't engage — a misconfigured
+      # trusted publisher and a missing id-token permission both surface as a
+      # generic ENEEDAUTH at publish time. This prints the three things that
+      # distinguish them, without leaking the token itself.
+      - name: Diagnose publish auth
+        run: |
+          echo "node        $(node --version)"
+          echo "npm         $(npm --version)   (trusted publishing needs >= 11.5.1)"
+          echo "registry    $(npm config get registry)"
+          echo "userconfig  ${NPM_CONFIG_USERCONFIG:-<unset>}"
+          echo "NODE_AUTH_TOKEN set: ${NODE_AUTH_TOKEN:+yes}${NODE_AUTH_TOKEN:-no}"
+          echo "OIDC request URL present: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}${ACTIONS_ID_TOKEN_REQUEST_URL:-no (id-token: write not in effect)}"
+          echo "repo        ${GITHUB_REPOSITORY}"
+          echo "workflow    ${GITHUB_WORKFLOW_REF}"
+          echo "--- npm's view of auth ---"
+          npm whoami || echo "(npm whoami failed — expected when only OIDC is available)"
+
       - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
         run: npm publish --provenance
 
       # Pinned by version AND checksum. The upstream one-liner pipes
@@ -98,13 +126,18 @@ jobs:
           tar xzf mcp-publisher.tar.gz mcp-publisher
           rm mcp-publisher.tar.gz
 
+      # login is safe to exercise in a dry run and confirms the registry side of
+      # OIDC independently of npm's, which narrows down where auth is failing.
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
       - name: Publish to MCP Registry
-        run: |
-          ./mcp-publisher login github-oidc
-          ./mcp-publisher publish
+        if: ${{ !inputs.dry_run }}
+        run: ./mcp-publisher publish
 
       # Installs from npm in a clean directory and completes an MCP handshake,
       # so a tarball that publishes but won't start fails the release loudly
       # instead of sitting broken on the registry.
       - name: Verify the published package installs and starts
+        if: ${{ !inputs.dry_run }}
         run: npm run verify:published

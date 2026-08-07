@@ -1,10 +1,35 @@
 import { createRequire } from "node:module";
+import { getMvrName, prefetchMvrNames } from "./mvr-names.js";
 const require = createRequire(import.meta.url);
 const protocolsData = require("../data/protocols.json");
 
+export type ProtocolType =
+  | "dex"
+  | "lending"
+  | "stablecoin"
+  | "liquid_staking"
+  | "perps"
+  | "system"
+  | "name_service"
+  | "storage"
+  | "options"
+  | "rwa"
+  | "yield"
+  | "farm"
+  | "oracle"
+  | "bridge"
+  /** Resolved from the Move Registry at runtime; category is not known. */
+  | "unknown";
+
 export interface ProtocolInfo {
   name: string;
-  type: "dex" | "lending" | "stablecoin" | "liquid_staking" | "perps" | "system" | "name_service" | "storage" | "options";
+  type: ProtocolType;
+  /**
+   * Where this identification came from. Absent means curated (the shipped
+   * registry). `"mvr"` means it was reverse-resolved at runtime and carries no
+   * verified category — safe to display, not safe to make decisions on.
+   */
+  source?: "mvr";
 }
 
 export interface OperationInfo {
@@ -143,8 +168,54 @@ const OPERATION_PATTERNS: OperationPattern[] = [
   { module: "coin", fnPrefix: "into_balance", operation: { action: "convert", skip: true } },
 ];
 
+/**
+ * Curated protocol identification only.
+ *
+ * Use this anywhere the answer changes behaviour rather than wording — fund
+ * tracing's pass-through test, parser selection in `find_pools`. Every entry
+ * here was verified by hand and carries a real category. Never widened by
+ * runtime resolution; see {@link lookupProtocolDisplay}.
+ */
 export function lookupProtocol(packageId: string): ProtocolInfo | null {
   return PROTOCOL_MAP[packageId] ?? null;
+}
+
+/** Is this package in the shipped, hand-verified registry? */
+export function isCuratedProtocol(packageId: string): boolean {
+  return packageId in PROTOCOL_MAP;
+}
+
+/**
+ * Warm the MVR name cache for packages this call is about to decode.
+ *
+ * Call once with every package ID in a batch, before the (synchronous) decode
+ * loop: one bulk request instead of one per package, and curated IDs are
+ * filtered out first so a fully-known transaction makes no network call at all.
+ * Awaiting this is optional — skipping it just means unknown packages render as
+ * raw addresses, exactly as before.
+ */
+export async function prefetchProtocolNames(packageIds: Iterable<string>): Promise<void> {
+  const unknown: string[] = [];
+  for (const id of packageIds) {
+    if (id && !isCuratedProtocol(id)) unknown.push(id);
+  }
+  await prefetchMvrNames(unknown);
+}
+
+/**
+ * Protocol identification for **display**: curated first, then any name the
+ * Move Registry gave us for this package (see ./mvr-names.ts).
+ *
+ * MVR entries come back with `type: "unknown"` and `source: "mvr"` so callers
+ * can tell a verified category from a name someone registered. Falls back to
+ * the curated answer — which may be null — when nothing has been prefetched,
+ * so this is always safe to call.
+ */
+export function lookupProtocolDisplay(packageId: string): ProtocolInfo | null {
+  const curated = PROTOCOL_MAP[packageId];
+  if (curated) return curated;
+  const mvrName = getMvrName(packageId);
+  return mvrName ? { name: mvrName, type: "unknown", source: "mvr" } : null;
 }
 
 export function lookupOperation(module: string, fn: string): OperationInfo | null {

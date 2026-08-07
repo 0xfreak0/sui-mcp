@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { sui, archive } from "../clients/grpc.js";
+import { sui } from "../clients/grpc.js";
+import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { bigintToString, timestampToIso } from "../utils/formatting.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -22,17 +23,13 @@ export function registerChainTools(server: McpServer) {
             ],
           },
         };
-        let res;
-        try {
-          ({ response: res } = await sui.ledgerService.getEpoch(req));
-        } catch {
-          ({ response: res } = await archive.ledgerService.getEpoch(req));
-        }
-        if (!res.epoch?.firstCheckpoint) {
-          try {
-            ({ response: res } = await archive.ledgerService.getEpoch(req));
-          } catch { /* keep fullnode result */ }
-        }
+        // A fullnode that has pruned an old epoch still returns an epoch object,
+        // just without its checkpoint range — so emptiness is "no firstCheckpoint"
+        // rather than "no epoch".
+        const res = await withArchiveFallback(
+          (client) => client.ledgerService.getEpoch(req),
+          (r) => !r.epoch?.firstCheckpoint,
+        );
         const ep = res.epoch;
         return {
           content: [
@@ -108,17 +105,12 @@ export function registerChainTools(server: McpServer) {
         checkpointId,
         readMask: { paths: ["sequence_number", "digest", "summary"] },
       };
-      let res;
-      try {
-        ({ response: res } = await sui.ledgerService.getCheckpoint(req));
-      } catch {
-        ({ response: res } = await archive.ledgerService.getCheckpoint(req));
-      }
-      if ((sequence_number || digest) && !res.checkpoint?.summary) {
-        try {
-          ({ response: res } = await archive.ledgerService.getCheckpoint(req));
-        } catch { /* keep fullnode result */ }
-      }
+      // Only an explicitly requested checkpoint can be pruned. With neither arg
+      // this returns the latest checkpoint, which the fullnode always has.
+      const res = await withArchiveFallback(
+        (client) => client.ledgerService.getCheckpoint(req),
+        (r) => !!(sequence_number || digest) && !r.checkpoint?.summary,
+      );
       const cp = res.checkpoint;
       return {
         content: [

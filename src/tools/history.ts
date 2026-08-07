@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
-import { decodeTransaction } from "../protocols/decoder.js";
+import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { prefetchProtocolNames } from "../protocols/registry.js";
 import { batchResolveNames } from "../utils/names.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
@@ -118,6 +119,15 @@ export function registerHistoryTools(server: McpServer) {
       };
 
       const data = await gqlQuery<GqlTransactionsResponse>(HISTORY_QUERY, variables);
+
+      // Resolve Move Registry names for every unknown package on this page in a
+      // single request, before the synchronous decode pass below. Doing it
+      // per-transaction inside the map would mean one round trip per tx.
+      await prefetchProtocolNames(
+        data.transactions.nodes.flatMap((node) =>
+          collectPackageIds(adaptCommands(node.kind?.commands?.nodes ?? [])),
+        ),
+      );
 
       // First pass: decode transactions and extract counterparty addresses
       const allCounterpartyAddresses = new Set<string>();

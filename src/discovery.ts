@@ -1,5 +1,6 @@
 import { sui } from "./clients/grpc.js";
 import { gqlQuery } from "./clients/graphql.js";
+import { EXTERNAL_HTTP_TIMEOUT_MS } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -242,7 +243,7 @@ export async function resolvePythFeedId(
   try {
     const resp = await fetch(
       `${PYTH_HERMES_URL}/v2/price_feeds?query=${encodeURIComponent(key)}&asset_type=crypto`,
-      { signal: AbortSignal.timeout(10_000) },
+      { signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS) },
     );
     if (!resp.ok) {
       pythFeedCache.set(key, { feedId: null, fetchedAt: Date.now() });

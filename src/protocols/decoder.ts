@@ -1,5 +1,5 @@
 import type { GrpcTypes } from "@mysten/sui/grpc";
-import { lookupProtocol, lookupOperation } from "./registry.js";
+import { lookupProtocolDisplay, lookupOperation } from "./registry.js";
 
 export interface DecodedTransaction {
   protocols: string[];
@@ -71,6 +71,22 @@ function formatAction(action: string, protocol: string | null, typeArgs: string[
   return label;
 }
 
+/**
+ * Every package a set of commands calls into.
+ *
+ * Pair with `prefetchProtocolNames` before decoding a batch so unknown packages
+ * get their Move Registry names in one bulk request instead of rendering as raw
+ * addresses. Decoding without prefetching is still correct, just less readable.
+ */
+export function collectPackageIds(commands: GrpcTypes.Command[]): string[] {
+  const ids = new Set<string>();
+  for (const cmd of commands) {
+    const c = cmd.command;
+    if (c.oneofKind === "moveCall" && c.moveCall.package) ids.add(c.moveCall.package);
+  }
+  return [...ids];
+}
+
 export function decodeTransaction(
   commands: GrpcTypes.Command[],
   balanceChanges: GrpcTypes.BalanceChange[] | undefined,
@@ -89,7 +105,10 @@ export function decodeTransaction(
         const fn = mc.function ?? "";
         const typeArgs = mc.typeArguments ?? [];
 
-        const proto = lookupProtocol(pkg);
+        // Display lookup: a Move Registry name is strictly better output than a
+        // truncated 0x address, and nothing downstream of the decoder makes a
+        // trust decision on it.
+        const proto = lookupProtocolDisplay(pkg);
         const op = lookupOperation(mod, fn);
 
         if (proto) {

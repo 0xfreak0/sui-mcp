@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { buildPythFeedMap } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -41,7 +42,7 @@ export async function fetchAftermathPrices(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ coins: coinTypes }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
     return (await resp.json()) as Record<string, AftermathPriceEntry>;
@@ -75,7 +76,7 @@ export async function fetchPythPrices(
       ? `/v2/updates/price/${timestamp}`
       : "/v2/updates/price/latest";
     const resp = await fetch(`${PYTH_HERMES_URL}${path}?${idParams}`, {
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
     const data = (await resp.json()) as { parsed: PythParsedPrice[] };

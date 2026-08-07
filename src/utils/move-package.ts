@@ -1,6 +1,6 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
-import { getMvrUrl } from "../config.js";
+import { EXTERNAL_HTTP_TIMEOUT_MS, getMvrUrl } from "../config.js";
 
 /**
  * A "package reference" accepted by the developer tools can be either a raw
@@ -33,6 +33,7 @@ export async function resolvePackageId(ref: string): Promise<string> {
   }
   const res = await fetch(`${mvrUrl}/resolution/${trimmed}`, {
     headers: { "content-type": "application/json" },
+    signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(

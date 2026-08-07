@@ -57,7 +57,48 @@ All environment variables are optional. See [`.env.example`](.env.example) for t
 }
 ```
 
+## Move decompiler (optional)
+
+46 of the 47 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+
+- `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
+- `analyze_package` summarizes a package's API and runs a heuristic risk scan.
+- `diff_package_upgrade` diffs two versions of a package.
+
+Use the decompiler when you want higher-level, source-like Move output instead of bytecode.
+
+The binary is Revela's `move-decompiler`, built from Rust. It is not bundled in the npm package because a published tarball could only carry one platform's build, so you compile it once yourself and point the server at it with `SUI_DECOMPILER_PATH`. This works the same whether you installed via npx or from source. You need a Rust toolchain ([rustup.rs](https://rustup.rs/)); the build takes a few minutes.
+
+```bash
+git clone --depth 1 https://github.com/verichains/revela_sui.git
+cd revela_sui/external-crates/move
+cargo build --release --bin move-decompiler
+# binary lands at target/release/move-decompiler
+```
+
+Then add its absolute path to your client config:
+
+```json
+{
+  "mcpServers": {
+    "sui": {
+      "command": "npx",
+      "args": ["-y", "sui-analytics-mcp"],
+      "env": {
+        "SUI_DECOMPILER_PATH": "/absolute/path/to/revela_sui/external-crates/move/target/release/move-decompiler"
+      }
+    }
+  }
+}
+```
+
+If you already cloned this repo, `npm run build:decompiler` does the same clone and build and copies the result to `bin/move-decompiler`.
+
+Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 46 tools are unaffected.
+
 ## Running from source
+
+For development, or to run a version you've modified:
 
 ```bash
 git clone https://github.com/0xfreak0/sui-mcp.git
@@ -79,45 +120,7 @@ Then point your client at the build output instead of npx:
 }
 ```
 
-### Move decompiler (optional, source installs only)
-
-Reading and analyzing Move code works with no extra setup: `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint, and `analyze_package` summarizes a package's API and runs a heuristic risk scan. The decompiler is only needed for higher-level, source-like output from `decompile_module`.
-
-It is a separate Rust binary and is deliberately not bundled in the npm package — a published tarball could only ever carry one platform's build. Getting it requires a clone and a Rust toolchain ([rustup.rs](https://rustup.rs/)):
-
-```bash
-npm run build:decompiler
-```
-
-This clones [verichains/revela_sui](https://github.com/verichains/revela_sui), builds the decompiler, and copies the binary to `bin/move-decompiler`. Point `SUI_DECOMPILER_PATH` at it:
-
-```json
-{
-  "mcpServers": {
-    "sui": {
-      "command": "node",
-      "args": ["/absolute/path/to/sui-mcp/dist/index.js"],
-      "env": {
-        "SUI_DECOMPILER_PATH": "/absolute/path/to/sui-mcp/bin/move-decompiler"
-      }
-    }
-  }
-}
-```
-
-<details>
-<summary>Building the decompiler manually</summary>
-
-```bash
-git clone --depth 1 https://github.com/verichains/revela_sui.git
-cd revela_sui/external-crates/move
-cargo build --release --bin move-decompiler
-```
-
-Then set `SUI_DECOMPILER_PATH` to the binary path.
-</details>
-
-An npx install can still use the decompiler by building the binary from a clone and pointing `SUI_DECOMPILER_PATH` at it. Without that variable the server looks for `move-decompiler` on `PATH`; if it isn't there, only `decompile_module` fails, and it says how to fix it. The other 46 tools are unaffected.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 ## Tools (47)
 

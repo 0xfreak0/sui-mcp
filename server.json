@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.0xfreak0/sui-mcp",
   "title": "Sui Analytics",
-  "description": "Read-only Sui blockchain analytics: 52 tools, protocol-aware tx decoding, no API keys or wallet.",
-  "version": "1.3.0",
+  "description": "Read-only Sui blockchain analytics: 53 tools, protocol-aware tx decoding, no API keys or wallet.",
+  "version": "1.4.0",
   "repository": {
     "url": "https://github.com/0xfreak0/sui-mcp",
     "source": "github",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "sui-analytics-mcp",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

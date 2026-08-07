@@ -1,4 +1,5 @@
 import { gqlQuery } from "../clients/graphql.js";
+import { getCachedFanout, saveFanout } from "./store.js";
 
 /**
  * How many distinct addresses an address has sent value to.
@@ -55,6 +56,9 @@ export interface FanoutResult {
    */
   classification: "hub" | "distributor" | "narrow";
   interpretation: string;
+  /** True when served from the optional local store rather than re-measured. */
+  cached?: boolean;
+  measured_ago_ms?: number;
 }
 
 /** Above this, shared funding through the address carries no signal. */
@@ -99,7 +103,28 @@ export function classifyFanout(recipients: number): {
 export async function measureFanout(
   address: string,
   maxTransactions = 1000,
+  useCache = true,
 ): Promise<FanoutResult> {
+  // Cheap win when the optional store is on: this is the expensive measurement
+  // in the toolkit (up to 20 paginated queries) and its answer is stable.
+  // Returns nothing when the store is disabled, which is the default.
+  if (useCache) {
+    const cached = getCachedFanout(address);
+    if (cached) {
+      const { classification, interpretation } = classifyFanout(cached.recipient_count);
+      return {
+        address,
+        recipient_count: cached.recipient_count,
+        scanned_transactions: 0,
+        truncated: cached.truncated === 1,
+        classification,
+        interpretation,
+        cached: true,
+        measured_ago_ms: cached.age_ms,
+      };
+    }
+  }
+
   const recipients = new Set<string>();
   let scanned = 0;
   let cursor: string | undefined;
@@ -127,6 +152,8 @@ export async function measureFanout(
   }
 
   const { classification, interpretation } = classifyFanout(recipients.size);
+  saveFanout({ address, recipient_count: recipients.size, truncated: hasNext ? 1 : 0 });
+
   return {
     address,
     recipient_count: recipients.size,

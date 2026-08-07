@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.4.0 (2026-08-07)
+
+### Added
+- **`aggregate_events`** — rank wallets or event types by activity or value over
+  a time window, in one call instead of paginating thousands of events by hand.
+  Validated against a manual investigation that took 19 minutes: two calls
+  reproduced its top wallets in the same order with matching magnitudes
+  (`0x8c90d1c1…` $343,983 vs its $344k, `0x808fb10d…` $193,547 vs $194k).
+  - Bounds accept **ISO timestamps or checkpoints**, so "today" no longer means
+    hand-probing for the checkpoint at midnight.
+  - Called without `value_field`, it returns each event type with its count and
+    numeric fields. That is the discovery step which otherwise requires
+    reverse-engineering a protocol's payload — and it makes visible that user
+    actions are usually far rarer than bookkeeping events (AlphaLend: 642
+    reward-refresh events to 61 deposits). Deliberately not a per-protocol
+    schema registry: one hand-maintained registry already drifts.
+  - Reports `truncated` loudly. A ranking from a partial scan looks exactly
+    like a complete one, which is how a wrong answer gets believed.
+- **Optional local store** via `SUI_STORE_PATH`, using Node's built-in
+  `node:sqlite` — no dependency, no native build, nothing new for a
+  supply-chain scanner to flag. Persists address labels (previously in-memory
+  only, with the tool telling you to hand-edit JSON) and fan-out measurements
+  (the expensive measurement here, and a stable one). Off by default: an
+  investigation store records which addresses you looked at, and that should
+  not land on disk because someone ran `npx`. Fund traces are deliberately not
+  cached — a trace is a function of labels, so a stored one would silently
+  disagree with a fresh run.
+
+### Notes
+- Two traps found while building this, both encoded in the tool: `event_type`
+  filters on the struct's **defining** package, which for many protocols is not
+  the package you call (AlphaLend calls `0xe48b33ef…` but defines its events at
+  `0xd631cd66…`), so `module` is usually the filter you want; and a zero-result
+  response now says so rather than looking like "nothing happened".
+- Added a static test that fails on a bare `require()` in `src/`. The build
+  output is ESM where `require` is undefined, but vitest's transform provides
+  one — so that bug passes every unit test and only surfaces when the built
+  server runs. It did exactly that here.
+
 ## 1.3.0 (2026-08-07)
 
 Everything here came out of a real investigation — ranking AlphaLend wallets by

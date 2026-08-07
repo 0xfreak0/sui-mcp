@@ -23,6 +23,7 @@ import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
 import { registerPoolTools } from "./pools.js";
 import { registerDeepBookTools } from "./deepbook.js";
+import { registerAggregateTools } from "./aggregate.js";
 import { registerDependencyTools } from "./dependencies.js";
 import { registerIdentifyTools } from "./identify.js";
 import { registerAnalyzeTokenTools } from "./analyze-token.js";
@@ -75,6 +76,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerTraceTools(server);
   registerPoolTools(server);
   registerDeepBookTools(server);
+  registerAggregateTools(server);
   registerDependencyTools(server);
   registerIdentifyTools(server);
   registerAnalyzeTokenTools(server);

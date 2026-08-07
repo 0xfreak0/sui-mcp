@@ -18,9 +18,9 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # npm trusted publishing requires npm >= 11.5.1 / Node >= 22.14.
           node-version: "24"
@@ -44,8 +44,11 @@ jobs:
           fi
 
       - run: npx tsc --noEmit
-      - run: npm test
+      # Build before test, not after: the packaging tests run `npm pack --dry-run`
+      # and assert on what it would ship, so they need a real dist/ on disk.
+      # Same ordering as ci.yml — keep the two in step.
       - run: npm run build
+      - run: npm test
 
       # No NODE_AUTH_TOKEN: npm detects the OIDC environment and exchanges a
       # short-lived token. Requires trusted publishing to be configured for this

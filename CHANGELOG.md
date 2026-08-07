@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.1 (2026-08-07)
+
+Patch: both changes harden `decompile_module` against hostile input. No tool
+signatures or output shapes change, except that a truncated `all_modules` run
+now says so explicitly.
 
 ### Security
 - `decompile_module` built a temp-file path from the on-chain module name
@@ -16,6 +20,11 @@
   buffered in memory. Now capped at 32 modules, a 120s whole-call budget and
   8MB of combined output, with `complete: false` and a `notes` array in the
   response so a truncated result is never mistaken for a full one.
+
+### Documentation
+- README documents every capability a supply-chain scanner reports — network,
+  filesystem, subprocess, environment — with the reason for each, plus how to
+  verify a release's provenance with `npm audit signatures`.
 
 ## 1.1.0 (2026-08-07)
 

@@ -18,16 +18,29 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v5
+      # Actions are pinned to commit SHAs, not tags. A tag is a mutable pointer:
+      # whoever controls the action's repo can move v5 to different code, and
+      # this job can mint an npm publish token. Comments record the tag the SHA
+      # corresponded to when pinned.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # npm trusted publishing requires npm >= 11.5.1 / Node >= 22.14.
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
+          # Deliberately NO registry-url. That input makes setup-node write an
+          # .npmrc and set NODE_AUTH_TOKEN to the literal placeholder
+          # "XXXXX-XXXXX-XXXXX-XXXXX" when no token is supplied. npm then finds
+          # configured auth, sends the placeholder, and never attempts the OIDC
+          # exchange — which fails as a 404 on PUT. Leaving it out is what makes
+          # trusted publishing work.
           cache: npm
 
-      - run: npm ci
+      # --ignore-scripts: this job holds `id-token: write`, i.e. the ability to
+      # mint an npm publish credential. Running arbitrary dependency install
+      # hooks in that context is the shortest path from a compromised
+      # transitive dep to a malicious release. Nothing here needs them.
+      - run: npm ci --ignore-scripts
 
       # The tag is the source of truth for a release. If it disagrees with
       # package.json, stop here rather than publishing a version nobody meant to
@@ -50,16 +63,40 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      # No NODE_AUTH_TOKEN: npm detects the OIDC environment and exchanges a
-      # short-lived token. Requires trusted publishing to be configured for this
-      # package on npmjs.com (Settings -> Trusted publisher -> this repo +
-      # workflow file). Without that config this step fails with an auth error.
+      # No NODE_AUTH_TOKEN and no .npmrc: npm detects the OIDC environment and
+      # exchanges a short-lived token. Requires trusted publishing to be
+      # configured for this package on npmjs.com (Settings -> Trusted publisher
+      # -> this repo + workflow file).
+      #
+      # --provenance attaches a signed Sigstore attestation binding the tarball
+      # to this commit and workflow run, which anyone can verify with
+      # `npm audit signatures`. It is the strongest signal users have that a
+      # release came from this repo and not from a stolen credential, so it is
+      # explicit rather than left to whatever the default happens to be.
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --provenance
 
+      # Pinned by version AND checksum. The upstream one-liner pipes
+      # `releases/latest` straight into tar, which means an unreviewed binary
+      # runs in a job that can publish to npm and to the MCP Registry — the
+      # download would silently change under us the moment upstream cuts a
+      # release. Digests come from the release assets API.
+      #
+      # To bump: set MCP_PUBLISHER_VERSION, then
+      #   gh api repos/modelcontextprotocol/registry/releases/tags/$VER \
+      #     --jq '.assets[] | select(.name|test("linux_amd64.tar.gz$")) | .digest'
       - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          set -euo pipefail
+          # runs-on is ubuntu-latest, so the platform is fixed; no uname guessing.
+          url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o mcp-publisher.tar.gz
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          rm mcp-publisher.tar.gz
 
       - name: Publish to MCP Registry
         run: |

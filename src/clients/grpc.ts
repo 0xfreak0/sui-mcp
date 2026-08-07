@@ -6,7 +6,7 @@ import { type SuiNetwork, getNetwork, getNetworkConfig } from "../config.js";
 interface NetworkClients {
   /** Fullnode client. */
   sui: SuiGrpcClient;
-  /** Archive client (mainnet only); falls back to the fullnode elsewhere. */
+  /** Archive client (mainnet + testnet); falls back to the fullnode on devnet. */
   archive: SuiGrpcClient;
 }
 
@@ -19,8 +19,9 @@ function buildClients(network: SuiNetwork): NetworkClients {
   const fullnode = new SuiGrpcClient({ network, baseUrl: cfg.fullnode });
 
   // Archive serves native gRPC (not gRPC-Web), so we use GrpcTransport instead
-  // of the default GrpcWebFetchTransport. Archive is only available on mainnet;
-  // elsewhere we point archive at the fullnode so callers' fallback logic works.
+  // of the default GrpcWebFetchTransport. Mainnet and testnet have one; devnet
+  // does not, so there archive points at the fullnode and callers' fallback
+  // logic still type-checks and runs (withArchiveFallback skips the retry).
   const archive: SuiGrpcClient = cfg.archive
     ? new SuiGrpcClient({
         network,

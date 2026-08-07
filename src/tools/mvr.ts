@@ -1,38 +1,8 @@
 import { z } from "zod";
-import { getMvrUrl, moveRegistryUrl } from "../config.js";
+import { moveRegistryUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
+import { mvrFetch } from "../utils/mvr-client.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-function requireMvr(): string | null {
-  return getMvrUrl();
-}
-
-async function mvrFetch(path: string, init?: RequestInit): Promise<unknown> {
-  const base = requireMvr();
-  if (!base) {
-    throw new Error("Move Registry is not available on this network (devnet has no MVR endpoint).");
-  }
-  const url = `${base}${path}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
-  });
-  const text = await res.text();
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
-  }
-  if (!res.ok) {
-    const msg =
-      body && typeof body === "object" && "message" in (body as object)
-        ? (body as { message: unknown }).message
-        : text || res.statusText;
-    throw new Error(`MVR ${res.status}: ${msg}`);
-  }
-  return body;
-}
 
 export function registerMvrTools(server: McpServer) {
   server.tool(

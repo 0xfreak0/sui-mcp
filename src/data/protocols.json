@@ -13,7 +13,7 @@
     "0x5b54b47971238403d6ade3c8c2cc75814cb55145a5184af916bb5b12aaf184cb": { "name": "Suilend", "type": "lending" },
     "0xe37cc7bb50fd9b6dbd3873df66fa2c554e973697f50ef97707311dc78bd08444": { "name": "Suilend", "type": "lending" },
     "0xd2a67633ccb8de063163e25bcfca242929caf5cf1a26c2929dab519ee0b8f331": { "name": "Suilend", "type": "lending" },
-    "0xb0575765166030556a6eafd3b1b970eba8183ff748860680245b9edd41c716e7": { "name": "SpringSui", "type": "lending" },
+    "0xb0575765166030556a6eafd3b1b970eba8183ff748860680245b9edd41c716e7": { "name": "SpringSui", "type": "liquid_staking" },
     "0x9f835c21d21f8ce519fec17d679cd38243ef2643ad879e7048ba77374be4036e": { "name": "Bucket", "type": "stablecoin" },
     "0x665188033384920a5bb5dcfb2ef21f54b4568d08b431718b97e02e5c184b92cc": { "name": "Bucket", "type": "stablecoin" },
     "0xa5a0c25c79e428eba04fb98b3fb2a34db45ab26d4c8faf0d7e39d66a63891e64": { "name": "Turbos", "type": "dex" },
@@ -45,6 +45,47 @@
     "0xdee9": { "name": "DeepBook", "type": "dex" },
 
     "0x4b0f4ee1a40ce37ec81c987cc4e76a665419e74b863319492fc7d26f708b835a": { "name": "Typus", "type": "options" },
-    "0x0624b66825d66821a57a49491fe1b31bc4f522459051a587aeb43828075f438a": { "name": "Typus", "type": "options" }
+    "0x0624b66825d66821a57a49491fe1b31bc4f522459051a587aeb43828075f438a": { "name": "Typus", "type": "options" },
+
+    "0xcaf6ba059d539a97646d47f0b9ddf843e138d215e2a12ca1f4585d386f7aec3a": { "name": "DeepBook", "type": "dex" },
+    "0xf48222c4e057fa468baf136bff8e12504209d43850c5778f76159292a96f621e": { "name": "DeepBook", "type": "dex" },
+    "0x0e735f8c93a95722efd73521aca7a7652c0bb71ed1daf41b26dfd7d1ff71f748": { "name": "DeepBook", "type": "dex" },
+
+    "0x25ebb9a7c50eb17b3fa9c5a30fb8b5ad8f97caaf4928943acbcff7153dfee5e3": { "name": "Cetus", "type": "dex" },
+    "0xae9c208cf58fd5ba36737c9ee5dcfa7f152d0fb5a5a99eebb7c881ebc2fe59e0": { "name": "Cetus", "type": "dex" },
+
+    "0xd075338d105482f1527cbfd363d6413558f184dec36d9138a70261e87f486e9c": { "name": "Bluefin", "type": "dex" },
+    "0x11d01c93c0461f8f505c993e48734b364a95fa7b32c7956e3bd58d93d27d0892": { "name": "Bluefin", "type": "perps" },
+    "0x4323b313ec962adc4bed31d6486d608b367b2fee075deb5171df3daaf63094a2": { "name": "Bluefin", "type": "perps" },
+
+    "0xde2c47eb0da8c74e4d0f6a220c41619681221b9c2590518095f0f0c2d3f3c772": { "name": "FlowX", "type": "dex" },
+
+    "0x346684e428a8b24c43cb2af269176fdbc41760ea2aed3e2a9d5c09a3347198bb": { "name": "Bucket", "type": "stablecoin" },
+    "0x5f0fa1540291decd6355336a11d8867c32383fe313b0ceec89a29f8be5e66166": { "name": "Bucket", "type": "oracle" },
+    "0x204f5f18b9b4d10eddc0f7256284ed3c655bd06e9425801e60b262152d47de50": { "name": "Bucket", "type": "farm" },
+    "0xf1d3bba9e0787723ec8799954b25a2ab0079a3d2f4ea6100ce714857159435ff": { "name": "Bucket", "type": "farm" },
+
+    "0x47c4b62aed92c5ae308ecd00253b64b3568ad97e6fb11e54b3d1ac5ed7be19ab": { "name": "SpringSui", "type": "liquid_staking" },
+    "0x126e4cfb051cad744706df590ec399e8c02b6feae195c35b8b496280d5442a62": { "name": "Haedal", "type": "liquid_staking" },
+    "0xfba9e78742d8f3edeb405561b954846ce3e60cab64dac00e600d50bb4923be0f": { "name": "Volo", "type": "liquid_staking" },
+
+    "0xaf7f3995c6a0e0d3cbfef84597c73e52755c6eebce34a7b98ed12436f03cb5e5": { "name": "AlphaFi", "type": "yield" },
+    "0xf259194ebadf4a68c7dd0103483aa6c6e0e058597c02c390a398092892192f6f": { "name": "Kai Finance", "type": "yield" },
+    "0x909ad5f8badc34b49507dbd0cb9fb88cc816b531323659e3aefb992d4ab58474": { "name": "Kai Finance", "type": "yield" },
+    "0x4269cb19a1a7938c8263d21c08d98b9324e5985522072ae3d76928650aed809f": { "name": "Ember", "type": "yield" },
+    "0xd575c44424f47ae501a560dde32a0b5456cf737bd7c2d6a328104c7bdd4a32c3": { "name": "Mole", "type": "yield" },
+    "0x93b6c9f751b51283f7bbe91f20c9a6c154a066621f41076913d3942c3c969aa5": { "name": "Mole", "type": "yield" },
+    "0x6b3ec2b32ac6ea7d66b7894a7edf4b7c5b0d659d5c02b2dde90d676ad5aa7931": { "name": "Mole", "type": "yield" },
+
+    "0x98da433aa0139512c210597b1c5e3df6cd121d8d77f8652691bb66fadfc8aa1b": { "name": "Walrus", "type": "storage" },
+
+    "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0": { "name": "Pyth", "type": "oracle" },
+    "0x04e20ddf36af412a4096f9014f4a565af9e812db9a05cc40254846cf6ed0ad91": { "name": "Pyth", "type": "oracle" },
+    "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4": { "name": "Wormhole", "type": "bridge" },
+
+    "0xcf60a40f45d46fc1e828871a647c1e25a0915dec860d2662eb10fdb382c3c1d1": { "name": "Momentum", "type": "dex" },
+
+    "0x2d986babdac1ee98767c38c349d34402ddb85481152ac50ace0fc86e22b1fd47": { "name": "WaterX", "type": "perps" },
+    "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e": { "name": "WaterX", "type": "oracle" }
   }
 }

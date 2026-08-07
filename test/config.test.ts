@@ -64,9 +64,11 @@ describe("getNetworkConfig", () => {
     expect(getNetworkConfig("devnet").fullnode).toBe("https://fullnode.devnet.sui.io");
   });
 
-  it("exposes archive only on mainnet", () => {
+  it("exposes archive on mainnet and testnet but not devnet", () => {
+    // host:port, not a URL: the archives serve native gRPC rather than
+    // gRPC-Web, so these go to GrpcTransport instead of a baseUrl client.
     expect(getNetworkConfig("mainnet").archive).toBe("archive.mainnet.sui.io:443");
-    expect(getNetworkConfig("testnet").archive).toBeNull();
+    expect(getNetworkConfig("testnet").archive).toBe("archive.testnet.sui.io:443");
     expect(getNetworkConfig("devnet").archive).toBeNull();
   });
 

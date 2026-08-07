@@ -1,0 +1,96 @@
+import { describe, it, expect } from "vitest";
+import { createRequire } from "node:module";
+import { lookupProtocol, type ProtocolType } from "../src/protocols/registry.js";
+
+const require = createRequire(import.meta.url);
+const { protocols } = require("../src/data/protocols.json") as {
+  protocols: Record<string, { name: string; type: string }>;
+};
+
+// protocols.json is plain JSON, so TypeScript never checks it against
+// ProtocolType — a typo'd category would sail through the build and only show
+// up as a wrong label in output. This list is the runtime counterpart of the
+// union in registry.ts; adding a category means adding it in both places.
+const VALID_TYPES: ProtocolType[] = [
+  "dex",
+  "lending",
+  "stablecoin",
+  "liquid_staking",
+  "perps",
+  "system",
+  "name_service",
+  "storage",
+  "options",
+  "rwa",
+  "yield",
+  "farm",
+  "oracle",
+  "bridge",
+  "unknown",
+];
+
+const entries = Object.entries(protocols);
+
+describe("protocols.json integrity", () => {
+  it("uses only categories declared in ProtocolType", () => {
+    const bad = entries
+      .filter(([, v]) => !VALID_TYPES.includes(v.type as ProtocolType))
+      .map(([id, v]) => `${id} -> ${v.type}`);
+    expect(bad).toEqual([]);
+  });
+
+  it("never labels a curated entry as unknown", () => {
+    // "unknown" is reserved for runtime MVR resolution. A hand-added entry with
+    // no category is worse than no entry: it claims verification it doesn't have.
+    const unknowns = entries.filter(([, v]) => v.type === "unknown").map(([id]) => id);
+    expect(unknowns).toEqual([]);
+  });
+
+  it("gives every entry a non-empty name", () => {
+    const nameless = entries.filter(([, v]) => !v.name?.trim()).map(([id]) => id);
+    expect(nameless).toEqual([]);
+  });
+
+  it("uses lowercase hex package ids", () => {
+    // Lookup is an exact string match against the ID the chain reports, which is
+    // always lowercase — a mixed-case entry would silently never match.
+    const malformed = entries.filter(([id]) => !/^0x[0-9a-f]+$/.test(id)).map(([id]) => id);
+    expect(malformed).toEqual([]);
+  });
+
+  it("keeps one name per protocol across its package ids", () => {
+    // Several protocols have many package IDs (upgrades, sub-products). They
+    // must agree on spelling or the same protocol shows up twice in output.
+    const byLowerName = new Map<string, Set<string>>();
+    for (const [, v] of entries) {
+      const key = v.name.toLowerCase();
+      if (!byLowerName.has(key)) byLowerName.set(key, new Set());
+      byLowerName.get(key)!.add(v.name);
+    }
+    const inconsistent = [...byLowerName.values()].filter((s) => s.size > 1).map((s) => [...s]);
+    expect(inconsistent).toEqual([]);
+  });
+});
+
+describe("registry additions resolve", () => {
+  // Spot-checks on entries added from Move Registry resolution and verified
+  // on-chain module lists, so a bad merge that drops them fails loudly.
+  const cases: [string, string][] = [
+    ["0xcaf6ba059d539a97646d47f0b9ddf843e138d215e2a12ca1f4585d386f7aec3a", "DeepBook"],
+    ["0xaf7f3995c6a0e0d3cbfef84597c73e52755c6eebce34a7b98ed12436f03cb5e5", "AlphaFi"],
+    ["0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0", "Pyth"],
+    ["0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4", "Wormhole"],
+    ["0xfba9e78742d8f3edeb405561b954846ce3e60cab64dac00e600d50bb4923be0f", "Volo"],
+  ];
+
+  it.each(cases)("%s is %s", (id, name) => {
+    expect(lookupProtocol(id)?.name).toBe(name);
+  });
+
+  it("classifies SpringSui as liquid staking", () => {
+    // Was previously mislabelled "lending"; it mints sSUI.
+    expect(
+      lookupProtocol("0xb0575765166030556a6eafd3b1b970eba8183ff748860680245b9edd41c716e7")?.type,
+    ).toBe("liquid_staking");
+  });
+});

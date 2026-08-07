@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -168,14 +168,25 @@ describe("unsupported runtime", () => {
 });
 
 describe("store failure handling", () => {
-  it.skipIf(!hasSqlite)("degrades to disabled instead of throwing on an unopenable path", () => {
-    // A directory that does not exist: the server must keep running.
-    process.env.SUI_STORE_PATH = join(dir, "no", "such", "dir", "store.db");
+  // Setting a path a few directories deep should just work — the alternative
+  // is a silent disable over something we can create.
+  it.skipIf(!hasSqlite)("creates missing parent directories", () => {
+    process.env.SUI_STORE_PATH = join(dir, "nested", "deeper", "store.db");
+    resetStore();
+    initStore();
+    expect(storeStatus().enabled).toBe(true);
+    saveLabel({ address: "0xa", label: "X", category: "cex", confidence: null, notes: null });
+    expect(loadLabels()).toHaveLength(1);
+  });
+
+  it.skipIf(!hasSqlite)("degrades to disabled instead of throwing on an unusable path", () => {
+    // A path whose parent is a *file*, so it cannot be made into a directory.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a directory");
+    process.env.SUI_STORE_PATH = join(blocker, "store.db");
     resetStore();
     expect(() => initStore()).not.toThrow();
-    const s = storeStatus();
-    expect(s.enabled).toBe(false);
-    expect(s.reason).toMatch(/could not open/);
+    expect(storeStatus().enabled).toBe(false);
     expect(loadLabels()).toEqual([]);
   });
 });

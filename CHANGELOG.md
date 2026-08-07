@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.1 (2026-08-07)
+
+### Fixed
+- Setting `SUI_STORE_PATH` to a path whose parent directory did not exist
+  disabled persistence with only a line on stderr — the store looked configured
+  but silently kept nothing. Naming a store path means "keep a store there", so
+  the parent directory is now created. Only the parent, never the file, and a
+  path that genuinely cannot be opened still degrades to disabled rather than
+  taking the server down.
+
 ## 1.4.0 (2026-08-07)
 
 ### Changed

@@ -27,7 +27,11 @@
           "isRequired": false,
           "format": "string",
           "default": "mainnet",
-          "choices": ["mainnet", "testnet", "devnet"]
+          "choices": [
+            "mainnet",
+            "testnet",
+            "devnet"
+          ]
         },
         {
           "name": "SUI_FULLNODE_URL",

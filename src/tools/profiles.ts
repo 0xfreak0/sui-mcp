@@ -55,6 +55,7 @@ export const PROFILES = {
     "check_activity",
     "get_top_holders",
     "compare_oracle_price",
+    "aggregate_events",
   ],
 
   /** Contract analysis and transaction construction. */

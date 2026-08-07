@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { registerAllTools } from "../src/tools/index.js";
@@ -100,6 +100,35 @@ describe("npm tarball contents", () => {
     // shipping them would only add dangling references.
     expect(paths.some((p) => p.endsWith(".map"))).toBe(false);
   }, 30_000);
+});
+
+describe("ESM correctness", () => {
+  // The build output is ESM, where a bare `require` is undefined. Vitest's
+  // transform provides one, so this class of bug passes every unit test and
+  // only fails when the built server runs — which is how it reached a manual
+  // smoke test once already. A static check is cheaper than catching it there.
+  it("never calls require() without createRequire in the same file", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith(".ts")) {
+          const src = readFileSync(full, "utf8");
+          // Ignore `import type` positions and comments well enough for this
+          // purpose: what matters is a call-shaped `require(` at runtime.
+          const callsRequire = /(^|[^.\w])require\s*\(/m.test(
+            src.replace(/^\s*(\/\/|\*).*$/gm, ""),
+          );
+          if (callsRequire && !src.includes("createRequire")) {
+            offenders.push(full.replace(root + "/", ""));
+          }
+        }
+      }
+    };
+    walk(join(root, "src"));
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("MCP registry metadata", () => {

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for Sui blockchain analytics. 52 tools for wallets, DeFi positions, NFTs, token prices, transaction decoding, Move package analysis, and incident investigation.
+Read-only MCP server for Sui blockchain analytics. 53 tools for wallets, DeFi positions, NFTs, token prices, transaction decoding, Move package analysis, and incident investigation.
 
 ## Install
 
@@ -23,7 +23,7 @@ No account, API key, or config file is required. The server reads public Sui end
 
 ## Tool profiles
 
-All 52 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 53 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
 When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
 
@@ -36,10 +36,10 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 17 | Wallets, balances, transactions, tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 11 | Fund tracing, funding-source attribution, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `forensics` | 12 | Fund tracing, funding-source attribution, timelines, object provenance, labels, events, oracle-vs-market deviation |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
-| `all` | 52 | Everything |
+| `all` | 53 | Everything |
 
 Runtime switching relies on `notifications/tools/list_changed`. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
 
@@ -92,6 +92,16 @@ npm audit signatures
 
 All environment variables are optional. See [`.env.example`](.env.example) for the full list; the common ones are `SUI_NETWORK` (default network), `SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (custom RPC endpoints), and `SUI_LABELS_FILE` (address attribution labels for fund tracing).
 
+### Optional local store
+
+Set `SUI_STORE_PATH` to keep address labels and fan-out measurements across sessions. It uses Node's built-in `node:sqlite`, so it adds no dependency and no native build. Unset by default — nothing is written to disk unless you ask for it, which matters because an investigation store is a record of which addresses you looked at.
+
+```json
+"env": { "SUI_STORE_PATH": "/Users/you/.local/share/sui-mcp/store.db" }
+```
+
+Fund traces are deliberately not cached: a trace is a function of your labels, so a stored one would silently disagree with a fresh run the moment a label changed.
+
 ```json
 {
   "mcpServers": {
@@ -106,7 +116,7 @@ All environment variables are optional. See [`.env.example`](.env.example) for t
 
 ## Move decompiler (optional)
 
-51 of the 52 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+52 of the 53 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -141,7 +151,7 @@ Then add its absolute path to your client config:
 
 If you already cloned this repo, `npm run build:decompiler` does the same clone and build and copies the result to `bin/move-decompiler`.
 
-Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 51 tools are unaffected.
+Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 52 tools are unaffected.
 
 ## Running from source
 
@@ -169,7 +179,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (52)
+## Tools (53)
 
 ### Recommended Starting Points
 
@@ -305,6 +315,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
 | `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains and reports shared funders |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
+| `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
 | `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |

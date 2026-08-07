@@ -40,12 +40,44 @@ testnet value to mainnet).
   against `getNetwork()` on every access, so the same imported reference targets
   whichever network the active call selected. Clients are built lazily and cached
   per network. `getNetwork()` reads the async context, falling back to the default.
-- `archive` (native gRPC) exists on mainnet only; on testnet/devnet it falls back
-  to the fullnode. Archive fallback pattern: try fullnode first, catch and retry
-  with archive.
 - Never use JSON-RPC. Fullnode JSON-RPC is deprecated/removed; all on-chain reads
   go through gRPC (`@mysten/sui/grpc`) or GraphQL. `@mysten/sui/client` may only be
   imported for types (`import type`), never as a runtime client.
+
+### Which transport to use
+
+Pick by the *shape of the read*, not by preference:
+
+| Read shape | Transport | Why |
+|---|---|---|
+| Point lookup by key (object ID, tx digest, checkpoint, epoch, package) | **gRPC** (`sui`) | `ledgerService` is get-by-key and lower latency; there is no filter API to need. |
+| Filtered or paginated set (txs by sender, events by type, holders, NFTs) | **GraphQL** (`gqlQuery`) | Only GraphQL exposes filter arguments and cursors. Max page size is 50. |
+| Anything historical enough to be pruned | **gRPC via `withArchiveFallback`** | See below. |
+| Non-Sui service (Aftermath, Pyth, MVR) | `fetch` + `EXTERNAL_HTTP_TIMEOUT_MS` | `fetch` has no default timeout; always pass the shared one. |
+
+If both transports could serve a read, prefer gRPC — GraphQL's 50-item page cap
+turns anything list-shaped into a pagination loop.
+
+### Archive fallback
+
+`archive` exists on **mainnet and testnet**; devnet has none, so `getClients()`
+returns the fullnode client under both names there.
+
+The archives speak **native gRPC over TLS, not gRPC-Web**, so `NetworkConfig.archive`
+is a `host:port` target for `GrpcTransport`, not an `https://` URL like the other
+endpoints. That inconsistency is load-bearing: a gRPC-Web client aimed at
+`https://archive.mainnet.sui.io` gets a 404. Don't "fix" it.
+
+Do not hand-roll the fallback. Use `withArchiveFallback(call, isEmpty)` from
+`src/utils/archive-fallback.ts`.
+
+Pruned and nonexistent data both surface as a gRPC **`NOT_FOUND` throw**, not as
+an empty response — verified against mainnet for `getObject`, `getTransaction`,
+`getCheckpoint` and `getEpoch`. The throw path is therefore the one that matters.
+The `isEmpty` predicate guards the other shape (a response missing the field the
+caller needs); no probe has made it fire, so keep it narrow and don't design
+around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
+the fullnode there.
 
 ## Commands
 

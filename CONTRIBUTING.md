@@ -39,6 +39,44 @@ npm test
 - Include a short description of what changed and why.
 - Make sure CI passes (type check + tests on Node 20 and 22).
 
+## Keeping the protocol registry current
+
+`src/data/protocols.json` maps package IDs to protocols, and it drifts two ways:
+new protocols launch, and — the one that bites — **existing protocols upgrade**.
+A package upgrade produces a new package ID, so a protocol we already support
+silently stops decoding, with no error and no signal.
+
+```bash
+npm run find-unknown-packages              # sample mainnet, rank unknowns by call count
+npm run find-unknown-packages -- --checkpoints 100 --network testnet
+```
+
+The script samples recent checkpoints, filters out packages already in the
+registry, and ranks what's left by how often it was actually called, so the
+top of the list is what users are most likely to hit. It prints
+ready-to-edit `protocols.json` stubs but never writes to the registry:
+identifying the protocol behind an address and choosing its category are
+judgement calls.
+
+Before adding an entry, get evidence — never assert a package ID from memory:
+
+- **Move Registry**: `https://mainnet.mvr.mystenlabs.com/v1/resolution/@org/app`
+  returns the authoritative `package_id`. This is the best source when it works.
+- **On-chain module list**: query `package(address:){ modules { nodes { name } } }`
+  over GraphQL. Module names are usually self-identifying (`alphafi_*`,
+  `batch_price_attestation`, `guardian_set`).
+
+MVR coverage is thin — roughly half of even our own curated registry is
+unregistered, and some large protocols (AlphaFi) have no MVR presence at all.
+That is why the registry is hand-maintained and MVR is only a fallback:
+`lookupProtocolDisplay` will show an MVR name for an unknown package, but
+`lookupProtocol` stays curated-only because fund tracing makes pass-through
+decisions from it.
+
+`test/protocols-data.test.ts` checks the JSON against the `ProtocolType` union
+(plain JSON is otherwise unchecked by tsc), so adding a category means adding it
+in both `registry.ts` and that test's list.
+
 ## Releasing
 
 The npm package is `sui-analytics-mcp`; the MCP Registry entry is

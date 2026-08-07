@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Testnet never used its archive.** `archive.testnet.sui.io` exists, but the
+  config had testnet as archive-less, so every testnet call silently fell back
+  to the fullnode and returned `NOT_FOUND` for anything pruned. Testnet reads of
+  historical epochs, checkpoints, objects and transactions now work.
+- MVR requests had no timeout, unlike every other external call. An
+  unresponsive registry hung the tool call for ~300s instead of 10.
+- SpringSui was categorized as `lending`; it is a liquid staking protocol.
+
+### Added
+- Move Registry fallback for unknown packages. Decoded output now shows an MVR
+  name (`@deepbook/core`) instead of a truncated address. Display only —
+  `lookupProtocol`, which fund tracing uses to decide pass-through addresses,
+  stays curated-only so a registered name can't change where a trace stops.
+- `npm run find-unknown-packages` samples recent checkpoints and ranks packages
+  missing from the registry by call count. Catches protocol upgrades, which
+  otherwise degrade decoding silently.
+- 27 protocol package IDs, each resolved via Move Registry or verified against
+  its on-chain module list: AlphaFi, Volo, Momentum, Mole, Kai Finance, Ember,
+  WaterX, Pyth, Wormhole, plus current package IDs for DeepBook, Cetus,
+  Bluefin, FlowX, Bucket, SpringSui and Haedal that had drifted past the
+  registry. New categories: `oracle`, `bridge`, `yield`, `farm`, `rwa`.
+- `EXTERNAL_HTTP_TIMEOUT_MS` — one timeout policy for all non-Sui HTTP calls.
+- `test/protocols-data.test.ts` validates the registry JSON against the
+  `ProtocolType` union, which tsc cannot check.
+
+### Changed
+- The four hand-inlined fullnode→archive fallbacks are now one tested helper,
+  `withArchiveFallback`. This is a consolidation, not a bug fix: all four call
+  sites already handled the case that actually occurs. Probing mainnet shows
+  pruned and nonexistent data throw gRPC `NOT_FOUND` rather than resolving with
+  an empty payload, so the pre-existing empty-result retries in `get_object`,
+  `get_checkpoint` and `get_chain_info` appear to be unreachable, and
+  `get_transaction` lacking one was not a defect. The helper keeps that
+  defensive path and skips both retries on devnet, where `archive` is the same
+  client as the fullnode and the second call was a duplicate request.
+- `CLAUDE.md` documents which transport to use for which read shape. The
+  gRPC/GraphQL split was consistent in practice but written down nowhere.
+
 ## 1.0.0 (2026-08-07)
 
 First release published to npm and the [MCP Registry](https://registry.modelcontextprotocol.io).

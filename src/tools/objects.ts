@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { sui, archive } from "../clients/grpc.js";
+import { sui } from "../clients/grpc.js";
+import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { clampPageSize } from "../utils/pagination.js";
 import { protoValueToJson } from "../utils/proto.js";
 import { formatOwner } from "../utils/formatting.js";
@@ -42,17 +43,13 @@ export function registerObjectTools(server: McpServer) {
         version: version ? BigInt(version) : undefined,
         readMask,
       };
-      let res;
-      try {
-        ({ response: res } = await sui.ledgerService.getObject(req));
-      } catch {
-        ({ response: res } = await archive.ledgerService.getObject(req));
-      }
-      if (!res.object && version) {
-        try {
-          ({ response: res } = await archive.ledgerService.getObject(req));
-        } catch { /* keep fullnode result */ }
-      }
+      // Only a versioned read is expected to hit pruned state; the latest
+      // version of a live object being absent means it genuinely doesn't exist,
+      // and asking the archive would just cost a round trip to learn the same.
+      const res = await withArchiveFallback(
+        (client) => client.ledgerService.getObject(req),
+        (r) => !r.object && !!version,
+      );
       const obj = res.object;
       const content = protoValueToJson(obj?.json);
       const display = extractDisplay(content);

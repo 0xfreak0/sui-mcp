@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Transaction } from "@mysten/sui/transactions";
-import { lookupProtocol, lookupOperation } from "../protocols/registry.js";
+import { lookupProtocolDisplay, lookupOperation, prefetchProtocolNames } from "../protocols/registry.js";
 import { flagPtbAnomalies, type FormattedCommand } from "../utils/ptb-anomalies.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -35,7 +35,7 @@ function formatCommand(cmd: { $kind: string } & Record<string, unknown>): Record
         typeArguments?: string[];
         arguments?: Array<{ $kind: string } & Record<string, unknown>>;
       };
-      const protocol = lookupProtocol(mc.package);
+      const protocol = lookupProtocolDisplay(mc.package);
       const operation = lookupOperation(mc.module, mc.function);
       return {
         type: "MoveCall",
@@ -154,6 +154,14 @@ export function registerDecodeTools(server: McpServer) {
     async ({ transaction_bcs }) => {
       const tx = Transaction.from(transaction_bcs);
       const data = tx.getData();
+
+      // The SDK's Transaction shape differs from the gRPC one, so package IDs
+      // are collected here rather than via collectPackageIds.
+      await prefetchProtocolNames(
+        data.commands
+          .filter((c) => c.$kind === "MoveCall")
+          .map((c) => (c as { MoveCall: { package: string } }).MoveCall.package),
+      );
 
       const commands = data.commands.map(formatCommand);
       const inputs = data.inputs.map(formatPureInput);

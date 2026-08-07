@@ -1,10 +1,12 @@
 import { z } from "zod";
-import { sui, archive } from "../clients/grpc.js";
+import { sui } from "../clients/grpc.js";
 import { formatStatus, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
+import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
-import { decodeTransaction } from "../protocols/decoder.js";
+import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { prefetchProtocolNames } from "../protocols/registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerTransactionTools(server: McpServer) {
@@ -24,12 +26,12 @@ export function registerTransactionTools(server: McpServer) {
           ],
         },
       };
-      let res: GrpcTypes.GetTransactionResponse;
-      try {
-        ({ response: res } = await sui.ledgerService.getTransaction(req));
-      } catch {
-        ({ response: res } = await archive.ledgerService.getTransaction(req));
-      }
+      // Pruned digests come back as a NOT_FOUND throw, which the helper's catch
+      // path routes to the archive. The emptiness predicate is belt-and-braces.
+      const res: GrpcTypes.GetTransactionResponse = await withArchiveFallback(
+        (client) => client.ledgerService.getTransaction(req),
+        (r) => !r.transaction,
+      );
 
       const tx = res.transaction;
       const effects = tx?.effects;
@@ -41,6 +43,7 @@ export function registerTransactionTools(server: McpServer) {
       let decoded;
       if (kind?.data.oneofKind === "programmableTransaction") {
         const ptb = kind.data.programmableTransaction;
+        await prefetchProtocolNames(collectPackageIds(ptb.commands));
         decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
       } else if (kind?.data.oneofKind) {
         decoded = {

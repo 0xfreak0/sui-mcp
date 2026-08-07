@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
-import { decodeTransaction } from "../protocols/decoder.js";
+import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { prefetchProtocolNames } from "../protocols/registry.js";
 import { batchResolveNames } from "../utils/names.js";
 import { getLabel } from "../utils/labels.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
@@ -75,6 +76,12 @@ async function fetchAddressEntries(
       afterCp,
       beforeCp,
     });
+    // One bulk MVR lookup per page, ahead of the synchronous decode loop.
+    await prefetchProtocolNames(
+      data.transactions.nodes.flatMap((node) =>
+        collectPackageIds(adaptCommands(node.kind?.commands?.nodes ?? [])),
+      ),
+    );
     for (const node of data.transactions.nodes) {
       const sender = node.sender?.address ?? null;
       const bcNodes = node.effects?.balanceChanges?.nodes ?? [];

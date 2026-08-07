@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { batchResolveNames } from "../utils/names.js";
-import { lookupProtocol } from "../protocols/registry.js";
+import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { getLabel, isSink } from "../utils/labels.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
 import {
@@ -13,7 +13,7 @@ import {
   usdValue,
   type PricePoint,
 } from "../utils/valuation.js";
-import { decodeTransaction } from "../protocols/decoder.js";
+import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -353,6 +353,10 @@ export function registerTraceTools(server: McpServer) {
       // A pool/protocol address is a pass-through, not a real destination —
       // funds routed through a DEX belong to the actor, not the pool.
       const isPassThrough = (addr: string): boolean => {
+        // Curated lookup only, deliberately. Treating an address as a
+        // pass-through makes the trace walk through it, so widening this with
+        // runtime-resolved MVR names would let anyone who registers a name
+        // change where a fund trace stops.
         if (lookupProtocol(addr)) return true;
         const cat = getLabel(addr)?.category;
         return cat === "protocol" || cat === "defi";
@@ -378,6 +382,9 @@ export function registerTraceTools(server: McpServer) {
         // Decode protocol actions
         const commands = adaptCommands(tx.commandNodes);
         const grpcBc = adaptBalanceChanges(tx.balanceChangeNodes);
+        // Per-hop rather than batched: hops are discovered one at a time, so
+        // there is no earlier point at which the package set is known.
+        await prefetchProtocolNames(collectPackageIds(commands));
         const decoded = decodeTransaction(commands, grpcBc, sender ?? undefined);
 
         const hopResult: HopResult = {
@@ -445,7 +452,8 @@ export function registerTraceTools(server: McpServer) {
         const label: (typeof addressLabels)[string] = {};
         const name = nameMap.get(addr);
         if (name) label.name = name;
-        const proto = lookupProtocol(addr);
+        // Display-only enrichment of the address label, so an MVR name is fine.
+        const proto = lookupProtocolDisplay(addr);
         if (proto) label.protocol = proto.name;
         const known = getLabel(addr);
         if (known) {
@@ -495,7 +503,7 @@ export function registerTraceTools(server: McpServer) {
             ...bc,
             formatted: formatAmount(bc.amount, bc.coin_type),
             name: nameMap.get(bc.address) ?? null,
-            protocol: lookupProtocol(bc.address)?.name ?? null,
+            protocol: lookupProtocolDisplay(bc.address)?.name ?? null,
             usd_value: price != null ? Number(usd.toFixed(2)) : null,
             // Unit price actually used and the exact Pyth sample time — makes the
             // valuation auditable (it's the transaction-second price, not a daily avg).

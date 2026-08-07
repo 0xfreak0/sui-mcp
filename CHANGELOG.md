@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.3.0 (2026-08-07)
+
+Everything here came out of a real investigation — ranking AlphaLend wallets by
+flow and attributing their funding — where the walls hit were specific enough
+to fix.
+
+### Fixed
+- **`query_events` reported the wrong event type.** It used
+  `transactionModule.fullyQualifiedName`, the module whose function was
+  *called*, not the event's own struct. Through an aggregator those are
+  different packages: a DeepBook `OrderCanceled` came back labelled with the
+  router's module, and `DepositEvent` was indistinguishable from `BorrowEvent`
+  in the same page. Now reports the real struct type, with the old value kept
+  as `emitting_module`.
+- **`enable_tools` described profiles in prose, not tool names.** "DeepBook
+  order book and fills" never matched a search for `deepbook_trades`, so an
+  agent reimplemented a gated tool by hand instead of enabling it. The gate now
+  lists every tool name — a disabled tool is only reachable if its name is
+  visible.
+
+### Added
+- `get_address_fanout` — how many distinct addresses a funder has paid.
+  Shared ancestry is the classic false positive in attribution: several wallets
+  tracing to one funder looks decisive until the funder turns out to have
+  ~29,000 recipients and be an exchange. Returns a classification
+  (`hub` / `distributor` / `narrow`) so the reading comes with the number.
+- `find_funding_sources` — batch attribution for up to 100 addresses, sharing
+  a memo across the batch. Funding chains converge hard, so per-address calls
+  re-derive the same ancestors repeatedly. Reports funders shared across the
+  batch and measures their fan-out, which a per-address call cannot see.
+  `depth: "first_hop"` skips the tail, which reliably dead-ends in 2023-era
+  distribution wallets.
+- `query_transactions` now returns `gas_sponsor` and `gas_sponsored`. Sponsored
+  gas is one of the strongest coordination signals on Sui and was invisible in
+  every tool.
+- `query_transactions` gains `include_functions`, returning every Move call in
+  a transaction plus `matched_calls` / `total_calls`.
+- `deepbook_trades` reports `truncated` when it returns a full page. The
+  indexer has no cursor, so a full page was previously indistinguishable from
+  "that was all of them".
+
+### Changed
+- `query_transactions`' description now carries an attribution warning: the
+  `function` filter matches PTBs where the package is one leg among several,
+  and transaction balance changes cover the whole PTB. Summing them per
+  protocol over-attributes — in the investigation above, a Bluefin LP open was
+  counted as AlphaLend volume. A live check on a Cetus-filtered transaction
+  shows `matched_calls: 3 / 12`, so the over-attribution is now measurable
+  rather than assumed.
+
 ## 1.2.0 (2026-08-07)
 
 Minor, and it changes default behaviour: the server now starts with 17 tools

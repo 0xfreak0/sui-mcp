@@ -19,7 +19,7 @@ Add this to your MCP client config — Claude Code, Claude Desktop, Cursor, or a
 }
 ```
 
-No account, API key, or config file is required. The server reads public Sui endpoints and defaults to mainnet. Requires Node.js >= 20.
+No account, API key, or config file is required. The server reads public Sui endpoints and defaults to mainnet. Requires Node.js >= 22.13.
 
 ## Tool profiles
 

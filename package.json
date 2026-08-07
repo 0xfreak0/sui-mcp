@@ -49,7 +49,7 @@
   },
   "homepage": "https://github.com/0xfreak0/sui-mcp#readme",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",

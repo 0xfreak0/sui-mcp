@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import {
   deleteLabel,
   getCachedFanout,
@@ -35,6 +36,23 @@ const enable = () => {
   initStore();
 };
 
+/**
+ * Is node:sqlite present on this runtime?
+ *
+ * The package requires Node >= 22.13, but the tests should still say something
+ * true when run somewhere older rather than failing with a misleading
+ * assertion. The "enabled" suite below is skipped there; the degradation suite
+ * runs everywhere and is the behaviour that matters on an unsupported runtime.
+ */
+const hasSqlite = (() => {
+  try {
+    createRequire(import.meta.url)("node:sqlite");
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 describe("store disabled (the default)", () => {
   beforeEach(() => {
     delete process.env.SUI_STORE_PATH;
@@ -61,7 +79,7 @@ describe("store disabled (the default)", () => {
   });
 });
 
-describe("store enabled", () => {
+describe.skipIf(!hasSqlite)("store enabled", () => {
   it("creates the database and reports its path", () => {
     enable();
     const s = storeStatus();
@@ -137,8 +155,20 @@ describe("store enabled", () => {
   });
 });
 
+describe("unsupported runtime", () => {
+  // The store must be an enhancement, never a requirement: on a Node without
+  // node:sqlite the server has to keep working with persistence simply off.
+  it.skipIf(hasSqlite)("degrades to disabled when node:sqlite is missing", () => {
+    enable();
+    const s = storeStatus();
+    expect(s.enabled).toBe(false);
+    expect(loadLabels()).toEqual([]);
+    expect(saveLabel({ address: "0xa", label: "X", category: "cex", confidence: null, notes: null })).toBe(false);
+  });
+});
+
 describe("store failure handling", () => {
-  it("degrades to disabled instead of throwing on an unopenable path", () => {
+  it.skipIf(!hasSqlite)("degrades to disabled instead of throwing on an unopenable path", () => {
     // A directory that does not exist: the server must keep running.
     process.env.SUI_STORE_PATH = join(dir, "no", "such", "dir", "store.db");
     resetStore();

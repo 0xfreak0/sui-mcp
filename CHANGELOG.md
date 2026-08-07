@@ -2,6 +2,11 @@
 
 ## 1.4.0 (2026-08-07)
 
+### Changed
+- **Minimum Node is now 22.13.** `node:sqlite` (which backs the optional store)
+  landed in 22.5 and stopped needing a flag in 22.13, and Node 20 reached EOL on
+  2026-04-30. CI's matrix moves from 20/22 to 22/24.
+
 ### Added
 - **`aggregate_events`** — rank wallets or event types by activity or value over
   a time window, in one call instead of paginating thousands of events by hand.

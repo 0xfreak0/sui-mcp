@@ -26,6 +26,8 @@
  */
 
 import { createRequire } from "node:module";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 export interface FanoutRecord {
   address: string;
@@ -98,6 +100,16 @@ export function initStore(): void {
     const { DatabaseSync } = req("node:sqlite") as {
       DatabaseSync: new (p: string) => DatabaseLike;
     };
+
+    // Create the parent directory. Someone who sets SUI_STORE_PATH to
+    // ~/.local/share/sui-mcp/store.db means "keep a store there", and failing
+    // because the directory is one level short would be a silent disable over
+    // something we can just do. Only the parent — never the file.
+    const parent = dirname(path);
+    if (parent && parent !== "." && !existsSync(parent)) {
+      mkdirSync(parent, { recursive: true });
+    }
+
     const opened = new DatabaseSync(path);
     opened.exec(SCHEMA);
     db = opened;

@@ -9,12 +9,47 @@ import { tmpdir } from "node:os";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+/**
+ * Bounds on `all_modules`, which is the expensive path: it shells out once per
+ * module, and both the module count and the bytecode size are chosen by whoever
+ * published the package. Without a ceiling, a package with a few hundred
+ * modules turns one tool call into tens of minutes of subprocesses and hundreds
+ * of megabytes buffered in memory before serialization — a denial of service
+ * that costs an attacker one publish.
+ *
+ * Every limit is reported in the response rather than applied silently, so a
+ * truncated result can never be mistaken for a complete one.
+ */
+export const DECOMPILE_LIMITS = {
+  /** Modules decompiled in a single all_modules call. */
+  maxModules: 32,
+  /** Wall-clock budget for the whole call, checked between modules. */
+  totalTimeoutMs: 120_000,
+  /** Combined source bytes retained before the run stops early. */
+  maxTotalOutputBytes: 8 * 1024 * 1024,
+  /** Per-subprocess limits, enforced by execFile itself. */
+  perModuleTimeoutMs: 30_000,
+  perModuleOutputBytes: 5 * 1024 * 1024,
+} as const;
+
+/**
+ * Decide which modules a single call will attempt. Split out from the loop so
+ * the ceiling is testable without invoking a decompiler binary.
+ */
+export function planModuleBatch<T>(modules: T[]): { selected: T[]; skipped: number } {
+  const selected = modules.slice(0, DECOMPILE_LIMITS.maxModules);
+  return { selected, skipped: modules.length - selected.length };
+}
+
 function runDecompiler(bytecodeFile: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       DECOMPILER_PATH,
       ["-b", bytecodeFile],
-      { timeout: 30_000, maxBuffer: 5 * 1024 * 1024 },
+      {
+        timeout: DECOMPILE_LIMITS.perModuleTimeoutMs,
+        maxBuffer: DECOMPILE_LIMITS.perModuleOutputBytes,
+      },
       (err, stdout, stderr) => {
         if (err) {
           const msg = stderr || err.message;
@@ -51,10 +86,30 @@ async function fetchPackageModules(packageId: string) {
   return response.object?.package;
 }
 
+/**
+ * Move identifiers are `[a-zA-Z_][a-zA-Z0-9_]*` — no dots, no separators.
+ *
+ * Module names arrive from on-chain package data, i.e. from whoever published
+ * the package, by way of whatever RPC endpoint the user configured. Anything
+ * that reaches `join()` from that source is untrusted input: a name like
+ * `../../../evil` would place an attacker-controlled write outside the temp
+ * directory. The Move verifier should make that impossible, but "the remote
+ * side promised" is not a boundary, and this costs one regex.
+ */
+export function isValidModuleName(name: string | undefined): name is string {
+  return !!name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 async function decompileModule(
   mod: GrpcTypes.Module,
   dir: string
 ): Promise<string> {
+  if (!isValidModuleName(mod.name)) {
+    throw new Error(
+      `Refusing to decompile module with an invalid name: ${JSON.stringify(mod.name)}. ` +
+        "Move identifiers are letters, digits and underscores only.",
+    );
+  }
   const mvFile = join(dir, `${mod.name}.mv`);
   try {
     await writeFile(mvFile, mod.contents!);
@@ -111,10 +166,42 @@ export function registerDecompilerTools(server: McpServer) {
           return errorResult("Package has no modules with bytecode");
         }
 
+        const { selected, skipped } = planModuleBatch(modulesWithBytecode);
+        const notes: string[] = [];
+        if (skipped > 0) {
+          notes.push(
+            `Package has ${modulesWithBytecode.length} modules with bytecode; ` +
+              `decompiled the first ${selected.length}. Request the remaining ${skipped} ` +
+              "individually with module_name.",
+          );
+        }
+
         const results: { module: string; source: string }[] = [];
-        for (const mod of modulesWithBytecode) {
+        const startedAt = Date.now();
+        let totalBytes = 0;
+
+        for (const mod of selected) {
+          // Both budgets are checked between modules rather than mid-subprocess:
+          // execFile already bounds a single module, so the only unbounded axis
+          // is how many of them we agree to run.
+          if (Date.now() - startedAt > DECOMPILE_LIMITS.totalTimeoutMs) {
+            notes.push(
+              `Stopped after ${results.length} of ${selected.length} modules: exceeded the ` +
+                `${DECOMPILE_LIMITS.totalTimeoutMs / 1000}s budget for one call.`,
+            );
+            break;
+          }
+          if (totalBytes > DECOMPILE_LIMITS.maxTotalOutputBytes) {
+            notes.push(
+              `Stopped after ${results.length} of ${selected.length} modules: output exceeded ` +
+                `${DECOMPILE_LIMITS.maxTotalOutputBytes / 1024 / 1024}MB.`,
+            );
+            break;
+          }
+
           try {
             const source = await decompileModule(mod, dir);
+            totalBytes += source.length;
             results.push({ module: mod.name!, source });
           } catch (err) {
             results.push({
@@ -132,6 +219,11 @@ export function registerDecompilerTools(server: McpServer) {
                 {
                   package_id: pkg.storageId,
                   module_count: results.length,
+                  // Surfaced so a truncated result is never mistaken for the
+                  // whole package — silence here would be the actual bug.
+                  total_modules_with_bytecode: modulesWithBytecode.length,
+                  complete: results.length === modulesWithBytecode.length,
+                  ...(notes.length ? { notes } : {}),
                   suivision_url: suivisionPackageUrl(package_id),
                   modules: results,
                 },

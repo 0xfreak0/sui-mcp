@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- `decompile_module` built a temp-file path from the on-chain module name
+  without validating it (`join(dir, \`${mod.name}.mv\`)`). Module names come
+  from whoever published the package, relayed by whatever RPC the user
+  configured, so a name like `../../../evil` was an arbitrary file write with
+  attacker-controlled contents. Move's verifier should prevent it, but a
+  hostile `SUI_FULLNODE_URL` removes that guarantee. Names are now checked
+  against the Move identifier grammar before touching the filesystem.
+- Bounded `all_modules`, which previously ran one subprocess per module with no
+  ceiling on either count or total output — a package with a few hundred
+  modules turned one call into tens of minutes and hundreds of megabytes
+  buffered in memory. Now capped at 32 modules, a 120s whole-call budget and
+  8MB of combined output, with `complete: false` and a `notes` array in the
+  response so a truncated result is never mistaken for a full one.
+
 ## 1.1.0 (2026-08-07)
 
 Minor rather than patch: `protocol_type` can now return categories that did not

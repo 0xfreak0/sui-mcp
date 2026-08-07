@@ -126,11 +126,23 @@ export function registerDeepBookTools(server: McpServer) {
           : await fetchTrades(pool.pool_name, base);
 
         const volume = trades.reduce((a, t) => a + (t.base_volume ?? 0), 0);
+        const cap = limit ?? 50;
         return ok({
           pool_name: pool.pool_name,
           base: pool.base_asset_symbol,
           quote: pool.quote_asset_symbol,
           trade_count: trades.length,
+          // Explicit, because the indexer has no cursor: a full page is
+          // indistinguishable from "that was all of them" unless we say so.
+          // Narrow start_time/end_time to walk further back.
+          truncated: trades.length >= cap,
+          ...(trades.length >= cap
+            ? {
+                truncation_note:
+                  `Returned the maximum ${cap} trades. There are probably more in this window — ` +
+                  "narrow start_time/end_time and page through by time.",
+              }
+            : {}),
           total_base_volume: round(volume, 6),
           ...(balance_manager_id ? { filtered_by_balance_manager: balance_manager_id } : {}),
           trades: trades.map((t) => ({

@@ -102,7 +102,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query raw Sui transactions with specific filters (sender, affected address/object, function, checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). For human-readable wallet activity, prefer get_transaction_history instead.",
+    "Query raw Sui transactions with specific filters (sender, affected address/object, function, checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). For human-readable wallet activity, prefer get_transaction_history instead.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes — a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
     {
       sender: z.string().optional().describe("Filter by sender address"),
       affected_address: z
@@ -127,6 +127,12 @@ export function registerTransactionTools(server: McpServer) {
         .describe("Only transactions before this checkpoint"),
       limit: z.number().optional().describe("Max results (default 20)"),
       after: z.string().optional().describe("Pagination cursor"),
+      include_functions: z
+        .boolean()
+        .optional()
+        .describe(
+          "Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB.",
+        ),
     },
     async ({
       sender,
@@ -137,6 +143,7 @@ export function registerTransactionTools(server: McpServer) {
       before_checkpoint,
       limit,
       after,
+      include_functions,
     }) => {
       // Sui GraphQL only allows one of these per query
       const exclusiveFilters = [
@@ -161,12 +168,24 @@ export function registerTransactionTools(server: McpServer) {
       if (before_checkpoint)
         filterParts.beforeCheckpoint = parseInt(before_checkpoint);
 
+      // Commands are only selected on request: they multiply response size on
+      // a page of 50, and most callers only want the digest list.
+      const includeFns = include_functions
+        ? `kind { ... on ProgrammableTransaction {
+             commands(first: 25) { nodes { ... on MoveCallCommand {
+               function { name module { name package { address } } }
+             } } }
+           } }`
+        : "";
+
       const query = `
         query($filter: TransactionFilter, $first: Int, $after: String) {
           transactions(filter: $filter, first: $first, after: $after) {
             nodes {
               digest
               sender { address }
+              gasInput { gasSponsor { address } }
+              ${includeFns}
               effects {
                 status
                 gasEffects {
@@ -197,6 +216,14 @@ export function registerTransactionTools(server: McpServer) {
           nodes: Array<{
             digest: string;
             sender?: { address: string };
+            gasInput?: { gasSponsor?: { address: string } | null };
+            kind?: {
+              commands?: {
+                nodes: Array<{
+                  function?: { name: string; module: { name: string; package: { address: string } } };
+                }>;
+              };
+            };
             effects?: {
               status: string;
               gasEffects?: {
@@ -214,13 +241,38 @@ export function registerTransactionTools(server: McpServer) {
         };
       }>(query, variables);
 
-      const transactions = data.transactions.nodes.map((n) => ({
-        digest: n.digest,
-        sender: n.sender?.address,
-        status: n.effects?.status,
-        checkpoint: n.effects?.checkpoint?.sequenceNumber,
-        timestamp: n.effects?.timestamp,
-      }));
+      const transactions = data.transactions.nodes.map((n) => {
+        const sponsor = n.gasInput?.gasSponsor?.address ?? null;
+        const calls = (n.kind?.commands?.nodes ?? [])
+          .filter((c) => c.function)
+          .map((c) => `${c.function!.module.package.address}::${c.function!.module.name}::${c.function!.name}`);
+
+        return {
+          digest: n.digest,
+          sender: n.sender?.address,
+          status: n.effects?.status,
+          checkpoint: n.effects?.checkpoint?.sequenceNumber,
+          timestamp: n.effects?.timestamp,
+          gas_sponsor: sponsor,
+          // Sponsorship is one of the stronger coordination signals on Sui: a
+          // swarm of wallets whose gas is paid by one address is not organic.
+          // The sponsor equals the sender for ordinary self-paid transactions.
+          gas_sponsored: sponsor !== null && sponsor !== n.sender?.address,
+          ...(include_functions
+            ? {
+                move_calls: calls,
+                // How much of this PTB belongs to the filtered package, so
+                // over-attribution is visible instead of assumed.
+                ...(fn
+                  ? {
+                      matched_calls: calls.filter((c) => c.startsWith(fn.split("::")[0])).length,
+                      total_calls: calls.length,
+                    }
+                  : {}),
+              }
+            : {}),
+        };
+      });
 
       return {
         content: [

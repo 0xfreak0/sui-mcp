@@ -100,16 +100,23 @@ export function registerToolsetTool(
   handles: ToolHandles,
   state: { active: Set<ProfileName> },
 ): void {
+  // Tool NAMES, not just prose. A summary reading "DeepBook order book and
+  // fills" does not match a search for `deepbook_trades`, and an agent that
+  // can't see a disabled tool has only this text to learn it exists — one
+  // reimplemented a gated tool from scratch rather than enabling it. The extra
+  // ~250 tokens buy back the whole point of the gate.
   const catalogue = PROFILE_NAMES.map(
-    (p) => `'${p}' (${PROFILES[p].length} tools): ${PROFILE_SUMMARIES[p]}`,
-  ).join(" | ");
+    (p) => `'${p}' — ${PROFILE_SUMMARIES[p]}. Tools: ${PROFILES[p].join(", ")}`,
+  ).join("\n");
 
   server.tool(
     "enable_tools",
     "Turn on additional Sui tool profiles for this session. This server ships a small default " +
-      "tool surface and keeps the rest one call away, so start here whenever the capability you " +
-      `need is not in your current tool list. Profiles: ${catalogue}. ` +
-      "Use 'all' for everything. Newly enabled tools become callable immediately.",
+      "tool surface and keeps the rest one call away. Call this FIRST whenever the capability " +
+      "you need is not in your current tool list — the tool probably exists and is simply " +
+      "disabled. Do not reimplement a listed tool by hand.\n\n" +
+      `${catalogue}\n\n` +
+      "Use 'all' for everything. Newly enabled tools are callable immediately.",
     {
       profile: z
         .union([z.enum(PROFILE_NAMES as [ProfileName, ...ProfileName[]]), z.literal("all")])

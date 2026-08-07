@@ -19,9 +19,17 @@ function runDecompiler(bytecodeFile: string): Promise<string> {
         if (err) {
           const msg = stderr || err.message;
           if (msg.includes("ENOENT")) {
+            // The binary is never bundled: it's a ~3.5MB platform-specific Rust
+            // build, so an npm tarball could only ever ship the wrong arch. The
+            // build script that produces it lives in the git repo and is not in
+            // the published `files` list, so an npx/npm install has no local
+            // copy to point at — hence the repo URL rather than a relative path.
             reject(
               new Error(
-                "move-decompiler binary not found. Run scripts/build-decompiler.sh and set SUI_DECOMPILER_PATH."
+                "move-decompiler binary not found. Build it from the repo " +
+                  "(https://github.com/0xfreak0/sui-mcp — `npm run build:decompiler`) " +
+                  "and set SUI_DECOMPILER_PATH to the resulting binary. " +
+                  "For bytecode-level output with no binary, use disassemble_module."
               )
             );
           } else {

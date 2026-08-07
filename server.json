@@ -1,0 +1,59 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.0xfreak0/sui-mcp",
+  "title": "Sui Analytics",
+  "description": "Read-only Sui blockchain analytics: 47 tools, protocol-aware tx decoding, no API keys or wallet.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/0xfreak0/sui-mcp",
+    "source": "github",
+    "id": "1185673085"
+  },
+  "websiteUrl": "https://github.com/0xfreak0/sui-mcp#readme",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "sui-analytics-mcp",
+      "version": "1.0.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SUI_NETWORK",
+          "description": "Default network when a tool call doesn't pass one. Every tool also takes a per-call network argument.",
+          "isRequired": false,
+          "format": "string",
+          "default": "mainnet",
+          "choices": ["mainnet", "testnet", "devnet"]
+        },
+        {
+          "name": "SUI_FULLNODE_URL",
+          "description": "Override the gRPC fullnode endpoint for the default network only.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "SUI_GRAPHQL_URL",
+          "description": "Override the GraphQL endpoint for the default network only.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "SUI_DECOMPILER_PATH",
+          "description": "Path to a locally built Revela move-decompiler binary. Only decompile_module needs it.",
+          "isRequired": false,
+          "format": "filepath"
+        },
+        {
+          "name": "SUI_LABELS_FILE",
+          "description": "JSON file of address attribution labels that overrides the shipped set for fund tracing.",
+          "isRequired": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}

@@ -2,53 +2,94 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for Sui blockchain analytics. 47 tools covering wallets, DeFi positions, NFTs, token prices, transaction decoding, incident investigation (labeled fund tracing, funding-source attribution, multi-address timelines, object provenance, PTB anomaly triage), pool discovery, staking, Move package analysis (disassembly + heuristic risk scan + capability audit + upgrade diffing, no external binary), optional Move bytecode decompilation, and Move Registry (MVR) name resolution.
+Read-only MCP server for Sui blockchain analytics. 47 tools for wallets, DeFi positions, NFTs, token prices, transaction decoding, Move package analysis, and incident investigation.
 
-- **No API keys, no wallet, no private keys** — connects to public Sui endpoints (mainnet by default)
+## Install
+
+Add this to your MCP client config — Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP over stdio:
+
+```json
+{
+  "mcpServers": {
+    "sui": {
+      "command": "npx",
+      "args": ["-y", "sui-analytics-mcp"]
+    }
+  }
+}
+```
+
+No account, API key, or config file is required. The server reads public Sui endpoints and defaults to mainnet. Requires Node.js >= 20.
+
+## No wallet, no keys
+
+The server has no credentials and no ability to move funds:
+
+- It never accepts a private key, mnemonic, or seed phrase. No tool takes one as an argument and nothing in the code reads one from the environment.
+- It never submits a transaction. `build_transfer` and `build_staking` return unsigned BCS bytes that you sign and broadcast somewhere else; `simulate_transaction` dry-runs bytes against a fullnode without executing them.
+- Every remaining tool is a read.
+- No provider accounts. RPC, indexing, and price data all come from public endpoints.
+
+## Capabilities
+
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
+- **Incident investigation** — labeled fund tracing, funding-source attribution, multi-address timelines, object provenance, PTB anomaly triage
+- **Move package analysis** — disassembly, heuristic risk scan, capability audit, and upgrade diffing, none of which need an external binary
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
 - **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
 - **Kiosk-aware** — resolves NFT ownership through Sui's kiosk system to actual wallet addresses
+- **Move Registry (MVR)** — resolves names like `@deepbook/core` to package addresses, and back
 
-Transaction building tools return unsigned bytes for external signing — the server never handles keys.
+## Configuration
 
-## Setup
+All environment variables are optional. See [`.env.example`](.env.example) for the full list; the common ones are `SUI_NETWORK` (default network), `SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (custom RPC endpoints), and `SUI_LABELS_FILE` (address attribution labels for fund tracing).
 
-Requires Node.js >= 20 (22+ recommended).
+```json
+{
+  "mcpServers": {
+    "sui": {
+      "command": "npx",
+      "args": ["-y", "sui-analytics-mcp"],
+      "env": { "SUI_NETWORK": "testnet" }
+    }
+  }
+}
+```
+
+## Running from source
 
 ```bash
+git clone https://github.com/0xfreak0/sui-mcp.git
+cd sui-mcp
 npm install
 npm run build
 ```
 
-### Move Decompiler (optional)
+Then point your client at the build output instead of npx:
 
-Reading and analyzing Move code works out of the box with no extra setup: `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint, and `analyze_package` summarizes a package's API and runs a heuristic risk scan. The decompiler below is only needed if you want higher-level, source-like output.
+```json
+{
+  "mcpServers": {
+    "sui": {
+      "command": "node",
+      "args": ["/absolute/path/to/sui-mcp/dist/index.js"]
+    }
+  }
+}
+```
 
-The `decompile_module` tool requires the Revela `move-decompiler` binary. Requires a Rust toolchain ([rustup.rs](https://rustup.rs/)).
+### Move decompiler (optional, source installs only)
+
+Reading and analyzing Move code works with no extra setup: `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint, and `analyze_package` summarizes a package's API and runs a heuristic risk scan. The decompiler is only needed for higher-level, source-like output from `decompile_module`.
+
+It is a separate Rust binary and is deliberately not bundled in the npm package — a published tarball could only ever carry one platform's build. Getting it requires a clone and a Rust toolchain ([rustup.rs](https://rustup.rs/)):
 
 ```bash
 npm run build:decompiler
 ```
 
-This clones [verichains/revela_sui](https://github.com/verichains/revela_sui), builds the decompiler, and copies the binary to `bin/move-decompiler`.
-
-<details>
-<summary>Manual setup</summary>
-
-```bash
-git clone --depth 1 https://github.com/verichains/revela_sui.git
-cd revela_sui/external-crates/move
-cargo build --release --bin move-decompiler
-```
-
-Then set `SUI_DECOMPILER_PATH` to the binary path.
-</details>
-
-## Installation
-
-Add to your MCP client config (Claude Code, Claude Desktop, Cursor, etc.):
+This clones [verichains/revela_sui](https://github.com/verichains/revela_sui), builds the decompiler, and copies the binary to `bin/move-decompiler`. Point `SUI_DECOMPILER_PATH` at it:
 
 ```json
 {
@@ -64,11 +105,21 @@ Add to your MCP client config (Claude Code, Claude Desktop, Cursor, etc.):
 }
 ```
 
-Replace `/absolute/path/to/sui-mcp` with the actual path to this repository. The `env` block is only needed for the decompilation tool — omit it if you don't need `decompile_module`.
+<details>
+<summary>Building the decompiler manually</summary>
 
-See [`.env.example`](.env.example) for optional environment variables (network selection, custom RPC endpoints).
+```bash
+git clone --depth 1 https://github.com/verichains/revela_sui.git
+cd revela_sui/external-crates/move
+cargo build --release --bin move-decompiler
+```
 
-## Tools (44)
+Then set `SUI_DECOMPILER_PATH` to the binary path.
+</details>
+
+An npx install can still use the decompiler by building the binary from a clone and pointing `SUI_DECOMPILER_PATH` at it. Without that variable the server looks for `move-decompiler` on `PATH`; if it isn't there, only `decompile_module` fails, and it says how to fix it. The other 46 tools are unaffected.
+
+## Tools (47)
 
 ### Recommended Starting Points
 

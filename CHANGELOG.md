@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (2026-08-07)
+
+Minor rather than patch: `protocol_type` can now return categories that did not
+exist in 1.0.0 (`oracle`, `bridge`, `yield`, `farm`, and `unknown` for
+runtime-resolved packages), and decoded output changes for packages the registry
+previously missed — a DeepBook call that rendered as a truncated address in
+1.0.0 now renders as a named action.
 
 ### Fixed
 - **Testnet never used its archive.** `archive.testnet.sui.io` exists, but the

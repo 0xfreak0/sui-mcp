@@ -20,4 +20,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
+      # Build before testing: the packaging tests run `npm pack --dry-run`,
+      # which reports what's on disk, so they need a real dist/ to inspect.
+      # It also means CI verifies the build actually emits, not just typechecks.
+      - run: npm run build
       - run: npm test

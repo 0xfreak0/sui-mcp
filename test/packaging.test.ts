@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { registerAllTools } from "../src/tools/index.js";
@@ -66,6 +66,14 @@ describe("npm tarball contents", () => {
   // would actually ship. `npm pack --dry-run` writes no tarball and needs no
   // registry credentials, so it is safe to run in CI.
   it("actually resolves to a tarball with the entrypoint and no vendored binary", () => {
+    // npm pack reports what is on disk, so this needs a build to have happened.
+    // Without the explicit check the failure reads as "dist/index.js missing
+    // from the tarball", which points at the files allowlist rather than at the
+    // real cause.
+    if (!existsSync(join(root, "dist/index.js"))) {
+      throw new Error("dist/ not built — run `npm run build` before `npm test`");
+    }
+
     const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
       cwd: root,
       encoding: "utf8",

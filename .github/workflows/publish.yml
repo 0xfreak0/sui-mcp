@@ -1,0 +1,70 @@
+name: Publish
+
+# Releases are cut by pushing a version tag. Everything below runs from a clean
+# checkout, which sidesteps the two ways a local `npm publish` goes wrong: a
+# stale dist/ from a build that predates your last edit, and `ignore-scripts=true`
+# in a personal .npmrc silently skipping the prepublishOnly guard.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Used twice: npm trusted publishing and `mcp-publisher login github-oidc`.
+      # Neither needs a stored secret.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # npm trusted publishing requires npm >= 11.5.1 / Node >= 22.14.
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+
+      # The tag is the source of truth for a release. If it disagrees with
+      # package.json, stop here rather than publishing a version nobody meant to
+      # cut — the registry would also reject the mismatched server.json later,
+      # but by then npm has already been published and npm versions are permanent.
+      - name: Check tag matches package.json
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag v$TAG_VERSION does not match package.json version $PKG_VERSION."
+            echo "Run 'npm run set-version -- $TAG_VERSION' and re-tag."
+            exit 1
+          fi
+
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+
+      # No NODE_AUTH_TOKEN: npm detects the OIDC environment and exchanges a
+      # short-lived token. Requires trusted publishing to be configured for this
+      # package on npmjs.com (Settings -> Trusted publisher -> this repo +
+      # workflow file). Without that config this step fails with an auth error.
+      - name: Publish to npm
+        run: npm publish
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Publish to MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+      # Installs from npm in a clean directory and completes an MCP handshake,
+      # so a tarball that publishes but won't start fails the release loudly
+      # instead of sitting broken on the registry.
+      - name: Verify the published package installs and starts
+        run: npm run verify:published

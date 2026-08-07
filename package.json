@@ -20,6 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:decompiler": "bash scripts/build-decompiler.sh",
+    "set-version": "node scripts/set-version.mjs",
+    "verify:published": "node scripts/verify-published.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [

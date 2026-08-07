@@ -15,7 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [20, 22]
+        # 22.13 is the floor: node:sqlite (used by the optional store) landed in
+        # 22.5 and stopped needing a flag in 22.13. Node 20 went EOL 2026-04-30.
+        node-version: [22, 24]
     steps:
       # SHA-pinned; see publish.yml for why. Comments record the tag.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

@@ -22,6 +22,13 @@ export interface NetworkConfig {
   archive: string | null;
   /** Move Registry base URL, or null on networks without MVR (devnet). */
   mvr: string | null;
+  /**
+   * DeepBook v3 indexer base URL, or null where none runs (devnet).
+   *
+   * Serves the order book, fills and OHLCV candles that cannot be reconstructed
+   * from chain reads without indexing every fill yourself. Unauthenticated.
+   */
+  deepbookIndexer: string | null;
 }
 
 const NETWORK_URLS: Record<SuiNetwork, Omit<NetworkConfig, "network">> = {
@@ -30,18 +37,21 @@ const NETWORK_URLS: Record<SuiNetwork, Omit<NetworkConfig, "network">> = {
     graphql: "https://graphql.mainnet.sui.io/graphql",
     archive: "archive.mainnet.sui.io:443",
     mvr: "https://mainnet.mvr.mystenlabs.com/v1",
+    deepbookIndexer: "https://deepbook-indexer.mainnet.mystenlabs.com",
   },
   testnet: {
     fullnode: "https://fullnode.testnet.sui.io",
     graphql: "https://graphql.testnet.sui.io/graphql",
     archive: "archive.testnet.sui.io:443",
     mvr: "https://testnet.mvr.mystenlabs.com/v1",
+    deepbookIndexer: "https://deepbook-indexer.testnet.mystenlabs.com",
   },
   devnet: {
     fullnode: "https://fullnode.devnet.sui.io",
     graphql: "https://graphql.devnet.sui.io/graphql",
     archive: null,
     mvr: null,
+    deepbookIndexer: null,
   },
 };
 
@@ -95,6 +105,7 @@ export function getNetworkConfig(network: SuiNetwork = getNetwork()): NetworkCon
     graphql: (isDefault ? process.env.SUI_GRAPHQL_URL : undefined) ?? urls.graphql,
     archive: urls.archive,
     mvr: (isDefault ? process.env.SUI_MVR_URL : undefined) ?? urls.mvr,
+    deepbookIndexer: urls.deepbookIndexer,
   };
 }
 

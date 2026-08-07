@@ -15,19 +15,24 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const indexSrc = readFileSync(join(root, "src/index.ts"), "utf8");
 
 /**
- * Every tool name `registerAllTools` registers. Uses the same recording-fake
- * technique as with-network.test.ts: the real McpServer would need a transport,
- * and all we want is the registration list.
+ * Every capability tool `registerAllTools` registers. Uses the same
+ * recording-fake technique as with-network.test.ts: the real McpServer would
+ * need a transport, and all we want is the registration list.
+ *
+ * `enable_tools` is excluded. It is the profile switch, not a Sui capability,
+ * and counting it would inflate the number the README and package description
+ * advertise. See src/tools/profiles.ts.
  */
 function registeredToolNames(): string[] {
   const names: string[] = [];
   const fake = {
     tool(...args: unknown[]) {
       names.push(args[0] as string);
+      return { enabled: true, enable() {}, disable() {} };
     },
   } as unknown as McpServer;
   registerAllTools(fake);
-  return names;
+  return names.filter((n) => n !== "enable_tools");
 }
 
 describe("npm tarball contents", () => {

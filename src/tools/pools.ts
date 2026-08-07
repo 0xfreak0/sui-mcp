@@ -38,7 +38,8 @@ interface PoolInfo {
   protocol_type: string | null;
   token_a: string | null;
   token_b: string | null;
-  reserves: Record<string, unknown>;
+  /** Null for order-book protocols, which have no reserves to report. */
+  reserves: Record<string, unknown> | null;
   fee_info: Record<string, unknown>;
   extra: Record<string, unknown>;
 }
@@ -62,18 +63,35 @@ function parseCetusPool(json: Record<string, unknown>, typeParams: string[]): Po
   };
 }
 
+/**
+ * DeepBook is a central limit order book, not an AMM.
+ *
+ * The other parsers here report `reserves` because for an AMM the pool balances
+ * *are* the liquidity, and price follows from their ratio. DeepBook's vaults are
+ * custody for resting orders and settled balances — they say nothing about
+ * price or about how much can actually be filled. Reporting them under
+ * `reserves` invited exactly the wrong reading, so they are labelled as what
+ * they are and the caller is pointed at the book itself.
+ */
 function parseDeepBookPool(json: Record<string, unknown>, typeParams: string[]): PoolInfo {
   return {
     protocol: "DeepBook",
-    protocol_type: "dex",
+    protocol_type: "clob",
     token_a: typeParams[0] ?? null,
     token_b: typeParams[1] ?? null,
-    reserves: {
-      base_vault: json.base_vault,
-      quote_vault: json.quote_vault,
-    },
+    // No `reserves` key: an order book has none.
+    reserves: null,
     fee_info: { taker_fee: json.taker_fee, maker_fee: json.maker_fee },
-    extra: { lot_size: json.lot_size, tick_size: json.tick_size },
+    extra: {
+      lot_size: json.lot_size,
+      tick_size: json.tick_size,
+      // Custody totals, not tradable depth.
+      base_vault_balance: json.base_vault,
+      quote_vault_balance: json.quote_vault,
+      liquidity_note:
+        "DeepBook is a central limit order book; vault balances are custody, not tradable depth. " +
+        "Use deepbook_orderbook for real bid/ask depth, spread and mid price.",
+    },
   };
 }
 

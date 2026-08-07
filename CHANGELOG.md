@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.2.0 (2026-08-07)
+
+Minor, and it changes default behaviour: the server now starts with 17 tools
+instead of all 50. Nothing is removed — `enable_tools` turns the rest on
+mid-session, and `SUI_TOOLS=all` restores the previous startup surface.
+
+### Added
+- **Tool profiles.** The full tool manifest is ~14k tokens and MCP sends it on
+  every request; a large flat tool list also degrades tool selection. The
+  server now starts with a `core` profile (17 tools, ~4.6k tokens) and exposes
+  `enable_tools` to turn on `forensics`, `developer`, `market` or `all`
+  mid-session — the client picks up the new tools via
+  `notifications/tools/list_changed`, no restart. `SUI_TOOLS` sets the startup
+  surface for clients that cache the tool list. Same approach GitHub's MCP
+  server takes with `GITHUB_TOOLSETS`.
+- **DeepBook v3 tools**, backed by the [DeepBook indexer](https://docs.sui.io/standards/deepbookv3-indexer)
+  (mainnet and testnet; devnet runs none):
+  - `deepbook_orderbook` — live bid/ask depth, spread, mid, and resting-liquidity
+    imbalance. Omit `pool_name` to list pools.
+  - `deepbook_trades` — recent fills with maker/taker balance manager IDs, so
+    trading can be attributed to an account during an incident window.
+  - `compare_oracle_price` — Pyth oracle price against the price DeepBook
+    actually traded at, over a window. Lending protocols liquidate on oracle
+    prices, so divergence is the signature of a stale feed, a manipulation
+    window, or liquidations priced where the market never printed.
+
+### Fixed
+- `get_pool_stats` reported DeepBook vault balances under `reserves`. DeepBook
+  is a central limit order book with no reserves — the vaults are custody for
+  resting orders and say nothing about tradable depth. It now reports
+  `protocol_type: "clob"`, a null `reserves`, and points at `deepbook_orderbook`.
+
+### Notes
+- The DeepBook indexer has two undocumented quirks, both encoded in the client:
+  the OHLCV path is `/ohclv` (transposed upstream, `/ohlcv` returns empty), and
+  it takes milliseconds while `/trades` takes seconds. Its `depth` parameter
+  counts levels across both sides, so callers pass per-side and the client
+  doubles it.
+- Margin and `/portfolio` endpoints are deliberately not wired up: the
+  `@backfill_collateral` pipelines were ~197 days behind when this was written.
+
 ## 1.1.1 (2026-08-07)
 
 Patch: both changes harden `decompile_module` against hostile input. No tool

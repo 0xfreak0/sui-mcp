@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Fixed
+- **`get_address_fanout` was measuring the wrong end of history.** Sui's GraphQL
+  `first` returns the OLDEST transactions, so every fan-out figure described an
+  address's genesis rather than what it does now — a 2023-era address was
+  sampled entirely from its first weeks, and an address that only became an
+  exchange recently would have read as narrow. It now walks backwards from the
+  most recent transaction. Numbers change: one funder reported at 1,623
+  recipients measures 792 counterparties over its recent history.
+- **Fan-out counted outbound counterparties only**, which cannot see a
+  custodial cold wallet — it receives from thousands and sends to almost
+  nobody, so it classified as "narrow". Both directions are now counted, and
+  the response carries `sender_count`, `counterparty_count` and
+  `coin_type_count` alongside the recipients.
+
+### Added
+- **`out_in_ratio` and `flow_shape`** on fan-out results. Shape separates cases
+  size cannot: measured the same day, a known exchange and a sybil funder had
+  399 and 431 counterparties respectively — indistinguishable by count — but
+  ratios of 0.73 (balanced custodian) and 9.78 (disperser).
+- Thresholds recalibrated against measured wallets: exchanges land at 205–440
+  counterparties per 600 recent transactions, ordinary wallets at 6–12. The
+  20x gap is what makes a coarse cut defensible; the boundaries themselves are
+  not precise and the code says so.
+- `labeled-addresses.example.json` now distinguishes **behavioural** claims you
+  can derive and stand behind from **named** claims that must cite a source,
+  since no measurement distinguishes Binance from Bybit.
+
 ### Added
 - **Findings capture.** `save_finding`, `list_findings`, `export_case` and
   `delete_finding`. An investigation used to end as a chat transcript — the

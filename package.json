@@ -36,7 +36,12 @@
     "move",
     "onchain-analytics",
     "grpc",
-    "graphql"
+    "graphql",
+    "sui-blockchain",
+    "blockchain-forensics",
+    "fund-tracing",
+    "investigation",
+    "claude"
   ],
   "author": "0xfreak0",
   "license": "MIT",

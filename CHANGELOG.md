@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Findings capture.** `save_finding`, `list_findings`, `export_case` and
+  `delete_finding`. An investigation used to end as a chat transcript — the
+  conclusions were real but lived somewhere nobody would read again, and
+  re-deriving them cost as much as the original work. Findings are recorded
+  against a named case and `export_case` renders the whole thing as Markdown,
+  highest-confidence first, with a full-address appendix. Needs
+  `SUI_STORE_PATH`.
+- **`sort_order` and distribution on `aggregate_events`.** Value sorted
+  descending only and `top` caps at 200, so a dust swarm was invisible: 919
+  wallets each borrowing ~$0.20 never appeared behind twenty large depositors.
+  `sort_order: "asc"` reaches the small end, and every response now carries
+  min/p25/median/p75/p95/max computed over *all* groups rather than the
+  returned page.
+- **Labels persist** when a store is configured. `manage_labels` previously
+  told you to hand-edit a JSON file; session labels now survive restarts, and
+  `action: "import"` / `"export"` round-trip a labels file so a team can share
+  attribution.
+- **`get_address_fanout` suggests a label** when fan-out is at hub scale — as a
+  suggestion the human confirms, never applied automatically. Labels decide
+  where fund traces stop, so an auto-applied one would let a measurement
+  silently redirect an investigation.
+
+### Notes
+- No seeded labels. DefiLlama was proposed as a source for exchange addresses;
+  checking it, their Sui CEX address book is literally empty (`sui: []`), so
+  shipping any would have been fabricated attribution. The mechanism is here;
+  the data is yours to supply.
+
 ## 1.4.1 (2026-08-07)
 
 ### Fixed

@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS fanout (
   truncated       INTEGER NOT NULL,
   measured_at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS findings (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_name   TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  detail      TEXT,
+  confidence  TEXT,
+  -- JSON arrays. Kept as text rather than join tables: a finding is a
+  -- write-once note, and querying inside it is not a use case.
+  addresses   TEXT,
+  evidence    TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS findings_case ON findings(case_name);
 `;
 
 /**
@@ -180,6 +193,100 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
        truncated=excluded.truncated,
        measured_at=excluded.measured_at`,
   ).run(r.address, r.recipient_count, r.truncated, Date.now());
+  return true;
+}
+
+export interface Finding {
+  id?: number;
+  case_name: string;
+  title: string;
+  detail: string | null;
+  confidence: string | null;
+  /** Addresses the finding is about. */
+  addresses: string[];
+  /** How it was established — tool calls, digests, counts. */
+  evidence: string[];
+  created_at?: number;
+}
+
+interface FindingRow {
+  id: number;
+  case_name: string;
+  title: string;
+  detail: string | null;
+  confidence: string | null;
+  addresses: string | null;
+  evidence: string | null;
+  created_at: number;
+}
+
+const parseList = (raw: string | null): string[] => {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+};
+
+const rowToFinding = (r: FindingRow): Finding => ({
+  id: r.id,
+  case_name: r.case_name,
+  title: r.title,
+  detail: r.detail,
+  confidence: r.confidence,
+  addresses: parseList(r.addresses),
+  evidence: parseList(r.evidence),
+  created_at: r.created_at,
+});
+
+/** Record a finding. Returns its id, or null when the store is off. */
+export function saveFinding(f: Omit<Finding, "id" | "created_at">): number | null {
+  initStore();
+  if (!db) return null;
+  db.prepare(
+    `INSERT INTO findings (case_name, title, detail, confidence, addresses, evidence, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    f.case_name,
+    f.title,
+    f.detail ?? null,
+    f.confidence ?? null,
+    JSON.stringify(f.addresses ?? []),
+    JSON.stringify(f.evidence ?? []),
+    Date.now(),
+  );
+  const row = db.prepare(`SELECT last_insert_rowid() AS id`).get() as { id: number };
+  return row.id;
+}
+
+/** Findings for one case, oldest first, or every case when name is omitted. */
+export function loadFindings(caseName?: string): Finding[] {
+  initStore();
+  if (!db) return [];
+  const rows = caseName
+    ? db.prepare(`SELECT * FROM findings WHERE case_name = ? ORDER BY created_at ASC`).all(caseName)
+    : db.prepare(`SELECT * FROM findings ORDER BY case_name, created_at ASC`).all();
+  return (rows as unknown as FindingRow[]).map(rowToFinding);
+}
+
+/** Distinct case names with their finding counts, most recent first. */
+export function listCases(): Array<{ case_name: string; finding_count: number; last_updated: number }> {
+  initStore();
+  if (!db) return [];
+  return db
+    .prepare(
+      `SELECT case_name, COUNT(*) AS finding_count, MAX(created_at) AS last_updated
+       FROM findings GROUP BY case_name ORDER BY last_updated DESC`,
+    )
+    .all() as unknown as Array<{ case_name: string; finding_count: number; last_updated: number }>;
+}
+
+export function deleteFinding(id: number): boolean {
+  initStore();
+  if (!db) return false;
+  db.prepare(`DELETE FROM findings WHERE id = ?`).run(id);
   return true;
 }
 

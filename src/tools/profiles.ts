@@ -56,6 +56,10 @@ export const PROFILES = {
     "get_top_holders",
     "compare_oracle_price",
     "aggregate_events",
+    "save_finding",
+    "list_findings",
+    "export_case",
+    "delete_finding",
   ],
 
   /** Contract analysis and transaction construction. */
@@ -99,7 +103,7 @@ export const PROFILE_NAMES = Object.keys(PROFILES) as ProfileName[];
 export const PROFILE_SUMMARIES: Record<ProfileName, string> = {
   core: "Everyday lookups — wallets, balances, transactions, tokens, NFTs, DeFi positions",
   forensics:
-    "Incident investigation — fund tracing, batch funding attribution, address fan-out, multi-address timelines, object provenance, address labels, oracle-vs-market deviation",
+    "Incident investigation — fund tracing, batch funding attribution, address fan-out, multi-address timelines, object provenance, address labels, oracle-vs-market deviation, and recording findings into an exportable case report",
   developer:
     "Move package analysis — modules, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry",
   market: "Market data — DeepBook order book and fills, pool stats, token search, validators",

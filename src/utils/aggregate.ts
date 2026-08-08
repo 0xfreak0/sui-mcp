@@ -34,6 +34,50 @@ export interface AggregateResult {
   events_aggregated: number;
   /** Events whose group key was absent — counted, never silently dropped. */
   ungrouped_count: number;
+  /**
+   * Distribution across ALL groups, not just the returned page.
+   *
+   * A `top: 20` view says nothing about the shape of the other 900, and the
+   * interesting population is often the small end: a swarm of wallets each
+   * doing one tiny action is invisible in a descending top-N, which is exactly
+   * how a 900-wallet dust cluster hides behind twenty large depositors.
+   */
+  distribution: Distribution | null;
+}
+
+export interface Distribution {
+  /** Metric described: the summed value if one was requested, else counts. */
+  metric: "value" | "event_count";
+  min: number;
+  p25: number;
+  median: number;
+  p75: number;
+  p95: number;
+  max: number;
+  total: number;
+}
+
+/** Nearest-rank percentile over a sorted ascending array. */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx];
+}
+
+function describe(values: number[], metric: Distribution["metric"]): Distribution | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const round6 = (n: number) => Number(n.toFixed(6));
+  return {
+    metric,
+    min: round6(sorted[0]),
+    p25: round6(percentile(sorted, 25)),
+    median: round6(percentile(sorted, 50)),
+    p75: round6(percentile(sorted, 75)),
+    p95: round6(percentile(sorted, 95)),
+    max: round6(sorted[sorted.length - 1]),
+    total: round6(sorted.reduce((a, b) => a + b, 0)),
+  };
 }
 
 /**
@@ -64,6 +108,11 @@ export interface AggregateOptions {
   /** Divisor applied to the summed value, e.g. 100 for USD cents. */
   valueScale?: number;
   top?: number;
+  /**
+   * Which end of the ranking to return. Descending finds whales; ascending
+   * finds swarms, and the small end is where coordinated dust activity lives.
+   */
+  sortOrder?: "desc" | "asc";
 }
 
 export function aggregateEvents(
@@ -102,10 +151,15 @@ export function aggregateEvents(
   // Rank by value when there is one, otherwise by activity. Sorting by count
   // when a value was requested would bury a single large mover under a bot
   // making thousands of dust calls.
-  groups.sort((a, b) =>
-    opts.valueField
-      ? (b.value_sum ?? 0) - (a.value_sum ?? 0) || b.event_count - a.event_count
-      : b.event_count - a.event_count,
+  const metricOf = (g: AggregateGroup) => (opts.valueField ? (g.value_sum ?? 0) : g.event_count);
+  const dir = opts.sortOrder === "asc" ? -1 : 1;
+  groups.sort((a, b) => dir * (metricOf(b) - metricOf(a) || b.event_count - a.event_count));
+
+  // Percentiles come from every group, before the page is cut — otherwise they
+  // would only describe the slice the caller already has.
+  const distribution = describe(
+    groups.map(metricOf),
+    opts.valueField ? "value" : "event_count",
   );
 
   return {
@@ -113,6 +167,7 @@ export function aggregateEvents(
     distinct_keys: acc.size,
     events_aggregated: events.length - ungrouped,
     ungrouped_count: ungrouped,
+    distribution,
   };
 }
 

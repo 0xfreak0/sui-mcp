@@ -2,11 +2,13 @@ import { z } from "zod";
 import {
   addSessionLabel,
   allLabels,
+  importLabels,
   getLabel,
   isSinkCategory,
   removeSessionLabel,
   type LabelCategory,
 } from "../utils/labels.js";
+import { storeStatus } from "../utils/store.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const CATEGORIES = [
@@ -35,7 +37,9 @@ export function registerLabelTools(server: McpServer) {
       "session (in-memory, not persisted). Actions: 'list' all labels, 'lookup' one address, 'add' " +
       "or 'remove' a session label.",
     {
-      action: z.enum(["list", "lookup", "add", "remove"]).describe("What to do."),
+      action: z
+        .enum(["list", "lookup", "add", "remove", "import", "export"])
+        .describe("What to do."),
       address: z
         .string()
         .optional()
@@ -52,8 +56,22 @@ export function registerLabelTools(server: McpServer) {
         .optional()
         .describe("Attribution confidence for 'add' (default: medium)."),
       notes: z.string().optional().describe("Optional context for 'add'."),
+      labels: z
+        .array(
+          z.object({
+            address: z.string(),
+            label: z.string(),
+            category: z.string(),
+            confidence: z.string().optional(),
+            notes: z.string().optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          "Labels to bulk-import (for 'import'). Malformed entries are skipped and reported rather than failing the batch.",
+        ),
     },
-    async ({ action, address, label, category, confidence, notes }) => {
+    async ({ action, address, label, category, confidence, notes, labels: bulk }) => {
       switch (action) {
         case "list": {
           const labels = allLabels();
@@ -83,7 +101,40 @@ export function registerLabelTools(server: McpServer) {
           return jsonResult({
             added: { address, ...stored },
             is_sink: isSinkCategory(stored.category),
-            note: "Session label (in-memory). Add it to your SUI_LABELS_FILE to persist across restarts.",
+            note: stored.persisted
+              ? "Saved to the local store — it will be here next session."
+              : "In-memory for this session only. Set SUI_STORE_PATH to persist labels across restarts.",
+          });
+        }
+
+        case "import": {
+          if (!bulk?.length) {
+            return jsonResult({ error: "'labels' array is required for import." });
+          }
+          const { imported, skipped } = importLabels(bulk);
+          return jsonResult({
+            imported,
+            skipped_count: skipped.length,
+            ...(skipped.length ? { skipped } : {}),
+            note: storeStatus().enabled
+              ? "Saved to the local store."
+              : "In-memory only — set SUI_STORE_PATH to keep these across restarts.",
+          });
+        }
+
+        case "export": {
+          // Emits the same shape `import` accepts, so a team can round-trip a
+          // labels file between machines without hand-editing.
+          const all = allLabels();
+          return jsonResult({
+            count: all.length,
+            labels: all.map((l) => ({
+              address: l.address,
+              label: l.label,
+              category: l.category,
+              ...(l.confidence ? { confidence: l.confidence } : {}),
+              ...(l.notes ? { notes: l.notes } : {}),
+            })),
           });
         }
 

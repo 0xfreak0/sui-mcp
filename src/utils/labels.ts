@@ -1,6 +1,11 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import {
+  deleteLabel as deleteStoredLabel,
+  loadLabels as loadStoredLabels,
+  saveLabel as saveStoredLabel,
+} from "./store.js";
 
 const require = createRequire(import.meta.url);
 
@@ -92,9 +97,24 @@ const overrideLabels: Map<string, AddressLabel> = (() => {
   }
 })();
 
-// Session labels added at runtime via manage_labels. In-memory only — they last
-// for the life of the process. Highest precedence.
+// Session labels added at runtime via manage_labels. Highest precedence.
+//
+// Seeded from the optional store when one is configured, so attribution
+// established in a previous investigation is still there — labels decide where
+// fund traces stop, and re-deriving them every session is both tedious and a
+// correctness risk. Without SUI_STORE_PATH this stays in-memory exactly as
+// before.
 const sessionLabels = new Map<string, AddressLabel>();
+
+for (const row of loadStoredLabels()) {
+  sessionLabels.set(normalize(row.address), {
+    label: row.label,
+    category: row.category as LabelCategory,
+    source: "stored",
+    confidence: (row.confidence ?? undefined) as LabelConfidence | undefined,
+    notes: row.notes ?? undefined,
+  });
+}
 
 /** Look up a label for an address. Precedence: session > override > static. */
 export function getLabel(address: string): AddressLabel | null {
@@ -108,11 +128,18 @@ export function isSink(address: string): boolean {
   return label ? isSinkCategory(label.category) : false;
 }
 
-/** Add or replace a session label (runtime, in-memory). Returns the stored label. */
+/**
+ * Add or replace a session label, persisting it when a store is configured.
+ *
+ * `persist` defaults to true so attribution survives by default once someone
+ * has opted into a store; the flag exists for a caller that wants a label to
+ * apply to this session only.
+ */
 export function addSessionLabel(
   address: string,
   input: { label: string; category: LabelCategory; confidence?: LabelConfidence; notes?: string },
-): AddressLabel {
+  persist = true,
+): AddressLabel & { persisted: boolean } {
   const stored: AddressLabel = {
     label: input.label,
     category: input.category,
@@ -121,12 +148,76 @@ export function addSessionLabel(
     notes: input.notes,
   };
   sessionLabels.set(normalize(address), stored);
-  return stored;
+
+  // Returns false when no store is configured, which is the default state.
+  const persisted = persist
+    ? saveStoredLabel({
+        address: normalize(address),
+        label: input.label,
+        category: input.category,
+        confidence: input.confidence ?? null,
+        notes: input.notes ?? null,
+      })
+    : false;
+
+  return { ...stored, persisted };
 }
 
 /** Remove a session label. Returns true if one existed. Does not affect static/override entries. */
 export function removeSessionLabel(address: string): boolean {
-  return sessionLabels.delete(normalize(address));
+  const key = normalize(address);
+  // Remove from the store too, otherwise it reappears on the next start and
+  // looks like the deletion silently failed.
+  deleteStoredLabel(key);
+  return sessionLabels.delete(key);
+}
+
+/**
+ * Bulk-import labels, e.g. from a team's shared file.
+ *
+ * Skips malformed entries rather than failing the batch: a partial import with
+ * a reported skip count is more useful than an all-or-nothing rejection of a
+ * hand-maintained file.
+ */
+export function importLabels(
+  entries: Array<{
+    address: string;
+    label: string;
+    category: string;
+    confidence?: string;
+    notes?: string;
+  }>,
+  persist = true,
+): { imported: number; skipped: string[] } {
+  const skipped: string[] = [];
+  let imported = 0;
+
+  for (const e of entries) {
+    if (!e?.address || !e.label || !isLabelCategory(e.category)) {
+      skipped.push(e?.address ?? "(missing address)");
+      continue;
+    }
+    addSessionLabel(
+      e.address,
+      {
+        label: e.label,
+        category: e.category,
+        confidence: (e.confidence as LabelConfidence | undefined) ?? undefined,
+        notes: e.notes,
+      },
+      persist,
+    );
+    imported++;
+  }
+  return { imported, skipped };
+}
+
+const LABEL_CATEGORIES: readonly string[] = [
+  "cex", "bridge", "mixer", "malicious", "protocol", "validator", "defi", "burn", "other",
+];
+
+function isLabelCategory(c: unknown): c is LabelCategory {
+  return typeof c === "string" && LABEL_CATEGORIES.includes(c);
 }
 
 /** All effective labels (static ∪ override ∪ session, with precedence applied). */

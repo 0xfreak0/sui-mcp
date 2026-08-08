@@ -136,8 +136,38 @@ export function registerFundingTools(server: McpServer) {
     async ({ address, max_transactions }) => {
       try {
         const result = await measureFanout(address, max_transactions ?? 1000);
+        const existing = getLabel(address);
+
+        // Suggested, never applied. Labels decide where fund traces stop, so
+        // an automatic one would let a measurement silently redirect an
+        // investigation. The human confirms it with manage_labels.
+        const suggestion =
+          !existing && result.classification === "hub"
+            ? {
+                suggested_label: {
+                  category: "cex",
+                  label: `Unidentified hub (~${result.recipient_count}+ recipients)`,
+                  confidence: "low",
+                },
+                why: "Fan-out at exchange/bridge scale. NOT applied — confirm the identity yourself, then record it with manage_labels action='add'. A wrong sink label silently truncates every future trace through this address.",
+              }
+            : null;
+
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  ...result,
+                  ...(existing ? { existing_label: existing } : {}),
+                  ...(suggestion ?? {}),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
         };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));

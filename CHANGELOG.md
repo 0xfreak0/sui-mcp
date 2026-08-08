@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 (2026-08-08)
+
+Minor rather than patch: fan-out numbers change meaningfully, so a figure from
+1.4.x and one from 1.5.0 are not comparable.
 
 ### Fixed
 - **`get_address_fanout` was measuring the wrong end of history.** Sui's GraphQL
@@ -15,6 +18,12 @@
   nobody, so it classified as "narrow". Both directions are now counted, and
   the response carries `sender_count`, `counterparty_count` and
   `coin_type_count` alongside the recipients.
+- **The fan-out cache kept serving the old measurements after the upgrade.** It
+  is keyed on address alone, so a row carries no record of *how* it was taken
+  and the 7-day TTL would have handed back 1.4.x numbers for a week. Cached
+  fan-out is now stamped with a method version (`PRAGMA user_version`) and
+  discarded when the method changes — once, on first open, and only the cache:
+  labels and findings are user data and are never touched.
 
 ### Added
 - **`out_in_ratio` and `flow_shape`** on fan-out results. Shape separates cases
@@ -28,8 +37,6 @@
 - `labeled-addresses.example.json` now distinguishes **behavioural** claims you
   can derive and stand behind from **named** claims that must cite a source,
   since no measurement distinguishes Binance from Bybit.
-
-### Added
 - **Findings capture.** `save_finding`, `list_findings`, `export_case` and
   `delete_finding`. An investigation used to end as a chat transcript — the
   conclusions were real but lived somewhere nobody would read again, and

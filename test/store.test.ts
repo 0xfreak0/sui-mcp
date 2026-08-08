@@ -12,6 +12,7 @@ import {
   resetStore,
   listCases,
   loadFindings,
+  FANOUT_METHOD_VERSION,
   saveFanout,
   saveFinding,
   saveLabel,
@@ -269,5 +270,63 @@ describe("store failure handling", () => {
     expect(() => initStore()).not.toThrow();
     expect(storeStatus().enabled).toBe(false);
     expect(loadLabels()).toEqual([]);
+  });
+});
+
+/**
+ * The fan-out cache is keyed on address alone, so it cannot tell that the
+ * *definition* of the measurement changed underneath it. 1.5.0 fixed fan-out to
+ * walk backwards through history and to count both directions, which means a
+ * row written by 1.4.x answers a different question than the one being asked —
+ * and the 7-day TTL would keep serving it for a week after the upgrade.
+ */
+describe("fan-out cache invalidation across method changes", () => {
+  const ADDR = "0xstale";
+
+  /** Write a row the way an older version would have: no method version. */
+  function writeLegacyRow(path: string) {
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(path);
+    raw.exec(`CREATE TABLE IF NOT EXISTS fanout (
+      address TEXT PRIMARY KEY, recipient_count INTEGER NOT NULL,
+      truncated INTEGER NOT NULL, measured_at INTEGER NOT NULL)`);
+    raw.prepare(`INSERT INTO fanout VALUES (?, ?, ?, ?)`).run(ADDR, 1623, 0, Date.now());
+    raw.close();
+  }
+
+  it("discards measurements taken by an older method", () => {
+    const path = join(dir, "legacy.db");
+    writeLegacyRow(path);
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    // Fresh, well within the 7-day TTL — age is not what rejects it.
+    expect(getCachedFanout(ADDR)).toBeNull();
+  });
+
+  it("keeps labels and findings, which are user data rather than cache", () => {
+    const path = join(dir, "legacy2.db");
+    writeLegacyRow(path);
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    saveLabel({ address: "0xkeep", label: "Mine", category: "cex", confidence: null, notes: null });
+    saveFinding({ case_name: "c", title: "t", detail: null, confidence: null, addresses: [], evidence: [] });
+    resetStore();
+
+    expect(loadLabels().find((l) => l.address === "0xkeep")?.label).toBe("Mine");
+    expect(loadFindings("c")).toHaveLength(1);
+  });
+
+  it("serves a measurement taken by the current method", () => {
+    process.env.SUI_STORE_PATH = join(dir, "current.db");
+    resetStore();
+    saveFanout({ address: ADDR, recipient_count: 792, truncated: 0 });
+    resetStore();
+
+    const cached = getCachedFanout(ADDR);
+    expect(cached?.recipient_count).toBe(792);
+    expect(cached?.method_version).toBe(FANOUT_METHOD_VERSION);
   });
 });

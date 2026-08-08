@@ -3,7 +3,7 @@
   "name": "io.github.0xfreak0/sui-mcp",
   "title": "Sui Analytics",
   "description": "Read-only Sui blockchain analytics: 57 tools, protocol-aware tx decoding, no API keys or wallet.",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "repository": {
     "url": "https://github.com/0xfreak0/sui-mcp",
     "source": "github",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "sui-analytics-mcp",
-      "version": "1.4.1",
+      "version": "1.5.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

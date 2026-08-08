@@ -10,6 +10,14 @@
 # `-i` is load-bearing. Without it stdin is closed, the transport sees EOF and
 # the server exits immediately, which looks like a crash.
 
+# 0 = fast build, 56 of 57 tools. 1 also builds the Move decompiler, which takes
+# tens of minutes. Declared here, above the first FROM, because an ARG used in a
+# FROM line must live in the global scope — declared later it expands to empty
+# and the build dies on `invalid reference format`.
+#
+#   docker build --build-arg WITH_DECOMPILER=1 -t sui-analytics-mcp .
+ARG WITH_DECOMPILER=0
+
 # Revela, the Move decompiler behind `decompile_module`. This is the one tool
 # that needs a binary the npm package cannot ship, so a clone install leaves it
 # unavailable until you run `npm run build:decompiler` yourself. An image can
@@ -54,7 +62,7 @@ RUN npm run build
 
 # Runtime stage: ships dist/ and production dependencies only — no toolchain,
 # no source, no devDependencies.
-FROM node:22.13-slim AS runtime
+FROM node:22.13-slim AS runtime-base
 
 WORKDIR /app
 ENV NODE_ENV=production
@@ -71,10 +79,25 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 
+
+# Two finishes, selected by WITH_DECOMPILER below.
+#
+# BuildKit only builds stages the selected target actually depends on, so the
+# default never touches the Rust stage — it is not skipped quickly, it is not
+# entered at all. That is the whole point: the decompiler build takes tens of
+# minutes over the Move crates, and directory sandboxes that build this image
+# have build timeouts. A timeout means no image, which means no introspection
+# and a listing that reads "cannot be installed" — losing all 57 tools to keep
+# one. Defaulting off trades `decompile_module` for a build that finishes.
+FROM runtime-base AS runtime-0
+
+# Opt in with: docker build --build-arg WITH_DECOMPILER=1 -t sui-analytics-mcp .
 # On PATH, so config.ts's default (`move-decompiler`, resolved via PATH) finds
-# it with no SUI_DECOMPILER_PATH set. This makes the image the only install
-# where all 57 tools work out of the box.
+# it with no SUI_DECOMPILER_PATH set.
+FROM runtime-base AS runtime-1
 COPY --from=decompiler /src/external-crates/move/target/release/move-decompiler /usr/local/bin/move-decompiler
+
+FROM runtime-${WITH_DECOMPILER} AS runtime
 
 # Drop root. The server only makes outbound HTTPS calls and reads its own files,
 # so it never needs privilege. `node` is a non-root user the base image provides.

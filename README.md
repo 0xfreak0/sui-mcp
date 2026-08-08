@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for Sui blockchain analytics. 53 tools for wallets, DeFi positions, NFTs, token prices, transaction decoding, Move package analysis, and incident investigation.
+Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
+
+57 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
 
 ## Install
 
@@ -21,9 +23,37 @@ Add this to your MCP client config — Claude Code, Claude Desktop, Cursor, or a
 
 No account, API key, or config file is required. The server reads public Sui endpoints and defaults to mainnet. Requires Node.js >= 22.13.
 
+Doing investigative work? Start with the forensics tools loaded:
+
+```json
+"env": { "SUI_TOOLS": "core,forensics" }
+```
+
+## What an investigation looks like
+
+Ranking a lending protocol's wallets for a day, then testing whether a cluster is coordinated — six calls:
+
+```
+aggregate_events(module: <package>, from: "2026-08-07T00:00:00Z", to: "now")
+  → every event type it emits, with counts and the numeric fields available
+    (user actions are usually far rarer than bookkeeping events)
+
+aggregate_events(event_type: <DepositEvent>, value_field: "event.deposit_value", value_scale: 100)
+  → wallets ranked by USD deposited, truncated: false
+
+find_funding_sources(addresses: [...25], depth: "first_hop")
+  → 23 of 25 share one funder, funded in three bursts of under a minute
+
+get_address_fanout(<that funder>)
+  → 1,623 recipients — "distributor", so co-funding alone proves nothing;
+    the second-level timing clustering is what carries it
+```
+
+That last step is the point. Several wallets tracing to one funder looks decisive until you measure the funder — an exchange hot wallet pays ~29,000 addresses and the shared ancestry means nothing. Every funding result carries that number so a coincidence doesn't get reported as a link.
+
 ## Tool profiles
 
-All 53 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 57 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
 When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
 
@@ -36,10 +66,10 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 17 | Wallets, balances, transactions, tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 12 | Fund tracing, funding-source attribution, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `forensics` | 16 | Fund tracing, funding-source attribution, timelines, object provenance, labels, events, oracle-vs-market deviation |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
-| `all` | 53 | Everything |
+| `all` | 57 | Everything |
 
 Runtime switching relies on `notifications/tools/list_changed`. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
 
@@ -81,7 +111,7 @@ npm audit signatures
 
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
-- **Incident investigation** — labeled fund tracing, funding-source attribution, multi-address timelines, object provenance, PTB anomaly triage
+- **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, PTB anomaly triage, oracle-vs-market deviation
 - **Move package analysis** — disassembly, heuristic risk scan, capability audit, and upgrade diffing, none of which need an external binary
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
 - **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
@@ -116,7 +146,7 @@ Fund traces are deliberately not cached: a trace is a function of your labels, s
 
 ## Move decompiler (optional)
 
-52 of the 53 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+56 of the 57 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -151,7 +181,7 @@ Then add its absolute path to your client config:
 
 If you already cloned this repo, `npm run build:decompiler` does the same clone and build and copies the result to `bin/move-decompiler`.
 
-Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 52 tools are unaffected.
+Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 56 tools are unaffected.
 
 ## Running from source
 
@@ -179,7 +209,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (53)
+## Tools (57)
 
 ### Recommended Starting Points
 
@@ -315,6 +345,10 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
 | `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains and reports shared funders |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
+| `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
+| `list_findings` | List findings in a case, or every case with its count |
+| `export_case` | Render a case as a Markdown report, highest-confidence findings first |
+| `delete_finding` | Retract a finding that turned out to be wrong |
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
 | `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |

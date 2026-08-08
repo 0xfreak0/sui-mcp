@@ -4,12 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
+  deleteFinding,
   deleteLabel,
   getCachedFanout,
   initStore,
   loadLabels,
   resetStore,
+  listCases,
+  loadFindings,
   saveFanout,
+  saveFinding,
   saveLabel,
   storeStatus,
 } from "../src/utils/store.js";
@@ -152,6 +156,83 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
     resetStore();
     initStore();
     expect(loadLabels()[0]?.label).toBe("Kept");
+  });
+});
+
+describe.skipIf(!hasSqlite)("findings", () => {
+  const base = { case_name: "case-a", title: "T", detail: null, confidence: null, addresses: [], evidence: [] };
+
+  it("round-trips a finding with its arrays intact", () => {
+    enable();
+    saveFinding({
+      ...base,
+      title: "23 of 25 share a funder",
+      detail: "Funded in three bursts.",
+      confidence: "high",
+      addresses: ["0xa", "0xb"],
+      evidence: ["find_funding_sources depth=first_hop", "fan-out 1623"],
+    });
+    const [f] = loadFindings("case-a");
+    expect(f.title).toBe("23 of 25 share a funder");
+    expect(f.addresses).toEqual(["0xa", "0xb"]);
+    expect(f.evidence).toHaveLength(2);
+    expect(f.id).toBeGreaterThan(0);
+  });
+
+  it("keeps cases separate", () => {
+    enable();
+    saveFinding({ ...base, case_name: "case-a" });
+    saveFinding({ ...base, case_name: "case-b" });
+    expect(loadFindings("case-a")).toHaveLength(1);
+    expect(loadFindings("case-b")).toHaveLength(1);
+    expect(loadFindings()).toHaveLength(2);
+  });
+
+  it("lists cases with counts", () => {
+    enable();
+    saveFinding({ ...base, case_name: "case-a" });
+    saveFinding({ ...base, case_name: "case-a" });
+    saveFinding({ ...base, case_name: "case-b" });
+    const cases = listCases();
+    expect(cases.find((c) => c.case_name === "case-a")?.finding_count).toBe(2);
+    expect(cases.find((c) => c.case_name === "case-b")?.finding_count).toBe(1);
+  });
+
+  it("deletes a finding, for retracting something wrong", () => {
+    enable();
+    const id = saveFinding({ ...base });
+    deleteFinding(id!);
+    expect(loadFindings("case-a")).toEqual([]);
+  });
+
+  // Findings accumulate rather than replace: two conclusions about the same
+  // case are both real, unlike a label where the latest wins.
+  it("appends rather than upserting", () => {
+    enable();
+    saveFinding({ ...base, title: "First" });
+    saveFinding({ ...base, title: "Second" });
+    expect(loadFindings("case-a").map((f) => f.title)).toEqual(["First", "Second"]);
+  });
+
+  it("survives a reopen", () => {
+    enable();
+    saveFinding({ ...base, title: "Kept" });
+    resetStore();
+    initStore();
+    expect(loadFindings("case-a")[0]?.title).toBe("Kept");
+  });
+});
+
+describe("findings with the store off", () => {
+  beforeEach(() => {
+    delete process.env.SUI_STORE_PATH;
+    resetStore();
+  });
+
+  it("returns null / empty instead of throwing", () => {
+    expect(saveFinding({ case_name: "c", title: "T", detail: null, confidence: null, addresses: [], evidence: [] })).toBeNull();
+    expect(loadFindings("c")).toEqual([]);
+    expect(listCases()).toEqual([]);
   });
 });
 

@@ -79,6 +79,12 @@ export function registerAggregateTools(server: McpServer) {
         .optional()
         .describe("Divisor for the summed value, e.g. 100 when a protocol reports USD cents."),
       top: z.number().int().min(1).max(200).optional().describe("Groups to return (default 20)."),
+      sort_order: z
+        .enum(["desc", "asc"])
+        .optional()
+        .describe(
+          "'desc' (default) returns the largest — whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view.",
+        ),
       max_events: z
         .number()
         .int()
@@ -97,6 +103,7 @@ export function registerAggregateTools(server: McpServer) {
       value_field,
       value_scale,
       top,
+      sort_order,
       max_events,
     }) => {
       try {
@@ -161,6 +168,7 @@ export function registerAggregateTools(server: McpServer) {
           valueField: value_field,
           valueScale: value_scale,
           top,
+          sortOrder: sort_order,
         });
 
         // Truncation is surfaced loudly: a ranking built from a partial scan
@@ -207,6 +215,10 @@ export function registerAggregateTools(server: McpServer) {
                       }
                     : {}),
                   distinct_keys: result.distinct_keys,
+                  sort_order: sort_order ?? "desc",
+                  // Computed over every group, not the returned page: a top-20
+                  // view says nothing about the shape of the other 900.
+                  distribution: result.distribution,
                   ...(result.ungrouped_count
                     ? { ungrouped_events: result.ungrouped_count }
                     : {}),

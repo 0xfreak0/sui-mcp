@@ -127,6 +127,78 @@ describe("aggregateEvents", () => {
     const r = aggregateEvents([], { groupBy: "sender" });
     expect(r.groups).toEqual([]);
     expect(r.distinct_keys).toBe(0);
+    expect(r.distribution).toBeNull();
+  });
+
+  // The gap this closes: a dust swarm is invisible in a descending top-N.
+  it("returns the smallest groups when sort_order is asc", () => {
+    const events = [
+      ev("0xwhale", "T", { v: "1000000" }),
+      ev("0xdust1", "T", { v: "20" }),
+      ev("0xdust2", "T", { v: "19" }),
+    ];
+    const desc = aggregateEvents(events, { groupBy: "sender", valueField: "v", top: 1 });
+    expect(desc.groups[0].key).toBe("0xwhale");
+
+    const asc = aggregateEvents(events, {
+      groupBy: "sender",
+      valueField: "v",
+      top: 2,
+      sortOrder: "asc",
+    });
+    expect(asc.groups.map((g) => g.key)).toEqual(["0xdust2", "0xdust1"]);
+  });
+
+  it("sorts ascending by count when no value field is given", () => {
+    const events = [ev("0xa", "T"), ev("0xb", "T"), ev("0xb", "T")];
+    const r = aggregateEvents(events, { groupBy: "sender", sortOrder: "asc" });
+    expect(r.groups[0].key).toBe("0xa");
+  });
+});
+
+describe("distribution", () => {
+  const spread = (values: number[]) =>
+    values.map((v, i) => ev(`0x${i}`, "T", { v: String(v) }));
+
+  it("describes every group, not just the returned page", () => {
+    // 100 groups but only 5 returned: percentiles must still cover all 100,
+    // otherwise they only restate the slice the caller already has.
+    const r = aggregateEvents(spread(Array.from({ length: 100 }, (_, i) => i + 1)), {
+      groupBy: "sender",
+      valueField: "v",
+      top: 5,
+    });
+    expect(r.groups).toHaveLength(5);
+    expect(r.distribution?.min).toBe(1);
+    expect(r.distribution?.max).toBe(100);
+    expect(r.distribution?.total).toBe(5050);
+  });
+
+  it("computes nearest-rank percentiles", () => {
+    const r = aggregateEvents(spread([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), {
+      groupBy: "sender",
+      valueField: "v",
+    });
+    expect(r.distribution?.median).toBe(5);
+    expect(r.distribution?.p25).toBe(3);
+    expect(r.distribution?.p95).toBe(10);
+  });
+
+  it("reports counts as the metric when no value field is given", () => {
+    const r = aggregateEvents([ev("0xa", "T"), ev("0xa", "T"), ev("0xb", "T")], {
+      groupBy: "sender",
+    });
+    expect(r.distribution?.metric).toBe("event_count");
+    expect(r.distribution?.max).toBe(2);
+    expect(r.distribution?.min).toBe(1);
+  });
+
+  // The signature of a swarm: median far below max, most groups identical.
+  it("makes a dust swarm visible in the percentiles", () => {
+    const values = [...Array.from({ length: 90 }, () => 0.2), 900000];
+    const r = aggregateEvents(spread(values), { groupBy: "sender", valueField: "v" });
+    expect(r.distribution?.median).toBe(0.2);
+    expect(r.distribution?.max).toBe(900000);
   });
 });
 

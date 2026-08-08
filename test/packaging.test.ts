@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { registerAllTools } from "../src/tools/index.js";
+import { PROFILES } from "../src/tools/profiles.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -182,5 +183,17 @@ describe("advertised tool count", () => {
   it("matches the count in the README heading and intro", () => {
     expect(readme).toContain(`## Tools (${toolCount})`);
     expect(readme).toContain(`${toolCount} tools`);
+  });
+
+  // The per-profile rows are hand-written and were the one advertised number
+  // nothing checked: adding a tool to a profile silently left the table wrong,
+  // and the table is what someone reads to decide which profile to set.
+  it("matches the per-profile counts in the README table", () => {
+    for (const [name, tools] of Object.entries(PROFILES)) {
+      const row = new RegExp(`^\\| \`${name}\`[^|]*\\|\\s*(\\d+)\\s*\\|`, "m").exec(readme);
+      expect(row, `README profile table has no row for \`${name}\``).not.toBeNull();
+      expect(Number(row![1]), `README says ${name} has ${row![1]} tools, PROFILES has ${tools.length}`)
+        .toBe(tools.length);
+    }
   });
 });

@@ -49,7 +49,9 @@ get_address_fanout(<that funder>)
     the second-level timing clustering is what carries it
 ```
 
-That last step is the point. Several wallets tracing to one funder looks decisive until you measure the funder — an exchange hot wallet pays ~29,000 addresses and the shared ancestry means nothing. Every funding result carries that number so a coincidence doesn't get reported as a link.
+That last step is the point. Several wallets tracing to one funder looks decisive until you measure the funder. Every funding result carries that measurement so a coincidence doesn't get reported as a link.
+
+Fan-out reports **shape as well as size**, because size alone doesn't separate the cases that matter. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts — 399 and 431 — and completely different flow: the exchange ran balanced at 0.73 out/in (deposits in, withdrawals out) while the funder ran 9.78 (it pays many and is paid by few). One is noise in an investigation; the other is the thing you're looking for.
 
 ## Tool profiles
 

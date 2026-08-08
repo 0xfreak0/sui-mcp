@@ -59,6 +59,13 @@ FROM node:22.13-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Load every tool by default, which is the opposite of the npx default (`core`,
+# 18 tools). Directories build this image and run tools/list to record what the
+# server can do, and that record is public and sticky — an unset SUI_TOOLS would
+# publish 18 tools as the server's declared capability surface. Anyone who wants
+# the smaller, cheaper surface overrides it: `docker run -i -e SUI_TOOLS=core`.
+ENV SUI_TOOLS=all
+
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 

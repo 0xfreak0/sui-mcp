@@ -34,6 +34,8 @@ export interface FanoutRecord {
   recipient_count: number;
   truncated: number;
   measured_at: number;
+  /** Which measurement method produced this row. See FANOUT_METHOD_VERSION. */
+  method_version?: number;
 }
 
 export interface StoredLabel {
@@ -59,6 +61,18 @@ interface DatabaseLike {
 let db: DatabaseLike | null = null;
 let initialised = false;
 let unavailableReason: string | null = null;
+
+/**
+ * Bumped whenever a change to how fan-out is measured makes older cached rows
+ * answer a different question than the one being asked.
+ *
+ * The cache is keyed on address alone, so nothing in a row records *how* it was
+ * taken; without this, an upgrade keeps serving the previous method's numbers
+ * until they age out. 1 marks the 1.5.0 measurement — backwards through
+ * history, both directions counted. Only the fan-out cache is discarded on a
+ * bump; labels and findings are user data and are never touched.
+ */
+export const FANOUT_METHOD_VERSION = 1;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (
@@ -89,6 +103,27 @@ CREATE TABLE IF NOT EXISTS findings (
 );
 CREATE INDEX IF NOT EXISTS findings_case ON findings(case_name);
 `;
+
+/**
+ * Discard fan-out rows measured by an earlier method.
+ *
+ * `PRAGMA user_version` is a SQLite integer that lives in the file header — it
+ * survives reopening and costs nothing to read, which is what makes it the
+ * right place for this. A store written before versioning reads as 0, so the
+ * first 1.5.0 open clears the cache exactly once and every later open is a
+ * no-op. Discarding is safe because fan-out is derived data: the worst case is
+ * one re-measurement.
+ */
+function migrateFanoutCache(opened: DatabaseLike): void {
+  const row = opened.prepare(`PRAGMA user_version`).get() as
+    | { user_version?: number }
+    | undefined;
+  if ((row?.user_version ?? 0) >= FANOUT_METHOD_VERSION) return;
+  opened.exec(`DELETE FROM fanout`);
+  // Not parameterised: PRAGMA does not accept bound values, and the operand is
+  // a module constant rather than anything a caller supplies.
+  opened.exec(`PRAGMA user_version = ${FANOUT_METHOD_VERSION}`);
+}
 
 /**
  * Open the store if configured. Idempotent, and never throws: a store that
@@ -125,6 +160,7 @@ export function initStore(): void {
 
     const opened = new DatabaseSync(path);
     opened.exec(SCHEMA);
+    migrateFanoutCache(opened);
     db = opened;
     unavailableReason = null;
   } catch (err) {
@@ -309,5 +345,5 @@ export function getCachedFanout(
     | undefined;
   if (!row) return null;
   const age = Date.now() - row.measured_at;
-  return age <= maxAgeMs ? { ...row, age_ms: age } : null;
+  return age <= maxAgeMs ? { ...row, age_ms: age, method_version: FANOUT_METHOD_VERSION } : null;
 }

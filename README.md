@@ -4,7 +4,7 @@
 
 Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
 
-58 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
+59 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
 
 ## Install
 
@@ -55,7 +55,7 @@ Fan-out reports **shape as well as size**, because size alone doesn't separate t
 
 ## Tool profiles
 
-All 58 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 59 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
 When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
 
@@ -68,10 +68,10 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 17 | Wallets, balances, transactions, tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 17 | Fund tracing, funding-source attribution, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `forensics` | 18 | Fund tracing, funding-source attribution, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
-| `all` | 58 | Everything |
+| `all` | 59 | Everything |
 
 Runtime switching relies on `notifications/tools/list_changed`. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
 
@@ -148,7 +148,7 @@ Fund traces are deliberately not cached: a trace is a function of your labels, s
 
 ## Move decompiler (optional)
 
-57 of the 58 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+58 of the 59 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -211,7 +211,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (58)
+## Tools (59)
 
 ### Recommended Starting Points
 
@@ -347,6 +347,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
 | `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape, addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, and sub-minute funding bursts |
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
+| `resolve_protocol_packages` | Find which of a protocol's package versions are actually emitting now — the bundled registry is a decode map full of historical IDs, and querying one returns nothing |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
 | `list_findings` | List findings in a case, or every case with its count |

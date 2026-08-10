@@ -3,10 +3,11 @@ import { classifyFanout } from "../src/utils/fanout.js";
 
 const { gqlQuery } = vi.hoisted(() => ({ gqlQuery: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
-vi.mock("../src/utils/store.js", () => ({
-  getCachedFanout: () => null,
-  saveFanout: () => false,
+const { getCachedFanout, saveFanout } = vi.hoisted(() => ({
+  getCachedFanout: vi.fn(() => null),
+  saveFanout: vi.fn(() => false),
 }));
+vi.mock("../src/utils/store.js", () => ({ getCachedFanout, saveFanout }));
 
 const { measureFanout } = await import("../src/utils/fanout.js");
 
@@ -49,7 +50,10 @@ const receiveFrom = (from: string, coin?: string) => [
   { owner: from, amount: "-100", coin },
 ];
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  getCachedFanout.mockReturnValue(null);
+});
 
 describe("classifyFanout", () => {
   it("calls a very wide address a hub", () => {
@@ -203,5 +207,66 @@ describe("measureFanout", () => {
     const r = await measureFanout(ADDR, 1000);
     expect(r.scanned_transactions).toBe(1);
     expect(gqlQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * find_funding_sources measures shared funders at 300 transactions, and the
+ * cache is keyed on address alone. Without a depth check, that shallow reading
+ * is served to a later get_address_fanout asking for 1500 — a weaker, more
+ * truncated measurement silently overriding a deeper request, for a week.
+ */
+describe("cache depth", () => {
+  const cachedRow = (over: Record<string, unknown> = {}) => ({
+    address: ADDR,
+    recipient_count: 37,
+    sender_count: 4,
+    counterparty_count: 41,
+    coin_type_count: 3,
+    out_in_ratio: 9.25,
+    flow_shape: "disperser",
+    scanned_transactions: 300,
+    truncated: 1,
+    measured_at: Date.now(),
+    age_ms: 1000,
+    ...over,
+  });
+
+  it("re-measures when the cached scan was shallower than asked for", async () => {
+    getCachedFanout.mockReturnValue(cachedRow() as never);
+    gqlQuery.mockResolvedValueOnce(page([sendTo("0xb")], false));
+
+    const r = await measureFanout(ADDR, 1500);
+    expect(gqlQuery).toHaveBeenCalled();
+    expect(r.cached).toBeFalsy();
+  });
+
+  it("serves a cached scan that was at least as deep", async () => {
+    getCachedFanout.mockReturnValue(cachedRow({ scanned_transactions: 1500 }) as never);
+    const r = await measureFanout(ADDR, 1000);
+    expect(gqlQuery).not.toHaveBeenCalled();
+    expect(r.cached).toBe(true);
+    expect(r.flow_shape).toBe("disperser");
+  });
+
+  // An untruncated scan saw the address's entire history, so scanning further
+  // cannot find more. Depth is irrelevant once the data ran out.
+  it("serves a complete scan regardless of the depth requested", async () => {
+    getCachedFanout.mockReturnValue(
+      cachedRow({ scanned_transactions: 40, truncated: 0 }) as never,
+    );
+    const r = await measureFanout(ADDR, 3000);
+    expect(gqlQuery).not.toHaveBeenCalled();
+    expect(r.cached).toBe(true);
+  });
+
+  it("round-trips every field from cache, not just the total", async () => {
+    getCachedFanout.mockReturnValue(cachedRow({ scanned_transactions: 2000 }) as never);
+    const r = await measureFanout(ADDR, 1000);
+    expect(r.sender_count).toBe(4);
+    expect(r.counterparty_count).toBe(41);
+    expect(r.coin_type_count).toBe(3);
+    expect(r.out_in_ratio).toBeCloseTo(9.25);
+    expect(r.scanned_transactions).toBe(2000);
   });
 });

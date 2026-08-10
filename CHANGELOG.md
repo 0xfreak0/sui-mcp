@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.5.1 (2026-08-09)
+
+All fixes, no new tools. Every item is 1.5.0 changing how fan-out is measured
+without the surface around it following: the description, the comments, the
+cache schema and the embedded summary were all still answering the 1.4.x
+question.
+
+Upgrading discards cached fan-out rows once, on first open. They were written
+by the paths fixed below, so re-measuring is the point.
+
+### Fixed
+- **The cache discarded the feature the release was built on.** Only
+  `recipient_count` was persisted, so any cache hit returned `-1` for
+  `sender_count` and `coin_type_count`, `null` for `out_in_ratio` and
+  `"unknown"` for `flow_shape`. It also wrote `counterparty_count` into the
+  `recipient_count` column, so a cached read disagreed with a fresh one about
+  the same address. Worst on the documented path: `find_funding_sources` warms
+  the cache, so the follow-up `get_address_fanout` on a shared funder was
+  always a hit — the example in the README could not produce a flow shape.
+- **Cached scans could be shallower than the one requested.**
+  `find_funding_sources` measures funders at 300 transactions and the cache is
+  keyed on address alone, so a later call asking for 1,500 got the
+  300-transaction reading back for a week, more truncated than asked for and
+  silent about it. A cached row is now used only when it scanned at least as
+  deep, or when it was untruncated and had already reached the end of the
+  address's history.
+- **`find_funding_sources` surfaced a quarter of what it measured**, dropping
+  `counterparty_count`, `sender_count`, `out_in_ratio` and `flow_shape`. That
+  is the tool deciding whether shared funding means anything, and a count alone
+  cannot decide it — an exchange and a sybil funder can carry near-identical
+  counterparty counts and opposite flow.
+- **Two migration bugs**, both invisible to tests that each used a fresh
+  database and so never exercised an upgrade. `CREATE TABLE IF NOT EXISTS`
+  leaves an existing table's columns alone, so adding columns kept the old
+  shape and every write failed; and a migration that bumped the version stamp
+  then failed left a store claiming to be current while holding old columns,
+  which a stamp-only check could never repair. The schema version and the
+  actual column list are now both checked, so such a store heals on next open.
+- **`get_address_fanout`'s description still documented the 1.4.x contract** —
+  "sent value to", "Outbound transactions to scan" — teaching the very
+  misconception 1.5.0 fixed, in the text a model reads to decide how to call
+  it. Two module comments had the same problem, one of them arguing that
+  counting both directions would be wrong.
+- `classifyFanout` accepted a `coinTypes` argument it never read, with callers
+  passing it as though it changed the result.
+
+### Changed
+- The container image no longer builds the Move decompiler by default. It is a
+  Rust build over the Move crates taking tens of minutes, long enough to risk a
+  directory's sandbox build timeout — and a timeout yields no image and no
+  introspection, losing all 57 tools to keep one. Opt in with
+  `docker build --build-arg WITH_DECOMPILER=1`. The image also now loads every
+  tool by default, since an unset `SUI_TOOLS` published the 18-tool `core`
+  profile as the server's public capability record.
+- The shipped `Dockerfile` was `node:20-slim`, which cannot run this server at
+  all: `node:sqlite` does not exist there, it is below the declared
+  `>=22.13.0` floor, and Node 20 is EOL. Rebuilt as a three-stage image that
+  drops to a non-root user and ships only `dist/` and production dependencies.
+
 ## 1.5.0 (2026-08-08)
 
 Minor rather than patch: fan-out numbers change meaningfully, so a figure from

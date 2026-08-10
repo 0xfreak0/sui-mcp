@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectCoFunding, type CoFundingStep } from "../src/utils/co-funding.js";
+import { assessCoFunding, detectCoFunding, type CoFundingStep } from "../src/utils/co-funding.js";
 
 const step = (over: Partial<CoFundingStep> & { address: string }): CoFundingStep => ({
   funded_by: "0xfunder",
@@ -118,5 +118,57 @@ describe("detectCoFunding", () => {
 
   it("returns nothing for no input", () => {
     expect(detectCoFunding([])).toEqual([]);
+  });
+});
+
+/**
+ * The denominator is the whole point. Two addresses sharing a payout that had
+ * two recipients is near-decisive; sharing one that had nineteen is a batch
+ * distribution. This is not hypothetical — a randomly drawn control address
+ * landed in the same transaction as two cohort wallets, because that
+ * transaction paid nineteen addresses.
+ */
+describe("assessCoFunding", () => {
+  it("calls a tiny payout targeted", () => {
+    const a = assessCoFunding(2, 2);
+    expect(a.strength).toBe("targeted");
+    expect(a.subject_share).toBe(1);
+    expect(a.interpretation).toMatch(/bespoke|specific/i);
+  });
+
+  it("calls a wide payout a batch and says shared membership is weak", () => {
+    const a = assessCoFunding(2, 19);
+    expect(a.strength).toBe("batch");
+    expect(a.subject_share).toBeCloseTo(2 / 19);
+    expect(a.interpretation).toMatch(/weak|random/i);
+  });
+
+  it("does not overstate a mid-sized payout", () => {
+    const a = assessCoFunding(2, 6);
+    expect(a.strength).toBe("mixed");
+    expect(a.interpretation).toMatch(/not conclusive|corroborate/i);
+  });
+
+  // An unknown denominator must not default to something that reads as measured.
+  it("refuses to weigh a group when the recipient count is unknown", () => {
+    const a = assessCoFunding(2, null);
+    expect(a.strength).toBe("unknown");
+    expect(a.subject_share).toBeNull();
+  });
+
+  it("treats a nonsensical recipient count as unknown", () => {
+    expect(assessCoFunding(2, 0).strength).toBe("unknown");
+  });
+
+  it("puts the boundaries where documented", () => {
+    expect(assessCoFunding(2, 3).strength).toBe("targeted");
+    expect(assessCoFunding(2, 4).strength).toBe("mixed");
+    expect(assessCoFunding(2, 9).strength).toBe("mixed");
+    expect(assessCoFunding(2, 10).strength).toBe("batch");
+  });
+
+  // The real case, end to end.
+  it("would have caught the EV3vk1Qa false positive", () => {
+    expect(assessCoFunding(2, 19).strength).toBe("batch");
   });
 });

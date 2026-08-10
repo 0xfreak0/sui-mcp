@@ -6,8 +6,44 @@ import { getLabel } from "../utils/labels.js";
 import { decimalsForCoinType, symbolOf, toHumanAmount } from "../utils/valuation.js";
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
 import { measureFanout } from "../utils/fanout.js";
-import { detectCoFunding } from "../utils/co-funding.js";
+import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+/**
+ * How many distinct addresses a transaction paid.
+ *
+ * The denominator for co-funding: two subjects sharing a two-recipient payout
+ * is near-decisive, sharing a nineteen-recipient one is a batch distribution.
+ * Without this the two are indistinguishable in the output.
+ */
+const TX_RECIPIENTS_QUERY = `query ($digest: String!) {
+  transactionEffects(digest: $digest) {
+    balanceChanges { nodes { amount owner { address } } }
+  }
+}`;
+
+interface TxRecipientsResult {
+  transactionEffects: {
+    balanceChanges: { nodes: Array<{ amount?: string; owner?: { address: string } }> };
+  } | null;
+}
+
+/** Null when the transaction could not be read — never a default that reads as measured. */
+async function countTxRecipients(digest: string): Promise<number | null> {
+  try {
+    const r = await gqlQuery<TxRecipientsResult>(TX_RECIPIENTS_QUERY, { digest });
+    const nodes = r.transactionEffects?.balanceChanges?.nodes;
+    if (!nodes) return null;
+    const recipients = new Set<string>();
+    for (const n of nodes) {
+      // Positive only: the payer's own negative change is not a recipient.
+      if (n.owner?.address && n.amount && BigInt(n.amount) > 0n) recipients.add(n.owner.address);
+    }
+    return recipients.size;
+  } catch {
+    return null;
+  }
+}
 
 const FUNDING_QUERY = `query ($addr: SuiAddress!, $first: Int!) {
   transactions(filter: { affectedAddress: $addr }, first: $first) {
@@ -271,6 +307,21 @@ export function registerFundingTools(server: McpServer) {
           addresses,
         );
 
+        // Weigh each group against how many addresses its transaction actually
+        // paid. Capped at 10 lookups: this runs after a batch that may already
+        // have made a hundred queries, and the widest groups sort first.
+        const subjectSet = new Set(addresses);
+        const assessed = [];
+        for (const g of coFunded.slice(0, 10)) {
+          const total = await countTxRecipients(g.funding_tx);
+          const matched = g.addresses.filter((a) => subjectSet.has(a)).length;
+          assessed.push({
+            ...g,
+            transaction_recipient_count: total,
+            ...assessCoFunding(matched, total),
+          });
+        }
+
         const addrSet = new Set<string>();
         for (const r of results) for (const s of r.chain) { addrSet.add(s.address); addrSet.add(s.funded_by); }
         const nameMap = await batchResolveNames([...addrSet]);
@@ -287,15 +338,15 @@ export function registerFundingTools(server: McpServer) {
                   addresses_resolved: results.filter((r) => r.hops > 0).length,
                   ...(coFunded.length
                     ? {
-                        co_funded_in_one_transaction: coFunded.map((g) => ({
+                        co_funded_in_one_transaction: assessed.map((g) => ({
                           ...g,
                           ...(nameMap.get(g.funder) ? { funder_name: nameMap.get(g.funder) } : {}),
                         })),
                         co_funding_note:
                           "These addresses were paid by a single transaction, not merely by the same funder over time. " +
-                          "One transaction paying several addresses is one signed action, so the sender held every " +
-                          "recipient in mind at once — far stronger than shared ancestry, and not explained by both " +
-                          "parties happening to withdraw from the same exchange.",
+                          "Read `strength` before concluding anything: a transaction paying only these addresses is " +
+                          "near-decisive, while one paying twenty of which two are yours is a batch distribution that an " +
+                          "unrelated address can land in by chance. `transaction_recipient_count` is the denominator.",
                       }
                     : {}),
                   shared_funders: shared.map(([funder, addrs]) => ({

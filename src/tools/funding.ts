@@ -122,7 +122,7 @@ async function walkFunding(address: string, maxHops: number, memo: FundingMemo) 
 export function registerFundingTools(server: McpServer) {
   server.tool(
     "get_address_fanout",
-    "(Incident investigation) Count how many distinct addresses an address has sent value to. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing.",
+    "(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape — shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.",
     {
       address: z.string().describe("Address to measure (0x...)"),
       max_transactions: z
@@ -131,7 +131,9 @@ export function registerFundingTools(server: McpServer) {
         .min(50)
         .max(3000)
         .optional()
-        .describe("Outbound transactions to scan (default 1000). Higher is slower but tighter."),
+        .describe(
+          "Transactions to scan, walking backwards from the most recent (default 1000). Counts both directions. Higher is slower but tighter; check `truncated` in the response.",
+        ),
     },
     async ({ address, max_transactions }) => {
       try {

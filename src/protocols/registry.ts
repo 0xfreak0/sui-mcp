@@ -176,6 +176,18 @@ const OPERATION_PATTERNS: OperationPattern[] = [
  * here was verified by hand and carries a real category. Never widened by
  * runtime resolution; see {@link lookupProtocolDisplay}.
  */
+/**
+ * The curated package-ID → protocol map, for callers that need to search it by
+ * name rather than look up a single ID.
+ *
+ * Read-only by contract. This is a decode map full of historical package IDs on
+ * purpose, so anything using it to pick a *query* target must resolve the
+ * lineage and check liveness first — see utils/package-lineage.ts.
+ */
+export function loadProtocolRegistry(): Record<string, ProtocolInfo> {
+  return PROTOCOL_MAP;
+}
+
 export function lookupProtocol(packageId: string): ProtocolInfo | null {
   return PROTOCOL_MAP[packageId] ?? null;
 }

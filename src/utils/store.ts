@@ -32,6 +32,12 @@ import { dirname } from "node:path";
 export interface FanoutRecord {
   address: string;
   recipient_count: number;
+  sender_count: number;
+  counterparty_count: number;
+  coin_type_count: number;
+  out_in_ratio: number | null;
+  flow_shape: string;
+  scanned_transactions: number;
   truncated: number;
   measured_at: number;
   /** Which measurement method produced this row. See FANOUT_METHOD_VERSION. */
@@ -72,7 +78,7 @@ let unavailableReason: string | null = null;
  * history, both directions counted. Only the fan-out cache is discarded on a
  * bump; labels and findings are user data and are never touched.
  */
-export const FANOUT_METHOD_VERSION = 1;
+export const FANOUT_METHOD_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (
@@ -84,10 +90,18 @@ CREATE TABLE IF NOT EXISTS labels (
   updated_at  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS fanout (
-  address         TEXT PRIMARY KEY,
-  recipient_count INTEGER NOT NULL,
-  truncated       INTEGER NOT NULL,
-  measured_at     INTEGER NOT NULL
+  address              TEXT PRIMARY KEY,
+  recipient_count      INTEGER NOT NULL,
+  sender_count         INTEGER NOT NULL,
+  counterparty_count   INTEGER NOT NULL,
+  coin_type_count      INTEGER NOT NULL,
+  -- Nullable on purpose: null means nothing was received, so no ratio exists.
+  -- Storing 0 would read as a measured ratio of zero.
+  out_in_ratio         REAL,
+  flow_shape           TEXT NOT NULL,
+  scanned_transactions INTEGER NOT NULL,
+  truncated            INTEGER NOT NULL,
+  measured_at          INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS findings (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,8 +132,28 @@ function migrateFanoutCache(opened: DatabaseLike): void {
   const row = opened.prepare(`PRAGMA user_version`).get() as
     | { user_version?: number }
     | undefined;
-  if ((row?.user_version ?? 0) >= FANOUT_METHOD_VERSION) return;
-  opened.exec(`DELETE FROM fanout`);
+  // The version stamp says whether the *method* changed; the column list says
+  // whether the table can actually hold what we now write. Both are checked,
+  // because trusting the stamp alone is not safe: a migration that bumped the
+  // version and then failed mid-way leaves a store whose stamp claims migrated
+  // while the old columns remain, and it would never self-correct.
+  const columns = new Set(
+    (opened.prepare(`PRAGMA table_info(fanout)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  const shapeOk = ["sender_count", "counterparty_count", "coin_type_count", "flow_shape"].every(
+    (c) => columns.has(c),
+  );
+  if ((row?.user_version ?? 0) >= FANOUT_METHOD_VERSION && shapeOk) return;
+
+  // DROP, not DELETE. `CREATE TABLE IF NOT EXISTS` leaves an existing table's
+  // columns untouched, so a version that adds columns would keep the old shape
+  // and every write would fail with "table fanout has no column named
+  // sender_count". Dropping and re-running the schema is what actually
+  // migrates. Safe because fan-out is derived: the cost is one re-measurement.
+  opened.exec(`DROP TABLE IF EXISTS fanout`);
+  opened.exec(SCHEMA);
   // Not parameterised: PRAGMA does not accept bound values, and the operand is
   // a module constant rather than anything a caller supplies.
   opened.exec(`PRAGMA user_version = ${FANOUT_METHOD_VERSION}`);
@@ -222,13 +256,32 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
   initStore();
   if (!db) return false;
   db.prepare(
-    `INSERT INTO fanout (address, recipient_count, truncated, measured_at)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO fanout (address, recipient_count, sender_count, counterparty_count,
+                         coin_type_count, out_in_ratio, flow_shape,
+                         scanned_transactions, truncated, measured_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(address) DO UPDATE SET
        recipient_count=excluded.recipient_count,
+       sender_count=excluded.sender_count,
+       counterparty_count=excluded.counterparty_count,
+       coin_type_count=excluded.coin_type_count,
+       out_in_ratio=excluded.out_in_ratio,
+       flow_shape=excluded.flow_shape,
+       scanned_transactions=excluded.scanned_transactions,
        truncated=excluded.truncated,
        measured_at=excluded.measured_at`,
-  ).run(r.address, r.recipient_count, r.truncated, Date.now());
+  ).run(
+    r.address,
+    r.recipient_count,
+    r.sender_count,
+    r.counterparty_count,
+    r.coin_type_count,
+    r.out_in_ratio,
+    r.flow_shape,
+    r.scanned_transactions,
+    r.truncated,
+    Date.now(),
+  );
   return true;
 }
 

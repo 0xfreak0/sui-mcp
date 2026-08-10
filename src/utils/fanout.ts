@@ -164,19 +164,19 @@ export async function measureFanout(
   if (useCache) {
     const cached = getCachedFanout(address);
     if (cached) {
-      // The store keeps only the counterparty total, so a cached hit cannot
-      // restore the in/out split or coin diversity. Reported as unknown rather
-      // than zero, which would read as a measured absence.
-      const { classification, interpretation } = classifyFanout(cached.recipient_count);
+      const { classification, interpretation } = classifyFanout(
+        cached.counterparty_count,
+        cached.coin_type_count,
+      );
       return {
         address,
         recipient_count: cached.recipient_count,
-        sender_count: -1,
-        counterparty_count: cached.recipient_count,
-        coin_type_count: -1,
-        out_in_ratio: null,
-        flow_shape: "unknown",
-        scanned_transactions: 0,
+        sender_count: cached.sender_count,
+        counterparty_count: cached.counterparty_count,
+        coin_type_count: cached.coin_type_count,
+        out_in_ratio: cached.out_in_ratio,
+        flow_shape: cached.flow_shape as FanoutResult["flow_shape"],
+        scanned_transactions: cached.scanned_transactions,
         truncated: cached.truncated === 1,
         classification,
         interpretation,
@@ -230,7 +230,21 @@ export async function measureFanout(
   const flowShape: FanoutResult["flow_shape"] =
     ratio === null ? "unknown" : ratio >= 3 ? "disperser" : ratio <= 0.33 ? "collector" : "balanced";
   const { classification, interpretation } = classifyFanout(counterparties.size, coinTypes.size);
-  saveFanout({ address, recipient_count: counterparties.size, truncated: hasNext ? 1 : 0 });
+  // Persist every field the measurement produced. Storing only the total used
+  // to make a cache hit report -1 for the in/out split and "unknown" for flow
+  // shape — and recipient_count was written as the counterparty total, so a
+  // cached read disagreed with a fresh one on the same address.
+  saveFanout({
+    address,
+    recipient_count: recipients.size,
+    sender_count: senders.size,
+    counterparty_count: counterparties.size,
+    coin_type_count: coinTypes.size,
+    out_in_ratio: ratio,
+    flow_shape: flowShape,
+    scanned_transactions: scanned,
+    truncated: hasNext ? 1 : 0,
+  });
 
   return {
     address,

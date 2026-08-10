@@ -2,7 +2,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getCachedFanout, saveFanout } from "./store.js";
 
 /**
- * How many distinct addresses an address has sent value to.
+ * How many distinct addresses an address transacts with, in both directions.
  *
  * This is the control that stops shared-ancestry from reading as collusion.
  * Tracing several wallets back to a common funder looks damning until you
@@ -118,12 +118,11 @@ const DISTRIBUTOR_THRESHOLD = 100;
  * thousands and sends to almost nobody. Counting only what an address pays out
  * cannot distinguish a quiet wallet from the quiet side of a busy one.
  */
-export function classifyFanout(counterparties: number, coinTypes = 0): {
+export function classifyFanout(counterparties: number): {
   classification: FanoutResult["classification"];
   interpretation: string;
 } {
-  const recipients = counterparties;
-  if (recipients >= HUB_THRESHOLD) {
+  if (counterparties >= HUB_THRESHOLD) {
     return {
       classification: "hub",
       interpretation:
@@ -131,7 +130,7 @@ export function classifyFanout(counterparties: number, coinTypes = 0): {
         "funder tells you nothing — do not read common ancestry through it as a link.",
     };
   }
-  if (recipients >= DISTRIBUTOR_THRESHOLD) {
+  if (counterparties >= DISTRIBUTOR_THRESHOLD) {
     return {
       classification: "distributor",
       interpretation:
@@ -147,11 +146,13 @@ export function classifyFanout(counterparties: number, coinTypes = 0): {
 }
 
 /**
- * Count distinct recipients of `address`, scanning at most `maxTransactions`.
+ * Count distinct counterparties of `address`, walking backwards from its most
+ * recent activity and scanning at most `maxTransactions`.
  *
- * Only outflows count: a balance change is a recipient when it is positive and
- * belongs to someone else. Counting every counterparty would fold in the
- * address's own funders and inflate narrow wallets into apparent distributors.
+ * Both directions count. A balance change belonging to someone else is a
+ * recipient when the subject's own change is negative and a sender when it is
+ * positive. Counting outflows alone cannot see a custodial wallet, which
+ * receives from thousands and pays almost nobody, and so read as "narrow".
  */
 export async function measureFanout(
   address: string,
@@ -163,11 +164,16 @@ export async function measureFanout(
   // Returns nothing when the store is disabled, which is the default.
   if (useCache) {
     const cached = getCachedFanout(address);
-    if (cached) {
-      const { classification, interpretation } = classifyFanout(
-        cached.counterparty_count,
-        cached.coin_type_count,
-      );
+    // A cached reading is only usable if it is at least as thorough as what is
+    // being asked for. find_funding_sources measures shared funders at 300
+    // transactions and the cache is keyed on address alone, so without this a
+    // shallow reading is served to a later 1500-transaction request — weaker and
+    // more truncated than asked for, for a week. An untruncated scan is exempt:
+    // it reached the end of the address's history, so more depth finds nothing.
+    const deepEnough =
+      cached && (cached.truncated === 0 || cached.scanned_transactions >= maxTransactions);
+    if (cached && deepEnough) {
+      const { classification, interpretation } = classifyFanout(cached.counterparty_count);
       return {
         address,
         recipient_count: cached.recipient_count,
@@ -229,7 +235,7 @@ export async function measureFanout(
   const ratio = senders.size > 0 ? recipients.size / senders.size : null;
   const flowShape: FanoutResult["flow_shape"] =
     ratio === null ? "unknown" : ratio >= 3 ? "disperser" : ratio <= 0.33 ? "collector" : "balanced";
-  const { classification, interpretation } = classifyFanout(counterparties.size, coinTypes.size);
+  const { classification, interpretation } = classifyFanout(counterparties.size);
   // Persist every field the measurement produced. Storing only the total used
   // to make a cache hit report -1 for the in/out split and "unknown" for flow
   // shape — and recipient_count was written as the counterparty total, so a

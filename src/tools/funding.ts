@@ -282,8 +282,21 @@ export function registerFundingTools(server: McpServer) {
                     funded: addrs,
                     ...(fanouts[funder]
                       ? {
+                          // Shape, not just size. This is the tool that decides
+                          // whether shared funding means anything, and count
+                          // alone cannot: a custodial exchange and a sybil
+                          // funder can have near-identical counterparty counts
+                          // while one runs balanced and the other pays many and
+                          // is paid by few. Surfacing only the count here left
+                          // the caller to guess exactly where it matters most.
                           fanout: {
                             recipient_count: fanouts[funder].recipient_count,
+                            sender_count: fanouts[funder].sender_count,
+                            counterparty_count: fanouts[funder].counterparty_count,
+                            coin_type_count: fanouts[funder].coin_type_count,
+                            out_in_ratio: fanouts[funder].out_in_ratio,
+                            flow_shape: fanouts[funder].flow_shape,
+                            scanned_transactions: fanouts[funder].scanned_transactions,
                             truncated: fanouts[funder].truncated,
                             classification: fanouts[funder].classification,
                             interpretation: fanouts[funder].interpretation,

@@ -7,6 +7,7 @@ import { decimalsForCoinType, symbolOf, toHumanAmount } from "../utils/valuation
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
 import { measureFanout } from "../utils/fanout.js";
 import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
+import { detectFundingBursts, detectSubjectLinks } from "../utils/funding-signals.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -216,7 +217,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_sources",
-    "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Reports which funders are shared across the batch and measures each shared funder's fan-out, so you can tell a real common origin from an exchange everyone happens to have withdrawn from.",
+    "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly; and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.",
     {
       addresses: z
         .array(z.string())
@@ -302,10 +303,8 @@ export function registerFundingTools(server: McpServer) {
         // recipient in mind at once, so this is reported separately rather than
         // folded into shared_funders — otherwise the weaker claim borrows the
         // stronger one's confidence.
-        const coFunded = detectCoFunding(
-          results.flatMap((r) => r.chain),
-          addresses,
-        );
+        const allSteps = results.flatMap((r) => r.chain);
+        const coFunded = detectCoFunding(allSteps, addresses);
 
         // Weigh each group against how many addresses its transaction actually
         // paid. Capped at 10 lookups: this runs after a batch that may already
@@ -321,6 +320,17 @@ export function registerFundingTools(server: McpServer) {
             ...assessCoFunding(matched, total),
           });
         }
+
+        // One subject funding another needs no denominator to interpret: the
+        // money went straight from one address under investigation to another,
+        // so there is no base rate it could be confused with. Easy to miss by
+        // eye, since the funder sits rows away in the input list.
+        const subjectLinks = detectSubjectLinks(allSteps, addresses);
+
+        // Timing survives where co-funding does not. A wide payout says little,
+        // but addresses funded seconds apart did not get there independently —
+        // people do not coordinate to the second, scripts do.
+        const bursts = detectFundingBursts(allSteps);
 
         const addrSet = new Set<string>();
         for (const r of results) for (const s of r.chain) { addrSet.add(s.address); addrSet.add(s.funded_by); }
@@ -347,6 +357,29 @@ export function registerFundingTools(server: McpServer) {
                           "Read `strength` before concluding anything: a transaction paying only these addresses is " +
                           "near-decisive, while one paying twenty of which two are yours is a batch distribution that an " +
                           "unrelated address can land in by chance. `transaction_recipient_count` is the denominator.",
+                      }
+                    : {}),
+                  ...(subjectLinks.length
+                    ? {
+                        subject_funded_subject: subjectLinks.map((l) => ({
+                          ...l,
+                          ...(nameMap.get(l.funder) ? { funder_name: nameMap.get(l.funder) } : {}),
+                        })),
+                        subject_link_note:
+                          "One address under investigation funded another directly. Unlike shared ancestry this needs no " +
+                          "control to interpret — there is no base rate for money moving straight from one subject to another.",
+                      }
+                    : {}),
+                  ...(bursts.length
+                    ? {
+                        funding_bursts: bursts,
+                        burst_note:
+                          "Addresses funded within " +
+                          "60s of each other, tightest first. Timing is the discriminator that survives when co-funding " +
+                          "does not: a wide payout proves little, but a set of wallets funded seconds apart did not arrive " +
+                          "there independently. Check the span — sub-second spans are scripted, minutes are not conclusive. " +
+                          "Ignore any entry with same_transaction true: that burst is a single payment, already reported " +
+                          "under co_funded_in_one_transaction, and counting it again would tally one fact as two.",
                       }
                     : {}),
                   shared_funders: shared.map(([funder, addrs]) => ({

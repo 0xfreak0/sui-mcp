@@ -345,7 +345,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 |---|---|
 | `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing that stops at labeled sinks (forward or backward) |
 | `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
-| `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders, and flags addresses paid by a single transaction |
+| `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape, addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, and sub-minute funding bursts |
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |

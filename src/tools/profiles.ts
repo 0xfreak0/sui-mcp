@@ -44,6 +44,7 @@ export const PROFILES = {
 
   /** Incident investigation: follow value, attribute accounts, reconstruct time. */
   forensics: [
+    "resolve_protocol_packages",
     "sample_control_addresses",
     "trace_funds",
     "find_funding_source",

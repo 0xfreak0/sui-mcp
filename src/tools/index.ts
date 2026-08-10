@@ -25,6 +25,7 @@ import { registerPoolTools } from "./pools.js";
 import { registerDeepBookTools } from "./deepbook.js";
 import { registerAggregateTools } from "./aggregate.js";
 import { registerControlTools } from "./control.js";
+import { registerPackageLineageTools } from "./package-lineage.js";
 import { registerFindingsTools } from "./findings.js";
 import { registerDependencyTools } from "./dependencies.js";
 import { registerIdentifyTools } from "./identify.js";
@@ -80,6 +81,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerDeepBookTools(server);
   registerAggregateTools(server);
   registerControlTools(server);
+  registerPackageLineageTools(server);
   registerFindingsTools(server);
   registerDependencyTools(server);
   registerIdentifyTools(server);

@@ -6,6 +6,7 @@ import { getLabel } from "../utils/labels.js";
 import { decimalsForCoinType, symbolOf, toHumanAmount } from "../utils/valuation.js";
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
 import { measureFanout } from "../utils/fanout.js";
+import { detectCoFunding } from "../utils/co-funding.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const FUNDING_QUERY = `query ($addr: SuiAddress!, $first: Int!) {
@@ -260,6 +261,16 @@ export function registerFundingTools(server: McpServer) {
           }
         }
 
+        // Same funder is weak; same *transaction* is not. One PTB paying
+        // several addresses is a single signed action whose author held every
+        // recipient in mind at once, so this is reported separately rather than
+        // folded into shared_funders — otherwise the weaker claim borrows the
+        // stronger one's confidence.
+        const coFunded = detectCoFunding(
+          results.flatMap((r) => r.chain),
+          addresses,
+        );
+
         const addrSet = new Set<string>();
         for (const r of results) for (const s of r.chain) { addrSet.add(s.address); addrSet.add(s.funded_by); }
         const nameMap = await batchResolveNames([...addrSet]);
@@ -274,6 +285,19 @@ export function registerFundingTools(server: McpServer) {
                   depth: depth ?? "full",
                   max_hops: maxHops,
                   addresses_resolved: results.filter((r) => r.hops > 0).length,
+                  ...(coFunded.length
+                    ? {
+                        co_funded_in_one_transaction: coFunded.map((g) => ({
+                          ...g,
+                          ...(nameMap.get(g.funder) ? { funder_name: nameMap.get(g.funder) } : {}),
+                        })),
+                        co_funding_note:
+                          "These addresses were paid by a single transaction, not merely by the same funder over time. " +
+                          "One transaction paying several addresses is one signed action, so the sender held every " +
+                          "recipient in mind at once — far stronger than shared ancestry, and not explained by both " +
+                          "parties happening to withdraw from the same exchange.",
+                      }
+                    : {}),
                   shared_funders: shared.map(([funder, addrs]) => ({
                     funder,
                     ...(nameMap.get(funder) ? { name: nameMap.get(funder) } : {}),

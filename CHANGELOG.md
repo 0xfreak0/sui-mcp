@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.6.0 (2026-08-09)
+
+Four new tools and richer output from `find_funding_sources` (53 → 59 tools).
+
+The theme is the gap between the methodology the documentation describes and
+what the tools actually helped you carry out. The README has always said to
+compare a cohort against a control before believing a shared-funding rate, and
+there was no way to build one; it cited "funded in three bursts of under a
+minute" as decisive evidence that had to be computed by hand. Those steps exist
+now.
+
+Two of these came out of running the documented investigation and getting it
+wrong, which is recorded in the tests rather than smoothed over.
+
+### Added
+- **`sample_control_addresses`** — draw a control group from the same protocol
+  and window as the cohort under test. Random rather than top-N, because
+  sampling the largest actors compares a cohort against whales, which transact
+  more and therefore collide more; de-duplicated, so an active address is not
+  likelier to be drawn than a quiet one; and seedable, because a control nobody
+  can redraw cannot be checked by whoever reads the report.
+- **`resolve_protocol_packages`** — find which of a protocol's package versions
+  are actually emitting. `protocols.json` is a decode map, full of historical
+  IDs on purpose so that a 2023 transaction still resolves to a name; used as a
+  query target it returns nothing, which reads as a dead protocol rather than a
+  wrong ID. Three major protocols were written off that way while building
+  this. The answer is usually plural — an event carries the ID of the version
+  that *defined* it, so a protocol upgraded piecemeal emits from several at
+  once. Cetus measured ten live versions, Suilend two. Resolving to a single
+  "current package" would drop most of a protocol's activity while looking
+  complete.
+- **Co-funding detection** in `find_funding_sources`: addresses paid by one
+  transaction, reported separately from shared funders because they support
+  different conclusions. Each group is weighed against how many addresses that
+  transaction paid in total — two of two is bespoke, two of nineteen is a batch
+  distribution an unrelated address can land in by chance. That case is real
+  and is in the tests: a randomly drawn control address appeared in the same
+  payout as two cohort wallets.
+- **Subject-to-subject links** — one address under investigation funding
+  another. Stronger than shared ancestry and needing no control to interpret,
+  since there is no base rate for money moving directly between two subjects.
+  Invisible by eye once a batch runs past a handful of addresses.
+- **Funding bursts** — fundings clustered by time, splitting on a 60s gap,
+  tightest first. Timing is what survives when co-funding does not: a wide
+  payout proves little, but wallets funded seconds apart did not get there
+  independently. Bursts built from a single transaction carry
+  `same_transaction`, because that is the co-funding entry restated and
+  counting both would tally one fact as two independent signals.
+
+### Changed
+- `find_funding_sources` returns the whole fan-out measurement for each shared
+  funder, including `flow_shape` and `out_in_ratio`. It previously surfaced the
+  count alone — in the one tool whose job is deciding whether shared funding
+  means anything, which a count cannot decide.
+
 ## 1.5.1 (2026-08-09)
 
 All fixes, no new tools. Every item is 1.5.0 changing how fan-out is measured

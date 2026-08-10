@@ -19,6 +19,19 @@ import {
   storeStatus,
 } from "../src/utils/store.js";
 
+/** A complete measurement; tests override only the fields they care about. */
+const fanout = (over: Record<string, unknown>) => ({
+  recipient_count: 1,
+  sender_count: 1,
+  counterparty_count: 1,
+  coin_type_count: 1,
+  out_in_ratio: 1,
+  flow_shape: "balanced",
+  scanned_transactions: 1,
+  truncated: 0,
+  ...over,
+}) as Parameters<typeof saveFanout>[0];
+
 let dir: string;
 let backup: string | undefined;
 
@@ -74,7 +87,7 @@ describe("store disabled (the default)", () => {
 
   it("makes every write a no-op that returns false", () => {
     expect(saveLabel({ address: "0xa", label: "X", category: "cex", confidence: null, notes: null })).toBe(false);
-    expect(saveFanout({ address: "0xa", recipient_count: 5, truncated: 0 })).toBe(false);
+    expect(saveFanout(fanout({ address: "0xa", recipient_count: 5 }))).toBe(false);
     expect(deleteLabel("0xa")).toBe(false);
   });
 
@@ -130,7 +143,7 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
 
   it("round-trips a fan-out measurement", () => {
     enable();
-    saveFanout({ address: "0xhub", recipient_count: 29_180, truncated: 1 });
+    saveFanout(fanout({ address: "0xhub", recipient_count: 29_180, counterparty_count: 29_180, truncated: 1 }));
     const r = getCachedFanout("0xhub");
     expect(r?.recipient_count).toBe(29_180);
     expect(r?.truncated).toBe(1);
@@ -139,7 +152,7 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
 
   it("honours the freshness window", () => {
     enable();
-    saveFanout({ address: "0xhub", recipient_count: 5, truncated: 0 });
+    saveFanout(fanout({ address: "0xhub", recipient_count: 5 }));
     // Just written, so a zero-tolerance window must still find it or miss it
     // deterministically — never return a stale reading as current.
     expect(getCachedFanout("0xhub", 60_000)).not.toBeNull();
@@ -322,11 +335,112 @@ describe("fan-out cache invalidation across method changes", () => {
   it("serves a measurement taken by the current method", () => {
     process.env.SUI_STORE_PATH = join(dir, "current.db");
     resetStore();
-    saveFanout({ address: ADDR, recipient_count: 792, truncated: 0 });
+    saveFanout(fanout({ address: ADDR, recipient_count: 792 }));
     resetStore();
 
     const cached = getCachedFanout(ADDR);
     expect(cached?.recipient_count).toBe(792);
     expect(cached?.method_version).toBe(FANOUT_METHOD_VERSION);
+  });
+});
+
+/**
+ * The cache used to persist only recipient_count, so a cache hit returned -1
+ * for sender_count/coin_type_count and "unknown" for flow_shape. That silently
+ * disabled the 1.5.0 headline feature on exactly the documented path:
+ * find_funding_sources populates the cache, so the follow-up fan-out call on a
+ * shared funder was always a cache hit.
+ */
+describe("fan-out cache round-trips the full measurement", () => {
+  it("restores the in/out split, coin diversity and flow shape", () => {
+    process.env.SUI_STORE_PATH = join(dir, "full.db");
+    resetStore();
+
+    saveFanout({
+      address: "0xfull",
+      recipient_count: 431,
+      sender_count: 44,
+      counterparty_count: 440,
+      coin_type_count: 7,
+      out_in_ratio: 9.78,
+      flow_shape: "disperser",
+      scanned_transactions: 600,
+      truncated: 1,
+    });
+    resetStore();
+
+    const c = getCachedFanout("0xfull");
+    expect(c?.recipient_count).toBe(431);
+    expect(c?.sender_count).toBe(44);
+    expect(c?.counterparty_count).toBe(440);
+    expect(c?.coin_type_count).toBe(7);
+    expect(c?.out_in_ratio).toBeCloseTo(9.78);
+    expect(c?.flow_shape).toBe("disperser");
+    expect(c?.scanned_transactions).toBe(600);
+    expect(c?.truncated).toBe(1);
+  });
+
+  // null is the honest value for "nothing was received", and must not come
+  // back as 0 — which would read as a measured ratio of zero.
+  it("keeps a null out_in_ratio null rather than zero", () => {
+    process.env.SUI_STORE_PATH = join(dir, "nullratio.db");
+    resetStore();
+    saveFanout({
+      address: "0xnull",
+      recipient_count: 3,
+      sender_count: 0,
+      counterparty_count: 3,
+      coin_type_count: 1,
+      out_in_ratio: null,
+      flow_shape: "unknown",
+      scanned_transactions: 3,
+      truncated: 0,
+    });
+    resetStore();
+    const c = getCachedFanout("0xnull");
+    expect(c?.out_in_ratio).toBeNull();
+    expect(c?.flow_shape).toBe("unknown");
+  });
+
+  // The exact state a half-finished migration leaves behind: the stamp says
+  // current, the columns say otherwise. Checking only the stamp would never
+  // recover, and every write would fail for as long as the store existed.
+  it("repairs a store stamped current but still holding the old columns", () => {
+    const path = join(dir, "halfmigrated.db");
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(path);
+    raw.exec(`CREATE TABLE fanout (address TEXT PRIMARY KEY, recipient_count INTEGER NOT NULL,
+      truncated INTEGER NOT NULL, measured_at INTEGER NOT NULL)`);
+    raw.exec(`PRAGMA user_version = ${FANOUT_METHOD_VERSION}`);
+    raw.close();
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    expect(saveFanout(fanout({ address: "0xrepaired", flow_shape: "disperser" }))).toBe(true);
+    expect(getCachedFanout("0xrepaired")?.flow_shape).toBe("disperser");
+  });
+
+  it("discards rows written before the fields existed", () => {
+    const path = join(dir, "v1.db");
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(path);
+    raw.exec(`CREATE TABLE fanout (address TEXT PRIMARY KEY, recipient_count INTEGER NOT NULL,
+      truncated INTEGER NOT NULL, measured_at INTEGER NOT NULL)`);
+    raw.exec(`PRAGMA user_version = 1`);
+    raw.prepare(`INSERT INTO fanout VALUES (?,?,?,?)`).run("0xold", 431, 0, Date.now());
+    raw.close();
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    expect(getCachedFanout("0xold")).toBeNull();
+
+    // The table must actually be rebuilt, not just emptied: CREATE TABLE IF NOT
+    // EXISTS leaves an old table's columns in place, so a write would fail with
+    // "no column named sender_count". Only a pre-existing store hits this, which
+    // is why a fresh temp DB per test never caught it.
+    expect(saveFanout(fanout({ address: "0xnew", flow_shape: "collector" }))).toBe(true);
+    expect(getCachedFanout("0xnew")?.flow_shape).toBe("collector");
   });
 });

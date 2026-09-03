@@ -84,3 +84,30 @@ describe("detectBridges", () => {
     expect(hits[0].resolution).toBe("detect-only");
   });
 });
+
+describe("Sui native bridge detection", () => {
+  it("detects an outbound send_token, including the v2 variant", () => {
+    for (const fn of ["send_token", "send_token_v2"]) {
+      const hits = detectBridges([
+        {
+          packageId: "0x000000000000000000000000000000000000000000000000000000000000000b",
+          module: "bridge",
+          function: fn,
+        },
+      ]);
+      expect(hits[0]?.protocol).toBe("Sui Bridge");
+      expect(hits[0]?.resolution).toBe("identifier");
+    }
+  });
+
+  it("detects the deposit event", () => {
+    const hits = detectBridges([], ["0x0b::bridge::TokenDepositedEvent"]);
+    expect(hits[0]?.protocol).toBe("Sui Bridge");
+  });
+
+  it("does not treat an inbound claim as an exit", () => {
+    // TokenTransferClaimed is value ARRIVING on Sui. Calling it an exit would
+    // send an investigator to the wrong chain.
+    expect(detectBridges([], ["0x0b::bridge::TokenTransferClaimed"])).toEqual([]);
+  });
+});

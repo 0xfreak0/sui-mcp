@@ -5,6 +5,12 @@ import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { detectBridges } from "../utils/bridge/detect.js";
 import {
+  CLAIM_EVENT_SUFFIX,
+  DEPOSIT_EVENT_SUFFIXES,
+  parseDepositEvent,
+  suiBridgeChainLabel,
+} from "../utils/bridge/sui-native.js";
+import {
   EVIDENCE_TIER_MEANING,
   WORMHOLE_CHAIN_SUI,
   extractWormholeMessages,
@@ -125,7 +131,51 @@ export function registerBridgeTools(server: McpServer) {
       const eventTypes = events
         .map((e) => e?.contents?.type?.repr)
         .filter((t): t is string => typeof t === "string");
-      const otherBridges = detectBridges([], eventTypes).filter((h) => h.protocol !== "Wormhole");
+      const otherBridges = detectBridges([], eventTypes).filter(
+        (h) => h.protocol !== "Wormhole" && h.protocol !== "Sui Bridge",
+      );
+
+      // Sui's native bridge carries its destination in the event, so this half
+      // is chain-derived — no indexer is consulted for it at all.
+      const nativeTransfers = events
+        .filter((e) => {
+          const t = e?.contents?.type?.repr;
+          return typeof t === "string" && DEPOSIT_EVENT_SUFFIXES.some((sfx) => t.endsWith(sfx));
+        })
+        .map((e) => parseDepositEvent(e.contents?.json))
+        .filter((t): t is NonNullable<typeof t> => t !== null);
+
+      // Inbound claims are value ARRIVING on Sui. Reporting one as an exit
+      // would send an investigator to the wrong chain entirely.
+      const nativeInboundClaims = eventTypes.filter((t) => t.endsWith(CLAIM_EVENT_SUFFIX)).length;
+
+      const nativeSection = {
+        ...(nativeTransfers.length
+          ? {
+              sui_native_bridge: nativeTransfers.map((t) => ({
+                evidence: "chain-derived" as const,
+                transfer_id: t.transferId,
+                sequence: t.seqNum,
+                destination_chain: t.targetAccount ? t.targetAccount.split(":").slice(0, 2).join(":") : null,
+                destination_chain_label: t.targetChainLabel,
+                destination_account: t.targetAccount,
+                destination_address: t.targetAddress,
+                sender: t.senderAddress,
+                amount: t.amount,
+                note: "Destination read from the deposit event, not from an indexer. Confirm the claim on the destination chain against this transfer id to establish it was completed.",
+              })),
+            }
+          : {}),
+        ...(nativeInboundClaims
+          ? {
+              sui_native_bridge_inbound: {
+                claims: nativeInboundClaims,
+                meaning:
+                  "This transaction CLAIMED value arriving on Sui from the native bridge. That is an entry, not an exit — do not follow it off-chain.",
+              },
+            }
+          : {}),
+      };
 
       if (messages.length === 0) {
         return ok({
@@ -133,14 +183,24 @@ export function registerBridgeTools(server: McpServer) {
           network: getNetwork(),
           source_chain: caip2ForSuiNetwork(getNetwork()),
           wormhole_messages: [],
-          ...(otherBridges.length
+          ...nativeSection,
+          ...(nativeTransfers.length
             ? {
-                other_bridge_activity: otherBridges,
-                note: "No Wormhole message in this transaction, but another cross-chain protocol was used — see other_bridge_activity. The funds did leave; this tool just cannot follow that protocol yet.",
+                ...(otherBridges.length ? { other_bridge_activity: otherBridges } : {}),
+                note: "No Wormhole message, but this transaction exited through Sui's native bridge — see sui_native_bridge. That destination is read from chain data, so it is stronger evidence than an indexer-attested one.",
               }
-            : {
-                note: "No Wormhole message in this transaction. It did not exit through Wormhole.",
-              }),
+            : otherBridges.length
+              ? {
+                  other_bridge_activity: otherBridges,
+                  note: "No Wormhole message in this transaction, but another cross-chain protocol was used — see other_bridge_activity. The funds did leave; this tool just cannot follow that protocol yet.",
+                }
+              : nativeInboundClaims
+                ? {
+                    note: "No outbound transfer here. This transaction claimed value ARRIVING on Sui via the native bridge — see sui_native_bridge_inbound.",
+                  }
+                : {
+                    note: "No Wormhole message in this transaction. It did not exit through Wormhole.",
+                  }),
         });
       }
 
@@ -184,6 +244,7 @@ export function registerBridgeTools(server: McpServer) {
         network: getNetwork(),
         source_chain: caip2ForSuiNetwork(getNetwork()),
         evidence_tiers: EVIDENCE_TIER_MEANING,
+        ...nativeSection,
         wormhole_messages: messages.map((m) => {
           const op = byVaa.get(m.vaaId);
           return {

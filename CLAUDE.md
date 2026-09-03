@@ -201,6 +201,30 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
+### Sui's native bridge (`0xb`)
+
+The strongest cross-chain evidence in the server, and the only case needing no
+third party for the destination: the outbound `bridge::TokenDepositedEvent`
+carries `target_chain` and `target_address` as raw bytes, so the far side is
+**chain-derived**. Wormhole cannot do this — a VAA names an emitter and a
+sequence, not a recipient — which is why its destination is indexer-attested.
+
+`(source_chain, seq_num)` is the bridge's transfer id, quoted back by Ethereum
+on claim. Sui ↔ Ethereum only; `chain_ids` declares no other route.
+
+Two traps:
+
+- `TokenTransferClaimed` is **inbound** — value arriving on Sui. Reporting it as
+  an exit sends an investigator to the wrong chain. `CLAIM_EVENT_SUFFIX` exists
+  to keep it distinguishable.
+- Address fields are raw bytes (base64 over GraphQL). 20 bytes is EVM, 32 is
+  Sui; any other length is left undecoded rather than padded into something
+  address-shaped that belongs to nobody.
+
+Only bridge chain ids observed on mainnet (0 = Sui, 10 = Ethereum) map to
+CAIP-2. Testnet/custom variants are reported by number, same non-guessing rule
+as Wormhole.
+
 ### Detecting a bridge exit vs. resolving one
 
 Keep these apart — conflating them is what makes "support every bridge" sound

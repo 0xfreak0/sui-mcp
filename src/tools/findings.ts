@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { currentSuiAccount } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { renderCaseReport } from "../utils/case-report.js";
 import {
@@ -43,7 +44,12 @@ export function registerFindingsTools(server: McpServer) {
       addresses: z
         .array(z.string())
         .optional()
-        .describe("Addresses the finding concerns."),
+        .describe(
+          "Addresses the finding concerns. A bare address is recorded against the network this " +
+            "call ran on; pass a CAIP-10 id ('eip155:1:0x…', 'sui:mainnet:0x…') to record an " +
+            "address on another chain, which is how a cross-chain case keeps both sides of a " +
+            "bridge hop straight.",
+        ),
       evidence: z
         .array(z.string())
         .optional()
@@ -55,12 +61,25 @@ export function registerFindingsTools(server: McpServer) {
       const blocked = storeRequired();
       if (blocked) return blocked;
 
+      // Store canonical CAIP-10 ids, never what the caller happened to type.
+      // A finding outlives the session, and an unqualified address in a
+      // cross-chain case is genuinely ambiguous later.
+      let qualified: string[];
+      try {
+        qualified = (addresses ?? []).map(currentSuiAccount);
+      } catch (err) {
+        return errorResult(
+          `Could not record this finding: ${(err as Error).message}. ` +
+            "Pass a bare address for the network this call targets, or a full CAIP-10 id.",
+        );
+      }
+
       const id = saveFinding({
         case_name,
         title,
         detail: detail ?? null,
         confidence: confidence ?? null,
-        addresses: addresses ?? [],
+        addresses: qualified,
         evidence: evidence ?? [],
       });
       return ok({

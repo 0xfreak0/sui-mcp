@@ -47,6 +47,7 @@ export const PROFILES = {
     "resolve_protocol_packages",
     "sample_control_addresses",
     "trace_funds",
+    "resolve_bridge_transfer",
     "find_funding_source",
     "find_funding_sources",
     "get_address_fanout",
@@ -105,7 +106,7 @@ export const PROFILE_NAMES = Object.keys(PROFILES) as ProfileName[];
 export const PROFILE_SUMMARIES: Record<ProfileName, string> = {
   core: "Everyday lookups — wallets, balances, transactions, tokens, NFTs, DeFi positions",
   forensics:
-    "Incident investigation — fund tracing, batch funding attribution, address fan-out, multi-address timelines, object provenance, address labels, oracle-vs-market deviation, and recording findings into an exportable case report",
+    "Incident investigation — fund tracing, batch funding attribution, address fan-out, multi-address timelines, object provenance, address labels, cross-chain bridge resolution, oracle-vs-market deviation, and recording findings into an exportable case report",
   developer:
     "Move package analysis — modules, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry",
   market: "Market data — DeepBook order book and fills, pool stats, token search, validators",

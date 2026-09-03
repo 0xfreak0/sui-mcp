@@ -8,6 +8,7 @@ import {
   removeSessionLabel,
   type LabelCategory,
 } from "../utils/labels.js";
+import { currentSuiAccount } from "../utils/chain-id.js";
 import { storeStatus } from "../utils/store.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -27,6 +28,19 @@ function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
 
+/**
+ * The canonical account id a reference resolves to, or null if it is not a
+ * valid address on any known chain. Reporting is never worth failing a call
+ * over, so this reports nothing rather than throwing.
+ */
+function safeAccount(reference: string): string | null {
+  try {
+    return currentSuiAccount(reference);
+  } catch {
+    return null;
+  }
+}
+
 export function registerLabelTools(server: McpServer) {
   server.tool(
     "manage_labels",
@@ -35,7 +49,8 @@ export function registerLabelTools(server: McpServer) {
       "so traces are readable and stop at known sinks. Precedence: session (added here) > local " +
       "override file (SUI_LABELS_FILE) > shipped static set. 'add'/'remove' affect only the current " +
       "session (in-memory, not persisted). Actions: 'list' all labels, 'lookup' one address, 'add' " +
-      "or 'remove' a session label.",
+      "or 'remove' a session label. Labels are chain-qualified: a label added while querying one " +
+      "chain does not apply on another.",
     {
       action: z
         .enum(["list", "lookup", "add", "remove", "import", "export"])
@@ -43,7 +58,11 @@ export function registerLabelTools(server: McpServer) {
       address: z
         .string()
         .optional()
-        .describe("Address to lookup/add/remove (required for those actions)."),
+        .describe(
+          "Address to lookup/add/remove (required for those actions). A bare address refers to " +
+            "the network this call targets; a CAIP-10 id ('eip155:1:0x…') labels an account on " +
+            "another chain — useful for recording where funds landed after a bridge hop.",
+        ),
       label: z.string().optional().describe("Human-readable label (required for 'add')."),
       category: z
         .enum(CATEGORIES)
@@ -83,6 +102,9 @@ export function registerLabelTools(server: McpServer) {
           const found = getLabel(address);
           return jsonResult({
             address,
+            // Which account this actually resolved to — the answer differs by
+            // network for a bare address, and silently so without this.
+            account: safeAccount(address),
             label: found,
             is_sink: found ? isSinkCategory(found.category) : false,
           });
@@ -92,14 +114,19 @@ export function registerLabelTools(server: McpServer) {
           if (!address || !label || !category) {
             return jsonResult({ error: "'address', 'label', and 'category' are required for add." });
           }
-          const stored = addSessionLabel(address, {
-            label,
-            category: category as LabelCategory,
-            confidence: confidence ?? "medium",
-            notes,
-          });
+          let stored;
+          try {
+            stored = addSessionLabel(address, {
+              label,
+              category: category as LabelCategory,
+              confidence: confidence ?? "medium",
+              notes,
+            });
+          } catch (err) {
+            return jsonResult({ error: (err as Error).message });
+          }
           return jsonResult({
-            added: { address, ...stored },
+            added: { address, account: safeAccount(address), ...stored },
             is_sink: isSinkCategory(stored.category),
             note: stored.persisted
               ? "Saved to the local store — it will be here next session."

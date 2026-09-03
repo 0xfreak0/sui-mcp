@@ -110,3 +110,59 @@ describe("renderCaseReport", () => {
     expect(md.endsWith("\n")).toBe(true);
   });
 });
+
+describe("cross-chain reports", () => {
+  it("names the chain beside each address in the body", () => {
+    const md = renderCaseReport({
+      caseName: "bridge-exit",
+      findings: [
+        finding({
+          addresses: [
+            "sui:mainnet:0x0000000000000000000000000000000000000000000000000000000000000002",
+            "eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed",
+          ],
+        }),
+      ],
+    });
+    expect(md).toContain("— Sui");
+    expect(md).toContain("— Ethereum");
+  });
+
+  it("groups the appendix by chain", () => {
+    const md = renderCaseReport({
+      caseName: "bridge-exit",
+      findings: [
+        finding({
+          addresses: [
+            "sui:mainnet:0x0000000000000000000000000000000000000000000000000000000000000002",
+            "eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed",
+          ],
+        }),
+      ],
+    });
+    expect(md).toContain("### Sui");
+    expect(md).toContain("### Ethereum");
+    // Full, unabbreviated addresses still belong in the appendix.
+    expect(md).toContain("0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed");
+  });
+
+  it("reports a legacy bare address as Sui rather than dropping it", () => {
+    const md = renderCaseReport({
+      caseName: "legacy",
+      findings: [finding({ addresses: ["0xdeadbeef"] })],
+    });
+    expect(md).toContain("— Sui");
+    expect(md).toContain("0xdeadbeef");
+  });
+
+  it("still renders a reference it cannot parse", () => {
+    // A report that throws on one malformed record loses every other finding
+    // in the case with it.
+    const md = renderCaseReport({
+      caseName: "odd",
+      findings: [finding({ addresses: ["cosmos:hub-4:whatever"] })],
+    });
+    expect(md).toContain("Unrecognised chain");
+    expect(md).toContain("cosmos:hub-4:whatever");
+  });
+});

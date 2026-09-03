@@ -1,3 +1,4 @@
+import { chainDisplayName, parseAccountId, SUI_MAINNET, type ChainId } from "./chain-id.js";
 import type { Finding } from "./store.js";
 
 /**
@@ -12,9 +13,41 @@ import type { Finding } from "./store.js";
  * without a database.
  */
 
+/**
+ * Split a stored reference into the chain it names and its bare address.
+ *
+ * Findings written before chain qualification hold a bare address; those are
+ * reported as Sui mainnet, matching the store's own backfill. Anything
+ * unparseable is passed through with no chain rather than dropped — a report
+ * must render whatever was recorded.
+ */
+function splitReference(reference: string): { chain: ChainId | null; address: string } {
+  if (!reference.includes(":")) return { chain: SUI_MAINNET, address: reference };
+  try {
+    const parsed = parseAccountId(reference, SUI_MAINNET);
+    return { chain: parsed.chain, address: parsed.address };
+  } catch {
+    return { chain: null, address: reference };
+  }
+}
+
 /** Short form for readability; full addresses stay in the appendix. */
 function shortAddress(a: string): string {
   return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;
+}
+
+/**
+ * Render one address for the body of a report.
+ *
+ * The chain is named alongside the address rather than left implicit. In a
+ * cross-chain case the same-looking hex string can appear on two chains, and a
+ * report that shows only `0x5aae…` invites a reader to assume they are the
+ * same account — the exact confusion chain qualification exists to prevent.
+ */
+function renderAddress(reference: string): string {
+  const { chain, address } = splitReference(reference);
+  const short = `\`${shortAddress(address)}\``;
+  return chain ? `${short} — ${chainDisplayName(chain)}` : short;
 }
 
 const CONFIDENCE_ORDER = ["high", "medium", "low"] as const;
@@ -80,7 +113,7 @@ export function renderCaseReport(opts: CaseReportOptions): string {
     if (f.addresses.length) {
       lines.push("**Addresses**");
       lines.push("");
-      for (const a of f.addresses) lines.push(`- \`${shortAddress(a)}\``);
+      for (const a of f.addresses) lines.push(`- ${renderAddress(a)}`);
       lines.push("");
     }
     if (f.evidence.length) {
@@ -96,8 +129,23 @@ export function renderCaseReport(opts: CaseReportOptions): string {
   if (opts.includeAppendix !== false && allAddresses.length) {
     lines.push("## Appendix: full addresses");
     lines.push("");
-    for (const a of allAddresses) lines.push(`- \`${a}\``);
-    lines.push("");
+    // Grouped by chain so a reader can see at a glance which chains the case
+    // spans, and so two addresses that differ only by chain never sit
+    // adjacent and unlabeled.
+    const byChain = new Map<string, string[]>();
+    for (const a of allAddresses) {
+      const { chain, address } = splitReference(a);
+      const heading = chain ? chainDisplayName(chain) : "Unrecognised chain";
+      const bucket = byChain.get(heading);
+      if (bucket) bucket.push(address);
+      else byChain.set(heading, [address]);
+    }
+    for (const [heading, addresses] of byChain) {
+      lines.push(`### ${heading}`);
+      lines.push("");
+      for (const a of addresses) lines.push(`- \`${a}\``);
+      lines.push("");
+    }
   }
 
   lines.push("---");

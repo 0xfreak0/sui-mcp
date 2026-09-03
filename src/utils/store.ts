@@ -30,7 +30,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface FanoutRecord {
-  address: string;
+  /** Canonical CAIP-10 account id, e.g. `sui:mainnet:0x…`. */
+  account: string;
   recipient_count: number;
   sender_count: number;
   counterparty_count: number;
@@ -45,6 +46,19 @@ export interface FanoutRecord {
 }
 
 export interface StoredLabel {
+  /**
+   * Canonical CAIP-10 account id and primary key, e.g. `sui:mainnet:0x…`.
+   *
+   * The key is chain-qualified because the same address string on two chains
+   * — or on Sui mainnet and Sui testnet — is two unrelated entities, and a
+   * label decides where a fund trace stops. Keying on the bare address would
+   * let attribution established on one chain silently terminate a trace on
+   * another.
+   */
+  account: string;
+  /** CAIP-2 chain, split out of `account` so labels can be listed per chain. */
+  chain: string;
+  /** Chain-native address, normalized under that chain's rules. */
   address: string;
   label: string;
   category: string;
@@ -77,12 +91,23 @@ let unavailableReason: string | null = null;
  * until they age out. 1 marks the 1.5.0 measurement — backwards through
  * history, both directions counted. Only the fan-out cache is discarded on a
  * bump; labels and findings are user data and are never touched.
+ *
+ * 3 marks the move to chain-qualified account keys: rows keyed on a bare
+ * address cannot say which chain they measured, so they are discarded rather
+ * than assumed to be Sui mainnet. Unlike labels, that costs only a
+ * re-measurement.
  */
-export const FANOUT_METHOD_VERSION = 2;
+export const FANOUT_METHOD_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (
-  address     TEXT PRIMARY KEY,
+  -- Canonical CAIP-10. The chain and address columns are its two halves,
+  -- stored alongside so a per-chain listing is an index scan rather than a
+  -- string split over every row. All three are written from one parsed
+  -- value, so they cannot disagree.
+  account     TEXT PRIMARY KEY,
+  chain       TEXT NOT NULL,
+  address     TEXT NOT NULL,
   label       TEXT NOT NULL,
   category    TEXT NOT NULL,
   confidence  TEXT,
@@ -90,7 +115,7 @@ CREATE TABLE IF NOT EXISTS labels (
   updated_at  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS fanout (
-  address              TEXT PRIMARY KEY,
+  account              TEXT PRIMARY KEY,
   recipient_count      INTEGER NOT NULL,
   sender_count         INTEGER NOT NULL,
   counterparty_count   INTEGER NOT NULL,
@@ -115,8 +140,113 @@ CREATE TABLE IF NOT EXISTS findings (
   evidence    TEXT,
   created_at  INTEGER NOT NULL
 );
+`;
+
+/**
+ * Indexes, kept out of {@link SCHEMA} and created only after migrations run.
+ *
+ * A legacy store still has the pre-1.7.0 `labels` table when SCHEMA is first
+ * exec'd, and indexing a column that table does not have yet fails the whole
+ * statement — which `initStore` catches as "could not open", silently
+ * disabling persistence for a user whose store was merely out of date.
+ */
+const INDEXES = `
+CREATE INDEX IF NOT EXISTS labels_chain ON labels(chain);
 CREATE INDEX IF NOT EXISTS findings_case ON findings(case_name);
 `;
+
+/**
+ * The chain every pre-1.7.0 record is assumed to belong to.
+ *
+ * Legacy rows carry a bare address and no way to recover which chain it was
+ * on. The server was Sui-only when they were written and mainnet is the
+ * default network, so mainnet is the only defensible backfill — but it *is* an
+ * assumption, and a label written while querying testnet will come across
+ * mislabeled as mainnet. That is documented rather than guessed at more
+ * cleverly: there is no evidence in the row to do better with.
+ */
+const LEGACY_CHAIN = "sui:mainnet";
+
+/**
+ * Re-key labels from a bare address onto a chain-qualified account id.
+ *
+ * Unlike the fan-out cache, this migrates rather than discards. Labels are
+ * hand-established attribution — someone did the work of proving an address is
+ * an exchange — and they decide where fund traces stop, so dropping them would
+ * both lose evidence and silently change every future trace.
+ *
+ * Detection is by column list, not a version stamp, for the reason
+ * {@link migrateFanoutCache} gives: a stamp that was bumped before a migration
+ * finished describes a store that does not exist. The column list is the
+ * ground truth, and it makes the migration idempotent for free.
+ */
+function migrateLabelsToAccounts(opened: DatabaseLike): void {
+  const columns = new Set(
+    (opened.prepare(`PRAGMA table_info(labels)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  // Already chain-qualified, or freshly created by SCHEMA.
+  if (columns.has("account")) return;
+  // No labels table at all: nothing to carry forward.
+  if (!columns.has("address")) return;
+
+  // `CREATE TABLE IF NOT EXISTS` will not reshape an existing table, so the
+  // old one is renamed out of the way and the canonical SCHEMA re-run.
+  opened.exec(`ALTER TABLE labels RENAME TO labels_legacy`);
+  opened.exec(SCHEMA);
+  // LEGACY_CHAIN is a module constant, not caller input; PRAGMA-free DDL/DML
+  // here still uses it by interpolation only because it is not a bound value.
+  opened.exec(
+    `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
+     SELECT '${LEGACY_CHAIN}:' || address, '${LEGACY_CHAIN}', address,
+            label, category, confidence, notes, updated_at
+     FROM labels_legacy`,
+  );
+  opened.exec(`DROP TABLE labels_legacy`);
+}
+
+/**
+ * Qualify bare addresses recorded inside legacy findings.
+ *
+ * A finding's `addresses` is a JSON array of strings, so this cannot be done
+ * in SQL. It is idempotent by construction rather than by a version stamp: a
+ * CAIP-10 id always contains a colon and no chain's bare address format does,
+ * so an already-qualified entry is recognisable and left alone. That is what
+ * stops a second open producing `sui:mainnet:sui:mainnet:0x…`.
+ *
+ * Only `addresses` is touched. `evidence` is prose the investigator wrote and
+ * is never rewritten.
+ */
+function migrateFindingAddresses(opened: DatabaseLike): void {
+  const rows = opened.prepare(`SELECT id, addresses FROM findings`).all() as Array<{
+    id: number;
+    addresses: string | null;
+  }>;
+
+  const update = opened.prepare(`UPDATE findings SET addresses = ? WHERE id = ?`);
+  for (const row of rows) {
+    if (!row.addresses) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.addresses);
+    } catch {
+      // Unparseable JSON predates this migration and is not made worse by
+      // leaving it; `parseList` already degrades to an empty array.
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+
+    let changed = false;
+    const qualified = parsed.map((entry) => {
+      const value = String(entry);
+      if (value.includes(":")) return value;
+      changed = true;
+      return `${LEGACY_CHAIN}:${value}`;
+    });
+    if (changed) update.run(JSON.stringify(qualified), row.id);
+  }
+}
 
 /**
  * Discard fan-out rows measured by an earlier method.
@@ -142,9 +272,13 @@ function migrateFanoutCache(opened: DatabaseLike): void {
       (c) => c.name,
     ),
   );
-  const shapeOk = ["sender_count", "counterparty_count", "coin_type_count", "flow_shape"].every(
-    (c) => columns.has(c),
-  );
+  const shapeOk = [
+    "account",
+    "sender_count",
+    "counterparty_count",
+    "coin_type_count",
+    "flow_shape",
+  ].every((c) => columns.has(c));
   if ((row?.user_version ?? 0) >= FANOUT_METHOD_VERSION && shapeOk) return;
 
   // DROP, not DELETE. `CREATE TABLE IF NOT EXISTS` leaves an existing table's
@@ -194,7 +328,14 @@ export function initStore(): void {
 
     const opened = new DatabaseSync(path);
     opened.exec(SCHEMA);
+    // Order matters: labels are rebuilt from the legacy table before anything
+    // reads them, and the fan-out cache is re-keyed last because it is the
+    // only one that discards rather than migrates.
+    migrateLabelsToAccounts(opened);
+    migrateFindingAddresses(opened);
     migrateFanoutCache(opened);
+    // Only now is every table in its final shape.
+    opened.exec(INDEXES);
     db = opened;
     unavailableReason = null;
   } catch (err) {
@@ -229,13 +370,14 @@ export function saveLabel(l: Omit<StoredLabel, "updated_at">): boolean {
   initStore();
   if (!db) return false;
   db.prepare(
-    `INSERT INTO labels (address, label, category, confidence, notes, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(address) DO UPDATE SET
+    `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(account) DO UPDATE SET
+       chain=excluded.chain, address=excluded.address,
        label=excluded.label, category=excluded.category,
        confidence=excluded.confidence, notes=excluded.notes,
        updated_at=excluded.updated_at`,
-  ).run(l.address, l.label, l.category, l.confidence, l.notes, Date.now());
+  ).run(l.account, l.chain, l.address, l.label, l.category, l.confidence, l.notes, Date.now());
   return true;
 }
 
@@ -245,10 +387,11 @@ export function loadLabels(): StoredLabel[] {
   return db.prepare(`SELECT * FROM labels`).all() as unknown as StoredLabel[];
 }
 
-export function deleteLabel(address: string): boolean {
+/** Delete by canonical CAIP-10 account id. */
+export function deleteLabel(account: string): boolean {
   initStore();
   if (!db) return false;
-  db.prepare(`DELETE FROM labels WHERE address = ?`).run(address);
+  db.prepare(`DELETE FROM labels WHERE account = ?`).run(account);
   return true;
 }
 
@@ -256,11 +399,11 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
   initStore();
   if (!db) return false;
   db.prepare(
-    `INSERT INTO fanout (address, recipient_count, sender_count, counterparty_count,
+    `INSERT INTO fanout (account, recipient_count, sender_count, counterparty_count,
                          coin_type_count, out_in_ratio, flow_shape,
                          scanned_transactions, truncated, measured_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(address) DO UPDATE SET
+     ON CONFLICT(account) DO UPDATE SET
        recipient_count=excluded.recipient_count,
        sender_count=excluded.sender_count,
        counterparty_count=excluded.counterparty_count,
@@ -271,7 +414,7 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
        truncated=excluded.truncated,
        measured_at=excluded.measured_at`,
   ).run(
-    r.address,
+    r.account,
     r.recipient_count,
     r.sender_count,
     r.counterparty_count,
@@ -388,12 +531,12 @@ export function deleteFinding(id: number): boolean {
  * taken and remains one — with its age so callers can re-measure if it matters.
  */
 export function getCachedFanout(
-  address: string,
+  account: string,
   maxAgeMs = 7 * 24 * 3600 * 1000,
 ): (FanoutRecord & { age_ms: number }) | null {
   initStore();
   if (!db) return null;
-  const row = db.prepare(`SELECT * FROM fanout WHERE address = ?`).get(address) as
+  const row = db.prepare(`SELECT * FROM fanout WHERE account = ?`).get(account) as
     | FanoutRecord
     | undefined;
   if (!row) return null;

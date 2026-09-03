@@ -33,13 +33,18 @@ describe("detectBridges", () => {
   it("separates what can be followed from what can only be named", () => {
     const hits = detectBridges(REAL_CALLS);
     expect(hits.find((h) => h.protocol === "Wormhole")?.resolution).toBe("identifier");
-    expect(hits.find((h) => h.protocol === "Circle CCTP")?.resolution).toBe("detect-only");
+    expect(hits.find((h) => h.protocol === "Circle CCTP")?.resolution).toBe("identifier");
     expect(resolvableHit(hits)?.protocol).toBe("Wormhole");
   });
 
   it("returns no resolvable hit when only detect-only bridges are present", () => {
-    // The caller must not be told to run a resolver that cannot help.
-    expect(resolvableHit(detectBridges([REAL_CALLS[1]]))).toBeNull();
+    // The caller must not be told to run a resolver that cannot help. Mayan is
+    // the detect-only case: it routes over bridges rather than being one.
+    const hits = detectBridges([
+      { packageId: "0xc6c1c127", module: "calculate_mctp_fee", function: "calculate_mctp_fee" },
+    ]);
+    expect(hits[0].protocol).toBe("Mayan MCTP");
+    expect(resolvableHit(hits)).toBeNull();
   });
 
   it("detects from events as well as calls", () => {

@@ -5,6 +5,12 @@ import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { detectBridges } from "../utils/bridge/detect.js";
 import {
+  CCTP_DEPOSIT_EVENT_SUFFIX,
+  CCTP_MESSAGE_EVENT_SUFFIX,
+  parseDepositForBurn,
+  parseMessageHeader,
+} from "../utils/bridge/cctp.js";
+import {
   CLAIM_EVENT_SUFFIX,
   DEPOSIT_EVENT_SUFFIXES,
   parseDepositEvent,
@@ -124,6 +130,13 @@ export function registerBridgeTools(server: McpServer) {
         );
       }
 
+      const network = getNetwork();
+      const indexed = wormholescanAvailable(network);
+      // Every bridge's chain numbering — Wormhole's, Circle's domains, the
+      // native bridge's — is reused across environments, so a CAIP-2 claim
+      // derived from one is only meaningful on mainnet.
+      const qualify = network === "mainnet";
+
       const events = data.transaction.effects?.events?.nodes ?? [];
       const messages = extractWormholeMessages(events);
       // Shared detector, so this tool and trace_funds agree on what counts as
@@ -132,8 +145,33 @@ export function registerBridgeTools(server: McpServer) {
         .map((e) => e?.contents?.type?.repr)
         .filter((t): t is string => typeof t === "string");
       const otherBridges = detectBridges([], eventTypes).filter(
-        (h) => h.protocol !== "Wormhole" && h.protocol !== "Sui Bridge",
+        (h) =>
+          h.protocol !== "Wormhole" && h.protocol !== "Sui Bridge" && h.protocol !== "Circle CCTP",
       );
+
+      // CCTP: the burn event carries destination domain and recipient, so this
+      // half is chain-derived. The paired MessageSent supplies the source
+      // domain, which completes the transfer id.
+      const cctpHeader = (() => {
+        for (const e of events) {
+          const t = e?.contents?.type?.repr;
+          if (typeof t !== "string" || !t.endsWith(CCTP_MESSAGE_EVENT_SUFFIX)) continue;
+          const msg = (e.contents?.json as { message?: unknown } | undefined)?.message;
+          if (typeof msg === "string") {
+            const header = parseMessageHeader(msg);
+            if (header) return header;
+          }
+        }
+        return null;
+      })();
+
+      const cctpTransfers = events
+        .filter((e) => {
+          const t = e?.contents?.type?.repr;
+          return typeof t === "string" && t.endsWith(CCTP_DEPOSIT_EVENT_SUFFIX);
+        })
+        .map((e) => parseDepositForBurn(e.contents?.json, cctpHeader, qualify))
+        .filter((t): t is NonNullable<typeof t> => t !== null);
 
       // Sui's native bridge carries its destination in the event, so this half
       // is chain-derived — no indexer is consulted for it at all.
@@ -149,7 +187,29 @@ export function registerBridgeTools(server: McpServer) {
       // would send an investigator to the wrong chain entirely.
       const nativeInboundClaims = eventTypes.filter((t) => t.endsWith(CLAIM_EVENT_SUFFIX)).length;
 
-      const nativeSection = {
+      const bridgeSections = {
+        ...(cctpTransfers.length
+          ? {
+              circle_cctp: cctpTransfers.map((t) => ({
+                evidence: "chain-derived" as const,
+                transfer_id: t.transferId,
+                nonce: t.nonce,
+                source_domain: t.sourceDomain,
+                destination_chain: t.destinationAccount
+                  ? t.destinationAccount.split(":").slice(0, 2).join(":")
+                  : null,
+                destination_chain_label: t.destinationChainLabel,
+                destination_domain: t.destinationDomain,
+                destination_account: t.destinationAccount,
+                destination_address: t.destinationAddress,
+                mint_recipient_raw: t.mintRecipientRaw,
+                depositor: t.depositor,
+                amount: t.amount,
+                burn_token: t.burnToken,
+                note: "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
+              })),
+            }
+          : {}),
         ...(nativeTransfers.length
           ? {
               sui_native_bridge: nativeTransfers.map((t) => ({
@@ -183,11 +243,19 @@ export function registerBridgeTools(server: McpServer) {
           network: getNetwork(),
           source_chain: caip2ForSuiNetwork(getNetwork()),
           wormhole_messages: [],
-          ...nativeSection,
-          ...(nativeTransfers.length
+          ...bridgeSections,
+          ...(nativeTransfers.length || cctpTransfers.length
             ? {
                 ...(otherBridges.length ? { other_bridge_activity: otherBridges } : {}),
-                note: "No Wormhole message, but this transaction exited through Sui's native bridge — see sui_native_bridge. That destination is read from chain data, so it is stronger evidence than an indexer-attested one.",
+                note:
+                  "No Wormhole message, but this transaction exited through " +
+                  [
+                    nativeTransfers.length ? "Sui's native bridge (sui_native_bridge)" : null,
+                    cctpTransfers.length ? "Circle CCTP (circle_cctp)" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" and ") +
+                  ". Those destinations are read from chain data, so they are stronger evidence than an indexer-attested one.",
               }
             : otherBridges.length
               ? {
@@ -207,11 +275,6 @@ export function registerBridgeTools(server: McpServer) {
       // One Wormholescan call covers every message in the transaction; they are
       // matched back by VAA id rather than by position, since the indexer makes
       // no ordering promise.
-      const network = getNetwork();
-      const indexed = wormholescanAvailable(network);
-      // Wormhole chain numbers are reused across environments, so its CAIP-2
-      // map is only meaningful for mainnet.
-      const qualify = network === "mainnet";
       const wantDestination = include_destination !== false && indexed;
 
       const byVaa = new Map<string, WormholescanOperation>();
@@ -244,7 +307,7 @@ export function registerBridgeTools(server: McpServer) {
         network: getNetwork(),
         source_chain: caip2ForSuiNetwork(getNetwork()),
         evidence_tiers: EVIDENCE_TIER_MEANING,
-        ...nativeSection,
+        ...bridgeSections,
         wormhole_messages: messages.map((m) => {
           const op = byVaa.get(m.vaaId);
           return {

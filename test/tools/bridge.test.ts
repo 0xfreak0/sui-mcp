@@ -25,8 +25,22 @@ const WORMHOLE_EVENT = {
     },
   },
 };
+/** The real mainnet burn payload, so the destination actually resolves. */
 const CCTP_EVENT = {
-  contents: { type: { repr: "0xabc::deposit_for_burn::DepositForBurn" }, json: {} },
+  contents: {
+    type: { repr: "0xabc::deposit_for_burn::DepositForBurn" },
+    json: {
+      nonce: "425380",
+      amount: "11085939",
+      depositor: "0x13b9da3c7102c1e94a02e926a544e50b93eecdfa3eef2300b99274ff4a5803d5",
+      mint_recipient: "0x0000000000000000000000009a62c1af2dff7f6b1731d9eb36b1622c17eae7be",
+      destination_domain: 3,
+    },
+  },
+};
+
+const MAYAN_EVENT = {
+  contents: { type: { repr: "0xabc::init_order::InitMctpLogged" }, json: {} },
 };
 
 const txWith = (nodes: unknown[]) => ({
@@ -145,12 +159,25 @@ describe("resolve_bridge_transfer", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("names another bridge protocol rather than reporting nothing happened", async () => {
+  it("resolves a CCTP exit from chain data when there is no Wormhole message", async () => {
     mockGqlQuery.mockResolvedValue(txWith([CCTP_EVENT]));
     const data = await call({ digest: "D" });
 
     expect(data.wormhole_messages).toEqual([]);
-    expect(data.other_bridge_activity[0].protocol).toContain("CCTP");
+    expect(data.circle_cctp[0].evidence).toBe("chain-derived");
+    expect(data.circle_cctp[0].destination_account).toBe(
+      "eip155:42161:0x9a62c1af2dff7f6b1731d9eb36b1622c17eae7be",
+    );
+    // No indexer was contacted for the destination.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("names a detect-only protocol rather than reporting nothing happened", async () => {
+    mockGqlQuery.mockResolvedValue(txWith([MAYAN_EVENT]));
+    const data = await call({ digest: "D" });
+
+    expect(data.wormhole_messages).toEqual([]);
+    expect(data.other_bridge_activity[0].protocol).toContain("Mayan");
     expect(data.note).toMatch(/funds did leave/i);
   });
 

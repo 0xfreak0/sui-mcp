@@ -42,8 +42,38 @@ export interface OperationInfo {
   skip?: boolean; // true for internal/infrastructure ops to omit from summary
 }
 
-// Package ID -> Protocol mapping loaded from src/data/protocols.json
-const PROTOCOL_MAP: Record<string, ProtocolInfo> = protocolsData.protocols as Record<string, ProtocolInfo>;
+/**
+ * Normalize a package ID for use as a registry key, or null if it is not an
+ * address at all.
+ *
+ * Lookups take IDs from chain data and from tool arguments, so an unparseable
+ * string has to mean "not in the registry" rather than an exception thrown out
+ * of the middle of a decode loop.
+ */
+function normalizeKey(packageId: string): string | null {
+  try {
+    return normalizeSuiAddress(packageId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Package ID -> Protocol mapping loaded from src/data/protocols.json.
+ *
+ * Keys are normalized on load. Curated entries are written the way a human
+ * types them — `0x2`, `0x3`, `0xdee9` — while the chain reports every package
+ * ID padded to 32 bytes, so an exact match against the raw file misses the
+ * system packages entirely. Normalizing both sides is what makes the
+ * exact-match tier answer for them without depending on a lineage prefetch
+ * having run.
+ */
+const PROTOCOL_MAP: Record<string, ProtocolInfo> = Object.fromEntries(
+  Object.entries(protocolsData.protocols as Record<string, ProtocolInfo>).map(([id, info]) => [
+    normalizeSuiAddress(id),
+    info,
+  ]),
+);
 
 /**
  * Upgrade-lineage root -> Protocol, generated from PROTOCOL_MAP by
@@ -226,9 +256,11 @@ export function loadProtocolRegistry(): Record<string, ProtocolInfo> {
  * never to a blocking call.
  */
 export function lookupProtocol(packageId: string): ProtocolInfo | null {
-  const exact = PROTOCOL_MAP[packageId];
+  const key = normalizeKey(packageId);
+  if (!key) return null;
+  const exact = PROTOCOL_MAP[key];
   if (exact) return exact;
-  const root = getPackageRoot(packageId);
+  const root = getPackageRoot(key);
   return root ? (ROOT_MAP[root] ?? null) : null;
 }
 
@@ -240,7 +272,8 @@ export function lookupProtocol(packageId: string): ProtocolInfo | null {
  * a package *belongs to* a curated protocol.
  */
 export function isCuratedProtocol(packageId: string): boolean {
-  return packageId in PROTOCOL_MAP;
+  const key = normalizeKey(packageId);
+  return key !== null && key in PROTOCOL_MAP;
 }
 
 /**

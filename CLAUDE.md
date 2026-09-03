@@ -93,7 +93,9 @@ npm start         # node dist/index.js
 Three tiers, cheapest first, all behind `prefetchProtocolNames` +
 `lookupProtocol` / `lookupProtocolDisplay` (`src/protocols/registry.ts`):
 
-1. `src/data/protocols.json` — exact package ID, in memory, no network.
+1. `src/data/protocols.json` — exact package ID, in memory, no network. Keys
+   are normalized on load, so a curated entry written short (`0x2`) still
+   matches the padded form the chain reports.
 2. `src/data/protocol-roots.json` — the package's **upgrade lineage root**,
    resolved at runtime by `src/protocols/package-roots.ts`. A package upgrade
    mints a new ID, so tier 1 alone goes stale on every upgrade; a lineage root

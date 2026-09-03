@@ -46,6 +46,26 @@ new protocols launch, and — the one that bites — **existing protocols upgrad
 A package upgrade produces a new package ID, so a protocol we already support
 silently stops decoding, with no error and no signal.
 
+Upgrades are handled by lineage rather than by hand. `src/data/protocol-roots.json`
+maps each curated package back to the root of its upgrade lineage (its version-1
+package ID), which is the same for every version a protocol will ever publish,
+so an upgrade nobody has curated still identifies — with its real category, not
+just a name. Regenerate it whenever you add entries:
+
+```bash
+npm run sync:protocol-roots                # rewrites src/data/protocol-roots.json
+```
+
+It refuses to write when two curated entries in one lineage disagree about the
+protocol's name or category, since that would mislabel every future version.
+`test/protocols-data.test.ts` fails if a curated protocol has no lineage
+coverage, which is what catches a forgotten re-run.
+
+Lineage resolution is a lookup, not a guarantee of freshness: a protocol that
+*redeploys* rather than upgrades mints an unrelated root that no lineage walk
+will find, so `find-unknown-packages` below is still how new lineages get
+discovered.
+
 ```bash
 npm run find-unknown-packages              # sample mainnet, rank unknowns by call count
 npm run find-unknown-packages -- --checkpoints 100 --network testnet
@@ -71,7 +91,9 @@ unregistered, and some large protocols (AlphaFi) have no MVR presence at all.
 That is why the registry is hand-maintained and MVR is only a fallback:
 `lookupProtocolDisplay` will show an MVR name for an unknown package, but
 `lookupProtocol` stays curated-only because fund tracing makes pass-through
-decisions from it.
+decisions from it. The lineage tier is on the curated side of that line — only
+the `UpgradeCap` holder can add a version, so a lineage is a fact the chain
+enforces, unlike a name anybody may register.
 
 `test/protocols-data.test.ts` checks the JSON against the `ProtocolType` union
 (plain JSON is otherwise unchecked by tsc), so adding a category means adding it

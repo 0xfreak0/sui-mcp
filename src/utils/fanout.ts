@@ -1,5 +1,6 @@
 import { gqlQuery } from "../clients/graphql.js";
 import { getCachedFanout, saveFanout } from "./store.js";
+import { currentSuiAccount } from "./chain-id.js";
 
 /**
  * How many distinct addresses an address transacts with, in both directions.
@@ -162,8 +163,13 @@ export async function measureFanout(
   // Cheap win when the optional store is on: this is the expensive measurement
   // in the toolkit (up to 20 paginated queries) and its answer is stable.
   // Returns nothing when the store is disabled, which is the default.
+  // Chain-qualified so a mainnet and a testnet measurement of the same
+  // address string cannot share a cache row — they are different accounts
+  // with genuinely different counterparty counts.
+  const account = currentSuiAccount(address);
+
   if (useCache) {
-    const cached = getCachedFanout(address);
+    const cached = getCachedFanout(account);
     // A cached reading is only usable if it is at least as thorough as what is
     // being asked for. find_funding_sources measures shared funders at 300
     // transactions and the cache is keyed on address alone, so without this a
@@ -241,7 +247,7 @@ export async function measureFanout(
   // shape — and recipient_count was written as the counterparty total, so a
   // cached read disagreed with a fresh one on the same address.
   saveFanout({
-    address,
+    account,
     recipient_count: recipients.size,
     sender_count: senders.size,
     counterparty_count: counterparties.size,

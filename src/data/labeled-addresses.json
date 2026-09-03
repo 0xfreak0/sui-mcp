@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated address labels for incident investigation. Only high-confidence, verifiable entries belong here — we do NOT ship fabricated attribution. Case-specific and org-maintained labels (CEX deposits, bridges, attacker wallets) belong in a local override file pointed to by SUI_LABELS_FILE (same shape). Categories cex|bridge|mixer|malicious|burn terminate fund tracing as sinks.",
+  "_comment": "Curated address labels for incident investigation. Only high-confidence, verifiable entries belong here — we do NOT ship fabricated attribution. Case-specific and org-maintained labels (CEX deposits, bridges, attacker wallets) belong in a local override file pointed to by SUI_LABELS_FILE (same shape). Categories cex|bridge|mixer|malicious|burn terminate fund tracing as sinks. Keys may be a bare Sui address, which applies on every Sui network, or a CAIP-10 account id ('eip155:1:0x...') to scope an entry to one chain — which is how the far side of a bridge hop gets labeled.",
   "labels": {
     "0x0000000000000000000000000000000000000000000000000000000000000000": {
       "label": "Zero address",

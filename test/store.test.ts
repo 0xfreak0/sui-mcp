@@ -32,6 +32,22 @@ const fanout = (over: Record<string, unknown>) => ({
   ...over,
 }) as Parameters<typeof saveFanout>[0];
 
+/**
+ * A complete label row. The store persists what it is given without
+ * normalizing, so tests supply the chain-qualified triple the way
+ * `utils/labels.ts` would.
+ */
+const label = (over: Record<string, unknown>) => ({
+  account: "sui:mainnet:0xabc",
+  chain: "sui:mainnet",
+  address: "0xabc",
+  label: "X",
+  category: "cex",
+  confidence: null,
+  notes: null,
+  ...over,
+}) as Parameters<typeof saveLabel>[0];
+
 let dir: string;
 let backup: string | undefined;
 
@@ -86,14 +102,14 @@ describe("store disabled (the default)", () => {
   });
 
   it("makes every write a no-op that returns false", () => {
-    expect(saveLabel({ address: "0xa", label: "X", category: "cex", confidence: null, notes: null })).toBe(false);
-    expect(saveFanout(fanout({ address: "0xa", recipient_count: 5 }))).toBe(false);
+    expect(saveLabel(label({ label: "X" }))).toBe(false);
+    expect(saveFanout(fanout({ account: "sui:mainnet:0xa", recipient_count: 5 }))).toBe(false);
     expect(deleteLabel("0xa")).toBe(false);
   });
 
   it("makes every read empty rather than throwing", () => {
     expect(loadLabels()).toEqual([]);
-    expect(getCachedFanout("0xa")).toBeNull();
+    expect(getCachedFanout("sui:mainnet:0xa")).toBeNull();
   });
 });
 
@@ -108,16 +124,18 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
 
   it("round-trips a label", () => {
     enable();
-    saveLabel({
-      address: "0xabc",
-      label: "Binance hot wallet",
-      category: "cex",
-      confidence: "high",
-      notes: "29k recipients",
-    });
+    saveLabel(
+      label({
+        label: "Binance hot wallet",
+        confidence: "high",
+        notes: "29k recipients",
+      }),
+    );
     const labels = loadLabels();
     expect(labels).toHaveLength(1);
     expect(labels[0]).toMatchObject({
+      account: "sui:mainnet:0xabc",
+      chain: "sui:mainnet",
       address: "0xabc",
       label: "Binance hot wallet",
       category: "cex",
@@ -126,9 +144,8 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
 
   it("upserts rather than duplicating on the same address", () => {
     enable();
-    const base = { address: "0xabc", category: "cex", confidence: null, notes: null };
-    saveLabel({ ...base, label: "First" });
-    saveLabel({ ...base, label: "Second" });
+    saveLabel(label({ label: "First" }));
+    saveLabel(label({ label: "Second" }));
     const labels = loadLabels();
     expect(labels).toHaveLength(1);
     expect(labels[0].label).toBe("Second");
@@ -136,15 +153,15 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
 
   it("deletes a label", () => {
     enable();
-    saveLabel({ address: "0xabc", label: "X", category: "cex", confidence: null, notes: null });
-    deleteLabel("0xabc");
+    saveLabel(label({ label: "X" }));
+    deleteLabel("sui:mainnet:0xabc");
     expect(loadLabels()).toEqual([]);
   });
 
   it("round-trips a fan-out measurement", () => {
     enable();
-    saveFanout(fanout({ address: "0xhub", recipient_count: 29_180, counterparty_count: 29_180, truncated: 1 }));
-    const r = getCachedFanout("0xhub");
+    saveFanout(fanout({ account: "sui:mainnet:0xhub", recipient_count: 29_180, counterparty_count: 29_180, truncated: 1 }));
+    const r = getCachedFanout("sui:mainnet:0xhub");
     expect(r?.recipient_count).toBe(29_180);
     expect(r?.truncated).toBe(1);
     expect(r?.age_ms).toBeGreaterThanOrEqual(0);
@@ -152,21 +169,21 @@ describe.skipIf(!hasSqlite)("store enabled", () => {
 
   it("honours the freshness window", () => {
     enable();
-    saveFanout(fanout({ address: "0xhub", recipient_count: 5 }));
+    saveFanout(fanout({ account: "sui:mainnet:0xhub", recipient_count: 5 }));
     // Just written, so a zero-tolerance window must still find it or miss it
     // deterministically — never return a stale reading as current.
-    expect(getCachedFanout("0xhub", 60_000)).not.toBeNull();
-    expect(getCachedFanout("0xhub", -1)).toBeNull();
+    expect(getCachedFanout("sui:mainnet:0xhub", 60_000)).not.toBeNull();
+    expect(getCachedFanout("sui:mainnet:0xhub", -1)).toBeNull();
   });
 
   it("returns null for an address never measured", () => {
     enable();
-    expect(getCachedFanout("0xnope")).toBeNull();
+    expect(getCachedFanout("sui:mainnet:0xnope")).toBeNull();
   });
 
   it("persists across a reopen, which is the entire point", () => {
     enable();
-    saveLabel({ address: "0xabc", label: "Kept", category: "bridge", confidence: null, notes: null });
+    saveLabel(label({ label: "Kept", category: "bridge" }));
     resetStore();
     initStore();
     expect(loadLabels()[0]?.label).toBe("Kept");
@@ -258,7 +275,7 @@ describe("unsupported runtime", () => {
     const s = storeStatus();
     expect(s.enabled).toBe(false);
     expect(loadLabels()).toEqual([]);
-    expect(saveLabel({ address: "0xa", label: "X", category: "cex", confidence: null, notes: null })).toBe(false);
+    expect(saveLabel(label({ label: "X" }))).toBe(false);
   });
 });
 
@@ -270,7 +287,7 @@ describe("store failure handling", () => {
     resetStore();
     initStore();
     expect(storeStatus().enabled).toBe(true);
-    saveLabel({ address: "0xa", label: "X", category: "cex", confidence: null, notes: null });
+    saveLabel(label({ label: "X" }));
     expect(loadLabels()).toHaveLength(1);
   });
 
@@ -294,7 +311,7 @@ describe("store failure handling", () => {
  * and the 7-day TTL would keep serving it for a week after the upgrade.
  */
 describe("fan-out cache invalidation across method changes", () => {
-  const ADDR = "0xstale";
+  const ADDR = "sui:mainnet:0xstale";
 
   /** Write a row the way an older version would have: no method version. */
   function writeLegacyRow(path: string) {
@@ -304,7 +321,7 @@ describe("fan-out cache invalidation across method changes", () => {
     raw.exec(`CREATE TABLE IF NOT EXISTS fanout (
       address TEXT PRIMARY KEY, recipient_count INTEGER NOT NULL,
       truncated INTEGER NOT NULL, measured_at INTEGER NOT NULL)`);
-    raw.prepare(`INSERT INTO fanout VALUES (?, ?, ?, ?)`).run(ADDR, 1623, 0, Date.now());
+    raw.prepare(`INSERT INTO fanout VALUES (?, ?, ?, ?)`).run("0xstale", 1623, 0, Date.now());
     raw.close();
   }
 
@@ -324,18 +341,18 @@ describe("fan-out cache invalidation across method changes", () => {
 
     process.env.SUI_STORE_PATH = path;
     resetStore();
-    saveLabel({ address: "0xkeep", label: "Mine", category: "cex", confidence: null, notes: null });
+    saveLabel(label({ account: "sui:mainnet:0xkeep", address: "0xkeep", label: "Mine" }));
     saveFinding({ case_name: "c", title: "t", detail: null, confidence: null, addresses: [], evidence: [] });
     resetStore();
 
-    expect(loadLabels().find((l) => l.address === "0xkeep")?.label).toBe("Mine");
+    expect(loadLabels().find((l) => l.account === "sui:mainnet:0xkeep")?.label).toBe("Mine");
     expect(loadFindings("c")).toHaveLength(1);
   });
 
   it("serves a measurement taken by the current method", () => {
     process.env.SUI_STORE_PATH = join(dir, "current.db");
     resetStore();
-    saveFanout(fanout({ address: ADDR, recipient_count: 792 }));
+    saveFanout(fanout({ account: ADDR, recipient_count: 792 }));
     resetStore();
 
     const cached = getCachedFanout(ADDR);
@@ -357,7 +374,7 @@ describe("fan-out cache round-trips the full measurement", () => {
     resetStore();
 
     saveFanout({
-      address: "0xfull",
+      account: "sui:mainnet:0xfull",
       recipient_count: 431,
       sender_count: 44,
       counterparty_count: 440,
@@ -369,7 +386,7 @@ describe("fan-out cache round-trips the full measurement", () => {
     });
     resetStore();
 
-    const c = getCachedFanout("0xfull");
+    const c = getCachedFanout("sui:mainnet:0xfull");
     expect(c?.recipient_count).toBe(431);
     expect(c?.sender_count).toBe(44);
     expect(c?.counterparty_count).toBe(440);
@@ -386,7 +403,7 @@ describe("fan-out cache round-trips the full measurement", () => {
     process.env.SUI_STORE_PATH = join(dir, "nullratio.db");
     resetStore();
     saveFanout({
-      address: "0xnull",
+      account: "sui:mainnet:0xnull",
       recipient_count: 3,
       sender_count: 0,
       counterparty_count: 3,
@@ -397,7 +414,7 @@ describe("fan-out cache round-trips the full measurement", () => {
       truncated: 0,
     });
     resetStore();
-    const c = getCachedFanout("0xnull");
+    const c = getCachedFanout("sui:mainnet:0xnull");
     expect(c?.out_in_ratio).toBeNull();
     expect(c?.flow_shape).toBe("unknown");
   });
@@ -417,8 +434,8 @@ describe("fan-out cache round-trips the full measurement", () => {
 
     process.env.SUI_STORE_PATH = path;
     resetStore();
-    expect(saveFanout(fanout({ address: "0xrepaired", flow_shape: "disperser" }))).toBe(true);
-    expect(getCachedFanout("0xrepaired")?.flow_shape).toBe("disperser");
+    expect(saveFanout(fanout({ account: "sui:mainnet:0xrepaired", flow_shape: "disperser" }))).toBe(true);
+    expect(getCachedFanout("sui:mainnet:0xrepaired")?.flow_shape).toBe("disperser");
   });
 
   it("discards rows written before the fields existed", () => {
@@ -434,13 +451,145 @@ describe("fan-out cache round-trips the full measurement", () => {
 
     process.env.SUI_STORE_PATH = path;
     resetStore();
-    expect(getCachedFanout("0xold")).toBeNull();
+    expect(getCachedFanout("sui:mainnet:0xold")).toBeNull();
 
     // The table must actually be rebuilt, not just emptied: CREATE TABLE IF NOT
     // EXISTS leaves an old table's columns in place, so a write would fail with
     // "no column named sender_count". Only a pre-existing store hits this, which
     // is why a fresh temp DB per test never caught it.
-    expect(saveFanout(fanout({ address: "0xnew", flow_shape: "collector" }))).toBe(true);
-    expect(getCachedFanout("0xnew")?.flow_shape).toBe("collector");
+    expect(saveFanout(fanout({ account: "sui:mainnet:0xnew", flow_shape: "collector" }))).toBe(true);
+    expect(getCachedFanout("sui:mainnet:0xnew")?.flow_shape).toBe("collector");
+  });
+});
+
+describe.skipIf(!hasSqlite)("legacy store migration", () => {
+  const LEGACY_ADDR = "0xaaa";
+  /**
+   * Write a store in the pre-chain-qualified shape: labels keyed on a bare
+   * `address`, findings holding bare addresses. This is what any existing
+   * user's store looks like, and it holds attribution they established by
+   * hand — losing it on upgrade would be a data-loss bug, not an
+   * inconvenience.
+   */
+  function writeLegacyStore(path: string): void {
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+      DatabaseSync: new (p: string) => {
+        exec(sql: string): void;
+        prepare(sql: string): { run(...a: unknown[]): unknown };
+        close(): void;
+      };
+    };
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE labels (
+        address TEXT PRIMARY KEY, label TEXT NOT NULL, category TEXT NOT NULL,
+        confidence TEXT, notes TEXT, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, case_name TEXT NOT NULL,
+        title TEXT NOT NULL, detail TEXT, confidence TEXT,
+        addresses TEXT, evidence TEXT, created_at INTEGER NOT NULL
+      );
+    `);
+    legacy
+      .prepare(`INSERT INTO labels VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(LEGACY_ADDR, "Attacker #1", "malicious", "high", "hand-attributed", 1_700_000_000_000);
+    legacy
+      .prepare(`INSERT INTO findings (case_name, title, detail, confidence, addresses, evidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        "legacy-case",
+        "Shared funder",
+        null,
+        "high",
+        JSON.stringify([LEGACY_ADDR, "0xbbb"]),
+        JSON.stringify(["find_funding_sources depth=first_hop"]),
+        1_700_000_000_000,
+      );
+    legacy.close();
+  }
+
+  it("carries legacy labels forward as sui:mainnet accounts", () => {
+    const path = join(dir, "legacy.db");
+    writeLegacyStore(path);
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    initStore();
+
+    const labels = loadLabels();
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toMatchObject({
+      account: `sui:mainnet:${LEGACY_ADDR}`,
+      chain: "sui:mainnet",
+      address: LEGACY_ADDR,
+      label: "Attacker #1",
+      category: "malicious",
+      confidence: "high",
+    });
+    // The timestamp is part of the record, not something the migration
+    // may reset — an "updated" label nobody updated is a false audit trail.
+    expect(labels[0].updated_at).toBe(1_700_000_000_000);
+  });
+
+  it("qualifies bare addresses inside legacy findings", () => {
+    const path = join(dir, "legacy.db");
+    writeLegacyStore(path);
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    initStore();
+
+    const [f] = loadFindings("legacy-case");
+    expect(f.addresses).toEqual([`sui:mainnet:${LEGACY_ADDR}`, "sui:mainnet:0xbbb"]);
+    // Evidence is prose and must be left exactly as written.
+    expect(f.evidence).toEqual(["find_funding_sources depth=first_hop"]);
+  });
+
+  it("is idempotent — reopening an already-migrated store changes nothing", () => {
+    const path = join(dir, "legacy.db");
+    writeLegacyStore(path);
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    initStore();
+    const first = loadLabels();
+    const firstFindings = loadFindings("legacy-case");
+
+    resetStore();
+    initStore();
+    expect(loadLabels()).toEqual(first);
+    // Double-qualification (sui:mainnet:sui:mainnet:0xaaa) is the specific
+    // failure this guards.
+    expect(loadFindings("legacy-case")[0].addresses).toEqual(firstFindings[0].addresses);
+  });
+});
+
+describe.skipIf(!hasSqlite)("migration failure handling", () => {
+  it("rolls back rather than leaving labels stranded in a renamed table", () => {
+    // A legacy table missing a column the migration selects. The point is not
+    // this specific shape but the guarantee: if the migration cannot complete,
+    // the rows it was moving must still be there afterwards. A store that is
+    // switched off but intact is recoverable; one that silently lost
+    // hand-built attribution is not.
+    const path = join(dir, "broken.db");
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as any;
+    const legacy = new DatabaseSync(path);
+    legacy.exec(
+      `CREATE TABLE labels (address TEXT PRIMARY KEY, label TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+    );
+    legacy.prepare(`INSERT INTO labels VALUES (?, ?, ?)`).run("0xkeep", "Mine", 1);
+    legacy.close();
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    expect(() => initStore()).not.toThrow();
+    expect(storeStatus().enabled).toBe(false);
+
+    // Reopen raw and confirm the row survived under its original table name.
+    const check = new DatabaseSync(path);
+    const rows = check.prepare(`SELECT address, label FROM labels`).all();
+    check.close();
+    expect(rows).toEqual([{ address: "0xkeep", label: "Mine" }]);
   });
 });

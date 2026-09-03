@@ -4,7 +4,7 @@
 
 Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
 
-59 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
+60 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
 
 ## Install
 
@@ -55,7 +55,7 @@ Fan-out reports **shape as well as size**, because size alone doesn't separate t
 
 ## Tool profiles
 
-All 59 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 60 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
 When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
 
@@ -68,7 +68,7 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 17 | Wallets, balances, transactions, tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 18 | Fund tracing, funding-source attribution, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `forensics` | 19 | Fund tracing, funding-source attribution, cross-chain bridge resolution, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
 | `all` | 59 | Everything |
@@ -148,7 +148,7 @@ Fund traces are deliberately not cached: a trace is a function of your labels, s
 
 ## Move decompiler (optional)
 
-58 of the 59 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+59 of the 60 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -211,7 +211,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (59)
+## Tools (60)
 
 ### Recommended Starting Points
 
@@ -344,6 +344,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | Tool | Description |
 |---|---|
 | `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing that stops at labeled sinks (forward or backward) |
+| `resolve_bridge_transfer` | Follow funds past a Wormhole bridge exit: the VAA identity `(emitter chain, emitter address, sequence)` read from chain data, plus the destination chain, account and transaction where Wormholescan has indexed a redemption. Results are tiered — the VAA identity is chain-derived, the destination is indexer-attested |
 | `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
 | `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape, addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, and sub-minute funding bursts |
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |

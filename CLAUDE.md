@@ -150,6 +150,48 @@ are hand-built attribution and are migrated, never dropped. Pre-1.7.0 rows
 backfill to `sui:mainnet`, which is an assumption the code documents — there is
 no evidence in a legacy row to do better.
 
+### Cross-chain (bridge) resolution
+
+`bridge` is a sink category, so a fund trace stops at Wormhole — exactly where
+attribution becomes possible. `resolve_bridge_transfer`
+(`src/tools/bridge.ts`) is the seam that lets it continue.
+
+The join is an **identifier match, not a heuristic**. A Wormhole message is
+identified by `(emitterChain, emitterAddress, sequence)`; Sui emits it as a
+`publish_message::WormholeMessage` event whose `sender` is the emitter cap
+object ID, and the destination chain quotes the same triple back. Verified on
+mainnet: event `sender`/`sequence` equal Wormholescan's VAA id exactly.
+
+Every result carries an `EvidenceTier`, and the distinction must survive into
+any report:
+
+- `chain-derived` — the VAA identity, read from Sui. Trusts nobody.
+- `indexer-attested` — the destination transaction. Sui cannot know whether a
+  VAA was redeemed or where, so this necessarily comes from Wormholescan. It is
+  a strong lead to confirm on the destination chain, not something this server
+  verified.
+- `heuristic` — amount/time/asset matching. **Not produced.** Named so nothing
+  silently promotes a lead to a finding.
+
+Notes for extending it:
+
+- The event is matched by **type suffix**, not full type. The core bridge
+  package ID changes on upgrade, and pinning it would silently stop finding
+  messages — the same failure the registry's lineage tier avoids.
+- Wormhole chain numbers are their own namespace (Sui is 21), mapped to CAIP-2
+  in `src/utils/bridge/wormhole.ts`. The map is deliberately partial: an
+  unmapped chain is reported by number, never guessed, since a wrong chain id
+  files an address under the wrong chain.
+- Wormholescan populates `targetChain` and `standarizedProperties`
+  independently — a real mainnet transfer had a complete `targetChain` beside
+  an all-zero `standarizedProperties`. Neither may be used to infer the other
+  is absent.
+- Event field JSON comes from **GraphQL**, not gRPC: the gRPC `Event` has no
+  parsed JSON. This is the documented exception to "point lookup by key uses
+  gRPC".
+- CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
+  be linked from chain data; that is a subpoena, not a query.
+
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)

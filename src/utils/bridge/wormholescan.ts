@@ -13,9 +13,33 @@
  * verified.
  */
 
-import { EXTERNAL_HTTP_TIMEOUT_MS } from "../../config.js";
+import { EXTERNAL_HTTP_TIMEOUT_MS, getNetwork, type SuiNetwork } from "../../config.js";
 
-const WORMHOLESCAN_API = "https://api.wormholescan.io/api/v1";
+/**
+ * Wormholescan runs a separate index per environment. Devnet has none, and
+ * there is nothing to fall back to: querying the mainnet index with a devnet
+ * digest returns an empty result that reads as "never redeemed" rather than
+ * "not indexed here", which is the wrong conclusion to hand an investigator.
+ */
+const API_BY_NETWORK: Partial<Record<SuiNetwork, string>> = {
+  mainnet: "https://api.wormholescan.io/api/v1",
+  testnet: "https://api.testnet.wormholescan.io/api/v1",
+};
+
+/** True when Wormholescan indexes the network this call is running against. */
+export function wormholescanAvailable(network: SuiNetwork = getNetwork()): boolean {
+  return API_BY_NETWORK[network] !== undefined;
+}
+
+function apiBase(): string {
+  const base = API_BY_NETWORK[getNetwork()];
+  if (!base) {
+    throw new Error(
+      `Wormholescan does not index ${getNetwork()}, so the redemption side cannot be looked up there.`,
+    );
+  }
+  return base;
+}
 
 /** The subset of an operation this server uses. */
 export interface WormholescanOperation {
@@ -110,7 +134,7 @@ export function parseOperation(raw: unknown): WormholescanOperation | null {
 
 async function get(path: string): Promise<unknown> {
   // fetch has no default timeout; without this a hung indexer hangs the tool.
-  const res = await fetch(`${WORMHOLESCAN_API}${path}`, {
+  const res = await fetch(`${apiBase()}${path}`, {
     signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
     headers: { accept: "application/json" },
   });
@@ -130,15 +154,32 @@ export async function operationsByTxHash(txHash: string): Promise<WormholescanOp
     .filter((o): o is WormholescanOperation => o !== null);
 }
 
-/** One operation by its VAA triple, for confirming an identity read on-chain. */
+/**
+ * One operation by its VAA triple.
+ *
+ * The fallback for a source-transaction lookup that comes back empty. The VAA
+ * identity is read from chain data, so it is the more reliable key of the two:
+ * the indexer may not associate a transaction hash the way we spell it, but
+ * the triple is what the guardians sign and what every chain quotes back.
+ *
+ * Returns null on 404 — a VAA the indexer has not seen is an ordinary answer
+ * ("in flight", "too recent"), not a failure worth losing the chain-derived
+ * half over.
+ */
 export async function operationByVaa(
   emitterChain: number,
   emitter: string,
   sequence: string,
 ): Promise<WormholescanOperation | null> {
-  const body = await get(
-    `/operations/${emitterChain}/${encodeURIComponent(emitter)}/${encodeURIComponent(sequence)}`,
-  );
+  let body: unknown;
+  try {
+    body = await get(
+      `/operations/${emitterChain}/${encodeURIComponent(emitter)}/${encodeURIComponent(sequence)}`,
+    );
+  } catch (err) {
+    if ((err as Error).message.includes("404")) return null;
+    throw err;
+  }
   // This endpoint returns the operation directly, unlike the list endpoint.
   return parseOperation(body);
 }

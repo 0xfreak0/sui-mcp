@@ -182,6 +182,16 @@ Notes for extending it:
   in `src/utils/bridge/wormhole.ts`. The map is deliberately partial: an
   unmapped chain is reported by number, never guessed, since a wrong chain id
   files an address under the wrong chain.
+- That map is **mainnet-only** — Wormhole reuses its chain numbers across
+  environments, so off mainnet chain 2 is Sepolia, not Ethereum. The tool
+  withholds the CAIP-2 claim off mainnet and reports the Wormhole number alone.
+- Wormholescan runs a **separate index per environment** and has none for
+  devnet. Never fall back to the mainnet index: an empty result there reads as
+  "never redeemed" rather than "not indexed here".
+- The destination is looked up by source transaction first, then by the VAA
+  triple for anything still unresolved. The triple is read from chain data and
+  is what the guardians sign, so it is the more reliable key; the second
+  request is only spent when the first misses.
 - Wormholescan populates `targetChain` and `standarizedProperties`
   independently — a real mainnet transfer had a complete `targetChain` beside
   an all-zero `standarizedProperties`. Neither may be used to infer the other
@@ -191,6 +201,10 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
+- `trace_funds` stopping at a `bridge` label emits a `bridge_exit` block naming
+  the digest to hand to `resolve_bridge_transfer`. A bridge is the one sink
+  that is not terminal, and without the handoff the trace reads as "the money
+  stopped here".
 
 ## Key Patterns
 

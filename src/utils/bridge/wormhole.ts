@@ -20,7 +20,6 @@
  */
 
 import {
-  caip2ForSuiNetwork,
   chainDisplayName,
   formatAccountId,
   normalizeAddressForChain,
@@ -62,6 +61,11 @@ export const WORMHOLE_CHAIN_SUI = 21;
  * with no CAIP-2 id rather than guessed at: emitting a wrong chain id would
  * put an address on the wrong chain in a case file, which is precisely the
  * error chain qualification exists to prevent.
+ *
+ * **Mainnet only.** Wormhole reuses its chain numbers across environments, so
+ * on testnet chain 2 is Sepolia rather than Ethereum mainnet. Callers must not
+ * qualify a destination with this map unless the call is running against Sui
+ * mainnet — see `qualifyDestinations` in the tool.
  */
 const WORMHOLE_TO_CAIP2: Record<number, ChainId> = {
   1: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
@@ -211,12 +215,4 @@ export function toForeignAccount(wormholeChain: number, address: string): string
   } catch {
     return null;
   }
-}
-
-/** The CAIP-10 for a Sui address on the network a call is running against. */
-export function suiAccount(address: string, network: Parameters<typeof caip2ForSuiNetwork>[0]) {
-  return formatAccountId({
-    chain: caip2ForSuiNetwork(network),
-    address: normalizeAddressForChain(caip2ForSuiNetwork(network), address),
-  });
 }

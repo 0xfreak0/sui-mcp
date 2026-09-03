@@ -152,11 +152,19 @@ export function registerLabelTools(server: McpServer) {
         case "export": {
           // Emits the same shape `import` accepts, so a team can round-trip a
           // labels file between machines without hand-editing.
+          //
+          // The exported address is the CAIP-10 account, never the bare
+          // chain-native one. `import` resolves a bare address against
+          // whichever network the importing call runs on, so exporting bare
+          // used to re-file an Ethereum label as a zero-padded Sui address —
+          // and since `bridge` and `cex` are sink categories, that phantom
+          // would silently terminate later Sui traces at an address belonging
+          // to nobody.
           const all = allLabels();
           return jsonResult({
             count: all.length,
             labels: all.map((l) => ({
-              address: l.address,
+              address: l.account,
               label: l.label,
               category: l.category,
               ...(l.confidence ? { confidence: l.confidence } : {}),

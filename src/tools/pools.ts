@@ -2,7 +2,7 @@ import { z } from "zod";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
-import { lookupProtocol } from "../protocols/registry.js";
+import { lookupProtocol, prefetchProtocolNames } from "../protocols/registry.js";
 import { errorResult } from "../utils/errors.js";
 import { resolveTokenType } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -149,6 +149,13 @@ export function registerPoolTools(server: McpServer) {
       // Determine protocol
       let detectedProtocol = protocolHint?.toLowerCase() ?? null;
       if (!detectedProtocol && packageId) {
+        // The ID here comes from the pool's *type*, so it is the package version
+        // that declared the type — the lineage root for anything declared in v1,
+        // but a later version for a type a protocol added on upgrade. Resolving
+        // the lineage first is what keeps parser selection working in the second
+        // case; without it an upgraded pool falls through to name-substring
+        // guessing below.
+        await prefetchProtocolNames([packageId]);
         const info = lookupProtocol(packageId);
         if (info) detectedProtocol = info.name.toLowerCase();
       }

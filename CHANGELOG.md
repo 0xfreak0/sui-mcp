@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.8.0 (2026-09-03)
+
+Inbound bridge transfers now resolve to their origin.
+
+1.7.0 detected an inbound claim and correctly refused to read it as an exit —
+that guard matters, since following an entry forward sends an investigator to
+the wrong chain. But it stopped at a count, and everything needed to resolve the
+origin was already in the event it had read.
+
+### Added
+- **Inbound bridge resolution.** A native-bridge claim now reports the origin
+  chain, its CAIP-2 id and the transfer id — `10/32597` from Ethereum — marked
+  `chain-derived`, since all of it comes from the claim event. This is the
+  mirror of the outbound `transfer_id`, so a trace running backwards can pick
+  the transfer up on the origin chain instead of dead-ending.
+
+  `NativeBridgeClaim` is deliberately a separate type from
+  `NativeBridgeTransfer`: the two carry the same shape of identity pointing in
+  opposite directions, and one type would make rendering an entry as an exit a
+  plausible mistake.
+
+  Off mainnet the CAIP-2 origin is withheld, the same rule the outbound side
+  follows — the bridge reuses its chain numbers across environments. The
+  bridge's own chain number is still reported, so the origin is never lost.
+
 ## 1.7.0 (2026-09-03)
 
 One new tool (59 → 60) and the identity change that makes cross-chain work

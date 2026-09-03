@@ -13,6 +13,7 @@ import {
 import {
   CLAIM_EVENT_SUFFIX,
   DEPOSIT_EVENT_SUFFIXES,
+  parseClaimEvent,
   parseDepositEvent,
   suiBridgeChainLabel,
 } from "../utils/bridge/sui-native.js";
@@ -184,8 +185,16 @@ export function registerBridgeTools(server: McpServer) {
         .filter((t): t is NonNullable<typeof t> => t !== null);
 
       // Inbound claims are value ARRIVING on Sui. Reporting one as an exit
-      // would send an investigator to the wrong chain entirely.
-      const nativeInboundClaims = eventTypes.filter((t) => t.endsWith(CLAIM_EVENT_SUFFIX)).length;
+      // would send an investigator to the wrong chain entirely — but an entry
+      // is still worth resolving, since the claim quotes the origin chain's own
+      // transfer identity and a trace running backwards dead-ends without it.
+      const nativeInboundClaims = events
+        .filter((e) => {
+          const t = e?.contents?.type?.repr;
+          return typeof t === "string" && t.endsWith(CLAIM_EVENT_SUFFIX);
+        })
+        .map((e) => parseClaimEvent(e.contents?.json, qualify))
+        .filter((cl): cl is NonNullable<typeof cl> => cl !== null);
 
       const bridgeSections = {
         ...(cctpTransfers.length
@@ -226,12 +235,20 @@ export function registerBridgeTools(server: McpServer) {
               })),
             }
           : {}),
-        ...(nativeInboundClaims
+        ...(nativeInboundClaims.length
           ? {
               sui_native_bridge_inbound: {
-                claims: nativeInboundClaims,
+                direction: "inbound" as const,
                 meaning:
-                  "This transaction CLAIMED value arriving on Sui from the native bridge. That is an entry, not an exit — do not follow it off-chain.",
+                  "This transaction CLAIMED value arriving on Sui from the native bridge. That is an entry, not an exit — following it forward off-chain goes the wrong way. To trace the money BACK, look up the transfer id on the origin chain.",
+                claims: nativeInboundClaims.map((cl) => ({
+                  evidence: "chain-derived" as const,
+                  transfer_id: cl.transferId,
+                  sequence: cl.seqNum,
+                  origin_chain: cl.sourceChainId,
+                  origin_chain_label: cl.sourceChainLabel,
+                  bridge_chain_id: cl.sourceChain,
+                })),
               },
             }
           : {}),
@@ -262,9 +279,9 @@ export function registerBridgeTools(server: McpServer) {
                   other_bridge_activity: otherBridges,
                   note: "No Wormhole message in this transaction, but another cross-chain protocol was used — see other_bridge_activity. The funds did leave; this tool just cannot follow that protocol yet.",
                 }
-              : nativeInboundClaims
+              : nativeInboundClaims.length
                 ? {
-                    note: "No outbound transfer here. This transaction claimed value ARRIVING on Sui via the native bridge — see sui_native_bridge_inbound.",
+                    note: "No outbound transfer here. This transaction claimed value ARRIVING on Sui via the native bridge — see sui_native_bridge_inbound for the origin chain and transfer id.",
                   }
                 : {
                     note: "No Wormhole message in this transaction. It did not exit through Wormhole.",

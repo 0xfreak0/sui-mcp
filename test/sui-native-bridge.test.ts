@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   decodeBridgeAddress,
+  parseClaimEvent,
   parseDepositEvent,
   suiBridgeChainLabel,
 } from "../src/utils/bridge/sui-native.js";
@@ -75,5 +76,40 @@ describe("suiBridgeChainLabel", () => {
 
   it("falls back to the number for anything undeclared", () => {
     expect(suiBridgeChainLabel(99)).toBe("Sui-bridge chain 99");
+  });
+});
+
+/** The TokenTransferClaimed payload from mainnet tx 5bATZ4ZYEZa9…ADut. */
+const REAL_CLAIM = { message_key: { source_chain: 10, message_type: 0, bridge_seq_num: "32597" } };
+
+describe("parseClaimEvent", () => {
+  it("resolves an inbound claim to its origin chain and transfer id", () => {
+    const c = parseClaimEvent(REAL_CLAIM, true)!;
+    // The mirror of an outbound transfer_id: the origin chain emitted this
+    // exact identity, so a trace running backwards can pick it up there.
+    expect(c.transferId).toBe("10/32597");
+    expect(c.sourceChainLabel).toBe("Ethereum");
+    expect(c.sourceChainId).toBe("eip155:1");
+  });
+
+  it("withholds the CAIP-2 origin off mainnet", () => {
+    // Same rule as outbound: the bridge reuses its chain numbers across
+    // environments, so off mainnet chain 10 is not Ethereum mainnet.
+    const c = parseClaimEvent(REAL_CLAIM, false)!;
+    expect(c.sourceChainId).toBeNull();
+    // The bridge's own chain number is still reported, so the origin is not lost.
+    expect(c.sourceChain).toBe(10);
+  });
+
+  it("returns null when the message key is absent or incomplete", () => {
+    expect(parseClaimEvent({}, true)).toBeNull();
+    expect(parseClaimEvent({ message_key: { source_chain: 10 } }, true)).toBeNull();
+    expect(parseClaimEvent(null, true)).toBeNull();
+  });
+
+  it("keeps the sequence as a string", () => {
+    // Same u64 precision argument as everywhere else: it has to compare equal
+    // to the origin chain's copy.
+    expect(typeof parseClaimEvent(REAL_CLAIM, true)!.seqNum).toBe("string");
   });
 });

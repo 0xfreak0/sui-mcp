@@ -3,6 +3,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
+import { detectBridges } from "../utils/bridge/detect.js";
 import {
   EVIDENCE_TIER_MEANING,
   WORMHOLE_CHAIN_SUI,
@@ -41,39 +42,6 @@ interface TxEventsResponse {
     digest?: string;
     effects?: { events?: { nodes?: SuiEventNode[] } };
   } | null;
-}
-
-/**
- * Other cross-chain protocols we can *detect* but not yet resolve.
- *
- * Reporting "no Wormhole message" on a transaction that plainly bridged
- * through Circle CCTP would read as "the funds did not leave", which is the
- * wrong conclusion to hand an investigator. Naming the protocol turns a dead
- * end into a next step.
- */
-const OTHER_BRIDGE_MARKERS: Array<{ suffix: string; protocol: string; note: string }> = [
-  {
-    suffix: "::deposit_for_burn::DepositForBurn",
-    protocol: "Circle CCTP",
-    note: "CCTP transfers are identified by a Circle nonce and message hash rather than a Wormhole VAA. Not resolved by this tool yet.",
-  },
-  {
-    suffix: "::send_message::MessageSent",
-    protocol: "Circle CCTP (message)",
-    note: "The CCTP message half of a burn. Its attestation is served by Circle, not Wormholescan.",
-  },
-];
-
-function detectOtherBridges(events: SuiEventNode[]): Array<{ protocol: string; note: string }> {
-  const found = new Map<string, string>();
-  for (const e of events) {
-    const repr = e?.contents?.type?.repr;
-    if (typeof repr !== "string") continue;
-    for (const marker of OTHER_BRIDGE_MARKERS) {
-      if (repr.endsWith(marker.suffix)) found.set(marker.protocol, marker.note);
-    }
-  }
-  return [...found].map(([protocol, note]) => ({ protocol, note }));
 }
 
 /**
@@ -152,7 +120,12 @@ export function registerBridgeTools(server: McpServer) {
 
       const events = data.transaction.effects?.events?.nodes ?? [];
       const messages = extractWormholeMessages(events);
-      const otherBridges = detectOtherBridges(events);
+      // Shared detector, so this tool and trace_funds agree on what counts as
+      // a bridge exit rather than drifting apart.
+      const eventTypes = events
+        .map((e) => e?.contents?.type?.repr)
+        .filter((t): t is string => typeof t === "string");
+      const otherBridges = detectBridges([], eventTypes).filter((h) => h.protocol !== "Wormhole");
 
       if (messages.length === 0) {
         return ok({

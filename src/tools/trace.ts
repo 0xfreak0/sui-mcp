@@ -3,6 +3,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { batchResolveNames } from "../utils/names.js";
 import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { getLabel, isSink } from "../utils/labels.js";
+import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
 import {
   decimalsForCoinType,
@@ -347,9 +348,14 @@ export function registerTraceTools(server: McpServer) {
       // Set when a hop's next address is a known fund sink (exchange, bridge,
       // mixer, malicious wallet, burn) — following further would add noise.
       let terminationReason: string | null = null;
-      // The transaction to hand to resolve_bridge_transfer, set only when the
-      // trace stopped at a bridge.
-      let bridgeExitDigest: string | null = null;
+      // Bridge exits seen anywhere in the trace, keyed by digest.
+      //
+      // Detected from the hop's Move calls rather than from a sink label. A
+      // bridge does not transfer value to an identifiable wallet — it burns or
+      // locks the coin and emits a message — so there is usually no recipient
+      // address to label, and `isSink` never fires. The call is the signal
+      // that is actually present.
+      const bridgeExits: Array<{ digest: string; hits: BridgeHit[] }> = [];
       // The coin we're following. May change mid-trace after a swap (A→B).
       let trackedCoin: string | null = coin_type ?? null;
 
@@ -390,6 +396,20 @@ export function registerTraceTools(server: McpServer) {
         await prefetchProtocolNames(collectPackageIds(commands));
         const decoded = decodeTransaction(commands, grpcBc, sender ?? undefined);
 
+        // Detect a bridge exit from this hop's Move calls. Runs after the
+        // prefetch so the registry tier can see lineage-resolved packages —
+        // an upgraded bridge still identifies.
+        const hits = detectBridges(
+          tx.commandNodes
+            .filter((n) => n.function)
+            .map((n) => ({
+              packageId: n.function!.module.package.address,
+              module: n.function!.module.name,
+              function: n.function!.name,
+            })),
+        );
+        if (hits.length) bridgeExits.push({ digest: currentDigest, hits });
+
         const hopResult: HopResult = {
           hop: hop + 1,
           digest: currentDigest,
@@ -423,18 +443,6 @@ export function registerTraceTools(server: McpServer) {
         if (isSink(nextAddress)) {
           const label = getLabel(nextAddress);
           terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
-          // A bridge is the one sink that is not actually terminal. The value
-          // continues on another chain under an identifier both chains quote,
-          // so say so and name the digest to hand over — otherwise the trace
-          // reads as "the money stopped here", which is wrong, and the tool
-          // that continues it is discoverable only by luck.
-          if (label?.category === "bridge") {
-            bridgeExitDigest = currentDigest;
-            terminationReason +=
-              " A bridge is not a dead end: run resolve_bridge_transfer on this hop's transaction" +
-              " to recover the cross-chain transfer identity and, where it has been redeemed," +
-              " the destination chain and account.";
-          }
           break;
         }
 
@@ -565,6 +573,18 @@ export function registerTraceTools(server: McpServer) {
         parts.push(usd.join("\n"));
       }
       if (terminationReason) parts.push(`⚠ ${terminationReason}`);
+      if (bridgeExits.length) {
+        // Said in the summary as well as the structured payload: a trace that
+        // just ends reads as "the money stopped here", which is the wrong
+        // conclusion when it actually left the chain.
+        const lines = ["🌉 Value left Sui in this trace:"];
+        for (const exit of bridgeExits) {
+          for (const hit of exit.hits) {
+            lines.push(`  ${exit.digest} — ${hit.protocol}: ${hit.note}`);
+          }
+        }
+        parts.push(lines.join("\n"));
+      }
       const summary = parts.join("\n\n");
 
       const fullData = {
@@ -575,13 +595,20 @@ export function registerTraceTools(server: McpServer) {
         stopped_at_sink: terminationReason,
         // Structured, not just prose in the summary, so a caller can chain
         // straight into resolve_bridge_transfer without re-parsing the text.
-        ...(bridgeExitDigest
+        ...(bridgeExits.length
           ? {
-              bridge_exit: {
-                digest: bridgeExitDigest,
-                next_tool: "resolve_bridge_transfer",
-                why: "The trace stopped at a bridge. Value crossed to another chain under an identifier quoted on both sides, so this hop can be followed rather than abandoned.",
-              },
+              bridge_exits: bridgeExits.map((e) => ({
+                digest: e.digest,
+                protocols: e.hits.map((h) => ({
+                  protocol: h.protocol,
+                  resolution: h.resolution,
+                  matched: h.matched,
+                  note: h.note,
+                })),
+                ...(resolvableHit(e.hits)
+                  ? { next_tool: "resolve_bridge_transfer" }
+                  : {}),
+              })),
             }
           : {}),
         usd: {

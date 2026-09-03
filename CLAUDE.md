@@ -201,10 +201,37 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
-- `trace_funds` stopping at a `bridge` label emits a `bridge_exit` block naming
-  the digest to hand to `resolve_bridge_transfer`. A bridge is the one sink
-  that is not terminal, and without the handoff the trace reads as "the money
-  stopped here".
+### Detecting a bridge exit vs. resolving one
+
+Keep these apart — conflating them is what makes "support every bridge" sound
+impossible.
+
+**Detection** (did value leave, through what?) generalizes cheaply and lives in
+`src/utils/bridge/detect.ts`. Two tiers:
+
+1. Curated `callMarkers` / `eventMarkers` per protocol, matched by
+   `module::function` *suffix and prefix* so they survive package upgrades and
+   name variants (mainnet CCTP calls
+   `deposit_for_burn_with_caller_with_package_auth`, not the bare name).
+2. Any package `lookupProtocol` types as `bridge`. This is free and automatic:
+   adding a bridge to `protocols.json` gives detection immediately, and via
+   lineage roots it keeps working after that bridge upgrades.
+
+**Resolution** (where did it land?) does *not* generalize — each protocol has
+its own identity scheme and its own index — so each resolver is bespoke.
+`BridgeProtocol.resolution` records which a protocol has: `identifier` means
+followable, `detect-only` means we can name it and no more. Never point a
+caller at a resolver that cannot help them; `resolvableHit()` is the guard.
+
+There is deliberately **no heuristic tier**. Guessing that an unknown package
+looks bridge-shaped would manufacture exactly the unverifiable attribution this
+project refuses to ship.
+
+Detect from **Move calls, not sink labels.** A bridge burns or locks the coin
+and emits a message; it does not transfer value to a labelable recipient
+wallet, so `isSink` never fires on a real bridge exit and only one address
+label ships at all. `trace_funds` runs `detectBridges` over each hop's calls —
+data it already has, no extra query — and emits `bridge_exits`.
 
 ## Key Patterns
 

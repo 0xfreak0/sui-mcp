@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseOperation } from "../src/utils/bridge/wormholescan.js";
+import { parseOperation, wormholescanAvailable } from "../src/utils/bridge/wormholescan.js";
 
 /**
  * Two real mainnet response shapes, captured from
@@ -111,5 +111,18 @@ describe("parseOperation", () => {
     expect(op.transfer).toBeNull();
     expect(op.sourceTxHash).toBeNull();
     expect(op.appIds).toEqual([]);
+  });
+});
+
+describe("wormholescanAvailable", () => {
+  it("knows which networks are indexed", () => {
+    expect(wormholescanAvailable("mainnet")).toBe(true);
+    expect(wormholescanAvailable("testnet")).toBe(true);
+  });
+
+  it("reports devnet as unindexed rather than silently using mainnet", () => {
+    // Querying the mainnet index with a devnet digest returns an empty result
+    // that reads as "never redeemed" instead of "not indexed here".
+    expect(wormholescanAvailable("devnet")).toBe(false);
   });
 });

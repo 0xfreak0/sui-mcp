@@ -347,6 +347,9 @@ export function registerTraceTools(server: McpServer) {
       // Set when a hop's next address is a known fund sink (exchange, bridge,
       // mixer, malicious wallet, burn) — following further would add noise.
       let terminationReason: string | null = null;
+      // The transaction to hand to resolve_bridge_transfer, set only when the
+      // trace stopped at a bridge.
+      let bridgeExitDigest: string | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
       let trackedCoin: string | null = coin_type ?? null;
 
@@ -420,6 +423,18 @@ export function registerTraceTools(server: McpServer) {
         if (isSink(nextAddress)) {
           const label = getLabel(nextAddress);
           terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
+          // A bridge is the one sink that is not actually terminal. The value
+          // continues on another chain under an identifier both chains quote,
+          // so say so and name the digest to hand over — otherwise the trace
+          // reads as "the money stopped here", which is wrong, and the tool
+          // that continues it is discoverable only by luck.
+          if (label?.category === "bridge") {
+            bridgeExitDigest = currentDigest;
+            terminationReason +=
+              " A bridge is not a dead end: run resolve_bridge_transfer on this hop's transaction" +
+              " to recover the cross-chain transfer identity and, where it has been redeemed," +
+              " the destination chain and account.";
+          }
           break;
         }
 
@@ -558,6 +573,17 @@ export function registerTraceTools(server: McpServer) {
         coin_type: coin_type ?? "all",
         hop_count: enrichedHops.length,
         stopped_at_sink: terminationReason,
+        // Structured, not just prose in the summary, so a caller can chain
+        // straight into resolve_bridge_transfer without re-parsing the text.
+        ...(bridgeExitDigest
+          ? {
+              bridge_exit: {
+                digest: bridgeExitDigest,
+                next_tool: "resolve_bridge_transfer",
+                why: "The trace stopped at a bridge. Value crossed to another chain under an identifier quoted on both sides, so this hop can be followed rather than abandoned.",
+              },
+            }
+          : {}),
         usd: {
           origin: originUsd > 0 ? Number(originUsd.toFixed(2)) : null,
           peak_hop: peakUsd > 0 ? Number(peakUsd.toFixed(2)) : null,

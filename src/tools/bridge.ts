@@ -12,7 +12,12 @@ import {
   caip2ForWormholeChain,
   type SuiEventNode,
 } from "../utils/bridge/wormhole.js";
-import { operationsByTxHash, type WormholescanOperation } from "../utils/bridge/wormholescan.js";
+import {
+  operationByVaa,
+  operationsByTxHash,
+  wormholescanAvailable,
+  type WormholescanOperation,
+} from "../utils/bridge/wormholescan.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -71,8 +76,16 @@ function detectOtherBridges(events: SuiEventNode[]): Array<{ protocol: string; n
   return [...found].map(([protocol, note]) => ({ protocol, note }));
 }
 
-/** Render the destination half of an operation, chain-qualified where possible. */
-function renderDestination(op: WormholescanOperation) {
+/**
+ * Render the destination half of an operation.
+ *
+ * `qualify` is false off mainnet. Wormhole reuses its chain numbers across
+ * environments, so on testnet chain 2 means Sepolia, not Ethereum mainnet —
+ * emitting `eip155:1` there would file a testnet address under a mainnet chain
+ * and read as verified. The Wormhole number and label are still reported; only
+ * the CAIP-2 claim is withheld.
+ */
+function renderDestination(op: WormholescanOperation, qualify: boolean) {
   const dest = op.destination;
   if (!dest) {
     return {
@@ -84,11 +97,14 @@ function renderDestination(op: WormholescanOperation) {
 
   const wormholeChain = dest.wormholeChain ?? op.transfer?.toChain ?? null;
   const rawAddress = dest.to ?? op.transfer?.toAddress ?? null;
-  const account = wormholeChain !== null && rawAddress ? toForeignAccount(wormholeChain, rawAddress) : null;
+  const account =
+    qualify && wormholeChain !== null && rawAddress
+      ? toForeignAccount(wormholeChain, rawAddress)
+      : null;
 
   return {
     status: dest.status ?? "unknown",
-    chain: wormholeChain === null ? null : (caip2ForWormholeChain(wormholeChain) ?? null),
+    chain: qualify && wormholeChain !== null ? caip2ForWormholeChain(wormholeChain) : null,
     chain_label: wormholeChain === null ? null : wormholeChainLabel(wormholeChain),
     wormhole_chain_id: wormholeChain,
     // The CAIP-10 form drops straight into save_finding and manage_labels, so
@@ -97,8 +113,9 @@ function renderDestination(op: WormholescanOperation) {
     address: rawAddress,
     ...(account === null && rawAddress
       ? {
-          address_note:
-            "Reported unqualified: this server has no address rule for that chain, so filing it under a chain id would be a guess.",
+          address_note: qualify
+            ? "Reported unqualified: this server has no address rule for that chain, so filing it under a chain id would be a guess."
+            : "Reported unqualified: Wormhole reuses its chain numbers across environments, so a CAIP-2 id derived off mainnet would name the wrong chain.",
         }
       : {}),
     transaction: dest.txHash,
@@ -157,19 +174,37 @@ export function registerBridgeTools(server: McpServer) {
       // One Wormholescan call covers every message in the transaction; they are
       // matched back by VAA id rather than by position, since the indexer makes
       // no ordering promise.
-      let operations: WormholescanOperation[] = [];
+      const network = getNetwork();
+      const indexed = wormholescanAvailable(network);
+      // Wormhole chain numbers are reused across environments, so its CAIP-2
+      // map is only meaningful for mainnet.
+      const qualify = network === "mainnet";
+      const wantDestination = include_destination !== false && indexed;
+
+      const byVaa = new Map<string, WormholescanOperation>();
       let destinationError: string | null = null;
-      if (include_destination !== false) {
+
+      if (wantDestination) {
         try {
-          operations = await operationsByTxHash(digest);
+          for (const op of await operationsByTxHash(digest)) byVaa.set(op.id, op);
+
+          // Fall back to the VAA triple for anything the transaction lookup
+          // missed. The triple is read from chain data and is what the
+          // guardians sign, so it is the more reliable key of the two — the
+          // indexer may simply not associate the source hash the way we spell
+          // it. Only messages still unresolved are looked up, so the common
+          // case costs no extra request.
+          for (const m of messages) {
+            if (byVaa.has(m.vaaId)) continue;
+            const op = await operationByVaa(WORMHOLE_CHAIN_SUI, m.emitter, m.sequence);
+            if (op) byVaa.set(m.vaaId, op);
+          }
         } catch (err) {
           // A dead indexer must not lose the chain-derived half, which is the
           // part that is actually evidence.
           destinationError = (err as Error).message;
         }
       }
-
-      const byVaa = new Map(operations.map((o) => [o.id, o]));
 
       return ok({
         digest,
@@ -190,15 +225,20 @@ export function registerBridgeTools(server: McpServer) {
             destination:
               include_destination === false
                 ? { status: "not_requested" }
-                : destinationError
-                  ? { status: "lookup_failed", error: destinationError }
-                  : op
-                    ? { evidence: "indexer-attested" as const, ...renderDestination(op) }
-                    : {
-                        status: "not_indexed",
-                        meaning:
-                          "Wormholescan returned no operation for this transaction. The VAA identity above is still chain-derived and valid; look it up directly if the transfer is recent.",
-                      },
+                : !indexed
+                  ? {
+                      status: "no_index_for_network",
+                      meaning: `Wormholescan does not index ${network}, so the redemption side cannot be resolved there. The VAA identity above is still chain-derived and valid.`,
+                    }
+                  : destinationError
+                    ? { status: "lookup_failed", error: destinationError }
+                    : op
+                      ? { evidence: "indexer-attested" as const, ...renderDestination(op, qualify) }
+                      : {
+                          status: "not_indexed",
+                          meaning:
+                            "Wormholescan has no operation for this transaction or its VAA id. The VAA identity above is still chain-derived and valid — the transfer may be too recent to have been indexed, or still in flight.",
+                        },
             ...(op?.transfer
               ? {
                   transfer: {

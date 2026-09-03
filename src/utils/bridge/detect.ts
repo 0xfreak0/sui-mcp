@@ -61,6 +61,15 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     note: "Run resolve_bridge_transfer on this transaction to read the VAA identity and, where it has been redeemed, the destination chain and account.",
   },
   {
+    id: "sui-native",
+    name: "Sui Bridge",
+    // send_token matches send_token_v2 by prefix.
+    callMarkers: ["bridge::send_token"],
+    eventMarkers: ["bridge::TokenDepositedEvent", "bridge::TokenDepositedEventV2"],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. Sui's native bridge puts the destination chain and address in the event itself, so the far side is read from chain data rather than an indexer.",
+  },
+  {
     id: "cctp",
     name: "Circle CCTP",
     callMarkers: ["deposit_for_burn::deposit_for_burn"],

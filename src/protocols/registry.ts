@@ -1,7 +1,10 @@
 import { createRequire } from "node:module";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { getMvrName, prefetchMvrNames } from "./mvr-names.js";
+import { getPackageRoot, prefetchPackageRoots } from "./package-roots.js";
 const require = createRequire(import.meta.url);
 const protocolsData = require("../data/protocols.json");
+const protocolRootsData = require("../data/protocol-roots.json");
 
 export type ProtocolType =
   | "dex"
@@ -18,6 +21,8 @@ export type ProtocolType =
   | "farm"
   | "oracle"
   | "bridge"
+  | "prediction_market"
+  | "nft"
   /** Resolved from the Move Registry at runtime; category is not known. */
   | "unknown";
 
@@ -37,8 +42,55 @@ export interface OperationInfo {
   skip?: boolean; // true for internal/infrastructure ops to omit from summary
 }
 
-// Package ID -> Protocol mapping loaded from src/data/protocols.json
-const PROTOCOL_MAP: Record<string, ProtocolInfo> = protocolsData.protocols as Record<string, ProtocolInfo>;
+/**
+ * Normalize a package ID for use as a registry key, or null if it is not an
+ * address at all.
+ *
+ * Lookups take IDs from chain data and from tool arguments, so an unparseable
+ * string has to mean "not in the registry" rather than an exception thrown out
+ * of the middle of a decode loop.
+ */
+function normalizeKey(packageId: string): string | null {
+  try {
+    return normalizeSuiAddress(packageId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Package ID -> Protocol mapping loaded from src/data/protocols.json.
+ *
+ * Keys are normalized on load. Curated entries are written the way a human
+ * types them — `0x2`, `0x3`, `0xdee9` — while the chain reports every package
+ * ID padded to 32 bytes, so an exact match against the raw file misses the
+ * system packages entirely. Normalizing both sides is what makes the
+ * exact-match tier answer for them without depending on a lineage prefetch
+ * having run.
+ */
+const PROTOCOL_MAP: Record<string, ProtocolInfo> = Object.fromEntries(
+  Object.entries(protocolsData.protocols as Record<string, ProtocolInfo>).map(([id, info]) => [
+    normalizeSuiAddress(id),
+    info,
+  ]),
+);
+
+/**
+ * Upgrade-lineage root -> Protocol, generated from PROTOCOL_MAP by
+ * `npm run sync:protocol-roots`.
+ *
+ * This is the tier that survives an upgrade. PROTOCOL_MAP lists package
+ * *versions*, so it identifies a protocol only until the next upgrade mints an
+ * ID nobody has typed in; a lineage root is the same for every version the
+ * protocol will ever publish. Keys are normalized, because a curated ID may be
+ * written short (`0x2`) while the chain reports it padded.
+ */
+const ROOT_MAP: Record<string, ProtocolInfo> = Object.fromEntries(
+  Object.entries(protocolRootsData.roots as Record<string, ProtocolInfo>).map(([root, info]) => [
+    normalizeSuiAddress(root),
+    info,
+  ]),
+);
 
 // module::function pattern -> operation action
 // Patterns use prefix matching: "pool::swap" matches "pool::swap", "pool::swap_a2b", etc.
@@ -188,35 +240,80 @@ export function loadProtocolRegistry(): Record<string, ProtocolInfo> {
   return PROTOCOL_MAP;
 }
 
+/**
+ * Curated protocol identification: the exact ID first, then the protocol that
+ * owns this package's upgrade lineage.
+ *
+ * Both tiers are hand-verified data, so this stays safe for the callers that
+ * change *behaviour* on the answer — fund tracing's pass-through test, parser
+ * selection in `find_pools`. The lineage tier only widens an existing curated
+ * entry to other versions of the same package, which the chain enforces: only
+ * the `UpgradeCap` holder can add one. Contrast {@link lookupProtocolDisplay},
+ * which will also hand back a name anybody could have registered.
+ *
+ * The lineage tier answers only for packages a prefetch has already resolved
+ * (see {@link prefetchProtocolNames}); without one this degrades to exact-match,
+ * never to a blocking call.
+ */
 export function lookupProtocol(packageId: string): ProtocolInfo | null {
-  return PROTOCOL_MAP[packageId] ?? null;
-}
-
-/** Is this package in the shipped, hand-verified registry? */
-export function isCuratedProtocol(packageId: string): boolean {
-  return packageId in PROTOCOL_MAP;
+  const key = normalizeKey(packageId);
+  if (!key) return null;
+  const exact = PROTOCOL_MAP[key];
+  if (exact) return exact;
+  const root = getPackageRoot(key);
+  return root ? (ROOT_MAP[root] ?? null) : null;
 }
 
 /**
- * Warm the MVR name cache for packages this call is about to decode.
+ * Is this exact package ID in the shipped registry file?
+ *
+ * Deliberately not lineage-aware: this is the prefetch filter, and it has to
+ * answer before any lineage is known. Use {@link lookupProtocol} to ask whether
+ * a package *belongs to* a curated protocol.
+ */
+export function isCuratedProtocol(packageId: string): boolean {
+  const key = normalizeKey(packageId);
+  return key !== null && key in PROTOCOL_MAP;
+}
+
+/**
+ * Warm the identification caches for packages this call is about to decode.
  *
  * Call once with every package ID in a batch, before the (synchronous) decode
- * loop: one bulk request instead of one per package, and curated IDs are
- * filtered out first so a fully-known transaction makes no network call at all.
- * Awaiting this is optional — skipping it just means unknown packages render as
- * raw addresses, exactly as before.
+ * loop. Three tiers, cheapest first, each one narrowing what the next has to
+ * ask about:
+ *
+ *   1. The shipped registry, in memory — a fully-known transaction makes no
+ *      network call at all.
+ *   2. Upgrade lineages, batched (./package-roots.ts). This is what identifies a
+ *      protocol that shipped an upgrade since the registry was last curated, and
+ *      it yields a real category, not just a name.
+ *   3. The Move Registry, in bulk (./mvr-names.ts), for whatever is left —
+ *      display names only.
+ *
+ * Awaiting this is optional: skipping it, or either network step failing, just
+ * means fewer packages are identified, exactly as before these tiers existed.
  */
 export async function prefetchProtocolNames(packageIds: Iterable<string>): Promise<void> {
   const unknown: string[] = [];
   for (const id of packageIds) {
     if (id && !isCuratedProtocol(id)) unknown.push(id);
   }
-  await prefetchMvrNames(unknown);
+  if (unknown.length === 0) return;
+
+  await prefetchPackageRoots(unknown);
+
+  // Only packages no lineage claimed are worth an MVR round trip — and a
+  // curated lineage hit is strictly better than an MVR name anyway, since it
+  // carries a verified category.
+  const stillUnknown = unknown.filter((id) => !lookupProtocol(id));
+  await prefetchMvrNames(stillUnknown);
 }
 
 /**
- * Protocol identification for **display**: curated first, then any name the
- * Move Registry gave us for this package (see ./mvr-names.ts).
+ * Protocol identification for **display**: curated first — including the
+ * lineage tier, so an upgraded package still reports its protocol and category
+ * — then any name the Move Registry gave us for this package (./mvr-names.ts).
  *
  * MVR entries come back with `type: "unknown"` and `source: "mvr"` so callers
  * can tell a verified category from a name someone registered. Falls back to
@@ -224,7 +321,7 @@ export async function prefetchProtocolNames(packageIds: Iterable<string>): Promi
  * so this is always safe to call.
  */
 export function lookupProtocolDisplay(packageId: string): ProtocolInfo | null {
-  const curated = PROTOCOL_MAP[packageId];
+  const curated = lookupProtocol(packageId);
   if (curated) return curated;
   const mvrName = getMvrName(packageId);
   return mvrName ? { name: mvrName, type: "unknown", source: "mvr" } : null;

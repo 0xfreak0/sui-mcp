@@ -86,6 +86,27 @@
     "0xcf60a40f45d46fc1e828871a647c1e25a0915dec860d2662eb10fdb382c3c1d1": { "name": "Momentum", "type": "dex" },
 
     "0x2d986babdac1ee98767c38c349d34402ddb85481152ac50ace0fc86e22b1fd47": { "name": "WaterX", "type": "perps" },
-    "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e": { "name": "WaterX", "type": "oracle" }
+    "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e": { "name": "WaterX", "type": "oracle" },
+
+    "0xbab1b714c5533a46ee27a9c124d6f9281ca54831fc288d4d0c133dae3a57254a": { "name": "Aftermath", "type": "perps" },
+    "0x3ec740df8428aa9c93aaef7f8cc1542ac3194fd014826b51bfe245346d64efc7": { "name": "Aftermath", "type": "perps" },
+    "0xa5428da682b4fad53e40f73dc07b547e33be078ec1c5d4a4378d6a316f0d9104": { "name": "Aftermath", "type": "oracle" },
+
+    "0xca441b44943c16be0e6e23c5a955bb971537ea3289ae8016fbf33fffe1fd210f": { "name": "NAVI", "type": "oracle" },
+    "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": { "name": "Dipcoin", "type": "perps" },
+    "0x5415784bf0d7bbcbffadf8e3b62090aba53706808378e9340013fdda81ed0140": { "name": "Lotus Finance", "type": "yield" },
+    "0xd631cd66138909636fc3f73ed75820d0c5b76332d1644608ed1c85ea2b8219b4": { "name": "AlphaLend", "type": "lending" },
+
+    "0x4a35d3dfef55ed3631b7158544c6322a23bc434fe4fca1234cb680ce0505f82d": { "name": "Magma", "type": "dex" },
+    "0xcd23d8f0a6e8b67d25499a722a4c989c6d01b97dee10f8c354bfbd42a6b3ebd9": { "name": "Magma", "type": "dex" },
+
+    "0x2ba57e9bd6f4a86ef3861f8317cae4c54c40a45027b5f161dda79f4e5c1e023a": { "name": "Yoso", "type": "prediction_market" },
+    "0x501f9137023532a285b9ddc971467f26b8d1f72faf2a6016999a88b78a6905f7": { "name": "Yoso", "type": "stablecoin" },
+    "0xccb197b4f19c0052c2b9ecad6d408713f127b7e03a4d06eed421263772b0d39d": { "name": "Yoso", "type": "oracle" },
+
+    "0x7b502c8a7bcb3915892347f11086745570e759fe9708d03c03accf4c90bbf580": { "name": "Pyth Lazer", "type": "oracle" },
+    "0xbc96aa8e79e0831131f00e7d9568fb40f283e6b96c2516dd99aa26b67459b60a": { "name": "Stork", "type": "oracle" },
+
+    "0xa6d2695f4c006319e80bae63dc6ddce47c1c164db13101f59fe70aa7f57651b5": { "name": "Rip Station", "type": "nft" }
   }
 }

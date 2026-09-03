@@ -23,7 +23,8 @@
     "find-unknown-packages": "node scripts/find-unknown-packages.mjs",
     "set-version": "node scripts/set-version.mjs",
     "verify:published": "node scripts/verify-published.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "sync:protocol-roots": "node scripts/sync-protocol-roots.mjs"
   },
   "keywords": [
     "sui",

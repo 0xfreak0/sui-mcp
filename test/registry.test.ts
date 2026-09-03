@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { lookupProtocol, lookupOperation } from "../src/protocols/registry.js";
+import {
+  isCuratedProtocol,
+  loadProtocolRegistry,
+  lookupOperation,
+  lookupProtocol,
+} from "../src/protocols/registry.js";
 
 describe("lookupProtocol", () => {
   it("resolves Cetus by full package ID", () => {
@@ -83,5 +88,43 @@ describe("lookupOperation", () => {
 
   it("returns null for unknown module/function", () => {
     expect(lookupOperation("unknown_module", "unknown_fn")).toBeNull();
+  });
+});
+
+/**
+ * Curated entries are written the way a human types them (`0x2`), but the
+ * chain reports every package ID padded to 32 bytes. Nothing here prefetches,
+ * so these must be answered by the exact-match tier alone — the lineage tier
+ * reads only what a prefetch has cached, and relying on it would make system
+ * packages identifiable only after a network round trip.
+ */
+describe("registry key normalization", () => {
+  const pad = (short: string) => `0x${short.slice(2).padStart(64, "0")}`;
+
+  it("resolves a short curated ID given in the padded form the chain reports", () => {
+    expect(lookupProtocol(pad("0x2"))).toEqual({ name: "Sui Framework", type: "system" });
+    expect(lookupProtocol(pad("0x3"))).toEqual({ name: "Sui System", type: "system" });
+    expect(lookupProtocol(pad("0xdee9"))?.name).toBe("DeepBook");
+  });
+
+  it("counts a padded curated ID as curated", () => {
+    // prefetchProtocolNames filters on this, so a false answer also costs a
+    // pointless lineage and MVR round trip for a package we already know.
+    expect(isCuratedProtocol(pad("0x2"))).toBe(true);
+    expect(isCuratedProtocol("0x2")).toBe(true);
+  });
+
+  it("reports every registry key in normalized form", () => {
+    const keys = Object.keys(loadProtocolRegistry());
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.every((k) => k.length === 66 && k.startsWith("0x"))).toBe(true);
+  });
+
+  it("returns null for a string that is not an address, rather than throwing", () => {
+    // Called mid-decode on IDs from chain data and tool arguments; one bad
+    // string must not abort the loop.
+    expect(() => lookupProtocol("not-an-address")).not.toThrow();
+    expect(lookupProtocol("not-an-address")).toBeNull();
+    expect(isCuratedProtocol("not-an-address")).toBe(false);
   });
 });

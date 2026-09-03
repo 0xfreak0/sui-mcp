@@ -7,6 +7,7 @@ import {
   isSinkCategory,
   removeSessionLabel,
 } from "../src/utils/labels.js";
+import { runWithNetwork } from "../src/config.js";
 
 const ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -79,5 +80,71 @@ describe("session labels", () => {
     // Zero address still present from static.
     expect(all.some((l) => l.category === "burn")).toBe(true);
     removeSessionLabel(addr);
+  });
+});
+
+describe("chain-qualified labels", () => {
+  const SUI_ADDR = "0x00000000000000000000000000000000000000000000000000000000000000ff";
+  const EVM_ADDR = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+
+  beforeEach(() => {
+    removeSessionLabel(SUI_ADDR);
+    removeSessionLabel(`eip155:1:${EVM_ADDR}`);
+    runWithNetwork("testnet", () => removeSessionLabel(SUI_ADDR));
+  });
+
+  it("keeps a label on one chain from applying on another", () => {
+    // The whole point of Stage 0: a bridge on Ethereum must not silently
+    // terminate a Sui trace because the hex strings coincide.
+    addSessionLabel(`eip155:1:${EVM_ADDR}`, { label: "Wormhole ETH", category: "bridge" });
+
+    expect(getLabel(`eip155:1:${EVM_ADDR}`)?.label).toBe("Wormhole ETH");
+    // Same string, read as a Sui address: a different account entirely.
+    expect(getLabel(EVM_ADDR)).toBeNull();
+  });
+
+  it("scopes a session label to the network it was added on", () => {
+    addSessionLabel(SUI_ADDR, { label: "Attacker (mainnet)", category: "malicious" });
+    expect(getLabel(SUI_ADDR)?.label).toBe("Attacker (mainnet)");
+    runWithNetwork("testnet", () => {
+      expect(getLabel(SUI_ADDR)).toBeNull();
+    });
+  });
+
+  it("still applies curated labels on every Sui network", () => {
+    // Curated entries are knowledge about entities, not about one network.
+    // Scoping them per-network would strip attribution from testnet work that
+    // has it today.
+    runWithNetwork("testnet", () => {
+      expect(getLabel(ZERO)?.category).toBe("burn");
+      expect(isSink(ZERO)).toBe(true);
+    });
+  });
+
+  it("does not leak a curated Sui label onto a non-Sui chain", () => {
+    expect(getLabel(`eip155:1:${EVM_ADDR}`)).toBeNull();
+  });
+
+  it("returns null instead of throwing on an unparseable reference", () => {
+    // Called mid-trace on addresses that came off-chain; one malformed
+    // counterparty must not abort an investigation.
+    expect(getLabel("not-an-address!")).toBeNull();
+    expect(isSink("not-an-address!")).toBe(false);
+    expect(getLabel("eip155:1:0xtooshort")).toBeNull();
+  });
+
+  it("reports the account and chain for each label", () => {
+    addSessionLabel(SUI_ADDR, { label: "Subject", category: "other" });
+    const entry = allLabels().find((l) => l.address === SUI_ADDR);
+    expect(entry?.account).toBe(`sui:mainnet:${SUI_ADDR}`);
+    expect(entry?.chain).toBe("sui:mainnet");
+  });
+
+  it("rejects an address that is invalid on the chain it names", () => {
+    // addSessionLabel throws where getLabel returns null: this is a caller
+    // asserting an identity, and a mangled key would never match anything.
+    expect(() =>
+      addSessionLabel("eip155:1:0xdeadbeef", { label: "X", category: "cex" }),
+    ).toThrow(/20-byte/);
   });
 });

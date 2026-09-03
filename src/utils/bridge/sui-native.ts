@@ -60,6 +60,54 @@ export function suiBridgeChainLabel(id: number): string {
   return BRIDGE_CHAIN_NAMES[id] ?? `Sui-bridge chain ${id}`;
 }
 
+/**
+ * An inbound claim: value ARRIVING on Sui.
+ *
+ * Deliberately a separate type from {@link NativeBridgeTransfer}. The two carry
+ * the same shape of identity but point in opposite directions, and a single
+ * type would make it easy to render an entry as an exit — which sends an
+ * investigator to the wrong chain.
+ */
+export interface NativeBridgeClaim {
+  /** `sourceChain/seqNum` — the same identity the origin chain emitted. */
+  transferId: string;
+  seqNum: string;
+  sourceChain: number;
+  sourceChainLabel: string;
+  /** CAIP-2 for the origin, when the chain is mapped and we are on mainnet. */
+  sourceChainId: string | null;
+  messageType: number | null;
+}
+
+/**
+ * Parse a `TokenTransferClaimed` payload.
+ *
+ * The claim quotes back the origin chain's `(source_chain, seq_num)`, so an
+ * inbound transfer is resolvable to its origin from Sui alone — the mirror of
+ * what {@link parseDepositEvent} does outbound.
+ */
+export function parseClaimEvent(json: unknown, qualify: boolean): NativeBridgeClaim | null {
+  if (!json || typeof json !== "object") return null;
+  const key = (json as Record<string, unknown>).message_key;
+  if (!key || typeof key !== "object") return null;
+  const f = key as Record<string, unknown>;
+
+  const sourceChain = asNum(f.source_chain);
+  const seqNum =
+    f.bridge_seq_num === undefined || f.bridge_seq_num === null ? null : String(f.bridge_seq_num);
+  if (sourceChain === null || seqNum === null) return null;
+
+  const caip2 = BRIDGE_CHAIN_TO_CAIP2[sourceChain];
+  return {
+    transferId: `${sourceChain}/${seqNum}`,
+    seqNum,
+    sourceChain,
+    sourceChainLabel: suiBridgeChainLabel(sourceChain),
+    sourceChainId: qualify && caip2 ? caip2 : null,
+    messageType: asNum(f.message_type),
+  };
+}
+
 export interface NativeBridgeTransfer {
   /** `sourceChain/seqNum` — the bridge's transfer identity. */
   transferId: string;

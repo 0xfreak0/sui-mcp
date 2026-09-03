@@ -111,3 +111,34 @@ describe("Sui native bridge detection", () => {
     expect(detectBridges([], ["0x0b::bridge::TokenTransferClaimed"])).toEqual([]);
   });
 });
+
+describe("Mayan MCTP", () => {
+  it("names the service alongside the bridge legs it routes over", () => {
+    // Captured from mainnet 7g4nQFx…JWPX, which settles through Wormhole and
+    // CCTP in one PTB. All three belong in the answer: the legs are what to
+    // follow, the service is who initiated it.
+    const hits = detectBridges([
+      { packageId: "0xc6c1c127", module: "calculate_mctp_fee", function: "prepare_calc_mctp_fee" },
+      { packageId: "0xb5bd3599", module: "init_order", function: "log_initialize_mctp" },
+      { packageId: "0x2aa6c5d5", module: "deposit_for_burn", function: "deposit_for_burn_with_caller_with_package_auth" },
+      { packageId: "0x5306f64e", module: "publish_message", function: "publish_message" },
+    ]);
+    expect(hits.map((h) => h.protocol).sort()).toEqual([
+      "Circle CCTP",
+      "Mayan MCTP",
+      "Wormhole",
+    ]);
+    expect(hits.find((h) => h.protocol === "Mayan MCTP")?.resolution).toBe("detect-only");
+  });
+
+  it("does not fire on a DEX order book", () => {
+    // The reason the markers carry "mctp" rather than the generic `init_order`
+    // module: order events are among the most frequent on mainnet.
+    expect(
+      detectBridges(
+        [{ packageId: "0xdex", module: "init_order", function: "initialize_order" }],
+        ["0xdex::order::OrderCanceled", "0xdex::order_info::OrderPlaced"],
+      ),
+    ).toEqual([]);
+  });
+});

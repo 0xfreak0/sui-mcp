@@ -70,6 +70,23 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     note: "Run resolve_bridge_transfer on this transaction. Sui's native bridge puts the destination chain and address in the event itself, so the far side is read from chain data rather than an indexer.",
   },
   {
+    id: "mayan-mctp",
+    name: "Mayan MCTP",
+    // Markers deliberately carry "mctp" rather than the generic `init_order`
+    // module, which would collide with DEX order books — `order::OrderCanceled`
+    // and friends are among the highest-frequency events on mainnet.
+    //
+    // Attribution basis: the on-chain module naming (calculate_mctp_fee,
+    // log_initialize_mctp), where MCTP is Mayan's cross-chain transfer
+    // protocol. MVR has no registration for these packages, so the name is not
+    // independently confirmed by a registry — which is why this is a display
+    // name on a detect-only entry and gates no behaviour.
+    callMarkers: ["calculate_mctp_fee::", "init_order::log_initialize_mctp"],
+    eventMarkers: ["init_order::InitMctpLogged"],
+    resolution: "detect-only",
+    note: "Mayan is a cross-chain swap layer that routes over other bridges — observed on mainnet settling through Wormhole and Circle CCTP in the same transaction. Those legs are reported separately and are what to follow; this entry names the service that initiated the transfer, which its own order id can be looked up against.",
+  },
+  {
     id: "cctp",
     name: "Circle CCTP",
     callMarkers: ["deposit_for_burn::deposit_for_burn"],

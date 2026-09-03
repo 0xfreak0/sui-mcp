@@ -247,6 +247,14 @@ its own identity scheme and its own index — so each resolver is bespoke.
 followable, `detect-only` means we can name it and no more. Never point a
 caller at a resolver that cannot help them; `resolvableHit()` is the guard.
 
+Markers must be **distinctive**, not merely present. `init_order` looked like a
+good Mayan marker and would have collided with DEX order books, which emit some
+of the highest-frequency events on mainnet; the markers carry `mctp` instead.
+Sample before adding — `node scripts/find-unknown-packages.mjs` ranks by call
+count, but note that bridge traffic is low-frequency relative to DEX and oracle
+activity, so volume sampling will *not* surface bridges. Probe candidate event
+types by name instead.
+
 There is deliberately **no heuristic tier**. Guessing that an unknown package
 looks bridge-shaped would manufacture exactly the unverifiable attribution this
 project refuses to ship.

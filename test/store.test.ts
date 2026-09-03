@@ -564,3 +564,32 @@ describe.skipIf(!hasSqlite)("legacy store migration", () => {
     expect(loadFindings("legacy-case")[0].addresses).toEqual(firstFindings[0].addresses);
   });
 });
+
+describe.skipIf(!hasSqlite)("migration failure handling", () => {
+  it("rolls back rather than leaving labels stranded in a renamed table", () => {
+    // A legacy table missing a column the migration selects. The point is not
+    // this specific shape but the guarantee: if the migration cannot complete,
+    // the rows it was moving must still be there afterwards. A store that is
+    // switched off but intact is recoverable; one that silently lost
+    // hand-built attribution is not.
+    const path = join(dir, "broken.db");
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as any;
+    const legacy = new DatabaseSync(path);
+    legacy.exec(
+      `CREATE TABLE labels (address TEXT PRIMARY KEY, label TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+    );
+    legacy.prepare(`INSERT INTO labels VALUES (?, ?, ?)`).run("0xkeep", "Mine", 1);
+    legacy.close();
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    expect(() => initStore()).not.toThrow();
+    expect(storeStatus().enabled).toBe(false);
+
+    // Reopen raw and confirm the row survived under its original table name.
+    const check = new DatabaseSync(path);
+    const rows = check.prepare(`SELECT address, label FROM labels`).all();
+    check.close();
+    expect(rows).toEqual([{ address: "0xkeep", label: "Mine" }]);
+  });
+});

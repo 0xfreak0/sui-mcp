@@ -66,3 +66,49 @@ describe("manage_labels", () => {
     expect(data.error).toMatch(/required/i);
   });
 });
+
+describe("manage_labels export/import round-trip", () => {
+  const EVM = "eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+  const PHANTOM_SUI =
+    "sui:mainnet:0x0000000000000000000000005aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+
+  beforeEach(() => {
+    removeSessionLabel(EVM);
+    removeSessionLabel(PHANTOM_SUI);
+  });
+
+  it("exports a chain-qualified account, not a bare address", async () => {
+    await call({ action: "add", address: EVM, label: "Wormhole ETH", category: "bridge" });
+    const data = await call({ action: "export" });
+    const row = data.labels.find((l: { label: string }) => l.label === "Wormhole ETH");
+    expect(row.address).toBe(EVM);
+  });
+
+  it("round-trips a cross-chain label without re-filing it on Sui", async () => {
+    // Exporting a bare address and re-importing it resolved against the
+    // CURRENT network, which minted a phantom Sui account by zero-padding a
+    // 20-byte EVM address. Because `bridge` is a sink category, that phantom
+    // would silently terminate future Sui traces at an address belonging to
+    // nobody.
+    await call({ action: "add", address: EVM, label: "Wormhole ETH", category: "bridge" });
+    const exported = await call({ action: "export" });
+
+    await call({ action: "import", labels: exported.labels });
+
+    const after = await call({ action: "export" });
+    const accounts = after.labels
+      .filter((l: { label: string }) => l.label === "Wormhole ETH")
+      .map((l: { address: string }) => l.address);
+    expect(accounts).toEqual([EVM]);
+    expect(accounts).not.toContain(PHANTOM_SUI);
+  });
+
+  it("still accepts a bare address on import, for hand-written files", async () => {
+    await call({
+      action: "import",
+      labels: [{ address: ADDR, label: "Hand written", category: "cex" }],
+    });
+    const found = await call({ action: "lookup", address: ADDR });
+    expect(found.label.label).toBe("Hand written");
+  });
+});

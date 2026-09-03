@@ -191,19 +191,34 @@ function migrateLabelsToAccounts(opened: DatabaseLike): void {
   // No labels table at all: nothing to carry forward.
   if (!columns.has("address")) return;
 
-  // `CREATE TABLE IF NOT EXISTS` will not reshape an existing table, so the
-  // old one is renamed out of the way and the canonical SCHEMA re-run.
-  opened.exec(`ALTER TABLE labels RENAME TO labels_legacy`);
-  opened.exec(SCHEMA);
-  // LEGACY_CHAIN is a module constant, not caller input; PRAGMA-free DDL/DML
-  // here still uses it by interpolation only because it is not a bound value.
-  opened.exec(
-    `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
-     SELECT '${LEGACY_CHAIN}:' || address, '${LEGACY_CHAIN}', address,
-            label, category, confidence, notes, updated_at
-     FROM labels_legacy`,
-  );
-  opened.exec(`DROP TABLE labels_legacy`);
+  // Atomic, because the rows being moved are the ones this migration exists
+  // to preserve. Without the transaction, a crash between the rename and the
+  // insert leaves an empty `labels` table beside an orphaned `labels_legacy`,
+  // and the next open — seeing an `account` column — would skip the migration
+  // and report the attribution as simply gone.
+  opened.exec(`BEGIN IMMEDIATE`);
+  try {
+    // `CREATE TABLE IF NOT EXISTS` will not reshape an existing table, so the
+    // old one is renamed out of the way and the canonical SCHEMA re-run.
+    opened.exec(`ALTER TABLE labels RENAME TO labels_legacy`);
+    opened.exec(SCHEMA);
+    // LEGACY_CHAIN is a module constant, not caller input; it is interpolated
+    // only because it is not a bound value.
+    opened.exec(
+      `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
+       SELECT '${LEGACY_CHAIN}:' || address, '${LEGACY_CHAIN}', address,
+              label, category, confidence, notes, updated_at
+       FROM labels_legacy`,
+    );
+    opened.exec(`DROP TABLE labels_legacy`);
+    opened.exec(`COMMIT`);
+  } catch (err) {
+    // Roll back to the legacy shape and let initStore disable the store with a
+    // reason. A store that still holds every label but is switched off is
+    // recoverable; one that silently lost them is not.
+    opened.exec(`ROLLBACK`);
+    throw err;
+  }
 }
 
 /**

@@ -112,6 +112,44 @@ tier 1; they never block. Lineage resolution batches 20 packages per GraphQL
 request — the service rejects 21+ store-backed queries in one request, and caps
 the payload at 5000 bytes.
 
+### Account identity
+
+Anything **stored or reported** carries a chain-qualified account id, not a
+bare address. `src/utils/chain-id.ts` owns this: CAIP-2 chains (`sui:mainnet`,
+`eip155:1`) and CAIP-10 accounts (`sui:mainnet:0x…`), with per-chain address
+normalization.
+
+Normalization is per-namespace and the differences are load-bearing — the Sui
+rule is *wrong* elsewhere. Left-padding a 20-byte EVM address to 32 bytes
+invents an address belonging to nobody, and lowercasing a Solana address
+destroys base58, which is case-significant. An unknown chain is rejected rather
+than passed through, so an unnormalized id never reaches storage where it would
+fail to match its own canonical form.
+
+Sui-scoped callers (traces, balances, fan-out) still pass bare `0x…` strings.
+The boundary resolves them with `currentSuiAccount()`, which qualifies against
+whichever network `runWithNetwork` selected for that call. So do not thread a
+chain parameter through tool handlers — qualify at the point of storage.
+
+Label scoping has one deliberate asymmetry:
+
+- **Session and override labels** are keyed on the exact CAIP-10 account. A
+  label added on one chain must not terminate a trace on another.
+- **Curated entries keyed by a bare address** (`src/data/labeled-addresses.json`)
+  apply across every *Sui* network — they are knowledge about an entity, not
+  about a network — but never match a non-Sui chain that shares the string. A
+  curated entry may name an explicit CAIP-10 key to scope itself to one chain.
+
+`getLabel` returns null on an unparseable reference instead of throwing; it runs
+inside trace loops over off-chain-sourced addresses, and one malformed
+counterparty must not abort an investigation. `addSessionLabel` *does* throw —
+that is a caller asserting an identity, and a mangled key would never match.
+
+Store migration is by column list, not a version stamp (see `store.ts`): labels
+are hand-built attribution and are migrated, never dropped. Pre-1.7.0 rows
+backfill to `sui:mainnet`, which is an assumption the code documents — there is
+no evidence in a legacy row to do better.
+
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)
@@ -120,3 +158,5 @@ the payload at 5000 bytes.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - Build copies `src/data/` to `dist/data/` — JSON files must exist in dist at runtime
+- Chain-qualify anything persisted or reported; bare addresses are Sui-only and
+  ambiguous the moment a second chain enters a case

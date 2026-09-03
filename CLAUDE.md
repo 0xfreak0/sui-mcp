@@ -150,6 +150,153 @@ are hand-built attribution and are migrated, never dropped. Pre-1.7.0 rows
 backfill to `sui:mainnet`, which is an assumption the code documents — there is
 no evidence in a legacy row to do better.
 
+### Cross-chain (bridge) resolution
+
+`bridge` is a sink category, so a fund trace stops at Wormhole — exactly where
+attribution becomes possible. `resolve_bridge_transfer`
+(`src/tools/bridge.ts`) is the seam that lets it continue.
+
+The join is an **identifier match, not a heuristic**. A Wormhole message is
+identified by `(emitterChain, emitterAddress, sequence)`; Sui emits it as a
+`publish_message::WormholeMessage` event whose `sender` is the emitter cap
+object ID, and the destination chain quotes the same triple back. Verified on
+mainnet: event `sender`/`sequence` equal Wormholescan's VAA id exactly.
+
+Every result carries an `EvidenceTier`, and the distinction must survive into
+any report:
+
+- `chain-derived` — the VAA identity, read from Sui. Trusts nobody.
+- `indexer-attested` — the destination transaction. Sui cannot know whether a
+  VAA was redeemed or where, so this necessarily comes from Wormholescan. It is
+  a strong lead to confirm on the destination chain, not something this server
+  verified.
+- `heuristic` — amount/time/asset matching. **Not produced.** Named so nothing
+  silently promotes a lead to a finding.
+
+Notes for extending it:
+
+- The event is matched by **type suffix**, not full type. The core bridge
+  package ID changes on upgrade, and pinning it would silently stop finding
+  messages — the same failure the registry's lineage tier avoids.
+- Wormhole chain numbers are their own namespace (Sui is 21), mapped to CAIP-2
+  in `src/utils/bridge/wormhole.ts`. The map is deliberately partial: an
+  unmapped chain is reported by number, never guessed, since a wrong chain id
+  files an address under the wrong chain.
+- That map is **mainnet-only** — Wormhole reuses its chain numbers across
+  environments, so off mainnet chain 2 is Sepolia, not Ethereum. The tool
+  withholds the CAIP-2 claim off mainnet and reports the Wormhole number alone.
+- Wormholescan runs a **separate index per environment** and has none for
+  devnet. Never fall back to the mainnet index: an empty result there reads as
+  "never redeemed" rather than "not indexed here".
+- The destination is looked up by source transaction first, then by the VAA
+  triple for anything still unresolved. The triple is read from chain data and
+  is what the guardians sign, so it is the more reliable key; the second
+  request is only spent when the first misses.
+- Wormholescan populates `targetChain` and `standarizedProperties`
+  independently — a real mainnet transfer had a complete `targetChain` beside
+  an all-zero `standarizedProperties`. Neither may be used to infer the other
+  is absent.
+- Event field JSON comes from **GraphQL**, not gRPC: the gRPC `Event` has no
+  parsed JSON. This is the documented exception to "point lookup by key uses
+  gRPC".
+- CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
+  be linked from chain data; that is a subpoena, not a query.
+### Chain-derived destinations: Sui native bridge and CCTP
+
+Two of the three resolvers need **no indexer for the destination** — the
+destination chain and recipient are in the events, so the far side is
+`chain-derived`. Wormhole cannot do this: a VAA names an emitter and a
+sequence, never a recipient, which is why its destination is
+`indexer-attested`. Prefer these when both are present in one transaction.
+
+Each has its own chain numbering, none of them CAIP-2:
+
+| Protocol | Identity | Numbering | Verified |
+|---|---|---|---|
+| Sui native (`0xb`) | `(source_chain, seq_num)` | 0 = Sui, 10 = Ethereum | tx `4xLuY6N6…` |
+| Circle CCTP | `(source_domain, nonce)` | Circle domains; 8 = Sui, 3 = Arbitrum | tx `4rDEyqGe…` |
+| Wormhole | `(emitterChain, emitter, sequence)` | Wormhole chain ids; 21 = Sui | tx `7g4nQFx…` |
+
+All three numberings are **reused across environments**, so a CAIP-2 claim
+derived from any of them is withheld off mainnet (`qualify`).
+
+CCTP specifics: `DepositForBurn` carries `destination_domain` and a 32-byte
+`mint_recipient`; the paired `send_message::MessageSent` carries the raw
+message whose header is `version(4) ‖ sourceDomain(4) ‖ destDomain(4) ‖
+nonce(8)` big-endian. Un-padding the recipient is only unambiguous once the
+destination is known — 12 zero bytes then 20 for EVM, all 32 for Sui, base58
+over 32 for Solana — and a value whose "padding" is not zero is refused rather
+than trimmed into an address that is not the recipient. The nonce is carried as
+a string because it is a u64.
+
+Circle's attestation API is deliberately **not** called: an attestation says
+Circle signed the message, not that anyone claimed it, so it would add a
+third-party dependency for weaker information than the events already give.
+
+### Sui's native bridge (`0xb`)
+
+The strongest cross-chain evidence in the server, and the only case needing no
+third party for the destination: the outbound `bridge::TokenDepositedEvent`
+carries `target_chain` and `target_address` as raw bytes, so the far side is
+**chain-derived**. Wormhole cannot do this — a VAA names an emitter and a
+sequence, not a recipient — which is why its destination is indexer-attested.
+
+`(source_chain, seq_num)` is the bridge's transfer id, quoted back by Ethereum
+on claim. Sui ↔ Ethereum only; `chain_ids` declares no other route.
+
+Two traps:
+
+- `TokenTransferClaimed` is **inbound** — value arriving on Sui. Reporting it as
+  an exit sends an investigator to the wrong chain. `CLAIM_EVENT_SUFFIX` exists
+  to keep it distinguishable.
+- Address fields are raw bytes (base64 over GraphQL). 20 bytes is EVM, 32 is
+  Sui; any other length is left undecoded rather than padded into something
+  address-shaped that belongs to nobody.
+
+Only bridge chain ids observed on mainnet (0 = Sui, 10 = Ethereum) map to
+CAIP-2. Testnet/custom variants are reported by number, same non-guessing rule
+as Wormhole.
+
+### Detecting a bridge exit vs. resolving one
+
+Keep these apart — conflating them is what makes "support every bridge" sound
+impossible.
+
+**Detection** (did value leave, through what?) generalizes cheaply and lives in
+`src/utils/bridge/detect.ts`. Two tiers:
+
+1. Curated `callMarkers` / `eventMarkers` per protocol, matched by
+   `module::function` *suffix and prefix* so they survive package upgrades and
+   name variants (mainnet CCTP calls
+   `deposit_for_burn_with_caller_with_package_auth`, not the bare name).
+2. Any package `lookupProtocol` types as `bridge`. This is free and automatic:
+   adding a bridge to `protocols.json` gives detection immediately, and via
+   lineage roots it keeps working after that bridge upgrades.
+
+**Resolution** (where did it land?) does *not* generalize — each protocol has
+its own identity scheme and its own index — so each resolver is bespoke.
+`BridgeProtocol.resolution` records which a protocol has: `identifier` means
+followable, `detect-only` means we can name it and no more. Never point a
+caller at a resolver that cannot help them; `resolvableHit()` is the guard.
+
+Markers must be **distinctive**, not merely present. `init_order` looked like a
+good Mayan marker and would have collided with DEX order books, which emit some
+of the highest-frequency events on mainnet; the markers carry `mctp` instead.
+Sample before adding — `node scripts/find-unknown-packages.mjs` ranks by call
+count, but note that bridge traffic is low-frequency relative to DEX and oracle
+activity, so volume sampling will *not* surface bridges. Probe candidate event
+types by name instead.
+
+There is deliberately **no heuristic tier**. Guessing that an unknown package
+looks bridge-shaped would manufacture exactly the unverifiable attribution this
+project refuses to ship.
+
+Detect from **Move calls, not sink labels.** A bridge burns or locks the coin
+and emits a message; it does not transfer value to a labelable recipient
+wallet, so `isSink` never fires on a real bridge exit and only one address
+label ships at all. `trace_funds` runs `detectBridges` over each hop's calls —
+data it already has, no extra query — and emits `bridge_exits`.
+
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)

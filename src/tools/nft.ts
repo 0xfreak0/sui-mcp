@@ -617,6 +617,40 @@ function buildResponse(address: string, state: ListNftsCursor, nfts: NftEntry[],
   const hasUntrusted = nfts.some(
     (n) => n.declared_urls.length || n.image_url_risk?.length || n.name || n.description,
   );
+
+  // Surfaced at the top rather than left to be discovered per-NFT. A reader
+  // scanning forty entries will not notice that three of them carry drainer
+  // infrastructure; a count and the hosts make it the first thing they see.
+  const flagged = new Map<string, Set<string>>();
+  let defangedCount = 0;
+  for (const n of nfts) {
+    for (const u of n.declared_urls) {
+      defangedCount++;
+      if (!u.risk_signals.length || !u.host) continue;
+      if (!flagged.has(u.host)) flagged.set(u.host, new Set());
+      for (const sig of u.risk_signals) flagged.get(u.host)!.add(sig);
+    }
+    if (n.image_url_risk?.length) {
+      defangedCount++;
+      const host = n.image_url ? (n.image_url.match(/:\/\/([^/?#]+)/)?.[1] ?? null) : null;
+      const key = host ? host.replace(/\[\.\]/g, ".") : "(unknown host)";
+      if (!flagged.has(key)) flagged.set(key, new Set());
+      for (const sig of n.image_url_risk) flagged.get(key)!.add(sig);
+    }
+  }
+  const security = defangedCount
+    ? {
+        defanged_urls: defangedCount,
+        ...(flagged.size
+          ? {
+              suspicious_hosts: [...flagged.entries()].map(([host, sigs]) => ({
+                host,
+                signals: [...sigs],
+              })),
+            }
+          : {}),
+      }
+    : null;
   return {
     content: [
       {
@@ -625,6 +659,7 @@ function buildResponse(address: string, state: ListNftsCursor, nfts: NftEntry[],
           {
             address,
             ...(hasUntrusted ? { untrusted_content: UNTRUSTED_NOTE } : {}),
+            ...(security ? { security_flags: security } : {}),
             nfts,
             page_size: nfts.length,
             kiosk_count: state.kiosks.length,

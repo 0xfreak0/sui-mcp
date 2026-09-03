@@ -100,9 +100,27 @@ jobs:
           echo "--- npm's view of auth ---"
           npm whoami || echo "(npm whoami failed — expected when only OIDC is available)"
 
+      # `--loglevel verbose` on purpose: npm is silent about whether it attempted
+      # the OIDC token exchange, and its absence is indistinguishable from its
+      # failure in the default output. A v1.7.0 attempt failed here with a
+      # registry-side 401 ("Failed to generate Web Auth URLs ... token is
+      # invalid") and no exchange logged at all, which is the registry trying to
+      # start an interactive 2FA flow because no usable credential arrived.
+      # Verbose logging shows the exchange request and its response, which is
+      # what distinguishes "npm never tried" from "npm tried and was refused".
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish --provenance
+        run: npm publish --provenance --loglevel verbose
+
+      # npm writes the full request/response trace to its debug log, which is
+      # discarded with the runner unless it is surfaced. Only runs on failure,
+      # so a normal release stays quiet.
+      - name: npm debug log (on failure)
+        if: ${{ failure() && !inputs.dry_run }}
+        run: |
+          echo "::group::npm debug log"
+          tail -n 200 "$(ls -t ~/.npm/_logs/*.log | head -1)" || echo "(no debug log found)"
+          echo "::endgroup::"
 
       # Pinned by version AND checksum. The upstream one-liner pipes
       # `releases/latest` straight into tar, which means an unreviewed binary

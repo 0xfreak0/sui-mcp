@@ -1,0 +1,266 @@
+{
+  "_generated": "npm run sync:protocol-roots — do not hand-edit; add entries to protocols.json",
+  "network": "mainnet",
+  "roots": {
+    "0x0625dc2cd40aee3998a1d6620de8892964c15066e0a285d8b573910ed4c75d50": {
+      "name": "Aftermath",
+      "type": "dex"
+    },
+    "0x3ec740df8428aa9c93aaef7f8cc1542ac3194fd014826b51bfe245346d64efc7": {
+      "name": "Aftermath",
+      "type": "perps"
+    },
+    "0x7f6ce7ade63857c4fd16ef7783fed2dfc4d7fb7e40615abdb653030b76aef0c6": {
+      "name": "Aftermath",
+      "type": "liquid_staking"
+    },
+    "0xa5428da682b4fad53e40f73dc07b547e33be078ec1c5d4a4378d6a316f0d9104": {
+      "name": "Aftermath",
+      "type": "oracle"
+    },
+    "0xbab1b714c5533a46ee27a9c124d6f9281ca54831fc288d4d0c133dae3a57254a": {
+      "name": "Aftermath",
+      "type": "perps"
+    },
+    "0xefe170ec0be4d762196bedecd7a065816576198a6527c99282a2551aaa7da38c": {
+      "name": "Aftermath",
+      "type": "dex"
+    },
+    "0xf325ce1300e8dac124071d3152c5c5ee6174914f8bc2161e88329cf579246efc": {
+      "name": "Aftermath",
+      "type": "liquid_staking"
+    },
+    "0x754afbce8c72c8e491e3b9d536aa9d9766fdbc68650224ce01072189b235eee3": {
+      "name": "AlphaFi",
+      "type": "yield"
+    },
+    "0xd631cd66138909636fc3f73ed75820d0c5b76332d1644608ed1c85ea2b8219b4": {
+      "name": "AlphaLend",
+      "type": "lending"
+    },
+    "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267": {
+      "name": "Bluefin",
+      "type": "dex"
+    },
+    "0xe74481697f432ddee8dd6f9bd13b9d0297a5b63d55f3db25c4d3b5d34dad85b7": {
+      "name": "Bluefin",
+      "type": "perps"
+    },
+    "0xf8870f988ab09be7c5820a856bd5e9da84fc7192e095a7a8829919293b00a36c": {
+      "name": "Bluefin",
+      "type": "perps"
+    },
+    "0x5d019c033bb8051fe9631cf910d0f4d077364d64ed4bb1940e98e6dc419a8d59": {
+      "name": "Bucket",
+      "type": "farm"
+    },
+    "0x665188033384920a5bb5dcfb2ef21f54b4568d08b431718b97e02e5c184b92cc": {
+      "name": "Bucket",
+      "type": "stablecoin"
+    },
+    "0x75b23bde4de9aca930d8c1f1780aa65ee777d8b33c3045b053a178b452222e82": {
+      "name": "Bucket",
+      "type": "farm"
+    },
+    "0x9f835c21d21f8ce519fec17d679cd38243ef2643ad879e7048ba77374be4036e": {
+      "name": "Bucket",
+      "type": "stablecoin"
+    },
+    "0xce7ff77a83ea0cb6fd39bd8748e2ec89a3f41e8efdc3f4eb123e0ca37b184db2": {
+      "name": "Bucket",
+      "type": "stablecoin"
+    },
+    "0xf145ee6d09aae034924f80672bc76db2415dfd1b1bed863ac289af9d94e2c4fc": {
+      "name": "Bucket",
+      "type": "oracle"
+    },
+    "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb": {
+      "name": "Cetus",
+      "type": "dex"
+    },
+    "0x33ec64e9bb369bf045ddc198c81adbf2acab424da37465d95296ee02045d2b17": {
+      "name": "Cetus",
+      "type": "dex"
+    },
+    "0x996c4d9480708fb8b92aa7acf819fb0497b5ec8e65ba06601cae2fb6db3312c3": {
+      "name": "Cetus",
+      "type": "dex"
+    },
+    "0xb1e11ceaf3e7cd3031ef5e24804478ec3441c5aecdace910bdaca317a0c1c535": {
+      "name": "Cetus",
+      "type": "dex"
+    },
+    "0x000000000000000000000000000000000000000000000000000000000000dee9": {
+      "name": "DeepBook",
+      "type": "dex"
+    },
+    "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05": {
+      "name": "DeepBook",
+      "type": "dex"
+    },
+    "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809": {
+      "name": "DeepBook",
+      "type": "dex"
+    },
+    "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": {
+      "name": "Dipcoin",
+      "type": "perps"
+    },
+    "0xc83d5406fd355f34d3ce87b35ab2c0b099af9d309ba96c17e40309502a49976f": {
+      "name": "Ember",
+      "type": "yield"
+    },
+    "0x25929e7f29e0a30eb4e692952ba1b5b65a3a4d65ab5f2a32e1ba3edcb587f26d": {
+      "name": "FlowX",
+      "type": "dex"
+    },
+    "0xba153169476e8c3114962261d1edc70de5ad9781b83cc617ecc8c1923191cae0": {
+      "name": "FlowX",
+      "type": "dex"
+    },
+    "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d": {
+      "name": "Haedal",
+      "type": "liquid_staking"
+    },
+    "0x01c389a85310b47e7630a9361d4e71025bc35e4999d3a645949b1b68b26f2273": {
+      "name": "Kai Finance",
+      "type": "yield"
+    },
+    "0x51e0ccce48f0763f98f1cb4856847c2e1531adacada99cdd7626ab999db57523": {
+      "name": "Kai Finance",
+      "type": "yield"
+    },
+    "0xa0eba10b173538c8fecca1dff298e488402cc9ff374f8a12ca7758eebe830b66": {
+      "name": "Kriya",
+      "type": "dex"
+    },
+    "0x5415784bf0d7bbcbffadf8e3b62090aba53706808378e9340013fdda81ed0140": {
+      "name": "Lotus Finance",
+      "type": "yield"
+    },
+    "0x4a35d3dfef55ed3631b7158544c6322a23bc434fe4fca1234cb680ce0505f82d": {
+      "name": "Magma",
+      "type": "dex"
+    },
+    "0xcd23d8f0a6e8b67d25499a722a4c989c6d01b97dee10f8c354bfbd42a6b3ebd9": {
+      "name": "Magma",
+      "type": "dex"
+    },
+    "0x4bf061b312428370109d4f423a85b94383a4c6d933212fd0ad1ea5fdcf396a3a": {
+      "name": "Mole",
+      "type": "yield"
+    },
+    "0x5ffa69ee4ee14d899dcc750df92de12bad4bacf81efa1ae12ee76406804dda7f": {
+      "name": "Mole",
+      "type": "yield"
+    },
+    "0x9ec6f17e19c5e64c8872779a635235497fd6c71f7b5c23b07f652b02a240c84a": {
+      "name": "Mole",
+      "type": "yield"
+    },
+    "0x70285592c97965e811e0c6f98dccc3a9c2b4ad854b3594faab9597ada267b860": {
+      "name": "Momentum",
+      "type": "dex"
+    },
+    "0xca441b44943c16be0e6e23c5a955bb971537ea3289ae8016fbf33fffe1fd210f": {
+      "name": "NAVI",
+      "type": "oracle"
+    },
+    "0xd899cf7d2b5db716bd2cf55599fb0d5ee38a3061e7b6bb6eebf73fa5bc4c81ca": {
+      "name": "NAVI",
+      "type": "lending"
+    },
+    "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0": {
+      "name": "Pyth",
+      "type": "oracle"
+    },
+    "0x8d97f1cd6ac663735be08d1d2b6d02a159e711586461306ce60a2b7a6a565a9e": {
+      "name": "Pyth",
+      "type": "oracle"
+    },
+    "0x7b502c8a7bcb3915892347f11086745570e759fe9708d03c03accf4c90bbf580": {
+      "name": "Pyth Lazer",
+      "type": "oracle"
+    },
+    "0xa6d2695f4c006319e80bae63dc6ddce47c1c164db13101f59fe70aa7f57651b5": {
+      "name": "Rip Station",
+      "type": "nft"
+    },
+    "0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf": {
+      "name": "Scallop",
+      "type": "lending"
+    },
+    "0xb0575765166030556a6eafd3b1b970eba8183ff748860680245b9edd41c716e7": {
+      "name": "SpringSui",
+      "type": "liquid_staking"
+    },
+    "0xbc96aa8e79e0831131f00e7d9568fb40f283e6b96c2516dd99aa26b67459b60a": {
+      "name": "Stork",
+      "type": "oracle"
+    },
+    "0x0000000000000000000000000000000000000000000000000000000000000002": {
+      "name": "Sui Framework",
+      "type": "system"
+    },
+    "0x0000000000000000000000000000000000000000000000000000000000000003": {
+      "name": "Sui System",
+      "type": "system"
+    },
+    "0xf95b06141ed4a174f239417323bde3f209b972f5930d8521ea38a52aff3a6ddf": {
+      "name": "Suilend",
+      "type": "lending"
+    },
+    "0x863d5f9760f302495398c8e4c6e9784bc17c44b079c826a1813715ef08cbe41a": {
+      "name": "SuiNS",
+      "type": "name_service"
+    },
+    "0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0": {
+      "name": "SuiNS",
+      "type": "name_service"
+    },
+    "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1": {
+      "name": "Turbos",
+      "type": "dex"
+    },
+    "0x4b0f4ee1a40ce37ec81c987cc4e76a665419e74b863319492fc7d26f708b835a": {
+      "name": "Typus",
+      "type": "options"
+    },
+    "0xcd86f77503a755c48fe6c87e1b8e9a137ec0c1bf37aac8878b6083262b27fefa": {
+      "name": "Volo",
+      "type": "liquid_staking"
+    },
+    "0xd843c37d213ea683ec3519abe4646fd618f52d7fce1c4e9875a4144d53e21ebc": {
+      "name": "Walrus",
+      "type": "storage"
+    },
+    "0xfdc88f7d7cf30afab2f82e8380d11ee8f70efb90e863d1de8616fae1bb09ea77": {
+      "name": "Walrus",
+      "type": "storage"
+    },
+    "0x44dad8a2899167fe2806c2c298366c0824180fc382aa66cb8bd034b2e9aef96f": {
+      "name": "WaterX",
+      "type": "perps"
+    },
+    "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e": {
+      "name": "WaterX",
+      "type": "oracle"
+    },
+    "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4": {
+      "name": "Wormhole",
+      "type": "bridge"
+    },
+    "0x2ba57e9bd6f4a86ef3861f8317cae4c54c40a45027b5f161dda79f4e5c1e023a": {
+      "name": "Yoso",
+      "type": "prediction_market"
+    },
+    "0x501f9137023532a285b9ddc971467f26b8d1f72faf2a6016999a88b78a6905f7": {
+      "name": "Yoso",
+      "type": "stablecoin"
+    },
+    "0xccb197b4f19c0052c2b9ecad6d408713f127b7e03a4d06eed421263772b0d39d": {
+      "name": "Yoso",
+      "type": "oracle"
+    }
+  }
+}

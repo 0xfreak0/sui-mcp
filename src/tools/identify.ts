@@ -260,6 +260,15 @@ export function registerIdentifyTools(server: McpServer) {
             address,
             type: "wallet",
             sui_name: nameRes,
+            // Stated at the point of use, not just in the tool description: a
+            // name is the strongest pull toward off-chain identity this server
+            // emits, and it is the least verified thing in the response.
+            ...(nameRes
+              ? {
+                  sui_name_caveat:
+                    "Self-chosen, purchasable handle — not identity and not verified. Anyone may register a name resembling an exchange, project or person. Corroborate before treating it as attribution.",
+                }
+              : {}),
             sui_balance: suiBalance,
             token_count: nonZeroTokens,
             hint: "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",

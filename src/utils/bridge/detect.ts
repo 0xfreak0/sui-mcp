@@ -91,8 +91,8 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     name: "Circle CCTP",
     callMarkers: ["deposit_for_burn::deposit_for_burn"],
     eventMarkers: ["deposit_for_burn::DepositForBurn", "send_message::MessageSent"],
-    resolution: "detect-only",
-    note: "CCTP is identified by a Circle nonce and message hash rather than a Wormhole VAA, and its attestation is served by Circle. Not resolvable here yet — follow it manually on the destination chain.",
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. CCTP puts the destination domain and recipient in the burn event, so the far side is read from chain data rather than an indexer.",
   },
 ];
 

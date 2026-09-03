@@ -201,6 +201,38 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
+### Chain-derived destinations: Sui native bridge and CCTP
+
+Two of the three resolvers need **no indexer for the destination** — the
+destination chain and recipient are in the events, so the far side is
+`chain-derived`. Wormhole cannot do this: a VAA names an emitter and a
+sequence, never a recipient, which is why its destination is
+`indexer-attested`. Prefer these when both are present in one transaction.
+
+Each has its own chain numbering, none of them CAIP-2:
+
+| Protocol | Identity | Numbering | Verified |
+|---|---|---|---|
+| Sui native (`0xb`) | `(source_chain, seq_num)` | 0 = Sui, 10 = Ethereum | tx `4xLuY6N6…` |
+| Circle CCTP | `(source_domain, nonce)` | Circle domains; 8 = Sui, 3 = Arbitrum | tx `4rDEyqGe…` |
+| Wormhole | `(emitterChain, emitter, sequence)` | Wormhole chain ids; 21 = Sui | tx `7g4nQFx…` |
+
+All three numberings are **reused across environments**, so a CAIP-2 claim
+derived from any of them is withheld off mainnet (`qualify`).
+
+CCTP specifics: `DepositForBurn` carries `destination_domain` and a 32-byte
+`mint_recipient`; the paired `send_message::MessageSent` carries the raw
+message whose header is `version(4) ‖ sourceDomain(4) ‖ destDomain(4) ‖
+nonce(8)` big-endian. Un-padding the recipient is only unambiguous once the
+destination is known — 12 zero bytes then 20 for EVM, all 32 for Sui, base58
+over 32 for Solana — and a value whose "padding" is not zero is refused rather
+than trimmed into an address that is not the recipient. The nonce is carried as
+a string because it is a u64.
+
+Circle's attestation API is deliberately **not** called: an attestation says
+Circle signed the message, not that anyone claimed it, so it would add a
+third-party dependency for weaker information than the events already give.
+
 ### Sui's native bridge (`0xb`)
 
 The strongest cross-chain evidence in the server, and the only case needing no

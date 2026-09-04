@@ -1,5 +1,78 @@
 # Changelog
 
+## 1.10.0 (2026-09-04)
+
+A minor rather than a patch release: alongside the fixes there is new
+capability — historical SuiNS name recovery, address classification in every
+investigation flow — and shipping that under a patch bump would leave it
+unread.
+
+The fixes came from running 1.9.0 against real transactions rather than reading
+its output. Three things looked right and were not.
+
+### Fixed
+- **`get_transaction` returned event types with no values.** The gRPC `Event`
+  carries `eventType`, `module` and BCS but no decoded JSON, so the tool could
+  report that an `order_info::OrderPlaced` fired and not what was ordered.
+  Decoded fields now come from GraphQL — the same exception the bridge resolvers
+  already rely on — joined by position and guarded on length, because attaching
+  fields from a mismatched list would file one event's values under another's
+  type.
+
+  Worth knowing if you ever query this by hand: the GraphQL `Event` has neither
+  `type` nor `json` at its top level. Both sit under `contents`. That is three
+  different shapes for one concept across gRPC, GraphQL and this server's
+  output.
+
+- **Protocols ignored the events entirely.** A transaction calling an obfuscated
+  wrapper (`h86261::h8b64d`) and emitting twelve DeepBook events reported
+  `protocols: []`, while the registry — asked directly about the event's own
+  package — resolves it to DeepBook by upgrade lineage. Nobody asked it.
+
+  That ran the wrong way round for investigation work: hashed module names are
+  what a bot or a laundering route looks like, so the transactions most worth
+  naming were the ones going unnamed. An event type is also harder to fake, since
+  a wrapper picks its own name but carries the type of whoever defined the event.
+  Protocols are now the union of both sources, and `protocols_from_events_only`
+  reports the discrepancy rather than merging it away quietly.
+
+- **Historical SuiNS names were lost.** Reverse lookup answers a narrower
+  question than it appears to — what is the *current default* name — and returns
+  nothing once a name lapses, so a wallet's former aliases vanished from an
+  investigation. The `SuinsRegistration` object outlives expiry, so held
+  registrations are now read directly and expired ones flagged. On one wallet
+  reverse lookup gave a single name while the registrations gave ten, six of
+  them expired. An expired name is still attribution: the address was known by
+  it at the time of the activity being investigated.
+
+- **Quoted numbers failed the whole call.** A model composing JSON will sometimes
+  send `max_hops: "8"`, and strict validation rejected it for something whose
+  intent was never ambiguous. Every numeric and boolean argument now accepts its
+  string form. The advertised JSON schema is byte-identical, so no client sees a
+  looser contract, and `"abc"` is still rejected. Booleans deliberately do not
+  use `z.coerce.boolean()`, which applies JavaScript truthiness and would turn
+  `"false"` into `true`.
+
+### Added
+- **What an address is**, in every investigation flow. A hop that is a package or
+  a shared object is not "someone the funds went to", and nothing in a trace said
+  so. `trace_funds`, both funding tools and `build_wallet_edges` now report the
+  kind, the protocol where a package is known, and the names an address holds.
+  Two batched calls for a whole result set. `identify_address` remains the
+  thorough single-address tool at roughly five requests each.
+
+- **`max_event_field_bytes`** on `get_transaction`, unset by default. Every event
+  comes back with its fields; bounding the payload is the caller's decision, and
+  when they make it the response says plainly that it is not the complete event
+  data.
+
+### Changed
+- Tool descriptions now say what they replace. Two of the fixes above exist
+  because GraphQL was hand-written for something a tool already did, so
+  `query_events` and `analyze_package` now name the shapes that trip people up,
+  and `get_balance` says what it does not count — staked SUI and DeFi positions
+  are invisible to it.
+
 ## 1.9.0 (2026-09-04)
 
 One new tool (60 → 61) and a round of correctness work on fund tracing.

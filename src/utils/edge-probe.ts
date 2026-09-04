@@ -560,20 +560,6 @@ export async function buildWalletEdges(
     profiles.set(seed, await profileSeed(seed, maxSeedScan, budget));
   }
 
-  // A seed that first-funded another seed. No base rate to argue with: the
-  // money that made one subject exist came straight from another subject.
-  for (const [seed, funder] of firstFunders) {
-    if (uniqueSeeds.includes(funder)) {
-      edges.add(
-        "funding_edge",
-        funder,
-        seed,
-        `${funder.slice(0, 10)}… sent the first funding that made ${seed.slice(0, 10)}… exist`,
-        [funderDigest.get(seed)!],
-      );
-    }
-  }
-
   // Co-appearance, free: derived from pages already fetched for the seeds.
   for (const { coParties } of profiles.values()) {
     for (const { digest, parties } of coParties) {
@@ -784,6 +770,36 @@ export async function buildWalletEdges(
         "quiet since can read as narrow. Check `used_intermediaries`.",
     );
   }
+  // Who first-funded whom.
+  //
+  // Two cases, and only the second is new. A seed funding another seed needs no
+  // base rate to argue with: the money that made one subject exist came
+  // straight from another. A funder discovered on the walk needs the popularity
+  // filter first, but once it clears — 10 lifetime counterparties, say — it is
+  // the strongest single thing in the result, and it used to be discarded.
+  //
+  // It was only ever used as the `via` label on the `cofunded` edges between
+  // the addresses it funded, so the hub of a cluster was excluded from it. That
+  // made the answer depend on what the caller already knew: pass both addresses
+  // as seeds and the edge appeared, pass one and it did not, on identical chain
+  // data. Backwards for a tool whose job is finding the addresses you did not
+  // name.
+  for (const [funded, funder] of firstFunders) {
+    const isSeed = uniqueSeeds.includes(funder);
+    const isNarrow = funderMembers.has(funder);
+    if (!isSeed && !isNarrow) continue;
+    const digest = funderDigest.get(funded);
+    edges.add(
+      "funding_edge",
+      funder,
+      funded,
+      `${funder.slice(0, 10)}… sent the first funding that made ${funded.slice(0, 10)}… exist` +
+        (isSeed ? "" : ", and pays few enough addresses that this is not an exchange withdrawal"),
+      digest ? [digest] : [],
+    );
+    examined.add(funder);
+  }
+
   if (budget.truncated) {
     notes.push(
       "The query budget ran out before every lead was followed. Edges found are still valid; " +

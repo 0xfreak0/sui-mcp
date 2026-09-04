@@ -351,36 +351,45 @@ personal alt-wallets share one mechanism. Both settings are pinned in
 Nothing calls this automatically. A heuristic must not change where a
 chain-derived trace stops.
 
-### Activity hours, and why it usually says nothing
+### Activity hours, and what they actually detect
 
-`build_timeline` takes `activity_hours`, which buckets an address's activity by
-UTC hour and looks for a sleep gap. `src/utils/activity-hours.ts` is pure.
+`build_timeline` takes `activity_hours`; `src/utils/activity-hours.ts` is pure.
 
-Measured before building, and the numbers argue against believing it:
+**Circular statistics, not a quiet-window scan.** Hours are points on a circle,
+so this takes the count-weighted circular mean (the peak) and the resultant
+length R — 0 for evenly spread, 1 for one hour — which doubles as the
+confidence. A linear scan for the quietest run treats hour 23 and hour 0 as
+opposite ends and has no natural confidence measure. The approach, the local
+16:00 anchor and the deliberately wide region bands come from a production
+implementation of the same idea; the improvement here is weighting by real
+counts, where that version consumed a ranking with no counts and said so.
 
-- **11 of 14 sampled active senders did 500 transactions inside a single day.**
-  A burst has no daily rhythm, so the signal is simply unavailable for most
-  active wallets.
-- **Of the 3 spanning a week or more, 2 had a quiet-window share near 30%**
-  against 33% for a perfectly flat distribution. No rhythm there either.
-- **The estimate is unstable when thin.** Sampling down from a full history, the
-  quiet window matched the full-sample answer 52-60% of the time at 20-100
-  transactions, reaching 85% only at 200.
+**It is mostly a bot detector.** Measured on 20 sampled active senders:
 
-So it reports the histogram always and offers a UTC offset only when sample size
-(50+), span (7+ days) and depth (quiet share under 20%) all hold. The common
-answer is "flat, consistent with automation", which is a finding rather than a
-failure — an address with no human rhythm is telling you something.
+- 17 did 400 transactions inside a single day. No daily rhythm exists to read.
+- The 3 spanning a week or more all came back flat, R 0.03-0.06 over ~298 days.
+- So every wallet that could produce an answer produced "automated".
 
-Computed **per address, never merged**: two addresses sharing a quiet window is
-the corroborating observation, and merging destroys it. Opposite windows argue
-against common control, which is the rarer and more useful result.
+Two routes to that verdict, catching different populations:
 
-An offset is a longitude, not a country. UTC+2 covers Berlin, Cairo and
-Johannesburg, and the reading says so rather than leaving a reader to assume.
+- `always_on` — flat clock over a long span. R below 0.35.
+- rate — more than 200 transactions a day sustained. A burst has no rhythm to
+  read and would otherwise be dismissed as "not enough data" when it is the
+  clearest automation signal available.
 
-Not wired into clustering. It would need to separate real pairs from a control
-group first, and on these numbers it probably cannot.
+**Volume is not the constraint, span is.** Sub-sampling full histories, the
+always-on verdict agreed with the full-sample answer 100% of the time at 30-100
+transactions, with mean |ΔR| of 0.075 at N=50. Fifty transactions is plenty;
+finding a wallet whose activity spans a week is the hard part.
+
+A region is not a city, and the same pattern is produced by two people who
+merely share a timezone or a working day. The reading says both.
+
+Computed per address, never merged: two addresses sharing a peak is the
+corroborating observation, and merging destroys it.
+
+Not wired into clustering. That would need it to separate real pairs from a
+control group first.
 
 ### First-funder cache
 

@@ -1,85 +1,109 @@
 /**
  * When an address is active, by hour of day.
  *
- * A human operator sleeps, and the gap shows up as a run of quiet hours whose
- * position implies a longitude. That is the theory. The measurement on Sui is
- * far less encouraging, and the shape of this module is built around it:
+ * Hours are points on a circle, so this uses circular statistics rather than
+ * scanning for a quiet run: the **circular mean** of activity gives a peak hour,
+ * and the **resultant length R** — 0 for activity spread evenly around the
+ * clock, 1 for everything in one hour — measures how concentrated it is. R is
+ * the confidence, and it falls out of the same computation as the peak.
  *
- * - **Most active wallets have no rhythm at all.** Of 14 sampled active
- *   senders, 11 did 500 transactions inside a single day. Bursts and bots have
- *   no circadian signal to read, and reporting one anyway would be invention.
- * - **Even long-lived wallets are often flat.** Of the 3 spanning a week or
- *   more, 2 had a quiet-window share of ~30% against a flat baseline of 33%.
- * - **The estimate is unstable when thin.** Sampling down from a full history,
- *   the quiet window matched the full-sample answer only 52-60% of the time at
- *   20-100 transactions, and 85% at 200.
+ * That approach, the local-16:00 anchor and the deliberately wide region bands
+ * are taken from a production implementation of the same idea rather than
+ * invented here. A quiet-window scan, which was the first attempt, treats hour
+ * 23 and hour 0 as unrelated and has no natural confidence measure.
  *
- * So this reports the distribution always, and offers a timezone reading only
- * when sample size, span and depth all support one. "Flat, consistent with
- * automation" is the common answer, and it is a finding rather than a failure.
+ * One improvement on that prior version: it consumed a *ranking* of active
+ * hours with no counts, and its own comment notes confidence therefore could not
+ * reflect activity mass. This weights by the real histogram.
  *
- * A longitude is not a country. UTC+2 is Berlin, Cairo and Johannesburg, and
- * nothing here narrows that.
+ * **`always_on` is a finding, not a failure.** Activity spread evenly around the
+ * clock is what automation looks like, and on Sui it is the common answer: of 14
+ * sampled active senders, 11 did 500 transactions inside a single day. An
+ * address with no human rhythm is telling you something.
+ *
+ * A region is not a city. The bands below are multi-hour-wide on purpose,
+ * because the inference is worth about ±1-2 hours.
  */
 
-/** Below this, the hour distribution is noise. Derived from the sampling test. */
+/** Below this the hour distribution is noise rather than a rhythm. */
 const MIN_SAMPLES = 50;
 
-/** Activity inside one day cannot show a daily rhythm. */
+/** Activity inside a single day cannot show a daily rhythm. */
 const MIN_SPAN_DAYS = 7;
 
 /**
- * Quiet-window share below which a gap is real rather than sampling noise.
+ * Resultant length below which activity is not concentrated enough to read.
  *
- * A flat distribution puts 8 of 24 hours — 33% — in any window. Two of three
- * long-lived wallets measured at ~30%, so the bar has to sit well under that.
+ * Taken from the production implementation. 0 is uniform around the clock, 1 is
+ * a single hour; below this the peak is not meaningfully distinguishable.
  */
-const MAX_QUIET_SHARE = 0.20;
+const MIN_RESULTANT = 0.35;
 
-/** Hours in the sleep window this looks for. */
-const WINDOW = 8;
+/**
+ * Transactions per day above which no human is doing this by hand.
+ *
+ * Measured: 17 of 20 sampled active senders did 400 transactions inside a
+ * single day, which is thousands per day. A busy human trader might reach a few
+ * dozen. This catches automation the circadian test cannot, because a burst has
+ * no daily rhythm to read and would otherwise be reported as "not enough data".
+ */
+const HUMAN_RATE_CEILING = 200;
+
+/** Assumed local hour of peak activity — late afternoon / evening. */
+const LOCAL_ACTIVITY_CENTER = 16;
+
+/**
+ * Coarse region for an inferred UTC offset.
+ *
+ * Bands are intentionally wide and named for their whole span. The offset is
+ * the precise output; this is the honest fuzzy bucket, and it exists so a
+ * reader is not left to turn a number into a country themselves.
+ */
+function regionForOffset(off: number): string {
+  if (off <= -7) return "W. N. America (Pacific/Mountain)";
+  if (off <= -4) return "N. America (Central–Eastern)";
+  if (off <= -1) return "Atlantic / E. South America";
+  if (off <= 1) return "UK / W. Europe / W. Africa";
+  if (off <= 3) return "C. Europe / Africa / Middle East";
+  if (off <= 6) return "W/Central Asia / India";
+  if (off <= 9) return "E. / SE Asia";
+  return "E. Asia / Oceania";
+}
 
 export interface ActivityHours {
   /** Transactions per UTC hour, index 0-23. */
   histogram: number[];
   sample_size: number;
   span_days: number;
-  /** Quietest 8-hour run, as UTC hours. */
-  quiet_window_utc: { start: number; end: number };
-  /** Share of all activity falling in that window. 0.33 is flat. */
-  quiet_share: number;
+  /** Circular mean of activity, in UTC hours. Null when there is no signal. */
+  peak_hour_utc: number | null;
   /**
-   * Estimated UTC offset, or null when the evidence does not support one.
-   *
-   * Derived by placing the middle of the quiet window at 03:00 local — the
-   * middle of a night's sleep. Coarse by construction.
+   * Resultant length: 0 is evenly spread around the clock, 1 is one hour.
+   * Doubles as the confidence in everything derived from it.
    */
+  concentration: number;
+  /** True when activity is spread evenly — the automation signal. */
+  always_on: boolean;
+  /** Mean transactions per day over the observed span. */
+  transactions_per_day: number | null;
+  /**
+   * Automation is indicated, by either route: a flat clock over a long span, or
+   * a rate no person sustains by hand. The two catch different populations —
+   * measured on Sui, most active wallets are the second.
+   */
+  automation_indicated: boolean;
   utc_offset_estimate: number | null;
+  region_estimate: string | null;
   reading: string;
 }
 
-/** Lowest-activity rotation of {@link WINDOW} hours. */
-function quietWindow(histogram: number[]): { start: number; count: number } {
-  let best = { start: 0, count: Infinity };
-  for (let s = 0; s < 24; s++) {
-    let c = 0;
-    for (let i = 0; i < WINDOW; i++) c += histogram[(s + i) % 24];
-    if (c < best.count) best = { start: s, count: c };
-  }
-  return best;
-}
-
-/**
- * Summarise activity by hour.
- *
- * `timestamps` are ISO strings; anything unparseable is skipped rather than
- * counted as epoch zero, which would invent activity at 00:00 UTC.
- */
 export function activityHours(timestamps: Array<string | null | undefined>): ActivityHours | null {
   const times: number[] = [];
   for (const t of timestamps) {
     if (!t) continue;
     const ms = Date.parse(t);
+    // Unparseable is skipped, never counted as epoch zero — that would invent
+    // activity at 00:00 UTC and drag every reading toward the same answer.
     if (Number.isFinite(ms)) times.push(ms);
   }
   if (times.length === 0) return null;
@@ -89,42 +113,74 @@ export function activityHours(timestamps: Array<string | null | undefined>): Act
 
   times.sort((a, b) => a - b);
   const spanDays = (times[times.length - 1] - times[0]) / 86_400_000;
-  const qw = quietWindow(histogram);
-  const share = qw.count / times.length;
+
+  // Circular mean, weighted by how much activity each hour actually holds.
+  let sx = 0;
+  let sy = 0;
+  for (let h = 0; h < 24; h++) {
+    const a = (h / 24) * 2 * Math.PI;
+    sx += Math.cos(a) * histogram[h];
+    sy += Math.sin(a) * histogram[h];
+  }
+  sx /= times.length;
+  sy /= times.length;
+  const R = Math.sqrt(sx * sx + sy * sy);
+
+  let peak: number | null = null;
+  let offset: number | null = null;
+  let region: string | null = null;
+  let reading: string;
 
   const thin = times.length < MIN_SAMPLES;
   const brief = spanDays < MIN_SPAN_DAYS;
-  const flat = share > MAX_QUIET_SHARE;
+  const alwaysOn = R < MIN_RESULTANT;
+  // Rate needs a span to divide by; a handful of transactions in one minute is
+  // not evidence of a sustained rate.
+  const rate = spanDays > 0 ? times.length / spanDays : null;
+  const tooFast = rate !== null && times.length >= 20 && rate > HUMAN_RATE_CEILING;
 
-  let offset: number | null = null;
-  let reading: string;
-  if (thin || brief) {
+  if (tooFast) {
+    reading =
+      `${times.length} transactions over ${spanDays.toFixed(2)} days — about ${Math.round(rate!)} per day. ` +
+      "No person does that by hand, so this is automated regardless of what the clock shows. The hour " +
+      "distribution below reflects when the script ran, not when anyone was awake.";
+  } else if (thin || brief) {
     reading =
       `Not enough to read a daily rhythm: ${times.length} transactions over ${spanDays.toFixed(1)} days ` +
-      `(needs ${MIN_SAMPLES}+ spanning ${MIN_SPAN_DAYS}+ days). The histogram is reported, but do not infer a timezone from it.`;
-  } else if (flat) {
+      `(needs ${MIN_SAMPLES}+ spanning ${MIN_SPAN_DAYS}+ days). The histogram is reported, but do not ` +
+      "infer a timezone from it.";
+  } else if (alwaysOn) {
     reading =
-      `Activity is spread evenly across the day — the quietest 8 hours still hold ${(share * 100).toFixed(0)}% ` +
-      "of it, against 33% for a perfectly flat distribution. No human sleep pattern is present, which is " +
-      "consistent with automation or with several people sharing the address. That absence is itself a finding.";
+      `Activity is spread around the clock (concentration ${R.toFixed(2)}, below ${MIN_RESULTANT}). ` +
+      "No human circadian pattern is present, which is what an automated or always-on wallet looks like — " +
+      "or several people sharing one address. That absence is itself a finding.";
   } else {
-    // Middle of the quiet run, placed at 03:00 local.
-    const mid = (qw.start + WINDOW / 2) % 24;
-    offset = ((3 - mid + 12 + 24) % 24) - 12;
+    let meanHour = (Math.atan2(sy, sx) / (2 * Math.PI)) * 24;
+    if (meanHour < 0) meanHour += 24;
+    peak = Number(meanHour.toFixed(1));
+    let off = Math.round(LOCAL_ACTIVITY_CENTER - meanHour);
+    while (off > 12) off -= 24;
+    while (off < -11) off += 24;
+    offset = off;
+    region = regionForOffset(off);
     reading =
-      `Quiet between ${qw.start}:00 and ${(qw.start + WINDOW) % 24}:00 UTC, holding only ` +
-      `${(share * 100).toFixed(0)}% of activity. If that gap is sleep, the operator is near UTC${offset >= 0 ? "+" : ""}${offset}. ` +
-      "That is a LONGITUDE, not a country — UTC+2 covers Berlin, Cairo and Johannesburg — and it assumes one " +
-      "person on an ordinary schedule. Corroborate before relying on it.";
+      `Activity peaks around ${peak.toFixed(1)}:00 UTC with concentration ${R.toFixed(2)}. ` +
+      `If that peak is a normal late-afternoon one, the operator sits near UTC${off >= 0 ? "+" : ""}${off} ` +
+      `— ${region}. A REGION, not a city, and it assumes one person on an ordinary schedule. The same ` +
+      "pattern is produced by two people who merely share a timezone or a working day, so corroborate it.";
   }
 
   return {
     histogram,
     sample_size: times.length,
     span_days: Number(spanDays.toFixed(1)),
-    quiet_window_utc: { start: qw.start, end: (qw.start + WINDOW) % 24 },
-    quiet_share: Number(share.toFixed(3)),
+    peak_hour_utc: peak,
+    concentration: Number(R.toFixed(3)),
+    always_on: !thin && !brief && !tooFast && alwaysOn,
+    transactions_per_day: rate === null ? null : Number(rate.toFixed(1)),
+    automation_indicated: tooFast || (!thin && !brief && alwaysOn),
     utc_offset_estimate: offset,
+    region_estimate: region,
     reading,
   };
 }

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { detectBridges, resolvableHit, type CallSite } from "../src/utils/bridge/detect.js";
+import {
+  detectBridges,
+  resolvableHit,
+  type BridgeHit,
+  type CallSite,
+} from "../src/utils/bridge/detect.js";
 
 /**
  * Move calls captured from mainnet transaction
@@ -145,5 +150,22 @@ describe("Mayan MCTP", () => {
         ["0xdex::order::OrderCanceled", "0xdex::order_info::OrderPlaced"],
       ),
     ).toEqual([]);
+  });
+});
+
+describe("address-label provenance", () => {
+  it("is a distinct, weaker basis than a call or event match", () => {
+    // A labeled bridge is an investigator's assertion, not something read off
+    // the transaction — and it is the case curated markers miss: a relayer
+    // forward, an unlisted protocol, a plain transfer into a deposit address.
+    // Reporting it under the same `matched` value as a call match would let the
+    // weaker claim borrow the stronger one's standing.
+    const bases: Array<BridgeHit["matched"]> = [
+      "call",
+      "event",
+      "protocol-registry",
+      "address-label",
+    ];
+    expect(new Set(bases).size).toBe(4);
   });
 });

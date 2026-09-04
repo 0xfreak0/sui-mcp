@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockGqlQuery = vi.fn();
+const mockArchive = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
+vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
+vi.mock("../src/utils/archive-fallback.js", () => ({
+  withArchiveFallback: (fn: (c: unknown) => unknown) =>
+    fn({ ledgerService: { getTransaction: mockArchive } }),
+}));
 
 const { fetchTransactions, MAX_DIGESTS } = await import("../src/utils/multi-tx.js");
 
@@ -37,7 +43,10 @@ const tx = (digest: string, opts: { events?: number; more?: boolean } = {}) => (
   },
 });
 
-beforeEach(() => mockGqlQuery.mockReset());
+beforeEach(() => {
+  mockGqlQuery.mockReset();
+  mockArchive.mockReset();
+});
 
 describe("fetchTransactions", () => {
   it("reads many digests in ONE request", async () => {
@@ -211,5 +220,49 @@ describe("fetchTransactions", () => {
     const r = await fetchTransactions(["nope!"], 0);
     expect(mockGqlQuery).not.toHaveBeenCalled();
     expect(r.found).toEqual([]);
+  });
+});
+
+const D3 = "4rDEyqGeXcUqvVBjJ7sfLXwUhCkkGpXLQBKUZaSUZLzT";
+const grpcTx = (d: string) => ({
+  transaction: {
+    digest: d,
+    transaction: { sender: "0xarchive", kind: { data: { oneofKind: "programmableTransaction", programmableTransaction: { commands: [] } } } },
+    effects: {},
+    balanceChanges: [],
+    events: { events: [] },
+  },
+});
+
+describe("archive fallback scope", () => {
+  it("sends ONLY the missing digests to the archive", async () => {
+    mockGqlQuery.mockResolvedValue({ multiGetTransactions: [tx(D1), null, null] });
+    mockArchive.mockImplementation(async ({digest}:{digest:string})=>grpcTx(digest));
+    const r = await fetchTransactions([D1,D2,D3]);
+    expect(mockArchive).toHaveBeenCalledTimes(2);
+    expect(mockArchive.mock.calls.map(c=>c[0].digest).sort()).toEqual([D2,D3].sort());
+    expect(r.found).toHaveLength(3);
+    expect(r.found.filter(t=>t.from_archive)).toHaveLength(2);
+  });
+
+  it("one archive miss does not sink the others", async () => {
+    mockGqlQuery.mockResolvedValue({ multiGetTransactions: [null, null] });
+    mockArchive.mockImplementation(async ({digest}:{digest:string})=>{
+      if (digest===D1) throw new Error("NOT_FOUND");
+      return grpcTx(digest);
+    });
+    const r = await fetchTransactions([D1,D2]);
+    expect(r.found.map(t=>t.digest)).toEqual([D2]);
+    expect(r.not_found).toEqual([D1]);
+  });
+
+  it("a GraphQL failure falls back to the archive for EVERY digest", async () => {
+    // Otherwise the batch tool is strictly worse than the single one whenever
+    // GraphQL is unavailable: get_transaction is gRPC-first and still answers.
+    mockGqlQuery.mockRejectedValue(new Error("GraphQL down"));
+    mockArchive.mockImplementation(async ({digest}:{digest:string})=>grpcTx(digest));
+    const r = await fetchTransactions([D1,D2]);
+    expect(r.found).toHaveLength(2);
+    expect(mockArchive).toHaveBeenCalledTimes(2);
   });
 });

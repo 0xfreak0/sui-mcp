@@ -267,10 +267,20 @@ export async function fetchTransactions(
   const packages = new Set<string>();
   if (keys.length === 0) return { found, not_found: notFound, invalid, packages: [] };
 
-  const r = await gqlQuery<{ multiGetTransactions: Array<RawTx | null> }>(MULTI_TX_QUERY, {
-    keys,
-    events: EVENTS_PER_TX,
-  });
+  // A GraphQL failure must not sink the whole batch. `graphql-request` throws on
+  // any `errors` array — even beside partial data — and `get_transaction` is
+  // gRPC-first and would still answer, so failing here outright would make the
+  // batch strictly worse than the tool it replaces. Every digest goes to the
+  // archive path instead.
+  let r: { multiGetTransactions: Array<RawTx | null> };
+  try {
+    r = await gqlQuery<{ multiGetTransactions: Array<RawTx | null> }>(MULTI_TX_QUERY, {
+      keys,
+      events: EVENTS_PER_TX,
+    });
+  } catch {
+    r = { multiGetTransactions: keys.map(() => null) };
+  }
 
   // Positional: entry i answers key i, and a null means nothing was found for
   // that digest rather than a dropped result.

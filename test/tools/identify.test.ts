@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { grpcError, notFoundError } from "../helpers/service-shapes.js";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 
@@ -161,9 +162,7 @@ describe("identify_address", () => {
 
   it("identifies a wallet address", async () => {
     // No object found at this address
-    mockSui.ledgerService.getObject.mockRejectedValue(
-      Object.assign(new Error("object not found"), { code: "NOT_FOUND" }),
-    );
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
 
     // Not a validator
     mockGqlQuery.mockResolvedValue({
@@ -201,9 +200,7 @@ describe("identify_address", () => {
 
   it("identifies a validator", async () => {
     // Not an object
-    mockSui.ledgerService.getObject.mockRejectedValue(
-      Object.assign(new Error("object not found"), { code: "NOT_FOUND" }),
-    );
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
 
     // Is a validator
     mockGqlQuery.mockResolvedValue({
@@ -244,9 +241,7 @@ describe("identify_address error handling", () => {
     // `type: "wallet", sui_balance: "0"` for a package or a pool during an
     // outage — and this is the recommended first step, so a wrong answer
     // steers every tool call after it.
-    mockSui.ledgerService.getObject.mockRejectedValue(
-      Object.assign(new Error("14 UNAVAILABLE: connection refused"), { code: "UNAVAILABLE" }),
-    );
+    mockSui.ledgerService.getObject.mockRejectedValue(grpcError("UNAVAILABLE"));
     const handler = tools.get("identify_address")!;
     const res = await handler({ address: "0xsomething" });
     expect(res.isError).toBe(true);

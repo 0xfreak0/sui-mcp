@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { errorResult } from "../utils/errors.js";
 import {
   DEFAULT_PROFILES,
   PROFILES,
@@ -95,6 +96,19 @@ export function applyProfiles(
  * disabled tool is invisible — this text is the only way the model can learn
  * that the capability it needs exists somewhere.
  */
+/** One profile name, or several. Both are accepted wherever a profile is asked for. */
+const profileName = z.union([
+  z.enum(PROFILE_NAMES as [ProfileName, ...ProfileName[]]),
+  z.literal("all"),
+]);
+const profileArg = z.union([profileName, z.array(profileName)]);
+
+/** Normalise either shape to a list. */
+function toList(v: unknown): Array<ProfileName | "all"> {
+  if (v == null) return [];
+  return (Array.isArray(v) ? v : [v]) as Array<ProfileName | "all">;
+}
+
 export function registerToolsetTool(
   server: McpServer,
   handles: ToolHandles,
@@ -118,15 +132,35 @@ export function registerToolsetTool(
       `${catalogue}\n\n` +
       "Use 'all' for everything. Newly enabled tools are callable immediately.",
     {
-      profile: z
-        .union([z.enum(PROFILE_NAMES as [ProfileName, ...ProfileName[]]), z.literal("all")])
-        .describe("Profile to enable, or 'all'."),
+      /**
+       * Accepts one name or several, under either key.
+       *
+       * The tool is called `enable_tools`, so a caller guessing at its shape
+       * reaches for `profiles: ["developer"]` — and a strict singular `profile`
+       * rejected exactly that. The observed consequence was not a retry: the
+       * model concluded the capability did not exist and hand-wrote GraphQL for
+       * something a tool already did. Both keys and both shapes now work.
+       */
+      profile: profileArg
+        .optional()
+        .describe("Profile to enable, or 'all'. Accepts several: ['forensics','developer']."),
+      profiles: profileArg
+        .optional()
+        .describe("Alias for `profile`. Same values; use whichever reads better."),
     },
-    async ({ profile }) => {
-      if (profile === "all") {
-        for (const p of PROFILE_NAMES) state.active.add(p);
-      } else {
-        state.active.add(profile);
+    async ({ profile, profiles }) => {
+      const requested = [
+        ...new Set([...toList(profile), ...toList(profiles)]),
+      ];
+      if (requested.length === 0) {
+        return errorResult(
+          "Name at least one profile to enable, e.g. { profile: \"developer\" } or { profiles: [\"forensics\", \"developer\"] }. " +
+            `Available: ${PROFILE_NAMES.join(", ")}, or 'all'.`,
+        );
+      }
+      for (const req of requested) {
+        if (req === "all") for (const p of PROFILE_NAMES) state.active.add(p);
+        else state.active.add(req);
       }
 
       const active = toolsForProfiles([...state.active]);
@@ -144,7 +178,7 @@ export function registerToolsetTool(
             type: "text" as const,
             text: JSON.stringify(
               {
-                enabled_profile: profile,
+                enabled_profiles: requested,
                 active_profiles: [...state.active],
                 newly_available_tools: turnedOn,
                 note: turnedOn.length

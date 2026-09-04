@@ -1,5 +1,74 @@
 # Changelog
 
+## 1.12.0 (2026-09-04)
+
+Clustering found more of what it was looking for, and timing analysis turned out
+to be a bot detector.
+
+### Added
+- **Reciprocal flow as a clustering signal.** Transfer volume was excluded
+  outright, on the reasoning that everyone pays an exchange so "A sent to B"
+  clusters the world together. That is true of one-directional payment and false
+  of value coming *back*, and the code never made the distinction.
+
+  Measured on mainnet: across 47 counterparty relationships of ordinary active
+  wallets, 1 was reciprocal — a 2.1% base rate. Among four addresses known to
+  share an owner, 4 of 6 pairs were. Roughly 32x enrichment, so it is weighted
+  level with a shared narrow funder and guarded the same way: a counterparty
+  popular enough to be a service is refused, because a deposit to an exchange
+  followed by a withdrawal is reciprocal and means nothing.
+
+  The return leg is asked of the counterparty rather than scanned for. A seed's
+  bounded window usually shows one direction only, and `probeRecipients` already
+  returns who a counterparty paid while measuring whether it is a service.
+
+- **`activity_hours` on `build_timeline`**, which is mostly an automation
+  detector. Hours are read as a circle: the count-weighted circular mean gives a
+  peak, and the resultant length R gives concentration and doubles as the
+  confidence.
+
+  Of 20 sampled active senders, 17 did 400 transactions inside a single day, and
+  the 3 spanning a week or more were all flat at R 0.03-0.06 over ~298 days.
+  Every wallet that could produce an answer produced "automated", so automation
+  is reported directly by two routes: a flat clock over a long span, and a rate
+  above 200 transactions a day. The second matters because a burst has no rhythm
+  to read and would otherwise be dismissed as insufficient data when it is the
+  clearest signal available.
+
+  Volume is not the constraint. Sub-sampling full histories, the verdict agreed
+  with the full-sample answer 100% of the time at 30-100 transactions. Finding a
+  wallet whose activity spans a week is the hard part.
+
+  A region is not a city, and the same pattern comes from two people who merely
+  share a timezone. The reading says both.
+
+- **A `sui-forensics` skill**, shipped in the package. The server gives Claude
+  chain access; it does not give it method. The skill carries the evidence tiers
+  and what each licenses, the base-rate check that stops shared ancestry reading
+  as collusion, which tool answers which question, and the conclusions to refuse.
+  Copy it into `~/.claude/skills/`; see the README.
+
+### Fixed
+- **A narrow funder was excluded from the cluster it funded.** `funding_edge`
+  fired only between two seeds, so a funder discovered on the walk was used as
+  the `via` label on the edges between the addresses it funded and then
+  discarded — the hub excluded from its own cluster. That made the answer depend
+  on what the caller already knew: pass both addresses as seeds and the edge
+  appears, pass one and it does not, on identical chain data.
+
+  Seeding one wallet previously reached 4 addresses on a single invisible
+  intermediary. It now reaches 7 on three independent ones, including two known
+  co-owned wallets whose funding lineage differs and which no shared-funder
+  signal could ever have found.
+
+- **MVR names vanished past 50 packages.** The bulk endpoint answers 51+ with
+  `400 Batch size limit exceeded`, and the only caller catches that — so the
+  failure was silent and total: every name lost, not just the ones past the
+  limit, and indistinguishable from a package not being registered. Batching
+  transactions in 1.11.0 made it easy to reach, since a batch collects packages
+  across every transaction in it. Now chunked, with the error handling per chunk
+  so one bad page does not discard the pages already in hand.
+
 ## 1.11.0 (2026-09-04)
 
 One new tool (61 → 62): reading many transactions in a single call.

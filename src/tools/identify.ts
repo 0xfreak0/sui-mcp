@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fetchActiveValidators, findValidatorByAddress } from "../utils/validators.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { suivisionPackageUrl } from "../config.js";
@@ -71,37 +72,8 @@ interface ValidatorMatch {
 
 async function findValidator(address: string): Promise<ValidatorMatch | null> {
   try {
-    const data = await gqlQuery<{
-      epoch: {
-        validatorSet: {
-          activeValidators: {
-            nodes: Array<{
-              contents?: {
-                json: {
-                  metadata?: { sui_address?: string; name?: string };
-                  staking_pool?: { sui_balance?: string };
-                  commission_rate?: string;
-                };
-              };
-            }>;
-          };
-        };
-      };
-    }>(
-      `query {
-        epoch {
-          validatorSet {
-            activeValidators(first: 200) {
-              nodes { contents { json } }
-            }
-          }
-        }
-      }`
-    );
-
-    const match = data.epoch.validatorSet.activeValidators.nodes.find(
-      (v) => v.contents?.json?.metadata?.sui_address === address
-    );
+    const set = await fetchActiveValidators();
+    const match = findValidatorByAddress(set, address);
     if (!match) return null;
     const json = match.contents!.json;
     return {
@@ -110,6 +82,9 @@ async function findValidator(address: string): Promise<ValidatorMatch | null> {
       commission_rate_bps: json.commission_rate != null ? Number(json.commission_rate) : null,
     };
   } catch {
+    // A failed lookup is not evidence the address is not a validator; it just
+    // means we could not tell. Returning null lets classification continue,
+    // which is why the caller must not present "wallet" as confirmed.
     return null;
   }
 }

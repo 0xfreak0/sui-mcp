@@ -9,6 +9,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
+import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerTransactionTools(server: McpServer) {
@@ -194,6 +195,74 @@ export function registerTransactionTools(server: McpServer) {
         ],
       };
     }
+  );
+
+  server.tool(
+    "get_transactions",
+    "Read up to 50 Sui transactions in ONE call, given their digests. Returns sender, status, timing, balance changes, Move call targets and events WITH their decoded fields for each, plus the protocols involved. Use this whenever you hold several digests at once — the outputs of a fan-out, the evidence on a cluster edge, a set of hops to compare — instead of calling get_transaction repeatedly; ten digests go from ten round trips to one. Digests that could not be read come back in `not_found` rather than being dropped. For ONE transaction, or for a transaction with more than 50 events, prefer get_transaction: it pages events to the end.",
+    {
+      digests: z
+        .array(z.string())
+        .min(1)
+        .max(MAX_DIGESTS)
+        .describe(`Transaction digests, Base58 (1-${MAX_DIGESTS}). Duplicates are collapsed.`),
+    },
+    async ({ digests }) => {
+      try {
+        const { found, not_found, invalid, packages } = await fetchTransactions(digests);
+
+        // One prefetch for the whole batch, then synchronous lookups. Protocols
+        // come from the Move call targets AND the event types, since a
+        // transaction calling an obfuscated wrapper is named only by its events.
+        if (packages.length > 0) await prefetchProtocolNames(packages);
+        const protocolsFor = (tx: (typeof found)[number]) => {
+          const names = new Set<string>();
+          for (const call of tx.move_calls) {
+            const n = lookupProtocolDisplay(call.split("::")[0])?.name;
+            if (n) names.add(n);
+          }
+          for (const ev of tx.events) {
+            const pkg = packageOfEventType(ev.type);
+            const n = pkg ? lookupProtocolDisplay(pkg)?.name : undefined;
+            if (n) names.add(n);
+          }
+          return [...names];
+        };
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  requested: digests.length,
+                  returned: found.length,
+                  ...(invalid.length
+                    ? {
+                        invalid_digests: invalid,
+                        invalid_note:
+                          "These are not Base58 and were never sent. They are reported rather than silently dropped, and rejecting them here is deliberate: the server refuses an entire batch over one malformed key, so a single typo would otherwise return nothing at all.",
+                      }
+                    : {}),
+                  ...(not_found.length
+                    ? {
+                        not_found,
+                        not_found_note:
+                          "These digests returned nothing. That is either a wrong digest or a transaction pruned from this node — the two are indistinguishable here, so do not read it as 'the transaction does not exist'. get_transaction falls back to the archive for old digests.",
+                      }
+                    : {}),
+                  transactions: found.map((t) => ({ ...t, protocols: protocolsFor(t) })),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    },
   );
 
   server.tool(

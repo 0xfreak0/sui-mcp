@@ -79,6 +79,33 @@ caller needs); no probe has made it fire, so keep it narrow and don't design
 around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
 the fullnode there.
 
+## Reading many transactions
+
+`get_transactions` (`src/utils/multi-tx.ts`) reads up to 50 digests in one
+`multiGetTransactions` call. Measured on ten digests: 0.80s sequentially, 0.10s
+batched — but the latency is the smaller half. Ten tool calls becoming one saves
+ten model turns, and that is the reason it exists.
+
+One query carries sender, status, timing, balance changes, Move call targets and
+events with decoded fields, so protocols are identified from both calls and
+events without a second request.
+
+Two rules:
+
+- **Digests are decoded before the request.** The server rejects the WHOLE batch
+  over one malformed key, so a single typo among fifty returned nothing at all.
+  The Base58 alphabet alone is not enough — 44 `1`s is valid Base58 and decodes
+  to 44 zero bytes — so validation is `fromBase58(d).length === 32`.
+- **Events are a page, not the whole set.** Paging every transaction in a batch
+  to exhaustion would put fifty digests back into dozens of requests. A
+  transaction with more events says so and names `get_transaction`, which pages
+  to the end. Breadth here, depth there, and the boundary is stated rather than
+  silently applied.
+
+A null entry is positional: it means that digest returned nothing, which is a
+wrong digest or a pruned transaction and the two are indistinguishable at this
+layer. `get_transaction` falls back to the archive; this does not.
+
 ## Address identity in investigation flows
 
 `src/utils/identity.ts` resolves name, label, kind and historical names for a

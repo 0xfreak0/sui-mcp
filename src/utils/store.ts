@@ -128,6 +128,22 @@ CREATE TABLE IF NOT EXISTS fanout (
   truncated            INTEGER NOT NULL,
   measured_at          INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS transactions (
+  -- Keyed network:digest. A finalized transaction is immutable — sender, balance
+  -- changes, commands, timestamp and checkpoint never change once it lands —
+  -- so this needs no TTL and cannot go stale. That is the whole reason it is
+  -- safe to cache here while a trace *conclusion* is not: a conclusion is
+  -- derived from labels and from how far the chain has grown, both of which
+  -- move.
+  key         TEXT PRIMARY KEY,
+  network     TEXT NOT NULL,
+  digest      TEXT NOT NULL,
+  -- The fetched hop as JSON. Verified round-trippable: protobuf commands keep
+  -- their oneofKind discriminator, and the BigInt-bearing fields (timestamp,
+  -- checkpoint) are already normalised to a string and a number before this.
+  payload     TEXT NOT NULL,
+  fetched_at  INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS findings (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   case_name   TEXT NOT NULL,
@@ -153,6 +169,7 @@ CREATE TABLE IF NOT EXISTS findings (
 const INDEXES = `
 CREATE INDEX IF NOT EXISTS labels_chain ON labels(chain);
 CREATE INDEX IF NOT EXISTS findings_case ON findings(case_name);
+CREATE INDEX IF NOT EXISTS transactions_network ON transactions(network);
 `;
 
 /**
@@ -557,4 +574,50 @@ export function getCachedFanout(
   if (!row) return null;
   const age = Date.now() - row.measured_at;
   return age <= maxAgeMs ? { ...row, age_ms: age, method_version: FANOUT_METHOD_VERSION } : null;
+}
+
+
+/* ------------------------------------------------------------------ *
+ * Transaction cache
+ * ------------------------------------------------------------------ */
+
+/**
+ * Remember a fetched transaction.
+ *
+ * Immutable by nature, so there is no TTL and no invalidation path to get
+ * wrong. Network-keyed like every other cache here: the same digest cannot
+ * occur on two networks, but keying on it costs nothing and keeps the rule
+ * uniform.
+ */
+export function saveTransaction(network: string, digest: string, payload: unknown): boolean {
+  initStore();
+  if (!db) return false;
+  let text: string;
+  try {
+    text = JSON.stringify(payload);
+  } catch {
+    // A payload that will not serialise is not worth failing a trace over.
+    return false;
+  }
+  db.prepare(
+    `INSERT INTO transactions (key, network, digest, payload, fetched_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at`,
+  ).run(`${network}:${digest}`, network, digest, text, Date.now());
+  return true;
+}
+
+/** A previously fetched transaction, or null. Never throws on bad stored JSON. */
+export function getCachedTransaction<T>(network: string, digest: string): T | null {
+  initStore();
+  if (!db) return null;
+  const row = db.prepare(`SELECT payload FROM transactions WHERE key = ?`).get(`${network}:${digest}`) as
+    | { payload?: string }
+    | undefined;
+  if (!row?.payload) return null;
+  try {
+    return JSON.parse(row.payload) as T;
+  } catch {
+    return null;
+  }
 }

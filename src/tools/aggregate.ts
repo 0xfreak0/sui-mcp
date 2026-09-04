@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import {
@@ -74,19 +75,17 @@ export function registerAggregateTools(server: McpServer) {
         .describe(
           "Dotted path into the event JSON to sum, e.g. 'deposit_value'. Omit to get counts plus field suggestions.",
         ),
-      value_scale: z
-        .number()
+      value_scale: numArg()
         .optional()
         .describe("Divisor for the summed value, e.g. 100 when a protocol reports USD cents."),
-      top: z.number().int().min(1).max(200).optional().describe("Groups to return (default 20)."),
+      top: numArg().int().min(1).max(200).optional().describe("Groups to return (default 20)."),
       sort_order: z
         .enum(["desc", "asc"])
         .optional()
         .describe(
           "'desc' (default) returns the largest — whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view.",
         ),
-      max_events: z
-        .number()
+      max_events: numArg()
         .int()
         .min(50)
         .max(50_000)

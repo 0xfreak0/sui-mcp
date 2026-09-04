@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { formatOwner } from "../utils/formatting.js";
@@ -18,8 +19,7 @@ export function registerMonitorTools(server: McpServer) {
         .string()
         .optional()
         .describe("Object ID to check for version changes. Provide either address or object_id."),
-      since_checkpoint: z
-        .number()
+      since_checkpoint: numArg()
         .optional()
         .describe("(address mode) Only show activity after this checkpoint number"),
       since_timestamp: z
@@ -30,8 +30,7 @@ export function registerMonitorTools(server: McpServer) {
         .string()
         .optional()
         .describe("(object mode) Only report if version is newer than this"),
-      limit: z
-        .number()
+      limit: numArg()
         .optional()
         .describe("(address mode) Max results (default 20, max 50)"),
     },

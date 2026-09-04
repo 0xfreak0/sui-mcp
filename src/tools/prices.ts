@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { pythApiKey, availableSources } from "../utils/price-providers.js";
 import { errorResult } from "../utils/errors.js";
@@ -110,7 +111,7 @@ export function registerPriceTools(server: McpServer) {
           "Array of full coin type strings (e.g. ['0x2::sui::SUI', '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'])"
         ),
       at: z
-        .union([z.number(), z.string()])
+        .union([numArg(), z.string()])
         .optional()
         .describe("Optional: price AT this point in time — Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices."),
     },

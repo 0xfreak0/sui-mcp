@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -13,8 +14,7 @@ export function registerCoinTools(server: McpServer) {
         .string()
         .optional()
         .describe("Coin type (default: 0x2::sui::SUI)"),
-      at_checkpoint: z
-        .number()
+      at_checkpoint: numArg()
         .optional()
         .describe("Query balance at a specific checkpoint (for historical balances)"),
     },

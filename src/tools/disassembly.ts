@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { suivisionPackageUrl } from "../config.js";
 import {
@@ -20,8 +21,7 @@ export function registerDisassemblyTools(server: McpServer) {
         .string()
         .optional()
         .describe("Module to disassemble. If omitted, lists available modules."),
-      all_modules: z
-        .boolean()
+      all_modules: boolArg()
         .optional()
         .describe("Disassemble every module in the package (default: false)"),
     },

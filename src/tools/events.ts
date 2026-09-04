@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -56,7 +57,7 @@ export function registerEventTools(server: McpServer) {
         .string()
         .optional()
         .describe("Only events before this checkpoint"),
-      limit: z.number().optional().describe("Max results (default 20)"),
+      limit: numArg().optional().describe("Max results (default 20)"),
       after: z.string().optional().describe("Pagination cursor"),
     },
     async ({

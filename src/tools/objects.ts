@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { clampPageSize } from "../utils/pagination.js";
@@ -90,7 +91,7 @@ export function registerObjectTools(server: McpServer) {
         .string()
         .optional()
         .describe("Filter by object type (e.g. 0x2::coin::Coin<0x2::sui::SUI>)"),
-      limit: z.number().optional().describe("Max results (default 50, max 1000)"),
+      limit: numArg().optional().describe("Max results (default 50, max 1000)"),
       cursor: z.string().optional().describe("Pagination cursor from previous response"),
     },
     async ({ owner, object_type, limit, cursor }) => {
@@ -127,7 +128,7 @@ export function registerObjectTools(server: McpServer) {
     "(Developer) List dynamic fields of a Sui object. Returns field names, types, and values. Useful for inspecting on-chain tables, kiosk contents, or other dynamic collections.",
     {
       parent_id: z.string().describe("Parent object ID (0x...)"),
-      limit: z.number().optional().describe("Max results (default 50, max 1000)"),
+      limit: numArg().optional().describe("Max results (default 50, max 1000)"),
       cursor: z.string().optional().describe("Pagination cursor from previous response"),
     },
     async ({ parent_id, limit, cursor }) => {

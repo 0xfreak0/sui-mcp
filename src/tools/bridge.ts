@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { caip2ForSuiNetwork } from "../utils/chain-id.js";
@@ -110,8 +111,7 @@ export function registerBridgeTools(server: McpServer) {
     "(Incident investigation) Follow funds across a bridge. Given a Sui transaction that emitted a Wormhole message, return the VAA identity read from chain data — (emitter chain, emitter address, sequence) — and, where Wormholescan has indexed a redemption, the destination chain, address and transaction. This is what lets a trace continue past a bridge instead of stopping there: the VAA identity is a shared identifier quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: the VAA identity is chain-derived, the destination is asserted by Wormholescan's index and should be confirmed on the destination chain before being relied on.",
     {
       digest: z.string().describe("Sui transaction digest (Base58) to inspect for a bridge exit."),
-      include_destination: z
-        .boolean()
+      include_destination: boolArg()
         .optional()
         .describe(
           "Query Wormholescan for the redemption side (default true). Set false to stay strictly on-chain and return only the VAA identity.",

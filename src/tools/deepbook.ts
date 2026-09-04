@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import {
   fetchCandles,
@@ -40,8 +41,7 @@ export function registerDeepBookTools(server: McpServer) {
         .string()
         .optional()
         .describe("Pool name such as 'SUI_USDC'. Omit to list all pools."),
-      depth: z
-        .number()
+      depth: numArg()
         .int()
         .min(1)
         .max(200)
@@ -96,9 +96,9 @@ export function registerDeepBookTools(server: McpServer) {
     "(DeepBook) Recent fills for a DeepBook v3 pool, with the maker and taker balance manager IDs behind each trade. Filter by balance manager to attribute trading activity to one account during an incident window, or by time range to reconstruct what traded when.",
     {
       pool_name: z.string().describe("Pool name such as 'SUI_USDC'."),
-      limit: z.number().int().min(1).max(200).optional().describe("Max trades (default 50)."),
-      start_time: z.number().int().optional().describe("Window start, Unix seconds."),
-      end_time: z.number().int().optional().describe("Window end, Unix seconds."),
+      limit: numArg().int().min(1).max(200).optional().describe("Max trades (default 50)."),
+      start_time: numArg().int().optional().describe("Window start, Unix seconds."),
+      end_time: numArg().int().optional().describe("Window end, Unix seconds."),
       balance_manager_id: z
         .string()
         .optional()
@@ -167,14 +167,12 @@ export function registerDeepBookTools(server: McpServer) {
     {
       pool_name: z.string().describe("DeepBook pool such as 'SUI_USDC'. Its base asset is priced."),
       interval: z.enum(INTERVALS).optional().describe("Candle interval (default '1h')."),
-      limit: z.number().int().min(1).max(100).optional().describe("Candles to compare (default 24)."),
-      end_time: z
-        .number()
+      limit: numArg().int().min(1).max(100).optional().describe("Candles to compare (default 24)."),
+      end_time: numArg()
         .int()
         .optional()
         .describe("End of window, Unix seconds. Defaults to now."),
-      threshold_pct: z
-        .number()
+      threshold_pct: numArg()
         .optional()
         .describe("Absolute deviation percent that counts as notable (default 1)."),
     },

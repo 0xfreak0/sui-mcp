@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg, numArg } from "./args.js";
 import { moveRegistryUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { mvrFetch } from "../utils/mvr-client.js";
@@ -142,10 +143,9 @@ export function registerMvrTools(server: McpServer) {
         .string()
         .optional()
         .describe("Substring to match against name or description. Omit to list all."),
-      limit: z.number().int().min(1).max(50).optional().describe("Page size (default 20, max 50)."),
+      limit: numArg().int().min(1).max(50).optional().describe("Page size (default 20, max 50)."),
       cursor: z.string().optional().describe("Opaque cursor from a previous response's next_cursor."),
-      is_linked: z
-        .boolean()
+      is_linked: boolArg()
         .optional()
         .describe("If true, only return packages with a published package on mainnet or testnet."),
     },

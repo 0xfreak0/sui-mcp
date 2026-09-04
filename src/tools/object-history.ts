@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
@@ -53,7 +54,7 @@ export function registerObjectHistoryTools(server: McpServer) {
     "(Incident investigation) Trace the provenance of a Sui object: its version history — each version, the transaction that produced it, when — and every ownership transition (transfers, sharing, freezing). Use it to see the full lifecycle of an exploited pool/vault/cap: who created it and who held it when. Note: history is capped to the most recent versions; very hot objects (e.g. system objects) are truncated.",
     {
       object_id: z.string().describe("Object ID (0x...)"),
-      limit: z.number().int().positive().max(50).optional().describe("Max prior versions to include (default 25)"),
+      limit: numArg().int().positive().max(50).optional().describe("Max prior versions to include (default 25)"),
     },
     async ({ object_id, limit }) => {
       try {

@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.12.1 (2026-09-04)
+
+### Fixed
+- **A rarely-used wallet was reported as automated.** Found by running
+  `activity_hours` on a real mainnet wallet: 120 transactions over 292 days —
+  0.4 a day — with a flat clock, reported as `automation_indicated: true`.
+
+  It could not have looked otherwise. A hundred and twenty points scattered
+  across a year never form a peak, so a 24/7 script and a person who uses a
+  wallet twice a week produce the same resultant length. The check asked whether
+  activity was flat and never whether the rate made flatness informative, which
+  put a confident label on an address that is simply not used much.
+
+  Flatness now requires 3+ transactions a day. Above that, a person keeping
+  ordinary hours would have left a shape and its absence means something; below
+  it, the reading says plainly that nothing follows either way.
+
+- **A peak inside a single hour now names the scheduled-job alternative.** A
+  person's day spreads over several hours, so one hour holding most of the
+  activity fits a cron line equally well — and a scheduled job has no timezone
+  at all. On the wallet that prompted this, 46% of activity sat in the single
+  hour 19:00 UTC, and a reader given only "likely UTC-3" would not have thought
+  of it.
+
+Also corrects a test fixture that had been passing on a wrong premise: its
+"automated" wallet ran at 1.3 transactions a day, which is an occasional person
+rather than a script.
+
 ## 1.12.0 (2026-09-04)
 
 Clustering found more of what it was looking for, and timing analysis turned out

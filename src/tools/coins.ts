@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerCoinTools(server: McpServer) {
   server.tool(
     "get_balance",
-    "Get the balance of a specific coin type for a Sui address. Defaults to SUI. Optionally query balance at a historical checkpoint.",
+    "Get the liquid balance of one coin type for a Sui address (defaults to SUI), optionally at a historical checkpoint. This counts spendable coins ONLY: staked SUI and value locked in DeFi positions do not appear here, so a wallet that looks nearly empty may not be — pair it with get_staking_summary and get_defi_positions before concluding anything about what an address holds. For every coin at once, use get_wallet_overview.",
     {
       owner: z.string().describe("Owner address (0x...)"),
       coin_type: z

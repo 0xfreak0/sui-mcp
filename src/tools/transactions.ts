@@ -6,13 +6,14 @@ import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
-import { prefetchProtocolNames } from "../protocols/registry.js";
+import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
+import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, events, balance changes, and protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend').",
+    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
     },
@@ -59,12 +60,49 @@ export function registerTransactionTools(server: McpServer) {
         };
       }
 
-      const events = tx?.events?.events?.map((e: GrpcTypes.Event) => ({
+      const rawEvents = tx?.events?.events ?? [];
+
+      // Decoded event contents, which gRPC does not carry. One extra request,
+      // and only when there is something to decode.
+      const parsed = rawEvents.length > 0 ? await fetchEventJson(digest) : null;
+      // Joined by position, which is emission order on both transports. Guarded
+      // on length: attaching fields from a mismatched list would put one event's
+      // values under another's type, which is worse than omitting them.
+      const parsedUsable = parsed !== null && parsed.length === rawEvents.length;
+
+      const events = rawEvents.map((e: GrpcTypes.Event, i: number) => ({
         package_id: e.packageId,
         module: e.module,
         event_type: e.eventType,
         sender: e.sender,
+        ...(parsedUsable ? { parsed: parsed![i].json } : {}),
       }));
+
+      // Protocols the EVENTS implicate, which the call targets can miss
+      // entirely. Both the defining package of each event type and the emitting
+      // package are resolved: the definer is the informative one when a wrapper
+      // is in play, the emitter is worth naming when it happens to be known.
+      const eventPackages = [
+        ...new Set(
+          rawEvents
+            .flatMap((e: GrpcTypes.Event) => [packageOfEventType(e.eventType), e.packageId ?? null])
+            .filter((p): p is string => Boolean(p)),
+        ),
+      ];
+      if (eventPackages.length > 0) await prefetchProtocolNames(eventPackages);
+      const fromEvents = [
+        ...new Set(
+          eventPackages
+            .map((p) => lookupProtocolDisplay(p)?.name)
+            .filter((n): n is string => Boolean(n)),
+        ),
+      ];
+      // Named by their events but not by their calls. Reported separately
+      // rather than folded in, because the gap is itself the finding: a
+      // transaction whose calls are unreadable and whose events name a known
+      // protocol is what a wrapper or router looks like.
+      const onlyFromEvents = fromEvents.filter((n) => !decoded.protocols.includes(n));
+      const allProtocols = [...new Set([...decoded.protocols, ...fromEvents])];
       const balanceChanges = tx?.balanceChanges?.map((bc: GrpcTypes.BalanceChange) => ({
         address: bc.address,
         coin_type: bc.coinType,
@@ -81,13 +119,26 @@ export function registerTransactionTools(server: McpServer) {
                 sender,
                 status: formatStatus(effects?.status),
                 timestamp: timestampToIso(tx?.timestamp),
-                protocols: decoded.protocols,
+                protocols: allProtocols,
+                ...(onlyFromEvents.length
+                  ? {
+                      protocols_from_events_only: onlyFromEvents,
+                      protocol_attribution_note:
+                        "These protocols were identified from the transaction's EVENTS, not its Move calls — the calls alone did not name them. That gap is usually a wrapper or router package sitting in front of the real protocol, which is worth a look: a package chooses its own name, but the events it emits carry the type of whoever defined them.",
+                    }
+                  : {}),
                 actions: decoded.actions,
                 token_flow: decoded.token_flow,
                 gas: formatGas(effects?.gasUsed),
                 epoch: bigintToString(effects?.epoch),
                 checkpoint: bigintToString(tx?.checkpoint),
-                event_count: events?.length ?? 0,
+                event_count: events.length,
+                ...(rawEvents.length > 0 && !parsedUsable
+                  ? {
+                      event_fields_note:
+                        "Decoded event fields could not be attached — the parsed-contents lookup failed or returned a different number of events, and guessing the alignment would file one event's values under another's type. Event types and senders below are unaffected.",
+                    }
+                  : {}),
                 events,
                 balance_changes: balanceChanges,
               },

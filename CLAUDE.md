@@ -450,7 +450,18 @@ data it already has, no extra query — and emits `bridge_exits`.
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)
-- SDK `Event` has `eventType` (not `type`), `module`, no `parsedJson`
+- SDK `Event` has `eventType` (not `type`), `module`, no `parsedJson`. GraphQL's
+  `Event` has neither `type` nor `json` at the top level — both live under
+  `contents` (`contents.type.repr`, `contents.json`). Three shapes for one
+  concept, which is why `get_transaction` fetches event fields over GraphQL
+  (`src/utils/event-json.ts`) even though it reads the transaction over gRPC.
+- **Protocols come from events as well as Move calls.** A transaction calling an
+  obfuscated wrapper into DeepBook reported `protocols: []` while the registry,
+  asked directly, resolved the event's own package by lineage. Event types are
+  also harder to fake: a package picks its own name, but the event it emits
+  carries the type of whoever defined it. `protocols_from_events_only` marks the
+  gap, since a transaction whose calls are unreadable and whose events name a
+  known protocol is what a router or wrapper looks like.
 - SDK `BalanceChange` has `address` (not `owner`)
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50

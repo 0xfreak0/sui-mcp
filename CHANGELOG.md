@@ -1,5 +1,107 @@
 # Changelog
 
+## 1.9.0 (2026-09-04)
+
+One new tool (60 → 61) and a round of correctness work on fund tracing.
+
+Most of this release came from asking a narrower question than "does it work":
+*where does this produce a confident answer that is wrong?* Several of the fixes
+below are cases where a trace or an attribution completed successfully and named
+the wrong party, which is worse than an error — an error gets investigated.
+
+### Added
+- **`build_wallet_edges`** — find addresses that may share an operator with the
+  ones you give it, built live with no analytics warehouse behind it.
+
+  The usual objection to on-demand clustering is that deciding whether a funder
+  is an exchange means enumerating its tens of thousands of recipients. It does
+  not: the count is never needed, only the bound. The probe fetches
+  `limit + 1` distinct counterparties and stops, and the same probe returns who
+  that funder paid, so it doubles as candidate generation. Popular means discard
+  and spend nothing more; narrow means at most `limit` candidates.
+
+  Four signals — a shared first funder, one address first-funding another, a
+  shared gas payer, and a third party moving both balances in one transaction.
+  Plain transfer volume is deliberately not among them: everyone pays an
+  exchange, so "A sent to B" clusters the world together.
+
+  Edges are reported as facts with the digests to check them; clusters are an
+  inference, tagged `heuristic` — the only heuristic-tier output in the server.
+  Nothing calls it automatically, because a heuristic must not change where a
+  chain-derived trace stops.
+
+- **Transaction cache** (`SUI_STORE_PATH`). Only the transaction reads are
+  cached, never a trace's conclusion. A finalized transaction is immutable, so
+  there is no TTL to get wrong; a conclusion depends on the label set and on how
+  far the chain has grown, both of which move. Measured: little on recent hops,
+  but an archive hop goes 0.56s to 0.14s — and those are the hops least likely
+  to ever get cheaper. `hops_from_cache` and `hops_served_by_archive` are
+  reported so a fast trace reads as reuse rather than as a different chain read.
+
+- **First-funder cache.** A wallet's first funding cannot change once it
+  happens, so no TTL. Only positives are stored, since "no funder yet" goes
+  stale the moment the address is funded.
+
+- **CoinMarketCap** as an optional price source (`CMC_API_KEY`).
+
+### Fixed
+- **`trace_funds` followed the wrong party.** The forward hop asked for the next
+  transaction *affecting* an address, which includes anyone paying it — so a
+  third party's transaction could be attributed to the subject. It now filters
+  on `sentAddress`. Two more bugs lived in the same query: `afterCheckpoint` is
+  exclusive, so passing the hop's own checkpoint skipped every same-checkpoint
+  spend (what a script does — the adversarial case, not an edge case), and
+  asking for a single candidate let the current transaction crowd out the
+  answer.
+
+- **The archive fallback was dropped** on the belief that archives omit balance
+  changes. They do not, verified on mainnet, so historical hops were failing for
+  no reason. Also: GraphQL answers a pruned digest with a *hollow* record rather
+  than null — digest and timestamp present, no sender, no balance changes — so a
+  trace ended early looking complete. That shape is now treated as absent.
+
+- **Dust and scam tokens counted as funding.** A 1-MIST spam send could become
+  "first funded by", and the walk then followed the spammer's ancestry. Inflows
+  now need to clear 0.01 SUI, or $0.10 for a priced non-SUI coin. The stronger
+  rule is not a threshold: an inflow in a coin nobody prices is spam at any
+  size. Skipped inflows are reported as `dust_skipped`, never dropped silently.
+
+- **The gas sponsor was named as the funder.** Gas folds into the payer's net
+  SUI rather than being itemised, so the most-negative change across all coins
+  picked the sponsor: -0.036 SUI outranks a real sender's -11 USDC on raw
+  magnitude, because SUI has three more decimals. The funder is now sought in
+  the coin that actually arrived. The same decimals bug was fixed in two other
+  places.
+
+- **Co-funding reported the weakest evidence and dropped the strongest.** Groups
+  were truncated to the first ten while sorted widest-payout-first, so a
+  bespoke payment to exactly the two addresses under investigation sorted last
+  and was cut.
+
+- **A failed object lookup was reported as a wallet.** "Could not look" and
+  "nothing there" are opposite conclusions.
+
+- **Validator lookups never worked** — mainnet has more than one page of
+  validators and the query took the first page only.
+
+- **The top-holders cache ignored result size and network**, so a request for
+  100 holders could be served a cached 10, and mainnet could answer a testnet
+  query.
+
+- **Resolving one coin symbol crawled the whole registry.**
+
+### Changed
+- **Pyth is now opt-in** (`PYTH_API_KEY`) rather than the default path. Its
+  Hermes endpoint began requiring authentication for price *values*, and every
+  call site handled that softly — prices simply became null, which reads as "no
+  value" rather than "no access". Aftermath is the free default and covers
+  current prices; historical pricing needs a paid key and now says so rather
+  than returning a null a caller might read as zero.
+
+- **Test doubles now refuse to answer shapes the real services never send.**
+  Three shipped bugs had survived because a mock returned a page larger than
+  GraphQL's 50-item cap, or an empty response where gRPC throws `NOT_FOUND`.
+
 ## 1.8.0 (2026-09-03)
 
 Inbound bridge transfers now resolve to their origin.

@@ -87,7 +87,7 @@ export function registerChainTools(server: McpServer) {
 
   server.tool(
     "get_checkpoint",
-    "Get a Sui checkpoint by sequence number or digest. Returns latest if neither is provided.",
+    "Get a Sui checkpoint by sequence number or digest, or the latest if neither is given. Returns its timestamp, epoch, and the transaction digests it contains. Mainly useful for turning a checkpoint number into a time: traces, funding chains and event queries all report checkpoints rather than dates, and this is how you place one on a timeline or bound a checkpoint-range filter.",
     {
       sequence_number: z
         .string()

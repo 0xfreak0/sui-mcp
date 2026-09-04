@@ -216,7 +216,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit.",
+    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. It also returns every module's struct shapes with full field names and types under `overview.modules`, so use it rather than hand-writing GraphQL for those — the GraphQL `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
     {
       package_id: z
         .string()

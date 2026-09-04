@@ -38,7 +38,7 @@ interface EventsPage {
 export function registerEventTools(server: McpServer) {
   server.tool(
     "query_events",
-    "Query Sui events with filters. Supports filtering by event type, sender, module, and checkpoint range.",
+    "Query Sui events with filters (type, sender, emitting module, checkpoint range). Returns each event's type AND its DECODED FIELDS, so there is no need to hand-write a GraphQL query to read event values — note the GraphQL Event has neither `type` nor `json` at its top level (both sit under `contents`), which is easy to get wrong by hand. Use this to measure per-protocol flow: a transaction's balance changes cover the whole PTB and over-attribute, while a protocol's own events do not. For the events of ONE known transaction, use get_transaction instead — it returns them already decoded.",
     {
       event_type: z
         .string()

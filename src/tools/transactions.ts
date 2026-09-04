@@ -248,7 +248,7 @@ export function registerTransactionTools(server: McpServer) {
                     ? {
                         not_found,
                         not_found_note:
-                          "These digests returned nothing. That is either a wrong digest or a transaction pruned from this node — the two are indistinguishable here, so do not read it as 'the transaction does not exist'. get_transaction falls back to the archive for old digests.",
+                          "These digests returned nothing from GraphQL. Do NOT read that as 'the transaction does not exist' — this batch path has no archive fallback, so a pruned transaction looks identical to a wrong digest. get_transaction DOES fall back to the archive and will often return these; retry each one there before concluding anything. Old digests are pruned continuously, so a digest that resolved minutes ago can land here.",
                       }
                     : {}),
                   transactions: found.map((t) => ({ ...t, protocols: protocolsFor(t) })),

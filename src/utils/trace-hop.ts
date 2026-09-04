@@ -51,9 +51,16 @@ function absBig(amount: string): bigint {
   return v < 0n ? -v : v;
 }
 
-/** Did this hop perform a swap? Decoder emits actions like "Swap USDC → SUI ...". */
+/**
+ * Did this hop perform a swap the actor kept the proceeds of?
+ *
+ * Decoder emits actions like "Swap USDC → SUI on Cetus". A **flash** swap is
+ * excluded: it borrows and repays inside the same transaction, so the actor
+ * ends up holding nothing, and switching the tracked asset to what they
+ * momentarily received would follow a coin they never kept.
+ */
 function isSwapHop(actions: string[]): boolean {
-  return actions.some((a) => /(^|\b)swap\b/i.test(a));
+  return actions.some((a) => /(^|\b)swap\b/i.test(a) && !/flash/i.test(a));
 }
 
 /**
@@ -111,6 +118,20 @@ export function chooseNextHop(params: {
       isSwap: false,
       unfollowed: [],
       basis: "direct",
+    };
+  }
+
+  // With a null sender every `c.address !== sender` comparison is true, so the
+  // subject's own inflows would be treated as payments to third parties and
+  // followed. No sender means there is no actor whose outflow could be traced.
+  if (!sender) {
+    return {
+      nextAddress: null,
+      nextCoinType: trackedCoin,
+      isSwap: false,
+      unfollowed: [],
+      basis: "none",
+      note: "No sender on this transaction, so there is no actor whose outflow could be followed.",
     };
   }
 

@@ -27,6 +27,7 @@ const ACTION_LABELS: Record<string, string> = {
   withdraw: "Withdraw",
   borrow: "Borrow",
   repay: "Repay",
+  flash_swap: "Flash swap",
   flash_loan: "Flash loan",
   flash_repay: "Repay flash loan",
   stake: "Stake",

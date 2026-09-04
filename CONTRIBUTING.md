@@ -66,6 +66,45 @@ Lineage resolution is a lookup, not a guarantee of freshness: a protocol that
 will find, so `find-unknown-packages` below is still how new lineages get
 discovered.
 
+## Mocks must be shapes the service can actually produce
+
+A mock is an assertion about the outside world. When it asserts something
+false, the test stops testing anything — and it keeps passing, which is worse
+than failing.
+
+Three bugs shipped green this way:
+
+- `activeValidators(first: 200)` was mocked as one page with no `pageInfo`.
+  Mainnet rejects that query outright — *"Page size is too large: 200 > 50"* —
+  so `identify_address` had **never once** detected a validator and
+  `get_staking_summary` failed on every call naming one. Every test passed.
+- Absence was mocked as `new Error("not found")`. The service signals it with a
+  gRPC `NOT_FOUND` **status**, so code that correctly checks the status looked
+  broken while a catch-everything looked correct.
+- Both let a completely dead code path report success.
+
+Use the builders in `test/helpers/service-shapes.ts` rather than hand-writing
+response literals. They encode the constraints the services impose and **throw**
+instead of building something impossible, so a false assumption fails at
+authoring time:
+
+```ts
+gqlPage(nodes)                    // always has pageInfo; throws above 50 nodes
+gqlPages(all)                     // splits into linked, in-cap pages
+notFoundError()                   // gRPC NOT_FOUND — absence, which is an answer
+grpcError("UNAVAILABLE")          // a failure, which is not
+httpOk(body) / httpError(401)     // fetch-shaped responses
+```
+
+The distinction `notFoundError()` and `grpcError()` draw is load-bearing, not
+stylistic. Absence is an answer callers conclude things from —
+`identify_address` reports a wallet on it — while an outage means the question
+could not be asked. A test that blurs them proves nothing about the code that
+keeps them apart.
+
+If a builder rejects the response you wanted, that is the finding. Do not
+work around it by writing the literal by hand.
+
 ## Adding a bridge
 
 Bridges live in `src/utils/bridge/detect.ts`, and the bar for adding one is

@@ -138,7 +138,7 @@ export function registerStakingTools(server: McpServer) {
 
   server.tool(
     "get_staking_summary",
-    "Get a wallet's staking positions on Sui. Shows all StakedSui objects with pool, principal amount, and activation epoch.",
+    "Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance — a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.",
     {
       address: z.string().describe("Wallet address (0x...)"),
     },

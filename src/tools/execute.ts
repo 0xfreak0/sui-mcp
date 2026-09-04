@@ -5,7 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerExecuteTools(server: McpServer) {
   server.tool(
     "simulate_transaction",
-    "Simulate a Sui transaction without executing it. Returns predicted effects, gas cost, events, and object changes.",
+    "Dry-run a Sui transaction without signing, sending, or spending anything. Takes Base64 BCS transaction bytes — build them with build_transaction — and returns the effects it WOULD have: status, gas cost, emitted events, balance and object changes. Use it to check whether a transaction succeeds and what it costs before committing, or to see what an unfamiliar payload actually does. This server holds no keys and cannot execute anything.",
     {
       transaction_bcs: z
         .string()

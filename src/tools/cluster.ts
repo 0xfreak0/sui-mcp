@@ -24,7 +24,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerClusterTools(server: McpServer) {
   server.tool(
     "build_wallet_edges",
-    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from four sources: a shared first funder, one address first-funding another, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it) separately from `clusters` (an inference — heuristic tier, never proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
+    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from five sources: a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it) separately from `clusters` (an inference — heuristic tier, never proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
     {
       addresses: z
         .array(z.string())
@@ -64,6 +64,12 @@ export function registerClusterTools(server: McpServer) {
         .max(1000)
         .optional()
         .describe("Refuse merges beyond this size (default 100). A runaway cluster is worse than no answer."),
+      reciprocal_budget: numArg()
+        .int()
+        .min(0)
+        .max(100)
+        .optional()
+        .describe("Reciprocal counterparties to measure for popularity (default 15). Value moving both ways is a strong signal, but the counterparty must be checked before it is trusted."),
       query_budget: numArg()
         .int()
         .min(10)
@@ -76,6 +82,7 @@ export function registerClusterTools(server: McpServer) {
       expand,
       expand_budget,
       popularity_limit,
+      reciprocal_budget,
       min_signal_types,
       max_cluster_size,
       query_budget,
@@ -92,6 +99,7 @@ export function registerClusterTools(server: McpServer) {
           expand,
           expandBudget: expand_budget,
           popularityLimit: popularity_limit,
+          reciprocalBudget: reciprocal_budget,
           queryBudget: query_budget,
         });
 

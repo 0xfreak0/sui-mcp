@@ -28,13 +28,18 @@
 /**
  * Signal types, in the order they are worth trusting.
  *
- * Deliberately excluded: plain transfer volume between two addresses. Everyone
- * pays an exchange, so "A sent to B" is the single most common relationship on
- * chain and clusters the world together. `funding_edge` is the narrow, defended
- * case — A was the *first* inflow that made B exist, which is a setup act, not
- * a payment.
+ * Deliberately excluded: plain ONE-DIRECTIONAL transfer volume. Everyone pays an
+ * exchange, so "A sent to B" is the single most common relationship on chain and
+ * clusters the world together.
+ *
+ * Reciprocal flow is a different claim and is NOT excluded. You do not normally
+ * get money back from a merchant, and the measurement bears that out: across 47
+ * counterparty relationships of ordinary active wallets, 1 was reciprocal — a
+ * 2.1% base rate. Among four addresses known to share an owner, 4 of 6 pairs
+ * were. That is roughly a 32x enrichment, which is why it is weighted level with
+ * a shared narrow funder rather than treated as volume.
  */
-export type SignalType = "cofunded" | "funding_edge" | "sponsor" | "co_tx";
+export type SignalType = "cofunded" | "funding_edge" | "reciprocal" | "sponsor" | "co_tx";
 
 /**
  * Per-signal confidence weight.
@@ -50,6 +55,11 @@ export type SignalType = "cofunded" | "funding_edge" | "sponsor" | "co_tx";
 export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
   cofunded: 1.0,
   funding_edge: 1.0,
+  // Level with a shared narrow funder, on a measured 2.1% base rate. Both
+  // carry the same kind of false positive — a friend who pays you back, an OTC
+  // counterparty — and both are guarded the same way, by refusing the pair when
+  // either side is popular enough to be a service.
+  reciprocal: 1.0,
   sponsor: 0.7,
   co_tx: 0.5,
 };

@@ -5,6 +5,7 @@ import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "..
 import { getLabel, isSink } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
+import { pricesForRanking } from "../utils/price-providers.js";
 import {
   decimalsForCoinType,
   dominantInflowUsd,
@@ -465,17 +466,19 @@ export function registerTraceTools(server: McpServer) {
         // Price this hop's coins before choosing, so the next-hop ranking
         // compares value rather than raw units — 1 USDC is 1e6 units and 1 SUI
         // is 1e9, so a raw comparison ranks by decimal places and can follow
-        // dust over the real transfer. Best-effort: coins with no Pyth feed
-        // fall back to raw magnitude, which is at least consistent per coin.
+        // dust over the real transfer.
+        //
+        // Current prices, deliberately. Ranking needs *relative* value, and
+        // which of five recipients got the most does not become more correct
+        // with block-time precision — while historical pricing is Pyth-only
+        // and Pyth now bills for it. Coins with no quote fall back to raw
+        // magnitude, which is at least consistent within one coin.
         const hopCoins = [...new Set(allChanges.map((c) => c.coin_type))];
-        const hopUnixTs = tx.timestamp ? Math.floor(Date.parse(tx.timestamp) / 1000) : undefined;
-        const decisionPrices = await priceUsdAtTime(hopCoins, hopUnixTs).catch(
-          () => new Map<string, { price: number } | undefined>(),
+        const decisionPrices = await pricesForRanking(hopCoins).catch(
+          () => new Map<string, { price: number }>(),
         );
         const valueUsd = (c: { amount: string; coin_type: string }) => {
-          const price = (decisionPrices as Map<string, { price: number } | undefined>).get(
-            c.coin_type,
-          )?.price;
+          const price = decisionPrices.get(c.coin_type)?.price;
           if (price == null) return null;
           return usdValue(c.amount, decimalsForCoinType(c.coin_type), price);
         };

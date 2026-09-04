@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
+import { pythApiKey, availableSources } from "../utils/price-providers.js";
 import { errorResult } from "../utils/errors.js";
 import { buildPythFeedMap } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -75,7 +76,13 @@ export async function fetchPythPrices(
     const path = timestamp
       ? `/v2/updates/price/${timestamp}`
       : "/v2/updates/price/latest";
+    // Hermes now requires authentication for price *values* (feed discovery is
+    // still open). Without a key this is a guaranteed 401, so skip the request
+    // rather than spend a round trip to be refused.
+    const key = pythApiKey();
+    if (!key) return null;
     const resp = await fetch(`${PYTH_HERMES_URL}${path}?${idParams}`, {
+      headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
@@ -118,6 +125,16 @@ export function registerPriceTools(server: McpServer) {
           if (isNaN(parsed)) return errorResult("Invalid `at`. Use Unix seconds or ISO 8601 format.");
           unixTs = Math.floor(parsed / 1000);
         }
+        // Hermes authenticates price queries now. Without a key every lookup
+        // below returns null, which reads as "this token had no value at that
+        // time" rather than "this server cannot ask". Say so instead.
+        if (!pythApiKey()) {
+          return errorResult(
+            "Historical prices are unavailable: Pyth Hermes now requires authentication for price " +
+              "queries, and no PYTH_API_KEY is set. Set one to enable historical pricing, or omit " +
+              "`at` for current prices, which come from a free source and need no key.",
+          );
+        }
         const { feedIds, reverseMap } = await buildPythFeedMap(coin_types);
         const coinTypesWithFeed = new Set<string>();
         for (const cts of reverseMap.values()) for (const ct of cts) coinTypesWithFeed.add(ct);
@@ -141,7 +158,7 @@ export function registerPriceTools(server: McpServer) {
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify({ query_timestamp: unixTs, query_date: new Date(unixTs * 1000).toISOString(), prices: histPrices }, null, 2),
+            text: JSON.stringify({ query_timestamp: unixTs, query_date: new Date(unixTs * 1000).toISOString(), price_sources: availableSources(), prices: histPrices }, null, 2),
           }],
         };
       }

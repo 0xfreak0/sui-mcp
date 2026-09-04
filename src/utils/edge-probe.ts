@@ -35,6 +35,7 @@ import { pickFundingTx, type FundingTx } from "./funding.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
 import { EdgeSet, type WalletEdge } from "./wallet-edges.js";
+import { assessCoFunding } from "./co-funding.js";
 
 /**
  * Distinct counterparties past which an intermediary is a service, not a person.
@@ -372,6 +373,74 @@ export async function probeSponsored(
   return { members, popular: false, observed: members.size, complete: reachedEnd };
 }
 
+/**
+ * How many distinct addresses one transaction paid.
+ *
+ * The denominator that decides what shared funding is worth. Two addresses
+ * first funded by the same transaction is near-decisive when that transaction
+ * paid two addresses, and close to meaningless when it paid twenty — an
+ * unrelated wallet lands in a batch distribution by being on a list, not by
+ * sharing an operator. Without this the two are scored identically.
+ */
+const TX_RECIPIENTS_QUERY = `query ($digest: String!) {
+  transactionEffects(digest: $digest) {
+    balanceChanges { nodes { amount owner { address } } }
+  }
+}`;
+
+/** Null when the transaction could not be read — never a default that reads as measured. */
+async function countTxRecipients(digest: string, budget: Budget): Promise<number | null> {
+  if (!budget.take()) return null;
+  try {
+    const r = await gqlQuery<{
+      transactionEffects: { balanceChanges: { nodes: Array<{ amount?: string; owner?: { address: string } }> } } | null;
+    }>(TX_RECIPIENTS_QUERY, { digest });
+    const nodes = r.transactionEffects?.balanceChanges?.nodes;
+    if (!nodes) return null;
+    const recipients = new Set<string>();
+    for (const n of nodes) {
+      if (n.owner?.address && n.amount && BigInt(n.amount) > 0n) recipients.add(n.owner.address);
+    }
+    return recipients.size;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Weight for a `cofunded` pair, given how the two were funded.
+ *
+ * Reuses {@link assessCoFunding}, the same doctrine `find_funding_sources`
+ * applies, so the two tools cannot disagree about what a batch payout is worth.
+ *
+ * Only pairs funded by the SAME transaction are re-weighted. Two addresses
+ * funded by one funder in separate transactions were each funded deliberately,
+ * which is the ordinary `cofunded` case and keeps the default weight.
+ */
+function coFundedWeight(
+  sharedDigest: string | null,
+  recipientCount: number | null,
+): { weight: number; detail: string } | undefined {
+  if (!sharedDigest) return undefined;
+  const { strength, interpretation } = assessCoFunding(2, recipientCount);
+  // Calibrated to what assessCoFunding actually says, which is subtler than
+  // "batch = weak". A wide batch is "no stronger than shared funding" — not
+  // worthless — and it asks the reader to check whether the cohort clusters
+  // within the batch by timing or later behaviour. So it sits just under the
+  // 1.0 merge threshold: enough that one corroborating signal carries the pair,
+  // not enough to assert a cluster from list membership alone.
+  //
+  // A failed lookup keeps the default. Declining to spend a query is not
+  // evidence about the payout's width.
+  const weight =
+    strength === "targeted" ? 1.2 : strength === "batch" ? 0.8 : 1.0;
+  const size = recipientCount === null ? "an unknown number of" : `${recipientCount}`;
+  return {
+    weight,
+    detail: `Both were first funded by the SAME transaction (${sharedDigest.slice(0, 10)}…), which paid ${size} addresses. ${interpretation}`,
+  };
+}
+
 /** Sponsors that paid this address's gas, and who it shared transactions with. */
 interface SeedProfile {
   sponsors: Map<string, string>;
@@ -582,15 +651,50 @@ export async function buildWalletEdges(
     if (!funderMembers.has(funder)) continue;
     bySharedFunder.set(funder, [...(bySharedFunder.get(funder) ?? []), seed]);
   }
-  for (const [funder, members] of bySharedFunder) {
-    if (members.length < 2) continue;
-    edges.addGroup(
+  // Recipient counts for any transaction that first-funded two or more of the
+  // addresses under examination. Fetched once, shared by every emission site.
+  const txRecipients = new Map<string, number | null>();
+  const prefetchRecipients = async (members: string[]) => {
+    const byDigest = new Map<string, number>();
+    for (const m of members) {
+      const d = funderDigest.get(m);
+      if (d) byDigest.set(d, (byDigest.get(d) ?? 0) + 1);
+    }
+    for (const [digest, count] of byDigest) {
+      if (count < 2 || txRecipients.has(digest)) continue;
+      txRecipients.set(digest, await countTxRecipients(digest, budget));
+    }
+  };
+
+  /**
+   * Emit `cofunded` edges for one funder, weighted by how the pair was funded.
+   *
+   * A star from the seeds: same components as pairing everyone, far less output.
+   */
+  const emitCoFunded = async (funder: string, seedsHere: string[], others: string[]) => {
+    if (seedsHere.length === 0 || seedsHere.length + others.length < 2) return;
+    await prefetchRecipients([...seedsHere, ...others]);
+    edges.addStar(
       "cofunded",
       funder,
-      members,
+      seedsHere,
+      others,
       `First funded by the same address (${funder.slice(0, 10)}…), which pays few enough addresses that the coincidence is meaningful`,
       (m) => (funderDigest.get(m) ? [funderDigest.get(m)!] : []),
+      (a, b) => {
+        const da = funderDigest.get(a);
+        const db = funderDigest.get(b);
+        // Only a SHARED funding transaction is re-weighted. Separate
+        // transactions from one funder means each was funded deliberately,
+        // which is the ordinary case and keeps the default weight.
+        if (!da || !db || da !== db) return undefined;
+        return coFundedWeight(da, txRecipients.get(da) ?? null);
+      },
     );
+  };
+
+  for (const [funder, members] of bySharedFunder) {
+    await emitCoFunded(funder, members, []);
   }
 
   // Seeds sharing a narrow sponsor. Directly observed, no verification needed.
@@ -663,15 +767,10 @@ export async function buildWalletEdges(
       );
     }
     for (const [funder, found] of confirmed) {
-      const seedsHere = uniqueSeeds.filter((s) => firstFunders.get(s) === funder);
-      if (found.length + seedsHere.length < 2 || seedsHere.length === 0) continue;
-      edges.addStar(
-        "cofunded",
+      await emitCoFunded(
         funder,
-        seedsHere,
+        uniqueSeeds.filter((s) => firstFunders.get(s) === funder),
         found,
-        `First funded by the same address (${funder.slice(0, 10)}…), which pays few enough addresses that the coincidence is meaningful`,
-        (m) => (funderDigest.get(m) ? [funderDigest.get(m)!] : []),
       );
     }
   }

@@ -363,7 +363,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
 | `resolve_protocol_packages` | Find which of a protocol's package versions are actually emitting now — the bundled registry is a decode map full of historical IDs, and querying one returns nothing |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
-| `build_wallet_edges` | Finds addresses sharing an operator with the ones you give it, and says why. Shared first funder, direct funding, shared gas sponsor, co-appearance in one transaction — with every intermediary measured first so an exchange can't link strangers together |
+| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
 | `list_findings` | List findings in a case, or every case with its count |
 | `export_case` | Render a case as a Markdown report, highest-confidence findings first |

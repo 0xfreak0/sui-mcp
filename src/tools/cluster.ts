@@ -140,6 +140,12 @@ export function registerClusterTools(server: McpServer) {
                   clusters: clustered.clusters.map((c) => ({
                     ...c,
                     members: c.members.map(describe),
+                    ...(c.independent_intermediaries < 2
+                      ? {
+                          single_point_of_failure:
+                            "Every edge in this cluster rests on ONE intermediary. That is one fact stated many times, not corroboration — the edge count is not evidence of strength. If that address turns out to be a payout service or exchange, the whole cluster falls at once. Check it in used_intermediaries before relying on this.",
+                        }
+                      : {}),
                   })),
                   ...(clustered.size_capped
                     ? {

@@ -20,6 +20,8 @@ import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { timestampToIso } from "../utils/formatting.js";
 import { errorResult, isNotFound } from "../utils/errors.js";
+import { getCachedTransaction, saveTransaction } from "../utils/store.js";
+import { getNetwork } from "../config.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -134,8 +136,12 @@ interface FetchedTx {
   callSites: Array<{ packageId: string; module: string; function: string }>;
   timestamp: string | null;
   checkpoint: number | null;
-  /** Which transport answered. An archive hop is older than the fullnode keeps. */
-  source: "fullnode" | "archive";
+  /**
+   * Which transport answered. An archive hop is older than the fullnode keeps;
+   * a cache hop was fetched in an earlier session and is safe because a
+   * finalized transaction is immutable.
+   */
+  source: "fullnode" | "archive" | "cache";
 }
 
 /** Pull Move calls out of decoder-shaped commands, for bridge detection. */
@@ -154,6 +160,16 @@ function callSitesOf(commands: ReturnType<typeof adaptCommands>) {
 }
 
 async function fetchTx(digest: string): Promise<FetchedTx | null> {
+  // A finalized transaction never changes, so a hit here is always correct and
+  // needs no TTL. This is deliberately the only thing about a trace that is
+  // cached: the *conclusion* is derived from labels and from how far the chain
+  // has grown, both of which move, and a stale conclusion looks identical to a
+  // current one. Re-running a trace after adding a label now costs nothing but
+  // the recomputation.
+  const network = getNetwork();
+  const cached = getCachedTransaction<FetchedTx>(network, digest);
+  if (cached) return { ...cached, source: "cache" };
+
   const data = await gqlQuery<GqlTxResult>(TX_QUERY, { digest }).catch(() => null);
   const tx = data?.transaction;
 
@@ -171,7 +187,7 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
   if (tx && !hollow) {
     const bcNodes = tx.effects?.balanceChanges?.nodes ?? [];
     const commands = adaptCommands(tx.kind?.commands?.nodes ?? []);
-    return {
+    const fetched: FetchedTx = {
       sender: tx.sender?.address ?? null,
       balanceChanges: bcNodes.map((n) => ({
         address: n.owner?.address ?? "",
@@ -185,6 +201,8 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
       checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
       source: "fullnode",
     };
+    saveTransaction(network, digest, fetched);
+    return fetched;
   }
 
   // The fullnode prunes. A digest it no longer holds is exactly what the
@@ -227,7 +245,7 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
       ? kind.data.programmableTransaction.commands
       : [];
 
-  return {
+  const archived: FetchedTx = {
     sender: g.transaction?.sender ?? null,
     balanceChanges: grpcBc.map((bc) => ({
       address: bc.address ?? "",
@@ -242,6 +260,11 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
     checkpoint: g.checkpoint != null ? Number(g.checkpoint) : null,
     source: "archive",
   };
+  // Worth caching most of all: an archive hop is one the fullnode has pruned,
+  // so it is both the slowest to fetch and the least likely to become
+  // available again.
+  saveTransaction(network, digest, archived);
+  return archived;
 }
 
 interface TxQueryPage {
@@ -501,6 +524,9 @@ export function registerTraceTools(server: McpServer) {
       // trace reached back past the fullnode's retention, which is usually the
       // interesting part of an old case.
       let archiveHops = 0;
+      // Hops served from the local transaction cache. Reported so a fast trace
+      // is legible as reuse rather than as a different chain read.
+      let cacheHops = 0;
       // Addresses already followed. A↔B ping-pong is a common obfuscation
       // pattern, and it passes the custody check on every hop — without this
       // the trace fills maxHops with a two-wallet loop and presents it as a
@@ -551,6 +577,7 @@ export function registerTraceTools(server: McpServer) {
           break;
         }
         if (tx.source === "archive") archiveHops++;
+        if (tx.source === "cache") cacheHops++;
 
         const sender = tx.sender;
         const allChanges = tx.balanceChanges;
@@ -876,6 +903,7 @@ export function registerTraceTools(server: McpServer) {
         hop_count: enrichedHops.length,
         stopped_at_sink: terminationReason,
         ...(archiveHops ? { hops_served_by_archive: archiveHops } : {}),
+        ...(cacheHops ? { hops_from_cache: cacheHops } : {}),
         ...(custodyBreak ? { custody_break: custodyBreak } : {}),
         // Structured, not just prose in the summary, so a caller can chain
         // straight into resolve_bridge_transfer without re-parsing the text.

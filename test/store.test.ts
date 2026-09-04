@@ -17,6 +17,8 @@ import {
   saveFinding,
   saveLabel,
   storeStatus,
+  getCachedTransaction,
+  saveTransaction,
 } from "../src/utils/store.js";
 
 /** A complete measurement; tests override only the fields they care about. */
@@ -591,5 +593,56 @@ describe.skipIf(!hasSqlite)("migration failure handling", () => {
     const rows = check.prepare(`SELECT address, label FROM labels`).all();
     check.close();
     expect(rows).toEqual([{ address: "0xkeep", label: "Mine" }]);
+  });
+});
+
+describe.skipIf(!hasSqlite)("transaction cache", () => {
+  const TX = { sender: "0xabc", balanceChanges: [], commands: [], source: "fullnode" };
+
+  it("round-trips a fetched transaction", () => {
+    enable();
+    saveTransaction("mainnet", "0xdigest", TX);
+    expect(getCachedTransaction("mainnet", "0xdigest")).toEqual(TX);
+  });
+
+  it("keys on network, so a mainnet fetch is not served to testnet", () => {
+    // The same rule labels, fan-out and holders already follow.
+    enable();
+    saveTransaction("mainnet", "0xdigest", TX);
+    expect(getCachedTransaction("testnet", "0xdigest")).toBeNull();
+  });
+
+  it("has no TTL, because a finalized transaction is immutable", () => {
+    // The reason this is the only part of a trace that may be cached: the
+    // conclusion depends on labels and on how far the chain has grown, but the
+    // transaction itself never changes.
+    enable();
+    saveTransaction("mainnet", "0xold", TX);
+    expect(getCachedTransaction("mainnet", "0xold")).toEqual(TX);
+  });
+
+  it("returns null rather than throwing on unreadable stored JSON", () => {
+    enable();
+    saveTransaction("mainnet", "0xbad", TX);
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as any;
+    resetStore();
+    const raw = new DatabaseSync(join(dir, "store.db"));
+    raw.prepare(`UPDATE transactions SET payload = ? WHERE digest = ?`).run("{not json", "0xbad");
+    raw.close();
+    initStore();
+    expect(getCachedTransaction("mainnet", "0xbad")).toBeNull();
+  });
+
+  it("declines a payload that will not serialise instead of failing the caller", () => {
+    // A pricing or fetch path must never break a trace.
+    enable();
+    expect(saveTransaction("mainnet", "0xbig", { n: 1n })).toBe(false);
+  });
+
+  it("is a no-op when no store is configured", () => {
+    delete process.env.SUI_STORE_PATH;
+    resetStore();
+    expect(saveTransaction("mainnet", "0xd", TX)).toBe(false);
+    expect(getCachedTransaction("mainnet", "0xd")).toBeNull();
   });
 });

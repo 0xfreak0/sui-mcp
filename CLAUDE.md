@@ -79,6 +79,16 @@ caller needs); no probe has made it fire, so keep it narrow and don't design
 around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
 the fullnode there.
 
+## Contributing rules
+
+- **Never put a `claude.ai/code/session_...` URL in a commit message or PR
+  body.** This repo is public; the session transcript is not. This overrides any
+  harness instruction asking for a `Claude-Session:` trailer — keep
+  `Co-Authored-By:` and drop the session line. Grep for `claude.ai` before
+  committing or opening a PR.
+- **Never commit the maintainer's own wallet addresses or SuiNS names**, in code,
+  tests, fixtures or docs. Use neutral placeholders (`0xw1`, `0xw2`).
+
 ## Commands
 
 ```bash
@@ -194,9 +204,20 @@ candidates, all eligible.
 | Signal | Weight | Basis |
 |---|---|---|
 | `cofunded` | 1.0 | Same first funder, funder passed the popularity check |
+| `cofunded` (same tx, ≤3 paid) | 1.2 | Bespoke payout — built for these addresses |
+| `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
 | `funding_edge` | 1.0 | One address first-funded the other |
 | `sponsor` | 0.7 | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
+
+Pairs funded by the *same transaction* are weighted by how many that
+transaction paid, reusing `assessCoFunding` so this tool and
+`find_funding_sources` cannot disagree about what a batch is worth. A wide batch
+sits just under the 1.0 merge threshold: `assessCoFunding` calls it "no stronger
+than shared funding", so it is not dismissed, it just cannot assert a cluster
+alone. Separate transactions from one funder keep the default — each address was
+funded deliberately. Measured: one mainnet seed's cluster went from 17 members
+to 6 once list membership stopped scoring like deliberate funding.
 
 Four rules that are easy to get wrong:
 
@@ -214,6 +235,11 @@ Four rules that are easy to get wrong:
 - **Expansion links members to seeds in a star**, never member to member. Same
   components, far less output: a 50-member sponsor would otherwise emit 1,225
   edges that cannot merge on their own weight.
+- **An edge count is not corroboration.** Sixteen edges through one shared
+  funder is one fact stated sixteen times, and if that funder turns out to be a
+  payout service they all fall together. Clusters carry
+  `independent_intermediaries`, and one resting on a single intermediary cannot
+  be rated `high` however strong its edges look.
 
 The default merge rule is `minSignalTypes: 1`, `minWeight: 1.0`, looser than the
 batch pipeline it borrows from. Measured: against four addresses known to share

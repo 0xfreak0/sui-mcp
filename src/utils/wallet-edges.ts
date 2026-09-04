@@ -63,6 +63,15 @@ export interface EdgeEvidence {
   digests: string[];
   /** Plain-language statement of the observed fact — never the inference. */
   detail: string;
+  /**
+   * Weight for this instance.
+   *
+   * Usually the type's default, but a signal can be worth more or less than
+   * its type suggests. Two addresses first funded by the same *transaction*
+   * are `cofunded` either way, yet a payout to two addresses is bespoke while
+   * one to twenty is a list an unrelated address can land in.
+   */
+  weight: number;
 }
 
 export interface WalletEdge {
@@ -95,6 +104,23 @@ const MAX_EVIDENCE = 5;
  */
 export class EdgeSet {
   private pairs = new Map<string, WalletEdge>();
+  /** Best weight seen per (pair, signal type). See {@link recompute}. */
+  private typeWeights = new Map<string, Map<SignalType, number>>();
+
+  /**
+   * An edge's weight is the sum over distinct signal types of the *strongest*
+   * instance of each.
+   *
+   * Summing every instance would let one mechanism clear a bar meant to require
+   * independent corroboration. Taking the strongest rather than the first means
+   * a pair that shares both a bespoke two-way payout and a wide batch is scored
+   * on the bespoke one, which is the fact that actually distinguishes them.
+   */
+  private recompute(key: string, edge: WalletEdge): void {
+    let total = 0;
+    for (const w of this.typeWeights.get(key)!.values()) total += w;
+    edge.weight = Number(total.toFixed(2));
+  }
 
   private static key(a: string, b: string): [string, string] {
     return a < b ? [a, b] : [b, a];
@@ -108,14 +134,17 @@ export class EdgeSet {
     detail: string,
     digests: string[] = [],
     via?: string,
+    weight?: number,
   ): void {
     if (a === b) return;
+    const w = weight ?? SIGNAL_WEIGHTS[type];
     const [wa, wb] = EdgeSet.key(a, b);
     const k = `${wa}|${wb}`;
     let edge = this.pairs.get(k);
     if (!edge) {
       edge = { wallet_a: wa, wallet_b: wb, signals: [], signal_types: [], weight: 0 };
       this.pairs.set(k, edge);
+      this.typeWeights.set(k, new Map());
     }
     // One entry per (type, via): a pair sharing two different narrow funders is
     // two independent coincidences and deserves two evidence rows, but the same
@@ -129,15 +158,11 @@ export class EdgeSet {
       }
       return;
     }
-    edge.signals.push({ type, via, digests: digests.slice(0, MAX_EVIDENCE), detail });
-    if (!edge.signal_types.includes(type)) {
-      edge.signal_types.push(type);
-      // Weight counts each distinct TYPE once. Two shared funders is stronger
-      // evidence than one, but it is still one kind of evidence, and letting it
-      // compound would let a single mechanism clear a threshold meant to
-      // require independent corroboration.
-      edge.weight = Number((edge.weight + SIGNAL_WEIGHTS[type]).toFixed(2));
-    }
+    edge.signals.push({ type, via, digests: digests.slice(0, MAX_EVIDENCE), detail, weight: w });
+    if (!edge.signal_types.includes(type)) edge.signal_types.push(type);
+    const tw = this.typeWeights.get(k)!;
+    tw.set(type, Math.max(tw.get(type) ?? 0, w));
+    this.recompute(k, edge);
   }
 
   /**
@@ -153,17 +178,20 @@ export class EdgeSet {
     members: string[],
     detail: string,
     digestFor: (member: string) => string[] = () => [],
+    weightFor?: (a: string, b: string) => { weight: number; detail: string } | undefined,
   ): void {
     const unique = [...new Set(members)];
     for (let i = 0; i < unique.length; i++) {
       for (let j = i + 1; j < unique.length; j++) {
+        const w = weightFor?.(unique[i], unique[j]);
         this.add(
           type,
           unique[i],
           unique[j],
-          detail,
+          w?.detail ?? detail,
           [...digestFor(unique[i]), ...digestFor(unique[j])],
           via,
+          w?.weight,
         );
       }
     }
@@ -187,16 +215,17 @@ export class EdgeSet {
     members: string[],
     detail: string,
     digestFor: (member: string) => string[] = () => [],
+    weightFor?: (a: string, b: string) => { weight: number; detail: string } | undefined,
   ): void {
     const uniqueSeeds = [...new Set(seeds)];
     const others = [...new Set(members)].filter((m) => !uniqueSeeds.includes(m));
+    const emit = (a: string, b: string) => {
+      const w = weightFor?.(a, b);
+      this.add(type, a, b, w?.detail ?? detail, [...digestFor(a), ...digestFor(b)], via, w?.weight);
+    };
     for (let i = 0; i < uniqueSeeds.length; i++) {
-      for (let j = i + 1; j < uniqueSeeds.length; j++) {
-        this.add(type, uniqueSeeds[i], uniqueSeeds[j], detail, [...digestFor(uniqueSeeds[i]), ...digestFor(uniqueSeeds[j])], via);
-      }
-      for (const m of others) {
-        this.add(type, uniqueSeeds[i], m, detail, [...digestFor(uniqueSeeds[i]), ...digestFor(m)], via);
-      }
+      for (let j = i + 1; j < uniqueSeeds.length; j++) emit(uniqueSeeds[i], uniqueSeeds[j]);
+      for (const m of others) emit(uniqueSeeds[i], m);
     }
   }
 
@@ -244,6 +273,15 @@ export interface Cluster {
   size: number;
   /** Signal types appearing on the edges that built this cluster. */
   signal_types: SignalType[];
+  /**
+   * Distinct intermediaries the cluster's edges rest on.
+   *
+   * The number that stops an edge count from reading as corroboration. Sixteen
+   * edges through one shared funder is ONE fact stated sixteen times: if that
+   * funder turns out to be a payout service, every edge falls at once. Two
+   * independent intermediaries is a genuinely different claim.
+   */
+  independent_intermediaries: number;
   /** The weakest merge in the cluster — a chain is only as strong as this. */
   min_edge_weight: number;
   /** Distinct signal types on that weakest merge. */
@@ -339,11 +377,20 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
   // Roll each component up, carrying the weakest merge that built it — a
   // cluster assembled through one 1.0 edge and one 3.0 edge is only as
   // defensible as the 1.0.
-  const groups = new Map<number, { members: Set<string>; types: Set<SignalType>; minW: number; minT: number }>();
+  const groups = new Map<
+    number,
+    { members: Set<string>; types: Set<SignalType>; vias: Set<string>; minW: number; minT: number }
+  >();
   for (const a of addrOf) {
     const root = uf.find(idOf.get(a)!);
     if (!groups.has(root)) {
-      groups.set(root, { members: new Set(), types: new Set(), minW: Infinity, minT: Infinity });
+      groups.set(root, {
+        members: new Set(),
+        types: new Set(),
+        vias: new Set(),
+        minW: Infinity,
+        minT: Infinity,
+      });
     }
     groups.get(root)!.members.add(a);
   }
@@ -354,6 +401,10 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
     if (uf.find(idOf.get(e.wallet_b)!) !== root) continue;
     const g = groups.get(root)!;
     for (const t of e.signal_types) g.types.add(t);
+    // A signal with no intermediary (a direct funding edge, a shared
+    // transaction) stands on its own, so it counts as its own basis rather
+    // than being lumped in with the shared-intermediary signals.
+    for (const sig of e.signals) g.vias.add(sig.via ?? `${sig.type}:direct`);
     g.minW = Math.min(g.minW, e.weight);
     g.minT = Math.min(g.minT, e.signal_types.length);
   }
@@ -364,9 +415,10 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
       members: [...g.members].sort(),
       size: g.members.size,
       signal_types: [...g.types],
+      independent_intermediaries: g.vias.size,
       min_edge_weight: g.minW === Infinity ? 0 : g.minW,
       min_edge_signal_types: g.minT === Infinity ? 0 : g.minT,
-      confidence: confidenceFor(g.minT, g.minW),
+      confidence: confidenceFor(g.minT, g.minW, g.vias.size),
     }))
     .sort((a, b) => b.size - a.size);
 
@@ -380,7 +432,17 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
  * two mechanisms agreeing is much harder to produce by coincidence than one
  * strong mechanism, however strong.
  */
-function confidenceFor(minSignalTypes: number, minWeight: number): Cluster["confidence"] {
+function confidenceFor(
+  minSignalTypes: number,
+  minWeight: number,
+  independentIntermediaries: number,
+): Cluster["confidence"] {
+  // Everything resting on one intermediary cannot be high confidence however
+  // strong the edges look: one popularity misjudgement collapses the whole
+  // cluster at once, and that is a single point of failure, not corroboration.
+  if (independentIntermediaries < 2) {
+    return minWeight >= 1.0 ? "medium" : "low";
+  }
   if (minSignalTypes >= 2 && minWeight >= 1.5) return "high";
   if (minWeight >= 1.0) return "medium";
   return "low";

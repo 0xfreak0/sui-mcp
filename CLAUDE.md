@@ -177,6 +177,118 @@ A hop the archive served is counted in `hops_served_by_archive`. An
 unfetchable *starting* digest is an error, never an empty trace — "nothing to
 follow" and "could not look" are opposite conclusions on hop 0.
 
+### Wallet clustering, built live
+
+`build_wallet_edges` (`src/tools/cluster.ts`) answers "does this address share an
+operator with the ones I already have" without an analytics warehouse behind it.
+Two files: `src/utils/wallet-edges.ts` is pure (signals, weights, union-find),
+`src/utils/edge-probe.ts` does the network work.
+
+**Edges are facts, clusters are inferences**, and the response keeps them apart.
+"These two were first funded by the same address, in transactions X and Y" is
+chain-derived and checkable; "therefore one person controls both" is not.
+Clusters are this server's only `heuristic`-tier output — the tier the bridge
+resolvers define and deliberately never produce.
+
+The thing that makes it work on demand: **the count is never needed, only the
+bound.** Whether a funder paid 51 addresses or 51,000, the verdict is the same,
+so `probeRecipients` fetches `limit + 1` distinct counterparties and stops. That
+one decision also solves candidate generation, because the probe that answers
+"is F popular?" returns *who F paid* as a side effect — popular means discard F
+and spend nothing more, narrow means at most `limit` members and every one of
+them is a candidate. One bounded query, both answers.
+
+Signals and why they are weighted as they are:
+
+| Signal | Weight | Basis |
+|---|---|---|
+| `cofunded` | 1.0 | Shared first funder, after that funder passed the popularity filter |
+| `funding_edge` | 1.0 | One address sent the first funding that made the other exist |
+| `sponsor` | 0.7 | Shared gas payer; strong, but relayer services exist and only the probe separates them |
+| `co_tx` | 0.5 | A **third party** moved both balances in one transaction, under the mass-action cap |
+
+Plain transfer volume is deliberately **not** a signal. Everyone pays an
+exchange, so "A sent to B" is the most common relationship on chain and clusters
+the world together. `funding_edge` is the narrow defended case: a setup act, not
+a payment.
+
+That rule has one non-obvious consequence, and getting it wrong is how the first
+version of `co_tx` shipped broken. Balance changes include the **sender**, so
+counting every party in a transaction made "A paid B" an edge — transfer volume
+by another name. It fired on 6 of 6 pairs in a live run, and a signal that always
+fires carries no information; worse, at 0.5 it could lift a 0.7 sponsor edge over
+the 1.0 merge threshold. The sender is now excluded, which leaves the real
+signal: somebody *else* paid two wallets in one transaction.
+
+Being paid is not being funded, so an expansion candidate is admitted as
+`cofunded` only after computing **its own** first funder. Sponsorship needs no
+such check — the probe observed it directly.
+
+The default merge rule is `minSignalTypes: 1` with `minWeight: 1.0`, which is
+*looser* than the batch pipeline this borrows from, and deliberately. Measured
+against four mainnet addresses known to share an owner, the batch rule (2 signal
+types, weight 1.5) merged **none** of them: ordinary personal alts share exactly
+one mechanism. That rule exists to avoid painting honest wallets as operator
+crews across a whole-chain population; this tool has one subject and an analyst
+reading per-edge evidence. `test/wallet-edges.test.ts` pins both behaviours so
+the default is never "tightened" back by eye.
+
+Measured on a known co-owned set of four mainnet addresses: 24 queries, ~5s, no
+truncation. It found both funding edges and returned **two clusters of two**
+where the truth is one set of four. The missing link between the pairs rested
+only on a shared sponsor, and that sponsor is a relayer with 75 distinct
+senders — correctly excluded as evidence, but the pair really is co-owned, so
+this is a **recall miss, not a correct refusal**.
+
+That is the intended direction of failure. The tool reports what it can
+evidence, not what is true, and under-merging leaves an analyst with a
+verifiable partial answer instead of a confident wrong one. It is also the
+concrete reason `observed_but_below_threshold` is in the response: the pair that
+should have merged is sitting right there, with its evidence, for a reader who
+knows more than the chain does.
+
+A `narrow` verdict is not symmetric with a `popular` one. Popular is proven —
+the limit was exceeded by things actually seen. Narrow off an **incomplete** scan
+is provisional, because the probe walks backwards from recent activity while the
+fundings it filters are historical: an address that airdropped ten thousand
+wallets years ago and has been quiet since reads as narrow. `used_intermediaries`
+carries `scan_complete` per intermediary so that distinction survives into the
+response.
+
+Expansion links members to the seeds in a **star**, never member-to-member.
+Union-find yields the same components either way, but a narrow sponsor with 50
+members expands to 1,225 pairs under full pairing — none of which can merge on
+their own weight, so the response fills with noise that buries the edges an
+analyst came for.
+
+Two caveats that belong in the response, not the docs, and are emitted there:
+
+- **Absence of an edge is not evidence of separate control.** Every signal comes
+  from a capped scan of public data.
+- A popularity verdict is a *sample*. `excluded_intermediaries` reports what was
+  discarded and why, so a filtered-out exchange is visible rather than silent.
+
+Nothing calls this automatically. A heuristic result must never silently change
+where a chain-derived trace stops — the same reason `get_address_fanout`
+suggests a hub label and refuses to apply it.
+
+### First-funder cache
+
+`first_funders` in the store, and it is cacheable for the same reason the
+transaction cache is: a wallet's **first** funding is fixed the moment it
+happens, so there is no TTL and no invalidation path to get wrong. The asymmetry
+is that a *negative* goes stale — an address with no qualifying funding today
+can be funded tomorrow — so **only positives are written**.
+
+Stamped with `FUNDING_METHOD_VERSION`, because the answer depends on the dust
+floors and the unpriced-coin rule in `pickFundingTx`; a row written under
+different rules is a different measurement wearing the same key, and is ignored
+rather than trusted.
+
+Measured: 24 queries to 18 on a repeat build of the same four wallets, with
+identical output. The saving grows with expansion, where every candidate
+verification is one cacheable lookup.
+
 ### Account identity
 
 Anything **stored or reported** carries a chain-qualified account id, not a

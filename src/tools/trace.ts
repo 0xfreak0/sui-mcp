@@ -786,6 +786,7 @@ export function registerTraceTools(server: McpServer) {
           is_sink?: boolean;
           kind?: string;
           object_type?: string;
+          names_held?: Array<{ name: string; expired: boolean; expires_at?: string }>;
           note?: string;
         }
       > = {};
@@ -797,6 +798,7 @@ export function registerTraceTools(server: McpServer) {
         const proto = lookupProtocolDisplay(addr);
         if (proto) label.protocol = proto.name;
         const id = identities.get(addr);
+        if (id?.names_held?.length) label.names_held = id.names_held;
         if (id && id.kind !== "wallet") {
           label.kind = id.kind;
           if (id.object_type) label.object_type = id.object_type;

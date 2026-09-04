@@ -112,6 +112,7 @@ export function registerClusterTools(server: McpServer) {
             // it is infrastructure several parties touch.
             ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
             ...(id?.protocol ? { protocol: id.protocol } : {}),
+            ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
             ...(note ? { note } : {}),
           };
         };

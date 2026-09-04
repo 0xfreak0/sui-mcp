@@ -99,6 +99,15 @@ let unavailableReason: string | null = null;
  */
 export const FANOUT_METHOD_VERSION = 3;
 
+/**
+ * Stamp for cached first-funder answers.
+ *
+ * Bump whenever the rules in `pickFundingTx` change what counts as funding —
+ * the dust floors, the unpriced-coin rule, or how the funder is chosen. A row
+ * written under the old rules is a different measurement wearing the same key.
+ */
+export const FUNDING_METHOD_VERSION = 1;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (
   -- Canonical CAIP-10. The chain and address columns are its two halves,
@@ -143,6 +152,24 @@ CREATE TABLE IF NOT EXISTS transactions (
   -- checkpoint) are already normalised to a string and a number before this.
   payload     TEXT NOT NULL,
   fetched_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS first_funders (
+  -- Which inflow made this account exist, chain-qualified like every other key.
+  --
+  -- Immutable in the same sense the transaction cache is: a wallet's FIRST
+  -- funding is fixed the moment it happens and no later activity can change
+  -- it. So there is no TTL. What can change is the answer for an address that
+  -- had no qualifying funding yet, which is exactly why only positives are
+  -- ever written here -- caching "no funder found" would freeze a wallet as
+  -- unfunded forever.
+  account         TEXT PRIMARY KEY,
+  funder_account  TEXT NOT NULL,
+  digest          TEXT NOT NULL,
+  -- The dust floors and price rules that produced this answer. A row computed
+  -- under different rules is not the same measurement, so it is ignored rather
+  -- than trusted.
+  method_version  INTEGER NOT NULL,
+  computed_at     INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS findings (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -576,6 +603,46 @@ export function getCachedFanout(
   return age <= maxAgeMs ? { ...row, age_ms: age, method_version: FANOUT_METHOD_VERSION } : null;
 }
 
+
+/* ------------------------------------------------------------------ *
+ * First-funder cache
+ * ------------------------------------------------------------------ */
+
+/**
+ * Remember which account first funded `account`.
+ *
+ * Positives only, by contract: see the table comment. Callers pass
+ * chain-qualified accounts so a mainnet and a testnet answer for the same
+ * address string cannot collide.
+ */
+export function saveFirstFunder(account: string, funderAccount: string, digest: string): boolean {
+  initStore();
+  if (!db) return false;
+  db.prepare(
+    `INSERT INTO first_funders (account, funder_account, digest, method_version, computed_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(account) DO UPDATE SET
+       funder_account=excluded.funder_account,
+       digest=excluded.digest,
+       method_version=excluded.method_version,
+       computed_at=excluded.computed_at`,
+  ).run(account, funderAccount, digest, FUNDING_METHOD_VERSION, Date.now());
+  return true;
+}
+
+/** A cached first funder, or null. Rows from older rules are ignored, not trusted. */
+export function getCachedFirstFunder(
+  account: string,
+): { funder_account: string; digest: string } | null {
+  initStore();
+  if (!db) return null;
+  const row = db
+    .prepare(`SELECT funder_account, digest, method_version FROM first_funders WHERE account = ?`)
+    .get(account) as { funder_account?: string; digest?: string; method_version?: number } | undefined;
+  if (!row?.funder_account || !row.digest) return null;
+  if (row.method_version !== FUNDING_METHOD_VERSION) return null;
+  return { funder_account: row.funder_account, digest: row.digest };
+}
 
 /* ------------------------------------------------------------------ *
  * Transaction cache

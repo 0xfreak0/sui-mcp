@@ -37,6 +37,7 @@ import { registerPackageAuditTools } from "./package-audit.js";
 import { registerFundingTools } from "./funding.js";
 import { registerTimelineTools } from "./timeline.js";
 import { registerObjectHistoryTools } from "./object-history.js";
+import { registerClusterTools } from "./cluster.js";
 import { withNetworkParam } from "./with-network.js";
 import {
   applyProfiles,
@@ -94,6 +95,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerFundingTools(server);
   registerTimelineTools(server);
   registerObjectHistoryTools(server);
+  registerClusterTools(server);
 
   // Apply the startup profile, then register the switch that expands it.
   // `enable_tools` goes on the raw server so it is never itself gated — it is

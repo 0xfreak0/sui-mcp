@@ -156,6 +156,13 @@ export function registerClusterTools(server: McpServer) {
                       }
                     : {}),
 
+                  ...(built.used_intermediaries.length
+                    ? {
+                        used_intermediaries: built.used_intermediaries,
+                        used_intermediary_note:
+                          "The shared funders and sponsors the edges above rest on. `scan_complete: false` means the scan hit its page cap before reaching the end of that address's history, so calling it narrow is provisional — a widely-distributing address that has since gone quiet can read as narrow from recent activity alone.",
+                      }
+                    : {}),
                   ...(built.excluded_intermediaries.length
                     ? {
                         excluded_intermediaries: built.excluded_intermediaries,

@@ -169,6 +169,37 @@ export class EdgeSet {
     }
   }
 
+  /**
+   * Connect `members` to each `seed`, and the seeds to each other — but never
+   * member to member.
+   *
+   * Union-find produces the *same components* as pairing everyone, because a
+   * star through the seeds already connects every member transitively. What it
+   * avoids is the output: a narrow sponsor with 50 members expands to 1,225
+   * pairs under {@link addGroup}, none of which can merge on their own weight,
+   * so the response fills with noise that buries the edges an analyst came for.
+   * The investigation is about the seeds, so those are the hub.
+   */
+  addStar(
+    type: SignalType,
+    via: string,
+    seeds: string[],
+    members: string[],
+    detail: string,
+    digestFor: (member: string) => string[] = () => [],
+  ): void {
+    const uniqueSeeds = [...new Set(seeds)];
+    const others = [...new Set(members)].filter((m) => !uniqueSeeds.includes(m));
+    for (let i = 0; i < uniqueSeeds.length; i++) {
+      for (let j = i + 1; j < uniqueSeeds.length; j++) {
+        this.add(type, uniqueSeeds[i], uniqueSeeds[j], detail, [...digestFor(uniqueSeeds[i]), ...digestFor(uniqueSeeds[j])], via);
+      }
+      for (const m of others) {
+        this.add(type, uniqueSeeds[i], m, detail, [...digestFor(uniqueSeeds[i]), ...digestFor(m)], via);
+      }
+    }
+  }
+
   /** Strongest first, so a truncated read still shows the best evidence. */
   edges(): WalletEdge[] {
     return [...this.pairs.values()].sort(

@@ -180,12 +180,20 @@ Signals and why they are weighted as they are:
 | `cofunded` | 1.0 | Shared first funder, after that funder passed the popularity filter |
 | `funding_edge` | 1.0 | One address sent the first funding that made the other exist |
 | `sponsor` | 0.7 | Shared gas payer; strong, but relayer services exist and only the probe separates them |
-| `co_tx` | 0.5 | Both had balances changed by one transaction, under the mass-action cap |
+| `co_tx` | 0.5 | A **third party** moved both balances in one transaction, under the mass-action cap |
 
 Plain transfer volume is deliberately **not** a signal. Everyone pays an
 exchange, so "A sent to B" is the most common relationship on chain and clusters
 the world together. `funding_edge` is the narrow defended case: a setup act, not
 a payment.
+
+That rule has one non-obvious consequence, and getting it wrong is how the first
+version of `co_tx` shipped broken. Balance changes include the **sender**, so
+counting every party in a transaction made "A paid B" an edge — transfer volume
+by another name. It fired on 6 of 6 pairs in a live run, and a signal that always
+fires carries no information; worse, at 0.5 it could lift a 0.7 sponsor edge over
+the 1.0 merge threshold. The sender is now excluded, which leaves the real
+signal: somebody *else* paid two wallets in one transaction.
 
 Being paid is not being funded, so an expansion candidate is admitted as
 `cofunded` only after computing **its own** first funder. Sponsorship needs no
@@ -200,7 +208,7 @@ crews across a whole-chain population; this tool has one subject and an analyst
 reading per-edge evidence. `test/wallet-edges.test.ts` pins both behaviours so
 the default is never "tightened" back by eye.
 
-Measured on a known co-owned set of four mainnet addresses: 23 queries, ~7s, no
+Measured on a known co-owned set of four mainnet addresses: 24 queries, ~5s, no
 truncation. It found both funding edges and returned **two clusters of two**
 where the truth is one set of four. The missing link between the pairs rested
 only on a shared sponsor, and that sponsor is a relayer with 75 distinct
@@ -213,6 +221,20 @@ verifiable partial answer instead of a confident wrong one. It is also the
 concrete reason `observed_but_below_threshold` is in the response: the pair that
 should have merged is sitting right there, with its evidence, for a reader who
 knows more than the chain does.
+
+A `narrow` verdict is not symmetric with a `popular` one. Popular is proven —
+the limit was exceeded by things actually seen. Narrow off an **incomplete** scan
+is provisional, because the probe walks backwards from recent activity while the
+fundings it filters are historical: an address that airdropped ten thousand
+wallets years ago and has been quiet since reads as narrow. `used_intermediaries`
+carries `scan_complete` per intermediary so that distinction survives into the
+response.
+
+Expansion links members to the seeds in a **star**, never member-to-member.
+Union-find yields the same components either way, but a narrow sponsor with 50
+members expands to 1,225 pairs under full pairing — none of which can merge on
+their own weight, so the response fills with noise that buries the edges an
+analyst came for.
 
 Two caveats that belong in the response, not the docs, and are emitted there:
 

@@ -34,7 +34,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { pickFundingTx, type FundingTx } from "./funding.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
-import { EdgeSet, type SignalType, type WalletEdge } from "./wallet-edges.js";
+import { EdgeSet, type WalletEdge } from "./wallet-edges.js";
 
 /**
  * Distinct counterparties past which an intermediary is a service, not a person.
@@ -82,11 +82,25 @@ export interface ExcludedIntermediary {
   reason: string;
 }
 
+/** An intermediary that survived the filter, and how well it was measured. */
+export interface UsedIntermediary {
+  address: string;
+  role: "funder" | "sponsor";
+  observed_counterparties: number;
+  /**
+   * False when the scan hit its page cap before reaching the end of history.
+   * The `narrow` verdict is then provisional, not measured.
+   */
+  scan_complete: boolean;
+}
+
 export interface EdgeBuildResult {
   edges: WalletEdge[];
   /** Addresses actually examined, seeds plus anything expansion pulled in. */
   examined: string[];
   excluded_intermediaries: ExcludedIntermediary[];
+  /** Intermediaries the edges actually rest on, with how completely each was measured. */
+  used_intermediaries: UsedIntermediary[];
   /** First funder per examined address, where one was determined. */
   first_funders: Record<string, string>;
   queries_used: number;
@@ -246,6 +260,17 @@ export interface Popularity {
   members: Map<string, string>;
   popular: boolean;
   observed: number;
+  /**
+   * True when the scan reached the end of the address's history.
+   *
+   * A `popular` verdict is proven either way — the limit was exceeded by
+   * things actually seen. A `narrow` verdict off an INCOMPLETE scan is not:
+   * the scan walks backwards from recent activity, while the fundings being
+   * filtered are historical, so an address that airdropped ten thousand
+   * wallets years ago and has been quiet since reads as narrow. Callers must
+   * surface this rather than presenting a provisional verdict as measured.
+   */
+  complete: boolean;
 }
 
 /**
@@ -263,6 +288,7 @@ export async function probeRecipients(
   const members = new Map<string, string>();
   let cursor: string | undefined;
   let pages = 0;
+  let reachedEnd = false;
   // Worst case one new recipient per transaction, so limit+1 recipients need
   // at most that many transactions; the page cap keeps a contract-call-heavy
   // address (many transactions, no recipients) from burning the whole budget.
@@ -285,12 +311,18 @@ export async function probeRecipients(
         if (!members.has(owner)) members.set(owner, n.digest);
       }
     }
-    if (members.size > limit) return { members: new Map(), popular: true, observed: members.size };
-    if (!page.transactions.pageInfo.hasPreviousPage) break;
+    if (members.size > limit) {
+      // Proven by what was seen; further pages cannot change the verdict.
+      return { members: new Map(), popular: true, observed: members.size, complete: true };
+    }
+    if (!page.transactions.pageInfo.hasPreviousPage) {
+      reachedEnd = true;
+      break;
+    }
     cursor = page.transactions.pageInfo.startCursor;
     if (!cursor) break;
   }
-  return { members, popular: false, observed: members.size };
+  return { members, popular: false, observed: members.size, complete: reachedEnd };
 }
 
 /**
@@ -308,6 +340,7 @@ export async function probeSponsored(
   const members = new Map<string, string>();
   let cursor: string | undefined;
   let pages = 0;
+  let reachedEnd = false;
   const maxPages = Math.ceil((limit + 1) / PAGE) + 4;
 
   while (pages < maxPages) {
@@ -325,12 +358,18 @@ export async function probeSponsored(
       if (!sender || sponsor !== address || sender === address) continue;
       if (!members.has(sender)) members.set(sender, n.digest);
     }
-    if (members.size > limit) return { members: new Map(), popular: true, observed: members.size };
-    if (!page.transactions.pageInfo.hasPreviousPage) break;
+    if (members.size > limit) {
+      // Proven by what was seen; further pages cannot change the verdict.
+      return { members: new Map(), popular: true, observed: members.size, complete: true };
+    }
+    if (!page.transactions.pageInfo.hasPreviousPage) {
+      reachedEnd = true;
+      break;
+    }
     cursor = page.transactions.pageInfo.startCursor;
     if (!cursor) break;
   }
-  return { members, popular: false, observed: members.size };
+  return { members, popular: false, observed: members.size, complete: reachedEnd };
 }
 
 /** Sponsors that paid this address's gas, and who it shared transactions with. */
@@ -338,6 +377,14 @@ interface SeedProfile {
   sponsors: Map<string, string>;
   coParties: Array<{ digest: string; parties: string[] }>;
 }
+
+/**
+ * Distinct parties in one transaction past which co-appearance means nothing.
+ *
+ * See {@link MASS_ACTION_LIMIT}. Kept separate from the sender-exclusion rule
+ * below because they defend against different things: this one against
+ * airdrops, that one against ordinary payments.
+ */
 
 async function profileSeed(
   address: string,
@@ -370,11 +417,18 @@ async function profileSeed(
       // address its own sponsor and link it to nobody usefully.
       if (sponsor && sender && sponsor !== sender) sponsors.set(sponsor, n.digest);
 
+      // The SENDER is excluded, and that exclusion is what makes this a signal
+      // rather than a restatement of transfer volume. If A pays B, both appear
+      // in the balance changes, so counting them would make "A sent to B" an
+      // edge — the single most common relationship on chain, and the one this
+      // module explicitly refuses to cluster on. What remains is the real
+      // signal: a THIRD party moved both balances in one transaction, which is
+      // somebody paying two wallets at once.
       const parties = [
         ...new Set(
           (n.effects?.balanceChanges.nodes ?? [])
             .map((bc) => bc.owner?.address)
-            .filter((a): a is string => Boolean(a)),
+            .filter((a): a is string => Boolean(a) && a !== sender),
         ),
       ];
       // A mass claim or airdrop puts hundreds of strangers in one transaction.
@@ -421,6 +475,7 @@ export async function buildWalletEdges(
   const uniqueSeeds = [...new Set(seeds)];
   const edges = new EdgeSet();
   const excluded: ExcludedIntermediary[] = [];
+  const used: UsedIntermediary[] = [];
   const firstFunders = new Map<string, string>();
   const notes: string[] = [];
 
@@ -463,7 +518,7 @@ export async function buildWalletEdges(
             "co_tx",
             parties[i],
             parties[j],
-            "Both had balances changed by the same transaction",
+            "Both had balances changed by one transaction sent by a third party",
             [digest],
           );
         }
@@ -490,6 +545,12 @@ export async function buildWalletEdges(
       continue;
     }
     funderMembers.set(funder, p.members);
+    used.push({
+      address: funder,
+      role: "funder",
+      observed_counterparties: p.observed,
+      scan_complete: p.complete,
+    });
   }
 
   const distinctSponsors = new Set<string>();
@@ -507,6 +568,12 @@ export async function buildWalletEdges(
       continue;
     }
     sponsorMembers.set(sponsor, p.members);
+    used.push({
+      address: sponsor,
+      role: "sponsor",
+      observed_counterparties: p.observed,
+      scan_complete: p.complete,
+    });
   }
 
   // Seeds sharing a narrow first funder. Exact: both sides were computed.
@@ -541,7 +608,6 @@ export async function buildWalletEdges(
         },
       );
     }
-    void members;
   }
 
   const examined = new Set(uniqueSeeds);
@@ -551,12 +617,14 @@ export async function buildWalletEdges(
     // Anyone else the narrow sponsors paid gas for is admitted directly — the
     // probe watched it happen.
     for (const [sponsor, members] of sponsorMembers) {
-      const group = [...new Set([...members.keys(), ...uniqueSeeds.filter((s) => profiles.get(s)?.sponsors.has(sponsor))])];
-      if (group.length < 2) continue;
-      edges.addGroup(
+      const seedsHere = uniqueSeeds.filter((s) => profiles.get(s)?.sponsors.has(sponsor));
+      const group = [...new Set([...members.keys(), ...seedsHere])];
+      if (group.length < 2 || seedsHere.length === 0) continue;
+      edges.addStar(
         "sponsor",
         sponsor,
-        group,
+        seedsHere,
+        [...members.keys()],
         `Gas paid by the same address (${sponsor.slice(0, 10)}…), which sponsors few enough senders to rule out a relayer service`,
         (m) => {
           const d = members.get(m) ?? profiles.get(m)?.sponsors.get(sponsor);
@@ -595,18 +663,28 @@ export async function buildWalletEdges(
       );
     }
     for (const [funder, found] of confirmed) {
-      const group = [...found, ...uniqueSeeds.filter((s) => firstFunders.get(s) === funder)];
-      if (group.length < 2) continue;
-      edges.addGroup(
+      const seedsHere = uniqueSeeds.filter((s) => firstFunders.get(s) === funder);
+      if (found.length + seedsHere.length < 2 || seedsHere.length === 0) continue;
+      edges.addStar(
         "cofunded",
         funder,
-        group,
+        seedsHere,
+        found,
         `First funded by the same address (${funder.slice(0, 10)}…), which pays few enough addresses that the coincidence is meaningful`,
         (m) => (funderDigest.get(m) ? [funderDigest.get(m)!] : []),
       );
     }
   }
 
+  const provisional = used.filter((u) => !u.scan_complete);
+  if (provisional.length) {
+    notes.push(
+      `${provisional.length} intermediary scan(s) hit the page cap before reaching the end of that address's history, ` +
+        "so their `narrow` verdict is provisional rather than measured. The scan walks backwards from recent activity " +
+        "while the fundings it filters are historical, so an address that distributed widely long ago and has been " +
+        "quiet since can read as narrow. Check `used_intermediaries`.",
+    );
+  }
   if (budget.truncated) {
     notes.push(
       "The query budget ran out before every lead was followed. Edges found are still valid; " +
@@ -618,12 +696,10 @@ export async function buildWalletEdges(
     edges: edges.edges(),
     examined: [...examined].sort(),
     excluded_intermediaries: excluded,
+    used_intermediaries: used,
     first_funders: Object.fromEntries(firstFunders),
     queries_used: budget.used,
     truncated: budget.truncated,
     notes,
   };
 }
-
-/** Signal types this module can currently produce. */
-export const PRODUCED_SIGNALS: SignalType[] = ["cofunded", "funding_edge", "sponsor", "co_tx"];

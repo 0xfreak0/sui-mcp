@@ -87,6 +87,33 @@ describe("probeRecipients — the bound, not the count", () => {
   });
 });
 
+describe("a narrow verdict off an incomplete scan is provisional", () => {
+  it("reports scan_complete false when the page cap stopped it", async () => {
+    // The scan walks backwards from recent activity while the fundings it
+    // filters are historical, so an address that distributed widely long ago
+    // and has been quiet since reads as narrow. Presenting that as measured
+    // would let a real airdropper link its recent handful of recipients.
+    mockGqlQuery.mockImplementation(async () => page([payment("0xd", "0xF", "0xa")], true));
+    const r = await probeRecipients("0xF", 50, new Budget(500));
+    expect(r.popular).toBe(false);
+    expect(r.complete).toBe(false);
+  });
+
+  it("reports scan_complete true when it reached the end of history", async () => {
+    mockGqlQuery.mockImplementation(async () => page([payment("0xd", "0xF", "0xa")], false));
+    expect((await probeRecipients("0xF", 50, new Budget(500))).complete).toBe(true);
+  });
+
+  it("calls a popular verdict complete — the limit was exceeded by what was seen", async () => {
+    mockGqlQuery.mockImplementation(async () =>
+      page(Array.from({ length: 20 }, (_, i) => payment(`0xd${i}`, "0xF", `0xr${i}`)), true),
+    );
+    const r = await probeRecipients("0xF", 5, new Budget(500));
+    expect(r.popular).toBe(true);
+    expect(r.complete).toBe(true);
+  });
+});
+
 describe("probeSponsored", () => {
   it("counts only transactions where the address paid someone else's gas", async () => {
     mockGqlQuery.mockImplementation(async () =>
@@ -205,6 +232,70 @@ describe("buildWalletEdges", () => {
     );
     const r = await buildWalletEdges([A, B], { expand: false });
     expect(r.edges.filter((e) => e.signal_types.includes("co_tx"))).toHaveLength(0);
+  });
+
+  it("does NOT treat a direct payment between two seeds as co-appearance", async () => {
+    // Regression. Balance changes include the sender, so counting every party
+    // made "A paid B" a co_tx edge — which is plain transfer volume, the one
+    // relationship this module explicitly refuses to cluster on. It fired on
+    // 6 of 6 pairs in a live run: a signal that always fires carries no
+    // information, and worse, at 0.5 it could lift a 0.7 sponsor edge over the
+    // 1.0 merge threshold.
+    mockGqlQuery.mockImplementation(
+      router({
+        recent: (addr) =>
+          addr === A
+            ? page([
+                {
+                  digest: "0xdirect",
+                  sender: { address: A },
+                  gasInput: { gasSponsor: { address: A } },
+                  effects: {
+                    balanceChanges: {
+                      nodes: [
+                        { owner: { address: A }, amount: `-${ONE_SUI}` },
+                        { owner: { address: B }, amount: ONE_SUI },
+                      ],
+                    },
+                  },
+                },
+              ])
+            : page([]),
+      }),
+    );
+    const r = await buildWalletEdges([A, B], { expand: false });
+    expect(r.edges).toHaveLength(0);
+  });
+
+  it("DOES treat a third party paying both seeds as co-appearance", async () => {
+    // What remains once the sender is excluded is the real signal: somebody
+    // else moved both balances in one transaction.
+    mockGqlQuery.mockImplementation(
+      router({
+        recent: (addr) =>
+          addr === A
+            ? page([
+                {
+                  digest: "0xboth",
+                  sender: { address: "0xthirdparty" },
+                  gasInput: { gasSponsor: { address: "0xthirdparty" } },
+                  effects: {
+                    balanceChanges: {
+                      nodes: [
+                        { owner: { address: "0xthirdparty" }, amount: `-${ONE_SUI}` },
+                        { owner: { address: A }, amount: ONE_SUI },
+                        { owner: { address: B }, amount: ONE_SUI },
+                      ],
+                    },
+                  },
+                },
+              ])
+            : page([]),
+      }),
+    );
+    const r = await buildWalletEdges([A, B], { expand: false });
+    expect(r.edges).toHaveLength(1);
+    expect(r.edges[0].signal_types).toEqual(["co_tx"]);
   });
 
   it("reports truncation rather than presenting a partial build as complete", async () => {

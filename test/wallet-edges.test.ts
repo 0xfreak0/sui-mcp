@@ -64,6 +64,25 @@ describe("EdgeSet", () => {
     expect(s.edges().every((e) => e.signals[0].via === "0xfunder")).toBe(true);
   });
 
+  it("addStar links members to seeds but never member to member", () => {
+    // A narrow sponsor with 50 members expands to 1,225 pairs under addGroup,
+    // none of which can merge on their own weight — pure noise burying the
+    // edges an analyst came for.
+    const s = new EdgeSet();
+    s.addStar("sponsor", "0xsp", [A], [B, C, D], "shared sponsor");
+    const pairs = s.edges().map((e) => `${e.wallet_a}|${e.wallet_b}`);
+    expect(pairs).toHaveLength(3);
+    expect(pairs.every((p) => p.includes(A))).toBe(true);
+  });
+
+  it("addStar still yields one component, so the saving costs no recall", () => {
+    const s = new EdgeSet();
+    s.addStar("cofunded", "0xf", [A], [B, C, D], "shared funder");
+    const { clusters } = clusterEdges(s.edges());
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].size).toBe(4);
+  });
+
   it("orders strongest first, so a truncated read keeps the best evidence", () => {
     const s = new EdgeSet();
     s.add("co_tx", C, D, "same transaction");

@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.10.1 (2026-09-04)
+
+Package analysis was unreachable from an investigation, in two different ways.
+Reported from a real run that fell back to hand-written GraphQL as a result.
+
+### Fixed
+- **Package tools were missing from the `forensics` profile.**
+  `analyze_package`, `get_package`, `get_move_function` and `disassemble_module`
+  sat in `developer` only, so a session running `core,forensics` had no way to
+  inspect a package at all. Reading an unknown package is investigation work —
+  naming an obfuscated wrapper, reading a protocol's event structs, checking
+  what a suspicious package can do — so all four now appear in `forensics` too.
+  `decompile_module` stays developer-only, since it needs an external binary.
+
+  This required relaxing an invariant, deliberately: profiles had to be
+  disjoint, on the reasoning that disabling one could silently keep a tool alive
+  through another. Profiles are additive and nothing ever removes one, so that
+  cannot happen. Overlap is now declared, and undeclared duplication still
+  fails the test.
+
+- **`enable_tools` rejected the plural form of its own name.** It takes
+  `profile`, singular, and refused `profiles: ["developer"]` — which is what
+  anyone guesses from a tool called `enable_tools`. The consequence was not a
+  retry with the other spelling: the capability was treated as absent and
+  GraphQL was written by hand for something a tool already did. Both keys and
+  both shapes now work, several profiles can be enabled in one call, and calling
+  it with no arguments names the options rather than failing on a schema.
+
+- **The publish verifier raced npm's index.** 1.10.0 published to npm and to the
+  MCP Registry successfully and then failed a second later on "No matching
+  version found", which marked a good release as failed and skipped the GitHub
+  release job behind it. The install now retries while npm reports the version
+  as missing. Only propagation errors are retried; anything else still surfaces
+  immediately.
+
 ## 1.10.0 (2026-09-04)
 
 A minor rather than a patch release: alongside the fixes there is new

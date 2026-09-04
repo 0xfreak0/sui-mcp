@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+  SHARED_TOOLS,
   PROFILES,
   PROFILE_NAMES,
   PROFILE_SUMMARIES,
@@ -54,18 +55,32 @@ describe("profile definitions", () => {
     }
   });
 
-  it("never lists the same tool in two profiles", () => {
-    // Overlap would make "which profile do I enable" ambiguous, and would make
-    // disabling one profile silently keep a tool alive via another.
+  it("lists a tool in two profiles only when that is declared", () => {
+    // Overlap used to be banned outright, on the reasoning that disabling one
+    // profile could silently keep a tool alive through another. Profiles are
+    // additive — nothing ever removes one — so that cannot happen, and a tool
+    // two jobs both need is only ever easier to reach. Declared overlap is
+    // allowed; undeclared overlap is still an accident and still fails.
+    const shared = new Set<string>(SHARED_TOOLS);
     const seen = new Map<string, string>();
     const dupes: string[] = [];
     for (const p of PROFILE_NAMES) {
       for (const t of PROFILES[p]) {
-        if (seen.has(t)) dupes.push(`${t} in both ${seen.get(t)} and ${p}`);
+        if (seen.has(t) && !shared.has(t)) dupes.push(`${t} in both ${seen.get(t)} and ${p}`);
         seen.set(t, p);
       }
     }
     expect(dupes).toEqual([]);
+  });
+
+  it("declares no shared tool that is not actually shared", () => {
+    // Keeps the allowlist honest: an entry left behind after a tool moves would
+    // otherwise quietly re-permit accidental duplication of that name.
+    for (const t of SHARED_TOOLS) {
+      const inProfiles = PROFILE_NAMES.filter((p) => (PROFILES[p] as readonly string[]).includes(t));
+      expect(inProfiles.length, `${t} is declared shared but appears in ${inProfiles.length} profile(s)`)
+        .toBeGreaterThan(1);
+    }
   });
 
   it("only references tools that actually exist", () => {

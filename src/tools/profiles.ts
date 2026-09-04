@@ -20,6 +20,26 @@
  * enhancement. Nothing is ever removed — a disabled tool is one call away.
  */
 
+/**
+ * Tools that deliberately appear in more than one profile.
+ *
+ * Profiles are additive — nothing ever removes one — so a tool reachable from
+ * two of them is only ever easier to get at, never ambiguous to turn off. Two
+ * jobs genuinely need these: reading an unknown package is developer work and
+ * investigation work alike, and an investigator who cannot inspect a package
+ * falls back to hand-written GraphQL against the Move schema, which is easy to
+ * get wrong and is not authoritative anyway. The deployed bytecode is.
+ *
+ * Anything NOT listed here appearing twice is an accident, and the profile test
+ * still fails on it.
+ */
+export const SHARED_TOOLS = [
+  "analyze_package",
+  "get_package",
+  "get_move_function",
+  "disassemble_module",
+] as const;
+
 export const PROFILES = {
   /** Everyday lookups: what is this, what does this wallet hold, what happened. */
   core: [
@@ -52,6 +72,16 @@ export const PROFILES = {
     "find_funding_sources",
     "get_address_fanout",
     "build_wallet_edges",
+    // Reading an unknown package IS investigation work: naming an obfuscated
+    // wrapper, reading a protocol's event structs, checking what a suspicious
+    // package can do. These sat in `developer` only, so an investigator running
+    // core+forensics had no way to inspect a package — and the observed
+    // consequence was hand-written GraphQL against the Move schema, which is
+    // both easy to get wrong and not authoritative. The deployed bytecode is.
+    "analyze_package",
+    "get_package",
+    "get_move_function",
+    "disassemble_module",
     "build_timeline",
     "trace_object_history",
     "manage_labels",
@@ -107,7 +137,7 @@ export const PROFILE_NAMES = Object.keys(PROFILES) as ProfileName[];
 export const PROFILE_SUMMARIES: Record<ProfileName, string> = {
   core: "Everyday lookups — wallets, balances, transactions, tokens, NFTs, DeFi positions",
   forensics:
-    "Incident investigation — fund tracing, batch funding attribution, address fan-out, live wallet-edge clustering, multi-address timelines, object provenance, address labels, cross-chain bridge resolution, oracle-vs-market deviation, and recording findings into an exportable case report",
+    "Incident investigation — fund tracing, batch funding attribution, address fan-out, live wallet-edge clustering, package analysis, multi-address timelines, object provenance, address labels, cross-chain bridge resolution, oracle-vs-market deviation, and recording findings into an exportable case report",
   developer:
     "Move package analysis — modules, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry",
   market: "Market data — DeepBook order book and fills, pool stats, token search, validators",

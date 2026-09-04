@@ -295,3 +295,49 @@ describe("pruned-transaction handling", () => {
     expect(isHollow(senderOnly as never)).toBe(false);
   });
 });
+
+describe("chooseNextHop — guards against following the wrong party", () => {
+  it("refuses to pick a next hop when the transaction has no sender", () => {
+    // With sender null, `c.address !== sender` is true for every change, so the
+    // subject's OWN inflows became candidate recipients and got followed.
+    const d = chooseNextHop({
+      sender: null,
+      changes: [
+        { address: victim, amount: "1000", coin_type: SUI },
+        { address: attacker, amount: "-1000", coin_type: SUI },
+      ],
+      actions: [],
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+    });
+    expect(d.nextAddress).toBeNull();
+    expect(d.basis).toBe("none");
+    expect(d.note).toMatch(/no sender/i);
+  });
+
+  it("does not treat a flash swap as a swap the actor kept proceeds from", () => {
+    // A flash swap borrows and repays in one transaction. Switching the tracked
+    // asset to what was momentarily received follows a coin nobody kept.
+    const changes: HopChange[] = [
+      { address: attacker, amount: "-1000", coin_type: SUI },
+      { address: attacker, amount: "500", coin_type: USDC },
+      { address: victim, amount: "900", coin_type: SUI },
+    ];
+    const flash = chooseNextHop({
+      sender: attacker, changes, actions: ["Flash swap on Cetus"],
+      direction: "forward", trackedCoin: SUI, isPassThrough: noPools,
+    });
+    expect(flash.isSwap).toBe(false);
+    expect(flash.nextAddress).toBe(victim);
+    expect(flash.nextCoinType).toBe(SUI);
+
+    // A real swap still follows the swapper and switches asset.
+    const real = chooseNextHop({
+      sender: attacker, changes, actions: ["Swap SUI → USDC on Cetus"],
+      direction: "forward", trackedCoin: SUI, isPassThrough: noPools,
+    });
+    expect(real.isSwap).toBe(true);
+    expect(real.nextCoinType).toBe(USDC);
+  });
+});

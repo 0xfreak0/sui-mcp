@@ -257,20 +257,43 @@ interface TxQueryPage {
   };
 }
 
+/**
+ * The next transaction to follow from `address`.
+ *
+ * Forward tracing filters on **sentAddress**, not `affectedAddress`. The
+ * distinction is the whole correctness of a forward hop: "the next transaction
+ * affecting R" is any transaction that touched R, including someone paying R.
+ * Following that attributed a third party's transaction to the subject, and —
+ * after the custody check was added — made a perfectly intact trace stop with
+ * `custody_break` because R had merely *received* something before spending.
+ * What a forward trace wants is the next transaction R itself **sent**.
+ *
+ * Backward keeps `affectedAddress`, because the transaction that funded an
+ * address is by definition one someone else sent.
+ *
+ * `afterCheckpoint` is **exclusive** — verified against mainnet: passing a
+ * transaction's own checkpoint excludes it, passing `cp - 1` includes it. The
+ * previous code passed `cp`, so anything the recipient did *in the same
+ * checkpoint* was skipped. That is not an edge case: same-checkpoint
+ * forwarding is what a script does, which is exactly the adversarial pattern a
+ * trace is chasing. We ask from `cp - 1` and drop the current digest
+ * explicitly.
+ */
 async function findNextTx(
   address: string,
-  afterCheckpoint?: number,
-  direction: "forward" | "backward" = "forward",
+  atCheckpoint: number | undefined,
+  direction: "forward" | "backward",
+  excludeDigest: string,
 ): Promise<string | null> {
   const isForward = direction === "forward";
+
   const query = isForward
     ? `query($address: SuiAddress!, $first: Int, $afterCheckpoint: Int) {
         transactions(
-          filter: { affectedAddress: $address, afterCheckpoint: $afterCheckpoint }
+          filter: { sentAddress: $address, afterCheckpoint: $afterCheckpoint }
           first: $first
         ) {
-          nodes { digest effects { checkpoint { sequenceNumber } timestamp } }
-          pageInfo { hasNextPage endCursor }
+          nodes { digest }
         }
       }`
     : `query($address: SuiAddress!, $last: Int, $beforeCheckpoint: Int) {
@@ -278,23 +301,27 @@ async function findNextTx(
           filter: { affectedAddress: $address, beforeCheckpoint: $beforeCheckpoint }
           last: $last
         ) {
-          nodes { digest effects { checkpoint { sequenceNumber } timestamp } }
-          pageInfo { hasNextPage endCursor }
+          nodes { digest }
         }
       }`;
 
   const variables: Record<string, unknown> = { address };
   if (isForward) {
-    variables.first = 1;
-    variables.afterCheckpoint = afterCheckpoint;
+    variables.first = 5;
+    // Inclusive of the current checkpoint; the current digest is filtered below.
+    variables.afterCheckpoint = atCheckpoint === undefined ? undefined : atCheckpoint - 1;
   } else {
-    variables.last = 1;
-    variables.beforeCheckpoint = afterCheckpoint;
+    variables.last = 5;
+    variables.beforeCheckpoint = atCheckpoint === undefined ? undefined : atCheckpoint + 1;
   }
 
   const data = await gqlQuery<TxQueryPage>(query, variables);
-  const node = data.transactions.nodes[0];
-  return node?.digest ?? null;
+  const nodes = data.transactions.nodes ?? [];
+  // Take the first that is not the hop we are standing on. Asking for five
+  // rather than one is what makes the same-checkpoint case work: the current
+  // transaction is usually first in that window.
+  const next = nodes.find((n) => n.digest !== excludeDigest);
+  return next?.digest ?? null;
 }
 
 function shortCoinType(coinType: string): string {
@@ -474,6 +501,11 @@ export function registerTraceTools(server: McpServer) {
       // trace reached back past the fullnode's retention, which is usually the
       // interesting part of an old case.
       let archiveHops = 0;
+      // Addresses already followed. A↔B ping-pong is a common obfuscation
+      // pattern, and it passes the custody check on every hop — without this
+      // the trace fills maxHops with a two-wallet loop and presents it as a
+      // ten-hop chain.
+      const visitedAddresses = new Set<string>();
       let custodyBreak: Record<string, unknown> | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
       let trackedCoin: string | null = coin_type ?? null;
@@ -585,6 +617,29 @@ export function registerTraceTools(server: McpServer) {
         };
         traceHops.push(hopResult);
 
+        // A bridge exit ends the on-chain trace. The coin was burned or locked,
+        // so there is no recipient to follow — chooseNextHop would fall back to
+        // the sender and findNextTx would return whatever that address did
+        // next, which is unrelated activity presented as a continuation of the
+        // same funds. The value's next move is on another chain, and
+        // resolve_bridge_transfer is how it is followed.
+        // Forward only. A bridge exit means value left the chain going forward;
+        // a backward trace is asking where the money in this transaction came
+        // FROM, which the exit says nothing about. Terminating there cut a
+        // four-hop funding walk to one.
+        const exitHere =
+          direction === "forward"
+            ? bridgeExits.find((e) => e.digest === currentDigest)
+            : undefined;
+        if (exitHere) {
+          const protocols = exitHere.hits.map((h) => h.protocol).join(", ");
+          terminationReason =
+            `Value left Sui via ${protocols}. Stopping: the coin was burned or locked, so nothing ` +
+            "on this chain continues it. Run resolve_bridge_transfer on this transaction to pick " +
+            "the transfer up on the destination chain.";
+          break;
+        }
+
         // Price this hop's coins before choosing, so the next-hop ranking
         // compares value rather than raw units — 1 USDC is 1e6 units and 1 SUI
         // is 1e9, so a raw comparison ranks by decimal places and can follow
@@ -622,6 +677,13 @@ export function registerTraceTools(server: McpServer) {
         // here" is never read off a split that had five other recipients.
         if (decision.unfollowed.length) hopResult.unfollowed_recipients = decision.unfollowed;
         const nextAddress = decision.nextAddress;
+        if (nextAddress && visitedAddresses.has(nextAddress)) {
+          terminationReason =
+            `Cycle detected — value returned to ${nextAddress}, an address already in this trace. ` +
+            "Stopping rather than reporting the same wallets again as further hops.";
+          break;
+        }
+        if (nextAddress) visitedAddresses.add(nextAddress);
         // Only meaningful forward: the address we hand on must be the one that
         // sends the next transaction for the chain to still concern these funds.
         expectedSender = direction === "forward" ? nextAddress : null;
@@ -662,6 +724,7 @@ export function registerTraceTools(server: McpServer) {
           nextAddress,
           checkpointNum,
           direction,
+          currentDigest,
         );
       }
 

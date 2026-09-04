@@ -49,6 +49,31 @@ const MIN_RESULTANT = 0.35;
  */
 const HUMAN_RATE_CEILING = 200;
 
+/**
+ * Rate below which a flat clock says nothing about automation.
+ *
+ * `always_on` asks whether activity is spread evenly, and a 24/7 script and an
+ * occasional person produce the same answer: a wallet doing 0.4 transactions a
+ * day over 292 days CANNOT concentrate, because 120 points scattered across a
+ * year never form a peak. Reading that as automation was wrong on a real
+ * mainnet wallet, and it is the failure this codebase exists to avoid — a
+ * confident label on an address that simply is not used much.
+ *
+ * Above this, flatness is informative: a person transacting several times a day
+ * would have left a working-hours shape, and its absence means something.
+ */
+const MIN_RATE_FOR_FLATNESS = 3;
+
+/**
+ * Share of activity in a single hour above which a "human working session"
+ * reading is not the only one worth naming.
+ *
+ * A person's day spreads over several hours. Nearly everything inside one hour
+ * is equally consistent with a job that runs on a schedule, and a reader told
+ * only about a timezone will not think of that themselves.
+ */
+const SCHEDULED_JOB_HOUR_SHARE = 0.4;
+
 /** Assumed local hour of peak activity — late afternoon / evening. */
 const LOCAL_ACTIVITY_CENTER = 16;
 
@@ -149,11 +174,19 @@ export function activityHours(timestamps: Array<string | null | undefined>): Act
       `Not enough to read a daily rhythm: ${times.length} transactions over ${spanDays.toFixed(1)} days ` +
       `(needs ${MIN_SAMPLES}+ spanning ${MIN_SPAN_DAYS}+ days). The histogram is reported, but do not ` +
       "infer a timezone from it.";
+  } else if (alwaysOn && rate !== null && rate < MIN_RATE_FOR_FLATNESS) {
+    // Flat, but too sparse for flatness to mean anything.
+    reading =
+      `Activity is spread around the clock (concentration ${R.toFixed(2)}), but at only ` +
+      `${rate.toFixed(1)} transactions a day it could not look otherwise — ${times.length} points across ` +
+      `${spanDays.toFixed(0)} days cannot form a peak whoever is behind them. This is an occasionally used ` +
+      "wallet, and no conclusion about automation or timezone follows from it either way.";
   } else if (alwaysOn) {
     reading =
-      `Activity is spread around the clock (concentration ${R.toFixed(2)}, below ${MIN_RESULTANT}). ` +
-      "No human circadian pattern is present, which is what an automated or always-on wallet looks like — " +
-      "or several people sharing one address. That absence is itself a finding.";
+      `Activity is spread around the clock (concentration ${R.toFixed(2)}, below ${MIN_RESULTANT}) at ` +
+      `${rate !== null ? rate.toFixed(1) : "?"} transactions a day — enough that a person keeping ordinary ` +
+      "hours would have left a shape, and none is present. That is what an automated or always-on wallet " +
+      "looks like, or several people sharing one address. The absence is itself a finding.";
   } else {
     let meanHour = (Math.atan2(sy, sx) / (2 * Math.PI)) * 24;
     if (meanHour < 0) meanHour += 24;
@@ -163,11 +196,22 @@ export function activityHours(timestamps: Array<string | null | undefined>): Act
     while (off < -11) off += 24;
     offset = off;
     region = regionForOffset(off);
+    // A single hour holding most of the activity is as consistent with a
+    // scheduled job as with a working session, and a reader given only a
+    // timezone will not think of that themselves.
+    const topHour = histogram.indexOf(Math.max(...histogram));
+    const topShare = histogram[topHour] / times.length;
+    const concentratedInOneHour = topShare >= SCHEDULED_JOB_HOUR_SHARE;
     reading =
       `Activity peaks around ${peak.toFixed(1)}:00 UTC with concentration ${R.toFixed(2)}. ` +
       `If that peak is a normal late-afternoon one, the operator sits near UTC${off >= 0 ? "+" : ""}${off} ` +
       `— ${region}. A REGION, not a city, and it assumes one person on an ordinary schedule. The same ` +
-      "pattern is produced by two people who merely share a timezone or a working day, so corroborate it.";
+      "pattern is produced by two people who merely share a timezone or a working day, so corroborate it." +
+      (concentratedInOneHour
+        ? ` NOTE: ${(topShare * 100).toFixed(0)}% of activity falls in the single hour ${topHour}:00 UTC. ` +
+          "A person's day spreads wider than that, so a job running on a schedule fits this equally well — " +
+          "and a scheduled job has no timezone at all, only a cron line."
+        : "");
   }
 
   return {
@@ -176,9 +220,13 @@ export function activityHours(timestamps: Array<string | null | undefined>): Act
     span_days: Number(spanDays.toFixed(1)),
     peak_hour_utc: peak,
     concentration: Number(R.toFixed(3)),
-    always_on: !thin && !brief && !tooFast && alwaysOn,
+    // Flatness at a rate too low to be informative is not an automation claim.
+    always_on:
+      !thin && !brief && !tooFast && alwaysOn && rate !== null && rate >= MIN_RATE_FOR_FLATNESS,
     transactions_per_day: rate === null ? null : Number(rate.toFixed(1)),
-    automation_indicated: tooFast || (!thin && !brief && alwaysOn),
+    automation_indicated:
+      tooFast ||
+      (!thin && !brief && alwaysOn && rate !== null && rate >= MIN_RATE_FOR_FLATNESS),
     utc_offset_estimate: offset,
     region_estimate: region,
     reading,

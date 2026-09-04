@@ -17,6 +17,9 @@ import {
 } from "../utils/valuation.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
+import { withArchiveFallback } from "../utils/archive-fallback.js";
+import { timestampToIso } from "../utils/formatting.js";
+import { errorResult, isNotFound } from "../utils/errors.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -113,34 +116,131 @@ interface GqlTxResult {
   } | null;
 }
 
+/**
+ * A fetched hop, in a shape that does not depend on which transport answered.
+ *
+ * GraphQL and gRPC return different structures, and the adapters exist to
+ * convert the former into the latter for the decoder. Doing that conversion
+ * inside the fetch keeps one shape downstream, which is what makes an archive
+ * fallback possible without a second set of consumers.
+ */
 interface FetchedTx {
   sender: string | null;
   balanceChanges: BalanceChangeInfo[];
-  balanceChangeNodes: GqlBalanceChangeNode[];
-  commandNodes: GqlCommandNode[];
+  /** Decoder input, already in gRPC form whichever transport was used. */
+  grpcBalanceChanges: ReturnType<typeof adaptBalanceChanges>;
+  commands: ReturnType<typeof adaptCommands>;
+  /** Move calls reduced for bridge detection. */
+  callSites: Array<{ packageId: string; module: string; function: string }>;
   timestamp: string | null;
   checkpoint: number | null;
+  /** Which transport answered. An archive hop is older than the fullnode keeps. */
+  source: "fullnode" | "archive";
+}
+
+/** Pull Move calls out of decoder-shaped commands, for bridge detection. */
+function callSitesOf(commands: ReturnType<typeof adaptCommands>) {
+  const out: Array<{ packageId: string; module: string; function: string }> = [];
+  for (const cmd of commands) {
+    const c = (cmd as { command?: { oneofKind?: string; moveCall?: { package?: string; module?: string; function?: string } } }).command;
+    if (c?.oneofKind !== "moveCall" || !c.moveCall) continue;
+    out.push({
+      packageId: c.moveCall.package ?? "",
+      module: c.moveCall.module ?? "",
+      function: c.moveCall.function ?? "",
+    });
+  }
+  return out;
 }
 
 async function fetchTx(digest: string): Promise<FetchedTx | null> {
-  const data = await gqlQuery<GqlTxResult>(TX_QUERY, { digest });
-  const tx = data.transaction;
-  if (!tx) return null;
+  const data = await gqlQuery<GqlTxResult>(TX_QUERY, { digest }).catch(() => null);
+  const tx = data?.transaction;
 
-  const bcNodes = tx.effects?.balanceChanges?.nodes ?? [];
-  const balanceChanges = bcNodes.map((n) => ({
-    address: n.owner?.address ?? "",
-    coin_type: n.coinType?.repr ?? "",
-    amount: n.amount ?? "0",
-  }));
+  // GraphQL answers a pruned digest with a hollow record rather than null: the
+  // digest, timestamp and checkpoint are present while sender is null and both
+  // balance changes and commands are empty. That is far more dangerous than a
+  // miss — it renders as a real hop that simply moved nothing, so a trace ends
+  // early looking complete. Treat it as absent and let the archive answer.
+  const hollow =
+    !!tx &&
+    !tx.sender?.address &&
+    (tx.effects?.balanceChanges?.nodes?.length ?? 0) === 0 &&
+    (tx.kind?.commands?.nodes?.length ?? 0) === 0;
+
+  if (tx && !hollow) {
+    const bcNodes = tx.effects?.balanceChanges?.nodes ?? [];
+    const commands = adaptCommands(tx.kind?.commands?.nodes ?? []);
+    return {
+      sender: tx.sender?.address ?? null,
+      balanceChanges: bcNodes.map((n) => ({
+        address: n.owner?.address ?? "",
+        coin_type: n.coinType?.repr ?? "",
+        amount: n.amount ?? "0",
+      })),
+      grpcBalanceChanges: adaptBalanceChanges(bcNodes),
+      commands,
+      callSites: callSitesOf(commands),
+      timestamp: tx.effects?.timestamp ?? null,
+      checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
+      source: "fullnode",
+    };
+  }
+
+  // The fullnode prunes. A digest it no longer holds is exactly what the
+  // archives exist for, and a trace that stops there is the case an
+  // investigator most needs to follow — old money is the money worth tracing.
+  //
+  // The commit that removed this fallback justified it on the archive not
+  // returning balance_changes. Measured against mainnet, it returns the same
+  // sender, balance changes, commands, timestamp and checkpoint the fullnode
+  // does, so that reason no longer holds.
+  let res;
+  try {
+    res = await withArchiveFallback(
+      (client) => client.ledgerService.getTransaction({
+        digest,
+        readMask: {
+          paths: ["digest", "transaction", "effects", "balance_changes", "timestamp", "checkpoint"],
+        },
+      }),
+      (r) => !r.transaction,
+    );
+  } catch (err) {
+    // NOT_FOUND means the digest genuinely is not held anywhere, which the
+    // caller renders as "could not fetch". Anything else — a malformed digest,
+    // an outage — is a different problem and should say what it was rather
+    // than be flattened into absence.
+    if (isNotFound(err)) return null;
+    throw new Error(
+      `Could not read transaction ${digest} from the fullnode or the archive: ${(err as Error).message}`,
+    );
+  }
+
+  const g = res.transaction;
+  if (!g) return null;
+
+  const grpcBc = g.balanceChanges ?? [];
+  const kind = g.transaction?.kind;
+  const commands =
+    kind?.data.oneofKind === "programmableTransaction"
+      ? kind.data.programmableTransaction.commands
+      : [];
 
   return {
-    sender: tx.sender?.address ?? null,
-    balanceChanges,
-    balanceChangeNodes: bcNodes,
-    commandNodes: tx.kind?.commands?.nodes ?? [],
-    timestamp: tx.effects?.timestamp ?? null,
-    checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
+    sender: g.transaction?.sender ?? null,
+    balanceChanges: grpcBc.map((bc) => ({
+      address: bc.address ?? "",
+      coin_type: bc.coinType ?? "",
+      amount: bc.amount ?? "0",
+    })),
+    grpcBalanceChanges: grpcBc as ReturnType<typeof adaptBalanceChanges>,
+    commands: commands as ReturnType<typeof adaptCommands>,
+    callSites: callSitesOf(commands as ReturnType<typeof adaptCommands>),
+    // gRPC returns a protobuf Timestamp ({seconds, nanos}), not a unix number.
+    timestamp: timestampToIso(g.timestamp) ?? null,
+    checkpoint: g.checkpoint != null ? Number(g.checkpoint) : null,
+    source: "archive",
   };
 }
 
@@ -370,6 +470,10 @@ export function registerTraceTools(server: McpServer) {
       // still be about the same funds. Null on the first hop, which has no
       // predecessor to disagree with.
       let expectedSender: string | null = null;
+      // Hops the fullnode had pruned. Worth reporting: it tells a reader the
+      // trace reached back past the fullnode's retention, which is usually the
+      // interesting part of an old case.
+      let archiveHops = 0;
       let custodyBreak: Record<string, unknown> | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
       let trackedCoin: string | null = coin_type ?? null;
@@ -387,8 +491,34 @@ export function registerTraceTools(server: McpServer) {
       };
 
       for (let hop = 0; hop < maxHops && currentDigest; hop++) {
-        const tx = await fetchTx(currentDigest);
-        if (!tx) break;
+        let tx: FetchedTx | null;
+        try {
+          tx = await fetchTx(currentDigest);
+        } catch (err) {
+          // A transport failure is not an empty trace. On the first hop there
+          // is nothing to report, so say why; later, keep what was found and
+          // mark it incomplete.
+          if (hop === 0) return errorResult((err as Error).message);
+          terminationReason = `${(err as Error).message} The trace is incomplete rather than finished.`;
+          break;
+        }
+        if (!tx) {
+          // Not found on the fullnode *or* the archive. Breaking silently here
+          // produced `hop_count: 0, hops: []` with no error, which a reader
+          // takes as "there is nothing to follow" rather than "this could not
+          // be fetched" — and on hop 0 those are opposite conclusions.
+          if (hop === 0) {
+            return errorResult(
+              `Could not fetch the starting transaction ${currentDigest} from the fullnode or the archive. ` +
+                "Check the digest and the network. This is not evidence that no funds moved.",
+            );
+          }
+          terminationReason =
+            `Could not fetch the next transaction (${currentDigest}) from the fullnode or the archive. ` +
+            "The trace is incomplete rather than finished — value may have moved beyond this point.";
+          break;
+        }
+        if (tx.source === "archive") archiveHops++;
 
         const sender = tx.sender;
         const allChanges = tx.balanceChanges;
@@ -404,8 +534,8 @@ export function registerTraceTools(server: McpServer) {
         const checkpointNum = tx.checkpoint ?? undefined;
 
         // Decode protocol actions
-        const commands = adaptCommands(tx.commandNodes);
-        const grpcBc = adaptBalanceChanges(tx.balanceChangeNodes);
+        const commands = tx.commands;
+        const grpcBc = tx.grpcBalanceChanges;
         // Per-hop rather than batched: hops are discovered one at a time, so
         // there is no earlier point at which the package set is known.
         await prefetchProtocolNames(collectPackageIds(commands));
@@ -414,15 +544,7 @@ export function registerTraceTools(server: McpServer) {
         // Detect a bridge exit from this hop's Move calls. Runs after the
         // prefetch so the registry tier can see lineage-resolved packages —
         // an upgraded bridge still identifies.
-        const hits = detectBridges(
-          tx.commandNodes
-            .filter((n) => n.function)
-            .map((n) => ({
-              packageId: n.function!.module.package.address,
-              module: n.function!.module.name,
-              function: n.function!.name,
-            })),
-        );
+        const hits = detectBridges(tx.callSites);
         if (hits.length) bridgeExits.push({ digest: currentDigest, hits });
 
         // Chain of custody. findNextTx asks for the next transaction *affecting*
@@ -690,6 +812,7 @@ export function registerTraceTools(server: McpServer) {
         coin_type: coin_type ?? "all",
         hop_count: enrichedHops.length,
         stopped_at_sink: terminationReason,
+        ...(archiveHops ? { hops_served_by_archive: archiveHops } : {}),
         ...(custodyBreak ? { custody_break: custodyBreak } : {}),
         // Structured, not just prose in the summary, so a caller can chain
         // straight into resolve_bridge_transfer without re-parsing the text.

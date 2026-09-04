@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getNetwork } from "../config.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
 import { batchResolveNames } from "../utils/names.js";
@@ -280,7 +281,13 @@ export function registerHolderTools(server: McpServer) {
           : "nft"
       );
 
-      const cacheKey = `${effectiveMode}:${resolvedType}:${maxScan}`;
+      // topN is part of the key because it is part of the answer: the cached
+      // payload holds exactly `limit` holders, so serving a 20-holder entry to
+      // a request for 100 silently returns the wrong list — and it looks like
+      // the collection only has 20 holders rather than like a cache hit. The
+      // network belongs in the key for the same reason a label does: the same
+      // type on mainnet and testnet is a different set of holders.
+      const cacheKey = `${getNetwork()}:${effectiveMode}:${resolvedType}:${maxScan}:${topN}`;
       const cached = getCached(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);

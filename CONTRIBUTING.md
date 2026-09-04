@@ -66,6 +66,39 @@ Lineage resolution is a lookup, not a guarantee of freshness: a protocol that
 will find, so `find-unknown-packages` below is still how new lineages get
 discovered.
 
+## Adding a bridge
+
+Bridges live in `src/utils/bridge/detect.ts`, and the bar for adding one is
+higher than for a protocol entry: a marker that never fires is dead weight, and
+one that fires on the wrong call is worse than nothing.
+
+**Verify on mainnet before adding anything.** Find the package, list its
+modules and structs, then sample real events to confirm the field names and see
+what a live payload actually contains. Every entry currently in the registry was
+added only after a real transaction was captured, and the payloads are the test
+fixtures — `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` are built
+from transactions named in their comments.
+
+Two things that sampling catches and guessing does not:
+
+- **Direction.** An inbound claim is not an exit. Detecting one as an exit sends
+  an investigator to the wrong chain. Check which events mean *leaving*.
+- **Marker specificity.** `init_order` looked like a good Mayan marker; it would
+  have collided with DEX order books, which emit some of the highest-frequency
+  events on mainnet. The markers carry `mctp` instead. Prefer a distinctive
+  module or event name over a generic one, and add a test asserting the
+  lookalike does *not* match.
+
+Note that volume sampling will **not** surface bridges. A survey of 1200 recent
+mainnet events turned up 180 `order::OrderCanceled` and not one bridge event —
+bridge traffic is rare next to DEX and oracle activity. Probe candidate event
+types by name instead.
+
+Set `resolution` honestly. `identifier` means a shared id is quoted on both
+chains and the hop can be followed; `detect-only` means the exit is recognised
+and no more. Never point a caller at a resolver that cannot help them —
+`resolvableHit()` is the guard.
+
 ```bash
 npm run find-unknown-packages              # sample mainnet, rank unknowns by call count
 npm run find-unknown-packages -- --checkpoints 100 --network testnet

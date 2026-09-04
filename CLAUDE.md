@@ -247,8 +247,12 @@ on claim. Sui ↔ Ethereum only; `chain_ids` declares no other route.
 Two traps:
 
 - `TokenTransferClaimed` is **inbound** — value arriving on Sui. Reporting it as
-  an exit sends an investigator to the wrong chain. `CLAIM_EVENT_SUFFIX` exists
-  to keep it distinguishable.
+  an exit sends an investigator to the wrong chain, so it is parsed by
+  `parseClaimEvent` into its own `NativeBridgeClaim` type rather than sharing
+  one with the outbound transfer. It still resolves: the claim quotes the origin
+  chain's `(source_chain, seq_num)`, which is the mirror of an outbound
+  `transfer_id`, so a trace running backwards picks the transfer up on the
+  origin chain instead of dead-ending.
 - Address fields are raw bytes (base64 over GraphQL). 20 bytes is EVM, 32 is
   Sui; any other length is left undecoded rather than padded into something
   address-shaped that belongs to nobody.

@@ -6,6 +6,7 @@ vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 const { fetchActiveValidators, findValidatorByAddress } = await import(
   "../src/utils/validators.js"
 );
+const { gqlPage } = await import("./helpers/service-shapes.js");
 
 /** One page of the connection, shaped the way the service actually answers. */
 const page = (
@@ -16,13 +17,15 @@ const page = (
   epoch: {
     epochId: 700,
     validatorSet: {
-      activeValidators: {
-        pageInfo: { hasNextPage, endCursor },
-        nodes: addresses.map((a) => ({
+      // gqlPage refuses an over-cap page and always carries pageInfo — the two
+      // things whose absence let `first: 200` look like it worked.
+      activeValidators: gqlPage(
+        addresses.map((a) => ({
           atRisk: 0,
           contents: { json: { metadata: { sui_address: a, name: `v-${a}` } } },
         })),
-      },
+        { hasNextPage, endCursor },
+      ),
       contents: { json: { total_stake: "1000" } },
     },
   },

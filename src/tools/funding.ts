@@ -387,6 +387,15 @@ export function registerFundingTools(server: McpServer) {
         // Origins that are not wallets, called out once for the whole batch —
         // the case a reader is most likely to misread as "this person funded
         // them".
+        // Addresses carrying names they no longer resolve to. Surfaced for the
+        // whole batch, since a lapsed alias is the attribution most easily lost.
+        const formerNames = [...batchIds.values()]
+          .filter((v) => (v.names_held ?? []).some((n) => n.expired))
+          .map((v) => ({
+            address: v.address,
+            ...(v.name ? { current_name: v.name } : {}),
+            expired_names: v.names_held!.filter((n) => n.expired).map((n) => n.name),
+          }));
         const nonWalletOrigins = [...batchIds.values()]
           .filter((v) => v.kind !== "wallet")
           .map((v) => ({
@@ -404,6 +413,13 @@ export function registerFundingTools(server: McpServer) {
                 {
                   address_count: addresses.length,
                   depth: depth ?? "full",
+                  ...(formerNames.length
+                    ? {
+                        expired_suins_names: formerNames,
+                        expired_names_note:
+                          "These addresses hold SuiNS registrations that have EXPIRED. Reverse lookup no longer returns them, so they will not appear as names anywhere else — but the address was known by them at the time of the activity under investigation, and older records may refer to it that way.",
+                      }
+                    : {}),
                   ...(nonWalletOrigins.length
                     ? {
                         non_wallet_addresses: nonWalletOrigins,
@@ -549,6 +565,10 @@ export function registerFundingTools(server: McpServer) {
             ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
             ...(id?.object_type ? { object_type: id.object_type } : {}),
             ...(id?.protocol ? { protocol: id.protocol } : {}),
+            // Former aliases, expired included. Reverse lookup drops these the
+            // moment a name lapses, which is exactly when an investigation
+            // still needs them.
+            ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
             ...(note ? { note } : {}),
           };
         };

@@ -1,6 +1,6 @@
 import { sui } from "./clients/grpc.js";
 import { gqlQuery } from "./clients/graphql.js";
-import { EXTERNAL_HTTP_TIMEOUT_MS } from "./config.js";
+import { EXTERNAL_HTTP_TIMEOUT_MS, getNetwork } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,8 +21,43 @@ const TOKEN_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const GQL_PAGE_SIZE = 50;
 const PAGE_DELAY_MS = 50;
 
-let tokenCache: { tokens: TokenInfo[]; fetchedAt: number } | null = null;
-let fetchInProgress: Promise<TokenInfo[]> | null = null;
+/**
+ * Ceiling on pages walked in one scan.
+ *
+ * There is no symbol filter in the objects API, so resolving a symbol means
+ * reading CoinMetadata objects until it turns up. Measured on mainnet: 637
+ * pages / 31,850 coins in 45s *without* the delay below, and the connection had
+ * not ended — the set is effectively unbounded and grows with every token
+ * anyone mints. An uncapped `while (true)` here is a multi-minute stall on a
+ * tool in the default profile, so the walk is bounded and says when it stopped
+ * early rather than presenting a partial answer as the whole set.
+ */
+const MAX_SCAN_PAGES = 60;
+
+interface TokenScan {
+  tokens: TokenInfo[];
+  /** True when the page budget ran out with pages still outstanding. */
+  truncated: boolean;
+}
+
+/**
+ * Caches are keyed by network. A single module-level cache served mainnet coin
+ * types to a testnet call, which is the one thing per-call network selection
+ * exists to prevent.
+ */
+const tokenCache = new Map<string, { scan: TokenScan; fetchedAt: number }>();
+const fetchInProgress = new Map<string, Promise<TokenScan>>();
+
+/**
+ * Resolved symbol → token, keyed `network:symbol`.
+ *
+ * The streaming resolver deliberately does not cache the pages it walked — a
+ * partial corpus would make a later exact match unreachable until it expired.
+ * Caching the *answer* has neither problem: a symbol that resolved once is
+ * settled, and a repeat lookup costs nothing instead of re-walking a few
+ * hundred pages.
+ */
+const symbolCache = new Map<string, { token: TokenInfo; fetchedAt: number }>();
 
 const COIN_METADATA_QUERY = `
   query($first: Int!, $after: String) {
@@ -64,76 +99,103 @@ function extractCoinTypeFromMetadata(typeRepr: string): string | null {
   return match?.[1] ?? null;
 }
 
-async function doFetchDiscoveryTokens(): Promise<TokenInfo[]> {
-  const tokens: TokenInfo[] = [];
+/**
+ * Walk CoinMetadata pages, handing each batch to `onBatch`.
+ *
+ * `onBatch` returning true stops the walk — which is what turns "resolve one
+ * symbol" from a full-network crawl into a scan that ends as soon as the
+ * symbol turns up. Returns whether the budget ran out with pages left.
+ */
+async function pageCoinMetadata(
+  onBatch: (batch: TokenInfo[]) => boolean,
+): Promise<{ truncated: boolean }> {
   let cursor: string | undefined;
 
-  try {
-    while (true) {
-      const data = await gqlQuery<CoinMetadataPage>(COIN_METADATA_QUERY, {
+  for (let page = 0; page < MAX_SCAN_PAGES; page++) {
+    let data: CoinMetadataPage;
+    try {
+      data = await gqlQuery<CoinMetadataPage>(COIN_METADATA_QUERY, {
         first: GQL_PAGE_SIZE,
         after: cursor ?? undefined,
       });
-
-      for (const node of data.objects.nodes) {
-        const contents = node.asMoveObject?.contents;
-        const typeRepr = contents?.type?.repr;
-        const json = contents?.json;
-        if (!typeRepr || !json) continue;
-
-        const coinType = extractCoinTypeFromMetadata(typeRepr);
-        if (!coinType) continue;
-
-        const symbol = json.symbol;
-        if (!symbol) continue;
-
-        tokens.push({
-          coin_type: coinType,
-          name: json.name ?? symbol,
-          symbol,
-          decimals: json.decimals ?? 9,
-        });
-      }
-
-      if (!data.objects.pageInfo.hasNextPage) break;
-      cursor = data.objects.pageInfo.endCursor ?? undefined;
-
-      await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
+    } catch {
+      // A failed page ends the walk, and the caller is told it was cut short so
+      // a partial list is never mistaken for the full set.
+      return { truncated: true };
     }
-  } catch {
-    // On partial failure, return what we got so far
+
+    const batch: TokenInfo[] = [];
+    for (const node of data.objects.nodes) {
+      const contents = node.asMoveObject?.contents;
+      const typeRepr = contents?.type?.repr;
+      const json = contents?.json;
+      if (!typeRepr || !json) continue;
+
+      const coinType = extractCoinTypeFromMetadata(typeRepr);
+      if (!coinType) continue;
+
+      const symbol = json.symbol;
+      if (!symbol) continue;
+
+      batch.push({
+        coin_type: coinType,
+        name: json.name ?? symbol,
+        symbol,
+        decimals: json.decimals ?? 9,
+      });
+    }
+
+    if (onBatch(batch)) return { truncated: false };
+    if (!data.objects.pageInfo.hasNextPage) return { truncated: false };
+    cursor = data.objects.pageInfo.endCursor ?? undefined;
+    await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
   }
 
-  return tokens;
+  return { truncated: true };
 }
 
-async function fetchDiscoveryTokens(): Promise<TokenInfo[]> {
-  if (tokenCache && Date.now() - tokenCache.fetchedAt < TOKEN_CACHE_TTL_MS) {
-    return tokenCache.tokens;
-  }
-
-  // Deduplicate concurrent callers — only one scan at a time
-  if (fetchInProgress) return fetchInProgress;
-
-  fetchInProgress = doFetchDiscoveryTokens()
-    .then((tokens) => {
-      if (tokens.length > 0) {
-        tokenCache = { tokens, fetchedAt: Date.now() };
-      }
-      return tokenCache?.tokens ?? [];
-    })
-    .finally(() => {
-      fetchInProgress = null;
-    });
-
-  return fetchInProgress;
+async function doFetchDiscoveryTokens(): Promise<TokenScan> {
+  const tokens: TokenInfo[] = [];
+  const { truncated } = await pageCoinMetadata((batch) => {
+    tokens.push(...batch);
+    return false;
+  });
+  return { tokens, truncated };
 }
 
 /**
- * Search on-chain CoinMetadata by name/symbol (fuzzy, case-insensitive).
+ * The full (bounded) token list for the current network.
+ *
+ * A truncated scan is cached like any other, because re-running a 60-page walk
+ * per call is worse than reusing a partial one — but `truncated` travels with
+ * it so callers can say the set is incomplete. Previously a scan cut short by
+ * an error was cached as if complete for six hours.
  */
+async function fetchDiscoveryTokens(): Promise<TokenScan> {
+  const key = getNetwork();
+  const cached = tokenCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < TOKEN_CACHE_TTL_MS) {
+    return cached.scan;
+  }
+
+  // Deduplicate concurrent callers — only one scan at a time per network.
+  const inFlight = fetchInProgress.get(key);
+  if (inFlight) return inFlight;
+
+  const p = doFetchDiscoveryTokens()
+    .then((scan) => {
+      if (scan.tokens.length > 0) tokenCache.set(key, { scan, fetchedAt: Date.now() });
+      return scan;
+    })
+    .finally(() => {
+      fetchInProgress.delete(key);
+    });
+  fetchInProgress.set(key, p);
+  return p;
+}
+
 export async function searchTokens(query: string): Promise<TokenInfo[]> {
-  const tokens = await fetchDiscoveryTokens();
+  const { tokens } = await fetchDiscoveryTokens();
   const q = query.toLowerCase();
   return tokens.filter(
     (t) =>
@@ -145,21 +207,54 @@ export async function searchTokens(query: string): Promise<TokenInfo[]> {
 /**
  * Resolve a single token by symbol/name. Prefers exact symbol match.
  */
-export async function resolveTokenBySymbol(
-  query: string,
-): Promise<TokenInfo | null> {
-  const tokens = await fetchDiscoveryTokens();
+export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | null> {
   const q = query.toLowerCase();
-  // Exact symbol match first
-  const exact = tokens.find((t) => t.symbol.toLowerCase() === q);
-  if (exact) return exact;
-  // Then name or symbol contains
+
+  const symbolKey = `${getNetwork()}:${q}`;
+  const hit = symbolCache.get(symbolKey);
+  if (hit && Date.now() - hit.fetchedAt < TOKEN_CACHE_TTL_MS) return hit.token;
+
+  // A completed scan for this network already has the answer.
+  const cached = tokenCache.get(getNetwork());
+  if (cached && Date.now() - cached.fetchedAt < TOKEN_CACHE_TTL_MS) {
+    const fromScan = matchToken(cached.scan.tokens, q);
+    if (fromScan) symbolCache.set(symbolKey, { token: fromScan, fetchedAt: Date.now() });
+    return fromScan;
+  }
+
+  // Otherwise stream pages and stop at the first exact symbol match, rather
+  // than reading every CoinMetadata object on the network and then searching.
+  // Measured on mainnet, the full walk is 600+ pages and climbing; the symbol
+  // being looked up is usually a well-known token that appears early.
+  let exact: TokenInfo | null = null;
+  const seen: TokenInfo[] = [];
+
+  await pageCoinMetadata((batch) => {
+    seen.push(...batch);
+    const hit = batch.find((t) => t.symbol.toLowerCase() === q);
+    if (hit) {
+      exact = hit;
+      return true;
+    }
+    return false;
+  });
+
+  // Fall back to a fuzzy match over whatever the walk covered. The corpus is
+  // deliberately not cached — it is a partial view, and caching it would make a
+  // later exact match unreachable for six hours — but the resolved answer is.
+  const resolved: TokenInfo | null = exact ?? matchToken(seen, q);
+  if (resolved) symbolCache.set(symbolKey, { token: resolved, fetchedAt: Date.now() });
+  return resolved;
+}
+
+/** Exact symbol first, then a name/symbol substring. */
+function matchToken(tokens: TokenInfo[], q: string): TokenInfo | null {
   return (
+    tokens.find((t) => t.symbol.toLowerCase() === q) ??
     tokens.find(
-      (t) =>
-        t.name.toLowerCase().includes(q) ||
-        t.symbol.toLowerCase().includes(q),
-    ) ?? null
+      (t) => t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q),
+    ) ??
+    null
   );
 }
 

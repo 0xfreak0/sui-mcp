@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import {
   fetchActiveValidators,
   findValidatorByAddress,
@@ -19,8 +20,7 @@ export function registerStakingTools(server: McpServer) {
         .string()
         .optional()
         .describe("If set, return details for this one validator instead of the full list (0x...)"),
-      limit: z
-        .number()
+      limit: numArg()
         .optional()
         .describe("Max validators to return when listing (default 50, max 150)"),
       sort_by: z

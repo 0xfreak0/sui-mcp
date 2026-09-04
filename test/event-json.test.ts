@@ -49,13 +49,16 @@ function txWithEvents(count: number) {
   };
 }
 
-const gqlEvents = (count: number) => ({
+const node = (i: number) => ({
+  contents: { type: { repr: EVENT_TYPE }, json: { order_id: `order-${i}` } },
+});
+
+const gqlEvents = (count: number, hasNextPage = false, endCursor?: string, from = 0) => ({
   transaction: {
     effects: {
       events: {
-        nodes: Array.from({ length: count }, (_, i) => ({
-          contents: { type: { repr: EVENT_TYPE }, json: { order_id: `order-${i}` } },
-        })),
+        pageInfo: { hasNextPage, endCursor },
+        nodes: Array.from({ length: count }, (_, i) => node(from + i)),
       },
     },
   },
@@ -116,6 +119,44 @@ describe("parsed event fields", () => {
     expect(d.events.map((e: { parsed: { order_id: string } }) => e.parsed.order_id))
       .toEqual(["order-0", "order-1", "order-2"]);
     expect(d.event_fields_note).toBeUndefined();
+  });
+
+  it("pages the events connection, which defaults to 20 and paginates", async () => {
+    // The bug this pins: asking without a page argument returned 20 nodes for a
+    // 59-event transaction, the length guard then correctly refused to attach
+    // anything, and the feature silently did nothing on exactly the
+    // event-heavy transactions that needed it most.
+    grpcResponse = txWithEvents(70);
+    mockGqlQuery
+      .mockResolvedValueOnce(gqlEvents(50, true, "cursor-1", 0))
+      .mockResolvedValueOnce(gqlEvents(20, false, undefined, 50));
+
+    const d = await run();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+    expect(mockGqlQuery.mock.calls[1][1].after).toBe("cursor-1");
+    expect(d.event_count).toBe(70);
+    expect(d.events[0].parsed.order_id).toBe("order-0");
+    expect(d.event_fields_note).toBeUndefined();
+  });
+
+  it("stops when a connection claims another page but returns no cursor", async () => {
+    // Otherwise it would refetch the same page until the page cap.
+    grpcResponse = txWithEvents(50);
+    mockGqlQuery.mockResolvedValue(gqlEvents(50, true, undefined, 0));
+
+    const d = await run();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
+    expect(d.events[0].parsed.order_id).toBe("order-0");
+  });
+
+  it("treats a response with no pageInfo as one complete page", async () => {
+    grpcResponse = txWithEvents(2);
+    mockGqlQuery.mockResolvedValue({
+      transaction: { effects: { events: { nodes: [node(0), node(1)] } } },
+    });
+
+    const d = await run();
+    expect(d.events[1].parsed.order_id).toBe("order-1");
   });
 
   it("attaches nothing when the two lists disagree on length", async () => {

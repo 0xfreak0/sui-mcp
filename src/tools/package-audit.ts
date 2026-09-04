@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import {
   fetchAllModuleDisassemblyAtVersion,
@@ -17,14 +18,12 @@ export function registerPackageAuditTools(server: McpServer) {
       package: z
         .string()
         .describe("Package reference: a 0x package ID (any version in the family) or MVR name (@org/app)."),
-      from_version: z
-        .number()
+      from_version: numArg()
         .int()
         .positive()
         .optional()
         .describe("Older version to compare from (default: latest - 1)."),
-      to_version: z
-        .number()
+      to_version: numArg()
         .int()
         .positive()
         .optional()

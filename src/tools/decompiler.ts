@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { DECOMPILER_PATH, suivisionPackageUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
@@ -129,8 +130,7 @@ export function registerDecompilerTools(server: McpServer) {
         .string()
         .optional()
         .describe("Module name to decompile. If omitted, lists available modules."),
-      all_modules: z
-        .boolean()
+      all_modules: boolArg()
         .optional()
         .describe("Decompile all modules in the package (default: false)"),
     },

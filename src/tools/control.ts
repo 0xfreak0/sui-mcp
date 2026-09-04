@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
@@ -38,8 +39,7 @@ export function registerControlTools(server: McpServer) {
         .string()
         .optional()
         .describe("Population: addresses that emitted this event struct type."),
-      size: z
-        .number()
+      size: numArg()
         .int()
         .min(1)
         .max(100)
@@ -58,15 +58,13 @@ export function registerControlTools(server: McpServer) {
         .optional()
         .describe("Window start: ISO 8601 timestamp or a checkpoint number."),
       to: z.string().optional().describe("Window end: ISO 8601 timestamp, 'now', or a checkpoint."),
-      seed: z
-        .number()
+      seed: numArg()
         .int()
         .optional()
         .describe(
           "Makes the draw reproducible. Record it alongside the result — without it nobody can redraw your control.",
         ),
-      max_events: z
-        .number()
+      max_events: numArg()
         .int()
         .min(50)
         .max(50000)

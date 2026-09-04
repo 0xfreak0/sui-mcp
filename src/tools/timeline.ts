@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
@@ -122,8 +123,8 @@ export function registerTimelineTools(server: McpServer) {
       addresses: z.array(z.string()).min(1).max(10).describe("Addresses to merge into one timeline (1-10)"),
       from: z.string().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
       to: z.string().optional().describe("Window end: ISO date or a checkpoint number"),
-      limit: z.number().int().positive().max(200).optional().describe("Max timeline entries to return (default 60)"),
-      per_address: z.number().int().positive().max(50).optional().describe("Max transactions to pull per address before merging (default 30)"),
+      limit: numArg().int().positive().max(200).optional().describe("Max timeline entries to return (default 60)"),
+      per_address: numArg().int().positive().max(50).optional().describe("Max transactions to pull per address before merging (default 30)"),
     },
     async ({ addresses, from, to, limit, per_address }) => {
       try {

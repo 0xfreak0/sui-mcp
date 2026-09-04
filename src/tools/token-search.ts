@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { searchTokens, probeOnChain } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,8 +10,7 @@ export function registerTokenSearchTools(server: McpServer) {
     "Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). Returns matching tokens with their full coin type. Use this when you have a token name but need the coin type for get_balance, get_coin_info, or get_token_prices. Discovers tokens by scanning on-chain CoinMetadata objects via GraphQL.",
     {
       query: z.string().describe("Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN')"),
-      verify_onchain: z
-        .boolean()
+      verify_onchain: boolArg()
         .optional()
         .describe(
           "If true, verify each match on-chain and include total supply (default: false)"

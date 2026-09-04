@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
@@ -99,8 +100,7 @@ export function registerHistoryTools(server: McpServer) {
     "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet. Returns a human-readable activity feed with protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI'), and token flow. Prefer this over query_transactions when exploring what a wallet has been doing.",
     {
       address: z.string().describe("Sui wallet address (0x...)"),
-      limit: z
-        .number()
+      limit: numArg()
         .min(1)
         .max(50)
         .optional()

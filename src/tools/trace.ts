@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { batchResolveNames } from "../utils/names.js";
 import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
@@ -492,8 +493,7 @@ export function registerTraceTools(server: McpServer) {
       direction: z
         .enum(["forward", "backward"])
         .describe("Direction to trace: 'forward' follows recipients, 'backward' follows sender"),
-      hops: z
-        .number()
+      hops: numArg()
         .optional()
         .describe("Max hops to follow (default 3, max 10)"),
       coin_type: z

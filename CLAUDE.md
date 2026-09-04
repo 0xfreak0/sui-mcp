@@ -79,6 +79,19 @@ caller needs); no probe has made it fire, so keep it narrow and don't design
 around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
 the fullnode there.
 
+## Tool arguments
+
+Numeric and boolean tool args use `numArg()` / `boolArg()` from
+`src/tools/args.ts`, never bare `z.number()` / `z.boolean()`. A model composing
+JSON will sometimes quote a value (`max_hops: "8"`), and strict validation turns
+that into a hard failure for something whose intent was never ambiguous.
+Coercion does not loosen the advertised contract — the generated JSON schema is
+byte-identical — and `"abc"` is still rejected.
+
+`boolArg` is deliberately not `z.coerce.boolean()`, which applies JavaScript
+truthiness and turns the string `"false"` into `true`. Silently inverting a
+caller's intent is worse than the rejection this is meant to fix.
+
 ## Contributing rules
 
 - **Never put a `claude.ai/code/session_...` URL in a commit message or PR

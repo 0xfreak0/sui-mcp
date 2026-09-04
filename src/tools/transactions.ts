@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { formatStatus, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
@@ -16,8 +17,17 @@ export function registerTransactionTools(server: McpServer) {
     "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
+      max_event_field_bytes: numArg()
+        .int()
+        .min(0)
+        .max(500_000)
+        .optional()
+        .describe(
+          "Byte budget for decoded event fields (default 24000). Event types and senders are always returned; only the decoded values are rationed, and anything skipped is reported. Raise it for an event-heavy transaction you need in full, or set 0 to skip decoding entirely.",
+        ),
     },
-    async ({ digest }) => {
+    async ({ digest, max_event_field_bytes }) => {
+      const fieldBudget = max_event_field_bytes ?? 24_000;
       const req = {
         digest,
         readMask: {
@@ -64,19 +74,41 @@ export function registerTransactionTools(server: McpServer) {
 
       // Decoded event contents, which gRPC does not carry. One extra request,
       // and only when there is something to decode.
-      const parsed = rawEvents.length > 0 ? await fetchEventJson(digest) : null;
+      const parsed =
+        rawEvents.length > 0 && fieldBudget > 0 ? await fetchEventJson(digest) : null;
       // Joined by position, which is emission order on both transports. Guarded
       // on length: attaching fields from a mismatched list would put one event's
       // values under another's type, which is worse than omitting them.
       const parsedUsable = parsed !== null && parsed.length === rawEvents.length;
 
-      const events = rawEvents.map((e: GrpcTypes.Event, i: number) => ({
-        package_id: e.packageId,
-        module: e.module,
-        event_type: e.eventType,
-        sender: e.sender,
-        ...(parsedUsable ? { parsed: parsed![i].json } : {}),
-      }));
+      // Decoded fields are attached in order until a byte budget is spent.
+      //
+      // The constraint is the caller's context, not any single event: measured
+      // on mainnet, the 99th percentile of transactions with events sits at
+      // 12 KB of decoded fields, but a 59-event DeepBook transaction reaches
+      // 53 KB — roughly 13k tokens for one lookup, and a ten-hop trace would
+      // spend its whole budget on event bodies. Types and senders are cheap and
+      // always useful, so they are never dropped; only the decoded values are
+      // rationed, and what was skipped is reported rather than silently missing.
+      let spent = 0;
+      let fieldsOmitted = 0;
+      const events = rawEvents.map((e: GrpcTypes.Event, i: number) => {
+        const base = {
+          package_id: e.packageId,
+          module: e.module,
+          event_type: e.eventType,
+          sender: e.sender,
+        };
+        if (!parsedUsable) return base;
+        const json = parsed![i].json;
+        const size = JSON.stringify(json ?? null).length;
+        if (spent + size > fieldBudget) {
+          fieldsOmitted++;
+          return base;
+        }
+        spent += size;
+        return { ...base, parsed: json };
+      });
 
       // Protocols the EVENTS implicate, which the call targets can miss
       // entirely. Both the defining package of each event type and the emitting
@@ -133,7 +165,14 @@ export function registerTransactionTools(server: McpServer) {
                 epoch: bigintToString(effects?.epoch),
                 checkpoint: bigintToString(tx?.checkpoint),
                 event_count: events.length,
-                ...(rawEvents.length > 0 && !parsedUsable
+                ...(fieldsOmitted
+                  ? {
+                      event_fields_omitted: fieldsOmitted,
+                      event_fields_budget_note:
+                        `Decoded fields for ${fieldsOmitted} event(s) were omitted after the ${fieldBudget}-byte budget was spent. Their types and senders are still listed. Raise max_event_field_bytes to see them.`,
+                    }
+                  : {}),
+                ...(rawEvents.length > 0 && fieldBudget > 0 && !parsedUsable
                   ? {
                       event_fields_note:
                         "Decoded event fields could not be attached — the parsed-contents lookup failed or returned a different number of events, and guessing the alignment would file one event's values under another's type. Event types and senders below are unaffected.",
@@ -176,10 +215,9 @@ export function registerTransactionTools(server: McpServer) {
         .string()
         .optional()
         .describe("Only transactions before this checkpoint"),
-      limit: z.number().optional().describe("Max results (default 20)"),
+      limit: numArg().optional().describe("Max results (default 20)"),
       after: z.string().optional().describe("Pagination cursor"),
-      include_functions: z
-        .boolean()
+      include_functions: boolArg()
         .optional()
         .describe(
           "Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB.",

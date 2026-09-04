@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { getNetwork } from "../config.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
@@ -249,12 +250,10 @@ export function registerHolderTools(server: McpServer) {
         .enum(["nft", "token"])
         .optional()
         .describe("'nft' ranks by count, 'token' ranks by balance. Auto-detected from type if omitted (Coin<...> = token, otherwise nft)."),
-      limit: z
-        .number()
+      limit: numArg()
         .optional()
         .describe("Top N holders to return (default 20, max 100)"),
-      max_scan: z
-        .number()
+      max_scan: numArg()
         .optional()
         .describe("Max objects to scan (default 5000, max 50000)"),
     },

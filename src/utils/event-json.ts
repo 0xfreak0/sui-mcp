@@ -27,10 +27,21 @@
 
 import { gqlQuery } from "../clients/graphql.js";
 
-const EVENT_JSON_QUERY = `query ($digest: String!) {
+/**
+ * Note the explicit `first` and the cursor.
+ *
+ * The events connection defaults to **20 nodes and paginates**, while gRPC
+ * returns every event. Asking without a page argument therefore produced a
+ * short list for any busy transaction — a 59-event transaction came back with
+ * 20 — and the length guard downstream then correctly refused to attach
+ * anything, so the feature silently did nothing on exactly the transactions
+ * that needed it. Page size is capped at 50 server-side.
+ */
+const EVENT_JSON_QUERY = `query ($digest: String!, $first: Int!, $after: String) {
   transaction(digest: $digest) {
     effects {
-      events {
+      events(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           contents { type { repr } json }
         }
@@ -39,10 +50,25 @@ const EVENT_JSON_QUERY = `query ($digest: String!) {
   }
 }`;
 
+/** GraphQL's hard page cap. */
+const PAGE = 50;
+
+/**
+ * Pages to walk before giving up.
+ *
+ * 20 pages is 1000 events, far beyond anything observed (the 99th percentile of
+ * transactions with events sits at 20 events). The bound exists so a pathological
+ * transaction cannot turn one lookup into an unbounded crawl.
+ */
+const MAX_PAGES = 20;
+
 interface EventJsonResult {
   transaction: {
     effects: {
-      events: { nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }> };
+      events: {
+        pageInfo?: { hasNextPage: boolean; endCursor?: string };
+        nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }>;
+      };
     } | null;
   } | null;
 }
@@ -59,11 +85,27 @@ export interface ParsedEvent {
  * GraphQL hiccup must not fail a transaction lookup that gRPC already answered.
  */
 export async function fetchEventJson(digest: string): Promise<ParsedEvent[] | null> {
+  const out: ParsedEvent[] = [];
+  let after: string | undefined;
   try {
-    const r = await gqlQuery<EventJsonResult>(EVENT_JSON_QUERY, { digest });
-    const nodes = r.transaction?.effects?.events?.nodes;
-    if (!nodes) return null;
-    return nodes.map((n) => ({ type: n.contents?.type?.repr ?? null, json: n.contents?.json ?? null }));
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const r = await gqlQuery<EventJsonResult>(EVENT_JSON_QUERY, { digest, first: PAGE, after });
+      const events = r.transaction?.effects?.events;
+      if (!events?.nodes) return out.length > 0 ? out : null;
+      for (const n of events.nodes) {
+        out.push({ type: n.contents?.type?.repr ?? null, json: n.contents?.json ?? null });
+      }
+      // A response without pageInfo is treated as a single complete page
+      // rather than an error: returning what was read beats discarding it.
+      if (!events.pageInfo?.hasNextPage) return out;
+      after = events.pageInfo.endCursor;
+      // A connection claiming another page but handing back no cursor would
+      // loop forever on the same one.
+      if (!after) return out;
+    }
+    // Ran out of pages. Returning a partial list would fail the caller's length
+    // check anyway; null says "no answer" rather than "this is all of them".
+    return null;
   } catch {
     return null;
   }

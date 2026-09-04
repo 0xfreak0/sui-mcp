@@ -33,6 +33,15 @@ interface HopResult {
   timestamp: string | null;
   checkpoint: string | null;
   protocols: string[];
+  /** How the next hop was chosen: direct, swap-follow, or pool-fallback. */
+  basis?: string;
+  /** Recipients on this hop that the trace did not follow. */
+  unfollowed_recipients?: Array<{
+    address: string;
+    amount: string;
+    coin_type: string;
+    usd_value: number | null;
+  }>;
   actions: string[];
   token_flow: { coin: string; amount: string; raw_type: string }[];
   /** Note about how the next hop was chosen (swap follow-through, pool skip). */
@@ -356,6 +365,11 @@ export function registerTraceTools(server: McpServer) {
       // address to label, and `isSink` never fires. The call is the signal
       // that is actually present.
       const bridgeExits: Array<{ digest: string; hits: BridgeHit[] }> = [];
+      // Who the next hop's transaction must have been sent by, for the chain to
+      // still be about the same funds. Null on the first hop, which has no
+      // predecessor to disagree with.
+      let expectedSender: string | null = null;
+      let custodyBreak: Record<string, unknown> | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
       let trackedCoin: string | null = coin_type ?? null;
 
@@ -410,6 +424,31 @@ export function registerTraceTools(server: McpServer) {
         );
         if (hits.length) bridgeExits.push({ digest: currentDigest, hits });
 
+        // Chain of custody. findNextTx asks for the next transaction *affecting*
+        // the address we followed, which for a shared contract is some other
+        // user's transaction. Without this check the trace keeps walking and
+        // attributes a stranger's flows to the subject — confidently, and with
+        // no visible seam.
+        // Forward only. Backward tracing deliberately walks to the transaction
+        // that FUNDED the address, which by definition someone else sent — so
+        // requiring the sender to match would fire on every backward hop.
+        if (direction === "forward" && expectedSender && sender && sender !== expectedSender) {
+          custodyBreak = {
+            at_hop: hop + 1,
+            digest: currentDigest,
+            expected_sender: expectedSender,
+            actual_sender: sender,
+            meaning:
+              "The next transaction on this address was not sent by it. That happens when the trace " +
+              "followed a shared contract (a pool or protocol), whose subsequent activity belongs to " +
+              "other users. Stopping here rather than attributing their flows to the subject.",
+          };
+          terminationReason =
+            "Chain of custody broken — the following transaction was sent by a different address. " +
+            "Stopping trace.";
+          break;
+        }
+
         const hopResult: HopResult = {
           hop: hop + 1,
           digest: currentDigest,
@@ -423,6 +462,24 @@ export function registerTraceTools(server: McpServer) {
         };
         traceHops.push(hopResult);
 
+        // Price this hop's coins before choosing, so the next-hop ranking
+        // compares value rather than raw units — 1 USDC is 1e6 units and 1 SUI
+        // is 1e9, so a raw comparison ranks by decimal places and can follow
+        // dust over the real transfer. Best-effort: coins with no Pyth feed
+        // fall back to raw magnitude, which is at least consistent per coin.
+        const hopCoins = [...new Set(allChanges.map((c) => c.coin_type))];
+        const hopUnixTs = tx.timestamp ? Math.floor(Date.parse(tx.timestamp) / 1000) : undefined;
+        const decisionPrices = await priceUsdAtTime(hopCoins, hopUnixTs).catch(
+          () => new Map<string, { price: number } | undefined>(),
+        );
+        const valueUsd = (c: { amount: string; coin_type: string }) => {
+          const price = (decisionPrices as Map<string, { price: number } | undefined>).get(
+            c.coin_type,
+          )?.price;
+          if (price == null) return null;
+          return usdValue(c.amount, decimalsForCoinType(c.coin_type), price);
+        };
+
         // Swap-aware, pool-skipping next-hop selection.
         const decision = chooseNextHop({
           sender,
@@ -431,10 +488,18 @@ export function registerTraceTools(server: McpServer) {
           direction,
           trackedCoin,
           isPassThrough,
+          valueUsd,
         });
         trackedCoin = decision.nextCoinType;
         if (decision.note) hopResult.note = decision.note;
+        hopResult.basis = decision.basis;
+        // Branches the trace set aside. Reported per hop so "the money went
+        // here" is never read off a split that had five other recipients.
+        if (decision.unfollowed.length) hopResult.unfollowed_recipients = decision.unfollowed;
         const nextAddress = decision.nextAddress;
+        // Only meaningful forward: the address we hand on must be the one that
+        // sends the next transaction for the chain to still concern these funds.
+        expectedSender = direction === "forward" ? nextAddress : null;
 
         if (!nextAddress) break;
 
@@ -573,6 +638,13 @@ export function registerTraceTools(server: McpServer) {
         parts.push(usd.join("\n"));
       }
       if (terminationReason) parts.push(`⚠ ${terminationReason}`);
+      if (custodyBreak) {
+        parts.push(
+          `⚠ Chain of custody broke at hop ${custodyBreak.at_hop}: expected a transaction from ` +
+            `${custodyBreak.expected_sender}, found one sent by ${custodyBreak.actual_sender}. ` +
+            `Hops beyond this point were not followed.`,
+        );
+      }
       if (bridgeExits.length) {
         // Said in the summary as well as the structured payload: a trace that
         // just ends reads as "the money stopped here", which is the wrong
@@ -593,6 +665,7 @@ export function registerTraceTools(server: McpServer) {
         coin_type: coin_type ?? "all",
         hop_count: enrichedHops.length,
         stopped_at_sink: terminationReason,
+        ...(custodyBreak ? { custody_break: custodyBreak } : {}),
         // Structured, not just prose in the summary, so a caller can chain
         // straight into resolve_bridge_transfer without re-parsing the text.
         ...(bridgeExits.length

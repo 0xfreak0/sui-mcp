@@ -103,7 +103,11 @@ interface OperationPattern {
 const OPERATION_PATTERNS: OperationPattern[] = [
   // DEX: swap
   { module: "pool", fnPrefix: "swap", operation: { action: "swap" } },
-  { module: "pool", fnPrefix: "flash_swap", operation: { action: "swap" } },
+  // Deliberately NOT "swap". A flash swap borrows and repays inside the same
+  // transaction, so the actor does not end up holding proceeds — and the trace's
+  // swap-follow path switches the tracked asset on that assumption, which would
+  // make it follow a coin the actor never kept.
+  { module: "pool", fnPrefix: "flash_swap", operation: { action: "flash_swap" } },
   { module: "router", fnPrefix: "swap", operation: { action: "swap" } },
   { module: "cetus", fnPrefix: "swap", operation: { action: "swap" } },
   { module: "router", fnPrefix: "new_swap_context", operation: { action: "swap" } },

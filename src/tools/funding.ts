@@ -307,11 +307,21 @@ export function registerFundingTools(server: McpServer) {
         const coFunded = detectCoFunding(allSteps, addresses);
 
         // Weigh each group against how many addresses its transaction actually
-        // paid. Capped at 10 lookups: this runs after a batch that may already
-        // have made a hundred queries, and the widest groups sort first.
+        // paid. The recipient-count lookup is capped, because this runs after a
+        // batch that may already have made a hundred queries — but the cap is
+        // on the *lookups*, not on what gets reported.
+        //
+        // Reporting only the first 10 was actively backwards. detectCoFunding
+        // sorts widest-payout-first, and a wide payout is the weak signal — a
+        // transaction paying nineteen addresses, two of which are yours, is a
+        // batch distribution. The decisive case is the narrow one, a payment to
+        // exactly the two addresses under investigation, and that sorts last.
+        // So the truncation dropped the strongest evidence and kept the
+        // weakest, silently.
         const subjectSet = new Set(addresses);
+        const RECIPIENT_LOOKUP_CAP = 10;
         const assessed = [];
-        for (const g of coFunded.slice(0, 10)) {
+        for (const g of coFunded.slice(0, RECIPIENT_LOOKUP_CAP)) {
           const total = await countTxRecipients(g.funding_tx);
           const matched = g.addresses.filter((a) => subjectSet.has(a)).length;
           assessed.push({
@@ -320,6 +330,20 @@ export function registerFundingTools(server: McpServer) {
             ...assessCoFunding(matched, total),
           });
         }
+
+        // Every group is reported. The ones past the lookup cap carry no
+        // payout size — that is the measurement we declined to spend a query
+        // on — but they are still evidence, and dropping them entirely removed
+        // the narrow payouts that matter most.
+        const reportedCoFunding = [
+          ...assessed,
+          ...coFunded.slice(RECIPIENT_LOOKUP_CAP).map((g) => ({
+            ...g,
+            transaction_recipient_count: null,
+            strength: "unmeasured" as const,
+            why: "Payout size not measured (per-call lookup cap). Weigh this group yourself: a payment to only the addresses under investigation is close to decisive, a wide batch distribution is not.",
+          })),
+        ];
 
         // One subject funding another needs no denominator to interpret: the
         // money went straight from one address under investigation to another,
@@ -348,7 +372,17 @@ export function registerFundingTools(server: McpServer) {
                   addresses_resolved: results.filter((r) => r.hops > 0).length,
                   ...(coFunded.length
                     ? {
-                        co_funded_in_one_transaction: assessed.map((g) => ({
+                        co_funding_group_count: coFunded.length,
+                        ...(coFunded.length > RECIPIENT_LOOKUP_CAP
+                          ? {
+                              co_funding_note:
+                                `${coFunded.length} co-funding groups were found; the payout size of the first ` +
+                                `${RECIPIENT_LOOKUP_CAP} was measured and the rest are reported without it. ` +
+                                "Groups are ordered widest-payout-first, so the unmeasured ones are the narrow " +
+                                "payouts — the stronger signal, not the weaker.",
+                            }
+                          : {}),
+                        co_funded_in_one_transaction: reportedCoFunding.map((g) => ({
                           ...g,
                           ...(nameMap.get(g.funder) ? { funder_name: nameMap.get(g.funder) } : {}),
                         })),

@@ -172,3 +172,29 @@ describe("assessCoFunding", () => {
     expect(assessCoFunding(2, 19).strength).toBe("batch");
   });
 });
+
+describe("group ordering and what truncation would drop", () => {
+  it("sorts widest-payout-first, so a naive head-slice keeps the weakest evidence", () => {
+    // This ordering is why capping the *reported* set was backwards. The
+    // module's own contract: a payout to exactly the two addresses under
+    // investigation is close to decisive; a nineteen-recipient batch says
+    // almost nothing. The decisive groups are the narrow ones — and they sort
+    // last, so they were the first to be dropped.
+    const steps = [
+      // wide group: one tx paying four subjects
+      { address: "0xa", funded_by: "0xf1", funding_tx: "0xwide" },
+      { address: "0xb", funded_by: "0xf1", funding_tx: "0xwide" },
+      { address: "0xc", funded_by: "0xf1", funding_tx: "0xwide" },
+      { address: "0xd", funded_by: "0xf1", funding_tx: "0xwide" },
+      // narrow group: one tx paying exactly two subjects
+      { address: "0xe", funded_by: "0xf2", funding_tx: "0xnarrow" },
+      { address: "0xf", funded_by: "0xf2", funding_tx: "0xnarrow" },
+    ];
+    const groups = detectCoFunding(steps, ["0xa", "0xb", "0xc", "0xd", "0xe", "0xf"]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0].funding_tx).toBe("0xwide");
+    // The narrow, stronger group is last — so `slice(0, N)` sheds it first.
+    expect(groups[groups.length - 1].funding_tx).toBe("0xnarrow");
+  });
+});

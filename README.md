@@ -95,7 +95,7 @@ Supply-chain scanners report the capabilities a package uses, without the reason
 | Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts). |
 | Filesystem | Temp files for `decompile_module`, and reading `SUI_LABELS_FILE` if you set it. |
 | Subprocess | One call, in [`src/tools/decompiler.ts`](src/tools/decompiler.ts), to the decompiler binary *you* build and point at. `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
-| Environment | Six variables, all prefixed `SUI_`, all listed in [`.env.example`](.env.example). Nothing else is read. |
+| Environment | The `SUI_`-prefixed variables in [`.env.example`](.env.example), plus two optional price-provider keys (`PYTH_API_KEY`, `CMC_API_KEY`). Nothing else is read. |
 
 There is no `eval`, no dynamic `require`, no minified or obfuscated code, and no telemetry. Inputs that come from the chain are treated as untrusted: `decompile_module` validates module names before they reach a filesystem path, and bounds how many modules one call will process.
 
@@ -123,6 +123,19 @@ npm audit signatures
 ## Configuration
 
 All environment variables are optional. See [`.env.example`](.env.example) for the full list; the common ones are `SUI_NETWORK` (default network), `SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (custom RPC endpoints), and `SUI_LABELS_FILE` (address attribution labels for fund tracing).
+
+### Price sources
+
+Current USD prices come from **Aftermath**, which is free and needs no key — that is the default path and it covers everything except historical pricing.
+
+Two paid sources are opt-in and engage only when their key is set, so nobody is billed by accident and nothing degrades if you set neither:
+
+| Variable | Enables |
+|---|---|
+| `PYTH_API_KEY` | Historical prices (`get_token_prices` with `at`), oracle-vs-market comparison. Pyth's Hermes endpoint began requiring authentication for price *values*; feed discovery is still open. |
+| `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
+
+Without a key, tools that need a paid source say so explicitly rather than returning a null price — a missing price and a price of zero are different claims.
 
 ### Optional local store
 

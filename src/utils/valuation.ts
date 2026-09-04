@@ -1,4 +1,5 @@
 import { buildPythFeedMap } from "../discovery.js";
+import { pythApiKey } from "./price-providers.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 
 /**
@@ -90,6 +91,10 @@ export async function priceUsdAtTime(
   const uniq = [...new Set(coinTypes)];
   if (uniq.length === 0) return out;
   try {
+    // Historical pricing is Pyth-only and Pyth now needs a key. Without one,
+    // skip straight out instead of walking the feed map to make a request that
+    // will be refused.
+    if (!pythApiKey()) return out;
     const { feedIds, reverseMap } = await buildPythFeedMap(uniq);
     if (feedIds.length === 0) return out;
     const prices = await fetchPythPrices(feedIds, unixTs);

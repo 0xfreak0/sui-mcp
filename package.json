@@ -10,7 +10,8 @@
   "files": [
     "dist",
     "!dist/**/*.map",
-    "labeled-addresses.example.json"
+    "labeled-addresses.example.json",
+    ".claude/skills"
   ],
   "scripts": {
     "build": "tsc && cp -r src/data dist/ && chmod +x dist/index.js",

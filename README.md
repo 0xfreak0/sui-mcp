@@ -68,7 +68,7 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 17 | Wallets, balances, transactions, tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 20 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `forensics` | 24 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
 | `all` | 59 | Everything |

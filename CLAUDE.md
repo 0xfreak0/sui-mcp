@@ -287,7 +287,7 @@ candidates, all eligible.
 | `cofunded` | 1.0 | Same first funder, funder passed the popularity check |
 | `cofunded` (same tx, ≤3 paid) | 1.2 | Bespoke payout — built for these addresses |
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
-| `funding_edge` | 1.0 | One address first-funded the other |
+| `funding_edge` | 1.0 | One address first-funded the other, and is a seed or passed the popularity check |
 | `sponsor` | 0.7 | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
 
@@ -309,6 +309,15 @@ Four rules that are easy to get wrong:
 - **Being paid is not being funded.** An expansion candidate becomes `cofunded`
   only after computing its own first funder. Sponsorship needs no such check —
   the probe observed it directly.
+- **A narrow funder belongs in the cluster it funded.** `funding_edge` once
+  fired only between two seeds, so a funder discovered on the walk was used as
+  the `via` label on the `cofunded` edges between the addresses it funded and
+  then discarded — the hub excluded from its own cluster. That made the answer
+  depend on what the caller already knew: pass both addresses as seeds and the
+  edge appeared, pass one and it did not, on identical chain data. It now fires
+  for any funder that is a seed *or* cleared the popularity filter. Measured:
+  seeding one wallet went from a 4-member cluster resting on a single invisible
+  intermediary to 5 members with two independent bases.
 - **Narrow and popular are not symmetric.** Popular is proven by what was seen.
   Narrow off an incomplete scan is provisional, because the probe reads recent
   activity while the fundings it filters are historical. `used_intermediaries`

@@ -174,11 +174,14 @@ describe("buildWalletEdges", () => {
     );
 
     const r = await buildWalletEdges([A, B], { expand: false });
-    expect(r.edges).toHaveLength(1);
-    expect(r.edges[0].signal_types).toEqual(["cofunded"]);
-    expect(r.edges[0].signals[0].via).toBe(NARROW);
+    // Assert the cofunded edge specifically. The narrow funder now also
+    // contributes a funding edge to each address it funded, so a total count
+    // would be asserting on a different behaviour than this test is about.
+    const cofunded = r.edges.filter((e) => e.signal_types.includes("cofunded"));
+    expect(cofunded).toHaveLength(1);
+    expect(cofunded[0].signals[0].via).toBe(NARROW);
     // The claim is checkable: the funding digests are attached.
-    expect(r.edges[0].signals[0].digests.length).toBeGreaterThan(0);
+    expect(cofunded[0].signals[0].digests.length).toBeGreaterThan(0);
   });
 
   it("discards a popular funder instead of linking everyone it paid", async () => {
@@ -257,9 +260,10 @@ describe("buildWalletEdges", () => {
       }),
     );
     const r = await buildWalletEdges([A, B], { expand: false });
-    expect(r.edges).toHaveLength(1);
-    expect(r.edges[0].weight).toBe(0.8);
-    expect(r.edges[0].signals[0].detail).toContain("20 addresses");
+    const batch = r.edges.filter((e) => e.signal_types.includes("cofunded"));
+    expect(batch).toHaveLength(1);
+    expect(batch[0].weight).toBe(0.8);
+    expect(batch[0].signals[0].detail).toContain("20 addresses");
   });
 
   it("scores a bespoke two-way payout ABOVE a plain shared funder", async () => {
@@ -278,7 +282,8 @@ describe("buildWalletEdges", () => {
       }),
     );
     const r = await buildWalletEdges([A, B], { expand: false });
-    expect(r.edges[0].weight).toBe(1.2);
+    const bespoke = r.edges.filter((e) => e.signal_types.includes("cofunded"));
+    expect(bespoke[0].weight).toBe(1.2);
   });
 
   it("leaves separately-funded pairs at the default weight", async () => {
@@ -297,7 +302,50 @@ describe("buildWalletEdges", () => {
       }),
     );
     const r = await buildWalletEdges([A, B], { expand: false });
-    expect(r.edges[0].weight).toBe(1);
+    const sep = r.edges.filter((e) => e.signal_types.includes("cofunded"));
+    expect(sep[0].weight).toBe(1);
+  });
+
+  it("puts a NARROW funder into the cluster it funded", async () => {
+    // The funder used to be the `via` label on the cofunded edges between the
+    // addresses it funded, and nothing more — so the hub of a cluster was
+    // excluded from it. That made the answer depend on what the caller already
+    // knew: pass both addresses as seeds and the edge appeared, pass one and it
+    // did not, on identical chain data. Backwards for a tool whose job is
+    // finding the addresses you did not name.
+    mockGqlQuery.mockImplementation(
+      router({
+        earliest: (addr) => (addr === A ? page([payment("0xfa", NARROW, A)]) : page([])),
+        sent: (addr) => (addr === NARROW ? page([payment("0xfa", NARROW, A)]) : page([])),
+      }),
+    );
+
+    const r = await buildWalletEdges([A], { expand: false });
+    const fe = r.edges.find((e) => e.signal_types.includes("funding_edge"));
+    expect(fe).toBeDefined();
+    expect([fe!.wallet_a, fe!.wallet_b]).toContain(NARROW);
+    expect(r.examined).toContain(NARROW);
+    expect(fe!.signals[0].detail).toContain("not an exchange withdrawal");
+  });
+
+  it("keeps a POPULAR funder out, however many it funded", async () => {
+    // The whole control. An exchange first-funds everybody, so a funding edge
+    // from one would put every withdrawal it ever made in the same cluster.
+    const CEX = "0xcex";
+    mockGqlQuery.mockImplementation(
+      router({
+        earliest: (addr) => (addr === A ? page([payment("0xfa", CEX, A)]) : page([])),
+        sent: (addr) =>
+          addr === CEX
+            ? page(Array.from({ length: 20 }, (_, i) => payment(`0xd${i}`, CEX, `0xr${i}`)), true)
+            : page([]),
+      }),
+    );
+
+    const r = await buildWalletEdges([A], { expand: false, popularityLimit: 10 });
+    expect(r.edges).toHaveLength(0);
+    expect(r.examined).not.toContain(CEX);
+    expect(r.excluded_intermediaries[0]).toMatchObject({ address: CEX, role: "funder" });
   });
 
   it("does NOT treat a direct payment between two seeds as co-appearance", async () => {

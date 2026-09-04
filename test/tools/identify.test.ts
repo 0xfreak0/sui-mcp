@@ -167,7 +167,7 @@ describe("identify_address", () => {
     mockGqlQuery.mockResolvedValue({
       epoch: {
         validatorSet: {
-          activeValidators: { nodes: [] },
+          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
         },
       },
     });
@@ -206,6 +206,7 @@ describe("identify_address", () => {
       epoch: {
         validatorSet: {
           activeValidators: {
+            pageInfo: { hasNextPage: false, endCursor: null },
             nodes: [
               {
                 contents: {

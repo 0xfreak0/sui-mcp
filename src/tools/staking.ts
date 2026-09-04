@@ -1,32 +1,14 @@
 import { z } from "zod";
+import {
+  fetchActiveValidators,
+  findValidatorByAddress,
+  type ValidatorJson,
+} from "../utils/validators.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { protoValueToJson } from "../utils/proto.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-interface ValidatorJson {
-  metadata?: {
-    sui_address?: string;
-    name?: string;
-    description?: string;
-    image_url?: string;
-    project_url?: string;
-    net_address?: string;
-    p2p_address?: string;
-    primary_address?: string;
-    worker_address?: string;
-  };
-  voting_power?: string;
-  gas_price?: string;
-  staking_pool?: {
-    id?: string;
-    activation_epoch?: string;
-    sui_balance?: string;
-  };
-  commission_rate?: string;
-  next_epoch_stake?: string;
-  next_epoch_commission_rate?: string;
-}
 
 export function registerStakingTools(server: McpServer) {
   server.tool(
@@ -49,23 +31,12 @@ export function registerStakingTools(server: McpServer) {
     async ({ address, limit, sort_by }) => {
       // Detail branch — a single validator.
       if (address) {
-        const detail = await gqlQuery<{
-          epoch: { epochId: number; validatorSet: { activeValidators: { nodes: Array<{ atRisk?: number; contents?: { json: ValidatorJson } }> } } };
-        }>(
-          `query {
-            epoch {
-              epochId
-              validatorSet { activeValidators(first: 200) { nodes { atRisk contents { json } } } }
-            }
-          }`,
-        );
-        const av = detail.epoch.validatorSet.activeValidators.nodes.find(
-          (v) => v.contents?.json?.metadata?.sui_address === address,
-        );
+        const set = await fetchActiveValidators();
+        const av = findValidatorByAddress(set, address);
         const j = av?.contents?.json;
         const m = j?.metadata;
         const pool = j?.staking_pool;
-        const result: Record<string, unknown> = { address, epoch: detail.epoch.epochId, in_active_set: !!av };
+        const result: Record<string, unknown> = { address, epoch: set.epochId, in_active_set: !!av };
         if (m) {
           result.credentials = {
             name: m.name ?? null,
@@ -96,41 +67,13 @@ export function registerStakingTools(server: McpServer) {
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
       }
 
-      const first = Math.min(Math.max(limit ?? 50, 1), 150);
+      // Ranking needs the whole set. Asking for `first: N` and sorting the
+      // result ranks whichever N the service returned first, not the top N.
+      const limitN = Math.max(limit ?? 50, 1);
       const sortField = sort_by ?? "stake";
+      const set = await fetchActiveValidators();
 
-      const data = await gqlQuery<{
-        epoch: {
-          epochId: number;
-          validatorSet: {
-            activeValidators: {
-              nodes: Array<{
-                atRisk?: number;
-                contents?: { json: ValidatorJson };
-              }>;
-            };
-            contents?: { json: { total_stake?: string } };
-          };
-        };
-      }>(
-        `query($first: Int) {
-          epoch {
-            epochId
-            validatorSet {
-              activeValidators(first: $first) {
-                nodes {
-                  atRisk
-                  contents { json }
-                }
-              }
-              contents { json }
-            }
-          }
-        }`,
-        { first }
-      );
-
-      const nodes = data.epoch.validatorSet.activeValidators.nodes;
+      const nodes = set.validators;
 
       const validators = nodes.map((v) => {
         const json = v.contents?.json;
@@ -162,7 +105,9 @@ export function registerStakingTools(server: McpServer) {
         );
       }
 
-      const totalStake = data.epoch.validatorSet.contents?.json?.total_stake ?? null;
+      // Sorted over the whole set, then cut — so "top N by stake" is the real
+      // top N rather than the first page reordered.
+      const shown = validators.slice(0, limitN);
 
       return {
         content: [
@@ -170,10 +115,17 @@ export function registerStakingTools(server: McpServer) {
             type: "text" as const,
             text: JSON.stringify(
               {
-                epoch: data.epoch.epochId,
-                total_stake: totalStake,
-                validator_count: validators.length,
-                validators,
+                epoch: set.epochId,
+                total_stake: set.totalStake,
+                active_validator_count: validators.length,
+                ...(set.truncated
+                  ? {
+                      truncated: true,
+                      note: "Validator set pagination hit its page budget; counts and ranking cover only what was fetched.",
+                    }
+                  : {}),
+                validator_count: shown.length,
+                validators: shown,
               },
               null,
               2

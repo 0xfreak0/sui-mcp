@@ -29,7 +29,7 @@ let failed = false;
 try {
   console.log(`Installing ${spec} into ${dir} ...`);
   execFileSync("npm", ["init", "-y"], { cwd: dir, stdio: "ignore" });
-  execFileSync("npm", ["install", spec], { cwd: dir, stdio: "inherit" });
+  await installWithRetry(spec, dir);
 
   const installed = JSON.parse(
     readFileSync(join(dir, "node_modules", pkgName, "package.json"), "utf8"),
@@ -46,6 +46,34 @@ try {
 }
 
 process.exit(failed ? 1 : 0);
+
+/**
+ * Install, retrying while npm still reports the version as missing.
+ *
+ * This runs seconds after `npm publish` in CI, and the registry does not index
+ * a new version instantly — 1.10.0 published successfully and then failed here
+ * with ETARGET one second later, which marked a good release as failed and
+ * skipped the GitHub release job behind it.
+ *
+ * Only ETARGET/E404 is retried, since that is the propagation case. Anything
+ * else is a real failure and should surface immediately rather than being
+ * waited out.
+ */
+async function installWithRetry(spec, dir, attempts = 6) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      execFileSync("npm", ["install", spec], { cwd: dir, stdio: "inherit" });
+      return;
+    } catch (err) {
+      const out = `${err.stdout ?? ""}${err.stderr ?? ""}${err.message ?? ""}`;
+      const propagating = /ETARGET|E404|No matching version/i.test(out);
+      if (!propagating || i === attempts) throw err;
+      const waitMs = i * 5000;
+      console.log(`  not on the registry yet (attempt ${i}/${attempts}); retrying in ${waitMs / 1000}s`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+}
 
 /** initialize + tools/list against the installed bin. Rejects on timeout. */
 function handshake(bin) {

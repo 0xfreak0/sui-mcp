@@ -40,19 +40,39 @@ export async function mvrFetch(path: string, init?: RequestInit): Promise<unknow
  * MVR coverage is thin — most mainnet packages are not registered — so nulls
  * are the common case, not an error.
  */
+/**
+ * MVR's server-side batch limit.
+ *
+ * Exceeding it returns `400 Batch size limit exceeded: 86 > 50`, which the only
+ * caller catches — so the failure was silent and total: 51 packages lost their
+ * names, not just the 51st. Batching transactions made this easy to reach,
+ * since a batch collects packages across every transaction in it.
+ */
+const MVR_BULK_LIMIT = 50;
+
 export async function reverseResolveBulk(
   packageIds: string[],
 ): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
   if (packageIds.length === 0) return out;
 
-  const data = (await mvrFetch("/reverse-resolution/bulk", {
-    method: "POST",
-    body: JSON.stringify({ package_ids: packageIds }),
-  })) as { resolution?: Record<string, { name?: string | null } | null> };
+  for (let i = 0; i < packageIds.length; i += MVR_BULK_LIMIT) {
+    const chunk = packageIds.slice(i, i + MVR_BULK_LIMIT);
+    // Per chunk, so one failed page costs only its own names rather than
+    // discarding the pages that already succeeded.
+    try {
+      const data = (await mvrFetch("/reverse-resolution/bulk", {
+        method: "POST",
+        body: JSON.stringify({ package_ids: chunk }),
+      })) as { resolution?: Record<string, { name?: string | null } | null> };
 
-  for (const id of packageIds) {
-    out.set(id, data.resolution?.[id]?.name ?? null);
+      for (const id of chunk) {
+        out.set(id, data.resolution?.[id]?.name ?? null);
+      }
+    } catch {
+      // Leave this chunk unresolved. The caller distinguishes "absent from the
+      // map" from "resolved to null", and only the latter is cached.
+    }
   }
   return out;
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { errorResult, isNotFound } from "../utils/errors.js";
 import { fetchActiveValidators, findValidatorByAddress } from "../utils/validators.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
@@ -97,7 +98,16 @@ export function registerIdentifyTools(server: McpServer) {
       address: z.string().describe("Sui address or object ID (0x...)"),
     },
     async ({ address }) => {
-      // Try to get object at this address first
+      // Try to get object at this address first.
+      //
+      // NOT_FOUND is the load-bearing answer here: it means there is genuinely
+      // no object at this address, which is what makes the wallet
+      // classification below correct. Any other failure — an outage, a
+      // timeout, a malformed address — means we could not ask, and the reads
+      // in CASE 4 also swallow their errors, so the tool would answer
+      // `type: "wallet", sui_balance: "0"` for a package or a pool. This is
+      // the recommended first step, so a wrong classification steers every
+      // tool call after it.
       let objectRes;
       try {
         ({ response: objectRes } = await sui.ledgerService.getObject({
@@ -108,7 +118,13 @@ export function registerIdentifyTools(server: McpServer) {
             ],
           },
         }));
-      } catch {
+      } catch (err) {
+        if (!isNotFound(err)) {
+          return errorResult(
+            `Could not determine what ${address} is: the object lookup failed (${(err as Error).message}). ` +
+              "This is not evidence the address is a wallet — retry rather than treating the address as unclassified.",
+          );
+        }
         objectRes = null;
       }
 

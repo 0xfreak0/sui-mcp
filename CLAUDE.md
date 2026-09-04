@@ -112,6 +112,25 @@ tier 1; they never block. Lineage resolution batches 20 packages per GraphQL
 request — the service rejects 21+ store-backed queries in one request, and caps
 the payload at 5000 bytes.
 
+### Pruned transactions in a trace
+
+`trace_funds` reads hops over GraphQL, then falls back to gRPC + the archive.
+Two traps, both verified on mainnet:
+
+- **GraphQL answers a pruned digest with a hollow record, not null** — digest,
+  timestamp and checkpoint present, `sender: null`, no balance changes, no
+  commands. That renders as a real hop that moved nothing, so a trace ends
+  early *looking complete*. `fetchTx` treats that shape as absent and lets the
+  archive answer; the shape is pinned in `test/trace-hop.test.ts`.
+- **The archive returns everything the fullnode does** — sender, balance
+  changes, commands, timestamp, checkpoint. An older commit dropped the
+  fallback believing it omitted `balance_changes`; that is not true today, so
+  do not re-drop it on that reasoning.
+
+A hop the archive served is counted in `hops_served_by_archive`. An
+unfetchable *starting* digest is an error, never an empty trace — "nothing to
+follow" and "could not look" are opposite conclusions on hop 0.
+
 ### Account identity
 
 Anything **stored or reported** carries a chain-qualified account id, not a

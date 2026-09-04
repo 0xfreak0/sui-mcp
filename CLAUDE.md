@@ -288,6 +288,7 @@ candidates, all eligible.
 | `cofunded` (same tx, ≤3 paid) | 1.2 | Bespoke payout — built for these addresses |
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
 | `funding_edge` | 1.0 | One address first-funded the other, and is a seed or passed the popularity check |
+| `reciprocal` | 1.0 | Value moved BOTH ways, counterparty passed the popularity check |
 | `sponsor` | 0.7 | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
 
@@ -302,10 +303,20 @@ to 6 once list membership stopped scoring like deliberate funding.
 
 Four rules that are easy to get wrong:
 
-- **Transfer volume is not a signal.** Balance changes include the sender, so
-  counting every party made "A paid B" an edge. It fired on 6 of 6 pairs in a
-  live run, and at 0.5 it could lift a 0.7 sponsor edge over the 1.0 merge
-  threshold. `co_tx` excludes the sender.
+- **ONE-DIRECTIONAL transfer volume is not a signal, but reciprocal flow is.**
+  Balance changes include the sender, so counting every party made "A paid B" an
+  edge — the commonest relationship on chain. `co_tx` excludes the sender for
+  that reason. Value coming *back* is a different claim: measured on mainnet, 1
+  of 47 counterparty relationships of ordinary active wallets was reciprocal, a
+  2.1% base rate, against 4 of 6 pairs among four addresses known to share an
+  owner. Roughly 32x enrichment, which is why `reciprocal` is weighted level
+  with a shared narrow funder.
+- **The return leg is asked of the counterparty, not scanned for.** A seed's
+  bounded window usually shows one direction only, because the return can sit
+  hundreds of transactions back. `probeRecipients` already returns who a
+  counterparty paid while measuring whether it is a service, so one probe
+  answers both questions. Scanning the seed deeper instead costs queries
+  linearly and still misses older legs.
 - **Being paid is not being funded.** An expansion candidate becomes `cofunded`
   only after computing its own first funder. Sponsorship needs no such check —
   the probe observed it directly.

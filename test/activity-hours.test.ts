@@ -22,14 +22,66 @@ describe("activityHours", () => {
 
   it("flags a flat clock over a long span as automated", () => {
     // The other automation population: measured at R 0.03-0.06 over ~298 days.
+    // Every day and most hours — the rate matters as much as the flatness, and
+    // this fixture originally ran at 1.3 a day, which is a person who uses a
+    // wallet occasionally rather than a script.
     const flat: string[] = [];
-    for (let d = 0; d < 300; d += 3) for (const h of [2, 7, 13, 19]) flat.push(iso(d, h));
+    for (let d = 0; d < 300; d++) for (const h of [1, 5, 9, 13, 17, 21]) flat.push(iso(d, h));
     const r = activityHours(flat)!;
     expect(r.concentration).toBeLessThan(0.35);
     expect(r.always_on).toBe(true);
     expect(r.automation_indicated).toBe(true);
     expect(r.utc_offset_estimate).toBeNull();
     expect(r.reading).toContain("automated");
+  });
+
+  it("does NOT call a rarely-used wallet automated", () => {
+    // Found on a real mainnet wallet: 120 transactions over 292 days, 0.4 a
+    // day, flat clock — and it was labelled automated. It could not have looked
+    // otherwise. A 24/7 script and an occasional person produce the same R, and
+    // at that rate the flatness carries no information at all.
+    const sparse: string[] = [];
+    for (let i = 0; i < 120; i++) sparse.push(iso(Math.floor((i * 292) / 120), (i * 7) % 24));
+    const r = activityHours(sparse)!;
+    expect(r.concentration).toBeLessThan(0.35);
+    expect(r.transactions_per_day!).toBeLessThan(3);
+    expect(r.always_on).toBe(false);
+    expect(r.automation_indicated).toBe(false);
+    expect(r.reading).toContain("could not look otherwise");
+  });
+
+  it("still calls a BUSY flat wallet automated", () => {
+    // The distinction is rate: at this volume a person keeping ordinary hours
+    // would have left a shape, so its absence means something.
+    const bot: string[] = [];
+    for (let d = 0; d < 60; d++) for (let h = 0; h < 24; h += 2) bot.push(iso(d, h));
+    const r = activityHours(bot)!;
+    expect(r.transactions_per_day!).toBeGreaterThan(3);
+    expect(r.always_on).toBe(true);
+    expect(r.automation_indicated).toBe(true);
+  });
+
+  it("names the scheduled-job alternative when one hour holds most activity", () => {
+    // A person's day spreads over several hours. Nearly everything inside one
+    // hour fits a cron line equally well, and a scheduled job has no timezone —
+    // a reader given only a region will not think of that themselves.
+    const tight: string[] = [];
+    for (let d = 0; d < 38; d++) {
+      for (let k = 0; k < 6; k++) tight.push(iso(d, 19));
+      tight.push(iso(d, 16));
+      tight.push(iso(d, 0));
+    }
+    const r = activityHours(tight)!;
+    expect(r.utc_offset_estimate).not.toBeNull();
+    expect(r.reading).toContain("cron line");
+  });
+
+  it("does not cry cron over an ordinary working day", () => {
+    const spread: string[] = [];
+    for (let d = 0; d < 40; d++) for (const h of [13, 15, 17, 19]) spread.push(iso(d, h));
+    const r = activityHours(spread)!;
+    expect(r.utc_offset_estimate).not.toBeNull();
+    expect(r.reading).not.toContain("cron line");
   });
 
   it("estimates a region when a real rhythm is present, and hedges it", () => {

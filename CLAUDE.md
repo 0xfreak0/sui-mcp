@@ -372,10 +372,23 @@ counts, where that version consumed a ranking with no counts and said so.
 
 Two routes to that verdict, catching different populations:
 
-- `always_on` — flat clock over a long span. R below 0.35.
+- `always_on` — flat clock over a long span, **at 3+ transactions a day**. R
+  below 0.35.
 - rate — more than 200 transactions a day sustained. A burst has no rhythm to
   read and would otherwise be dismissed as "not enough data" when it is the
   clearest automation signal available.
+
+**Flatness needs a rate to mean anything.** A wallet doing 0.4 transactions a
+day over 292 days cannot concentrate — 120 points scattered across a year never
+form a peak — so a 24/7 script and an occasional person produce the same R.
+Found on a real mainnet wallet that was labelled automated for being rarely
+used. Above 3/day, a person keeping ordinary hours would have left a shape and
+its absence means something; below it, nothing follows either way.
+
+**A single hour holding most activity gets the cron caveat.** A person's day
+spreads over several hours; 46% inside one hour fits a scheduled job equally
+well, and a scheduled job has no timezone at all. Without that note a reader
+takes "likely UTC-3" as the only reading available.
 
 **Volume is not the constraint, span is.** Sub-sampling full histories, the
 always-on verdict agreed with the full-sample answer 100% of the time at 30-100

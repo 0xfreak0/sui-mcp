@@ -2,7 +2,7 @@ import { z } from "zod";
 import { boolArg, numArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { getLabel } from "../utils/labels.js";
-import { batchResolveNames } from "../utils/names.js";
+import { describeAddresses, identityNote } from "../utils/identity.js";
 import { buildWalletEdges } from "../utils/edge-probe.js";
 import { clusterEdges } from "../utils/wallet-edges.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -100,14 +100,19 @@ export function registerClusterTools(server: McpServer) {
           maxClusterSize: max_cluster_size,
         });
 
-        const named = await batchResolveNames(built.examined);
+        const identities = await describeAddresses(built.examined);
         const describe = (a: string) => {
-          const label = getLabel(a);
-          const name = named.get(a);
+          const id = identities.get(a);
+          const note = id ? identityNote(id) : undefined;
           return {
             address: a,
-            ...(name ? { name } : {}),
-            ...(label ? { label: label.label, category: label.category } : {}),
+            ...(id?.name ? { name: id.name } : {}),
+            ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+            // A package or shared object in a cluster is not a co-owned wallet;
+            // it is infrastructure several parties touch.
+            ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
+            ...(id?.protocol ? { protocol: id.protocol } : {}),
+            ...(note ? { note } : {}),
           };
         };
 

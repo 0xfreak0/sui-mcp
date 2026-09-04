@@ -3,6 +3,7 @@ import { boolArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
+import { describeAddresses, identityNote } from "../utils/identity.js";
 import { getLabel } from "../utils/labels.js";
 import { decimalsForCoinType, symbolOf, toHumanAmount, usdValue } from "../utils/valuation.js";
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
@@ -379,7 +380,21 @@ export function registerFundingTools(server: McpServer) {
 
         const addrSet = new Set<string>();
         for (const r of results) for (const s of r.chain) { addrSet.add(s.address); addrSet.add(s.funded_by); }
-        const nameMap = await batchResolveNames([...addrSet]);
+        const batchIds = await describeAddresses([...addrSet]);
+        const nameMap = new Map(
+          [...batchIds].filter(([, v]) => v.name).map(([k, v]) => [k, v.name!]),
+        );
+        // Origins that are not wallets, called out once for the whole batch —
+        // the case a reader is most likely to misread as "this person funded
+        // them".
+        const nonWalletOrigins = [...batchIds.values()]
+          .filter((v) => v.kind !== "wallet")
+          .map((v) => ({
+            address: v.address,
+            kind: v.kind,
+            ...(v.protocol ? { protocol: v.protocol } : {}),
+            ...(v.object_type ? { object_type: v.object_type } : {}),
+          }));
 
         return {
           content: [
@@ -389,6 +404,13 @@ export function registerFundingTools(server: McpServer) {
                 {
                   address_count: addresses.length,
                   depth: depth ?? "full",
+                  ...(nonWalletOrigins.length
+                    ? {
+                        non_wallet_addresses: nonWalletOrigins,
+                        non_wallet_note:
+                          "These addresses in the funding chains are packages or objects, not wallets. Value associated with a package is protocol activity, and a shared object may be a pool many parties touch — neither reads as a person who funded someone.",
+                      }
+                    : {}),
                   max_hops: maxHops,
                   addresses_resolved: results.filter((r) => r.hops > 0).length,
                   ...(coFunded.length
@@ -513,19 +535,37 @@ export function registerFundingTools(server: McpServer) {
         // Resolve names + labels for everything in the chain.
         const addrs = new Set<string>();
         for (const s of chain) { addrs.add(s.address); addrs.add(s.funded_by); }
-        const nameMap = await batchResolveNames([...addrs]);
+        // Name, label, and WHAT THE ADDRESS IS, in two batched calls. The kind
+        // matters here more than anywhere: "funded by 0xabc" reads as a person,
+        // and if 0xabc is a package or a shared object that reading is wrong.
+        const identities = await describeAddresses([...addrs]);
         const labelFor = (a: string) => {
-          const label = getLabel(a);
-          const name = nameMap.get(a);
-          return { address: a, ...(name ? { name } : {}), ...(label ? { label: label.label, category: label.category } : {}) };
+          const id = identities.get(a);
+          const note = id ? identityNote(id) : undefined;
+          return {
+            address: a,
+            ...(id?.name ? { name: id.name } : {}),
+            ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+            ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
+            ...(id?.object_type ? { object_type: id.object_type } : {}),
+            ...(id?.protocol ? { protocol: id.protocol } : {}),
+            ...(note ? { note } : {}),
+          };
         };
 
+        const originId = identities.get(origin);
+        const subjectId = identities.get(address);
         const originLabel = getLabel(origin);
-        const originName = nameMap.get(origin);
         const summaryParts = [
-          `${address}${nameMap.get(address) ? ` (${nameMap.get(address)})` : ""}`,
+          `${address}${subjectId?.name ? ` (${subjectId.name})` : ""}`,
           `funded through ${chain.length} hop(s) back to`,
-          `${origin}${originName ? ` (${originName})` : ""}${originLabel ? ` — ${originLabel.label} [${originLabel.category}]` : ""}.`,
+          `${origin}${originId?.name ? ` (${originId.name})` : ""}${originLabel ? ` — ${originLabel.label} [${originLabel.category}]` : ""}.`,
+          // Said in the summary, not only in the chain entry. An origin that is
+          // a package or shared object is the case a reader is most likely to
+          // misread as "this person funded them".
+          originId && originId.kind !== "wallet"
+            ? `NOTE: the origin is a ${originId.kind}${originId.protocol ? ` (${originId.protocol})` : ""}, not a wallet.`
+            : "",
           stopReason ? `Stopped: ${stopReason}.` : "",
         ];
 

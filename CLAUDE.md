@@ -79,6 +79,34 @@ caller needs); no probe has made it fire, so keep it narrow and don't design
 around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
 the fullnode there.
 
+## Address identity in investigation flows
+
+`src/utils/identity.ts` resolves name, label, kind and historical names for a
+whole result set in two batched calls, and `trace_funds`, both funding tools and
+`build_wallet_edges` all use it. `identify_address` stays the thorough
+single-address tool; it costs about five requests each and cannot run per hop.
+
+Two things it adds that the flows were missing:
+
+- **What the address is.** A hop that is a package or a shared object is not
+  "someone the funds went to", and nothing else in a trace said so. Classified
+  by one `multiGetObjects` call — an address with no object at it is a wallet,
+  which makes `wallet` a default rather than a positive finding.
+- **Names the address used to hold.** Reverse lookup answers only "what is the
+  current default name" and returns nothing once a name lapses, so former
+  aliases vanish from an investigation. The `SuinsRegistration` object outlives
+  expiry, so held registrations are read directly and expired ones are flagged
+  rather than dropped. Measured on one wallet: reverse lookup gave 1 name, the
+  registrations gave 10, six of them expired. An expired name is still
+  attribution — the address was known by it at the time of the activity.
+
+The registration type is matched at **module** level. A Move type keeps the
+package that defined it, so this does not drift on upgrade — the opposite of the
+call-target problem the protocol registry solves with lineage roots.
+
+Note `batchResolveNames` is not actually batched: it fans out one gRPC call per
+address. Fine at these sizes, but it is not the single request the name suggests.
+
 ## Completeness beats payload size
 
 `get_transaction` returns decoded fields for **every** event by default.

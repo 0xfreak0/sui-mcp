@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { batchResolveNames } from "../utils/names.js";
+import { describeAddresses, identityNote } from "../utils/identity.js";
 import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { getLabel, isSink } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
@@ -764,14 +764,30 @@ export function registerTraceTools(server: McpServer) {
         }
       }
 
-      // Batch-resolve SuiNS names
-      const nameMap = await batchResolveNames([...allAddresses]);
+      // Name, label and WHAT EACH ADDRESS IS, in two batched calls. A hop that
+      // is a package or a shared object is not "someone the funds went to",
+      // and nothing else in a trace says so.
+      const identities = await describeAddresses([...allAddresses]);
+      const nameMap = new Map(
+        [...identities].filter(([, v]) => v.name).map(([k, v]) => [k, v.name!]),
+      );
 
       // Build labels from SuiNS names, protocol package IDs, and the
       // attribution registry (exchanges, bridges, malicious wallets, ...).
       const addressLabels: Record<
         string,
-        { name?: string; protocol?: string; label?: string; category?: string; confidence?: string; source?: string; is_sink?: boolean }
+        {
+          name?: string;
+          protocol?: string;
+          label?: string;
+          category?: string;
+          confidence?: string;
+          source?: string;
+          is_sink?: boolean;
+          kind?: string;
+          object_type?: string;
+          note?: string;
+        }
       > = {};
       for (const addr of allAddresses) {
         const label: (typeof addressLabels)[string] = {};
@@ -780,6 +796,13 @@ export function registerTraceTools(server: McpServer) {
         // Display-only enrichment of the address label, so an MVR name is fine.
         const proto = lookupProtocolDisplay(addr);
         if (proto) label.protocol = proto.name;
+        const id = identities.get(addr);
+        if (id && id.kind !== "wallet") {
+          label.kind = id.kind;
+          if (id.object_type) label.object_type = id.object_type;
+          const note = identityNote(id);
+          if (note) label.note = note;
+        }
         const known = getLabel(addr);
         if (known) {
           label.label = known.label;

@@ -3,8 +3,9 @@ import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
 import { getLabel } from "../utils/labels.js";
-import { decimalsForCoinType, symbolOf, toHumanAmount } from "../utils/valuation.js";
+import { decimalsForCoinType, symbolOf, toHumanAmount, usdValue } from "../utils/valuation.js";
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
+import { pricesForRanking } from "../utils/price-providers.js";
 import { measureFanout } from "../utils/fanout.js";
 import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
 import { detectFundingBursts, detectSubjectLinks } from "../utils/funding-signals.js";
@@ -116,7 +117,21 @@ type FundingMemo = Map<string, ReturnType<typeof pickFundingTx>>;
 
 async function fundingStep(address: string, memo: FundingMemo) {
   if (!memo.has(address)) {
-    memo.set(address, pickFundingTx(await fetchEarliestTxs(address), address));
+    const txs = await fetchEarliestTxs(address);
+    // Price the coins these candidate inflows are denominated in, so dust and
+    // unpriced scam tokens can be told from real funding. Best-effort: with no
+    // prices the SUI floor still applies and non-SUI inflows are accepted
+    // rather than discarded on a missing dependency.
+    const coinTypes = [...new Set(txs.flatMap((t) => t.changes.map((c) => c.coinType)))];
+    const prices = await pricesForRanking(coinTypes).catch(
+      () => new Map<string, { price: number }>(),
+    );
+    const valueUsd = (coinType: string, raw: bigint) => {
+      const price = prices.get(coinType)?.price;
+      if (price == null) return null;
+      return usdValue(raw, decimalsForCoinType(coinType), price);
+    };
+    memo.set(address, pickFundingTx(txs, address, { valueUsd }));
   }
   return memo.get(address)!;
 }
@@ -124,6 +139,10 @@ async function fundingStep(address: string, memo: FundingMemo) {
 /** Walk one address back through funding hops. Shared by both funding tools. */
 async function walkFunding(address: string, maxHops: number, memo: FundingMemo) {
   const chain: ChainStep[] = [];
+  // Inflows rejected as dust along the way. Reported rather than dropped: an
+  // investigator needs to see that a 1-MIST send was skipped, both to trust
+  // the answer and to lower the floor deliberately if the case calls for it.
+  const dustSkipped: Array<Record<string, unknown>> = [];
   const visited = new Set<string>([address]);
   let current = address;
   let origin = address;
@@ -132,6 +151,9 @@ async function walkFunding(address: string, maxHops: number, memo: FundingMemo) 
   for (let i = 0; i < maxHops; i++) {
     const funding = await fundingStep(current, memo);
     if (!funding) break;
+    for (const d of funding.dustSkipped ?? []) {
+      dustSkipped.push({ address: current, ...d, amount: formatAmount(d.amount, d.coinType) });
+    }
 
     chain.push({
       hop: i + 1,
@@ -154,7 +176,7 @@ async function walkFunding(address: string, maxHops: number, memo: FundingMemo) 
     if (i === maxHops - 1) stopReason = `hit max_hops (${maxHops})`;
   }
 
-  return { chain, origin, stopReason };
+  return { chain, origin, stopReason, dustSkipped };
 }
 
 export function registerFundingTools(server: McpServer) {
@@ -257,13 +279,14 @@ export function registerFundingTools(server: McpServer) {
         // Sequential on purpose: the memo only pays off if earlier walks have
         // finished populating it before later ones start.
         for (const addr of addresses) {
-          const { chain, origin, stopReason } = await walkFunding(addr, maxHops, memo);
+          const { chain, origin, stopReason, dustSkipped } = await walkFunding(addr, maxHops, memo);
           results.push({
             address: addr,
             origin,
             hops: chain.length,
             stop_reason: stopReason,
             first_funder: chain[0]?.funded_by ?? null,
+            ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
             chain,
           });
         }
@@ -476,7 +499,7 @@ export function registerFundingTools(server: McpServer) {
     async ({ address, max_hops, measure_fanout }) => {
       try {
         const maxHops = Math.min(max_hops ?? 5, 12);
-        const { chain, origin, stopReason } = await walkFunding(address, maxHops, new Map());
+        const { chain, origin, stopReason, dustSkipped } = await walkFunding(address, maxHops, new Map());
 
         // Fan-out on the origin, because the origin is what gets over-read.
         // A chain ending at an address with 29,000 recipients has not found a
@@ -519,6 +542,7 @@ export function registerFundingTools(server: McpServer) {
                   origin: labelFor(origin),
                   hops: chain.length,
                   stop_reason: stopReason,
+                  ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
                   ...(originFanout
                     ? {
                         origin_fanout: {

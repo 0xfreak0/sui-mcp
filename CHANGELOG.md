@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.11.0 (2026-09-04)
+
+One new tool (61 → 62): reading many transactions in a single call.
+
+### Added
+- **`get_transactions`** — up to 50 digests in one request. An investigation
+  rarely arrives at digests one at a time: `get_address_fanout` hands back a set
+  of counterparties, `build_wallet_edges` attaches digests as evidence on every
+  edge, and comparing branches means reading several at once. Each of those was
+  one round trip per digest.
+
+  Measured on ten digests: 0.80s sequentially against 0.10s batched. The latency
+  is the smaller half — ten tool calls becoming one saves ten model turns, which
+  is the actual reason it exists. Fifty digests return in 0.41s.
+
+  One query carries sender, status, timing, balance changes, Move call targets
+  and events with decoded fields, so protocols are identified from both the
+  calls and the events without a second request.
+
+  `trace_funds` is deliberately unaffected: a trace is sequential by nature,
+  since each hop decides the next.
+
+### Fixed
+Cross-checking the new tool against `get_transaction` on 24 real mainnet digests
+agreed on 9. Three causes, none visible to unit tests, because those answered
+with shapes the real service does not send.
+
+- **System transactions had no sender.** GraphQL reports one as `sender: null`
+  while gRPC reports the null address, so the two tools described the same
+  transaction differently on 15 of 24. Normalised, and system transactions are
+  flagged rather than left looking like a transaction with an unknown sender.
+
+- **`ProgrammableSystemTransaction` is a distinct GraphQL type** that still
+  carries real Move calls — framework settlement, randomness. A fragment on
+  `ProgrammableTransaction` alone never saw them, so the batch reported no
+  protocols where `get_transaction` reported Sui Framework.
+
+- **The batch had no archive fallback.** Mainnet prunes continuously — digests
+  sampled 200k checkpoints back disappeared mid-test — so a pruned transaction
+  arrived as a null entry indistinguishable from a wrong digest. Misses now
+  retry through the same archive path, and a GraphQL failure sends every digest
+  there, since `get_transaction` is gRPC-first and would still have answered.
+  Only the misses are retried, and one archive miss does not sink the others.
+
+  The archive cannot decode event fields, so recovered events arrive typed but
+  unparsed and say so. `get_transaction` has the same limit on a pruned digest.
+
+- **A hollow record is now treated as absence.** A pruned digest can come back
+  carrying a digest and a timestamp and nothing else; rendering that as a
+  transaction that moved nothing is the failure `trace_funds` already guards
+  against.
+
+Malformed digests are rejected before the request, because the server refuses an
+entire batch over one bad key — and the Base58 alphabet alone does not catch it,
+since 44 ones is valid Base58 that decodes to 44 bytes rather than 32.
+
 ## 1.10.1 (2026-09-04)
 
 Package analysis was unreachable from an investigation, in two different ways.

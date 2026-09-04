@@ -112,6 +112,31 @@ tier 1; they never block. Lineage resolution batches 20 packages per GraphQL
 request — the service rejects 21+ store-backed queries in one request, and caps
 the payload at 5000 bytes.
 
+### What counts as funding
+
+`pickFundingTx` decides which inflow made a wallet exist, and that answer names
+someone in a report. Three rules, in `src/utils/funding.ts`:
+
+- **Unpriced coins are spam, not small payments.** Nobody funds a wallet with a
+  token that has no market, and a scam token can mint any quantity it likes —
+  so this is a signal, not a threshold. Only a *known* lack of price counts; a
+  missing price oracle accepts the inflow rather than discarding evidence.
+- **Floors:** 0.01 SUI (gas for a transfer is ~0.001-0.005, so a real funder
+  sends enough for many), and $0.10 for priced non-SUI. Both are parameters —
+  a faucet-scale case can lower them deliberately.
+- **The funder must have sent what arrived.** Gas is folded into the payer's net
+  SUI rather than itemised, so comparing the most-negative change across *all*
+  coins named the gas sponsor: -0.036 SUI is raw -36000000 against a real
+  sender's -11 USDC at raw -11085939, and SUI simply has three more decimals.
+
+Skipped inflows are reported as `dust_skipped`, never filtered silently.
+
+Note that airdropped scam **NFTs** need no handling here — they move no coin, so
+they never appear as an inflow. This is specifically about coin dust.
+
+Inflow ranking is by USD where a price exists, for the same decimals reason the
+trace's hop ranking is.
+
 ### What may be cached in a trace
 
 Only the **transaction reads**, never the conclusion.

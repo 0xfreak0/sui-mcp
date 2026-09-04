@@ -1,54 +1,67 @@
 import { describe, it, expect } from "vitest";
 import { activityHours } from "../src/utils/activity-hours.js";
 
-/** `n` timestamps at `hour` UTC, spread one per day so the span is real. */
-function at(hour: number, n: number, dayOffset = 0): string[] {
-  return Array.from({ length: n }, (_, i) =>
-    new Date(Date.UTC(2026, 0, 1 + dayOffset + i, hour, 30)).toISOString(),
-  );
-}
+const iso = (day: number, hour: number) => new Date(Date.UTC(2026, 0, 1 + day, hour, 30)).toISOString();
+/** `n` timestamps at one hour, one per day, so the span is real. */
+const at = (hour: number, n: number) => Array.from({ length: n }, (_, i) => iso(i, hour));
 
 describe("activityHours", () => {
-  it("refuses a reading when the sample is thin", () => {
-    const r = activityHours(at(12, 10))!;
+  it("flags a burst as automated on RATE, without reading the clock", () => {
+    // 17 of 20 sampled active senders did 400 transactions inside a single day.
+    // A burst has no daily rhythm, so the circadian test cannot see it — it
+    // would otherwise be dismissed as "not enough data" when it is in fact the
+    // clearest automation signal available.
+    const burst = Array.from({ length: 400 }, (_, i) => iso(0, (i % 6) + 9));
+    const r = activityHours(burst)!;
+    expect(r.transactions_per_day).toBeGreaterThan(200);
+    expect(r.automation_indicated).toBe(true);
+    expect(r.always_on).toBe(false); // it is fast, not flat
     expect(r.utc_offset_estimate).toBeNull();
-    expect(r.reading).toContain("Not enough");
+    expect(r.reading).toContain("No person does that by hand");
   });
 
-  it("refuses a reading when everything happened in one day", () => {
-    // 11 of 14 sampled active wallets did 500 transactions inside a day. A
-    // burst has no daily rhythm to read, and reporting one would be invention.
-    const sameDay = Array.from({ length: 200 }, (_, i) =>
-      new Date(Date.UTC(2026, 0, 1, i % 24, 0)).toISOString(),
-    );
-    const r = activityHours(sameDay)!;
-    expect(r.span_days).toBeLessThan(7);
-    expect(r.utc_offset_estimate).toBeNull();
-    expect(r.reading).toContain("Not enough");
-  });
-
-  it("calls an even distribution automation rather than inventing a timezone", () => {
-    // Two of three long-lived wallets measured at ~30% quiet share against a
-    // 33% flat baseline. That is no rhythm, and saying so is the finding.
+  it("flags a flat clock over a long span as automated", () => {
+    // The other automation population: measured at R 0.03-0.06 over ~298 days.
     const flat: string[] = [];
-    for (let d = 0; d < 30; d++) for (let h = 0; h < 24; h += 2) flat.push(...at(h, 1, d));
+    for (let d = 0; d < 300; d += 3) for (const h of [2, 7, 13, 19]) flat.push(iso(d, h));
     const r = activityHours(flat)!;
+    expect(r.concentration).toBeLessThan(0.35);
+    expect(r.always_on).toBe(true);
+    expect(r.automation_indicated).toBe(true);
     expect(r.utc_offset_estimate).toBeNull();
-    expect(r.reading).toContain("automation");
-    expect(r.quiet_share).toBeGreaterThan(0.2);
+    expect(r.reading).toContain("automated");
   });
 
-  it("estimates an offset when the gap is real, and hedges it", () => {
-    // Active 12:00-20:00 UTC, silent otherwise: a pronounced gap centred on
-    // 04:00 UTC, so local 03:00 sits about UTC-1.
-    const busy: string[] = [];
-    for (let d = 0; d < 40; d++) for (const h of [12, 14, 16, 18, 20]) busy.push(...at(h, 1, d));
-    const r = activityHours(busy)!;
+  it("estimates a region when a real rhythm is present, and hedges it", () => {
+    const human: string[] = [];
+    for (let d = 0; d < 60; d++) for (const h of [13, 15, 17, 19]) human.push(iso(d, h));
+    const r = activityHours(human)!;
+    expect(r.concentration).toBeGreaterThan(0.35);
+    expect(r.automation_indicated).toBe(false);
     expect(r.utc_offset_estimate).not.toBeNull();
-    expect(r.quiet_share).toBeLessThan(0.2);
-    // The claim is bounded on purpose: a longitude, not a country.
-    expect(r.reading).toContain("LONGITUDE");
-    expect(r.reading).toContain("Corroborate");
+    expect(r.region_estimate).toBeTruthy();
+    // A region, never a city, and the innocent explanation is named.
+    expect(r.reading).toContain("REGION, not a city");
+    expect(r.reading).toContain("share a timezone");
+  });
+
+  it("handles the wrap at midnight, which a quiet-window scan could not", () => {
+    // Active 22:00-02:00 UTC. Hours 23 and 0 are adjacent on a circle; a linear
+    // scan treats them as opposite ends and lands on the wrong peak.
+    const night: string[] = [];
+    for (let d = 0; d < 60; d++) for (const h of [22, 23, 0, 1]) night.push(iso(d, h));
+    const r = activityHours(night)!;
+    expect(r.concentration).toBeGreaterThan(0.35);
+    // Peak sits near midnight, not near noon.
+    expect(r.peak_hour_utc! > 22 || r.peak_hour_utc! < 2).toBe(true);
+  });
+
+  it("refuses a reading when the sample is thin or brief", () => {
+    expect(activityHours(at(12, 10))!.utc_offset_estimate).toBeNull();
+    const oneDay = Array.from({ length: 40 }, (_, i) => iso(0, i % 24));
+    const r = activityHours(oneDay)!;
+    expect(r.utc_offset_estimate).toBeNull();
+    expect(r.always_on).toBe(false); // absence of evidence, not evidence of automation
   });
 
   it("skips unparseable timestamps rather than counting them at midnight", () => {
@@ -63,12 +76,5 @@ describe("activityHours", () => {
   it("returns null when there is nothing to read", () => {
     expect(activityHours([])).toBeNull();
     expect(activityHours([null, "nonsense"])).toBeNull();
-  });
-
-  it("reports the histogram even when it refuses a reading", () => {
-    // The distribution is still evidence; only the inference is withheld.
-    const r = activityHours(at(3, 12))!;
-    expect(r.histogram[3]).toBe(12);
-    expect(r.utc_offset_estimate).toBeNull();
   });
 });

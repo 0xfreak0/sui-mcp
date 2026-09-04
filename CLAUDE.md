@@ -351,6 +351,37 @@ personal alt-wallets share one mechanism. Both settings are pinned in
 Nothing calls this automatically. A heuristic must not change where a
 chain-derived trace stops.
 
+### Activity hours, and why it usually says nothing
+
+`build_timeline` takes `activity_hours`, which buckets an address's activity by
+UTC hour and looks for a sleep gap. `src/utils/activity-hours.ts` is pure.
+
+Measured before building, and the numbers argue against believing it:
+
+- **11 of 14 sampled active senders did 500 transactions inside a single day.**
+  A burst has no daily rhythm, so the signal is simply unavailable for most
+  active wallets.
+- **Of the 3 spanning a week or more, 2 had a quiet-window share near 30%**
+  against 33% for a perfectly flat distribution. No rhythm there either.
+- **The estimate is unstable when thin.** Sampling down from a full history, the
+  quiet window matched the full-sample answer 52-60% of the time at 20-100
+  transactions, reaching 85% only at 200.
+
+So it reports the histogram always and offers a UTC offset only when sample size
+(50+), span (7+ days) and depth (quiet share under 20%) all hold. The common
+answer is "flat, consistent with automation", which is a finding rather than a
+failure — an address with no human rhythm is telling you something.
+
+Computed **per address, never merged**: two addresses sharing a quiet window is
+the corroborating observation, and merging destroys it. Opposite windows argue
+against common control, which is the rarer and more useful result.
+
+An offset is a longitude, not a country. UTC+2 covers Berlin, Cairo and
+Johannesburg, and the reading says so rather than leaving a reader to assume.
+
+Not wired into clustering. It would need to separate real pairs from a control
+group first, and on these numbers it probably cannot.
+
 ### First-funder cache
 
 `first_funders` in the store. A wallet's first funding cannot change once it

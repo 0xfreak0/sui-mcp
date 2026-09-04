@@ -72,6 +72,8 @@ export interface EdgeBuildOptions {
   expandBudget?: number;
   /** Hard ceiling on GraphQL requests for the whole build. */
   queryBudget?: number;
+  /** Reciprocal counterparties to measure for popularity (default 15). */
+  reciprocalBudget?: number;
 }
 
 /** An intermediary that was measured and thrown away, with the reason. */
@@ -441,10 +443,23 @@ function coFundedWeight(
   };
 }
 
+const RECIPROCAL_DETAIL =
+  "Value moved in BOTH directions between these addresses, and the counterparty is not a service. " +
+  "One-directional payment is the commonest relationship on chain and means little; money coming back is not what paying a merchant looks like.";
+
 /** Sponsors that paid this address's gas, and who it shared transactions with. */
 interface SeedProfile {
   sponsors: Map<string, string>;
   coParties: Array<{ digest: string; parties: string[] }>;
+  /**
+   * Counterparties this address PAID, and those that paid it, with a digest.
+   *
+   * Kept directed on purpose. One direction is ordinary transfer volume and
+   * clusters the world together; an address appearing on BOTH sides is the
+   * signal, because value coming back is not what a payment looks like.
+   */
+  paidTo: Map<string, string>;
+  paidBy: Map<string, string>;
 }
 
 /**
@@ -462,6 +477,8 @@ async function profileSeed(
 ): Promise<SeedProfile> {
   const sponsors = new Map<string, string>();
   const coParties: Array<{ digest: string; parties: string[] }> = [];
+  const paidTo = new Map<string, string>();
+  const paidBy = new Map<string, string>();
   let cursor: string | undefined;
   let scanned = 0;
 
@@ -493,6 +510,19 @@ async function profileSeed(
       // module explicitly refuses to cluster on. What remains is the real
       // signal: a THIRD party moved both balances in one transaction, which is
       // somebody paying two wallets at once.
+      // Direction is read from the subject's own net change, the same way
+      // measureFanout separates recipients from senders.
+      const changes = n.effects?.balanceChanges.nodes ?? [];
+      const own = changes.find((c) => c.owner?.address === address);
+      const ownDelta = BigInt(own?.amount ?? "0");
+      for (const bc of changes) {
+        const other = bc.owner?.address;
+        if (!other || other === address) continue;
+        const amt = BigInt(bc.amount ?? "0");
+        if (ownDelta < 0n && amt > 0n && !paidTo.has(other)) paidTo.set(other, n.digest);
+        if (ownDelta > 0n && amt < 0n && !paidBy.has(other)) paidBy.set(other, n.digest);
+      }
+
       const parties = [
         ...new Set(
           (n.effects?.balanceChanges.nodes ?? [])
@@ -509,7 +539,7 @@ async function profileSeed(
     cursor = page.transactions.pageInfo.startCursor;
     if (!cursor) break;
   }
-  return { sponsors, coParties };
+  return { sponsors, coParties, paidTo, paidBy };
 }
 
 /* ------------------------------------------------------------------ *
@@ -542,6 +572,9 @@ export async function buildWalletEdges(
   const budget = new Budget(opts.queryBudget ?? 150);
 
   const uniqueSeeds = [...new Set(seeds)];
+  const reciprocalBudget = opts.reciprocalBudget ?? 15;
+  const reciprocalCandidates: Array<{ seed: string; other: string; digests: string[]; alreadyBoth: boolean }> = [];
+  let unprobedReciprocal = 0;
   const edges = new EdgeSet();
   const excluded: ExcludedIntermediary[] = [];
   const used: UsedIntermediary[] = [];
@@ -770,6 +803,75 @@ export async function buildWalletEdges(
         "quiet since can read as narrow. Check `used_intermediaries`.",
     );
   }
+  // Value that came BACK.
+  //
+  // One-directional transfer volume is excluded everywhere else here, and
+  // rightly: everyone pays an exchange. Reciprocal flow is a different claim.
+  // Measured on mainnet, 1 of 47 counterparty relationships of ordinary active
+  // wallets was reciprocal — a 2.1% base rate — while 4 of 6 pairs among four
+  // addresses known to share an owner were. Roughly a 32x enrichment.
+  //
+  // The seed's own scan usually sees only ONE direction, because it reads a
+  // bounded window of recent history and the return leg can sit outside it: a
+  // wallet that paid another 400 transactions ago shows the outbound half and
+  // nothing else. So the missing direction is not scanned for — it is asked of
+  // the counterparty, and `probeRecipients` already returns exactly that while
+  // measuring whether the counterparty is a service. One probe answers both.
+  const reciprocalSeen = new Set<string>();
+  for (const [seed, prof] of profiles) {
+    for (const [other, outDigest] of prof.paidTo) {
+      if (other === seed) continue;
+      const pairKey = seed < other ? `${seed}|${other}` : `${other}|${seed}`;
+      if (reciprocalSeen.has(pairKey)) continue;
+      reciprocalSeen.add(pairKey);
+      const digests = [outDigest];
+      const back = prof.paidBy.get(other);
+      if (back) digests.push(back);
+      if (reciprocalCandidates.length < reciprocalBudget) {
+        reciprocalCandidates.push({ seed, other, digests, alreadyBoth: Boolean(back) });
+      } else {
+        unprobedReciprocal++;
+      }
+    }
+  }
+  for (const c of reciprocalCandidates) {
+    // A seed is under investigation and needs no popularity check; a
+    // counterparty is not, and a deposit to an exchange followed by a
+    // withdrawal from it is reciprocal while meaning nothing.
+    if (uniqueSeeds.includes(c.other)) {
+      if (c.alreadyBoth) edges.add("reciprocal", c.seed, c.other, RECIPROCAL_DETAIL, c.digests);
+      continue;
+    }
+    const p = await probeRecipients(c.other, popularityLimit, budget);
+    if (p.popular) {
+      excluded.push({
+        address: c.other,
+        role: "funder",
+        observed_counterparties: p.observed,
+        reason: `Value moved to this address, but it pays more than ${popularityLimit} distinct addresses — an exchange or service, where a deposit followed by a withdrawal is reciprocal and means nothing.`,
+      });
+      continue;
+    }
+    // The probe answers the direction the seed's own window could not see.
+    const paidSeedBack = p.members.has(c.seed);
+    if (!c.alreadyBoth && !paidSeedBack) continue;
+    if (paidSeedBack && !c.alreadyBoth) c.digests.push(p.members.get(c.seed)!);
+    used.push({
+      address: c.other,
+      role: "funder",
+      observed_counterparties: p.observed,
+      scan_complete: p.complete,
+    });
+    edges.add("reciprocal", c.seed, c.other, RECIPROCAL_DETAIL, c.digests);
+    examined.add(c.other);
+  }
+  if (unprobedReciprocal > 0) {
+    notes.push(
+      `${unprobedReciprocal} counterparties were not checked for reciprocal flow (budget ${reciprocalBudget}). ` +
+        "They are neither confirmed nor ruled out — raise reciprocal_budget to check them.",
+    );
+  }
+
   // Who first-funded whom.
   //
   // Two cases, and only the second is new. A seed funding another seed needs no

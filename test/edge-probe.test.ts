@@ -348,6 +348,63 @@ describe("buildWalletEdges", () => {
     expect(r.excluded_intermediaries[0]).toMatchObject({ address: CEX, role: "funder" });
   });
 
+  it("links a pair whose value moved BOTH ways, using the probe for the return leg", async () => {
+    // The seed's own window usually sees one direction only: a wallet paid 400
+    // transactions ago shows the outbound half and nothing else. The return leg
+    // is asked of the counterparty instead, and probeRecipients already returns
+    // it while measuring whether that counterparty is a service.
+    const OTHER = "0xother";
+    mockGqlQuery.mockImplementation(
+      router({
+        recent: (addr) => (addr === A ? page([payment("0xout", A, OTHER)]) : page([])),
+        // The probe of OTHER shows it paid A back.
+        sent: (addr) => (addr === OTHER ? page([payment("0xback", OTHER, A)]) : page([])),
+      }),
+    );
+
+    const r = await buildWalletEdges([A], { expand: false });
+    const rec = r.edges.find((e) => e.signal_types.includes("reciprocal"));
+    expect(rec).toBeDefined();
+    expect([rec!.wallet_a, rec!.wallet_b]).toContain(OTHER);
+    expect(rec!.weight).toBe(1);
+    expect(rec!.signals[0].digests).toContain("0xback");
+  });
+
+  it("does NOT link a one-directional payment", async () => {
+    // Everyone pays an exchange. Paying someone who never pays you back is the
+    // commonest relationship on chain and carries almost no information.
+    const OTHER = "0xother";
+    mockGqlQuery.mockImplementation(
+      router({
+        recent: (addr) => (addr === A ? page([payment("0xout", A, OTHER)]) : page([])),
+        sent: () => page([]), // OTHER paid nobody back
+      }),
+    );
+    const r = await buildWalletEdges([A], { expand: false });
+    expect(r.edges.filter((e) => e.signal_types.includes("reciprocal"))).toHaveLength(0);
+  });
+
+  it("refuses reciprocal flow through a service", async () => {
+    // A deposit to an exchange followed by a withdrawal from it is reciprocal
+    // and means nothing.
+    const CEX = "0xcex";
+    mockGqlQuery.mockImplementation(
+      router({
+        recent: (addr) => (addr === A ? page([payment("0xout", A, CEX)]) : page([])),
+        sent: (addr) =>
+          addr === CEX
+            ? page(
+                [payment("0xback", CEX, A), ...Array.from({ length: 20 }, (_, i) => payment(`0xd${i}`, CEX, `0xr${i}`))],
+                true,
+              )
+            : page([]),
+      }),
+    );
+    const r = await buildWalletEdges([A], { expand: false, popularityLimit: 10 });
+    expect(r.edges.filter((e) => e.signal_types.includes("reciprocal"))).toHaveLength(0);
+    expect(r.excluded_intermediaries.some((e) => e.address === CEX)).toBe(true);
+  });
+
   it("does NOT treat a direct payment between two seeds as co-appearance", async () => {
     // Regression. Balance changes include the sender, so counting every party
     // made "A paid B" a co_tx edge — which is plain transfer volume, the one

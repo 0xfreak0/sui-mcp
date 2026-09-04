@@ -161,7 +161,9 @@ describe("identify_address", () => {
 
   it("identifies a wallet address", async () => {
     // No object found at this address
-    mockSui.ledgerService.getObject.mockRejectedValue(new Error("not found"));
+    mockSui.ledgerService.getObject.mockRejectedValue(
+      Object.assign(new Error("object not found"), { code: "NOT_FOUND" }),
+    );
 
     // Not a validator
     mockGqlQuery.mockResolvedValue({
@@ -199,7 +201,9 @@ describe("identify_address", () => {
 
   it("identifies a validator", async () => {
     // Not an object
-    mockSui.ledgerService.getObject.mockRejectedValue(new Error("not found"));
+    mockSui.ledgerService.getObject.mockRejectedValue(
+      Object.assign(new Error("object not found"), { code: "NOT_FOUND" }),
+    );
 
     // Is a validator
     mockGqlQuery.mockResolvedValue({
@@ -230,5 +234,22 @@ describe("identify_address", () => {
     expect(data.type).toBe("validator");
     expect(data.name).toBe("Big Validator");
     expect(data.staking_pool_sui_balance).toBe("9000000000000");
+  });
+});
+
+describe("identify_address error handling", () => {
+  it("does not report a wallet when the object lookup fails for any other reason", async () => {
+    // An outage must not read as "there is no object here". The CASE 4 reads
+    // also swallow their errors, so the old code answered
+    // `type: "wallet", sui_balance: "0"` for a package or a pool during an
+    // outage — and this is the recommended first step, so a wrong answer
+    // steers every tool call after it.
+    mockSui.ledgerService.getObject.mockRejectedValue(
+      Object.assign(new Error("14 UNAVAILABLE: connection refused"), { code: "UNAVAILABLE" }),
+    );
+    const handler = tools.get("identify_address")!;
+    const res = await handler({ address: "0xsomething" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/not evidence the address is a wallet/i);
   });
 });

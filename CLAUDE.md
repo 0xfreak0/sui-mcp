@@ -112,6 +112,27 @@ tier 1; they never block. Lineage resolution batches 20 packages per GraphQL
 request — the service rejects 21+ store-backed queries in one request, and caps
 the payload at 5000 bytes.
 
+### What may be cached in a trace
+
+Only the **transaction reads**, never the conclusion.
+
+A finalized transaction is immutable — sender, balance changes, commands,
+timestamp and checkpoint are fixed once it lands — so `transactions` in the
+store has no TTL and cannot go stale. A trace *conclusion* is derived from two
+things that move: the label set (adding a sink label is the documented
+workflow, and it changes where a trace stops) and how far the chain has grown
+(a forward trace stops when the recipient has not spent *yet*). A cached
+conclusion looks identical to a current one, which is why it is not cached.
+
+Measured: caching buys little on recent transactions — GraphQL is already fast
+and only 3 of ~12 HTTP calls in a 3-hop trace are transaction fetches — but an
+archive hop goes 0.56s → 0.14s, because a pruned transaction costs a GraphQL
+miss plus a gRPC archive round trip. Those are also the hops least likely to
+ever become cheap again.
+
+`hops_from_cache` and `hops_served_by_archive` are reported so a fast trace is
+legible as reuse rather than as a different chain read.
+
 ### Pruned transactions in a trace
 
 `trace_funds` reads hops over GraphQL, then falls back to gRPC + the archive.

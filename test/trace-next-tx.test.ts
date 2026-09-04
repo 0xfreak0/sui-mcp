@@ -3,6 +3,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockGqlQuery = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
+// Without these the tool reaches the network for prices and SuiNS names, which
+// makes the test depend on two live services and time out when either is slow.
+// Only the GraphQL query shape is under test here.
+vi.mock("../src/utils/price-providers.js", () => ({
+  pricesForRanking: async () => new Map(),
+}));
+vi.mock("../src/utils/names.js", () => ({
+  batchResolveNames: async () => new Map(),
+}));
 
 const { registerTraceTools } = await import("../src/tools/trace.js");
 

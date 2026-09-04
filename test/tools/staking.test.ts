@@ -50,6 +50,7 @@ describe("get_validators", () => {
         epochId: 500,
         validatorSet: {
           activeValidators: {
+            pageInfo: { hasNextPage: false, endCursor: null },
             nodes: [
               makeValidator("small", "1000000000", "500"),
               makeValidator("big", "9000000000", "200"),
@@ -80,6 +81,7 @@ describe("get_validators", () => {
         epochId: 500,
         validatorSet: {
           activeValidators: {
+            pageInfo: { hasNextPage: false, endCursor: null },
             nodes: [
               makeValidator("high", "1000000000", "1000"),
               makeValidator("low", "2000000000", "100"),
@@ -111,6 +113,7 @@ describe("get_validators (detail via address)", () => {
         epochId: 500,
         validatorSet: {
           activeValidators: {
+            pageInfo: { hasNextPage: false, endCursor: null },
             nodes: [makeValidator("myval", "5000000000", "200")],
           },
         },
@@ -132,7 +135,7 @@ describe("get_validators (detail via address)", () => {
       epoch: {
         epochId: 500,
         validatorSet: {
-          activeValidators: { nodes: [] },
+          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
         },
       },
     });

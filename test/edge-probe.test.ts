@@ -142,12 +142,14 @@ function router(handlers: {
   earliest?: (addr: string) => unknown;
   recent?: (addr: string) => unknown;
   sent?: (addr: string) => unknown;
+  recipients?: (digest: string) => unknown;
 }) {
   // `vars` defaults because the runner invokes the implementation once with no
   // arguments; an unknown address falls through every handler to an empty page,
   // which is the correct answer for "no such address" anyway.
   return async (query: string, vars: Record<string, string> = {}) => {
     const q = String(query);
+    if (q.includes("transactionEffects")) return handlers.recipients?.(vars.digest) ?? { transactionEffects: null };
     if (q.includes("sentAddress")) return handlers.sent?.(vars.addr) ?? page([]);
     if (q.includes("gasInput")) return handlers.recent?.(vars.addr) ?? page([]);
     return handlers.earliest?.(vars.addr) ?? page([]);
@@ -232,6 +234,70 @@ describe("buildWalletEdges", () => {
     );
     const r = await buildWalletEdges([A, B], { expand: false });
     expect(r.edges.filter((e) => e.signal_types.includes("co_tx"))).toHaveLength(0);
+  });
+
+  it("scores a wide batch payout below the merge threshold", async () => {
+    // Two addresses first funded by the SAME transaction is near-decisive when
+    // that transaction paid two addresses, and close to meaningless when it
+    // paid twenty — an unrelated wallet lands in a batch by being on a list.
+    // Measured on mainnet: one seed's cluster went from 17 members to 6 once
+    // batch-funded pairs stopped scoring the same as separately-funded ones.
+    const F = "0xfunder";
+    const SHARED = "0xsharedtx";
+    const wide = { transactionEffects: { balanceChanges: { nodes:
+      Array.from({ length: 20 }, (_, i) => ({ owner: { address: `0xr${i}` }, amount: ONE_SUI })) } } };
+    mockGqlQuery.mockImplementation(
+      router({
+        earliest: (addr) =>
+          addr === A || addr === B
+            ? page([{ ...payment(SHARED, F, addr), digest: SHARED }])
+            : page([]),
+        sent: (addr) => (addr === F ? page([payment("0x1", F, A), payment("0x2", F, B)]) : page([])),
+        recipients: () => wide,
+      }),
+    );
+    const r = await buildWalletEdges([A, B], { expand: false });
+    expect(r.edges).toHaveLength(1);
+    expect(r.edges[0].weight).toBe(0.8);
+    expect(r.edges[0].signals[0].detail).toContain("20 addresses");
+  });
+
+  it("scores a bespoke two-way payout ABOVE a plain shared funder", async () => {
+    const F = "0xfunder";
+    const SHARED = "0xsharedtx";
+    const narrow = { transactionEffects: { balanceChanges: { nodes: [
+      { owner: { address: A }, amount: ONE_SUI }, { owner: { address: B }, amount: ONE_SUI }] } } };
+    mockGqlQuery.mockImplementation(
+      router({
+        earliest: (addr) =>
+          addr === A || addr === B
+            ? page([{ ...payment(SHARED, F, addr), digest: SHARED }])
+            : page([]),
+        sent: (addr) => (addr === F ? page([payment("0x1", F, A), payment("0x2", F, B)]) : page([])),
+        recipients: () => narrow,
+      }),
+    );
+    const r = await buildWalletEdges([A, B], { expand: false });
+    expect(r.edges[0].weight).toBe(1.2);
+  });
+
+  it("leaves separately-funded pairs at the default weight", async () => {
+    // Two transactions from one funder means each address was funded
+    // deliberately. That is the ordinary cofunded case, not a payout list, so
+    // no recipient-count lookup should even be spent on it.
+    const F = "0xfunder";
+    mockGqlQuery.mockImplementation(
+      router({
+        earliest: (addr) =>
+          addr === A ? page([{ ...payment("0xtxA", F, A), digest: "0xtxA" }])
+          : addr === B ? page([{ ...payment("0xtxB", F, B), digest: "0xtxB" }])
+          : page([]),
+        sent: (addr) => (addr === F ? page([payment("0x1", F, A), payment("0x2", F, B)]) : page([])),
+        recipients: () => { throw new Error("must not look up a payout that was never shared"); },
+      }),
+    );
+    const r = await buildWalletEdges([A, B], { expand: false });
+    expect(r.edges[0].weight).toBe(1);
   });
 
   it("does NOT treat a direct payment between two seeds as co-appearance", async () => {

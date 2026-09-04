@@ -164,6 +164,48 @@ describe("clusterEdges", () => {
   });
 });
 
+describe("independent intermediaries", () => {
+  it("counts one when every edge runs through the same address", () => {
+    // Sixteen edges through one shared funder is ONE fact stated sixteen
+    // times. The edge count reads as corroboration and is not.
+    const s = new EdgeSet();
+    s.addStar("cofunded", "0xf", [A], [B, C, D], "shared funder");
+    const { clusters } = clusterEdges(s.edges());
+    expect(clusters[0].independent_intermediaries).toBe(1);
+  });
+
+  it("refuses high confidence on a single point of failure", () => {
+    // However strong the edges look, one popularity misjudgement collapses the
+    // whole cluster at once.
+    const s = new EdgeSet();
+    s.add("cofunded", A, B, "shared funder", [], "0xf");
+    s.add("sponsor", A, B, "shared sponsor", [], "0xf");
+    const { clusters } = clusterEdges(s.edges());
+    expect(clusters[0].min_edge_weight).toBeGreaterThanOrEqual(1.5);
+    expect(clusters[0].independent_intermediaries).toBe(1);
+    expect(clusters[0].confidence).toBe("medium");
+  });
+
+  it("allows high confidence once two independent intermediaries agree", () => {
+    const s = new EdgeSet();
+    s.add("cofunded", A, B, "shared funder", [], "0xfunder");
+    s.add("sponsor", A, B, "shared sponsor", [], "0xsponsor");
+    const { clusters } = clusterEdges(s.edges());
+    expect(clusters[0].independent_intermediaries).toBe(2);
+    expect(clusters[0].confidence).toBe("high");
+  });
+
+  it("counts a signal with no intermediary as its own basis", () => {
+    // A direct funding edge stands on its own rather than resting on a third
+    // party, so it must not be lumped in with shared-intermediary signals.
+    const s = new EdgeSet();
+    s.add("funding_edge", A, B, "A first-funded B");
+    s.add("sponsor", A, B, "shared sponsor", [], "0xsp");
+    const { clusters } = clusterEdges(s.edges());
+    expect(clusters[0].independent_intermediaries).toBe(2);
+  });
+});
+
 describe("the strict batch tuning misses ordinary personal alts", () => {
   /**
    * The signal shape measured on a real set of four co-owned mainnet addresses:

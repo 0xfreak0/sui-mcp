@@ -79,6 +79,19 @@ caller needs); no probe has made it fire, so keep it narrow and don't design
 around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
 the fullnode there.
 
+## Completeness beats payload size
+
+`get_transaction` returns decoded fields for **every** event by default.
+`max_event_field_bytes` exists but is unset unless a caller asks for it.
+
+A default cap looked reasonable — a 59-event transaction carries 53 KB of
+decoded fields, roughly 13k tokens — but it would let an investigation reach a
+conclusion from a subset without the reader having chosen that. Measured, it
+would almost never fire: the 99th percentile of transactions with events carries
+12 KB. Paying for the rare outlier is the right trade; bounding the payload is
+the caller's decision, and when they make it the response says plainly that it
+is not the complete event data.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from

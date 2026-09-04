@@ -23,11 +23,17 @@ export function registerTransactionTools(server: McpServer) {
         .max(500_000)
         .optional()
         .describe(
-          "Byte budget for decoded event fields (default 24000). Event types and senders are always returned; only the decoded values are rationed, and anything skipped is reported. Raise it for an event-heavy transaction you need in full, or set 0 to skip decoding entirely.",
+          "Optional byte cap on decoded event fields. UNSET BY DEFAULT: every event comes back with its fields, because an investigation must not be silently working from a subset. Set this only when you knowingly want to bound the payload — anything skipped is reported — or set 0 to skip decoding entirely.",
         ),
     },
     async ({ digest, max_event_field_bytes }) => {
-      const fieldBudget = max_event_field_bytes ?? 24_000;
+      // No default cap. A budget that silently omits decoded values would let
+      // an investigation draw a conclusion from a subset of the events without
+      // the reader having chosen that trade-off, which is the failure this
+      // whole codebase is built to avoid. Measured, it would almost never fire
+      // anyway: the 99th percentile of transactions with events carries 12 KB
+      // of decoded fields. Bounding the payload is the caller's call to make.
+      const fieldBudget = max_event_field_bytes ?? Number.POSITIVE_INFINITY;
       const req = {
         digest,
         readMask: {
@@ -169,7 +175,7 @@ export function registerTransactionTools(server: McpServer) {
                   ? {
                       event_fields_omitted: fieldsOmitted,
                       event_fields_budget_note:
-                        `Decoded fields for ${fieldsOmitted} event(s) were omitted after the ${fieldBudget}-byte budget was spent. Their types and senders are still listed. Raise max_event_field_bytes to see them.`,
+                        `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
                     }
                   : {}),
                 ...(rawEvents.length > 0 && fieldBudget > 0 && !parsedUsable

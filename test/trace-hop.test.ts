@@ -242,3 +242,56 @@ describe("chooseNextHop — split transfers", () => {
     expect(d.unfollowed.map((u) => u.address)).toEqual([w1]);
   });
 });
+
+describe("pruned-transaction handling", () => {
+  /**
+   * GraphQL answers a digest the fullnode has pruned with a hollow record, not
+   * null: digest, timestamp and checkpoint present, `sender: null`, no balance
+   * changes, no commands. Captured from mainnet digest
+   * 6TxushiTv1jWm7cp5UhH7Spe6MbiC6sV6V3f8ajkasSk.
+   *
+   * That shape is more dangerous than a miss — it renders as a real hop that
+   * moved nothing, so a trace ends early while looking complete. The detection
+   * lives in trace.ts's fetchTx; this pins the shape it has to recognise so a
+   * future change cannot quietly stop matching it.
+   */
+  const HOLLOW_GQL_TX = {
+    digest: "6TxushiTv1jWm7cp5UhH7Spe6MbiC6sV6V3f8ajkasSk",
+    sender: null,
+    effects: {
+      timestamp: "2026-05-23T06:05:49.714Z",
+      checkpoint: { sequenceNumber: 278658096 },
+      balanceChanges: { nodes: [] },
+    },
+    kind: {},
+  };
+
+  const isHollow = (tx: typeof HOLLOW_GQL_TX) =>
+    !tx.sender &&
+    (tx.effects?.balanceChanges?.nodes?.length ?? 0) === 0 &&
+    ((tx.kind as { commands?: { nodes?: unknown[] } })?.commands?.nodes?.length ?? 0) === 0;
+
+  it("recognises the hollow record a pruned digest returns", () => {
+    expect(isHollow(HOLLOW_GQL_TX)).toBe(true);
+  });
+
+  it("does not mistake a real transaction for a pruned one", () => {
+    // A genuine transaction with a sender must never be routed to the archive.
+    const real = {
+      ...HOLLOW_GQL_TX,
+      sender: { address: attacker },
+      effects: {
+        ...HOLLOW_GQL_TX.effects,
+        balanceChanges: { nodes: [{ amount: "-1" }] },
+      },
+    };
+    expect(isHollow(real as never)).toBe(false);
+  });
+
+  it("does not mistake a genuinely empty-but-live transaction for pruned", () => {
+    // A transaction with a sender but no balance changes is real — a failed
+    // call, a pure Move call. Only the total absence of all three marks a stub.
+    const senderOnly = { ...HOLLOW_GQL_TX, sender: { address: attacker } };
+    expect(isHollow(senderOnly as never)).toBe(false);
+  });
+});

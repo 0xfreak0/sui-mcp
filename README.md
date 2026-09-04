@@ -53,6 +53,25 @@ That last step is the point. Several wallets tracing to one funder looks decisiv
 
 Fan-out reports **shape as well as size**, because size alone doesn't separate the cases that matter. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts — 399 and 431 — and completely different flow: the exchange ran balanced at 0.73 out/in (deposits in, withdrawals out) while the funder ran 9.78 (it pays many and is paid by few). One is noise in an investigation; the other is the thing you're looking for.
 
+## The forensics skill
+
+The server gives Claude chain access. It does not, on its own, give it method —
+which tool answers which question, what a control group is for, or which
+conclusions to refuse. That lives in a skill shipped alongside it.
+
+```bash
+mkdir -p ~/.claude/skills
+cp -r "$(npm root -g)/sui-analytics-mcp/.claude/skills/sui-forensics" ~/.claude/skills/
+```
+
+Or copy `.claude/skills/sui-forensics/` out of this repo. It loads automatically
+once present; there is nothing to configure.
+
+It covers the evidence tiers and what each licenses you to claim, the order to
+work in, the base-rate check that stops shared ancestry reading as collusion,
+and the conclusions to refuse — "no edge found, so they are unrelated" being the
+one that costs most.
+
 ## Tool profiles
 
 All 62 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.

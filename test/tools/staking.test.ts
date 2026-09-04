@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { gqlPage } from "../helpers/service-shapes.js";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 
 const mockSui = createMockClient();
@@ -49,14 +50,11 @@ describe("get_validators", () => {
       epoch: {
         epochId: 500,
         validatorSet: {
-          activeValidators: {
-            pageInfo: { hasNextPage: false, endCursor: null },
-            nodes: [
+          activeValidators: gqlPage([
               makeValidator("small", "1000000000", "500"),
               makeValidator("big", "9000000000", "200"),
               makeValidator("med", "5000000000", "300"),
-            ],
-          },
+            ]),
           contents: { json: { total_stake: "15000000000" } },
         },
       },
@@ -80,14 +78,11 @@ describe("get_validators", () => {
       epoch: {
         epochId: 500,
         validatorSet: {
-          activeValidators: {
-            pageInfo: { hasNextPage: false, endCursor: null },
-            nodes: [
+          activeValidators: gqlPage([
               makeValidator("high", "1000000000", "1000"),
               makeValidator("low", "2000000000", "100"),
               makeValidator("mid", "1500000000", "500"),
-            ],
-          },
+            ]),
           contents: { json: { total_stake: "4500000000" } },
         },
       },
@@ -135,7 +130,7 @@ describe("get_validators (detail via address)", () => {
       epoch: {
         epochId: 500,
         validatorSet: {
-          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+          activeValidators: gqlPage([]),
         },
       },
     });

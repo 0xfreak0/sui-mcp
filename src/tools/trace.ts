@@ -508,6 +508,28 @@ export function registerTraceTools(server: McpServer) {
         if (isSink(nextAddress)) {
           const label = getLabel(nextAddress);
           terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
+          // A bridge is the one sink that is not terminal, and a labeled one
+          // may carry no curated Move-call marker at all — a relayer forward,
+          // an unlisted bridge, or a plain transfer into a deposit address.
+          // Detection from calls alone therefore misses exactly the case an
+          // investigator created the label for, and the trace reads as "the
+          // money stopped here" when it left the chain.
+          if (label?.category === "bridge") {
+            bridgeExits.push({
+              digest: currentDigest,
+              hits: [
+                {
+                  protocol: label.label,
+                  resolution: "detect-only",
+                  matched: "address-label",
+                  note:
+                    "Labeled as a bridge. No curated marker fired on this transaction, so the " +
+                    "protocol is whatever the label says — try resolve_bridge_transfer on this " +
+                    "digest, and follow the value on the destination chain if it cannot resolve it.",
+                },
+              ],
+            });
+          }
           break;
         }
 

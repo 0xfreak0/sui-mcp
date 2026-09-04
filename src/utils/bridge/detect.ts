@@ -107,8 +107,16 @@ export interface BridgeHit {
   protocol: string;
   resolution: BridgeResolution;
   note: string;
-  /** How it was recognised, so a reader can judge the claim. */
-  matched: "call" | "event" | "protocol-registry";
+  /**
+   * How it was recognised, so a reader can judge the claim.
+   *
+   * `address-label` is the weakest and the only one not derived from the
+   * transaction: an investigator asserted that the address is a bridge. It is
+   * still worth reporting, because a labeled bridge often carries no curated
+   * marker — a relayer forward, an unlisted protocol, a plain transfer into a
+   * deposit address — and that is precisely the case the label was created for.
+   */
+  matched: "call" | "event" | "protocol-registry" | "address-label";
 }
 
 /**

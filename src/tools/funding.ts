@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { boolArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
+import { describeAddresses, identityNote } from "../utils/identity.js";
 import { getLabel } from "../utils/labels.js";
 import { decimalsForCoinType, symbolOf, toHumanAmount, usdValue } from "../utils/valuation.js";
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
@@ -185,8 +187,7 @@ export function registerFundingTools(server: McpServer) {
     "(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape — shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.",
     {
       address: z.string().describe("Address to measure (0x...)"),
-      max_transactions: z
-        .number()
+      max_transactions: numArg()
         .int()
         .min(50)
         .max(3000)
@@ -246,8 +247,7 @@ export function registerFundingTools(server: McpServer) {
         .min(1)
         .max(100)
         .describe("Addresses to attribute (1-100)."),
-      max_hops: z
-        .number()
+      max_hops: numArg()
         .int()
         .positive()
         .optional()
@@ -258,8 +258,7 @@ export function registerFundingTools(server: McpServer) {
         .describe(
           "'first_hop' walks one hop per address — usually the informative one, since deep chains dead-end in early distribution wallets. 'full' walks to max_hops (default).",
         ),
-      measure_fanout: z
-        .boolean()
+      measure_fanout: boolArg()
         .optional()
         .describe("Measure fan-out for funders shared by 2+ addresses (default true)."),
     },
@@ -381,7 +380,21 @@ export function registerFundingTools(server: McpServer) {
 
         const addrSet = new Set<string>();
         for (const r of results) for (const s of r.chain) { addrSet.add(s.address); addrSet.add(s.funded_by); }
-        const nameMap = await batchResolveNames([...addrSet]);
+        const batchIds = await describeAddresses([...addrSet]);
+        const nameMap = new Map(
+          [...batchIds].filter(([, v]) => v.name).map(([k, v]) => [k, v.name!]),
+        );
+        // Origins that are not wallets, called out once for the whole batch —
+        // the case a reader is most likely to misread as "this person funded
+        // them".
+        const nonWalletOrigins = [...batchIds.values()]
+          .filter((v) => v.kind !== "wallet")
+          .map((v) => ({
+            address: v.address,
+            kind: v.kind,
+            ...(v.protocol ? { protocol: v.protocol } : {}),
+            ...(v.object_type ? { object_type: v.object_type } : {}),
+          }));
 
         return {
           content: [
@@ -391,6 +404,13 @@ export function registerFundingTools(server: McpServer) {
                 {
                   address_count: addresses.length,
                   depth: depth ?? "full",
+                  ...(nonWalletOrigins.length
+                    ? {
+                        non_wallet_addresses: nonWalletOrigins,
+                        non_wallet_note:
+                          "These addresses in the funding chains are packages or objects, not wallets. Value associated with a package is protocol activity, and a shared object may be a pool many parties touch — neither reads as a person who funded someone.",
+                      }
+                    : {}),
                   max_hops: maxHops,
                   addresses_resolved: results.filter((r) => r.hops > 0).length,
                   ...(coFunded.length
@@ -488,9 +508,8 @@ export function registerFundingTools(server: McpServer) {
     "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a wallet it has already seen, or a dead end. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
     {
       address: z.string().describe("Address to attribute (0x...)"),
-      max_hops: z.number().int().positive().optional().describe("Max funding hops to walk back (default 5, max 12)"),
-      measure_fanout: z
-        .boolean()
+      max_hops: numArg().int().positive().optional().describe("Max funding hops to walk back (default 5, max 12)"),
+      measure_fanout: boolArg()
         .optional()
         .describe(
           "Measure the origin's fan-out so a hub can be told from a real link (default true).",
@@ -516,19 +535,37 @@ export function registerFundingTools(server: McpServer) {
         // Resolve names + labels for everything in the chain.
         const addrs = new Set<string>();
         for (const s of chain) { addrs.add(s.address); addrs.add(s.funded_by); }
-        const nameMap = await batchResolveNames([...addrs]);
+        // Name, label, and WHAT THE ADDRESS IS, in two batched calls. The kind
+        // matters here more than anywhere: "funded by 0xabc" reads as a person,
+        // and if 0xabc is a package or a shared object that reading is wrong.
+        const identities = await describeAddresses([...addrs]);
         const labelFor = (a: string) => {
-          const label = getLabel(a);
-          const name = nameMap.get(a);
-          return { address: a, ...(name ? { name } : {}), ...(label ? { label: label.label, category: label.category } : {}) };
+          const id = identities.get(a);
+          const note = id ? identityNote(id) : undefined;
+          return {
+            address: a,
+            ...(id?.name ? { name: id.name } : {}),
+            ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+            ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
+            ...(id?.object_type ? { object_type: id.object_type } : {}),
+            ...(id?.protocol ? { protocol: id.protocol } : {}),
+            ...(note ? { note } : {}),
+          };
         };
 
+        const originId = identities.get(origin);
+        const subjectId = identities.get(address);
         const originLabel = getLabel(origin);
-        const originName = nameMap.get(origin);
         const summaryParts = [
-          `${address}${nameMap.get(address) ? ` (${nameMap.get(address)})` : ""}`,
+          `${address}${subjectId?.name ? ` (${subjectId.name})` : ""}`,
           `funded through ${chain.length} hop(s) back to`,
-          `${origin}${originName ? ` (${originName})` : ""}${originLabel ? ` — ${originLabel.label} [${originLabel.category}]` : ""}.`,
+          `${origin}${originId?.name ? ` (${originId.name})` : ""}${originLabel ? ` — ${originLabel.label} [${originLabel.category}]` : ""}.`,
+          // Said in the summary, not only in the chain entry. An origin that is
+          // a package or shared object is the case a reader is most likely to
+          // misread as "this person funded them".
+          originId && originId.kind !== "wallet"
+            ? `NOTE: the origin is a ${originId.kind}${originId.protocol ? ` (${originId.protocol})` : ""}, not a wallet.`
+            : "",
           stopReason ? `Stopped: ${stopReason}.` : "",
         ];
 

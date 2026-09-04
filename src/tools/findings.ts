@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg, numArg } from "./args.js";
 import { currentSuiAccount } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { renderCaseReport } from "../utils/case-report.js";
@@ -139,8 +140,7 @@ export function registerFindingsTools(server: McpServer) {
     "(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Highest-confidence findings first, with an appendix of full addresses. Requires SUI_STORE_PATH.",
     {
       case_name: z.string().describe("Case to render."),
-      include_appendix: z
-        .boolean()
+      include_appendix: boolArg()
         .optional()
         .describe("Append the full-address list (default true)."),
     },
@@ -176,7 +176,7 @@ export function registerFindingsTools(server: McpServer) {
     "delete_finding",
     "(Incident investigation) Remove a finding by id — for retracting something that turned out to be wrong. Use list_findings to get ids. Requires SUI_STORE_PATH.",
     {
-      finding_id: z.number().int().describe("Finding id from list_findings."),
+      finding_id: numArg().int().describe("Finding id from list_findings."),
     },
     async ({ finding_id }) => {
       const blocked = storeRequired();

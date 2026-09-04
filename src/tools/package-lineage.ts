@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
@@ -46,8 +47,7 @@ export function registerPackageLineageTools(server: McpServer) {
         .describe(
           "How far back to probe for activity: ISO 8601 timestamp or checkpoint. Defaults to roughly the last day.",
         ),
-      max_versions: z
-        .number()
+      max_versions: numArg()
         .int()
         .min(1)
         .max(20)

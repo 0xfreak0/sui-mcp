@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
@@ -14,8 +15,7 @@ export function registerWorkflowTools(server: McpServer) {
     "(Recommended first tool for wallets) Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions. Set include_prices=true for USD values and total portfolio value. Start here before drilling into specific tools.",
     {
       address: z.string().describe("Wallet address (0x...)"),
-      include_prices: z
-        .boolean()
+      include_prices: boolArg()
         .optional()
         .describe("Include USD prices and portfolio value (default: false)"),
     },

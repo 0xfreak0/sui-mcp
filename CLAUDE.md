@@ -79,6 +79,60 @@ caller needs); no probe has made it fire, so keep it narrow and don't design
 around it. Skipping the fallback entirely on devnet is deliberate — `archive` is
 the fullnode there.
 
+## Address identity in investigation flows
+
+`src/utils/identity.ts` resolves name, label, kind and historical names for a
+whole result set in two batched calls, and `trace_funds`, both funding tools and
+`build_wallet_edges` all use it. `identify_address` stays the thorough
+single-address tool; it costs about five requests each and cannot run per hop.
+
+Two things it adds that the flows were missing:
+
+- **What the address is.** A hop that is a package or a shared object is not
+  "someone the funds went to", and nothing else in a trace said so. Classified
+  by one `multiGetObjects` call — an address with no object at it is a wallet,
+  which makes `wallet` a default rather than a positive finding.
+- **Names the address used to hold.** Reverse lookup answers only "what is the
+  current default name" and returns nothing once a name lapses, so former
+  aliases vanish from an investigation. The `SuinsRegistration` object outlives
+  expiry, so held registrations are read directly and expired ones are flagged
+  rather than dropped. Measured on one wallet: reverse lookup gave 1 name, the
+  registrations gave 10, six of them expired. An expired name is still
+  attribution — the address was known by it at the time of the activity.
+
+The registration type is matched at **module** level. A Move type keeps the
+package that defined it, so this does not drift on upgrade — the opposite of the
+call-target problem the protocol registry solves with lineage roots.
+
+Note `batchResolveNames` is not actually batched: it fans out one gRPC call per
+address. Fine at these sizes, but it is not the single request the name suggests.
+
+## Completeness beats payload size
+
+`get_transaction` returns decoded fields for **every** event by default.
+`max_event_field_bytes` exists but is unset unless a caller asks for it.
+
+A default cap looked reasonable — a 59-event transaction carries 53 KB of
+decoded fields, roughly 13k tokens — but it would let an investigation reach a
+conclusion from a subset without the reader having chosen that. Measured, it
+would almost never fire: the 99th percentile of transactions with events carries
+12 KB. Paying for the rare outlier is the right trade; bounding the payload is
+the caller's decision, and when they make it the response says plainly that it
+is not the complete event data.
+
+## Tool arguments
+
+Numeric and boolean tool args use `numArg()` / `boolArg()` from
+`src/tools/args.ts`, never bare `z.number()` / `z.boolean()`. A model composing
+JSON will sometimes quote a value (`max_hops: "8"`), and strict validation turns
+that into a hard failure for something whose intent was never ambiguous.
+Coercion does not loosen the advertised contract — the generated JSON schema is
+byte-identical — and `"abc"` is still rejected.
+
+`boolArg` is deliberately not `z.coerce.boolean()`, which applies JavaScript
+truthiness and turns the string `"false"` into `true`. Silently inverting a
+caller's intent is worse than the rejection this is meant to fix.
+
 ## Contributing rules
 
 - **Never put a `claude.ai/code/session_...` URL in a commit message or PR
@@ -450,7 +504,18 @@ data it already has, no extra query — and emits `bridge_exits`.
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)
-- SDK `Event` has `eventType` (not `type`), `module`, no `parsedJson`
+- SDK `Event` has `eventType` (not `type`), `module`, no `parsedJson`. GraphQL's
+  `Event` has neither `type` nor `json` at the top level — both live under
+  `contents` (`contents.type.repr`, `contents.json`). Three shapes for one
+  concept, which is why `get_transaction` fetches event fields over GraphQL
+  (`src/utils/event-json.ts`) even though it reads the transaction over gRPC.
+- **Protocols come from events as well as Move calls.** A transaction calling an
+  obfuscated wrapper into DeepBook reported `protocols: []` while the registry,
+  asked directly, resolved the event's own package by lineage. Event types are
+  also harder to fake: a package picks its own name, but the event it emits
+  carries the type of whoever defined it. `protocols_from_events_only` marks the
+  gap, since a transaction whose calls are unreadable and whose events name a
+  known protocol is what a router or wrapper looks like.
 - SDK `BalanceChange` has `address` (not `owner`)
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50

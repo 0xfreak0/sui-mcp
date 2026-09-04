@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { boolArg, numArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { getLabel } from "../utils/labels.js";
-import { batchResolveNames } from "../utils/names.js";
+import { describeAddresses, identityNote } from "../utils/identity.js";
 import { buildWalletEdges } from "../utils/edge-probe.js";
 import { clusterEdges } from "../utils/wallet-edges.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -30,21 +31,18 @@ export function registerClusterTools(server: McpServer) {
         .min(1)
         .max(25)
         .describe("Seed addresses to examine (1-25). Give it every address you already suspect belongs together — links between seeds are the exactly-verified ones."),
-      expand: z
-        .boolean()
+      expand: boolArg()
         .optional()
         .describe(
           "Also look for unknown siblings, not just links among the seeds (default true). Each candidate is verified by computing its own first funder before it is admitted.",
         ),
-      expand_budget: z
-        .number()
+      expand_budget: numArg()
         .int()
         .min(0)
         .max(200)
         .optional()
         .describe("Sibling candidates to verify while expanding (default 25). Unverified candidates are reported, never silently dropped."),
-      popularity_limit: z
-        .number()
+      popularity_limit: numArg()
         .int()
         .min(5)
         .max(500)
@@ -52,8 +50,7 @@ export function registerClusterTools(server: McpServer) {
         .describe(
           "Distinct counterparties past which a funder or sponsor is treated as a service and discarded (default 50). Raise it only if you have a reason — this is the control that stops an exchange from linking the whole chain together.",
         ),
-      min_signal_types: z
-        .number()
+      min_signal_types: numArg()
         .int()
         .min(1)
         .max(4)
@@ -61,15 +58,13 @@ export function registerClusterTools(server: McpServer) {
         .describe(
           "Independent signal types a pair needs before it may merge (default 1). Set 2 for the strict batch-pipeline rule: far higher precision, but it misses ordinary personal alt-wallets, which typically share exactly one mechanism.",
         ),
-      max_cluster_size: z
-        .number()
+      max_cluster_size: numArg()
         .int()
         .min(2)
         .max(1000)
         .optional()
         .describe("Refuse merges beyond this size (default 100). A runaway cluster is worse than no answer."),
-      query_budget: z
-        .number()
+      query_budget: numArg()
         .int()
         .min(10)
         .max(600)
@@ -105,14 +100,19 @@ export function registerClusterTools(server: McpServer) {
           maxClusterSize: max_cluster_size,
         });
 
-        const named = await batchResolveNames(built.examined);
+        const identities = await describeAddresses(built.examined);
         const describe = (a: string) => {
-          const label = getLabel(a);
-          const name = named.get(a);
+          const id = identities.get(a);
+          const note = id ? identityNote(id) : undefined;
           return {
             address: a,
-            ...(name ? { name } : {}),
-            ...(label ? { label: label.label, category: label.category } : {}),
+            ...(id?.name ? { name: id.name } : {}),
+            ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+            // A package or shared object in a cluster is not a co-owned wallet;
+            // it is infrastructure several parties touch.
+            ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
+            ...(id?.protocol ? { protocol: id.protocol } : {}),
+            ...(note ? { note } : {}),
           };
         };
 

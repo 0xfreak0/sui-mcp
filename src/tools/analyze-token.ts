@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders } from "./holders.js";
@@ -14,8 +15,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       query: z
         .string()
         .describe("Token name, symbol (e.g. 'USDC', 'deep'), or full coin type (e.g. '0x2::sui::SUI')"),
-      include_holders: z
-        .boolean()
+      include_holders: boolArg()
         .optional()
         .describe("Include top 5 holders (default: true). Set false for faster response."),
     },

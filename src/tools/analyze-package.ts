@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import { errorResult } from "../utils/errors.js";
@@ -220,12 +221,10 @@ export function registerAnalyzePackageTools(server: McpServer) {
       package_id: z
         .string()
         .describe("Package ID (0x...) or MVR name (@org/app)"),
-      include_disassembly: z
-        .boolean()
+      include_disassembly: boolArg()
         .optional()
         .describe("Include GraphQL disassembly for each module (default: false)"),
-      audit_capabilities: z
-        .boolean()
+      audit_capabilities: boolArg()
         .optional()
         .describe("Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true)"),
     },

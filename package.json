@@ -1,6 +1,6 @@
 {
   "name": "sui-analytics-mcp",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Read-only Sui blockchain analytics: 61 tools, protocol-aware tx decoding, no API keys or wallet.",
   "mcpName": "io.github.0xfreak0/sui-mcp",
   "type": "module",

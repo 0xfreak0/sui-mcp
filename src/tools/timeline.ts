@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { boolArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
 import { batchResolveNames } from "../utils/names.js";
 import { getLabel } from "../utils/labels.js";
+import { activityHours } from "../utils/activity-hours.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import { errorResult } from "../utils/errors.js";
@@ -124,9 +125,21 @@ export function registerTimelineTools(server: McpServer) {
       from: z.string().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
       to: z.string().optional().describe("Window end: ISO date or a checkpoint number"),
       limit: numArg().int().positive().max(200).optional().describe("Max timeline entries to return (default 60)"),
-      per_address: numArg().int().positive().max(50).optional().describe("Max transactions to pull per address before merging (default 30)"),
+      per_address: numArg()
+        .int()
+        .positive()
+        .max(300)
+        .optional()
+        .describe(
+          "Max transactions to pull per address before merging (default 30). Raise it for `activity_hours`: a daily rhythm needs 50+ transactions spanning a week or more, and the reading says so when it has less.",
+        ),
+      activity_hours: boolArg()
+        .optional()
+        .describe(
+          "Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one — on Sui the common answer is 'flat, consistent with automation', which is itself a finding.",
+        ),
     },
-    async ({ addresses, from, to, limit, per_address }) => {
+    async ({ addresses, from, to, limit, per_address, activity_hours }) => {
       try {
         const tracked = new Set(addresses);
         const fromB = parseTimeBound(from);
@@ -152,6 +165,19 @@ export function registerTimelineTools(server: McpServer) {
           return { address: a, ...(name ? { name } : {}), ...(label ? { label: label.label, category: label.category } : {}) };
         });
 
+        // Per address, not merged: two addresses having the SAME active window
+        // is the corroborating observation, and merging them destroys it.
+        // Computed over everything fetched rather than the truncated timeline,
+        // since the entry limit is about readability and this wants volume.
+        const activity = activity_hours
+          ? addresses
+              .map((a, i) => ({
+                address: a,
+                ...(activityHours(perAddressEntries[i].map((e) => e.timestamp)) ?? {}),
+              }))
+              .filter((x) => "histogram" in x)
+          : undefined;
+
         return {
           content: [
             {
@@ -161,6 +187,13 @@ export function registerTimelineTools(server: McpServer) {
                   addresses: legend,
                   window: { from: from ?? null, to: to ?? null },
                   entry_count: merged.length,
+                  ...(activity?.length
+                    ? {
+                        activity_hours: activity,
+                        activity_hours_note:
+                          "Hour-of-day activity per address, in UTC. A shared quiet window across addresses is corroborating; opposite windows argue against common control and are the rarer, more useful result. Read `reading` before `utc_offset_estimate` — it is null unless sample size, span and depth support one, and even then it is a longitude rather than a country.",
+                      }
+                    : {}),
                   timeline: merged,
                 },
                 null,

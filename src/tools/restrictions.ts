@@ -16,21 +16,17 @@ import { errorResult } from "../utils/errors.js";
 import { describeAddresses } from "../utils/identity.js";
 import { restrictionNote } from "../utils/deny-list.js";
 import {
-  checkAddress,
+  checkAddressAcrossCoins,
   currentEpoch,
   findCoinConfig,
   readCoinRestrictions,
 } from "../utils/deny-list-probe.js";
-import { sui } from "../clients/grpc.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-/** Coins checked for one address when the caller names none. */
-const MAX_HELD_COINS = 25;
 
 export function registerRestrictionTools(server: McpServer) {
   server.tool(
     "check_coin_restrictions",
-    "(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions — give a coin_type to list everyone frozen for it, or an address to check whether it is frozen for the coins it holds. A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.",
+    "(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions — give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (~1,250 on mainnet, about 65 requests — a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.",
     {
       coin_type: z
         .string()
@@ -65,43 +61,48 @@ export function registerRestrictionTools(server: McpServer) {
         );
       }
 
-      // --- one address, across the coins it holds ---------------------------
+      // --- one address, across every configured coin -----------------------
       if (address && !coin_type) {
-        let coins: string[] = [];
-        try {
-          const balances = await sui.listBalances({ owner: address, limit: 50, cursor: null });
-          coins = (balances.balances ?? [])
-            .filter((b) => b.balance !== "0")
-            .map((b) => b.coinType ?? "")
-            .filter(Boolean)
-            .slice(0, MAX_HELD_COINS);
-        } catch (err) {
+        // Exhaustive by default. Checking only the coins an address holds does
+        // not work, and the reason is structural: freezing and holding are
+        // ANTI-CORRELATED. An issuer freezes an address and it ends up holding
+        // none of that coin. Measured on a real denied address, held-coins
+        // found 11 restrictions where the full scan found 58 — missing 81%,
+        // including the coin that led us to the address in the first place.
+        const scan = await checkAddressAcrossCoins(address, epoch).catch(() => null);
+        if (!scan) {
           return errorResult(
-            `Could not list ${address}'s balances (${err instanceof Error ? err.message : String(err)}), so there is no coin set to check against.`,
+            `Could not read the deny list for ${address}. This is not evidence it is unrestricted.`,
           );
         }
 
-        const results = await Promise.all(
-          coins.map((c) => checkAddress(c, address, epoch).catch(() => null)),
-        );
-        const regulated = results.filter((r): r is NonNullable<typeof r> => r !== null);
-        const restricted = regulated.filter((r) => r.denied || r.pending);
+        const identities = await describeAddresses([address]).catch(() => new Map());
+        const id = identities.get(address);
 
         return json({
           address,
           epoch,
-          coins_held_checked: coins.length,
-          regulated_coins_held: regulated.length,
-          restricted,
-          restricted_count: restricted.length,
-          ...(restricted.length === 0
+          ...(id?.name ? { name: id.name } : {}),
+          ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+          coins_checked: scan.coins_checked,
+          scan_complete: scan.complete,
+          denied_by_count: scan.denied.length,
+          denied_by: scan.denied,
+          ...(scan.pending.length ? { pending: scan.pending } : {}),
+          ...(scan.denied.length === 0 && scan.complete
             ? {
                 result:
-                  "Not frozen for any coin it currently holds. This checks held coins only — a freeze on a coin the address has never held would not appear, and neither would one on a coin below the check cap.",
+                  "No issuer has frozen this address, across every coin type with a deny list configured.",
               }
             : {}),
+          ...(scan.complete
+            ? {}
+            : {
+                incomplete_note:
+                  "Part of the scan failed, so some coins were never checked. A short list here is not evidence of a short list on chain.",
+              }),
           caveat:
-            "A freeze is an issuer decision recorded on chain, reversible by whoever holds the DenyCap. `pending: true` means the entry is recorded but NOT yet in force — a denial takes effect the epoch after it is written.",
+            "A freeze is the issuer's own decision recorded on chain, reversible by whoever holds the DenyCap. Note that a frozen address usually holds NONE of the coin that froze it — being denied and holding are anti-correlated — so the absence of a balance says nothing either way.",
         });
       }
 

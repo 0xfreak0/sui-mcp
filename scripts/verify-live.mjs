@@ -48,6 +48,8 @@ const CHECKS = [
   ["probe/dump-fixtures", "regenerate signature fixtures from live mainnet"],
   ["probe/adversarial", "hostile and malformed input across every tool"],
   ["probe/investigation", "chained end-to-end investigation"],
+  ["probe/full-case", "cross-tool consistency: two tools must not disagree about one fact"],
+  ["probe/gap-pass", "paths the other sweeps do not reach"],
 ];
 
 const run = (script) =>

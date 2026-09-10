@@ -112,6 +112,9 @@ async function fetchAddressEntries(
     }
     if (!data.transactions.pageInfo.hasNextPage) break;
     after = data.transactions.pageInfo.endCursor;
+    // No cursor with another page claimed would restart the walk, re-reading
+    // page one and double-counting every entry on it.
+    if (!after) break;
   }
   return entries;
 }

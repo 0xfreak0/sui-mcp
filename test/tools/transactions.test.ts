@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 
+/**
+ * A real mainnet digest. get_transaction rejects a malformed one before making
+ * any request, so a placeholder like "TxDigest123" no longer reaches the
+ * handler under test.
+ */
+const TEST_DIGEST = "6rbfmByTyP4k7EREQBV9XZNhaG4RPm2ExT5bhVDfhGpu";
+/** A second one, so the archive case stays distinguishable from the fullnode case. */
+const ARCHIVED_DIGEST = "CBjycKjVXizZ2VcxVjE2u6xBhP8YJgSgLziZA7N7crXK";
+
 const mockSui = createMockClient();
 const mockArchive = createMockClient();
 const mockGqlQuery = createMockGraphql();
@@ -32,7 +41,7 @@ describe("get_transaction", () => {
     mockSui.ledgerService.getTransaction.mockResolvedValue({
       response: {
         transaction: {
-          digest: "TxDigest123",
+          digest: TEST_DIGEST,
           timestamp: { seconds: 1700000000n, nanos: 0 },
           checkpoint: 50000n,
           transaction: {
@@ -81,10 +90,10 @@ describe("get_transaction", () => {
     });
 
     const handler = tools.get("get_transaction")!;
-    const result = await handler({ digest: "TxDigest123" });
+    const result = await handler({ digest: TEST_DIGEST });
     const data = JSON.parse(result.content[0].text);
 
-    expect(data.digest).toBe("TxDigest123");
+    expect(data.digest).toBe(TEST_DIGEST);
     expect(data.sender).toBe("0xsender");
     expect(data.status).toBe("success");
     expect(data.protocols).toContain("Cetus");
@@ -98,7 +107,7 @@ describe("get_transaction", () => {
     mockArchive.ledgerService.getTransaction.mockResolvedValue({
       response: {
         transaction: {
-          digest: "OldTx",
+          digest: ARCHIVED_DIGEST,
           transaction: { sender: "0xsender", kind: { data: { oneofKind: undefined } } },
           effects: { status: { success: true } },
           events: { events: [] },
@@ -108,10 +117,10 @@ describe("get_transaction", () => {
     });
 
     const handler = tools.get("get_transaction")!;
-    const result = await handler({ digest: "OldTx" });
+    const result = await handler({ digest: ARCHIVED_DIGEST });
     const data = JSON.parse(result.content[0].text);
 
-    expect(data.digest).toBe("OldTx");
+    expect(data.digest).toBe(ARCHIVED_DIGEST);
     expect(mockArchive.ledgerService.getTransaction).toHaveBeenCalled();
   });
 });

@@ -39,6 +39,7 @@ import { registerTimelineTools } from "./timeline.js";
 import { registerObjectHistoryTools } from "./object-history.js";
 import { registerClusterTools } from "./cluster.js";
 import { registerMultisigTools } from "./multisig.js";
+import { registerRestrictionTools } from "./restrictions.js";
 import { withNetworkParam } from "./with-network.js";
 import {
   applyProfiles,
@@ -98,6 +99,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerObjectHistoryTools(server);
   registerClusterTools(server);
   registerMultisigTools(server);
+  registerRestrictionTools(server);
 
   // Apply the startup profile, then register the switch that expands it.
   // `enable_tools` goes on the raw server so it is never itself gated — it is

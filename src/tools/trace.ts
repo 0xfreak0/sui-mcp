@@ -8,7 +8,9 @@ import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/de
 import { chooseNextHop } from "../utils/trace-hop.js";
 import { pricesForRanking } from "../utils/price-providers.js";
 import {
+  coinScale,
   decimalsForCoinType,
+  displayCoin,
   dominantInflowUsd,
   formatUsd,
   PRICE_STALE_THRESHOLD_SEC,
@@ -353,30 +355,34 @@ function shortCoinType(coinType: string): string {
   return parts.length >= 3 ? parts[parts.length - 1] : coinType;
 }
 
+/**
+ * Signed human amount with its symbol, marked when nothing vouches for the coin.
+ *
+ * Scale comes from {@link coinScale}, which resolves by coin TYPE. This used to
+ * carry its own symbol-keyed decimals map — a third copy of the same table —
+ * which meant any coin whose struct name was `SUI` was rendered with real SUI's
+ * 9 decimals. Measured on mainnet, 47 of 289 imitators declare a different
+ * scale, one of them 10^9 out.
+ */
 function formatAmount(amount: string, coinType: string): string {
   const val = BigInt(amount);
-  const coin = shortCoinType(coinType);
   const abs = val < 0n ? -val : val;
   const sign = val < 0n ? "-" : "+";
+  const { decimals, source } = coinScale(coinType);
+  const { symbol, verified } = displayCoin(coinType);
 
-  // Known decimals for common coins
-  const KNOWN_DECIMALS: Record<string, number> = {
-    SUI: 9, USDC: 6, USDT: 6, DEEP: 6, CETUS: 9, NS: 6,
-    WAL: 9, BUCK: 9, NAVX: 9, SCA: 9, BLUE: 9, WETH: 8,
-    WBTC: 8, IKA: 9, UP: 6,
-  };
-  const decimals = KNOWN_DECIMALS[coin];
-
-  if (decimals !== undefined) {
-    const divisor = 10n ** BigInt(decimals);
-    const whole = abs / divisor;
-    const frac = abs % divisor;
-    const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
-    const formatted = fracStr ? `${whole}.${fracStr}` : whole.toString();
-    return `${sign}${formatted} ${coin}`;
-  }
-
-  return `${sign}${abs} ${coin} (raw)`;
+  const divisor = 10n ** BigInt(decimals);
+  const whole = abs / divisor;
+  const frac = abs % divisor;
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  const formatted = fracStr ? `${whole}.${fracStr}` : whole.toString();
+  // Two different warnings. "unverified" is about WHICH coin this is; "assumed
+  // scale" is about whether the number is right at all.
+  const marks = [
+    verified ? null : "unverified",
+    source === "assumed" ? "assumed scale" : null,
+  ].filter(Boolean);
+  return `${sign}${formatted} ${symbol}${marks.length ? ` (${marks.join(", ")})` : ""}`;
 }
 
 function addrLabel(addr: string, nameMap: Map<string, string>): string {
@@ -849,9 +855,16 @@ export function registerTraceTools(server: McpServer) {
           const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
           const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
           if (stale) anyStalePrice = true;
+          const coin = displayCoin(bc.coin_type);
           return {
             ...bc,
             formatted: formatAmount(bc.amount, bc.coin_type),
+            // Structural, not just in the formatted string: a report generated
+            // from this must be able to see that the asset is unidentified
+            // without parsing prose. 8,008 mainnet coins share a symbol with
+            // another, so "moved 10,000 USDC" is not a claim about which USDC.
+            coin_verified: coin.verified,
+            ...(coin.verified ? {} : { coin_scale: coinScale(bc.coin_type).source }),
             name: nameMap.get(bc.address) ?? null,
             protocol: lookupProtocolDisplay(bc.address)?.name ?? null,
             usd_value: price != null ? Number(usd.toFixed(2)) : null,

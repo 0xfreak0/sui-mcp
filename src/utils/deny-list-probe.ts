@@ -36,6 +36,16 @@ export const DENY_LIST_ID =
 
 const PAGE = 50;
 
+/** Aliased queries per request — the service's store-backed limit. */
+const ALIAS_LIMIT = 20;
+
+/**
+ * Query-text budget per request. The service rejects anything over 5000 bytes;
+ * this leaves headroom so a slightly longer config address cannot tip a chunk
+ * over and lose it whole.
+ */
+const QUERY_BYTE_BUDGET = 4600;
+
 const FIELDS = `query ($id: SuiAddress!, $cursor: String, $first: Int!) {
   object(address: $id) {
     dynamicFields(first: $first, after: $cursor) {
@@ -181,6 +191,105 @@ export async function checkAddress(
  * "show me everything regulated" — a question about one coin should use
  * {@link findCoinConfig}, and one about one address {@link checkAddress}.
  */
+/**
+ * Cached because the walk costs ~5.5s and the map is append-mostly: a new
+ * regulated coin appears when someone creates one, and missing it for an hour
+ * degrades to "not checked against that coin" rather than a wrong answer.
+ */
+let coinMapCache: { at: number; map: Map<string, string> } | null = null;
+const COIN_MAP_TTL_MS = 60 * 60 * 1000;
+
+/** Every coin config, cached. See {@link listConfiguredCoins}. */
+export async function cachedConfiguredCoins(): Promise<Map<string, string>> {
+  if (coinMapCache && Date.now() - coinMapCache.at < COIN_MAP_TTL_MS) return coinMapCache.map;
+  const map = await listConfiguredCoins();
+  // Only cache a non-trivial result: a walk cut short by an outage would
+  // otherwise pin an almost-empty map for an hour and silently under-report.
+  if (map.size > 0) coinMapCache = { at: Date.now(), map };
+  return map;
+}
+
+/** Reset the coin-config cache. Tests only. */
+export function resetCoinMapCache(): void {
+  coinMapCache = null;
+}
+
+/**
+ * Every coin whose issuer has denied this address, across ALL configured coin
+ * types.
+ *
+ * Checking only the coins an address holds does not work, and the reason is
+ * structural: **freezing and holding are anti-correlated.** An issuer freezes
+ * an address and it ends up holding none of that coin — measured on a real
+ * denied address, the held-coins approach found 11 restrictions where the full
+ * scan found 58, missing 81% including the very coin that led us to it.
+ *
+ * Costs roughly 65 aliased requests over ~1,250 configured coins. That is the
+ * floor: the alias limit is 20 store-backed queries per request, and there is
+ * no reverse index from address to deny entries.
+ */
+export async function checkAddressAcrossCoins(
+  address: string,
+  epoch: number,
+): Promise<{ denied: string[]; pending: string[]; coins_checked: number; complete: boolean }> {
+  const coins = await cachedConfiguredCoins();
+  const entries = [...coins.entries()];
+  const bcs = addressKeyBcs(address);
+  const denied: string[] = [];
+  const pending: string[] = [];
+  let checked = 0;
+  let complete = true;
+
+  // Chunks are packed to a BYTE budget, not a fixed count. The service caps a
+  // request at 5000 bytes of query text as well as at 20 store-backed queries,
+  // and which limit binds depends on how long the alias bodies are — 20 of
+  // these came to 5132B and were rejected whole. Packing by size adapts instead
+  // of encoding a magic number that breaks when the query text changes.
+  const aliasLine = (j: number, cfg: string) =>
+    `c${j}:object(address:${JSON.stringify(cfg)}){dynamicField(name:{type:"0x2::deny_list::AddressKey",bcs:${JSON.stringify(bcs)}}){value{...on MoveValue{json}}}}`;
+
+  let i = 0;
+  while (i < entries.length) {
+    const lines: string[] = [];
+    const batch: string[] = [];
+    let size = "query{}".length;
+    while (i < entries.length && lines.length < ALIAS_LIMIT) {
+      const line = aliasLine(lines.length, entries[i][1]);
+      if (size + line.length + 1 > QUERY_BYTE_BUDGET) break;
+      size += line.length + 1;
+      lines.push(line);
+      batch.push(entries[i][0]);
+      i++;
+    }
+    // A single alias that cannot fit would spin forever; take it anyway and let
+    // the service reject that one chunk rather than hanging.
+    if (lines.length === 0) {
+      lines.push(aliasLine(0, entries[i][1]));
+      batch.push(entries[i][0]);
+      i++;
+    }
+
+    try {
+      const r = await gqlQuery<Record<string, { dynamicField?: { value?: { json?: unknown } } | null }>>(
+        `query{${lines.join(" ")}}`,
+      );
+      batch.forEach((coin, j) => {
+        checked++;
+        const setting = r[`c${j}`]?.dynamicField?.value?.json as RawSetting | undefined;
+        if (!setting) return;
+        if (effectiveSetting(setting, epoch) === true) denied.push(coin);
+        else if (isPending(setting, epoch)) pending.push(coin);
+      });
+    } catch {
+      // A failed chunk is unchecked, not clean. Reported so a nil result is
+      // never mistaken for "not frozen anywhere".
+      complete = false;
+    }
+  }
+
+  return { denied, pending, coins_checked: checked, complete };
+}
+
 export async function listConfiguredCoins(maxPages = 25): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   let cursor: string | null = null;

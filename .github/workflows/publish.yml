@@ -197,4 +197,21 @@ jobs:
           printf '%s\n\n---\n\n```\nnpx sui-analytics-mcp@%s\n```\n' "$notes" "$version" > /tmp/notes.md
           # --latest is explicit. GitHub otherwise infers it from creation date,
           # which is wrong the moment an older tag is released after a newer one.
-          gh release create "$TAG" --title "$version" --notes-file /tmp/notes.md --latest
+          #
+          # A release for this tag may already exist: merging a release PR with
+          # auto-generated release notes turned on creates one before this job
+          # runs, and `create` then fails with "Release.tag_name already exists".
+          # Because this is the last job, that failure lands after npm has
+          # published — a green publish, a red workflow, and a release carrying
+          # GitHub's PR list instead of the CHANGELOG.
+          #
+          # Branch on whether it exists rather than on `create` failing. A
+          # failure could equally be a network blip or a missing permission, and
+          # falling back to `edit` on any error would retry the wrong thing and
+          # bury the real cause.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; overwriting its notes with the CHANGELOG."
+            gh release edit "$TAG" --title "$version" --notes-file /tmp/notes.md --latest
+          else
+            gh release create "$TAG" --title "$version" --notes-file /tmp/notes.md --latest
+          fi

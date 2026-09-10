@@ -305,6 +305,10 @@ export async function listConfiguredCoins(maxPages = 25): Promise<Map<string, st
     }
     if (!conn.pageInfo.hasNextPage) break;
     cursor = conn.pageInfo.endCursor;
+    // Another page claimed with no cursor restarts the walk. Bounded by
+    // maxPages so it terminates, but it would re-read page one and report the
+    // same denied addresses twice.
+    if (!cursor) break;
   }
   return out;
 }
@@ -359,6 +363,10 @@ export async function readCoinRestrictions(
     }
     if (!conn.pageInfo.hasNextPage) break;
     cursor = conn.pageInfo.endCursor;
+    // Another page claimed with no cursor restarts the walk. Bounded by
+    // maxPages so it terminates, but it would re-read page one and report the
+    // same denied addresses twice.
+    if (!cursor) break;
     if (i === maxPages - 1 && conn.pageInfo.hasNextPage) out.truncated = true;
   }
   return out;

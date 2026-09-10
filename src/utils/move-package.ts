@@ -80,6 +80,10 @@ export async function fetchModuleNames(packageId: string): Promise<string[]> {
     for (const n of data.package.modules.nodes) names.push(n.name);
     if (!data.package.modules.pageInfo.hasNextPage) break;
     after = data.package.modules.pageInfo.endCursor;
+    // A connection claiming another page but handing back no cursor would send
+    // `after` to null, which restarts the walk from page one — forever, since
+    // this loop has no page bound. Same guard as `event-json.ts`.
+    if (!after) break;
   }
   return names;
 }
@@ -212,6 +216,7 @@ async function fetchModuleNamesAtVersion(address: string, version: number): Prom
     for (const n of data.package.packageAt.modules.nodes) names.push(n.name);
     if (!data.package.packageAt.modules.pageInfo.hasNextPage) break;
     after = data.package.packageAt.modules.pageInfo.endCursor;
+    if (!after) break;
   }
   return names;
 }

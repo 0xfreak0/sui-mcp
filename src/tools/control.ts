@@ -108,6 +108,7 @@ export function registerControlTools(server: McpServer) {
           hasNext = page.events.pageInfo.hasNextPage;
           cursor = page.events.pageInfo.endCursor;
           if (!cursor) break;
+          if (!cursor) break;
         }
 
         const result = sampleControl(senders, size ?? 25, { exclude, seed });

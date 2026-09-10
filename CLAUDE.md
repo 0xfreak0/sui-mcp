@@ -774,6 +774,12 @@ data it already has, no extra query — and emits `bridge_exits`.
 - SDK `BalanceChange` has `address` (not `owner`)
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
+- **Guard the cursor on every paginated walk.** A connection can claim
+  `hasNextPage: true` and hand back a null `endCursor`; assigning it sends the
+  walk back to page one. `for(;;)` loops then never return, and loops bounded by
+  a page counter or a collection target return duplicates that skew whatever
+  they feed — signer-set frequencies, event rankings, denied-address lists. The
+  idiom is `if (!cursor) break;` immediately after the assignment.
 - Build copies `src/data/` to `dist/data/` — JSON files must exist in dist at runtime
 - Chain-qualify anything persisted or reported; bare addresses are Sui-only and
   ambiguous the moment a second chain enters a case

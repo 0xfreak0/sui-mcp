@@ -251,6 +251,9 @@ async function scanKioskPage(
       break;
     }
     cursor = conn.pageInfo.endCursor;
+    // Another page claimed with no cursor restarts the walk, so the same items
+    // would be collected again until the target filled with duplicates.
+    if (!cursor) break;
   }
   return { items, nextInnerCursor: cursor };
 }
@@ -369,6 +372,9 @@ async function listDirectNftsPage(
       break;
     }
     cursor = conn.pageInfo.endCursor;
+    // Another page claimed with no cursor restarts the walk, so the same items
+    // would be collected again until the target filled with duplicates.
+    if (!cursor) break;
   }
   return { items: out, nextCursor: cursor };
 }

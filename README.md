@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
+Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
 
-62 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
+64 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
 
 ## Install
 
@@ -53,6 +53,54 @@ That last step is the point. Several wallets tracing to one funder looks decisiv
 
 Fan-out reports **shape as well as size**, because size alone doesn't separate the cases that matter. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts — 399 and 431 — and completely different flow: the exchange ran balanced at 0.73 out/in (deposits in, withdrawals out) while the funder ran 9.78 (it pays many and is paid by few). One is noise in an investigation; the other is the thing you're looking for.
 
+## Multisig
+
+A Sui address is the hash of whatever authenticates it. For a multisig, the threshold, every member key and every weight are part of that hash, so the committee can be read off the address and checked — derive it, confirm it reproduces the address.
+
+**Identify a wallet and its committee.** `identify_address` returns the shape, every member address, and each member resolved to its own name, labels and SuiNS history.
+
+```
+identify_address(0x045dadba…)
+  → authentication: multisig, 4-of-7, verified: true
+    committee_members: 7, each with name/label/kind
+```
+
+**See which keys are actually used.** The committee never changes, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's history.
+
+```
+analyze_multisig(0x045dadba…, max_transactions: 200)
+  → transactions_examined: 8
+    signer_sets: [0,1,3,4] x4, [1,2,3,4] x2, [0,2,3,4] x2
+    always_present: [3, 4]
+    dormant_members: [5, 6]
+    active_signers_meet_threshold: true
+```
+
+`dormant_members` are keys that hold weight and have never used it. `always_present` are keys the wallet currently cannot move without. Both are reported against `transactions_examined`, since the claim is only as good as the window.
+
+**See who authorised one transaction.** `get_transaction` returns an `authorization` block naming the keys that signed and the members that did not, plus the gas sponsor when there is one.
+
+```
+get_transaction(oxrJ3Bppuk…)
+  → authorization[0]: sender, multisig 4-of-7
+      signed_by:     [0, 1, 3, 4]
+      did_not_sign:  [2, 5, 6]
+```
+
+**Search backwards from keys to a treasury.** Given addresses a trace has already linked, `find_shared_multisig` derives every committee they could form and returns the ones that exist on chain. This finds multisigs that never appeared in the trace, since a wallet is only visible if it transacted with something you looked at.
+
+```
+find_shared_multisig([0xafe2fafa…, 0xc848c5cc…])
+  → candidates_checked: 4, found: 1
+    0xcf4e7b88… 1-of-2, evidence_tier: chain-derived
+```
+
+**Clustering.** `build_wallet_edges` emits a `co_signer` edge for any key that can spend a wallet on its own, and marks clusters built only from those `chain-derived` rather than `heuristic`. Keys sitting on more committees than the limit are treated as custody or wallet-provider keys and listed under `excluded_co_signers` instead of linking everyone who uses that provider.
+
+**Limits, also stated in the tool output.** Member order is part of the address, so `find_shared_multisig` is factorial in committee size and refuses past five keys; it covers equal-weight committees only, so a nil result is not a negative finding. A wallet that has never sent a transaction cannot be classified at all — it has produced no signature — and comes back as unknown rather than as an ordinary wallet.
+
+zkLogin and passkey wallets go through the same path. zkLogin reports its OAuth issuer, which is all the chain discloses about the account.
+
 ## The forensics skill
 
 The server gives Claude chain access. It does not, on its own, give it method —
@@ -74,7 +122,7 @@ one that costs most.
 
 ## Tool profiles
 
-All 62 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 64 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
 When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
 
@@ -87,7 +135,7 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 18 | Wallets, balances, transactions (single and batched), tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 24 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
+| `forensics` | 26 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
 | `all` | 59 | Everything |
@@ -133,6 +181,7 @@ npm audit signatures
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
 - **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, PTB anomaly triage, oracle-vs-market deviation
+- **Multisig** — a Sui address is the hash of its authenticator, so the committee is read off the address itself. Names every member, says which keys are live and which have never signed, and shows who signed a given transaction. Also handles zkLogin and passkey wallets
 - **Move package analysis** — disassembly, heuristic risk scan, capability audit, and upgrade diffing, none of which need an external binary
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
 - **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
@@ -180,7 +229,7 @@ Fund traces are deliberately not cached: a trace is a function of your labels, s
 
 ## Move decompiler (optional)
 
-61 of the 62 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+63 of the 64 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -243,7 +292,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (62)
+## Tools (64)
 
 ### Recommended Starting Points
 
@@ -383,7 +432,9 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
 | `resolve_protocol_packages` | Find which of a protocol's package versions are actually emitting now — the bundled registry is a decode map full of historical IDs, and querying one returns nothing |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
-| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first |
+| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first |
+| `analyze_multisig` | For a multisig wallet, which committee keys are actually live and which have never signed, across its history. The committee is fixed for the life of the address; only who signs varies |
+| `find_shared_multisig` | Given addresses you suspect are related, derive every committee they could form and find the multisig they jointly control — a hit is proof, since the address IS the hash of its committee |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
 | `list_findings` | List findings in a case, or every case with its count |
 | `export_case` | Render a case as a Markdown report, highest-confidence findings first |

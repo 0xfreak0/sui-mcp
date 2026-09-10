@@ -139,13 +139,13 @@ address. Fine at these sizes, but it is not the single request the name suggests
 `get_transaction` returns decoded fields for **every** event by default.
 `max_event_field_bytes` exists but is unset unless a caller asks for it.
 
-A default cap looked reasonable — a 59-event transaction carries 53 KB of
-decoded fields, roughly 13k tokens — but it would let an investigation reach a
-conclusion from a subset without the reader having chosen that. Measured, it
-would almost never fire: the 99th percentile of transactions with events carries
-12 KB. Paying for the rare outlier is the right trade; bounding the payload is
-the caller's decision, and when they make it the response says plainly that it
-is not the complete event data.
+**Do not add a default cap.** It would let an investigation reach a conclusion
+from a subset of the events without the reader having chosen that, and it would
+almost never fire: the 99th percentile of transactions with events carries 12 KB
+of decoded fields, against 53 KB (~13k tokens) for a 59-event outlier. Paying
+for the outlier is the right trade. Bounding the payload is the caller's
+decision, and when they make it the response says plainly that it is not the
+complete event data.
 
 ## Tool arguments
 
@@ -159,6 +159,32 @@ byte-identical — and `"abc"` is still rejected.
 `boolArg` is deliberately not `z.coerce.boolean()`, which applies JavaScript
 truthiness and turns the string `"false"` into `true`. Silently inverting a
 caller's intent is worse than the rejection this is meant to fix.
+
+## Writing documentation
+
+README, CONTRIBUTING and the forensics skill are **reference material**. They
+say what a tool does, what its arguments mean, what it returns, and when to
+reach for it. Someone lands on them to get work done.
+
+- **Write capability and usage.** "`analyze_multisig` reports which committee
+  keys have signed and which never have" — not the story of how that was
+  discovered.
+- **No changelog voice in reference docs.** "This used to be wrong", "an
+  earlier version reported X", "found by running it against mainnet" is
+  archaeology. It belongs in the commit message and the CHANGELOG, both of
+  which are already keyed to the change. A reader six months from now does not
+  care what it used to do.
+- **Keep the limit, drop the anecdote.** "A nil result covers equal-weight
+  committees only, so it is not a negative finding" is a fact the reader needs.
+  The bug that taught us to say it is not.
+- **Show a call and its output.** Concrete beats prose for anything with
+  arguments.
+
+This file is the exception, and only for *rules a future change would
+otherwise get wrong*. "Do not re-drop the archive fallback, it does return
+balance changes" is a rule. "I tried removing it and it broke" is a story —
+write the first. Where a number is what makes the rule stick, keep the number
+and lose the narrative around it.
 
 ## Contributing rules
 
@@ -258,13 +284,89 @@ Two traps, both verified on mainnet:
   early *looking complete*. `fetchTx` treats that shape as absent and lets the
   archive answer; the shape is pinned in `test/trace-hop.test.ts`.
 - **The archive returns everything the fullnode does** — sender, balance
-  changes, commands, timestamp, checkpoint. An older commit dropped the
-  fallback believing it omitted `balance_changes`; that is not true today, so
-  do not re-drop it on that reasoning.
+  changes, commands, timestamp, checkpoint. It does *not* omit
+  `balance_changes`, so do not drop the fallback on that reasoning.
 
 A hop the archive served is counted in `hops_served_by_archive`. An
 unfetchable *starting* digest is an error, never an empty trace — "nothing to
 follow" and "could not look" are opposite conclusions on hop 0.
+
+### Multisig identity
+
+A Sui address **is the hash of its authenticator**. For a multisig that is
+`blake2b(0x03 ‖ threshold ‖ flag₁‖pk₁‖w₁ ‖ … ‖ flagₙ‖pkₙ‖wₙ)`
+(`sui-types/src/base_types.rs`), so the whole committee travels inside every
+transaction the wallet sends and re-deriving it reproduces the address. Reading
+it is `src/utils/multisig.ts`; it is pure, and the tests pin real mainnet
+signatures rather than hand-built ones so a drift in the SDK's parse fails
+loudly.
+
+Three properties are the opposite of the EVM intuition, and all three are
+load-bearing:
+
+- **The committee cannot rotate.** Changing a member changes the hash, hence the
+  address. A Gnosis Safe rotates owners in place; this cannot. Measured: 200
+  sent transactions from one wallet, one committee.
+- **An address has exactly one authenticator, forever.** No key rotation, so
+  "what is this address" has a single permanent answer — which is why
+  authentication is never cached with a TTL.
+- **A wallet that has never SENT cannot be classified.** No signature, no
+  committee. That is an absent field and an explicit caveat, never "ordinary
+  wallet": a receive-only treasury multisig is indistinguishable from a fresh
+  personal wallet from the outside.
+
+Committees cannot nest — `PublicKey` in sui-types has no `MultiSig` variant —
+so member expansion is exactly one level deep by chain rule, not by budget.
+
+**The signature is matched to an address by re-deriving it**, never by
+position. A gas-sponsored transaction carries `[sender, sponsor]` and position
+happens to work today, but a derivation is a fact the caller can check.
+
+**A flag-3 signature that will not decode stays labelled `multisig`.** Legacy
+multisig (`multisig_legacy.rs`) shares the flag and the address derivation but
+not the wire format. Calling it `unknown` would downgrade a real finding to an
+absent one. gRPC parses legacy (the proto carries `legacyBitmap`); the SDK's
+BCS path may not, which is why the scheme survives the parse failure.
+
+**Who signed is per-transaction; the committee is not.** The bitmap is the only
+thing that varies, and reading one transaction cannot interpret it. Measured on
+a mainnet 4-of-7: 8 transactions, 3 distinct signer sets, and 2 of 7 keys had
+never signed. So `signed_source_tx` is named for the transaction it came from,
+`get_transaction` reports `authorization` for a specific transaction, and
+`analyze_multisig` (`src/utils/signer-history.ts`, pure) answers the
+wallet-level question. Every dormancy claim is stated against the transaction
+count it rests on — "never signed" over 8 and over 200 are different claims —
+and under two transactions it refuses to read a pattern at all.
+
+**Finding them.** Multisig is rare: 2 in 79,052 signatures sampled at random on
+mainnet, both from one wallet. Random checkpoint sampling is the wrong
+instrument. They live where admin authority does — 3 of 353 `UpgradeCap` owners
+(0.85%, ~340x), which is how the test fixtures were found.
+`scripts/probe/README.md` maps each script to the claim it establishes; re-run
+them after an SDK bump.
+
+**Cost.** Authentication is one GraphQL call per 20 addresses — `transactions`
+has no multi-get, so it batches with aliases and hits the same two service
+limits as package lineage (20 store-backed queries, 5000 bytes of query text).
+`describeAddresses` takes `{ authentication, expandMembers }`; every
+investigation flow turns expansion on, and a sub-20-address hop set pays one
+extra call.
+
+**zkLogin** rides the same code path. The address derives from
+`(iss, addressSeed)` and **both** derivations exist on chain (padded and
+unpadded seed), so both are tried. It discloses the OAuth issuer and nothing
+else: the seed is `poseidon(sub, aud, salt)`, one-to-one with the address, so
+it cannot link a person's wallets — a different app means a different `aud`,
+hence a different address. It can only confirm a guess formed elsewhere.
+
+**Reverse search.** `find_shared_multisig` derives every committee a set of
+known keys could form and checks which exist. A hit is proof, not a match.
+Member order is hashed, so the space is factorial — 4 keys is 192 candidates, 5
+is 1,560, 6 is refused. Refusing beats truncating: the question is a negative
+and a partial search cannot support one. Weight-1 only, because weights are
+unbounded; a nil result means "no equal-weight multisig of these exact keys".
+Existence is tested with `affectedAddress`, not `sentAddress` — a treasury that
+only ever received is exactly the case this is for.
 
 ### Wallet clustering
 
@@ -284,6 +386,8 @@ candidates, all eligible.
 
 | Signal | Weight | Basis |
 |---|---|---|
+| `co_signer` | 1.5 | A key that can spend the wallet ALONE (`weight >= threshold`), read from the address hash |
+| `co_signer` (cannot spend alone) | 0.6 | On the committee but needs others — below the merge floor |
 | `cofunded` | 1.0 | Same first funder, funder passed the popularity check |
 | `cofunded` (same tx, ≤3 paid) | 1.2 | Bespoke payout — built for these addresses |
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
@@ -320,15 +424,14 @@ Four rules that are easy to get wrong:
 - **Being paid is not being funded.** An expansion candidate becomes `cofunded`
   only after computing its own first funder. Sponsorship needs no such check —
   the probe observed it directly.
-- **A narrow funder belongs in the cluster it funded.** `funding_edge` once
-  fired only between two seeds, so a funder discovered on the walk was used as
-  the `via` label on the `cofunded` edges between the addresses it funded and
-  then discarded — the hub excluded from its own cluster. That made the answer
-  depend on what the caller already knew: pass both addresses as seeds and the
-  edge appeared, pass one and it did not, on identical chain data. It now fires
-  for any funder that is a seed *or* cleared the popularity filter. Measured:
-  seeding one wallet went from a 4-member cluster resting on a single invisible
-  intermediary to 5 members with two independent bases.
+- **A narrow funder belongs in the cluster it funded.** `funding_edge` fires
+  for any funder that is a seed *or* cleared the popularity filter — not only
+  between two seeds. Restricting it to seeds makes the answer depend on what
+  the caller already knew: the same chain data yields the edge when both
+  addresses are passed as seeds and not when only one is, because the hub gets
+  used as a `via` label and then discarded from its own cluster. Measured on
+  one seed: 4 members resting on a single invisible intermediary, against 5
+  with two independent bases.
 - **Narrow and popular are not symmetric.** Popular is proven by what was seen.
   Narrow off an incomplete scan is provisional, because the probe reads recent
   activity while the fundings it filters are historical. `used_intermediaries`
@@ -336,6 +439,30 @@ Four rules that are easy to get wrong:
 - **Expansion links members to seeds in a star**, never member to member. Same
   components, far less output: a 50-member sponsor would otherwise emit 1,225
   edges that cannot merge on their own weight.
+- **Co-signature is not behavioural, and it is the only signal here that
+  isn't.** Every other one says two addresses did something co-controlled
+  wallets tend to do, measured against a base rate; `co_signer` says the
+  committee hashes to the address and this key is in it. So clusters built only
+  from full-weight co-signature are tagged `chain-derived` and the tier moved
+  from a blanket top-level field onto each cluster. Weakest link: a component
+  that needed one behavioural edge is `heuristic` however strong the rest looks.
+- **A committee is evidence its members are SEPARATE parties.** That is what a
+  4-of-7 treasury is for. So co-signer edges run member↔multisig in a star and
+  never member↔member, and a member who cannot spend alone sits below the merge
+  floor — reported as a lead, unable to cluster alone. Verified: the 4-of-7 and
+  2-of-3 seeds produce no co-signer merges at all.
+- **A co-signing key can be a service, and the filter is not optional.** A
+  wallet provider's recovery key sits on one 1-of-2 committee per customer, so
+  without a popularity filter the star links every customer of that provider
+  into one cluster. Measured on mainnet: one key on 31 committees produced a
+  63-member cluster of unrelated people; with the filter, 31 two-member
+  clusters. `DEFAULT_CO_SIGNER_LIMIT` is 5 rather than the funder limit of 50,
+  because a narrow funder legitimately pays dozens while a key on dozens of
+  committees is a service by construction. The count comes from committees
+  already read, so it costs no queries, and it is a lower bound over what was
+  examined — which only makes the filter fire late, never early. Excluded keys
+  go in `excluded_co_signers` rather than being dropped: "this key can spend 31
+  wallets" is itself chain-derived.
 - **An edge count is not corroboration.** Sixteen edges through one shared
   funder is one fact stated sixteen times, and if that funder turns out to be a
   payout service they all fall together. Clusters carry
@@ -380,10 +507,10 @@ Two routes to that verdict, catching different populations:
 
 **Flatness needs a rate to mean anything.** A wallet doing 0.4 transactions a
 day over 292 days cannot concentrate — 120 points scattered across a year never
-form a peak — so a 24/7 script and an occasional person produce the same R.
-Found on a real mainnet wallet that was labelled automated for being rarely
-used. Above 3/day, a person keeping ordinary hours would have left a shape and
-its absence means something; below it, nothing follows either way.
+form a peak — so a 24/7 script and an occasional person produce the same R, and
+a rarely-used wallet reads as automated. Above 3/day, a person keeping ordinary
+hours would have left a shape and its absence means something; below it,
+nothing follows either way.
 
 **A single hour holding most activity gets the cron caveat.** A person's day
 spreads over several hours; 46% inside one hour fits a scheduled job equally
@@ -583,9 +710,9 @@ its own identity scheme and its own index — so each resolver is bespoke.
 followable, `detect-only` means we can name it and no more. Never point a
 caller at a resolver that cannot help them; `resolvableHit()` is the guard.
 
-Markers must be **distinctive**, not merely present. `init_order` looked like a
-good Mayan marker and would have collided with DEX order books, which emit some
-of the highest-frequency events on mainnet; the markers carry `mctp` instead.
+Markers must be **distinctive**, not merely present. A generic name like
+`init_order` collides with DEX order books, which emit some of the
+highest-frequency events on mainnet — the Mayan markers carry `mctp` instead.
 Sample before adding — `node scripts/find-unknown-packages.mjs` ranks by call
 count, but note that bridge traffic is low-frequency relative to DEX and oracle
 activity, so volume sampling will *not* surface bridges. Probe candidate event

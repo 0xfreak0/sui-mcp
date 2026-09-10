@@ -4,7 +4,12 @@ import { errorResult } from "../utils/errors.js";
 import { getLabel } from "../utils/labels.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import { buildWalletEdges } from "../utils/edge-probe.js";
-import { clusterEdges } from "../utils/wallet-edges.js";
+import {
+  addCoSignerEdges,
+  clusterEdges,
+  EdgeSet,
+  type CommitteeMembership,
+} from "../utils/wallet-edges.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -14,17 +19,32 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  *
  *   - `edges` are **facts**. "These two addresses were first funded by the same
  *     address, in transactions X and Y" is chain-derived and checkable.
- *   - `clusters` are an **inference** drawn from those facts, and this server's
- *     first `heuristic`-tier output. Nothing here proves common ownership.
+ *   - `clusters` are an **inference** drawn from those facts. Nothing here
+ *     proves common ownership.
  *
  * Keeping them apart is the same discipline the bridge resolvers apply to
  * `chain-derived` versus `indexer-attested`: the weaker claim must not borrow
  * the stronger one's confidence on its way into a report.
+ *
+ * Clusters used to be uniformly `heuristic`, and mostly still are. `co_signer`
+ * is the exception and it is a different KIND of claim, not a stronger guess:
+ * every other signal says two addresses behaved the way co-controlled wallets
+ * tend to, measured against a base rate, while co-signature says a key is in
+ * the committee that hashes to the wallet's address. So the tier moved onto
+ * each cluster. A component that needed one behavioural edge to hold together
+ * is heuristic however strong the rest of it looks — the same weakest-link
+ * rule `min_edge_weight` already follows.
+ *
+ * What co-signature still does NOT establish is ownership. Holding a spending
+ * key is control; a custodian holds one for a client. And a multi-party
+ * committee is as much evidence its members are separate parties as that they
+ * share an operator, which is why a member who cannot spend alone is weighted
+ * below the merge floor rather than treated as a weaker co-signer.
  */
 export function registerClusterTools(server: McpServer) {
   server.tool(
     "build_wallet_edges",
-    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from five sources: a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it) separately from `clusters` (an inference — heuristic tier, never proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
+    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address — the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference — each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
     {
       addresses: z
         .array(z.string())
@@ -103,12 +123,51 @@ export function registerClusterTools(server: McpServer) {
           queryBudget: query_budget,
         });
 
-        const clustered = clusterEdges(built.edges, {
+        // Identities are resolved BEFORE clustering, because a multisig's
+        // committee is itself an edge source. Every other signal comes from
+        // the probe's bounded scan; this one comes from the address hash, so
+        // it costs no extra queries beyond the authentication read that
+        // `expandMembers` already performs.
+        const identities = await describeAddresses(built.examined, {
+          expandMembers: true,
+        });
+
+        const committees: CommitteeMembership[] = [];
+        for (const [address, id] of identities) {
+          const ms = id.authentication?.multisig;
+          if (!ms) continue;
+          committees.push({
+            multisig: address,
+            threshold: ms.threshold,
+            members: ms.members
+              .filter((m): m is typeof m & { address: string } => Boolean(m.address))
+              .map((m) => ({ address: m.address, weight: m.weight })),
+          });
+        }
+
+        // Members are new addresses the probe never examined, so they need
+        // describing too — one extra batch, and only when a multisig was
+        // actually found.
+        const edgeSet = new EdgeSet();
+        for (const e of built.edges) {
+          for (const sig of e.signals) {
+            edgeSet.add(sig.type, e.wallet_a, e.wallet_b, sig.detail, sig.digests, sig.via, sig.weight);
+          }
+        }
+        const coSigner = addCoSignerEdges(edgeSet, committees);
+        const allEdges = edgeSet.edges();
+
+        if (committees.length > 0) {
+          const memberAddresses = committees.flatMap((c) => c.members.map((m) => m.address));
+          for (const [addr, id] of await describeAddresses(memberAddresses)) {
+            if (!identities.has(addr)) identities.set(addr, id);
+          }
+        }
+
+        const clustered = clusterEdges(allEdges, {
           minSignalTypes: min_signal_types,
           maxClusterSize: max_cluster_size,
         });
-
-        const identities = await describeAddresses(built.examined);
         const describe = (a: string) => {
           const id = identities.get(a);
           const note = id ? identityNote(id) : undefined;
@@ -137,19 +196,33 @@ export function registerClusterTools(server: McpServer) {
                   truncated: built.truncated,
 
                   // --- facts ---
-                  edge_count: built.edges.length,
-                  edges: built.edges.map((e) => ({
+                  edge_count: allEdges.length,
+                  edges: allEdges.map((e) => ({
                     ...e,
                     wallet_a_info: describe(e.wallet_a),
                     wallet_b_info: describe(e.wallet_b),
                   })),
 
                   // --- inference ---
-                  evidence_tier: "heuristic",
+                  // Per-cluster now, not blanket. A cluster built purely on
+                  // unilateral co-signature is read from the address hash, so
+                  // calling it heuristic alongside a shared-funder guess would
+                  // understate it as badly as the reverse would overstate one.
+                  evidence_tier: clustered.clusters.every((c) => c.evidence_tier === "chain-derived")
+                    ? "chain-derived"
+                    : clustered.clusters.some((c) => c.evidence_tier === "chain-derived")
+                      ? "mixed — see each cluster's evidence_tier"
+                      : "heuristic",
                   clusters: clustered.clusters.map((c) => ({
                     ...c,
                     members: c.members.map(describe),
-                    ...(c.independent_intermediaries < 2
+                    ...(c.evidence_tier === "chain-derived"
+                      ? {
+                          basis:
+                            "Every merge in this cluster is a key that can spend the wallet it is linked to, on its own, read from the committee that hashes to the address. This is not a behavioural coincidence and no popularity judgement was made. It still shows CONTROL rather than ownership — a custodian holds a key for a client.",
+                        }
+                      : {}),
+                    ...(c.evidence_tier !== "chain-derived" && c.independent_intermediaries < 2
                       ? {
                           single_point_of_failure:
                             "Every edge in this cluster rests on ONE intermediary. That is one fact stated many times, not corroboration — the edge count is not evidence of strength. If that address turns out to be a payout service or exchange, the whole cluster falls at once. Check it in used_intermediaries before relying on this.",
@@ -178,6 +251,13 @@ export function registerClusterTools(server: McpServer) {
                           "The shared funders and sponsors the edges above rest on. `scan_complete: false` means the scan hit its page cap before reaching the end of that address's history, so calling it narrow is provisional — a widely-distributing address that has since gone quiet can read as narrow from recent activity alone.",
                       }
                     : {}),
+                  ...(coSigner.excluded.length
+                    ? {
+                        excluded_co_signers: coSigner.excluded,
+                        excluded_co_signer_note:
+                          "These keys sit on more committees than the co-signer limit, so they are wallet-provider or custody keys rather than operators. Each one CAN spend every wallet it signs for — that part is chain-derived and may matter on its own — but it says nothing about whether those wallets share an owner, so no edges were drawn through them. The count is over the committees examined here, so it is a lower bound.",
+                      }
+                    : {}),
                   ...(built.excluded_intermediaries.length
                     ? {
                         excluded_intermediaries: built.excluded_intermediaries,
@@ -199,7 +279,7 @@ export function registerClusterTools(server: McpServer) {
                   ...(built.notes.length ? { notes: built.notes } : {}),
 
                   caveat:
-                    "Edges are facts; clusters are an inference and this server's only heuristic-tier output — never record one as a finding without confirming it yourself. Critically, ABSENCE OF AN EDGE IS NOT EVIDENCE OF SEPARATE CONTROL: every signal here comes from a capped scan of public data, so two wallets funded out-of-band, sponsored by nobody and never sharing a transaction produce no edge no matter who controls them.",
+                    "Edges are facts; clusters are an inference — never record a heuristic-tier one as a finding without confirming it yourself. The exception is `co_signer`, which is read from the committee that hashes to the multisig's address rather than from behaviour, so a cluster marked `chain-derived` rests on arithmetic; it still shows control, not ownership. Critically, ABSENCE OF AN EDGE IS NOT EVIDENCE OF SEPARATE CONTROL: every behavioural signal here comes from a capped scan of public data, so two wallets funded out-of-band, sponsored by nobody and never sharing a transaction produce no edge no matter who controls them. And a multi-party committee is as much evidence its members are SEPARATE parties as that they share an operator — that is what a treasury multisig is for.",
                 },
                 null,
                 2,

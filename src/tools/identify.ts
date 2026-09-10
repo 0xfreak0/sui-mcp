@@ -7,6 +7,7 @@ import { suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
+import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
@@ -232,17 +233,27 @@ export function registerIdentifyTools(server: McpServer) {
       }
 
       // CASE 4: Treat as a wallet address — fetch summary data in parallel
-      const [balanceRes, nameRes, ownedRes] = await Promise.all([
+      const [balanceRes, nameRes, ownedRes, identities] = await Promise.all([
         sui.getBalance({ owner: address }).catch(() => null),
         sui.nameService
           .reverseLookupName({ address })
           .then(({ response }) => response.record?.name ?? null)
           .catch(() => null),
         sui.listBalances({ owner: address, limit: 10, cursor: null }).catch(() => null),
+        // Who can spend from it, and — if that is a committee — who those
+        // members are. This is the tool that answers "what is this address",
+        // so a multisig going unmentioned here is the omission that matters
+        // most: nothing else in this response distinguishes a treasury
+        // committee from one person's wallet.
+        describeAddresses([address], { expandMembers: true }).catch(
+          () => new Map<string, AddressIdentity>(),
+        ),
       ]);
 
       const suiBalance = balanceRes?.balance?.balance ?? "0";
       const nonZeroTokens = ownedRes?.balances?.filter((b) => b.balance !== "0").length ?? 0;
+      const auth = identities.get(address)?.authentication;
+      const committee = identities.get(address)?.committee_members;
 
       return {
         content: [{
@@ -262,7 +273,21 @@ export function registerIdentifyTools(server: McpServer) {
               : {}),
             sui_balance: suiBalance,
             token_count: nonZeroTokens,
-            hint: "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",
+            // Absent means this address has never SENT a transaction, so it
+            // has produced no signature to read. That is not the same as an
+            // ordinary single-key wallet, and the caveat says so rather than
+            // letting the silence be read as one.
+            authentication: auth ?? null,
+            ...(auth
+              ? {}
+              : {
+                  authentication_caveat:
+                    "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
+                }),
+            ...(committee ? { committee_members: committee } : {}),
+            hint: auth?.scheme === "multisig"
+              ? "This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds."
+              : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",
           }, null, 2),
         }],
       };

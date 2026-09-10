@@ -66,7 +66,25 @@ export function registerObjectHistoryTools(server: McpServer) {
         const priorNodes = obj.objectVersionsBefore.nodes ?? [];
         // Chronological (oldest -> newest): prior versions, then current.
         const history: VersionEntry[] = [...priorNodes.map(toEntry), toEntry(obj)];
-        const truncated = priorNodes.length >= last;
+
+        // Two different ways the history can be incomplete, and only one of
+        // them used to be detected.
+        //
+        // A full page means there are older versions we did not ask for.
+        // ZERO prior versions is the case that mattered and read as the
+        // opposite: historical versions fall outside the indexer's retention
+        // for any object that has sat still, so a long-lived object comes back
+        // with one version and looks like it was created by whatever last
+        // touched it and never moved since.
+        //
+        // Verified on a real UpgradeCap: published by 0x158d6f85, now owned by
+        // 0x2, so it provably changed hands — and this reported
+        // `owner_change_count: 0`, `history_truncated: false`, and named the
+        // burn address as its creator. Three false claims from one missing
+        // page.
+        const pageFull = priorNodes.length >= last;
+        const noPriorVersions = priorNodes.length === 0;
+        const truncated = pageFull || noPriorVersions;
 
         const ownerChanges = computeOwnerChanges(history);
 
@@ -85,6 +103,9 @@ export function registerObjectHistoryTools(server: McpServer) {
           };
         };
 
+        // Only claim a creation when the walk actually reached the beginning.
+        // With one version and nothing before it, "created here" and "this is
+        // as far back as the indexer goes" are indistinguishable.
         const creation = truncated ? null : history[0];
         const current = history[history.length - 1];
 
@@ -101,8 +122,23 @@ export function registerObjectHistoryTools(server: McpServer) {
                     ? { tx: creation.tx, timestamp: creation.timestamp, owner: describeOwner(creation.owner) }
                     : null,
                   history_truncated: truncated,
+                  ...(noPriorVersions
+                    ? {
+                        history_unavailable:
+                          "The indexer returned no versions before the current one, which for a long-lived object means its history is beyond retention rather than absent. `created` is therefore null and `owner_change_count` counts only what was visible — NOT that this object was never transferred. Verified on a real upgrade cap: published by one address, now held by another, and this call could see neither.",
+                      }
+                    : {}),
                   version_count_shown: history.length,
+                  // Transitions among the versions RETURNED. Reads as a count
+                  // of everything that ever happened, so it is named and
+                  // caveated where the history is short.
                   owner_change_count: ownerChanges.length,
+                  ...(truncated
+                    ? {
+                        owner_change_note:
+                          "Counts transitions among the versions shown only. An earlier transfer outside this window would not appear.",
+                      }
+                    : {}),
                   owner_changes: ownerChanges.map((c) => ({
                     from: describeOwner(c.from),
                     to: describeOwner(c.to),

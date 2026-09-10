@@ -160,6 +160,32 @@ byte-identical — and `"abc"` is still rejected.
 truthiness and turns the string `"false"` into `true`. Silently inverting a
 caller's intent is worse than the rejection this is meant to fix.
 
+## Writing documentation
+
+README, CONTRIBUTING and the forensics skill are **reference material**. They
+say what a tool does, what its arguments mean, what it returns, and when to
+reach for it. Someone lands on them to get work done.
+
+- **Write capability and usage.** "`analyze_multisig` reports which committee
+  keys have signed and which never have" — not the story of how that was
+  discovered.
+- **No changelog voice in reference docs.** "This used to be wrong", "an
+  earlier version reported X", "found by running it against mainnet" is
+  archaeology. It belongs in the commit message and the CHANGELOG, both of
+  which are already keyed to the change. A reader six months from now does not
+  care what it used to do.
+- **Keep the limit, drop the anecdote.** "A nil result covers equal-weight
+  committees only, so it is not a negative finding" is a fact the reader needs.
+  The bug that taught us to say it is not.
+- **Show a call and its output.** Concrete beats prose for anything with
+  arguments.
+
+This file is the exception, and only for *rules a future change would
+otherwise get wrong*. "Do not re-drop the archive fallback, it does return
+balance changes" is a rule. "I tried removing it and it broke" is a story —
+write the first. Where a number is what makes the rule stick, keep the number
+and lose the narrative around it.
+
 ## Contributing rules
 
 - **Never put a `claude.ai/code/session_...` URL in a commit message or PR
@@ -427,20 +453,18 @@ Four rules that are easy to get wrong:
   never member↔member, and a member who cannot spend alone sits below the merge
   floor — reported as a lead, unable to cluster alone. Verified: the 4-of-7 and
   2-of-3 seeds produce no co-signer merges at all.
-- **A co-signing key can be a service, and the filter is not optional.** Found
-  by running the tool, not by reasoning: one key sat on 31 distinct 1-of-2
-  committees, each with a different second member — a wallet provider's
-  recovery key. The star fused 31 strangers into a 63-member cluster rated
-  `chain-derived`/`high`, containing people plainly unrelated by their own SuiNS
-  names. Co-signers now get the popularity treatment funders get, at
-  `DEFAULT_CO_SIGNER_LIMIT = 5` rather than 50: a narrow funder legitimately
-  pays dozens, while a key on dozens of committees is a service by
-  construction. The count comes from committees already read, so it costs no
-  queries, and it is a lower bound over what was examined — which only makes the
-  filter fire late. After it, that seed gives 31 two-member clusters instead of
-  one of 63, and the true positive survives. Excluded keys are reported in
-  `excluded_co_signers`, since "this provider key can spend 31 wallets" is
-  itself chain-derived.
+- **A co-signing key can be a service, and the filter is not optional.** A
+  wallet provider's recovery key sits on one 1-of-2 committee per customer, so
+  without a popularity filter the star links every customer of that provider
+  into one cluster. Measured on mainnet: one key on 31 committees produced a
+  63-member cluster of unrelated people; with the filter, 31 two-member
+  clusters. `DEFAULT_CO_SIGNER_LIMIT` is 5 rather than the funder limit of 50,
+  because a narrow funder legitimately pays dozens while a key on dozens of
+  committees is a service by construction. The count comes from committees
+  already read, so it costs no queries, and it is a lower bound over what was
+  examined — which only makes the filter fire late, never early. Excluded keys
+  go in `excluded_co_signers` rather than being dropped: "this key can spend 31
+  wallets" is itself chain-derived.
 - **An edge count is not corroboration.** Sixteen edges through one shared
   funder is one fact stated sixteen times, and if that funder turns out to be a
   payout service they all fall together. Clusters carry

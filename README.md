@@ -53,29 +53,53 @@ That last step is the point. Several wallets tracing to one funder looks decisiv
 
 Fan-out reports **shape as well as size**, because size alone doesn't separate the cases that matter. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts — 399 and 431 — and completely different flow: the exchange ran balanced at 0.73 out/in (deposits in, withdrawals out) while the funder ran 9.78 (it pays many and is paid by few). One is noise in an investigation; the other is the thing you're looking for.
 
-## Who can sign for this wallet?
+## Multisig
 
-A Sui address is the hash of whatever authenticates it. For a multisig that means the threshold, every member key and every weight are baked into the address, and the committee travels inside every transaction the wallet sends. So membership isn't guesswork — you derive it and check it reproduces the address.
+A Sui address is the hash of whatever authenticates it. For a multisig, the threshold, every member key and every weight are part of that hash, so the committee can be read off the address and checked — derive it, confirm it reproduces the address.
+
+**Identify a wallet and its committee.** `identify_address` returns the shape, every member address, and each member resolved to its own name, labels and SuiNS history.
 
 ```
 identify_address(0x045dadba…)
-  → multisig, 4-of-7, verified: true
-    seven member addresses, each resolved to its own name and labels
-
-analyze_multisig(0x045dadba…)
-  → 8 transactions, 3 different signer sets
-    members 3 and 4 signed every one
-    members 5 and 6 have never signed anything
-
-get_transaction(oxrJ3Bppuk…)
-  → signed_by [0,1,3,4], did_not_sign [2,5,6]
+  → authentication: multisig, 4-of-7, verified: true
+    committee_members: 7, each with name/label/kind
 ```
 
-Two of seven keys have never been used, and the ones that do sign already carry the weight the threshold needs. That's a different treasury from the one the 4-of-7 label implies, and you can't see it from a single transaction — the committee is fixed, but who signs changes each time.
+**See which keys are actually used.** The committee never changes, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's history.
 
-It works backwards too. If a trace has already linked some wallets, `find_shared_multisig` derives every committee those keys could form and checks which of those addresses exist. A hit is proof rather than a resemblance, because the address *is* the hash of the committee. It also finds treasuries that never showed up in the trace at all, since a multisig is only visible if it happened to transact with something you looked at.
+```
+analyze_multisig(0x045dadba…, max_transactions: 200)
+  → transactions_examined: 8
+    signer_sets: [0,1,3,4] x4, [1,2,3,4] x2, [0,2,3,4] x2
+    always_present: [3, 4]
+    dormant_members: [5, 6]
+    active_signers_meet_threshold: true
+```
 
-Some limits, stated in the output rather than buried here: member order is part of the address, so the search is factorial and refuses past five keys; it only covers equal-weight committees; and a wallet that has never sent a transaction can't be classified at all, because it has produced no signature to read.
+`dormant_members` are keys that hold weight and have never used it. `always_present` are keys the wallet currently cannot move without. Both are reported against `transactions_examined`, since the claim is only as good as the window.
+
+**See who authorised one transaction.** `get_transaction` returns an `authorization` block naming the keys that signed and the members that did not, plus the gas sponsor when there is one.
+
+```
+get_transaction(oxrJ3Bppuk…)
+  → authorization[0]: sender, multisig 4-of-7
+      signed_by:     [0, 1, 3, 4]
+      did_not_sign:  [2, 5, 6]
+```
+
+**Search backwards from keys to a treasury.** Given addresses a trace has already linked, `find_shared_multisig` derives every committee they could form and returns the ones that exist on chain. This finds multisigs that never appeared in the trace, since a wallet is only visible if it transacted with something you looked at.
+
+```
+find_shared_multisig([0xafe2fafa…, 0xc848c5cc…])
+  → candidates_checked: 4, found: 1
+    0xcf4e7b88… 1-of-2, evidence_tier: chain-derived
+```
+
+**Clustering.** `build_wallet_edges` emits a `co_signer` edge for any key that can spend a wallet on its own, and marks clusters built only from those `chain-derived` rather than `heuristic`. Keys sitting on more committees than the limit are treated as custody or wallet-provider keys and listed under `excluded_co_signers` instead of linking everyone who uses that provider.
+
+**Limits, also stated in the tool output.** Member order is part of the address, so `find_shared_multisig` is factorial in committee size and refuses past five keys; it covers equal-weight committees only, so a nil result is not a negative finding. A wallet that has never sent a transaction cannot be classified at all — it has produced no signature — and comes back as unknown rather than as an ordinary wallet.
+
+zkLogin and passkey wallets go through the same path. zkLogin reports its OAuth issuer, which is all the chain discloses about the account.
 
 ## The forensics skill
 

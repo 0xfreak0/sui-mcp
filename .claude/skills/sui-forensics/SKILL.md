@@ -100,11 +100,10 @@ Three fields decide how much weight a cluster carries:
   provisional. Confirm it with `get_address_fanout` before relying on the cluster.
 - **`notes`** — unverified sibling candidates are listed, not dropped. Raise
   `expand_budget` to resolve them.
-- **`excluded_co_signers`** — keys sitting on more committees than the limit.
-  These are wallet-provider or custody keys, not operators. One real mainnet key
-  was on 31 separate 1-of-2 committees; without the filter it fused 31 strangers
-  into one cluster. That key genuinely can spend all 31 wallets — write that if
-  it matters — but it says nothing about whether those wallets share an owner.
+- **`excluded_co_signers`** — keys sitting on more committees than the limit,
+  i.e. custody or wallet-provider keys. Such a key genuinely can spend every
+  wallet it signs for, and you may write that. It says nothing about whether
+  those wallets share an owner, so do not cluster on it.
 
 ## Multisig
 
@@ -116,10 +115,10 @@ plain reading gets wrong:
   cannot be rotated out the way a Gnosis Safe owner can. If you need a different
   committee, you have a different address.
 - **Who signs is per-transaction; who is authorised is not.** `get_transaction`
-  gives `authorization.signed_by` for one transaction. Do not generalise from
-  it — a mainnet 4-of-7 used three different signer sets across eight
-  transactions. Use `analyze_multisig` for the wallet-level picture: which keys
-  are live, which have never signed, whether the active set shifted.
+  gives `authorization.signed_by` for one transaction. A member under
+  `did_not_sign` is still authorised and may have signed others, so do not
+  generalise from one. Use `analyze_multisig` for the wallet-level picture:
+  which keys are live, which have never signed, whether the active set shifted.
 - **A wallet that has never SENT cannot be classified at all.** No signature, no
   committee. `authentication: null` with a caveat means unknown, not ordinary —
   a receive-only treasury multisig looks exactly like a fresh personal wallet.

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolvePublisher } from "../utils/publisher.js";
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
@@ -259,6 +260,10 @@ export function registerAnalyzePackageTools(server: McpServer) {
         const capabilities =
           audit_capabilities === false ? undefined : await auditPackageCapabilities(packageId);
 
+        // Who deployed it. This is the field that turns an unknown package back
+        // into an address a trace can follow.
+        const publisher = await resolvePublisher(packageId);
+
         let disassembly: { module: string; disassembly: string }[] | undefined;
         if (include_disassembly) {
           disassembly = await Promise.all(
@@ -284,6 +289,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
                   disclaimer:
                     "Heuristic surface scan to guide review — NOT a security audit. Absence of findings does not imply safety.",
                   suivision_url: suivisionPackageUrl(packageId),
+                  publisher,
                   finding_count: findings.length,
                   findings,
                   ...(capabilities ? { capabilities } : {}),

@@ -1,5 +1,107 @@
 # Changelog
 
+## 1.14.0 (2026-09-10)
+
+Investigations can now say who controls a wallet, who wrote the code, why a
+transaction failed, and whether the asset they followed is the real one.
+
+### Added
+- **Multisig identity, chain-derived.** A Sui address is the hash of its
+  authenticator, so a multisig's committee travels inside every transaction it
+  sends. `identify_address` reports it and expands each member; `analyze_multisig`
+  says which keys are live and which have never signed; `find_shared_multisig`
+  searches backwards from known keys to a treasury; `get_transaction` names the
+  keys that signed one transaction. `build_wallet_edges` gains a `co_signer`
+  signal, and clusters built only from it are `chain-derived` rather than
+  `heuristic`.
+
+  Burned into the design: the committee cannot rotate, an address has one
+  authenticator forever, and a wallet that has never SENT cannot be classified
+  at all — which surfaces as an explicit unknown rather than "ordinary wallet".
+
+- **Why a transaction failed.** `formatStatus` reduced every failure to
+  `failure: command=1`. `get_transaction` and `get_transactions` now report the
+  abort code with the package, module and function that raised it, from data
+  already in `effects` — no extra requests. Notes are attached only where a
+  kind's name misleads: a congestion cancellation means the transaction was
+  never invalid, and `ADDRESS_DENIED_FOR_COIN` records an issuer's decision
+  rather than a protocol rule.
+
+- **Package publisher attribution.** `analyze_package` and `identify_address`
+  report who deployed a package — the field that turns an unknown package back
+  into an address a trace can follow. Attributed to the lineage ROOT, since an
+  upgrade's creating transaction names the upgrader rather than the publisher,
+  and resolved through the archive because publish transactions are usually
+  pruned.
+
+- **Upgrade-cap holder status.** Whoever holds an `UpgradeCap` can replace a
+  package's code, and reporting only the current holder is not a finding.
+  Compared against the publisher it becomes one. `burned` and `transferred` are
+  kept distinct deliberately: 20% of mainnet caps are not with their publisher,
+  but 27 of every 30 of those went somewhere unspendable, which is the
+  responsible choice. A single "the cap moved" flag would have fired on a fifth
+  of all packages.
+
+- **`check_coin_restrictions`** reads the on-chain deny list — which addresses
+  an issuer froze, or whether one address is frozen anywhere. Mainnet has ~1,250
+  coin types with a deny config. A denial is epoch-scheduled, so an entry
+  written this epoch is reported as pending rather than in force, and a lifted
+  one is not reported at all.
+
+- **Sponsorship breadth** on `get_address_fanout`. Paying gas moves none of the
+  sponsor's own value, so a relayer looks narrow by balance changes and is
+  anything but. Measured free on the scan that was already running.
+
+### Changed
+- **A coin's symbol no longer identifies it.** `resolveTokenBySymbol` scanned
+  on-chain metadata and stopped at the first exact match, so "USDC" resolved to
+  an imitator named "USDC v2 (complete bridge: usdv2.com)" rather than Circle's
+  issue. 8,008 mainnet coins share a symbol with another; 585 claim `SUI`.
+  Symbols now resolve against a curated registry, seeded from Aftermath's
+  verified list by `npm run sync:verified-coins` and refreshed at runtime under
+  rules that can only ever add.
+
+  **Behaviour change:** `analyze_token` on an ambiguous symbol returns
+  CANDIDATES rather than a coin. Seven symbols are ambiguous among legitimate
+  verified coins — Circle's USDC, Wormhole's and Celer's all exist — and picking
+  one silently would misreport which asset moved. Pass a full coin type to get a
+  single answer.
+
+- **Amounts are scaled by coin type, not by the name of the struct.** Decimals
+  were keyed on the last segment of the type, so anything ending `::sui::SUI`
+  was rendered with real SUI's 9 decimals. Of 289 unverified coins whose struct
+  name matches a hardcoded symbol, 47 declare different decimals — a fake SUI
+  with 0 would have reported every amount 10^9 out. Traces now carry
+  `coin_verified` per balance change, and an amount scaled by a guess says so.
+
+- **`evidence_tier` moved from the response root onto each cluster** in
+  `build_wallet_edges`, since a cluster built only on co-signature is read from
+  the address hash rather than inferred from behaviour.
+
+- **A narrow sponsor reading is provisional when the scan was truncated.**
+  Breadth only grows with the window; on one mainnet sponsor the count went 1 to
+  86 between a 100- and an 800-transaction scan, crossing the threshold.
+  `relayer` is proven by what was seen and is never marked provisional.
+
+### Fixed
+- **A malformed transaction digest** was passed straight to gRPC, which threw a
+  transport error about Base58 length — indistinguishable, to a reader, from the
+  transaction not existing. It is now rejected before the request, with a
+  message saying so. The realistic input is an object ID.
+
+- **Checking whether one address is frozen** looked only at the coins it holds.
+  Freezing and holding are anti-correlated: an issuer freezes an address and it
+  ends up holding none of that coin. Measured, that found 11 restrictions where
+  a full scan finds 58.
+
+### Internal
+- Tool count 62 → 65. `npm run verify:live` runs six live checks against
+  mainnet — regenerate signature fixtures, hostile input, a chained
+  investigation, and cross-tool consistency. Not in CI; run it after an
+  `@mysten/sui` bump, after a Sui GraphQL schema change, and before a release.
+- The `scripts/probe/` directory went from 70 one-off scripts to six with a
+  trigger.
+
 ## 1.13.0 (2026-09-10)
 
 Multisig wallets are now legible: who is on the committee, which of them

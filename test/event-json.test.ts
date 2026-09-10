@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+/**
+ * A real mainnet digest. get_transaction validates the digest before making a
+ * request, so a placeholder like "0xd" is now rejected up front — these tests
+ * are about event decoding, and the shape of the input has to be plausible for
+ * them to exercise it.
+ */
+const TEST_DIGEST = "6rbfmByTyP4k7EREQBV9XZNhaG4RPm2ExT5bhVDfhGpu";
+
 const mockGqlQuery = vi.fn();
 const mockLookup = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -31,7 +39,7 @@ const EVENT_TYPE = `${DEEPBOOK_PKG}::order_info::OrderPlaced`;
 function txWithEvents(count: number) {
   return {
     transaction: {
-      digest: "0xd",
+      digest: TEST_DIGEST,
       timestamp: null,
       checkpoint: 1n,
       balanceChanges: [],
@@ -64,7 +72,7 @@ const gqlEvents = (count: number, hasNextPage = false, endCursor?: string, from 
   },
 });
 
-const run = async () => JSON.parse((await getTransaction({ digest: "0xd" })).content.at(-1).text);
+const run = async () => JSON.parse((await getTransaction({ digest: TEST_DIGEST })).content.at(-1).text);
 
 beforeEach(() => {
   mockGqlQuery.mockReset();

@@ -1,5 +1,9 @@
 import { sui } from "./clients/grpc.js";
 import { gqlQuery } from "./clients/graphql.js";
+import {
+  resolveVerifiedSymbol,
+  type RegistryCoin,
+} from "./utils/coin-registry.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS, getNetwork } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -210,6 +214,38 @@ export async function searchTokens(query: string): Promise<TokenInfo[]> {
 export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | null> {
   const q = query.toLowerCase();
 
+  // The curated registry decides first, and its "no" is load-bearing. Scanning
+  // coin metadata and taking the first exact symbol match returns whichever
+  // impostor is indexed earliest — measured on mainnet, "USDC" resolved to
+  // "USDC v2 (complete bridge: usdv2.com)" rather than Circle's issue. Callers
+  // that need to distinguish "verified" from "found something" should use
+  // resolveSymbolDetailed.
+  const verified = resolveVerifiedSymbol(query);
+  if (verified.status === "resolved") {
+    return {
+      coin_type: verified.coin.coin_type,
+      name: verified.coin.name,
+      symbol: verified.coin.symbol,
+      decimals: verified.coin.decimals ?? 0,
+    };
+  }
+  // Ambiguous among verified coins: refuse rather than pick. Several
+  // legitimate coins share USDC on Sui, and choosing one silently misreports
+  // which asset moved.
+  if (verified.status === "ambiguous") return null;
+
+  return scanForSymbol(query);
+}
+
+/**
+ * Search on-chain CoinMetadata for a symbol.
+ *
+ * **Nothing here verifies anything.** A hit means some coin carries that
+ * symbol, and on mainnet 8,008 coins share a symbol with another. Callers must
+ * present a result from this as unverified.
+ */
+async function scanForSymbol(query: string): Promise<TokenInfo | null> {
+  const q = query.toLowerCase();
   const symbolKey = `${getNetwork()}:${q}`;
   const hit = symbolCache.get(symbolKey);
   if (hit && Date.now() - hit.fetchedAt < TOKEN_CACHE_TTL_MS) return hit.token;
@@ -245,6 +281,41 @@ export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | n
   const resolved: TokenInfo | null = exact ?? matchToken(seen, q);
   if (resolved) symbolCache.set(symbolKey, { token: resolved, fetchedAt: Date.now() });
   return resolved;
+}
+
+/**
+ * Symbol resolution with the reason attached.
+ *
+ * `resolveTokenBySymbol` collapses everything to a coin or null, which cannot
+ * distinguish "no such symbol" from "several legitimate coins claim it" from
+ * "found one, but nothing verifies it". A tool reporting on an asset needs
+ * that difference — the last case is where an impostor gets presented as the
+ * answer.
+ */
+export async function resolveSymbolDetailed(query: string): Promise<
+  | { status: "resolved"; token: TokenInfo; verified: true }
+  | { status: "ambiguous"; candidates: RegistryCoin[] }
+  | { status: "unverified"; token: TokenInfo | null }
+> {
+  const verified = resolveVerifiedSymbol(query);
+  if (verified.status === "resolved") {
+    return {
+      status: "resolved",
+      verified: true,
+      token: {
+        coin_type: verified.coin.coin_type,
+        name: verified.coin.name,
+        symbol: verified.coin.symbol,
+        decimals: verified.coin.decimals ?? 0,
+      },
+    };
+  }
+  if (verified.status === "ambiguous") {
+    return { status: "ambiguous", candidates: verified.candidates };
+  }
+  // Not curated. The scan may still find something; the caller is told it is
+  // unverified so it never presents a symbol match as an identification.
+  return { status: "unverified", token: await scanForSymbol(query) };
 }
 
 /** Exact symbol first, then a name/symbol substring. */

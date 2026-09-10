@@ -159,6 +159,9 @@ export function registerAggregateTools(server: McpServer) {
 
           hasNext = page.events.pageInfo.hasNextPage;
           cursor = page.events.pageInfo.endCursor;
+          // A claimed next page with no cursor would re-read page one and
+          // double-count those events in the ranking.
+          if (!cursor) break;
           if (!cursor) break;
         }
 

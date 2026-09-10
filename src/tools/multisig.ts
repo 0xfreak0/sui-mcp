@@ -103,6 +103,9 @@ export function registerMultisigTools(server: McpServer) {
           }
           if (!conn.pageInfo.hasNextPage) break;
           after = conn.pageInfo.endCursor;
+          // Restarting the walk would count the same transactions again and
+          // skew every signer-set frequency in the result.
+          if (!after) break;
         }
       } catch (err) {
         return errorResult(

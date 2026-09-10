@@ -101,6 +101,49 @@ find_shared_multisig([0xafe2fafa…, 0xc848c5cc…])
 
 zkLogin and passkey wallets go through the same path. zkLogin reports its OAuth issuer, which is all the chain discloses about the account.
 
+## What a result tells you about itself
+
+Several tools now qualify their own answers, because a confident-looking number
+is worse than an absent one.
+
+**Is this coin the one you meant?** A symbol is not an identifier on Sui — 8,008
+mainnet coins share one with another, and imitators are named to be mistaken.
+`analyze_token` reports `verified`, and every balance change in a trace carries
+`coin_verified`:
+
+```
+-850 MAGMA (unverified, assumed scale)     coin_verified=false
++202.361728 USDC                           coin_verified=true
+```
+
+Two separate marks. `unverified` is about *which* coin. `assumed scale` is about
+whether the number is right at all — decimals for an unknown coin are a guess,
+and 47 of 289 imitators declare a different scale from the coin they imitate.
+
+An ambiguous symbol returns candidates rather than a coin. `USDC` matches seven
+legitimate verified coins on Sui (Circle's, Wormhole's, Celer's), so picking one
+would misreport which asset moved.
+
+**Why did it fail?** `get_transaction` returns the abort code with the package,
+module and function that raised it, and a clever error's constant name where the
+author defined one.
+
+**Who deployed this, and can they still change it?** `analyze_package` and
+`identify_address` report `publisher` — the address that created the package,
+attributed to the lineage root. The UpgradeCap carries `holder_status`:
+`burned` means upgrade rights were renounced, which *reduces* risk, and is what
+27 of every 30 departing caps did.
+
+**Has an issuer frozen this address?** `check_coin_restrictions` reads the
+on-chain deny list in both directions. A frozen address usually holds none of
+the coin that froze it, so it checks every configured coin type rather than the
+ones it holds.
+
+**Does this address pay other people's gas?** `get_address_fanout` reports
+`sponsor_shape` — invisible to value fan-out, since sponsoring moves none of
+the sponsor's own money. `relayer` is proven; `private_sponsor` off a truncated
+scan is flagged provisional, because breadth only grows with the window.
+
 ## The forensics skill
 
 The server gives Claude chain access. It does not, on its own, give it method —
@@ -182,7 +225,8 @@ npm audit signatures
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
 - **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, PTB anomaly triage, oracle-vs-market deviation
 - **Multisig** — a Sui address is the hash of its authenticator, so the committee is read off the address itself. Names every member, says which keys are live and which have never signed, and shows who signed a given transaction. Also handles zkLogin and passkey wallets
-- **Move package analysis** — disassembly, heuristic risk scan, capability audit, and upgrade diffing, none of which need an external binary
+- **Move package analysis** — disassembly, heuristic risk scan, capability audit, publisher attribution, upgrade-cap holder status, and upgrade diffing, none of which need an external binary
+- **Asset verification** — a curated coin registry, so a trace says whether the asset it followed is the real one rather than an imitator wearing its symbol
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
 - **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
 - **Kiosk-aware** — resolves NFT ownership through Sui's kiosk system to actual wallet addresses

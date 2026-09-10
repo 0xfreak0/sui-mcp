@@ -1,4 +1,5 @@
 import { gqlQuery } from "../clients/graphql.js";
+import { assessCapHolder, type CapHolderStatus } from "./upgrade-cap.js";
 
 /**
  * Capability auditing for a Move package: who holds the powerful capabilities
@@ -23,6 +24,17 @@ export interface CapabilityInfo {
   owner_address?: string;
   /** UpgradeCap only: on-chain upgrade policy. */
   upgrade_policy?: string;
+  /**
+   * UpgradeCap only: where the cap ended up relative to the publisher.
+   *
+   * `burned` and `transferred` are deliberately distinct. 20% of mainnet caps
+   * are not with their publisher, but 27 of every 30 of those went to an
+   * unspendable address — reporting both as "moved" would flag the responsible
+   * choice as suspicious.
+   */
+  holder_status?: CapHolderStatus;
+  /** UpgradeCap only: the publisher it was compared against. */
+  publisher?: string;
   risk: CapRisk;
   note: string;
 }
@@ -195,7 +207,17 @@ function ownerKindOf(typename: string | undefined): OwnerKind {
  * Caps created in a later transaction (e.g. a coin whose currency is created
  * post-publish) are not discovered here.
  */
-export async function auditPackageCapabilities(packageId: string): Promise<CapabilityAudit> {
+export async function auditPackageCapabilities(
+  packageId: string,
+  /**
+   * The package's publisher, when the caller already resolved it.
+   *
+   * Passed in rather than looked up here so `analyze_package` does not resolve
+   * it twice — and so an UpgradeCap can be compared against it, which is the
+   * only thing that turns "held by 0xabc" into a finding.
+   */
+  publisher?: string | null,
+): Promise<CapabilityAudit> {
   // 1. Scan the publish tx for created cap-like objects (paginating a few pages).
   const capObjects: Array<{ id: string; type: string; kind: CapKind }> = [];
   let after: string | null = null;
@@ -243,6 +265,13 @@ export async function auditPackageCapabilities(packageId: string): Promise<Capab
         owner = "unknown";
       }
       const { risk, note } = classifyCapabilityRisk({ kind, type, owner, ownerAddress, policyLabel });
+
+      // An UpgradeCap's holder means nothing on its own. Compared against the
+      // publisher it says whether upgrade authority changed hands, which is
+      // the question worth asking about the most consequential capability on
+      // the chain.
+      const held = kind === "upgrade" ? assessCapHolder(ownerAddress, publisher) : null;
+
       return {
         kind,
         type,
@@ -250,8 +279,13 @@ export async function auditPackageCapabilities(packageId: string): Promise<Capab
         owner,
         ...(ownerAddress ? { owner_address: ownerAddress } : {}),
         ...(policyLabel ? { upgrade_policy: policyLabel } : {}),
+        ...(held ? { holder_status: held.status } : {}),
+        ...(held?.publisher ? { publisher: held.publisher } : {}),
         risk,
-        note,
+        // The holder assessment is appended rather than replacing the risk
+        // note: the two say different things, and a burn is the one case where
+        // the cap being elsewhere makes the package SAFER.
+        note: held ? `${note} ${held.note}` : note,
       };
     }),
   );

@@ -108,7 +108,9 @@ export function registerClusterTools(server: McpServer) {
           maxClusterSize: max_cluster_size,
         });
 
-        const identities = await describeAddresses(built.examined);
+        const identities = await describeAddresses(built.examined, {
+          expandMembers: true,
+        });
         const describe = (a: string) => {
           const id = identities.get(a);
           const note = id ? identityNote(id) : undefined;

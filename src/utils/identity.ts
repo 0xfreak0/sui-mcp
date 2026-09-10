@@ -21,9 +21,26 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getLabel } from "./labels.js";
 import { batchResolveNames } from "./names.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
+import {
+  authenticationNote as describeAuthentication,
+  readAuthentication,
+  type Authentication,
+} from "./multisig.js";
 
 /** GraphQL page cap, and the natural chunk size for a keyed multi-get. */
 const CHUNK = 50;
+
+/**
+ * Addresses whose authentication is read per GraphQL request.
+ *
+ * There is no multi-get for `transactions`, so this batches with aliases and
+ * hits the same two service limits as package lineage: at most 20 queries that
+ * need a backing store, and 5000 bytes of query text. Twenty aliased
+ * `transactions` calls land at roughly 2.4KB, inside both. Kept separate from
+ * `ROOT_BATCH_SIZE` because the payload per alias is different, not because
+ * the limits are.
+ */
+const AUTH_BATCH_SIZE = 20;
 
 /**
  * SuiNS registrations, matched at module level.
@@ -96,6 +113,27 @@ export interface AddressIdentity {
   label_category?: string;
   /** Protocol name, when the address is a package the registry knows. */
   protocol?: string;
+  /**
+   * How the address authenticates, read from a transaction it sent.
+   *
+   * Absent means we could not tell, and that is not the same as "ordinary
+   * wallet": an address that has never sent anything has produced no
+   * signature, so a receive-only treasury multisig is indistinguishable from a
+   * fresh personal wallet. `authentication_note` says so in words.
+   */
+  authentication?: Authentication;
+  /**
+   * The identity of each multisig committee member, in committee order.
+   *
+   * A committee names addresses; this says who they are. Present only when the
+   * caller asked to expand members, and only for a multisig.
+   *
+   * Exactly one level deep, and that is a property of the chain rather than a
+   * budget: `PublicKey` in `sui-types` has no `MultiSig` variant, so a
+   * committee cannot contain another committee and there is nothing to
+   * recurse into.
+   */
+  committee_members?: AddressIdentity[];
   /**
    * Every SuiNS registration this address holds, including expired ones.
    *
@@ -174,20 +212,93 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
 }
 
 /**
- * Name, label, kind and protocol for every address in one pass.
+ * How each address authenticates. Batched with aliases; never throws.
  *
- * Two network calls total regardless of set size: one batched name resolution
- * and one batched classification, both already chunked.
+ * One sent transaction is enough and the oldest is as good as the newest,
+ * because an address commits to its authenticator in its own hash and can
+ * never rotate it. That is also why nothing here is cached with a TTL — the
+ * answer is fixed for the life of the address.
+ *
+ * An address with no sent transaction is simply absent from the result. It has
+ * signed nothing, so there is nothing to read, and saying "single-key wallet"
+ * would be a guess dressed as a finding.
  */
-export async function describeAddresses(addresses: string[]): Promise<Map<string, AddressIdentity>> {
+async function fetchAuthentication(addresses: string[]): Promise<Map<string, Authentication>> {
+  const out = new Map<string, Authentication>();
+  for (let i = 0; i < addresses.length; i += AUTH_BATCH_SIZE) {
+    const chunk = addresses.slice(i, i + AUTH_BATCH_SIZE);
+    const query =
+      "query {\n" +
+      chunk
+        .map(
+          (_, j) =>
+            `  a${j}: transactions(filter: { sentAddress: $a${j} }, first: 1) { nodes { signatures { signatureBytes } } }`,
+        )
+        .join("\n") +
+      "\n}";
+    // Variables would need declaring in the operation signature; inlining the
+    // address is simpler and safe because these are hex strings we normalize.
+    const inlined = chunk.reduce((q, addr, j) => q.replace(`$a${j}`, JSON.stringify(addr)), query);
+    try {
+      const r = await gqlQuery<Record<string, { nodes: { signatures: { signatureBytes: string }[] }[] }>>(
+        inlined,
+      );
+      chunk.forEach((addr, j) => {
+        const sigs = r[`a${j}`]?.nodes?.[0]?.signatures?.map((s) => s.signatureBytes);
+        if (!sigs?.length) return;
+        const auth = readAuthentication(addr, sigs);
+        if (auth) out.set(addr, auth);
+      });
+    } catch {
+      // Enrichment only. A trace the chain already answered must not fail here.
+    }
+  }
+  return out;
+}
+
+export interface DescribeOptions {
+  /**
+   * Also read how each address authenticates.
+   *
+   * Costs one extra GraphQL call per twenty addresses — `transactions` has no
+   * multi-get, so this batches with aliases and the service caps those at
+   * twenty. Every investigation flow turns it on: a trace whose hop set is
+   * under twenty addresses, which is the common case, pays exactly one call
+   * for it.
+   */
+  authentication?: boolean;
+  /**
+   * Also resolve each multisig committee member's own identity. Implies
+   * `authentication`.
+   *
+   * This is the fan-out that makes a multisig worth detecting. The committee
+   * names member addresses; without this the reader has a list of hex strings
+   * and no idea that one of them is a labelled exchange deposit or carries an
+   * expired SuiNS name that appears elsewhere in the case.
+   *
+   * One extra round over the member set, never more: committees cannot nest.
+   */
+  expandMembers?: boolean;
+}
+
+/**
+ * Name, label, kind and protocol for every address in one pass, and
+ * optionally how each one authenticates.
+ */
+export async function describeAddresses(
+  addresses: string[],
+  options: DescribeOptions = {},
+): Promise<Map<string, AddressIdentity>> {
   const unique = [...new Set(addresses.filter(Boolean))];
   const out = new Map<string, AddressIdentity>();
   if (unique.length === 0) return out;
 
-  const [names, kinds, held] = await Promise.all([
+  const wantAuth = options.authentication || options.expandMembers;
+  const [names, kinds, held, auth] = await Promise.all([
     batchResolveNames(unique).catch(() => new Map<string, string>()),
     fetchKinds(unique),
     fetchHeldNames(unique),
+    wantAuth ? fetchAuthentication(unique) : new Map<string, Authentication>(),
   ]);
 
   // Only packages are worth a protocol lookup, and the registry is cached, so
@@ -206,10 +317,51 @@ export async function describeAddresses(addresses: string[]): Promise<Map<string
       ...(names.get(address) ? { name: names.get(address) } : {}),
       ...(label ? { label: label.label, label_category: label.category } : {}),
       ...(protocol ? { protocol } : {}),
+      ...(auth.get(address) ? { authentication: auth.get(address) } : {}),
       ...(held.get(address)?.length ? { names_held: held.get(address) } : {}),
     });
   }
+
+  if (options.expandMembers) await expandCommitteeMembers(out);
   return out;
+}
+
+/**
+ * Resolve the identity of every multisig member across a result set, in one
+ * batch, and attach each committee's members to it.
+ *
+ * One round for the whole set rather than one per multisig — three 7-member
+ * committees are 21 addresses, which is two calls here and six if each were
+ * expanded on its own. The recursion terminates because committees cannot
+ * nest, so the inner call deliberately does not expand again.
+ *
+ * A member we cannot resolve keeps its address and nothing else. Dropping it
+ * would misreport the committee's size, which is the one number a reader uses
+ * to judge how much control any single key represents.
+ */
+async function expandCommitteeMembers(identities: Map<string, AddressIdentity>): Promise<void> {
+  const memberAddresses = new Set<string>();
+  for (const id of identities.values()) {
+    for (const m of id.authentication?.multisig?.members ?? []) {
+      if (m.address) memberAddresses.add(m.address);
+    }
+  }
+  if (memberAddresses.size === 0) return;
+
+  const resolved = await describeAddresses([...memberAddresses], { authentication: true });
+
+  for (const id of identities.values()) {
+    const members = id.authentication?.multisig?.members;
+    if (!members) continue;
+    id.committee_members = members.map((m) => {
+      const known = m.address ? resolved.get(m.address) : undefined;
+      if (known) return known;
+      return {
+        address: m.address ?? `(${m.scheme} member #${m.index}, no derivable address)`,
+        kind: "wallet" as const,
+      };
+    });
+  }
 }
 
 /**
@@ -232,5 +384,16 @@ export function identityNote(id: AddressIdentity): string | undefined {
   if (id.kind === "object") {
     return `This is an OBJECT${id.object_type ? ` (${id.object_type.split("::").slice(-2).join("::")})` : ""}, not a wallet — it may be a shared pool or vault that many parties touch.`;
   }
-  return undefined;
+  // Said after the kind checks because those describe what is AT the address,
+  // and this describes who can spend from it. A multisig is still a wallet;
+  // the point is that it is not one person's key.
+  if (!id.authentication) return undefined;
+  const base = describeAuthentication(id.authentication);
+  if (!base) return undefined;
+  // Naming the members that are already attributable is the difference between
+  // "this is a 4-of-7" and a lead worth following.
+  const known = (id.committee_members ?? []).filter((m) => m.name || m.label);
+  if (known.length === 0) return base;
+  const who = known.map((m) => `${m.address.slice(0, 10)}… (${m.label ?? m.name})`).join(", ");
+  return `${base} Already attributable among its members: ${who}.`;
 }

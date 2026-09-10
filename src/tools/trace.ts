@@ -767,7 +767,7 @@ export function registerTraceTools(server: McpServer) {
       // Name, label and WHAT EACH ADDRESS IS, in two batched calls. A hop that
       // is a package or a shared object is not "someone the funds went to",
       // and nothing else in a trace says so.
-      const identities = await describeAddresses([...allAddresses]);
+      const identities = await describeAddresses([...allAddresses], { expandMembers: true });
       const nameMap = new Map(
         [...identities].filter(([, v]) => v.name).map(([k, v]) => [k, v.name!]),
       );

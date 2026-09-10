@@ -105,6 +105,83 @@ Three fields decide how much weight a cluster carries:
   wallet it signs for, and you may write that. It says nothing about whether
   those wallets share an owner, so do not cluster on it.
 
+## A coin's symbol is not its identity
+
+8,008 mainnet coins share a symbol with another. 585 claim `SUI`, 100 claim
+`DEEP`. The imitators are named to be mistaken — "Sui v2 (migrate asset:
+suiv2.com)" — and nothing cheap tells them apart: the fake USDC's supply is
+LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
+
+- **`verified: false` means nothing vouches for this coin**, not that it is
+  fake. It is still the coin the transaction moved. What you may not write is
+  "the attacker moved 10,000 USDC" — you do not know which USDC.
+- **A balance change carries `coin_verified`.** Use it. A trace through an
+  imitator reads exactly like a trace through the real asset.
+- **`assumed scale` means the amount itself may be wrong.** Decimals for an
+  unverified coin are a guess; 47 of 289 imitators declare a different scale
+  from the coin they imitate, one of them by 10^9.
+- **An ambiguous symbol is an answer.** Several legitimate coins share `USDC` —
+  Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
+  picking. Pass a full coin type; it is the only unambiguous identifier.
+
+## Packages: who deployed it, and who can change it
+
+- **`publisher`** is the sender of the transaction that created the package —
+  the address a trace can follow. It attributes the lineage ROOT, so for an
+  upgraded package this is the original deployer, not whoever last upgraded.
+- **`holder_status` on the UpgradeCap** answers whether the code can still
+  change. `burned` means the cap went somewhere unspendable and upgrade rights
+  are renounced — **that is a REDUCTION in risk**, and 27 of every 30 caps that
+  leave their publisher are burned rather than transferred. `transferred` is
+  the uncommon one (about 2%), and even then it is not wrong on its own: teams
+  move caps to treasuries and multisigs deliberately. Identify the holder.
+- **`unresolved` is not `publisher`.** Publish transactions are frequently
+  pruned. A failed lookup is "could not check", never "still with the deployer".
+
+## Why a transaction failed
+
+`get_transaction` returns `failure` with the abort code, and the package,
+module and function that raised it. Two readings to get right:
+
+- **An abort code is meaningless across packages.** Every package numbers its
+  own aborts from zero, so `3` only means something beside the module that
+  raised it. A `clever_error`, when present, names the constant the author
+  wrote — that is the answer, and the raw code is an implementation detail.
+- **Some failures are not rejections.** Congestion cancellation means the
+  transaction was never invalid and a retry may succeed; out-of-gas says
+  nothing about intent. Do not read either as an attempt that was stopped.
+
+`ADDRESS_DENIED_FOR_COIN` is the exception worth chasing: it means an issuer
+had already frozen the sender, which is attribution.
+
+## Frozen addresses
+
+`check_coin_restrictions` reads the on-chain deny list. A freeze is
+**chain-derived attribution of an unusual kind**: not a protocol rule, but an
+issuer's own decision, recorded on chain and reversible by whoever holds the
+DenyCap. Somebody with authority over an asset concluded something about this
+address — worth knowing, and worth attributing to the issuer rather than to the
+chain.
+
+- **A frozen address usually holds NONE of the coin that froze it.** Freezing
+  and holding are anti-correlated, so an empty balance is not evidence.
+- **A global pause is not about any holder.** It says the issuer stopped the
+  whole asset.
+- **`active: false` is recorded but not in force.** A denial takes effect the
+  epoch after it is written.
+
+## Sponsorship
+
+`get_address_fanout` reports `sponsor_shape` alongside value fan-out, because
+paying someone's gas moves no value of your own — a relayer looks narrow by
+balance changes and is anything but.
+
+**`relayer` is proven; `private_sponsor` is provisional.** Breadth only grows
+with the window, and on one mainnet sponsor the count went 1 to 86 between a
+100- and an 800-transaction scan, crossing the threshold. If
+`sponsor_shape_provisional` is set, raise `max_transactions` before writing
+"narrow" — and never treat shared sponsorship through a relayer as a link.
+
 ## Multisig
 
 `identify_address` tells you a wallet is a multisig and names its committee
@@ -154,6 +231,12 @@ get the schema wrong in ways that fail silently.
 | What did this transaction do, with event values? | `get_transaction` |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — struct shapes, API, capability audit |
+| Who deployed this package? | `analyze_package` or `identify_address` → `publisher` |
+| Can the code still be changed, and by whom? | `analyze_package` → the UpgradeCap's `holder_status` |
+| Why did this transaction fail? | `get_transaction` → `failure` (abort code, module, function) |
+| Has an issuer frozen this address? | `check_coin_restrictions` |
+| Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |
+| Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
 | Where did this object come from? | `trace_object_history` |

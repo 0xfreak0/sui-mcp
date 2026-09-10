@@ -36,6 +36,11 @@ import { currentSuiAccount } from "./chain-id.js";
 const COUNTERPARTY_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
   transactions(filter: { affectedAddress: $addr }, last: $last, before: $before) {
     nodes {
+      # Sponsorship rides along on the scan this query already does. A relayer
+      # pays gas for strangers and may move no value at all, so it is invisible
+      # in balance changes — the signal that would otherwise be missed entirely.
+      sender { address }
+      gasInput { gasSponsor { address } }
       effects {
         balanceChanges { nodes { amount owner { address } coinType { repr } } }
       }
@@ -47,6 +52,8 @@ const COUNTERPARTY_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: Str
 interface CounterpartyPage {
   transactions: {
     nodes: Array<{
+      sender?: { address?: string } | null;
+      gasInput?: { gasSponsor?: { address?: string } | null } | null;
       effects: {
         balanceChanges: {
           nodes: Array<{
@@ -93,6 +100,26 @@ export interface FanoutResult {
    */
   classification: "hub" | "distributor" | "narrow";
   interpretation: string;
+  /**
+   * Distinct addresses this one paid gas FOR, over the sample.
+   *
+   * A separate question from value fan-out, and not answerable from it: a
+   * relayer sponsors strangers while moving no value of its own, so it looks
+   * narrow by balance changes and is anything but.
+   *
+   * The distinction that matters for clustering is breadth, not volume.
+   * Measured on mainnet: one sponsor paid gas in 278 of 400 sampled
+   * transactions but for only 7 distinct addresses — a private payer for a
+   * small set, where shared sponsorship is a real link. A public relayer pays
+   * for strangers and shared sponsorship through it means nothing.
+   */
+  sponsored_address_count: number;
+  /** Transactions in the sample where this address paid someone else's gas. */
+  sponsored_transaction_count: number;
+  /** Coarse reading of sponsorship breadth. `relayer` means treat it as noise. */
+  sponsor_shape: "relayer" | "private_sponsor" | "not_a_sponsor";
+  /** What that shape licenses. Absent when the address sponsors nobody. */
+  sponsor_interpretation?: string;
   /** True when served from the optional local store rather than re-measured. */
   cached?: boolean;
   measured_ago_ms?: number;
@@ -108,6 +135,43 @@ export interface FanoutResult {
  * "obviously busy / obviously not" rather than a calibrated classifier.
  */
 const HUB_THRESHOLD = 1_000;
+
+/**
+ * Addresses one sponsor may pay for before shared sponsorship stops meaning
+ * anything.
+ *
+ * Same logic as the funder popularity filter and the same reason: a link
+ * through an intermediary is only worth something if the intermediary is
+ * narrow. Measured on mainnet, a real private sponsor paid gas in 278 of 400
+ * sampled transactions for just 7 distinct addresses — heavy use, tiny
+ * audience. A public relayer is the opposite shape, and shared sponsorship
+ * through one says nothing about whether two wallets are related.
+ *
+ * Deliberately below the funder limit of 50: sponsoring is an operational
+ * relationship, so paying for dozens of strangers already reads as a service.
+ */
+const SPONSOR_BREADTH_LIMIT = 20;
+
+function classifySponsor(count: number): FanoutResult["sponsor_shape"] {
+  if (count === 0) return "not_a_sponsor";
+  return count > SPONSOR_BREADTH_LIMIT ? "relayer" : "private_sponsor";
+}
+
+/**
+ * What the sponsorship shape licenses, or undefined when it says nothing.
+ *
+ * Stated separately from `interpretation` because the two can disagree and the
+ * disagreement is the point: an address can be narrow by value and a relayer by
+ * gas. Reading only the value classification would call it a meaningful shared
+ * ancestor when sponsorship through it is noise.
+ */
+function interpretSponsor(shape: FanoutResult["sponsor_shape"], count: number): string | undefined {
+  if (shape === "not_a_sponsor") return undefined;
+  if (shape === "relayer") {
+    return `Pays gas for ${count}+ distinct addresses, which is a relayer or paymaster. Two wallets sharing it as a sponsor is NOT evidence they are related — treat shared sponsorship through this address as noise, the same as a shared exchange.`;
+  }
+  return `Pays gas for only ${count} distinct address(es). A narrow sponsor is an operational relationship worth following: whoever funds the gas usually runs the wallets. Note this can be true even when value fan-out looks unremarkable, since sponsoring moves no value of its own.`;
+}
 const DISTRIBUTOR_THRESHOLD = 100;
 
 /**
@@ -188,6 +252,23 @@ export async function measureFanout(
         coin_type_count: cached.coin_type_count,
         out_in_ratio: cached.out_in_ratio,
         flow_shape: cached.flow_shape as FanoutResult["flow_shape"],
+        // Read back rather than recomputed. Defaulting these to 0 on a cache
+        // hit would claim "not a sponsor" from data this path never looked at,
+        // and a cached answer would silently disagree with a fresh one.
+        sponsored_address_count: cached.sponsored_address_count,
+        sponsored_transaction_count: cached.sponsored_transaction_count,
+        sponsor_shape: cached.sponsor_shape as FanoutResult["sponsor_shape"],
+        ...(interpretSponsor(
+          cached.sponsor_shape as FanoutResult["sponsor_shape"],
+          cached.sponsored_address_count,
+        )
+          ? {
+              sponsor_interpretation: interpretSponsor(
+                cached.sponsor_shape as FanoutResult["sponsor_shape"],
+                cached.sponsored_address_count,
+              ),
+            }
+          : {}),
         scanned_transactions: cached.scanned_transactions,
         truncated: cached.truncated === 1,
         classification,
@@ -201,6 +282,9 @@ export async function measureFanout(
   const recipients = new Set<string>();
   const senders = new Set<string>();
   const coinTypes = new Set<string>();
+  /** Addresses this one paid gas FOR. Never includes self-paid transactions. */
+  const sponsored = new Set<string>();
+  let sponsoredTxs = 0;
   let scanned = 0;
   let cursor: string | undefined;
   let hasNext = true;
@@ -214,6 +298,15 @@ export async function measureFanout(
 
     for (const node of page.transactions.nodes) {
       scanned++;
+
+      // Paying your own gas is not sponsorship, so the sender must differ.
+      const sponsor = node.gasInput?.gasSponsor?.address;
+      const sender = node.sender?.address;
+      if (sponsor === address && sender && sender !== address) {
+        sponsored.add(sender);
+        sponsoredTxs++;
+      }
+
       const changes = node.effects?.balanceChanges.nodes ?? [];
       // Whether this transaction moved value in or out decides which side each
       // counterparty belongs to, so read the subject's own change first.
@@ -242,6 +335,7 @@ export async function measureFanout(
   const flowShape: FanoutResult["flow_shape"] =
     ratio === null ? "unknown" : ratio >= 3 ? "disperser" : ratio <= 0.33 ? "collector" : "balanced";
   const { classification, interpretation } = classifyFanout(counterparties.size);
+  const sponsorShape = classifySponsor(sponsored.size);
   // Persist every field the measurement produced. Storing only the total used
   // to make a cache hit report -1 for the in/out split and "unknown" for flow
   // shape — and recipient_count was written as the counterparty total, so a
@@ -254,6 +348,9 @@ export async function measureFanout(
     coin_type_count: coinTypes.size,
     out_in_ratio: ratio,
     flow_shape: flowShape,
+    sponsored_address_count: sponsored.size,
+    sponsored_transaction_count: sponsoredTxs,
+    sponsor_shape: sponsorShape,
     scanned_transactions: scanned,
     truncated: hasNext ? 1 : 0,
   });
@@ -266,6 +363,12 @@ export async function measureFanout(
     coin_type_count: coinTypes.size,
     out_in_ratio: ratio === null ? null : Number(ratio.toFixed(2)),
     flow_shape: flowShape,
+    sponsored_address_count: sponsored.size,
+    sponsored_transaction_count: sponsoredTxs,
+    sponsor_shape: sponsorShape,
+    ...(interpretSponsor(sponsorShape, sponsored.size)
+      ? { sponsor_interpretation: interpretSponsor(sponsorShape, sponsored.size) }
+      : {}),
     scanned_transactions: scanned,
     truncated: hasNext,
     classification,

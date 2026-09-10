@@ -38,6 +38,9 @@ export interface FanoutRecord {
   coin_type_count: number;
   out_in_ratio: number | null;
   flow_shape: string;
+  sponsored_address_count: number;
+  sponsored_transaction_count: number;
+  sponsor_shape: string;
   scanned_transactions: number;
   truncated: number;
   measured_at: number;
@@ -133,6 +136,12 @@ CREATE TABLE IF NOT EXISTS fanout (
   -- Storing 0 would read as a measured ratio of zero.
   out_in_ratio         REAL,
   flow_shape           TEXT NOT NULL,
+  -- Sponsorship is measured on the same scan but answers a different question,
+  -- so it is stored rather than recomputed: a cache hit that reported 0 here
+  -- would be claiming "not a sponsor" from data it never read.
+  sponsored_address_count     INTEGER NOT NULL,
+  sponsored_transaction_count INTEGER NOT NULL,
+  sponsor_shape        TEXT NOT NULL,
   scanned_transactions INTEGER NOT NULL,
   truncated            INTEGER NOT NULL,
   measured_at          INTEGER NOT NULL
@@ -337,6 +346,8 @@ function migrateFanoutCache(opened: DatabaseLike): void {
     "counterparty_count",
     "coin_type_count",
     "flow_shape",
+    "sponsored_address_count",
+    "sponsor_shape",
   ].every((c) => columns.has(c));
   if ((row?.user_version ?? 0) >= FANOUT_METHOD_VERSION && shapeOk) return;
 
@@ -460,8 +471,9 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
   db.prepare(
     `INSERT INTO fanout (account, recipient_count, sender_count, counterparty_count,
                          coin_type_count, out_in_ratio, flow_shape,
+                         sponsored_address_count, sponsored_transaction_count, sponsor_shape,
                          scanned_transactions, truncated, measured_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(account) DO UPDATE SET
        recipient_count=excluded.recipient_count,
        sender_count=excluded.sender_count,
@@ -469,6 +481,9 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
        coin_type_count=excluded.coin_type_count,
        out_in_ratio=excluded.out_in_ratio,
        flow_shape=excluded.flow_shape,
+       sponsored_address_count=excluded.sponsored_address_count,
+       sponsored_transaction_count=excluded.sponsored_transaction_count,
+       sponsor_shape=excluded.sponsor_shape,
        scanned_transactions=excluded.scanned_transactions,
        truncated=excluded.truncated,
        measured_at=excluded.measured_at`,
@@ -480,6 +495,9 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
     r.coin_type_count,
     r.out_in_ratio,
     r.flow_shape,
+    r.sponsored_address_count,
+    r.sponsored_transaction_count,
+    r.sponsor_shape,
     r.scanned_transactions,
     r.truncated,
     Date.now(),

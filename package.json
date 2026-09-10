@@ -26,7 +26,8 @@
     "verify:published": "node scripts/verify-published.mjs",
     "prepublishOnly": "npm run build && npm test",
     "sync:protocol-roots": "node scripts/sync-protocol-roots.mjs",
-    "sync:verified-coins": "node scripts/sync-verified-coins.mjs"
+    "sync:verified-coins": "node scripts/sync-verified-coins.mjs",
+    "verify:live": "node scripts/verify-live.mjs"
   },
   "keywords": [
     "sui",

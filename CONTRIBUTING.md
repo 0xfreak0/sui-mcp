@@ -42,6 +42,12 @@ npm test
 - Use the existing clients in `src/clients/` rather than creating new HTTP connections.
 - Add entries to `src/data/*.json` registries for new tokens, protocols, or collections.
 - Run `npm test` and `npx tsc --noEmit` before submitting a PR.
+- Run `npm run verify:live` after bumping `@mysten/sui`, after a Sui GraphQL
+  schema change, or before a release. The offline tests pin mainnet fixtures and
+  cannot notice that the chain or the SDK moved underneath them.
+- Measuring something new? Write a throwaway script and delete it. Record the
+  number in a commit message or `CLAUDE.md` — a script kept to rediscover a
+  number you already wrote down just rots against live mainnet.
 
 ## Pull requests
 

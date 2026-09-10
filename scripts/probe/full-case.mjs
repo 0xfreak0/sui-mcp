@@ -163,9 +163,23 @@ await runWithNetwork("mainnet", async () => {
   console.log("\n7. sponsorship travels with fan-out");
   const fan = await call("get_address_fanout", { address: HOT_MULTISIG, max_transactions: 200 });
   check("sponsor fields present", typeof fan.sponsored_address_count === "number", `shape=${fan.sponsor_shape}`);
+  // Present whenever there is something to say: it sponsors, or it does not
+  // and the scan was cut short — absence off a truncated scan is not absence.
+  // Silent only when a COMPLETE scan saw no sponsorship.
+  const shouldSpeak = fan.sponsor_shape !== "not_a_sponsor" || fan.truncated;
   check(
-    "sponsor_interpretation present exactly when it sponsors",
-    (fan.sponsor_shape === "not_a_sponsor") === (fan.sponsor_interpretation === undefined),
+    "sponsor_interpretation present exactly when there is something to say",
+    shouldSpeak === (fan.sponsor_interpretation !== undefined),
+    `shape=${fan.sponsor_shape} truncated=${fan.truncated} note=${fan.sponsor_interpretation ? "yes" : "no"}`,
+  );
+  // Provisional whenever the scan was cut short and the reading is one that
+  // more history could overturn. `relayer` is the exception — 21 distinct
+  // payees stay 21 however much further you look.
+  const shouldBeProvisional = fan.truncated && fan.sponsor_shape !== "relayer";
+  check(
+    "a reading more history could overturn is marked provisional",
+    shouldBeProvisional === (fan.sponsor_shape_provisional === true),
+    `shape=${fan.sponsor_shape} truncated=${fan.truncated} provisional=${fan.sponsor_shape_provisional}`,
   );
 
   console.log(`\n${"=".repeat(64)}`);

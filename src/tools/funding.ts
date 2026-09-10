@@ -5,7 +5,13 @@ import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import { getLabel } from "../utils/labels.js";
-import { decimalsForCoinType, symbolOf, toHumanAmount, usdValue } from "../utils/valuation.js";
+import {
+  coinScale,
+  decimalsForCoinType,
+  displayCoin,
+  toHumanAmount,
+  usdValue,
+} from "../utils/valuation.js";
 import { pickFundingTx, type FundingTx } from "../utils/funding.js";
 import { pricesForRanking } from "../utils/price-providers.js";
 import { measureFanout } from "../utils/fanout.js";
@@ -91,10 +97,19 @@ async function fetchEarliestTxs(address: string, first = 12): Promise<FundingTx[
   }));
 }
 
+/**
+ * Human amount with its symbol, marked when nothing vouches for the coin.
+ *
+ * The `(unverified)` is not decoration. The symbol is whatever the minter
+ * chose — 585 mainnet coins end `::SUI` — and the scale used to render the
+ * number is a guess for any coin the registry does not know. An amount that
+ * might be 10^9 out must not read the same as one that cannot be.
+ */
 function formatAmount(rawAmount: string, coinType: string): string {
-  const sym = symbolOf(coinType);
-  const human = toHumanAmount(rawAmount, decimalsForCoinType(coinType));
-  return `${human} ${sym}`;
+  const scale = coinScale(coinType);
+  const { symbol, verified } = displayCoin(coinType);
+  const human = toHumanAmount(rawAmount, scale.decimals);
+  return `${human} ${symbol}${verified ? "" : " (unverified)"}`;
 }
 
 interface ChainStep {

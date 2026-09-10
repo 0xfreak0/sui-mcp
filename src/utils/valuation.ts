@@ -1,12 +1,19 @@
 import { buildPythFeedMap } from "../discovery.js";
+import { verifiedCoin } from "./coin-registry.js";
 import { pythApiKey } from "./price-providers.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 
 /**
- * Decimals for common Sui coins, keyed by short symbol. Used to convert raw
- * on-chain amounts to human units for USD valuation and display. Unknown coins
- * fall back to 9 (Sui's default) — documented as best-effort; Pyth-priced coins
- * (the ones that get a USD value at all) are all covered here.
+ * Decimals for common Sui coins, keyed by short symbol.
+ *
+ * **Kept only as a last-resort fallback, never as identification.** Keying a
+ * scale on the struct name is how a coin whose type merely ends `::sui::SUI`
+ * inherited real SUI's 9 decimals. Measured on mainnet: of 289 unverified
+ * coins whose struct name matches one of these symbols, 47 declare different
+ * decimals — a fake SUI with 0 would have reported every amount 10^9 out.
+ *
+ * The registry is consulted first and answers by coin TYPE, which is the
+ * identity. This map only softens the failure when nothing knows the coin.
  */
 export const KNOWN_DECIMALS: Record<string, number> = {
   SUI: 9, USDC: 6, USDT: 6, DEEP: 6, CETUS: 9, NS: 6,
@@ -16,15 +23,75 @@ export const KNOWN_DECIMALS: Record<string, number> = {
 
 export const DEFAULT_DECIMALS = 9;
 
-/** Short symbol from a full coin type (`0x2::sui::SUI` → `SUI`). */
+/**
+ * Short symbol from a full coin type (`0x2::sui::SUI` → `SUI`).
+ *
+ * This is the struct name and nothing more. It is not an identifier: 585
+ * mainnet coins end `::SUI`. Use {@link displayCoin} anywhere a reader will
+ * see it.
+ */
 export function symbolOf(coinType: string): string {
   const parts = coinType.split("::");
   return parts.length >= 3 ? parts[parts.length - 1] : coinType;
 }
 
-/** Decimals for a coin type, from the known map, else the default. */
+export interface CoinScale {
+  decimals: number;
+  /**
+   * `registry` means a curated list vouches for this exact coin type and
+   * supplied its decimals. `assumed` means nothing does, and the amount was
+   * scaled by a guess — which the caller must pass on rather than absorb.
+   */
+  source: "registry" | "assumed";
+}
+
+/**
+ * The decimal scale for a coin type, and how much that scale is worth.
+ *
+ * Resolved by TYPE against the verified registry. Only when nothing knows the
+ * coin does it fall back to the symbol map, and it says so — an amount scaled
+ * by a guess is not the same claim as one scaled by a known decimals value,
+ * and 16% of imitators on mainnet declare a different scale from the coin they
+ * imitate.
+ */
+export function coinScale(coinType: string): CoinScale {
+  const known = verifiedCoin(coinType);
+  if (known?.decimals !== null && known?.decimals !== undefined) {
+    return { decimals: known.decimals, source: "registry" };
+  }
+  return {
+    decimals: KNOWN_DECIMALS[symbolOf(coinType)] ?? DEFAULT_DECIMALS,
+    source: "assumed",
+  };
+}
+
+/** Decimals only, for callers that have already handled the scale's provenance. */
 export function decimalsForCoinType(coinType: string): number {
-  return KNOWN_DECIMALS[symbolOf(coinType)] ?? DEFAULT_DECIMALS;
+  return coinScale(coinType).decimals;
+}
+
+export interface CoinDisplay {
+  coin_type: string;
+  symbol: string;
+  /** A curated list vouches for this exact coin type. */
+  verified: boolean;
+}
+
+/**
+ * How to name a coin in output.
+ *
+ * The symbol is still shown for an unverified coin — hiding it would make
+ * results unreadable — but `verified: false` says it is a claim made by
+ * whoever minted the coin rather than an identification, and the full type is
+ * always carried so two coins called SUI stay distinguishable.
+ */
+export function displayCoin(coinType: string): CoinDisplay {
+  const known = verifiedCoin(coinType);
+  return {
+    coin_type: coinType,
+    symbol: known?.symbol ?? symbolOf(coinType),
+    verified: known !== null,
+  };
 }
 
 /** Convert a raw amount to human units (may lose sub-cent precision on huge values — fine for USD estimates). */

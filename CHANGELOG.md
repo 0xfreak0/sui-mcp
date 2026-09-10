@@ -1,5 +1,91 @@
 # Changelog
 
+## 1.13.0 (2026-09-10)
+
+Multisig wallets are now legible: who is on the committee, which of them
+actually sign, and who signed a given transaction.
+
+### Added
+- **Multisig identification, chain-derived.** A Sui address is the hash of its
+  authenticator, so a multisig's threshold, member keys and weights are part of
+  the address itself and travel inside every transaction the wallet sends.
+  Membership is derived and checked against the address rather than inferred.
+
+  Nothing could see this before: an address with no object at it classified as
+  `wallet`, so a treasury multisig and a personal wallet gave the same answer.
+  `identify_address` now returns `authentication`, and expands each committee
+  member into its own identity — name, labels, SuiNS history. `trace_funds`,
+  `find_funding_source`, `find_funding_sources` and `build_wallet_edges` carry
+  the same enrichment.
+
+  Three properties are the opposite of the EVM intuition and are documented at
+  the point of use. The committee cannot rotate — changing a member changes the
+  address, so a member key is permanent. An address has exactly one
+  authenticator for its whole life. And a wallet that has never *sent* cannot be
+  classified at all, which surfaces as an explicit "unknown" rather than as an
+  ordinary wallet: a receive-only treasury multisig is indistinguishable from a
+  fresh personal wallet until it spends.
+
+  zkLogin and passkey wallets go through the same path. zkLogin reports its
+  OAuth issuer, which is all the chain discloses about the account — the address
+  seed is one-to-one with the address and cannot link a person's wallets.
+
+- **`analyze_multisig`** — which committee keys are live, which have never
+  signed, and how the signer set moved. The committee is fixed, so the signer
+  bitmap is the only thing that varies between transactions, and one
+  transaction cannot interpret it. Measured on a mainnet 4-of-7: eight
+  transactions, three distinct signer sets, two of the seven keys with no
+  signature at all. Every claim is reported against `transactions_examined`,
+  because "never signed" over 8 transactions and over 200 are different claims.
+
+- **`find_shared_multisig`** — given addresses a trace has already linked,
+  derive every committee those keys could form and return the ones that exist
+  on chain. A hit is proof rather than a resemblance. It finds treasuries that
+  never appeared in the trace, since a multisig is only visible if it happened
+  to transact with something already examined.
+
+  Two limits are in the output, not just the docs. Member order is part of the
+  address, so the search is factorial and refuses past five keys — a truncated
+  search cannot support the negative it is asked for. And it covers equal-weight
+  committees only, so a nil result means "no equal-weight multisig of these
+  exact keys", never "these addresses share no multisig".
+
+- **`authorization` on `get_transaction`** — which keys signed *this*
+  transaction and which committee members did not, plus the gas sponsor when
+  one paid. A member under `did_not_sign` is still authorised and may have
+  signed others; the response says so.
+
+- **`co_signer` clustering signal** on `build_wallet_edges`, weighted 1.5 for a
+  key that can spend a wallet alone. It is the only signal here that is not
+  behavioural — the others say two addresses did something co-controlled
+  wallets tend to do, measured against a base rate, while this says the
+  committee hashes to the address and the key is in it.
+
+  Two guards, both load-bearing. A multi-party committee is evidence its members
+  are *separate* parties — that is what a 4-of-7 treasury is for — so edges run
+  member-to-multisig in a star, never member-to-member, and a member who cannot
+  spend alone is weighted below the merge floor. And a co-signing key can be a
+  service: a wallet provider's recovery key sits on one committee per customer,
+  which without a popularity filter links every customer of that provider into
+  one cluster. Measured on mainnet: one key on 31 committees produced a
+  63-member cluster of unrelated people; with the filter, 31 two-member
+  clusters. Excluded keys are reported in `excluded_co_signers` rather than
+  dropped — that such a key can spend 31 wallets is itself chain-derived.
+
+### Changed
+- **`evidence_tier` moved from the response root onto each cluster.**
+  `build_wallet_edges` previously tagged its whole output `heuristic`. A cluster
+  built only from full-weight co-signature is read from the address hash, so it
+  now carries `chain-derived` while behavioural clusters stay `heuristic`, and
+  the root field reports which case applies. Weakest link: a cluster that needed
+  one behavioural edge to hold together is heuristic however strong the rest is.
+
+  A `chain-derived` cluster still shows **control, not ownership** — a custodian
+  holds a key for a client.
+
+- Tool count 62 → 64. The `forensics` profile gains `analyze_multisig` and
+  `find_shared_multisig`.
+
 ## 1.12.1 (2026-09-04)
 
 ### Fixed

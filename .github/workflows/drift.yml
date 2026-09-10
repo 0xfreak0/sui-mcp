@@ -1,0 +1,80 @@
+name: Drift
+
+# The offline tests pin real mainnet signatures and shapes as fixtures, which is
+# what keeps them fast and deterministic — and is exactly why they cannot notice
+# that the chain, the SDK or the Sui GraphQL schema moved underneath them. They
+# keep passing against a stale copy of a world that changed.
+#
+# `npm run verify:live` is the only thing that catches that, and it ran when
+# somebody remembered. This gives it a schedule.
+#
+# Deliberately NOT part of CI. It needs the network and mainnet's current state,
+# so as a required check it would be flaky on a cadence nobody chose, and a
+# flaky required check teaches people to ignore failures. It runs on its own and
+# opens an issue instead, which is a thing you can read on Monday rather than a
+# red mark on an unrelated pull request.
+on:
+  schedule:
+    # Weekly. Drift comes from dependency and schema releases, which arrive on
+    # that sort of timescale — daily would mostly re-report the same thing.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Only to file the report; nothing here writes to the repo.
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned; see publish.yml for why. Comments record the tag.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      # --ignore-scripts: nothing here needs install hooks, and this job runs
+      # unattended on a schedule.
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+
+      - name: Live checks against mainnet
+        id: live
+        run: npm run verify:live 2>&1 | tee /tmp/live.log
+
+      # verify:live regenerates test/fixtures/signatures.json. If the SDK's
+      # parse has drifted, the offline tests fail here against the freshly
+      # pulled fixtures — the loudest signal available, and the reason this step
+      # runs AFTER the live one rather than before.
+      - name: Tests against the regenerated fixtures
+        if: always()
+        run: npm test 2>&1 | tee -a /tmp/live.log
+
+      # A changed fixture is itself the finding: the bytes the chain returns for
+      # a pinned signature are not what they were.
+      - name: Report a fixture change
+        if: always()
+        run: |
+          if ! git diff --quiet -- test/fixtures/signatures.json; then
+            echo "FIXTURES CHANGED — the chain returned different bytes for a pinned signature." | tee -a /tmp/live.log
+            git diff --stat -- test/fixtures/signatures.json | tee -a /tmp/live.log
+          fi
+
+      - name: Open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # One open issue at a time. A weekly job that files a duplicate every
+          # Monday is a job people mute.
+          existing=$(gh issue list --label drift --state open --limit 1 --json number --jq '.[0].number')
+          body=$(printf 'The weekly live checks failed. Something moved that the offline tests cannot see — the SDK, the Sui GraphQL schema, or mainnet itself.\n\nRun: %s\n\n```\n%s\n```\n' "$RUN" "$(tail -n 60 /tmp/live.log)")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Live checks failed against mainnet" --label drift --body "$body"
+          fi

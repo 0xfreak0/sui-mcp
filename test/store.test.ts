@@ -29,6 +29,9 @@ const fanout = (over: Record<string, unknown>) => ({
   coin_type_count: 1,
   out_in_ratio: 1,
   flow_shape: "balanced",
+  sponsored_address_count: 0,
+  sponsored_transaction_count: 0,
+  sponsor_shape: "not_a_sponsor",
   scanned_transactions: 1,
   truncated: 0,
   ...over,
@@ -383,6 +386,10 @@ describe("fan-out cache round-trips the full measurement", () => {
       coin_type_count: 7,
       out_in_ratio: 9.78,
       flow_shape: "disperser",
+      // Measured on mainnet: heavy sponsorship of a tiny audience.
+      sponsored_address_count: 7,
+      sponsored_transaction_count: 278,
+      sponsor_shape: "private_sponsor",
       scanned_transactions: 600,
       truncated: 1,
     });
@@ -395,6 +402,13 @@ describe("fan-out cache round-trips the full measurement", () => {
     expect(c?.coin_type_count).toBe(7);
     expect(c?.out_in_ratio).toBeCloseTo(9.78);
     expect(c?.flow_shape).toBe("disperser");
+    // Sponsorship is measured on the same scan but answers a different
+    // question, so it has to survive the round trip too. Defaulting it to 0 on
+    // a cache hit would claim "not a sponsor" from data never read — the same
+    // failure this whole describe block exists to prevent.
+    expect(c?.sponsored_address_count).toBe(7);
+    expect(c?.sponsored_transaction_count).toBe(278);
+    expect(c?.sponsor_shape).toBe("private_sponsor");
     expect(c?.scanned_transactions).toBe(600);
     expect(c?.truncated).toBe(1);
   });
@@ -412,6 +426,9 @@ describe("fan-out cache round-trips the full measurement", () => {
       coin_type_count: 1,
       out_in_ratio: null,
       flow_shape: "unknown",
+      sponsored_address_count: 0,
+      sponsored_transaction_count: 0,
+      sponsor_shape: "not_a_sponsor",
       scanned_transactions: 3,
       truncated: 0,
     });

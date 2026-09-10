@@ -2,7 +2,7 @@ import { z } from "zod";
 import { describeSignatures } from "../utils/multisig.js";
 import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
-import { formatStatus, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
+import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
@@ -198,6 +198,12 @@ export function registerTransactionTools(server: McpServer) {
                 digest: tx?.digest,
                 sender,
                 status: formatStatus(effects?.status),
+                // Why it failed, from data already in `effects`. Absent on
+                // success, so a reader never has to check a field that says
+                // nothing.
+                ...(describeFailure(effects?.status)
+                  ? { failure: describeFailure(effects?.status) }
+                  : {}),
                 timestamp: timestampToIso(tx?.timestamp),
                 protocols: allProtocols,
                 ...(onlyFromEvents.length

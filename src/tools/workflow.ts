@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { coinScale, displayCoin } from "../utils/valuation.js";
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
@@ -128,12 +129,20 @@ export function registerWorkflowTools(server: McpServer) {
       // Build holdings
       const holdings = rawBalances.map((b) => {
         const meta = metaMap.get(b.coinType);
-        const decimals = meta?.decimals ?? 9;
-        const symbol = meta?.symbol ?? extractSymbol(b.coinType);
+        // On-chain metadata is authoritative when present. Falling back to the
+        // registry's scale rather than a bare 9 keeps this consistent with how
+        // traces render the same coin, and marks a guess as a guess.
+        const scale = coinScale(b.coinType);
+        const decimals = meta?.decimals ?? scale.decimals;
+        const known = displayCoin(b.coinType);
+        const symbol = meta?.symbol ?? known.symbol;
 
         const base: Record<string, unknown> = {
           coin_type: b.coinType,
           symbol,
+          // The symbol is whatever the minter chose; 8,008 mainnet coins share
+          // one with another. Marked here for the same reason a trace marks it.
+          verified: known.verified,
           balance: b.balance,
         };
 
@@ -183,10 +192,44 @@ export function registerWorkflowTools(server: McpServer) {
       };
 
       if (include_prices) {
-        const totalValueUsd = Math.round(
-          holdings.reduce((sum, h) => sum + ((h.value_usd as number) ?? 0), 0) * 100
-        ) / 100;
-        result.total_value_usd = totalValueUsd;
+        // A holding with no price contributes 0, so the total silently covers
+        // only what could be priced. Measured on three mainnet wallets: 1 of 3,
+        // 46 of 50 and 5 of 15 holdings had no price. The middle one reported
+        // $1.86 for a wallet holding fifty coins, which reads as a portfolio
+        // value rather than as four coins out of fifty.
+        const priced = holdings.filter((h) => h.value_usd != null);
+        const unpriced = holdings.length - priced.length;
+        result.total_value_usd =
+          Math.round(priced.reduce((sum, h) => sum + ((h.value_usd as number) ?? 0), 0) * 100) / 100;
+        result.priced_holdings = priced.length;
+        result.unpriced_holdings = unpriced;
+        result.verified_holdings = holdings.filter((h) => h.verified === true).length;
+
+        if (unpriced > 0 || hasNextPage) {
+          const parts: string[] = [];
+          if (unpriced > 0) {
+            // Say what an absent price most likely MEANS rather than only that
+            // it is absent. Nobody makes a market in a token minted to look
+            // like another one, which is why `pickFundingTx` treats an unpriced
+            // coin as spam at any size — but a newly listed asset is
+            // indistinguishable here, so both readings are given.
+            const unverifiedUnpriced = holdings.filter(
+              (h) => h.value_usd == null && h.verified === false,
+            ).length;
+            parts.push(
+              `Covers the ${priced.length} of ${holdings.length} holdings that have a price. The other ${unpriced} contribute nothing.` +
+                (unverifiedUnpriced > 0
+                  ? ` ${unverifiedUnpriced} of those are also unverified — no market price and nothing vouching for the coin is the usual shape of a spam or impersonation token, though a newly listed asset looks the same.`
+                  : " A coin with no market price usually has no market, though a newly listed asset looks the same here."),
+            );
+          }
+          if (hasNextPage) {
+            parts.push(
+              "The holdings list was also truncated, so coins beyond the page are excluded entirely.",
+            );
+          }
+          result.total_value_note = `${parts.join(" ")} Treat this as a floor, not a portfolio value.`;
+        }
       }
 
       return {

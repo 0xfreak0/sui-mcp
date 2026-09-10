@@ -78,6 +78,10 @@ export const PROFILES = {
     // never surfaced in the trace.
     "analyze_multisig",
     "find_shared_multisig",
+    // Whether an issuer has frozen an address is chain-derived attribution, and
+    // the question comes up the moment a traced address stops being able to move
+    // a token.
+    "check_coin_restrictions",
     // Reading an unknown package IS investigation work: naming an obfuscated
     // wrapper, reading a protocol's event structs, checking what a suspicious
     // package can do. These sat in `developer` only, so an investigator running

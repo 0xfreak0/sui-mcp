@@ -21,7 +21,7 @@ await Promise.all(Array.from({length:CONC},async()=>{ while(idx<N){ const i=idx+
 console.log("checkpoints requested",N.toString(),"ok",ok,"failed",fail,"txs",txs,"sigs",sigs);
 console.log("errors:",[...errs.entries()]);
 console.log("multisig sigs",hits.length,"distinct senders",new Set(hits.map(h=>h.sender)).size);
-fs.writeFileSync("/private/tmp/claude-501/-Users-gorpig-github-sui-mcp/32ba20b4-1118-4478-b4d7-6175eec9afe5/scratchpad/multisig-hits.json", JSON.stringify(hits,null,1));
+fs.writeFileSync("scripts/probe/multisig-hits.json", JSON.stringify(hits,null,1));
 const shapes=new Map();
 for(const h of hits){ const k=`t=${h.threshold} weights=[${h.members.map(m=>m.weight).join(",")}] schemes=[${h.members.map(m=>m.zk?"zk:"+m.iss:m.scheme).join(",")}] legacy=${h.legacy}`; shapes.set(k,(shapes.get(k)??0)+1); }
 for(const [k,n] of [...shapes.entries()].sort((a,b)=>b[1]-a[1])) console.log("  ",n,k);

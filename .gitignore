@@ -26,3 +26,6 @@ scripts/extract-nft-purchases*
 # Scratch / working files (never commit)
 scratchpad/
 **/scratchpad/
+
+# Probe scan output
+scripts/probe/multisig-hits.json

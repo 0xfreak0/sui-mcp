@@ -14,7 +14,7 @@ async function one(i){ try{
 await Promise.all(Array.from({length:CONC},async()=>{ while(idx<N){ const i=idx++; await one(i);} }));
 console.log("checkpoints",N.toString(),"txs",txs,"sigs",sigs,"schemes",[...schemes.entries()].sort());
 console.log("multisig sigs",hits.length,"distinct senders",new Set(hits.map(h=>h.sender)).size);
-fs.writeFileSync("/private/tmp/claude-501/-Users-gorpig-github-sui-mcp/32ba20b4-1118-4478-b4d7-6175eec9afe5/scratchpad/multisig-hits.json", JSON.stringify(hits,null,1));
+fs.writeFileSync("scripts/probe/multisig-hits.json", JSON.stringify(hits,null,1));
 const shapes=new Map();
 for(const h of hits){ const k=`${h.threshold}-of-[${h.members.map(m=>m.weight).join(",")}] schemes=[${h.members.map(m=>m.zk?"zk":m.scheme).join(",")}] legacy=${h.legacy}`; shapes.set(k,(shapes.get(k)??0)+1); }
 console.log("shapes:"); for(const [k,n] of [...shapes.entries()].sort((a,b)=>b[1]-a[1])) console.log("  ",n,k);

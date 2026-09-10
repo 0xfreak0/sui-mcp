@@ -8,6 +8,7 @@ import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
 import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
+import { resolvePublisher } from "../utils/publisher.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
@@ -148,6 +149,11 @@ export function registerIdentifyTools(server: McpServer) {
 
         const lineage = await describeLineage(address, originalId, version);
 
+        // Attribute the ROOT, not the version handed in. An upgrade's creating
+        // transaction was sent by whoever held the UpgradeCap then, which is
+        // the upgrader and a different claim from the original publisher.
+        const publisher = await resolvePublisher(lineage.root_package_id ?? address);
+
         // Identification, cheapest tier first. The lineage root is already
         // cached by describeLineage, so a package belonging to a curated
         // protocol resolves without another call — and only a package no
@@ -178,6 +184,7 @@ export function registerIdentifyTools(server: McpServer) {
               type: "package",
               protocol,
               lineage,
+              publisher,
               module_count: modules.length,
               modules: modules.slice(0, 20),
               modules_truncated: modules.length > 20,

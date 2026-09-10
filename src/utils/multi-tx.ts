@@ -37,7 +37,7 @@ import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { packageOfEventType } from "./event-json.js";
 import { withArchiveFallback } from "./archive-fallback.js";
-import { formatStatus, bigintToString, timestampToIso } from "./formatting.js";
+import { formatStatus, describeFailure, bigintToString, timestampToIso, type FailureDetail } from "./formatting.js";
 
 /**
  * The null address, which is what a system transaction's sender is.
@@ -89,6 +89,20 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
     }
     effects {
       status
+      # Why it failed. GraphQL exposes less than gRPC does: no clever-error
+      # constant name, and sourceLineNumber / identifier came back null on every
+      # mainnet failure sampled. The abort code, module and function are all
+      # here though, which is what makes an abort readable.
+      executionError {
+        abortCode
+        instructionOffset
+        identifier
+        constant
+        sourceLineNumber
+        message
+        module { name package { address } }
+        function { name }
+      }
       timestamp
       epoch { epochId }
       checkpoint { sequenceNumber }
@@ -115,6 +129,7 @@ interface RawTx {
   } | null;
   effects?: {
     status?: string;
+    executionError?: GqlExecutionError | null;
     timestamp?: string | null;
     epoch?: { epochId?: number } | null;
     checkpoint?: { sequenceNumber?: number } | null;
@@ -126,10 +141,58 @@ interface RawTx {
   } | null;
 }
 
+interface GqlExecutionError {
+  abortCode?: string | null;
+  instructionOffset?: number | null;
+  identifier?: string | null;
+  constant?: string | null;
+  sourceLineNumber?: number | null;
+  message?: string | null;
+  module?: { name?: string | null; package?: { address?: string | null } | null } | null;
+  function?: { name?: string | null } | null;
+}
+
+/**
+ * Map GraphQL's execution error onto the same shape gRPC produces, so a caller
+ * reading `failure` does not have to know which transport served the batch.
+ *
+ * The kind is always `MOVE_ABORT` here: GraphQL only populates
+ * `executionError` for aborts, and reports every other failure as a bare
+ * `FAILURE` status. `get_transaction` reads over gRPC and distinguishes all of
+ * them — the same breadth-here-depth-there boundary this file applies to
+ * events.
+ */
+function failureFromGraphql(e: GqlExecutionError): FailureDetail {
+  const out: FailureDetail = { kind: "MOVE_ABORT" };
+  if (e.abortCode != null) out.abort_code = String(e.abortCode);
+  if (e.message) out.description = e.message;
+  const pkg = e.module?.package?.address;
+  if (pkg || e.module?.name || e.function?.name || e.instructionOffset != null) {
+    out.location = {
+      ...(pkg ? { package: pkg } : {}),
+      ...(e.module?.name ? { module: e.module.name } : {}),
+      ...(e.function?.name ? { function: e.function.name } : {}),
+      ...(e.instructionOffset != null ? { instruction: e.instructionOffset } : {}),
+    };
+  }
+  // Null on every mainnet failure sampled, but populated for a package built
+  // with clever errors — carried through rather than assumed absent.
+  if (e.constant || e.identifier || e.sourceLineNumber != null) {
+    out.clever_error = {
+      ...(e.constant ? { constant_name: e.constant } : {}),
+      ...(e.identifier ? { rendered: e.identifier } : {}),
+      ...(e.sourceLineNumber != null ? { line_number: e.sourceLineNumber } : {}),
+    };
+  }
+  return out;
+}
+
 export interface BatchedTx {
   digest: string;
   sender: string | null;
   status: string | null;
+  /** Why it failed, when it did. Absent on success. */
+  failure?: FailureDetail;
   timestamp: string | null;
   epoch: string | null;
   checkpoint: string | null;
@@ -195,6 +258,7 @@ function fromGrpc(res: GrpcTypes.GetTransactionResponse, digest: string): Batche
     digest: tx.digest ?? digest,
     sender: tx.transaction?.sender ?? null,
     status: formatStatus(e?.status) ?? null,
+    ...(describeFailure(e?.status) ? { failure: describeFailure(e?.status) } : {}),
     timestamp: timestampToIso(tx.timestamp) ?? null,
     epoch: bigintToString(e?.epoch) ?? null,
     checkpoint: bigintToString(tx.checkpoint) ?? null,
@@ -324,7 +388,8 @@ export async function fetchTransactions(
       // Null from GraphQL on a transaction that plainly exists means the null
       // address, which is how gRPC reports it.
       sender: tx.sender?.address ?? (tx.kind?.__typename ? SYSTEM_SENDER : null),
-      status: e?.status ?? null,
+      status: e?.status ? e.status.toLowerCase() : null,
+      ...(e?.executionError ? { failure: failureFromGraphql(e.executionError) } : {}),
       timestamp: e?.timestamp ?? null,
       epoch: e?.epoch?.epochId != null ? String(e.epoch.epochId) : null,
       checkpoint: e?.checkpoint?.sequenceNumber != null ? String(e.checkpoint.sequenceNumber) : null,

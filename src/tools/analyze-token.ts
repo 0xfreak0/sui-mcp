@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  currentEpoch,
+  findCoinConfig,
+  readCoinRestrictions,
+} from "../utils/deny-list-probe.js";
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
@@ -99,6 +104,30 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         price_change_24h_percent: change24h,
         market_cap_usd: marketCapUsd,
       };
+
+      // Is this a regulated coin, and is anyone frozen? One keyed lookup, so it
+      // costs a request rather than a scan. Best-effort: a token analysis must
+      // not fail because the deny list was unreachable.
+      try {
+        const configId = await findCoinConfig(coinType);
+        if (configId) {
+          const epoch = await currentEpoch();
+          const r = await readCoinRestrictions(coinType, configId, epoch, 4);
+          result.deny_list = {
+            regulated: true,
+            globally_paused: r.globally_paused,
+            denied_address_count: r.denied.length,
+            denied_count_truncated: r.truncated,
+            note: "This coin's issuer can freeze individual addresses or pause it entirely. Use check_coin_restrictions for who is frozen.",
+          };
+        } else {
+          // Said explicitly. Absent would read as "not checked", and whether a
+          // token can freeze its holders is exactly what a holder wants to know.
+          result.deny_list = { regulated: false };
+        }
+      } catch {
+        result.deny_list = { regulated: null, note: "The deny list could not be read; this is not evidence the coin is unregulated." };
+      }
 
       if (holderResult) {
         result.top_holders = holderResult.holders;

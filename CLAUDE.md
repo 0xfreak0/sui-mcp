@@ -459,7 +459,11 @@ Four rules that are easy to get wrong:
 - **Narrow and popular are not symmetric.** Popular is proven by what was seen.
   Narrow off an incomplete scan is provisional, because the probe reads recent
   activity while the fundings it filters are historical. `used_intermediaries`
-  carries `scan_complete`.
+  carries `scan_complete`. The same rule governs `sponsor_shape` in
+  `measureFanout`: `relayer` is proven, `private_sponsor` off a truncated scan
+  only means "not far enough" and carries `sponsor_shape_provisional`. Measured
+  on one mainnet sponsor, the distinct-payee count went 1 to 86 between a 100-
+  and an 800-transaction window, crossing the threshold.
 - **Expansion links members to seeds in a star**, never member to member. Same
   components, far less output: a 50-member sponsor would otherwise emit 1,225
   edges that cannot merge on their own weight.

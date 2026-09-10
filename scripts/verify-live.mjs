@@ -50,6 +50,7 @@ const CHECKS = [
   ["probe/investigation", "chained end-to-end investigation"],
   ["probe/full-case", "cross-tool consistency: two tools must not disagree about one fact"],
   ["probe/gap-pass", "paths the other sweeps do not reach"],
+  ["probe/consistency-pass2", "each 1.13.0+ feature against an independent source of the same fact"],
 ];
 
 const run = (script) =>

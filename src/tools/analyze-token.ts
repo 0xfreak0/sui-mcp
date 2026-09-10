@@ -123,7 +123,15 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         } else {
           // Said explicitly. Absent would read as "not checked", and whether a
           // token can freeze its holders is exactly what a holder wants to know.
-          result.deny_list = { regulated: false };
+          //
+          // Spelled out because `regulated: false` is easy to read as a clean
+          // bill of health, and it is the opposite: a scam token has no deny
+          // list precisely because nobody legitimate issued it. This field
+          // describes freeze capability, never legitimacy.
+          result.deny_list = {
+            regulated: false,
+            note: "No deny list state, so nobody can freeze holders of this coin. That is a statement about issuer capability, NOT about the coin being safe or genuine — an impostor token has no deny list either.",
+          };
         }
       } catch {
         result.deny_list = { regulated: null, note: "The deny list could not be read; this is not evidence the coin is unregulated." };

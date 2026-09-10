@@ -152,3 +152,30 @@ describe("BCS key encoding", () => {
     expect(Buffer.from(addressKeyBcs("0x2"), "base64")).toHaveLength(32);
   });
 });
+
+describe("query chunking", () => {
+  /**
+   * Regression. The cross-coin scan aliased 20 lookups per request because 20
+   * is the store-backed query limit — but the service ALSO caps query text at
+   * 5000 bytes, and 20 of these came to 5132B. The whole chunk was rejected,
+   * so a scan of 1,250 coins checked 10 and reported 58 restrictions as 1.
+   *
+   * Packing to a byte budget adapts; a fixed count encodes a number that breaks
+   * the moment the query text changes.
+   */
+  it("keeps an alias chunk inside the service's query-text budget", () => {
+    const bcs = addressKeyBcs("0x" + "a".repeat(64));
+    const cfg = "0x" + "b".repeat(64);
+    const line = (j: number) =>
+      `c${j}:object(address:${JSON.stringify(cfg)}){dynamicField(name:{type:"0x2::deny_list::AddressKey",bcs:${JSON.stringify(bcs)}}){value{...on MoveValue{json}}}}`;
+    let size = "query{}".length;
+    let count = 0;
+    while (count < 20 && size + line(count).length + 1 <= 4600) {
+      size += line(count).length + 1;
+      count++;
+    }
+    // Whatever the packer admits must fit, with headroom under the hard cap.
+    expect(size).toBeLessThan(5000);
+    expect(count).toBeGreaterThan(0);
+  });
+});

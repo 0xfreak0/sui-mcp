@@ -118,8 +118,14 @@ export interface FanoutResult {
   sponsored_transaction_count: number;
   /** Coarse reading of sponsorship breadth. `relayer` means treat it as noise. */
   sponsor_shape: "relayer" | "private_sponsor" | "not_a_sponsor";
-  /** What that shape licenses. Absent when the address sponsors nobody. */
+  /** What that shape licenses. Absent when there is nothing worth saying. */
   sponsor_interpretation?: string;
+  /**
+   * The shape rests on a scan that hit its budget, so "narrow" may only mean
+   * "not far enough". Never set for `relayer`, which is proven by what was
+   * seen. See {@link sponsorIsProvisional}.
+   */
+  sponsor_shape_provisional?: boolean;
   /** True when served from the optional local store rather than re-measured. */
   cached?: boolean;
   measured_ago_ms?: number;
@@ -158,6 +164,27 @@ function classifySponsor(count: number): FanoutResult["sponsor_shape"] {
 }
 
 /**
+ * Narrow and popular are not symmetric, and sponsorship is the sharpest case.
+ *
+ * `relayer` is proven by what was seen: 21 distinct payees is 21 distinct
+ * payees however much history remains. `private_sponsor` is only ever "not
+ * many so far", and the scan reads the most recent window.
+ *
+ * Measured on one mainnet sponsor, the count moves 1 -> 1 -> 12 -> 86 as the
+ * window goes 100 -> 200 -> 400 -> 800, crossing the threshold. Reporting
+ * "narrow, worth following" off a truncated scan asserts the opposite of what
+ * a deeper look shows.
+ *
+ * Same rule `used_intermediaries.scan_complete` applies to funders.
+ */
+function sponsorIsProvisional(
+  shape: FanoutResult["sponsor_shape"],
+  truncated: boolean,
+): boolean {
+  return truncated && shape !== "relayer";
+}
+
+/**
  * What the sponsorship shape licenses, or undefined when it says nothing.
  *
  * Stated separately from `interpretation` because the two can disagree and the
@@ -165,12 +192,26 @@ function classifySponsor(count: number): FanoutResult["sponsor_shape"] {
  * gas. Reading only the value classification would call it a meaningful shared
  * ancestor when sponsorship through it is noise.
  */
-function interpretSponsor(shape: FanoutResult["sponsor_shape"], count: number): string | undefined {
-  if (shape === "not_a_sponsor") return undefined;
+function interpretSponsor(
+  shape: FanoutResult["sponsor_shape"],
+  count: number,
+  truncated: boolean,
+): string | undefined {
+  if (shape === "not_a_sponsor") {
+    // Absence off a truncated scan is not absence. Said only when it could be
+    // mistaken for a finding — a complete scan seeing no sponsorship needs no
+    // gloss.
+    return truncated
+      ? "No sponsorship seen in the window scanned, which reached its budget before the end of this address's history. That is not evidence it has never paid anyone's gas."
+      : undefined;
+  }
   if (shape === "relayer") {
     return `Pays gas for ${count}+ distinct addresses, which is a relayer or paymaster. Two wallets sharing it as a sponsor is NOT evidence they are related — treat shared sponsorship through this address as noise, the same as a shared exchange.`;
   }
-  return `Pays gas for only ${count} distinct address(es). A narrow sponsor is an operational relationship worth following: whoever funds the gas usually runs the wallets. Note this can be true even when value fan-out looks unremarkable, since sponsoring moves no value of its own.`;
+  const base = `Pays gas for ${count} distinct address(es) in the window scanned. A narrow sponsor is an operational relationship worth following: whoever funds the gas usually runs the wallets. This can be true even when value fan-out looks unremarkable, since sponsoring moves no value of its own.`;
+  return truncated
+    ? `${base} PROVISIONAL: the scan hit its budget before the end of this address's history, and breadth only grows with the window — measured on one mainnet sponsor the count went 1 to 86 between a 100- and an 800-transaction scan, crossing from narrow to relayer. Raise max_transactions before relying on "narrow".`
+    : base;
 }
 const DISTRIBUTOR_THRESHOLD = 100;
 
@@ -261,13 +302,21 @@ export async function measureFanout(
         ...(interpretSponsor(
           cached.sponsor_shape as FanoutResult["sponsor_shape"],
           cached.sponsored_address_count,
+          cached.truncated === 1,
         )
           ? {
               sponsor_interpretation: interpretSponsor(
                 cached.sponsor_shape as FanoutResult["sponsor_shape"],
                 cached.sponsored_address_count,
+                cached.truncated === 1,
               ),
             }
+          : {}),
+        ...(sponsorIsProvisional(
+          cached.sponsor_shape as FanoutResult["sponsor_shape"],
+          cached.truncated === 1,
+        )
+          ? { sponsor_shape_provisional: true }
           : {}),
         scanned_transactions: cached.scanned_transactions,
         truncated: cached.truncated === 1,
@@ -366,9 +415,10 @@ export async function measureFanout(
     sponsored_address_count: sponsored.size,
     sponsored_transaction_count: sponsoredTxs,
     sponsor_shape: sponsorShape,
-    ...(interpretSponsor(sponsorShape, sponsored.size)
-      ? { sponsor_interpretation: interpretSponsor(sponsorShape, sponsored.size) }
+    ...(interpretSponsor(sponsorShape, sponsored.size, hasNext)
+      ? { sponsor_interpretation: interpretSponsor(sponsorShape, sponsored.size, hasNext) }
       : {}),
+    ...(sponsorIsProvisional(sponsorShape, hasNext) ? { sponsor_shape_provisional: true } : {}),
     scanned_transactions: scanned,
     truncated: hasNext,
     classification,

@@ -266,6 +266,83 @@ A hop the archive served is counted in `hops_served_by_archive`. An
 unfetchable *starting* digest is an error, never an empty trace — "nothing to
 follow" and "could not look" are opposite conclusions on hop 0.
 
+### Multisig identity
+
+A Sui address **is the hash of its authenticator**. For a multisig that is
+`blake2b(0x03 ‖ threshold ‖ flag₁‖pk₁‖w₁ ‖ … ‖ flagₙ‖pkₙ‖wₙ)`
+(`sui-types/src/base_types.rs`), so the whole committee travels inside every
+transaction the wallet sends and re-deriving it reproduces the address. Reading
+it is `src/utils/multisig.ts`; it is pure, and the tests pin real mainnet
+signatures rather than hand-built ones so a drift in the SDK's parse fails
+loudly.
+
+Three properties are the opposite of the EVM intuition, and all three are
+load-bearing:
+
+- **The committee cannot rotate.** Changing a member changes the hash, hence the
+  address. A Gnosis Safe rotates owners in place; this cannot. Measured: 200
+  sent transactions from one wallet, one committee.
+- **An address has exactly one authenticator, forever.** No key rotation, so
+  "what is this address" has a single permanent answer — which is why
+  authentication is never cached with a TTL.
+- **A wallet that has never SENT cannot be classified.** No signature, no
+  committee. That is an absent field and an explicit caveat, never "ordinary
+  wallet": a receive-only treasury multisig is indistinguishable from a fresh
+  personal wallet from the outside.
+
+Committees cannot nest — `PublicKey` in sui-types has no `MultiSig` variant —
+so member expansion is exactly one level deep by chain rule, not by budget.
+
+**The signature is matched to an address by re-deriving it**, never by
+position. A gas-sponsored transaction carries `[sender, sponsor]` and position
+happens to work today, but a derivation is a fact the caller can check.
+
+**A flag-3 signature that will not decode stays labelled `multisig`.** Legacy
+multisig (`multisig_legacy.rs`) shares the flag and the address derivation but
+not the wire format. Calling it `unknown` would downgrade a real finding to an
+absent one. gRPC parses legacy (the proto carries `legacyBitmap`); the SDK's
+BCS path may not, which is why the scheme survives the parse failure.
+
+**Who signed is per-transaction; the committee is not.** The bitmap is the only
+thing that varies, and reading one transaction cannot interpret it. Measured on
+a mainnet 4-of-7: 8 transactions, 3 distinct signer sets, and 2 of 7 keys had
+never signed. So `signed_source_tx` is named for the transaction it came from,
+`get_transaction` reports `authorization` for a specific transaction, and
+`analyze_multisig` (`src/utils/signer-history.ts`, pure) answers the
+wallet-level question. Every dormancy claim is stated against the transaction
+count it rests on — "never signed" over 8 and over 200 are different claims —
+and under two transactions it refuses to read a pattern at all.
+
+**Finding them.** Multisig is rare: 2 in 79,052 signatures sampled at random on
+mainnet, both from one wallet. Random checkpoint sampling is the wrong
+instrument. They live where admin authority does — 3 of 353 `UpgradeCap` owners
+(0.85%, ~340x), which is how the test fixtures were found.
+`scripts/probe/README.md` maps each script to the claim it establishes; re-run
+them after an SDK bump.
+
+**Cost.** Authentication is one GraphQL call per 20 addresses — `transactions`
+has no multi-get, so it batches with aliases and hits the same two service
+limits as package lineage (20 store-backed queries, 5000 bytes of query text).
+`describeAddresses` takes `{ authentication, expandMembers }`; every
+investigation flow turns expansion on, and a sub-20-address hop set pays one
+extra call.
+
+**zkLogin** rides the same code path. The address derives from
+`(iss, addressSeed)` and **both** derivations exist on chain (padded and
+unpadded seed), so both are tried. It discloses the OAuth issuer and nothing
+else: the seed is `poseidon(sub, aud, salt)`, one-to-one with the address, so
+it cannot link a person's wallets — a different app means a different `aud`,
+hence a different address. It can only confirm a guess formed elsewhere.
+
+**Reverse search.** `find_shared_multisig` derives every committee a set of
+known keys could form and checks which exist. A hit is proof, not a match.
+Member order is hashed, so the space is factorial — 4 keys is 192 candidates, 5
+is 1,560, 6 is refused. Refusing beats truncating: the question is a negative
+and a partial search cannot support one. Weight-1 only, because weights are
+unbounded; a nil result means "no equal-weight multisig of these exact keys".
+Existence is tested with `affectedAddress`, not `sentAddress` — a treasury that
+only ever received is exactly the case this is for.
+
 ### Wallet clustering
 
 `build_wallet_edges` (`src/tools/cluster.ts`) finds addresses that may share an
@@ -284,6 +361,8 @@ candidates, all eligible.
 
 | Signal | Weight | Basis |
 |---|---|---|
+| `co_signer` | 1.5 | A key that can spend the wallet ALONE (`weight >= threshold`), read from the address hash |
+| `co_signer` (cannot spend alone) | 0.6 | On the committee but needs others — below the merge floor |
 | `cofunded` | 1.0 | Same first funder, funder passed the popularity check |
 | `cofunded` (same tx, ≤3 paid) | 1.2 | Bespoke payout — built for these addresses |
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
@@ -336,6 +415,32 @@ Four rules that are easy to get wrong:
 - **Expansion links members to seeds in a star**, never member to member. Same
   components, far less output: a 50-member sponsor would otherwise emit 1,225
   edges that cannot merge on their own weight.
+- **Co-signature is not behavioural, and it is the only signal here that
+  isn't.** Every other one says two addresses did something co-controlled
+  wallets tend to do, measured against a base rate; `co_signer` says the
+  committee hashes to the address and this key is in it. So clusters built only
+  from full-weight co-signature are tagged `chain-derived` and the tier moved
+  from a blanket top-level field onto each cluster. Weakest link: a component
+  that needed one behavioural edge is `heuristic` however strong the rest looks.
+- **A committee is evidence its members are SEPARATE parties.** That is what a
+  4-of-7 treasury is for. So co-signer edges run member↔multisig in a star and
+  never member↔member, and a member who cannot spend alone sits below the merge
+  floor — reported as a lead, unable to cluster alone. Verified: the 4-of-7 and
+  2-of-3 seeds produce no co-signer merges at all.
+- **A co-signing key can be a service, and the filter is not optional.** Found
+  by running the tool, not by reasoning: one key sat on 31 distinct 1-of-2
+  committees, each with a different second member — a wallet provider's
+  recovery key. The star fused 31 strangers into a 63-member cluster rated
+  `chain-derived`/`high`, containing people plainly unrelated by their own SuiNS
+  names. Co-signers now get the popularity treatment funders get, at
+  `DEFAULT_CO_SIGNER_LIMIT = 5` rather than 50: a narrow funder legitimately
+  pays dozens, while a key on dozens of committees is a service by
+  construction. The count comes from committees already read, so it costs no
+  queries, and it is a lower bound over what was examined — which only makes the
+  filter fire late. After it, that seed gives 31 two-member clusters instead of
+  one of 63, and the true positive survives. Excluded keys are reported in
+  `excluded_co_signers`, since "this provider key can spend 31 wallets" is
+  itself chain-derived.
 - **An edge count is not corroboration.** Sixteen edges through one shared
   funder is one fact stated sixteen times, and if that funder turns out to be a
   payout service they all fall together. Clusters carry

@@ -139,13 +139,13 @@ address. Fine at these sizes, but it is not the single request the name suggests
 `get_transaction` returns decoded fields for **every** event by default.
 `max_event_field_bytes` exists but is unset unless a caller asks for it.
 
-A default cap looked reasonable — a 59-event transaction carries 53 KB of
-decoded fields, roughly 13k tokens — but it would let an investigation reach a
-conclusion from a subset without the reader having chosen that. Measured, it
-would almost never fire: the 99th percentile of transactions with events carries
-12 KB. Paying for the rare outlier is the right trade; bounding the payload is
-the caller's decision, and when they make it the response says plainly that it
-is not the complete event data.
+**Do not add a default cap.** It would let an investigation reach a conclusion
+from a subset of the events without the reader having chosen that, and it would
+almost never fire: the 99th percentile of transactions with events carries 12 KB
+of decoded fields, against 53 KB (~13k tokens) for a 59-event outlier. Paying
+for the outlier is the right trade. Bounding the payload is the caller's
+decision, and when they make it the response says plainly that it is not the
+complete event data.
 
 ## Tool arguments
 
@@ -284,9 +284,8 @@ Two traps, both verified on mainnet:
   early *looking complete*. `fetchTx` treats that shape as absent and lets the
   archive answer; the shape is pinned in `test/trace-hop.test.ts`.
 - **The archive returns everything the fullnode does** — sender, balance
-  changes, commands, timestamp, checkpoint. An older commit dropped the
-  fallback believing it omitted `balance_changes`; that is not true today, so
-  do not re-drop it on that reasoning.
+  changes, commands, timestamp, checkpoint. It does *not* omit
+  `balance_changes`, so do not drop the fallback on that reasoning.
 
 A hop the archive served is counted in `hops_served_by_archive`. An
 unfetchable *starting* digest is an error, never an empty trace — "nothing to
@@ -425,15 +424,14 @@ Four rules that are easy to get wrong:
 - **Being paid is not being funded.** An expansion candidate becomes `cofunded`
   only after computing its own first funder. Sponsorship needs no such check —
   the probe observed it directly.
-- **A narrow funder belongs in the cluster it funded.** `funding_edge` once
-  fired only between two seeds, so a funder discovered on the walk was used as
-  the `via` label on the `cofunded` edges between the addresses it funded and
-  then discarded — the hub excluded from its own cluster. That made the answer
-  depend on what the caller already knew: pass both addresses as seeds and the
-  edge appeared, pass one and it did not, on identical chain data. It now fires
-  for any funder that is a seed *or* cleared the popularity filter. Measured:
-  seeding one wallet went from a 4-member cluster resting on a single invisible
-  intermediary to 5 members with two independent bases.
+- **A narrow funder belongs in the cluster it funded.** `funding_edge` fires
+  for any funder that is a seed *or* cleared the popularity filter — not only
+  between two seeds. Restricting it to seeds makes the answer depend on what
+  the caller already knew: the same chain data yields the edge when both
+  addresses are passed as seeds and not when only one is, because the hub gets
+  used as a `via` label and then discarded from its own cluster. Measured on
+  one seed: 4 members resting on a single invisible intermediary, against 5
+  with two independent bases.
 - **Narrow and popular are not symmetric.** Popular is proven by what was seen.
   Narrow off an incomplete scan is provisional, because the probe reads recent
   activity while the fundings it filters are historical. `used_intermediaries`
@@ -509,10 +507,10 @@ Two routes to that verdict, catching different populations:
 
 **Flatness needs a rate to mean anything.** A wallet doing 0.4 transactions a
 day over 292 days cannot concentrate — 120 points scattered across a year never
-form a peak — so a 24/7 script and an occasional person produce the same R.
-Found on a real mainnet wallet that was labelled automated for being rarely
-used. Above 3/day, a person keeping ordinary hours would have left a shape and
-its absence means something; below it, nothing follows either way.
+form a peak — so a 24/7 script and an occasional person produce the same R, and
+a rarely-used wallet reads as automated. Above 3/day, a person keeping ordinary
+hours would have left a shape and its absence means something; below it,
+nothing follows either way.
 
 **A single hour holding most activity gets the cron caveat.** A person's day
 spreads over several hours; 46% inside one hour fits a scheduled job equally
@@ -712,9 +710,9 @@ its own identity scheme and its own index — so each resolver is bespoke.
 followable, `detect-only` means we can name it and no more. Never point a
 caller at a resolver that cannot help them; `resolvableHit()` is the guard.
 
-Markers must be **distinctive**, not merely present. `init_order` looked like a
-good Mayan marker and would have collided with DEX order books, which emit some
-of the highest-frequency events on mainnet; the markers carry `mctp` instead.
+Markers must be **distinctive**, not merely present. A generic name like
+`init_order` collides with DEX order books, which emit some of the
+highest-frequency events on mainnet — the Mayan markers carry `mctp` instead.
 Sample before adding — `node scripts/find-unknown-packages.mjs` ranks by call
 count, but note that bridge traffic is low-frequency relative to DEX and oracle
 activity, so volume sampling will *not* surface bridges. Probe candidate event

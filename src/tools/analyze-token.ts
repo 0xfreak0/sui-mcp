@@ -9,7 +9,8 @@ import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders } from "./holders.js";
 import { errorResult } from "../utils/errors.js";
-import { resolveTokenBySymbol } from "../discovery.js";
+import { resolveSymbolDetailed } from "../discovery.js";
+import { vouchFor } from "../utils/coin-registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerAnalyzeTokenTools(server: McpServer) {
@@ -26,6 +27,9 @@ export function registerAnalyzeTokenTools(server: McpServer) {
     },
     async ({ query, include_holders }) => {
       const wantHolders = include_holders !== false;
+      // Whether a curated list vouches for this coin, or the symbol merely
+      // matched something on chain.
+      let symbolVerified = true;
 
       // Resolve coin type: if it looks like a type (contains ::), use directly; else resolve dynamically
       let coinType: string;
@@ -36,7 +40,27 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       if (query.includes("::")) {
         coinType = query;
       } else {
-        const match = await resolveTokenBySymbol(query);
+        // A symbol is not an identifier here: 8,008 mainnet coins share one with
+        // another, and the impostors are named to be mistaken. Ambiguity is
+        // reported rather than resolved.
+        const detailed = await resolveSymbolDetailed(query);
+        if (detailed.status === "ambiguous") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                query,
+                status: "ambiguous_symbol",
+                message: `${detailed.candidates.length} verified coins use the symbol "${query}". A symbol does not identify a coin on Sui — pass one of these coin_type values instead.`,
+                candidates: detailed.candidates.map((c) => ({
+                  coin_type: c.coin_type, symbol: c.symbol, name: c.name, decimals: c.decimals,
+                })),
+              }, null, 2),
+            }],
+          };
+        }
+        const match = detailed.status === "resolved" ? detailed.token : detailed.token;
+        symbolVerified = detailed.status === "resolved";
         if (!match) {
           return errorResult(
             `Token "${query}" not found. Try using the full coin type string (e.g. '0x...::module::TOKEN'), or use search_token for fuzzy search.`
@@ -93,6 +117,20 @@ export function registerAnalyzeTokenTools(server: McpServer) {
 
       const result: Record<string, unknown> = {
         coin_type: coinType,
+        // Reported for the COIN, not for how it was reached. A full coin type
+        // is unambiguous as an identifier — you get exactly what you asked
+        // for — but that is not the same as anyone vouching for it, and the
+        // impostor case arrives by type just as easily as by symbol.
+        verified: vouchFor(coinType) !== null,
+        ...(vouchFor(coinType) === null
+          ? {
+              unverified_note:
+                "No curated list vouches for this coin. 8,008 mainnet coins share a symbol with another and impostors are named to be mistaken for the real asset, so treat the symbol and name here as claims made by whoever minted it, not as identification." +
+                (symbolVerified
+                  ? ""
+                  : " It was reached by scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin."),
+            }
+          : { verified_by: vouchFor(coinType) }),
         symbol,
         name,
         decimals,

@@ -256,13 +256,16 @@ export function registerAnalyzePackageTools(server: McpServer) {
           })),
         };
 
+        // Who deployed it. This is the field that turns an unknown package back
+        // into an address a trace can follow — and the only thing an
+        // UpgradeCap's current holder can meaningfully be compared against.
+        const publisher = await resolvePublisher(packageId);
+
         // Capability audit (default on). Best-effort — never breaks the analysis.
         const capabilities =
-          audit_capabilities === false ? undefined : await auditPackageCapabilities(packageId);
-
-        // Who deployed it. This is the field that turns an unknown package back
-        // into an address a trace can follow.
-        const publisher = await resolvePublisher(packageId);
+          audit_capabilities === false
+            ? undefined
+            : await auditPackageCapabilities(packageId, publisher.publisher);
 
         let disassembly: { module: string; disassembly: string }[] | undefined;
         if (include_disassembly) {

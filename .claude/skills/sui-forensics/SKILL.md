@@ -21,10 +21,18 @@ Every claim should be traceable to one of these. Say which.
 | `indexer-attested` | A third party asserts it | "Wormholescan reports this VAA was redeemed on Ethereum" — a lead to confirm, not a finding |
 | `heuristic` | An inference from patterns | "These addresses may share an operator" — never "they do" |
 
-`build_wallet_edges` is the only tool that tags its output `heuristic`. Its
-**edges** are facts with digests attached; its **clusters** are inference. Do not
-collapse the two, and never record a cluster as a finding without confirming it
+`build_wallet_edges` is the tool that tags its output `heuristic`. Its **edges**
+are facts with digests attached; its **clusters** are inference. Do not collapse
+the two, and never record a heuristic cluster as a finding without confirming it
 yourself.
+
+One exception, and it is a different KIND of claim rather than a stronger guess.
+A Sui address **is the hash of its authenticator**, so a multisig's committee is
+read from the address itself, not inferred from behaviour. Clusters built only
+from full-weight `co_signer` edges carry `evidence_tier: "chain-derived"` per
+cluster, and you may write "this key can spend that wallet" as a fact. You may
+not write that it is the same person: a key is **control**, and a custodian
+holds one for a client.
 
 ## Opening a case
 
@@ -76,6 +84,8 @@ Do not read a cluster as having cleared a two-signal bar; read the edges.
 
 | signal | what it means |
 |---|---|
+| `co_signer` (1.5) | A key that can spend the multisig **alone**. Read from the address hash — not behavioural, and the only signal here that isn't |
+| `co_signer` (0.6) | On the committee but cannot spend alone. Below the merge floor: a lead, never a cluster by itself |
 | `cofunded` | Same first funder, and that funder is not a service |
 | `funding_edge` | One address sent the first funding that made the other exist |
 | `reciprocal` | Value moved **both** ways, and the counterparty is not a service |
@@ -90,6 +100,38 @@ Three fields decide how much weight a cluster carries:
   provisional. Confirm it with `get_address_fanout` before relying on the cluster.
 - **`notes`** — unverified sibling candidates are listed, not dropped. Raise
   `expand_budget` to resolve them.
+- **`excluded_co_signers`** — keys sitting on more committees than the limit,
+  i.e. custody or wallet-provider keys. Such a key genuinely can spend every
+  wallet it signs for, and you may write that. It says nothing about whether
+  those wallets share an owner, so do not cluster on it.
+
+## Multisig
+
+`identify_address` tells you a wallet is a multisig and names its committee
+members. That is chain-derived and costs one query. Three things follow that the
+plain reading gets wrong:
+
+- **The committee never changes.** It is part of the address hash, so a member
+  cannot be rotated out the way a Gnosis Safe owner can. If you need a different
+  committee, you have a different address.
+- **Who signs is per-transaction; who is authorised is not.** `get_transaction`
+  gives `authorization.signed_by` for one transaction. A member under
+  `did_not_sign` is still authorised and may have signed others, so do not
+  generalise from one. Use `analyze_multisig` for the wallet-level picture:
+  which keys are live, which have never signed, whether the active set shifted.
+- **A wallet that has never SENT cannot be classified at all.** No signature, no
+  committee. `authentication: null` with a caveat means unknown, not ordinary —
+  a receive-only treasury multisig looks exactly like a fresh personal wallet.
+
+A dormancy claim is only as good as the count behind it. "Member 5 has never
+signed" over 8 transactions and over 200 are different claims; the tool reports
+`transactions_examined` and you should carry it into anything you write.
+
+`find_shared_multisig` searches the other way: given addresses you already
+suspect are related, it finds a multisig they jointly control even if it never
+appeared in your trace. A hit is proof. A **nil result is not** — it tests
+equal-weight committees of exactly the keys you passed, so it cannot rule out a
+weighted committee or one with a member you did not supply.
 
 ## Which tool answers what
 
@@ -104,6 +146,9 @@ get the schema wrong in ways that fail silently.
 | Several addresses at once? | `find_funding_sources` — shares work, reports co-funding |
 | Is this funder an exchange? | `get_address_fanout` |
 | Do these wallets share an operator? | `build_wallet_edges` |
+| Who really runs this multisig treasury? | `analyze_multisig` — live vs dormant keys across its history |
+| Which keys signed THIS transaction? | `get_transaction` → `authorization.signed_by` |
+| Do these wallets share a multisig I haven't seen? | `find_shared_multisig` |
 | Is this wallet automated? | `build_timeline` with `activity_hours` |
 | Where does this trace stop, and why? | `manage_labels` — sinks are yours to set |
 | What did this transaction do, with event values? | `get_transaction` |

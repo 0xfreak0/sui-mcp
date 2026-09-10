@@ -73,6 +73,11 @@ export const PROFILES = {
     "find_funding_sources",
     "get_address_fanout",
     "build_wallet_edges",
+    // Multisig work is investigation work: whether a treasury is really run by
+    // seven people or two, and whether known wallets share a committee that
+    // never surfaced in the trace.
+    "analyze_multisig",
+    "find_shared_multisig",
     // Reading an unknown package IS investigation work: naming an obfuscated
     // wrapper, reading a protocol's event structs, checking what a suspicious
     // package can do. These sat in `developer` only, so an investigator running

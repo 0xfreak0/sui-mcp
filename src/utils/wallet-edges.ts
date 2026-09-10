@@ -39,7 +39,13 @@
  * were. That is roughly a 32x enrichment, which is why it is weighted level with
  * a shared narrow funder rather than treated as volume.
  */
-export type SignalType = "cofunded" | "funding_edge" | "reciprocal" | "sponsor" | "co_tx";
+export type SignalType =
+  | "co_signer"
+  | "cofunded"
+  | "funding_edge"
+  | "reciprocal"
+  | "sponsor"
+  | "co_tx";
 
 /**
  * Per-signal confidence weight.
@@ -53,6 +59,22 @@ export type SignalType = "cofunded" | "funding_edge" | "reciprocal" | "sponsor" 
  * readily as an alt.
  */
 export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
+  /**
+   * A key that can spend the multisig **on its own** (`weight >= threshold`).
+   *
+   * The only signal here that is not an observation of behaviour. Every other
+   * one says "these two addresses did something that co-controlled wallets
+   * tend to do"; this says the committee hashes to the address, and that key
+   * is in it. It is checkable arithmetic, not a base rate, which is why it
+   * sits above the strongest behavioural signal rather than level with it.
+   *
+   * Still short of proof of common ownership: a custodian holds a key for a
+   * client, and holding a spending key is control, not identity.
+   *
+   * See {@link PARTIAL_CO_SIGNER_WEIGHT} for the case where the member cannot
+   * spend alone — which is a weaker claim, not a weaker version of this one.
+   */
+  co_signer: 1.5,
   cofunded: 1.0,
   funding_edge: 1.0,
   // Level with a shared narrow funder, on a measured 2.1% base rate. Both
@@ -63,6 +85,25 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
   sponsor: 0.7,
   co_tx: 0.5,
 };
+
+/**
+ * Weight for a committee member who canNOT spend alone (`weight < threshold`).
+ *
+ * Deliberately below the 1.0 merge floor, so it never clusters on its own.
+ *
+ * A multi-party committee is evidence its members are **separate parties** —
+ * that is what a 4-of-7 treasury is FOR. Clustering a DAO's independently
+ * chosen signers as "one operator" is precisely the false positive that would
+ * discredit this tool, and it is the answer a naive reading of co-signature
+ * produces. So a partial member is reported as a lead and made to find
+ * corroboration elsewhere.
+ *
+ * Above `co_tx` because sitting on a committee is a real, permanent control
+ * relationship rather than a single co-appearance, and below `sponsor` because
+ * sharing a gas payer suggests shared tooling while co-signing a treasury
+ * often suggests the opposite.
+ */
+export const PARTIAL_CO_SIGNER_WEIGHT = 0.6;
 
 /** One reason two addresses are linked, with the chain data to check it. */
 export interface EdgeEvidence {
@@ -247,6 +288,102 @@ export class EdgeSet {
   }
 }
 
+/**
+ * A multisig and the keys that can sign for it, as read from its own address
+ * hash. See `src/utils/multisig.ts`.
+ */
+export interface CommitteeMembership {
+  /** The multisig wallet's address. */
+  multisig: string;
+  threshold: number;
+  members: { address: string; weight: number }[];
+}
+
+/**
+ * Link each committee member to the wallet it can sign for.
+ *
+ * **A star, never a mesh.** Edges run member↔multisig only. Two members of one
+ * committee are NOT linked to each other, and that is the whole point: a
+ * 4-of-7 treasury has seven signers precisely because they are meant to be
+ * separate parties, so meshing them would report a DAO's governance as one
+ * operator's wallet crew. It also keeps the output bounded — a 10-member
+ * committee is 10 edges rather than 45, the same reason expansion links
+ * candidates to seeds in a star.
+ *
+ * The weight turns on one question, answerable from the committee alone:
+ * **can this key spend the wallet by itself?** A member whose weight reaches
+ * the threshold has unilateral control, which is a strong same-operator
+ * signal. A member who needs others does not, and gets
+ * {@link PARTIAL_CO_SIGNER_WEIGHT} — reported as a lead, unable to merge on
+ * its own.
+ *
+ * There are no digests to cite. Every other signal points at a transaction;
+ * this one points at the address itself, which is the committee's hash. The
+ * detail says so, because "no evidence digests" would otherwise read as
+ * weaker evidence rather than a different kind.
+ */
+/**
+ * Wallets one key may co-sign before it is treated as a service.
+ *
+ * Set from a mainnet observation: seeding one ordinary 1-of-2 wallet surfaced a
+ * key sitting on 31 distinct committees, each with a different second member —
+ * a wallet provider's recovery key, not an operator. Five leaves room for a
+ * person running several of their own multisigs while catching that shape
+ * immediately. Much lower than the funder popularity limit of 50 because the
+ * populations differ: a narrow funder legitimately pays dozens of addresses,
+ * whereas a key on dozens of committees is a service by construction.
+ */
+export const DEFAULT_CO_SIGNER_LIMIT = 5;
+
+export function addCoSignerEdges(
+  set: EdgeSet,
+  committees: CommitteeMembership[],
+  opts: { memberLimit?: number } = {},
+): { excluded: { address: string; committees: number }[] } {
+  const memberLimit = opts.memberLimit ?? DEFAULT_CO_SIGNER_LIMIT;
+
+  // How many DISTINCT wallets each key can sign for, over the committees we
+  // actually examined. A lower bound, which is the safe direction: it can only
+  // make the filter fire late, and a missed exclusion fuses a cluster while a
+  // false one loses a true edge.
+  const signsFor = new Map<string, Set<string>>();
+  for (const c of committees) {
+    for (const m of c.members) {
+      if (!m.address || m.address === c.multisig) continue;
+      let seen = signsFor.get(m.address);
+      if (!seen) signsFor.set(m.address, (seen = new Set()));
+      seen.add(c.multisig);
+    }
+  }
+
+  const excluded = [...signsFor.entries()]
+    .filter(([, wallets]) => wallets.size > memberLimit)
+    .map(([address, wallets]) => ({ address, committees: wallets.size }))
+    .sort((a, b) => b.committees - a.committees);
+  const isService = new Set(excluded.map((e) => e.address));
+
+  for (const c of committees) {
+    for (const m of c.members) {
+      if (!m.address || m.address === c.multisig) continue;
+      if (isService.has(m.address)) continue;
+      const unilateral = m.weight >= c.threshold;
+      const detail = unilateral
+        ? `This key can spend ${c.multisig} alone: its weight ${m.weight} meets the ${c.threshold} threshold of a ${c.members.length}-member committee. Read from the committee that hashes to the address, not from behaviour.`
+        : `This key sits on the ${c.members.length}-member committee controlling ${c.multisig} but cannot spend it alone — weight ${m.weight} against a threshold of ${c.threshold}. A multi-party committee is as much evidence its members are SEPARATE parties as that they share an operator.`;
+      set.add(
+        "co_signer",
+        c.multisig,
+        m.address,
+        detail,
+        [],
+        c.multisig,
+        unilateral ? SIGNAL_WEIGHTS.co_signer : PARTIAL_CO_SIGNER_WEIGHT,
+      );
+    }
+  }
+  return { excluded };
+}
+
 export interface ClusterOptions {
   /**
    * Minimum summed weight for a pair to be eligible to merge.
@@ -296,6 +433,20 @@ export interface Cluster {
   min_edge_weight: number;
   /** Distinct signal types on that weakest merge. */
   min_edge_signal_types: number;
+  /**
+   * What kind of claim this cluster is, which is not the same question as how
+   * confident it is.
+   *
+   * `chain-derived` means every merge that built it is a key that can spend
+   * the wallet it is linked to, read from the address's own hash. `heuristic`
+   * means at least one merge is a behavioural coincidence — a shared funder, a
+   * shared sponsor — which is an inference however strong.
+   *
+   * Weakest link, the same rule `min_edge_weight` follows: a component that
+   * needed one behavioural edge to hold together is only as defensible as that
+   * edge, whatever else it contains.
+   */
+  evidence_tier: "chain-derived" | "heuristic";
   confidence: "high" | "medium" | "low";
 }
 
@@ -389,7 +540,15 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
   // defensible as the 1.0.
   const groups = new Map<
     number,
-    { members: Set<string>; types: Set<SignalType>; vias: Set<string>; minW: number; minT: number }
+    {
+      members: Set<string>;
+      types: Set<SignalType>;
+      vias: Set<string>;
+      minW: number;
+      minT: number;
+      /** False as soon as one merge rests on anything but unilateral co-signature. */
+      allChainDerived: boolean;
+    }
   >();
   for (const a of addrOf) {
     const root = uf.find(idOf.get(a)!);
@@ -400,6 +559,7 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
         vias: new Set(),
         minW: Infinity,
         minT: Infinity,
+        allChainDerived: true,
       });
     }
     groups.get(root)!.members.add(a);
@@ -417,6 +577,15 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
     for (const sig of e.signals) g.vias.add(sig.via ?? `${sig.type}:direct`);
     g.minW = Math.min(g.minW, e.weight);
     g.minT = Math.min(g.minT, e.signal_types.length);
+    // A partial co-signer edge cannot merge alone, so any edge that DID merge
+    // and is not a full-weight co_signer is a behavioural claim.
+    if (
+      e.signal_types.length !== 1 ||
+      e.signal_types[0] !== "co_signer" ||
+      e.weight < SIGNAL_WEIGHTS.co_signer
+    ) {
+      g.allChainDerived = false;
+    }
   }
 
   const clusters: Cluster[] = [...groups.values()]
@@ -428,7 +597,8 @@ export function clusterEdges(edges: WalletEdge[], opts: ClusterOptions = {}): Cl
       independent_intermediaries: g.vias.size,
       min_edge_weight: g.minW === Infinity ? 0 : g.minW,
       min_edge_signal_types: g.minT === Infinity ? 0 : g.minT,
-      confidence: confidenceFor(g.minT, g.minW, g.vias.size),
+      evidence_tier: g.allChainDerived ? ("chain-derived" as const) : ("heuristic" as const),
+      confidence: confidenceFor(g.minT, g.minW, g.vias.size, g.allChainDerived),
     }))
     .sort((a, b) => b.size - a.size);
 
@@ -446,7 +616,14 @@ function confidenceFor(
   minSignalTypes: number,
   minWeight: number,
   independentIntermediaries: number,
+  allChainDerived = false,
 ): Cluster["confidence"] {
+  // The single-intermediary rule below exists because a popularity
+  // misjudgement can collapse every behavioural edge at once. Co-signature has
+  // no popularity judgement in it — the committee hashes to the address — so
+  // there is no shared assumption to fail, and the rule would be penalising
+  // the one signal it was not written for.
+  if (allChainDerived) return "high";
   // Everything resting on one intermediary cannot be high confidence however
   // strong the edges look: one popularity misjudgement collapses the whole
   // cluster at once, and that is a single point of failure, not corroboration.

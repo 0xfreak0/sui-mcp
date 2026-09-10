@@ -380,7 +380,7 @@ export function registerFundingTools(server: McpServer) {
 
         const addrSet = new Set<string>();
         for (const r of results) for (const s of r.chain) { addrSet.add(s.address); addrSet.add(s.funded_by); }
-        const batchIds = await describeAddresses([...addrSet]);
+        const batchIds = await describeAddresses([...addrSet], { expandMembers: true });
         const nameMap = new Map(
           [...batchIds].filter(([, v]) => v.name).map(([k, v]) => [k, v.name!]),
         );
@@ -554,7 +554,7 @@ export function registerFundingTools(server: McpServer) {
         // Name, label, and WHAT THE ADDRESS IS, in two batched calls. The kind
         // matters here more than anywhere: "funded by 0xabc" reads as a person,
         // and if 0xabc is a package or a shared object that reading is wrong.
-        const identities = await describeAddresses([...addrs]);
+        const identities = await describeAddresses([...addrs], { expandMembers: true });
         const labelFor = (a: string) => {
           const id = identities.get(a);
           const note = id ? identityNote(id) : undefined;

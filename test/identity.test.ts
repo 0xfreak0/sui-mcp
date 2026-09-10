@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fixtures from "./fixtures/signatures.json" with { type: "json" };
 
 const mockGqlQuery = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -17,6 +18,7 @@ vi.mock("../src/protocols/registry.js", () => ({
 }));
 
 const { describeAddresses, identityNote } = await import("../src/utils/identity.js");
+const { readAuthentication } = await import("../src/utils/multisig.js");
 
 /** multiGetObjects answers positionally: null means nothing lives there. */
 const reply = (entries: Array<unknown>) => ({ multiGetObjects: entries });
@@ -182,5 +184,181 @@ describe("identityNote", () => {
 
   it("says nothing about an ordinary wallet", () => {
     expect(identityNote({ address: "0xw", kind: "wallet" })).toBeUndefined();
+  });
+});
+
+describe("describeAddresses — authentication", () => {
+  const ms = fixtures.ms_2of3;
+
+  /**
+   * The alias batch is a third query shape, so the router has to tell it apart
+   * from the other two. It carries no variables, which is itself the tell.
+   */
+  const withAuth = (kinds: unknown, held: unknown, auth: unknown) =>
+    async (q: string, v?: unknown) => {
+      if (String(q).includes("sentAddress")) return auth;
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? held : kinds;
+    };
+
+  it("does not read authentication unless asked", async () => {
+    mockGqlQuery.mockImplementation(route(reply([null]), heldReply([[]])));
+    const out = await describeAddresses([ms.address]);
+    expect(out.get(ms.address)!.authentication).toBeUndefined();
+    // Two calls, not three: the cost that makes this affordable per hop.
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads a multisig committee when asked", async () => {
+    mockGqlQuery.mockImplementation(
+      withAuth(reply([null]), heldReply([[]]), {
+        a0: { nodes: [{ signatures: ms.signatures.map((signatureBytes) => ({ signatureBytes })) }] },
+      }),
+    );
+    const out = await describeAddresses([ms.address], { authentication: true });
+    const auth = out.get(ms.address)!.authentication!;
+    expect(auth.scheme).toBe("multisig");
+    expect(auth.multisig!.threshold).toBe(2);
+  });
+
+  /**
+   * An address that has never sent has produced no signature. Leaving the
+   * field absent is the honest answer; defaulting it to a single-key wallet
+   * would make a receive-only treasury multisig read as a personal wallet.
+   */
+  it("leaves authentication absent for an address that has never sent", async () => {
+    mockGqlQuery.mockImplementation(
+      withAuth(reply([null]), heldReply([[]]), { a0: { nodes: [] } }),
+    );
+    const out = await describeAddresses(["0xquiet"], { authentication: true });
+    expect(out.get("0xquiet")!.authentication).toBeUndefined();
+  });
+
+  it("chunks the alias batch at the service's 20-query limit", async () => {
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("sentAddress")) return {};
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      const n = (v as { keys: unknown[] }).keys.length;
+      return String(q).includes("multiGetAddresses")
+        ? heldReply(new Array(n).fill([]))
+        : reply(new Array(n).fill(null));
+    });
+    await describeAddresses(Array.from({ length: 50 }, (_, i) => `0x${i}`), { authentication: true });
+    // 1 classification + 1 held-names (50 fits both) + 3 auth batches of 20.
+    expect(mockGqlQuery).toHaveBeenCalledTimes(5);
+  });
+
+  it("survives the authentication query failing", async () => {
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("sentAddress")) throw new Error("rate limited");
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? heldReply([[]]) : reply([null]);
+    });
+    const out = await describeAddresses([ms.address], { authentication: true });
+    expect(out.get(ms.address)!.kind).toBe("wallet");
+    expect(out.get(ms.address)!.authentication).toBeUndefined();
+  });
+});
+
+describe("identityNote — authentication", () => {
+  it("calls out a multisig wallet", () => {
+    const auth = readAuthentication(fixtures.ms_2of3.address, fixtures.ms_2of3.signatures)!;
+    const n = identityNote({ address: fixtures.ms_2of3.address, kind: "wallet", authentication: auth })!;
+    expect(n).toContain("MULTISIG");
+    expect(n).toContain("2-of-3");
+  });
+
+  /**
+   * What is at the address takes precedence over who can spend from it: a
+   * package being mistaken for a person is the louder error.
+   */
+  it("still leads with the package warning when both apply", () => {
+    const auth = readAuthentication(fixtures.ms_2of3.address, fixtures.ms_2of3.signatures)!;
+    const n = identityNote({ address: "0xp", kind: "package", authentication: auth })!;
+    expect(n).toContain("PACKAGE");
+  });
+});
+
+describe("describeAddresses — committee member fan-out", () => {
+  const ms = fixtures.ms_1of2;
+  const [memberA, memberB] = [
+    "0xafe2fafac0b048c9c70a61cc1798400a85173df96b30118c40af6f3382b5a777",
+    "0xc848c5cc29fdff135650156194a27442b6c8cada58fab5ba9123d635754ae66f",
+  ];
+
+  /**
+   * The expansion issues a second round of every query over the member set,
+   * so the mock answers by which addresses it was asked about rather than by
+   * call order.
+   */
+  const routeByKeys = (auth: Record<string, unknown>) =>
+    async (q: string, v?: unknown) => {
+      if (String(q).includes("sentAddress")) {
+        const wanted = Object.fromEntries(
+          Object.entries(auth).filter(([, sigs]) => String(q).includes(String((sigs as { for: string }).for))),
+        );
+        return Object.fromEntries(
+          Object.keys(wanted).map((k, i) => [
+            `a${i}`,
+            { nodes: [{ signatures: (wanted[k] as { sigs: string[] }).sigs.map((s) => ({ signatureBytes: s })) }] },
+          ]),
+        );
+      }
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      const n = (v as { keys: unknown[] }).keys.length;
+      return String(q).includes("multiGetAddresses")
+        ? heldReply(new Array(n).fill([]))
+        : reply(new Array(n).fill(null));
+    };
+
+  it("resolves each committee member's own identity", async () => {
+    mockGqlQuery.mockImplementation(
+      routeByKeys({
+        parent: { for: ms.address, sigs: ms.signatures },
+        a: { for: memberA, sigs: fixtures.ed25519.signatures },
+      }),
+    );
+    const out = await describeAddresses([ms.address], { expandMembers: true });
+    const members = out.get(ms.address)!.committee_members!;
+    expect(members).toHaveLength(2);
+    expect(members.map((m) => m.address)).toEqual([memberA, memberB]);
+  });
+
+  it("implies authentication without being asked for it separately", async () => {
+    mockGqlQuery.mockImplementation(
+      routeByKeys({ parent: { for: ms.address, sigs: ms.signatures } }),
+    );
+    const out = await describeAddresses([ms.address], { expandMembers: true });
+    expect(out.get(ms.address)!.authentication!.scheme).toBe("multisig");
+  });
+
+  it("does not expand a wallet that is not a multisig", async () => {
+    mockGqlQuery.mockImplementation(
+      routeByKeys({ p: { for: fixtures.ed25519.address, sigs: fixtures.ed25519.signatures } }),
+    );
+    const out = await describeAddresses([fixtures.ed25519.address], { expandMembers: true });
+    expect(out.get(fixtures.ed25519.address)!.committee_members).toBeUndefined();
+  });
+
+  /**
+   * A member that resolves to nothing still occupies its seat. Dropping it
+   * would misreport the committee's size, which is the number a reader uses to
+   * judge how much control one key represents.
+   */
+  it("keeps a seat for a member it cannot resolve", async () => {
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("sentAddress")) {
+        return String(q).includes(ms.address)
+          ? { a0: { nodes: [{ signatures: ms.signatures.map((s) => ({ signatureBytes: s })) }] } }
+          : {};
+      }
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      const n = (v as { keys: unknown[] }).keys.length;
+      return String(q).includes("multiGetAddresses")
+        ? heldReply(new Array(n).fill([]))
+        : reply(new Array(n).fill(null));
+    });
+    const out = await describeAddresses([ms.address], { expandMembers: true });
+    expect(out.get(ms.address)!.committee_members).toHaveLength(2);
   });
 });

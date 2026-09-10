@@ -32,12 +32,12 @@
  * visible rather than a silent truncation.
  */
 
-import { fromBase58 } from "@mysten/sui/utils";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { packageOfEventType } from "./event-json.js";
 import { withArchiveFallback } from "./archive-fallback.js";
 import { formatStatus, describeFailure, bigintToString, timestampToIso, type FailureDetail } from "./formatting.js";
+import { isDigest } from "./digest.js";
 
 /**
  * The null address, which is what a system transaction's sender is.
@@ -226,17 +226,8 @@ export interface MultiTxResult {
  *
  * Checked before the request, because the server rejects the WHOLE batch on one
  * malformed key — a single typo among fifty digests returned nothing at all.
- * The alphabet alone is not enough: a run of 44 `1`s is valid Base58 and
- * decodes to 44 zero bytes, which the server refuses on length. Decoding is the
- * only check that matches what it will accept.
+ * See {@link isDigest}.
  */
-function isDigest(d: string): boolean {
-  try {
-    return fromBase58(d).length === 32;
-  } catch {
-    return false;
-  }
-}
 
 /** Map one gRPC transaction into the batch shape. */
 function fromGrpc(res: GrpcTypes.GetTransactionResponse, digest: string): BatchedTx | null {

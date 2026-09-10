@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { describeSignatures } from "../utils/multisig.js";
+import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
 import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
@@ -28,7 +29,8 @@ export function registerTransactionTools(server: McpServer) {
           "Optional byte cap on decoded event fields. UNSET BY DEFAULT: every event comes back with its fields, because an investigation must not be silently working from a subset. Set this only when you knowingly want to bound the payload — anything skipped is reported — or set 0 to skip decoding entirely.",
         ),
     },
-    async ({ digest, max_event_field_bytes }) => {
+    async ({ digest: rawDigest, max_event_field_bytes }) => {
+      const digest = normalizeDigest(rawDigest);
       // No default cap. A budget that silently omits decoded values would let
       // an investigation draw a conclusion from a subset of the events without
       // the reader having chosen that trade-off, which is the failure this
@@ -36,6 +38,13 @@ export function registerTransactionTools(server: McpServer) {
       // anyway: the 99th percentile of transactions with events carries 12 KB
       // of decoded fields. Bounding the payload is the caller's call to make.
       const fieldBudget = max_event_field_bytes ?? Number.POSITIVE_INFINITY;
+
+      // Checked here so a typo comes back as "that is not a digest" rather than
+      // a thrown transport error about Base58 — and so it is never mistaken for
+      // the transaction not existing. get_transactions has always done this;
+      // the single-digest path had not.
+      if (!isDigest(digest)) return errorResult(invalidDigestMessage(digest));
+
       const req = {
         digest,
         readMask: {

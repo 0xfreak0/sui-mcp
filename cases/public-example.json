@@ -1,0 +1,16 @@
+{
+  "_comment": "Public example cases so the harness runs for anyone, including CI. Real investigations belong in a private file pointed at by SUI_CASES_FILE — the addresses in a live case should not be committed. Same arrangement SUI_LABELS_FILE uses for attribution.",
+  "cases": [
+    {
+      "name": "obfuscated-wrapper-into-deepbook",
+      "_why": "This transaction calls two packages with hashed module names and emits twelve DeepBook events. Protocol identification from events, and decoded event fields, both regressed here before — the response once read `protocols: []` while the events named DeepBook outright.",
+      "digests": ["YjD4uaPxdF61wAGViXsYyARij4v9NsiHtJGo3rXa6zN"]
+    },
+    {
+      "name": "batch-funded-wallet",
+      "_why": "A wallet first funded by a twenty-way uniform payout. Exercises funding attribution, the batch-payout weighting, and cluster membership on a public address.",
+      "addresses": ["0x5347b918a9cc46358da35e787758707a459929f0c0ff921810f0f64c2790e117"],
+      "max_hops": 3
+    }
+  ]
+}

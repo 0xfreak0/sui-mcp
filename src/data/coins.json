@@ -1,0 +1,1800 @@
+{
+  "source": "aftermath/verified",
+  "canonical": {},
+  "coins": [
+    {
+      "coin_type": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+      "symbol": "SUI",
+      "name": "Sui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x0041f9f9344cac094454cd574e333c4fdb132d7bcc9379bcd4aab485b2a63942::wbtc::WBTC",
+      "symbol": "WBTC",
+      "name": "Wrapped BTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x0042c1db2eecdd8472aa2464cc3b25b39408ab6d3863bc0e574c7c7910daab09::mbtc::MBTC",
+      "symbol": "mBTC",
+      "name": "mBTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x02358129a7d66f943786a10b518fdc79145f1fc8d23420d9948c4aeea190f603::fud_sui::FUD_SUI",
+      "symbol": "fudSUI",
+      "name": "FUD Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x027792d9fed7f9844eb4839566001bb6f6cb4804f66aa2da6fe1ee242d896881::coin::COIN",
+      "symbol": "WBTC",
+      "name": "Wrapped BTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x0292295126a70b16516108f708e31f2d54ba67db42d7441416a735a340e7ad2b::ups::UPS",
+      "symbol": "UPS",
+      "name": "UP SUI-NDROME",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x04deb377c33bfced1ab81cde96918e2538fe78735777150b0064ccf7df5e1c81::tato::TATO",
+      "symbol": "TATO",
+      "name": "Pawtato",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x0674aa28e511a3be092e08fa92b67facfc7d51b290b309063588ff6368eb425e::smog::SMOG",
+      "symbol": "SMOG",
+      "name": "Smog the Destroyer",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS",
+      "symbol": "CETUS",
+      "name": "Cetus Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x07ab9ba99abd9af0d687ae55079601192be5a12d1a21c8c4cd9f1a17519111e0::emoji::EMOJI",
+      "symbol": "Emoji",
+      "name": "Sui Emoji",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x09f1c8f05cb47bbcb61133dd2ef00583720694f41d4f8a61c94467d8f5911a14::pumpkin::PUMPKIN",
+      "symbol": "PUMPKIN",
+      "name": "PUMPKIN TOKEN",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0a2a868f6a8618b599e49f6b49240088d85b93660003da5a066841e28f19d629::pchu::PCHU",
+      "symbol": "PCHU",
+      "name": "PCHU",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x0a6f7fe4e76dca3284507723e8d84884339f01b41a1ed3cc8ea05dba5c0e22ad::soge::SOGE",
+      "symbol": "SOGE",
+      "name": "SOGE SUI",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0b559e66f39afcc202b7f529571eccad713402bc9fd4e3ecfa0956bbe24a3f51::cctoo::CCTOO",
+      "symbol": "CCTOO",
+      "name": "Chief Community Take Over Officer",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0bffc4f0333fb1256431156395a93fc252432152b0ff732197e8459a365e5a9f::suicat::SUICAT",
+      "symbol": "SUICAT",
+      "name": "SUI CAT",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0d7acc8e91ea02582f3111dd6809f4f65e2ca2c1a0d13c966af3a673603ced42::orcie::ORCIE",
+      "symbol": "ORCIE",
+      "name": "Orcie",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0df7385781a5894963625beaeb6101587abbc110cd13ede63f228061a60ffc1b::c0in::C0IN",
+      "symbol": "C0IN",
+      "name": "community coin",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0e25582daef54ee41052390c4db5e70a82ec1baed97942db0eb6094267624b5d::jwlcetus::JWLCETUS",
+      "symbol": "JWLCETUS",
+      "name": "JWLCETUS",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x0e25582daef54ee41052390c4db5e70a82ec1baed97942db0eb6094267624b5d::jwlsca::JWLSCA",
+      "symbol": "JWLSCA",
+      "name": "JWLSCA",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x0e975ca68a7cad7607271c173c784d34aaaeb1116e4887901a8bafef5732c6bf::alice::ALICE",
+      "symbol": "ALICE",
+      "name": "AL1CE AGENT",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x0ef38abcdaaafedd1e2d88929068a3f65b59bf7ee07d7e8f573c71df02d27522::attn::ATTN",
+      "symbol": "ATTN",
+      "name": "Attention",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x0f03158a2caec1b656ee929007d08e58d620eeabeacac90ea7657d8b386b00b9::pwal::PWAL",
+      "symbol": "pWAL",
+      "name": "Patara Staked Walrus",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x16ab6a14d76a90328a6b04f06b0a0ce952847017023624e0c37bf8aa314c39ba::shr::SHR",
+      "symbol": "SHR0",
+      "name": "SroomAI DAO",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x16b382624391a9fc9b02c983dc3e363c97638e16e0ec5365995c9d1fef085e60::martyparty::MARTYPARTY",
+      "symbol": "MARTYPARTY",
+      "name": "MartyParty",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x1d4a2bdbc1602a0adaa98194942c220202dcc56bb0a205838dfaa63db0d5497e::SAIL::SAIL",
+      "symbol": "SAIL",
+      "name": "SAIL",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x1d58e26e85fbf9ee8596872686da75544342487f95b1773be3c9a49ab1061b19::suia_token::SUIA_TOKEN",
+      "symbol": "SUIA",
+      "name": "SUIA",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x1e520f3bb4b93938cf2bc90fb8d709ed3042dbf3c0290824c0ace15e583e8162::suishiba::SUISHIBA",
+      "symbol": "SuiShib",
+      "name": "SuiShiba",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x1e8b532cca6569cab9f9b9ebc73f8c13885012ade714729aa3b450e0339ac766::coin::COIN",
+      "symbol": "WAVAX",
+      "name": "Wrapped AVAX",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x1ef4c0b20340b8c6a59438204467ca71e1e7cbe918526f9c2c6c5444517cd5ca::chirp::CHIRP",
+      "symbol": "CHIRP",
+      "name": "Chirp Token",
+      "decimals": 10
+    },
+    {
+      "coin_type": "0x1fc50c2a9edf1497011c793cb5c88fd5f257fd7009e85a489392f388b1118f82::tusk::TUSK",
+      "symbol": "tusk",
+      "name": "Tusk the Walrus",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x202591744d54ee4f4af736ef3b8508f3d46d982c36747d9587032bd549122179::luck::LUCK",
+      "symbol": "LUCK",
+      "name": "LUCKYSTAR",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x2053d08c1e2bd02791056171aab0fd12bd7cd7efad2ab8f6b9c8902f14df2ff2::ausd::AUSD",
+      "symbol": "AUSD",
+      "name": "AUSD",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x23e99e646a4071609a2957d0b7c7bac73eaefc2f94640e9d8d54e4ab77f8cd6e::dapy::DAPY",
+      "symbol": "DAPY",
+      "name": "dapy",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x247a6d271810efbe80943433e84b9360e2f976fce89e7c19dc680f5aae8738e2::flame::FLAME",
+      "symbol": "FLAME",
+      "name": "Flame Token",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x2665273e0930bf4a4cd0ed0fe90a26f7cbd013480167ca2b1589789130741ee8::cheese::CHEESE",
+      "symbol": "CHEESE",
+      "name": "Cheese Cat 8888",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x2665dc784c7ff17fddba2442b36cb8b2bbc8adfa9fe08794fd941d80ef2758ec::zen::ZEN",
+      "symbol": "ZEN",
+      "name": "ZenFrogs",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x26bd5f0aeac3b0fb60cdb8c9a75b28e8d0eca12170aab85736f8c1ae0cecfc4d::ydoes::YDOES",
+      "symbol": "YDOES",
+      "name": "YouDon'tOwnEnoughSui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x285b49635f4ed253967a2a4a5f0c5aea2cbd9dd0fc427b4086f3fad7ccef2c29::i_sui::I_SUI",
+      "symbol": "iSUI",
+      "name": "Ika Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x288710173f12f677ac38b0c2b764a0fea8108cb5e32059c3dd8f650d65e2cb25::pepe::PEPE",
+      "symbol": "PEPE",
+      "name": "Pepe on Sui",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0x2921ca2fe6ee99698b095f046bc9759ce7a764d2e91ab0ad182c143649c3df79::jwlsui::JWLSUI",
+      "symbol": "JWLSUI",
+      "name": "JWLSUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x2b6602099970374cf58a2a1b9d96f005fccceb81e92eb059873baf420eb6c717::x_sui::X_SUI",
+      "symbol": "xSUI",
+      "name": "x Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x2cd6f14a4b64c3a0fa9c644e8ed88d9c91d789a071886d67d24e6b435147063d::pugwif::PUGWIF",
+      "symbol": "PUGWIF",
+      "name": "Pugwifhat",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x2d6d59adaaa08b912e629dad9e60df7a83e849ccb28e78c4c536b72780ff67de::generis::GENERIS",
+      "symbol": "GENERIS",
+      "name": "Sui Generis",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x2d79d5911998b695ca4dcf15a0e850e3029d169d127a007887c5d57e98c87ec8::millie::MILLIE",
+      "symbol": "MILLIE",
+      "name": "Millie",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x2e3c97ca6659629897905ddf89fd451a0c8421f4e45345a9b74481ae421e7dac::poors::POORS",
+      "symbol": "POORS",
+      "name": "poors",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x30a644c3485ee9b604f52165668895092191fcaf5489a846afa7fc11cdb9b24a::spam::SPAM",
+      "symbol": "SPAM",
+      "name": "SPAM",
+      "decimals": 4
+    },
+    {
+      "coin_type": "0x30be75de6fd909098796500952e6518432338168907f5d2136bff7c2d8ab39a0::mystic::MYSTIC",
+      "symbol": "MYSTIC",
+      "name": "MYSTIC",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x30fe2be9b585076f2d10d0349f1f7f333a08f4d79e2b9eb8babed671b8770d48::suiguy::SUIGUY",
+      "symbol": "Suiguy",
+      "name": "Chill Sui Guy",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x33d6d4e4844a9efdafd7c46efe66009a20bf2d4b06657bee70ad3d44e7eadb78::patience::PATIENCE",
+      "symbol": "PATIENCE",
+      "name": "Patience",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT",
+      "symbol": "MMT",
+      "name": "MMT",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL",
+      "symbol": "WAL",
+      "name": "WAL Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x35adf6a0be64838ae1604276e740798d52005cce83430e80ec88782719cbc7fe::nuts::NUTS",
+      "symbol": "NUTS",
+      "name": "SANDY",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x35b59a0d8707764cde2345e4a3acd025b73d3d639308e49df00eff7eec821d46::bubl::BUBL",
+      "symbol": "BUBL",
+      "name": "BUBL on Sui",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x361dd589b98e8fcda9a7ee53b85efabef3569d00416640d2faa516e3801d7ffc::TOKEN::TOKEN",
+      "symbol": "SSWP",
+      "name": "Suiswap Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x375f70cf2ae4c00bf37117d0c85a2c71545e6ee05c4a5c7d282cd66a4504b068::usdt::USDT",
+      "symbol": "USDT",
+      "name": "Tether",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x38c41caa99a1e767f9436b60a5ce7be73d6c70d4f4b1e6a6048b90277cb0cd85::suigma::SUIGMA",
+      "symbol": "SUIGMA",
+      "name": "Sigma on Sui",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x392ee961cc3b7c09d5ed019b20fe24b9d174e41b6cfb0f58f38bead4671d675e::peeka::PEEKA",
+      "symbol": "PEEKA",
+      "name": "Peeka World",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x39733d537f75c9f9ffef41bc23576e0c7af1051193e5114f141e3ea34eefbac5::puffy::PUFFY",
+      "symbol": "PUFFY",
+      "name": "Puffy The Pufferfish",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x3a304c7feba2d819ea57c3542d68439ca2c386ba02159c740f7b406e592c62ea::haedal::HAEDAL",
+      "symbol": "HAEDAL",
+      "name": "Haedal",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x3b68324b392cee9cd28eba82df39860b6b220dc89bdd9b21f675d23d6b7416f1::kdx::KDX",
+      "symbol": "KDX",
+      "name": "KDX",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x3c1227010835ecf9cb8f2bf9993aa9378bb951f0b3a098de6f0ee20385e01c4a::psh::PSH",
+      "symbol": "PSH",
+      "name": "Poseidollar Shares",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x3ca7ea7e115945923ddd0415373b67757d64ae37e93c8d4129a64f8fd3ed3045::aaasui::AAASUI",
+      "symbol": "AAASUI",
+      "name": "Triple A Sui",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x3cb52b59860159e2bf0a3b3a4af2d338c89d7a69cac339bf3295fa7c31605089::af_lp::AF_LP",
+      "symbol": "AF_LP_WHUSD",
+      "name": "AfLpWhUSD",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x3ddfcf2e7a25f53419444ece1faee75eb17c3fb4535d28063547bdf43553fcf9::snrkl::SNRKL",
+      "symbol": "SNRKL",
+      "name": "SNORKEL",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x3e8e9423d80e1774a7ca128fccd8bf5f1f7753be658c5e645929037f7c819040::lbtc::LBTC",
+      "symbol": "LBTC",
+      "name": "Lombard Staked BTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x4068a116305413e4aa03906fb2b9f8625b9f19e73ee0e4766b456ce502c247ed::satxbtc::SATXBTC",
+      "symbol": "satXBTC",
+      "name": "SATXBTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x41d587e5336f1c86cad50d38a7136db99333bb9bda91cea4ba69115defeb1402::sui_usde::SUI_USDE",
+      "symbol": "suiUSDe",
+      "name": "eSui Dollar",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x41ff228bfd566f0c707173ee6413962a77e3929588d010250e4e76f0d1cc0ad4::ksui::KSUI",
+      "symbol": "kSUI",
+      "name": "Kriya Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x424b293afd846e994a6791f9c47bce03fa3b8a19d54bf670a6bb9de3bc3737c7::jai::JAI",
+      "symbol": "JAI",
+      "name": "Jelly AI",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x42d0b3476bc10d18732141a471d7ad3aa588a6fb4ba8e1a6608a4a7b78e171bf::af_lp::AF_LP",
+      "symbol": "AF_LP_AFSUI_SUI",
+      "name": "AfLpAfSuiSui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x439dc5b02f643131f94cfbfeb577bba3c02ff23b4e5158bad436f79293a37685::snwy::SNWY",
+      "symbol": "SNWY",
+      "name": "SNOWY",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x44356dba84dd74290dda0eb81e5bc4b7076f534babb8cbaf17b9b8b35a6faf0a::af_lp::AF_LP",
+      "symbol": "AF_LP_AF_USDC",
+      "name": "AfLpAfUsdc",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x44bec60c55e7c4233a240b804310511e6d0c18168636bf537639669035bbb1b2::natl::NATL",
+      "symbol": "NATL",
+      "name": "Nautilus Agent",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x44f838219cf67b058f3b37907b655f226153c18e33dfcd0da559a844fea9b1c1::usdsui::USDSUI",
+      "symbol": "USDSUI",
+      "name": "Sui Dollar",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x45d57f18eb53cbdcbad089bf6656204d949817fd7df7d12721cf8801112792fb::bob::BOB",
+      "symbol": "BOB",
+      "name": "BOB",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x46fbe54691b27d7abd2c9e5a01088913531f241b98f3c2351f8215e45cc17a4c::times::TIMES",
+      "symbol": "$TIMES",
+      "name": "TIMES",
+      "decimals": 5
+    },
+    {
+      "coin_type": "0x4b6d48afff2948c3ccc67191cf0ef175637472b007c1a8601fa18e16e236909c::octo::OCTO",
+      "symbol": "OCTO",
+      "name": "Oscar The Octopus",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x4b8da3a458be156af7bd17c0e754c703d6f7318fcfb2cf2a293d39c080a06692::pika::PIKA",
+      "symbol": "PIKA",
+      "name": "Pikasui",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0x4c407edd882f5ba66813856676c486ce4dd16ed7c534d07cf5d50e015c288ab8::chad::CHAD",
+      "symbol": "Chad",
+      "name": "Sui Chad",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x4c981f3ff786cdb9e514da897ab8a953647dae2ace9679e8358eec1e3e8871ac::dmc::DMC",
+      "symbol": "DMC",
+      "name": "DeLorean",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x4db126eac4fa99207e98db61d968477021fdeae153de3b244bcfbdc468ef0722::wsb::WSB",
+      "symbol": "WSB",
+      "name": "0xWSB on SUI",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x4e56b39acd75721999cf833062dfb77b1d51e749b02d90f049a5688e21919a64::prl::PRL",
+      "symbol": "PRL",
+      "name": "Pearl",
+      "decimals": 12
+    },
+    {
+      "coin_type": "0x4fc3949a4a8fe3ad9c75cec9724ff2b2d8520506b6129c9d8f0fcc2a1e4a8880::pdo::PDO",
+      "symbol": "PDO",
+      "name": "Poseidollar",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x502867b177303bf1bf226245fcdd3403c177e78d175a55a56c0602c7ff51c7fa::trevin_sui::TREVIN_SUI",
+      "symbol": "trevinSUI",
+      "name": "Trevin Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x506a6fc25f1c7d52ceb06ea44a3114c9380f8e2029b4356019822f248b49e411::memefi::MEMEFI",
+      "symbol": "MEMEFI",
+      "name": "MEMEFI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x50bedb72c2d5d6e4327f1b7fcc5aeabc8edf373c9fa7eb691d42f2654e3a6362::af_lp::AF_LP",
+      "symbol": "AF_LP_THREETH",
+      "name": "AfLpThreeth",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x513209220b0c75a26aa1b0a6141d3600b5f360ca5aceb6ce3d0f16fced2aed62::suidan::SUIDAN",
+      "symbol": "SUIDAN",
+      "name": "LT. Lego Dan",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x5145494a5f5100e645e4b0aa950fa6b68f614e8c59e17bc5ded3495123a79178::ns::NS",
+      "symbol": "NS",
+      "name": "SuiNS Token",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x53f3e4c387902af37f813c10013f19493dfe2cace9a01c34df766b4449850a00::swo::SWO",
+      "symbol": "SWO",
+      "name": "SuimilioWorldOrder",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x549e8b69270defbfafd4f94e17ec44cdbdd99820b33bda2278dea3b9a32d3f55::cert::CERT",
+      "symbol": "vSUI",
+      "name": "Volo Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x56d0ea7fd120f8c18eff0fd92d81c4f86cbe976dbcb1c04a7e8f325a7604ba07::slion::SLION",
+      "symbol": "SLION",
+      "name": "SUILION",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x5701b78aa77d856c4ed2656984b8543517a27b1bf337ea42e462846df2f131bb::milk::MILK",
+      "symbol": "MILK",
+      "name": "Itty Bitty Kitty Committy",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x57e93adcecd97fc8b30fc6f124be185f292b648e324773d8fbe6650e8274790f::aida::AIDA",
+      "symbol": "AIDA",
+      "name": "Aida",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x591c06dd0623155c5cbdbce196b92241f284b65612fa492386727a9caab13f43::odon::ODON",
+      "symbol": "ODON",
+      "name": "SuiOdon",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x5a71532c1e812daeffd07ef375451fad7a2906d01151bade4d5018ffc5a3c267::o_sui::O_SUI",
+      "symbol": "oSUI",
+      "name": "The Order Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x5b9b4cd82aee3d5a942eebe9c2da38f411d82bfdfea1204f2486e45b5868b44f::sity::SITY",
+      "symbol": "SITY",
+      "name": "SITY",
+      "decimals": 3
+    },
+    {
+      "coin_type": "0x5bb54b3a9d30e890eca8098832d2d4927abd47d466c73bed72d0dc5251660b2e::af_lp::AF_LP",
+      "symbol": "AF_LP_SUI_USDC",
+      "name": "AfLpSuiUsdc",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x5ca17430c1d046fae9edeaa8fd76c7b4193a00d764a0ecfa9418d733ad27bc1e::scallop_sca::SCALLOP_SCA",
+      "symbol": "sSCA",
+      "name": "sSCA",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x5d1f47ea69bb0de31c313d7acf89b890dbb8991ea8e03c6c355171f84bb1ba4a::turbos::TURBOS",
+      "symbol": "TURBOS",
+      "name": "Turbos",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x5d6881b68371f1d801ad93fb40d1cb130dd1975717170190207651b701938b72::simba::SIMBA",
+      "symbol": "SIMBA",
+      "name": "Simba the lonely lion",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x5ed0595332bb9adc4cc7af3fb7eea888cf68377f9497b22a186d681a6e92f1f6::mysten::MYSTEN",
+      "symbol": "MYSTEN",
+      "name": "Team Mysten",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x5f3a18cdfd7ef0527a65ba5c07dbe0efe276507d4d1a4d1bebe87f5d40df6cf6::bob::BOB",
+      "symbol": "BOB",
+      "name": "Bob the blob",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x5f70820b716a1d83580e5cf36dd0d0915b8763e1b85e3ef3db821ff40846be44::bread_wal::BREAD_WAL",
+      "symbol": "BreadWal",
+      "name": "Bread Walrus",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x604f2e82f5923c22373d048149c4b7861585cebe231b4e9e93ed8fb9c3c33bb5::af_lp::AF_LP",
+      "symbol": "AF_LP_LBTC_SUIWBTC",
+      "name": "AfLpLbtcSuiWbtc",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x6081300950a4f1e2081580e919c210436a1bed49080502834950d31ee55a2396::coin::COIN",
+      "symbol": "WFTM",
+      "name": "Wrapped Fantom",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x615b29e7cf458a4e29363a966a01d6a6bf5026349bb4e957daa61ca9ffff639d::up_wal::UP_WAL",
+      "symbol": "upWAL",
+      "name": "DoubleUp Staked Walrus",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x622345b3f80ea5947567760eec7b9639d0582adcfd6ab9fccb85437aeda7c0d0::scallop_wal::SCALLOP_WAL",
+      "symbol": "sWAL",
+      "name": "sWAL",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x62e39f5554a2badccab46bf3fab044e3f7dc889d42a567a68d3c1b2e5463001f::af_lp::AF_LP",
+      "symbol": "AF_LP_SUI_BUCK",
+      "name": "AfLpSuiBuck",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x64c37820fa974745c91c30f21a9266ccbea3790525e7a9d1687da16423de1d7e::suu::SUU",
+      "symbol": "SUU",
+      "name": "ovan suu",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0x64e081287af3fb4eb5720137348661493203d48535f582577177fcd3b253805f::mwal::MWAL",
+      "symbol": "mWAL",
+      "name": "Mirai Staked WAL",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x6612c8419c70a706612e154ffcc0ef21b3fec6e4008b4b775ceae4e894d3484d::tism::TISM",
+      "symbol": "TISM",
+      "name": "TISM",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x66f87084e49c38f76502d17f87d17f943f183bb94117561eb573e075fdc5ff75::coin::COIN",
+      "symbol": "WGLMR",
+      "name": "Wrapped GLMR",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x6907963ca849faff0957b9a8269a7a07065e3def2eef49cc33b50ab946ea5a9f::coin::COIN",
+      "symbol": "Bonk",
+      "name": "Bonk",
+      "decimals": 5
+    },
+    {
+      "coin_type": "0x6a474a6b7e7f3dd0b4eb65af96ebb3c2c0b7b7e301392532adb855a37d133615::fasui::FASUI",
+      "symbol": "FASUI",
+      "name": "Football Arena Sui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x6a4d9c0eab7ac40371a7453d1aa6c89b130950e8af6868ba975fdd81371a7285::sbets::SBETS",
+      "symbol": "SBets",
+      "name": "SuiBets",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x6a6cc1dc2603643f5b08775ed9af847e8954a1b692a9df69ca1c4077f9040fa5::snorkel::SNORKEL",
+      "symbol": "SNORKEL",
+      "name": "SNORKEL",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x6ad7368bf6bbe077cfd30adbc07037767596bc922934d2908027f2ab092c7530::grass::GRASS",
+      "symbol": "GRASS",
+      "name": "GRASS",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x6b42e2f4cd5b74c737258b3589a3a09397bb012bda6183f99a87294ecaa8504e::capo::CAPO",
+      "symbol": "CAPO",
+      "name": "Capo The Mafia",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x6cdf9430814b38435a96302b0b4431ff0d9d3cc11c8f590b3458ce24cd5c2afc::moony::MOONY",
+      "symbol": "MOONY",
+      "name": "Moony Meme",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x6dae8ca14311574fdfe555524ea48558e3d1360d1607d1c7f98af867e3b7976c::flx::FLX",
+      "symbol": "FLX",
+      "name": "FlowX",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x6db9a7bb22829898fd281879778a175120ebfc77eafc1f8ee341654cfc3f8dc2::burry::BURRY",
+      "symbol": "BURRY",
+      "name": "Burrial",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x6e0414951a89a237761b0a4ae90aa34d289da956bbeac27d8e78e5c216fb1f65::blast::BLAST",
+      "symbol": "BLAST",
+      "name": "BIG MAN BLASTOISE",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x7016aae72cfc67f2fadf55769c0a7dd54291a583b63051a5ed71081cce836ac6::sca::SCA",
+      "symbol": "SCA",
+      "name": "Scallop",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x706fa7723231e13e8d37dad56da55c027f3163094aa31c867ca254ba0e0dc79f::artfi::ARTFI",
+      "symbol": "ARTFI",
+      "name": "ARTFI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x713280ef74d6ae68dc679f588f1eb7f83b877df8e7d8441aa6af972fe215ec48::af_lp::AF_LP",
+      "symbol": "AF_LP_SUI_MPOINTS",
+      "name": "AfLpSuiMPoints",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA",
+      "symbol": "IKA",
+      "name": "IKA Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x727458212ca0be056d9ccc0d42981bdf41109779fbd9c7fad56c4456e0c3d0c6::beeg::BEEG",
+      "symbol": "BEEG",
+      "name": "Beeg Blue Whale",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x7373a010c5a466cd4ad5c73f72b2cd6d8c61d34540dc401ff759c4bf938e7e33::luga::LUGA",
+      "symbol": "LUGA",
+      "name": "Luga",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x76cb819b01abed502bee8a702b4c2d547532c12f25001c9dea795a5e631c26f1::fud::FUD",
+      "symbol": "FUD",
+      "name": "FUD",
+      "decimals": 5
+    },
+    {
+      "coin_type": "0x790f258062909e3a0ffc78b3c53ac2f62d7084c3bab95644bdeb05add7250001::super_sui::SUPER_SUI",
+      "symbol": "superSUI",
+      "name": "superSUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x797abd920c222fef740fddf865e94c1f8198d67e18d395ee4445a7f263677e62::af_lp::AF_LP",
+      "symbol": "AF_LP_SUPER_SUI_MUSD",
+      "name": "AfLpSuperSuiMUsd",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x7a272959f0bdfc46a89b6226666eae89ddbb9e392c15c96a3a912f5a854d5c63::oink::OINK",
+      "symbol": "OINK",
+      "name": "Oink",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x7b0075309f3faf6caa38a9fffd896673d93fcddad8d0513ce185e2d8eaf14e71::utato::UTATO",
+      "symbol": "uTATO",
+      "name": "uTATO",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x7bae0b3b7b6c3da899fe3f4af95b7110633499c02b8c6945110d799d99deaa68::mpoints::MPOINTS",
+      "symbol": "mPOINTS",
+      "name": "mPOINTS",
+      "decimals": 0
+    },
+    {
+      "coin_type": "0x7bd673d1b980fc2f1c922f91395c325561a675fc2f349c8ffcff7d03bdbeadc8::boost::BOOST",
+      "symbol": "BOOST",
+      "name": "Sui Booster DAO",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x80a4b8e2fbc6b5741a301e2295e431c3ca54ad7ff0b20291c433c05cb53b35ce::shork::SHORK",
+      "symbol": "SHORK",
+      "name": "Shork",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x81875ebb12168916fac49a584a769403d5ac062c25e7bd1cfd019e1f380456eb::suifans::SUIFANS",
+      "symbol": "SUIfans",
+      "name": "SUI Fans",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x820ad3b81297b7f4c1aa22e2dc19ff584684954e62db390e9885a38273bf9d0e::oink_sui::OINK_SUI",
+      "symbol": "oinkSUI",
+      "name": "Oink Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x83556891f4a0f233ce7b05cfe7f957d4020492a34f5405b2cb9377d060bef4bf::spring_sui::SPRING_SUI",
+      "symbol": "sSUI",
+      "name": "Spring SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x83848a3032cfec1140113c4894bb926ed35de98d470f006660faf6fbd1161a83::suitoro::SUITORO",
+      "symbol": "SUITORO",
+      "name": "Suitoro",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x83f1bb8c91ecd1fd313344058b0eed94d63c54e41d8d1ae5bff1353443517d65::yap_sui::YAP_SUI",
+      "symbol": "yapSUI",
+      "name": "Yap Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x84b27ddadc6139c7e8837fef6759eba4670ba3fc0679acd118b4e9252f834e29::e4c::E4C",
+      "symbol": "E4C",
+      "name": "$E4C",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x84c853d28dac001038015d8580bf6b078c670817434f06c5ecad44fd181d7252::af_lp::AF_LP",
+      "symbol": "AF_LP_SUI_MUSD",
+      "name": "AfLpSuiMUsd",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x84d155fb70aebcc1391bf497d8fc139154be745765dfec57faef4704f4112c79::vaporeon::VAPOREON",
+      "symbol": "VAPOREON",
+      "name": "Vaporeon",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x862c5f46431d4be2fc3042f9ded715b019b95126006a99df80a0904ba1f0cbe6::suitardio::SUITARDIO",
+      "symbol": "suitardio",
+      "name": "suitardio",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x876a4b7bce8aeaef60464c11f4026903e9afacab79b9b142686158aa86560b50::xbtc::XBTC",
+      "symbol": "xBTC",
+      "name": "OKX Wrapped BTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x87dfe1248a1dc4ce473bd9cb2937d66cdc6c30fee63f3fe0dbb55c7a09d35dec::up::UP",
+      "symbol": "UP",
+      "name": "UP",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x89f7d4d3b02de755693b53ec03e2296b23ef9fe21e6175d8c0a106c162943c77::byka::BYKA",
+      "symbol": "BYKA",
+      "name": "Baby Ika",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x8a51036977a1149620419c492a5af8c276fdb23cf3007882909a3e0d43593654::squirtle::SQUIRTLE",
+      "symbol": "SQUIRT",
+      "name": "SQUIRTLE",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x8b4d553839b219c3fd47608a0cc3d5fcc572cb25d41b7df3833208586a8d2470::hawal::HAWAL",
+      "symbol": "haWAL",
+      "name": "haWAL",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x8b6e2ca7bafe1f0144dea2ea167abc614de69e73c4acb11d1bf8d90fcb2aeebc::zengar::ZENGAR",
+      "symbol": "ZENGAR",
+      "name": "ZENGARR",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x8c47c0bde84b7056520a44f46c56383e714cc9b6a55e919d8736a34ec7ccb533::suicune::SUICUNE",
+      "symbol": "HSUI",
+      "name": "Suicune",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x8c4e1c4606941d0c03fd561a7b01f35814673fce3537b0a32d33b7e6a7a6af90::fred::FRED",
+      "symbol": "FRED",
+      "name": "Fred the Platypus",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x8cd8a3f5ca27d768cbdd0f41653a77fd6c922ed907aa3298b67072a148f94a74::nelly::NELLY",
+      "symbol": "NELLY",
+      "name": "Discord's 404 Mascot",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x8d84e98518cab8bd2941cfb23fa78ad0538ed07ba8887e451f0b93380d479908::zuki::ZUKI",
+      "symbol": "ZUKI",
+      "name": "Suizuki",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x8e9187b49143e6071d8bdee63e34224a8e79fdaa6207d2d2ed54007c45936e0b::aya::AYA",
+      "symbol": "AYA",
+      "name": "Aya Asagiri",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x909cba62ce96d54de25bec9502de5ca7b4f28901747bbf96b76c2e63ec5f1cba::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x90e8c5f5762afa676e96fb30e2cd0c9bfdc840d432ece58793f54f42d9981b09::killa::KILLA",
+      "symbol": "KILLA",
+      "name": "killa",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x922d15d7f55c13fd790f6e54397470ec592caa2b508df292a2e8553f3d3b274f::msui::MSUI",
+      "symbol": "mSUI",
+      "name": "Mirai Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x92f75743661ac21edf3c31f0be7dba6d35e6d01b387f6170665eb8ea88827ae3::jack::JACK",
+      "symbol": "JACK",
+      "name": "Jack The Crab",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x93c5b75322b5f9fc194e16d869b30a1db8d1f1826b2371c776c21c3d6a375b10::suitable::SUITABLE",
+      "symbol": "TABLE",
+      "name": "SUITABLE",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x94b092e200b1a700fb3ebc1bd0f1eee4d06fd2edfd626ae6efebb2da78ce125b::af_lp::AF_LP",
+      "symbol": "AF_LP_METH_MUSD",
+      "name": "AfLpMEthMUsd",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_dai_coin::CELER_DAI_COIN",
+      "symbol": "DAI",
+      "name": "Dai Stablecoin",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_frax_coin::CELER_FRAX_COIN",
+      "symbol": "FRAX",
+      "name": "Frax",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_fxs_coin::CELER_FXS_COIN",
+      "symbol": "FXS",
+      "name": "Frax Share",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_usdc_coin::CELER_USDC_COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_usdt_coin::CELER_USDT_COIN",
+      "symbol": "USDT",
+      "name": "Tether USD",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_wbtc_coin::CELER_WBTC_COIN",
+      "symbol": "WBTC",
+      "name": "Wrapped BTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_weth_coin::CELER_WETH_COIN",
+      "symbol": "WETH",
+      "name": "Wrapped Ether",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x94e7a8e71830d2b34b3edaa195dc24c45d142584f06fa257b73af753d766e690::celer_wsteth_coin::CELER_WSTETH_COIN",
+      "symbol": "wstETH",
+      "name": "Wrapped liquid staked Ether 2.0",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x960b531667636f39e85867775f52f6b1f220a058c4de786905bdf761e06a56bb::usdy::USDY",
+      "symbol": "USDY",
+      "name": "Ondo US Dollar Yield",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x96ec97bb345f814242e43b2ba5985fff57a3bfd962a3d7e1ffd6b30e696f8a3b::ssf::SSF",
+      "symbol": "SSF",
+      "name": "SuiStarFish",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x980ec1e7d5a3d11c95039cab901f02a044df2d82bc79d99b60455c02524fad83::pup::PUP",
+      "symbol": "PUP",
+      "name": "Pum Pup",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x9a5502414b5d51d01c8b5641db7436d789fa15a245694b24aa37c25c2a6ce001::scb::SCB",
+      "symbol": "SCB",
+      "name": "Sacabam",
+      "decimals": 5
+    },
+    {
+      "coin_type": "0x9a7ca7b6de5b6e9a4dadec42fada7cd84068aebd7adbd1faeb713622c4628ca9::meadow::MEADOW",
+      "symbol": "MED",
+      "name": "Meadow",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x9ab853bdb5a2dd0a4314edb90eced4869eb90fbeaf4f95587ce5d9d8c6a7dec1::zilla::ZILLA",
+      "symbol": "ZILLA",
+      "name": "BobZilla",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x9aff4aa4dd737a71dc374c03deaec1e11b20a51a46e64f4605e95cc3c966f272::wend::WEND",
+      "symbol": "WEND",
+      "name": "Wen Dexscreener",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x9c86d1926a0a39e906f20674d6a35f337be8625ebcb6b799ee8ff011f328bee2::liq::LIQ",
+      "symbol": "LIQ",
+      "name": "Liquor",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0x9cde6fd22c9518820644dd1350ac1595bb23751033d247465ff3c7572d9a7049::mine::MINE",
+      "symbol": "MINE",
+      "name": "Mineral",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0x9eed28fc98688a799fe51aa6ed39b851bd09d950fc785b2d7c9f543796254631::drip::DRIP",
+      "symbol": "DRIP",
+      "name": "Dripward",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xa198f3be41cda8c07b3bf3fee02263526e535d682499806979a111e88a5a8d0f::coin::COIN",
+      "symbol": "CELO",
+      "name": "Celo native asset",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xa224eea12f683adac14ca236dc8d471061fcfc7de8635ddb72b98a02897e78e1::suidog::SUIDOG",
+      "symbol": "SUIDOG",
+      "name": "SUI DOG",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xa26788cb462ae9242d9483bdbe5a82188ba0eaeae3c5e9237d30cbcb83ce7a88::mochi::MOCHI",
+      "symbol": "MOCHI",
+      "name": "Mochi",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xa4e825dd94bd236e29f9a0cda6bd45ebe7246300f4825db5349a05d5cc114a87::dmnd::DMND",
+      "symbol": "DMND",
+      "name": "Diamond",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xa7b184cdd17cc2753b9aa2d3c1a4fcb1ae7e2fd8670ee42180369343bdac9c08::sizu::SIZU",
+      "symbol": "SIZU",
+      "name": "Sizu",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xa8ad8c2720f064676856f4999894974a129e3d15386b3d0a27f3a7f85811c64a::tr_wal::TR_WAL",
+      "symbol": "TrWal",
+      "name": "TrWal",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xa9396a2d0b927fad93666fee828d6cea49c1bf15779d3717b08fa00424669e3e::isg::ISG",
+      "symbol": "ISG",
+      "name": "Infinite Sui Glitch",
+      "decimals": 0
+    },
+    {
+      "coin_type": "0xa99166e802527eeb5439cbda12b0a02851bf2305d3c96a592b1440014fcb8975::koto::KOTO",
+      "symbol": "KOTO",
+      "name": "KOTO",
+      "decimals": 0
+    },
+    {
+      "coin_type": "0xa99b8952d4f7d947ea77fe0ecdcc9e5fc0bcab2841d6e2a5aa00c3044e5544b5::navx::NAVX",
+      "symbol": "NAVX",
+      "name": "NAVX Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xa9c27201730c5a17c628e7b5647ee12174e6df3d86a772a2d30ea4a5bc60b22c::baa::BAA",
+      "symbol": "BAA",
+      "name": "baa sheep",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b::btc::BTC",
+      "symbol": "wBTC",
+      "name": "Wrapped Bitcoin",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xaded77ced91afca17e03306d24962f782a51c7395eaf0e7bc1e08ac0dca0fd52::fl_sui::FL_SUI",
+      "symbol": "flSUI",
+      "name": "FlowX Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xaf3aae4940a248739ce4964857381fc3f3149a6d05375bfbb2118592907e3bbb::dam::DAM",
+      "symbol": "DAM",
+      "name": "suibeaver",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xaf8cd5edc19c4512f4259f0bee101a40d41ebed738ade5874359610ef8eeced5::coin::COIN",
+      "symbol": "WETH",
+      "name": "Wrapped Ether",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xaf9e228fd0292e2a27b4859bc57a2f3a9faedb9341b6307c84fef163e44790cc::uni::UNI",
+      "symbol": "Uni",
+      "name": "Uni",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xb0b6d9fa117da4f47c4895c4216cd3cad37d3b2f4425c62dbd4f4638b44e3f93::bull::BULL",
+      "symbol": "Bull",
+      "name": "Sui Bull",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xb1b0650a8862e30e3f604fd6c5838bc25464b8d3d827fbd58af7cb9685b832bf::wwal::WWAL",
+      "symbol": "wWAL",
+      "name": "❄️ WINTER WAL",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xb214573530ee4d57151cec0fbbc917ae097ae6078b3844b3f690cedb360dfd4d::aaafish::AAAFISH",
+      "symbol": "aaaFish",
+      "name": "aaFish",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xb231fcda8bbddb31f2ef02e6161444aec64a514e2c89279584ac9806ce9cf037::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xb331d2ba4692ca70f96a345b746b7d10085453c0520cdb47b32cc1cc1d1716a4::stem::STEM",
+      "symbol": "STEM",
+      "name": "SUISTEM",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xb45fcfcc2cc07ce0702cc2d229621e046c906ef14d9b25e8e4d25f6e8763fef7::send::SEND",
+      "symbol": "SEND",
+      "name": "SEND",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xb6618debe65795bf0ecd5373eec3ab74d38e26742c1b0817c8b00896d2cb7150::lemon::LEMON",
+      "symbol": "LEMON",
+      "name": "Lemon",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xb6baa75577e4bbffba70207651824606e51d38ae23aa94fb9fb700e0ecf50064::kimchi::KIMCHI",
+      "symbol": "KIMCHI",
+      "name": "KIMCHI",
+      "decimals": 5
+    },
+    {
+      "coin_type": "0xb779486cfd6c19e9218cc7dc17c453014d2d9ba12d2ee4dbb0ec4e1e02ae1cca::spt::SPT",
+      "symbol": "SPT",
+      "name": "SPT",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xb7844e289a8410e50fb3ca48d69eb9cf29e27d223ef90353fe1bd8e27ff8f3f8::coin::COIN",
+      "symbol": "SOL",
+      "name": "Wrapped SOL",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xb84323cac05ce4ba5ec8abb9a7499171ca66aff75a4e38f7d7dc536718ff374b::af_lp::AF_LP",
+      "symbol": "AF_LP_AFSUI_USDY",
+      "name": "AfLpAfSuiUsdy",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xb848cce11ef3a8f62eccea6eb5b35a12c4c2b1ee1af7755d02d7bd6218e8226f::coin::COIN",
+      "symbol": "WBNB",
+      "name": "Wrapped BNB",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xbc3a676894871284b3ccfb2eec66f428612000e2a6e6d23f592ce8833c27c973::coin::COIN",
+      "symbol": "tBTC",
+      "name": "tBTC v2",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xbc732bc5f1e9a9f4bdf4c0672ee538dbf56c161afe04ff1de2176efabdf41f92::suai::SUAI",
+      "symbol": "SUAI",
+      "name": "SuiAI",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xbc858cb910b9914bee64fff0f9b38855355a040c49155a17b265d9086d256545::but::BUT",
+      "symbol": "BUT",
+      "name": "Bucket Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xbd2301d12b96dd64b41134168931dd54742c0336bcf1752ed346a177ac00d1ed::SuiRewardsMe::SUIREWARDSME",
+      "symbol": "SRM",
+      "name": "SuiRewards.Me",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d::hasui::HASUI",
+      "symbol": "haSUI",
+      "name": "haSUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xbff8dc60d3f714f678cd4490ff08cabbea95d308c6de47a150c79cc875e0c7c6::sbox::SBOX",
+      "symbol": "SBOX",
+      "name": "SuiBoxer Coin",
+      "decimals": 1
+    },
+    {
+      "coin_type": "0xc00dfc048ec250a6029a0728f799905d3d8d3c281fd5bd153584a5dbafde93e1::af_lp::AF_LP",
+      "symbol": "AF_LP_IKA_SUI",
+      "name": "AfLpIkaSui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xc060006111016b8a020ad5b33834984a437aaa7d3c74c18e09a95d48aceab08c::coin::COIN",
+      "symbol": "USDT",
+      "name": "Tether USD",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc12fb8de513df4c6541d8dff0dbfd01b6079611703e01a4c0876e3c834c96be8::causa::CAUSA",
+      "symbol": "CAUSA",
+      "name": "Causa Sui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xc1a35b6a9771e6eb69e3b36e921a3a373e6d33e6f863dab6949ed3c2d1228f73::neonet::NEONET",
+      "symbol": "NEONET",
+      "name": "NeoNet AI by SuiAI",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc44d97a4bc4e5a33ca847b72b123172c88a6328196b71414f32c3070233604b2::slp::SLP",
+      "symbol": "SLP",
+      "name": "Sudo LP Token",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc466c28d87b3d5cd34f3d5c088751532d71a38d93a8aae4551dd56272cfb4355::manifest::MANIFEST",
+      "symbol": "MANIFEST",
+      "name": "MANIFEST",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xc4db0771e1fa7db8d9f1dca55eedf4048673a2fb056bc91d646cb75dfa0bc573::hiddo::HIDDO",
+      "symbol": "HIDDO",
+      "name": "sudog",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc5b61b1e1f7f88511c9c0c6f475f823c66cc4e2d39a49beb6777059710be8404::toilet::TOILET",
+      "symbol": "Toilet",
+      "name": "Toilet Dust",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc6b2f19923f3c62ccc5d10c2247873d033128d0d056eba1d27cd29441b8b7f69::sepe::SEPE",
+      "symbol": "SEPE",
+      "name": "Sepe On Sui",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc98736be213323acf431f109908c8f66f132b7936d64de328dd1aafb5c337d4b::adeni::ADENI",
+      "symbol": "ADENI",
+      "name": "Aideniyi",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xc9ad7962644dbcc6cd88f6e926d3c721655731ad5362c0eea8ec21d45840ed14::af_lp::AF_LP",
+      "symbol": "AF_LP_AFSUI_ETH",
+      "name": "AfLpAfSuiEth",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xc9ecb0b9d62dac89607dbe368de67a022bf07dd37273b298d7074d7cff42e39b::af_lp::AF_LP",
+      "symbol": "AF_LP_MBTC_MUSD",
+      "name": "AfLpMbtcMusd",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xcbd480f670c70232ad52ab12b56f81e6bfc870b14ae4e2af6e40426458450478::mvg::MVG",
+      "symbol": "MVG",
+      "name": "monivong",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xccd628c2334c5ed33e6c47d6c21bb664f8b6307b2ac32c2462a61f69a31ebcee::meth::METH",
+      "symbol": "mETH",
+      "name": "mETH",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xcd4874d0ea02e448076ba7490de089dc071c396a677af5b1bde6df9f8bedd267::af_lp::AF_LP",
+      "symbol": "AF_LP_CUSD",
+      "name": "AfLpCUSD",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xce7ff77a83ea0cb6fd39bd8748e2ec89a3f41e8efdc3f4eb123e0ca37b184db2::buck::BUCK",
+      "symbol": "BUCK",
+      "name": "Bucket USD",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xcf72ec52c0f8ddead746252481fb44ff6e8485a39b803825bde6b00d77cdb0bb::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin (PoS)",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xcfd2bc58d96eb86bc48110e1cfdeebb5b9531317c2203cb415dfd44fab587cf0::lamb::LAMB",
+      "symbol": "LAMB",
+      "name": "LAMBALL",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0xd06278ad71b5a4d622f179bd21d163d2efc8aaf14e1750884026f63e3d07ca3a::surf::SURF",
+      "symbol": "SURF",
+      "name": "SurfDog",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xd0e89b2af5e4910726fbcd8b8dd37bb79b29e5f83f7491bca830e94f7f226d29::eth::ETH",
+      "symbol": "ETH",
+      "name": "ETH by Sui Bridge",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xd0ea9bc91c3855e9b58a51cd55e8455b37bd5c75f70b4d6e97e54b55c4ba4ae8::issp::ISSP",
+      "symbol": "ISSP",
+      "name": "ISSP Coin",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xd1a3eab6e9659407cb2a5a529d13b4102e498619466fc2d01cb0a6547bbdb376::af_lp::AF_LP",
+      "symbol": "AF_LP_SUI_USDC",
+      "name": "AfLpSuiUsdc",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xd1b72982e40348d069bb1ff701e634c117bb5f741f44dff91e472d3b01461e55::stsui::STSUI",
+      "symbol": "stSUI",
+      "name": "AlphaFi Staked SUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xd2013e206f7983f06132d5b61f7c577638ff63171221f4f600a98863febdfb47::toce::TOCE",
+      "symbol": "TOCE",
+      "name": "Tocen Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xd3ccd5bf9e845177220dadd080aa05bff57706f73afb2f3e3713bcf8fb68b447::mazu::MAZU",
+      "symbol": "MAZU",
+      "name": "Mazu",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xd5fcf6a2947411e145a01e31cf97d43d13d9cd37b7cac2bb3296f7539ebaaf4a::rex::REX",
+      "symbol": "REX",
+      "name": "suirex",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xd74441359aa05b5e5fec916c9bef83eb522682f248822e8105e1b1b4b1b337e6::jesuis::JESUIS",
+      "symbol": "JESUIS",
+      "name": "JeSUIs",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0xd7b720a37be0f5540e2499c989cbab660ae6b64f28ec54ceeea68ad3936b8d41::hopper::HOPPER",
+      "symbol": "Hopper",
+      "name": "Hopper the rabbit",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xd7ca095524ec25cd3a276506d8045ef4992c82381145dec375a9ede9b34b5b02::td2::TD2",
+      "symbol": "TD2",
+      "name": "TOILET2.0",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xd8b855d48fb4d8ffbb5c4a3ecac27b00f3712ce58626deb5a16a290e0c6edf84::nwal::NWAL",
+      "symbol": "nWAL",
+      "name": "Sui Nigeria Walrus LST",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xd976fda9a9786cda1a36dee360013d775a5e5f206f8e20f84fad3385e99eeb2d::aaa::AAA",
+      "symbol": "AAA",
+      "name": "aaa cat",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xd9f9b0b4f35276eecd1eea6985bfabe2a2bbd5575f9adb9162ccbdb4ddebde7f::smove::SMOVE",
+      "symbol": "MOVE",
+      "name": "MOVE",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xda1644f58a955833a15abae24f8cc65b5bd8152ce013fde8be0a6a3dcf51fe36::token::TOKEN",
+      "symbol": "HUSKI",
+      "name": "Huski Token",
+      "decimals": 0
+    },
+    {
+      "coin_type": "0xda79c0756319ea12c1679cb0d2c9fa85c66c0c724f45b7d1af0f7ed79fe4573d::suiz::SUIZ",
+      "symbol": "SUIZ",
+      "name": "SUIZ",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xdb48d22586b7eabf33202ae32a0c074577ad90e94cf7ce476362256b45f9a1fd::af_lp::AF_LP",
+      "symbol": "AF_LP_SURF_SUI",
+      "name": "AfLpSurf/Sui",
+      "decimals": 7
+    },
+    {
+      "coin_type": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+      "symbol": "USDC",
+      "name": "USDC",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xdbced66d354dc5089cf222d429916f93f290d097bb35df94dc4b5fb73c4bcc23::ape::APE",
+      "symbol": "APE",
+      "name": "🦍",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xdbe380b13a6d0f5cdedd58de8f04625263f113b3f9db32b3e1983f49e2841676::coin::COIN",
+      "symbol": "WMATIC",
+      "name": "Wrapped Matic",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xdc9b462697876ff4c680e59b3756ac39a6899cfbc355a6880c60e01c8930b3cc::ronda::RONDA",
+      "symbol": "Ronda",
+      "name": "Ronda On Sui",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xdcb3820f6e5f29aa627f6d6150774aa01f271af5df646ce6298edbad8a30f1d7::suigga::SUIGGA",
+      "symbol": "SUIGGA",
+      "name": "Suigga",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xdd50cefc7d8a825adac79daf9ef7b7d18b066bb2ad5777eaf8098b948973af70::frosty::FROSTY",
+      "symbol": "FROSTY",
+      "name": "Frosty",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xde2d3e02ba60b806f81ee9220be2a34932a513fe8d7f553167649e95de21c066::reap_token::REAP_TOKEN",
+      "symbol": "REAP",
+      "name": "REAP",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xdeb831e796f16f8257681c0d5d4108fa94333060300b2459133a96631bf470b8::suitrump::SUITRUMP",
+      "symbol": "SUITRUMP",
+      "name": "SUI TRUMP",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP",
+      "symbol": "DEEP",
+      "name": "DeepBook Token",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xdfe175720cb087f967694c1ce7e881ed835be73e8821e161c351f4cea24a0f20::satlbtc::SATLBTC",
+      "symbol": "SATLBTC",
+      "name": "satLBTC",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xe0644f3e46b2d9f319a2cc3491155c75d1b6132ba9b3601c6e7e102e17296645::goof::GOOF",
+      "symbol": "GOOF",
+      "name": "Captain GOOFY",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe0fbaffa16409259e431b3e1ff97bf6129641945b42e5e735c99aeda73a595ac::suiyan::SUIYAN",
+      "symbol": "SUIYAN",
+      "name": "Super Suiyan",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe14726c336e81b32328e92afc37345d159f5b550b09fa92bd43640cfdd0a0cfd::usdb::USDB",
+      "symbol": "USDB",
+      "name": "Bucket USD",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe1b45a0e641b9955a20aa0ad1c1f4ad86aad8afb07296d4085e349a50e90bdca::blue::BLUE",
+      "symbol": "BLUE",
+      "name": "Bluefin",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xe32d3ebafa42e6011b87ef1087bbc6053b499bf6f095807b9013aff5a6ecd7bb::coin::COIN",
+      "symbol": "USDC",
+      "name": "USD Coin (Arb1)",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe4239cd951f6c53d9c41e25270d80d31f925ad1655e5ba5b543843d4a66975ee::SUIP::SUIP",
+      "symbol": "SUIP",
+      "name": "SuiPad",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xe44df51c0b21a27ab915fa1fe2ca610cd3eaa6d9666fe5e62b988bf7f0bd8722::musd::MUSD",
+      "symbol": "mUSD",
+      "name": "mUSD",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xe49faf3eec344507eaadb6d21119d95823ae48b3540708489d492a5d8d9e79ed::suu::SUU",
+      "symbol": "SUU",
+      "name": "Suuflex",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xe4cbb9bcb343ce93182725da11050640c7872453cdb7809e8b7e654581e32774::frog::FROG",
+      "symbol": "FROG",
+      "name": "HopFrog",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe68de9dcefed8f7b24183fb3f990f0cebffb1df001bddc4cde2d75187b369c7f::plankz::PLANKZ",
+      "symbol": "PLANKZ",
+      "name": "PLANKz",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xe68fad47384e18cd79040cb8d72b7f64d267eebb73a0b8d54711aa860570f404::upsui::UPSUI",
+      "symbol": "UPSUI",
+      "name": "Double Up Sui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xe737bf979c4c2e6ae832a99727141902094079631599d6964f29dedabdf64b50::crimeszn::CRIMESZN",
+      "symbol": "crimeszn",
+      "name": "crime szn",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xe91167517f38b39315b792f39829ed447823e92b36cda24d3c79879c4c72f620::nut::NUT",
+      "symbol": "NUT",
+      "name": "No Utility Token",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xea1cdbe236d9227e478026cead7c7ab623cac9e9728bbd3d7adfc01945fd47bf::suisabi::SUISABI",
+      "symbol": "SABI",
+      "name": "SUISABI",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0xea65bb5a79ff34ca83e2995f9ff6edd0887b08da9b45bf2e31f930d3efb82866::s::S",
+      "symbol": "S",
+      "name": "Agent S",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xead92ec6492b9c51ab7dbb079e60d8049062f771951df15f8012d22baeff4c93::unithewonderdog::UNITHEWONDERDOG",
+      "symbol": "uni the wonder dog",
+      "name": "uni",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xebb4eb552f807a28a1601e804ccaf91796ddc46407ba1b07381333111ed29d46::suishi::SUISHI",
+      "symbol": "suishi",
+      "name": "Suishicat",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xebbf537bc3686be32fe22b498b42715641bbb209267be72236a352e0444cc5df::sui_pepe::SUI_PEPE",
+      "symbol": "SPEPE",
+      "name": "SUI PEPE",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xecdc81bd6e5a1b889d428d19c7949ff45708045d445c9f937c51e25bb85e39d0::bb::BB",
+      "symbol": "BB",
+      "name": "BabyBlub",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xed4504e791e1dad7bf93b41e089b4733c27f35fde505693e18186c2ba8e2e14b::suib::SUIB",
+      "symbol": "SUIB",
+      "name": "Suiba Inu",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xee962a61432231c2ede6946515beb02290cb516ad087bb06a731e922b2a5f57a::us::US",
+      "symbol": "US",
+      "name": "Talus Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf00eb7ab086967a33c04a853ad960e5c6b0955ef5a47d50b376d83856dc1215e::axol::AXOL",
+      "symbol": "AXOL",
+      "name": "AXOLcoin",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf05381d5c15833ddec7c4060e3b9bf3dded29cfa81d034ab0f693e68bcd9f9db::rachop::RACHOP",
+      "symbol": "RACHOP",
+      "name": "Rachop",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xf0cf4a97d49b32936bf4819c3c2437423946625db31a28a47dbb45874351718b::srab::SRAB",
+      "symbol": "SRAB",
+      "name": "Srab",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf0fe2210b4f0c4e3aff7ed147f14980cf14f1114c6ad8fd531ab748ccf33373b::bswt::BSWT",
+      "symbol": "BSWT",
+      "name": "BaySwap Token",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf16e6b723f242ec745dfd7634ad072c42d5c1d9ac9d62a39c381303eaa57693a::fdusd::FDUSD",
+      "symbol": "FDUSD",
+      "name": "First Digital USD",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xf1b901d93cc3652ee26e8d88fff8dc7b9402b2b2e71a59b244f938a140affc5e::af_lp::AF_LP",
+      "symbol": "AF_LP_USDC_BUCK",
+      "name": "AfLpUsdcBuck",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf217249507c83f0d404b096c1f79194c3290d9c26b453cd78c95d2062f76812d::fish::FISH",
+      "symbol": "FISH",
+      "name": "Catfish",
+      "decimals": 6
+    },
+    {
+      "coin_type": "0xf22da9a24ad027cccb5f2d496cbe91de953d363513db08a3a734d361c7c17503::LOFI::LOFI",
+      "symbol": "LOFI",
+      "name": "LOFI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf325ce1300e8dac124071d3152c5c5ee6174914f8bc2161e88329cf579246efc::afsui::AFSUI",
+      "symbol": "AFSUI",
+      "name": "afSUI",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf4530aa5ef8af33c497ec38f54ff9dd45fad9157264efae9693eb62faf8667b5::coin::COIN",
+      "symbol": "pxETH",
+      "name": "Pirex Ether",
+      "decimals": 8
+    },
+    {
+      "coin_type": "0xf50e1ecf17ef91af0f3966b9d34504bf7bc52b4b628179b70539fba53a7b2fce::a55::A55",
+      "symbol": "A55",
+      "name": "370H55V",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf6e7fcac642280ba427bc1b3e158a169fa0624cad36cd79fc931aba3502880a5::homi::HOMI",
+      "symbol": "HOMI",
+      "name": "HOMITOKEN",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf72368851fb9d28049932d845887b5a4701fdd18d9d90989c55b910933cfc453::azur::AZUR",
+      "symbol": "AZUR",
+      "name": "AZUR CRYPTUS",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf82dc05634970553615eef6112a1ac4fb7bf10272bf6cbe0f80ef44a6c489385::typus::TYPUS",
+      "symbol": "TYPUS",
+      "name": "Typus",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xf847c541b3076eea83cbaddcc244d25415b7c6828c1542cae4ab152d809896b6::af_lp::AF_LP",
+      "symbol": "AF_LP_SUI_NS",
+      "name": "AfLpSuiNs",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xfa7ac3951fdca92c5200d468d31a365eb03b2be9936fde615e69f0c1274ad3a0::BLUB::BLUB",
+      "symbol": "BLUB",
+      "name": "BLUB",
+      "decimals": 2
+    },
+    {
+      "coin_type": "0xfbdd50dd7bc7af482d308f8c5d8c66c23e3b59494ff92f2947b150f20b5f43fd::af_lp::AF_LP",
+      "symbol": "AF_LP_SUPER_SUI",
+      "name": "AfLpSuperSui",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xfd22b6a15804cfa918ea25fbc48c48fe220382be34d5fb44594448717e6661d3::explorers::EXPLORERS",
+      "symbol": "EXPLR",
+      "name": "Explorers",
+      "decimals": 9
+    },
+    {
+      "coin_type": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA",
+      "symbol": "ALPHA",
+      "name": "ALPHA Token",
+      "decimals": 9
+    }
+  ]
+}

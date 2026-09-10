@@ -203,7 +203,33 @@ npm run build     # tsc + copy data files to dist/
 npm test          # vitest run
 npm run dev       # tsc --watch
 npm start         # node dist/index.js
+
+npm run verify:live          # live mainnet checks — see below
+npm run sync:verified-coins  # regenerate src/data/coins.json
+npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
 ```
+
+### Live checks
+
+The offline tests pin real mainnet signatures and shapes as fixtures, which is
+what keeps them fast and deterministic — and is exactly why a fixture cannot
+notice that the chain, the SDK or the GraphQL schema moved underneath it. It
+keeps passing against a stale copy of a world that changed.
+
+`npm run verify:live` covers that gap: it regenerates the signature fixtures
+from mainnet, feeds every tool hostile input, and runs a chained investigation.
+Run it **after an `@mysten/sui` bump**, **after Mysten changes the GraphQL
+schema**, and **before a release** — then run `npm test`, because a drifted
+parse surfaces there as a fixture that no longer derives to its own address.
+
+Not in CI. It needs the network and mainnet's current state, so it would be
+flaky on a schedule nobody chose, and a flaky required check teaches people to
+ignore failures.
+
+Measuring something new is a throwaway script you then delete. Record the
+number in a commit message or here; a script kept only to rediscover a number
+already written down rots against live mainnet and fails for reasons unrelated
+to the code.
 
 ### Protocol identification
 
@@ -342,8 +368,6 @@ and under two transactions it refuses to read a pattern at all.
 mainnet, both from one wallet. Random checkpoint sampling is the wrong
 instrument. They live where admin authority does — 3 of 353 `UpgradeCap` owners
 (0.85%, ~340x), which is how the test fixtures were found.
-`scripts/probe/README.md` maps each script to the claim it establishes; re-run
-them after an SDK bump.
 
 **Cost.** Authentication is one GraphQL call per 20 addresses — `transactions`
 has no multi-get, so it batches with aliases and hits the same two service

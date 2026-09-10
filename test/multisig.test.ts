@@ -4,8 +4,11 @@ import {
   readAuthentication,
   deriveMultisigAddress,
   authenticationNote,
+  enumerateCommittees,
+  publicKeyFromSignatures,
   type MultisigMember,
 } from "../src/utils/multisig.js";
+import { Ed25519PublicKey } from "@mysten/sui/keypairs/ed25519";
 import fixtures from "./fixtures/signatures.json" with { type: "json" };
 
 /**
@@ -38,7 +41,7 @@ describe("readAuthentication — multisig committees", () => {
     expect(auth!.multisig!.threshold).toBe(4);
     expect(auth!.multisig!.members).toHaveLength(7);
     // bitmap 0b0011011
-    expect(auth!.multisig!.members.filter((m) => m.signed).map((m) => m.index)).toEqual([0, 1, 3, 4]);
+    expect(auth!.multisig!.members.filter((m) => m.signed_source_tx).map((m) => m.index)).toEqual([0, 1, 3, 4]);
   });
 
   it("reads a 3-of-6", () => {
@@ -48,7 +51,7 @@ describe("readAuthentication — multisig committees", () => {
     expect(auth!.multisig!.threshold).toBe(3);
     expect(auth!.multisig!.members).toHaveLength(6);
     // bitmap 0b010110
-    expect(auth!.multisig!.members.filter((m) => m.signed).map((m) => m.index)).toEqual([1, 2, 4]);
+    expect(auth!.multisig!.members.filter((m) => m.signed_source_tx).map((m) => m.index)).toEqual([1, 2, 4]);
   });
 
   it("derives member addresses that match their own single-sig wallets", () => {
@@ -60,7 +63,7 @@ describe("readAuthentication — multisig committees", () => {
     ]);
     // Member 0 is the only key that has ever signed for this wallet; member 1
     // is a dormant backup. The bitmap is the only thing that says so.
-    expect(auth!.multisig!.members.map((m) => m.signed)).toEqual([true, false]);
+    expect(auth!.multisig!.members.map((m) => m.signed_source_tx)).toEqual([true, false]);
   });
 
   it("counts signers against the threshold", () => {
@@ -178,7 +181,7 @@ describe("deriveMultisigAddress", () => {
       weight: 1,
       public_key: "zKVjBVK4lCZOYOboq4+U3AudO2STrceo4HK5vHGxV4I=",
       address: "0xafe2fafac0b048c9c70a61cc1798400a85173df96b30118c40af6f3382b5a777",
-      signed: false,
+      signed_source_tx: false,
     },
     {
       index: 1,
@@ -186,7 +189,7 @@ describe("deriveMultisigAddress", () => {
       weight: 1,
       public_key: "+x5KLRu40AVqvOVyktmj0sRNYHeMYwxLMz8gG2RRaGo=",
       address: "0xc848c5cc29fdff135650156194a27442b6c8cada58fab5ba9123d635754ae66f",
-      signed: false,
+      signed_source_tx: false,
     },
   ];
 
@@ -234,5 +237,85 @@ describe("authenticationNote", () => {
   it("names the identity provider for a zkLogin wallet", () => {
     const auth = readAuthentication(fixtures.zklogin.address, fixtures.zklogin.signatures);
     expect(authenticationNote(auth!)).toContain("accounts.google.com");
+  });
+});
+
+describe("enumerateCommittees", () => {
+  const keyOf = (b64: string, address: string) => ({
+    address,
+    publicKey: new Ed25519PublicKey(Buffer.from(b64, "base64")),
+  });
+  const k0 = keyOf(
+    "zKVjBVK4lCZOYOboq4+U3AudO2STrceo4HK5vHGxV4I=",
+    "0xafe2fafac0b048c9c70a61cc1798400a85173df96b30118c40af6f3382b5a777",
+  );
+  const k1 = keyOf(
+    "+x5KLRu40AVqvOVyktmj0sRNYHeMYwxLMz8gG2RRaGo=",
+    "0xc848c5cc29fdff135650156194a27442b6c8cada58fab5ba9123d635754ae66f",
+  );
+
+  it("generates the real multisig these two keys actually form", () => {
+    const found = enumerateCommittees([k0, k1]).find((c) => c.address === fixtures.ms_1of2.address);
+    expect(found).toBeDefined();
+    expect(found!.threshold).toBe(1);
+    expect(found!.members).toEqual([k0.address, k1.address]);
+  });
+
+  /** 2 keys: 2 orderings x 2 thresholds. Order is hashed, so both are searched. */
+  it("covers every ordering and threshold", () => {
+    expect(enumerateCommittees([k0, k1])).toHaveLength(4);
+  });
+
+  it("needs at least two keys", () => {
+    expect(enumerateCommittees([k0])).toEqual([]);
+    expect(enumerateCommittees([])).toEqual([]);
+  });
+
+  it("ignores a repeated key", () => {
+    expect(enumerateCommittees([k0, k1, k0])).toHaveLength(4);
+  });
+
+  /**
+   * Refusing beats truncating. This search is asked to support a NEGATIVE —
+   * "these keys share no multisig" — and a partial search cannot.
+   */
+  it("refuses rather than truncating when the space is too large", () => {
+    const many = Array.from({ length: 8 }, (_, i) =>
+      keyOf(Buffer.alloc(32, i + 1).toString("base64"), `0x${(i + 1).toString().repeat(64)}`),
+    );
+    expect(() => enumerateCommittees(many)).toThrow(/cap/);
+  });
+
+  it("stays under the cap for four keys", () => {
+    const four = Array.from({ length: 4 }, (_, i) =>
+      keyOf(Buffer.alloc(32, i + 1).toString("base64"), `0x${String(i).repeat(64)}`),
+    );
+    // C(4,2)*2!*2 + C(4,3)*3!*3 + C(4,4)*4!*4 = 24 + 72 + 96
+    expect(enumerateCommittees(four).length).toBe(192);
+  });
+});
+
+describe("publicKeyFromSignatures", () => {
+  it("recovers the key a plain wallet signs with", () => {
+    const pk = publicKeyFromSignatures(fixtures.ed25519.address, fixtures.ed25519.signatures);
+    expect(pk).not.toBeNull();
+    expect(pk!.toSuiAddress()).toBe(fixtures.ed25519.address);
+  });
+
+  /**
+   * A multisig has no single key of its own, and a zkLogin address has no
+   * plain public key at all — neither can take part in the reverse search.
+   */
+  it("returns null for a multisig's own signature", () => {
+    expect(publicKeyFromSignatures(fixtures.ms_1of2.address, fixtures.ms_1of2.signatures)).toBeNull();
+  });
+
+  it("returns null for a zkLogin wallet", () => {
+    expect(publicKeyFromSignatures(fixtures.zklogin.address, fixtures.zklogin.signatures)).toBeNull();
+  });
+
+  it("ignores a signature belonging to someone else", () => {
+    // The sponsor's signature rides along on the multisig's transaction.
+    expect(publicKeyFromSignatures("0x" + "7".repeat(64), fixtures.ms_1of2.signatures)).toBeNull();
   });
 });

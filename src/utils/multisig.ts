@@ -94,8 +94,19 @@ export interface MultisigMember {
   address?: string;
   /** Present for a zkLogin member; names the identity provider. */
   zklogin?: ZkLoginIdentity;
-  /** Did this member sign the transaction this reading came from. */
-  signed: boolean;
+  /**
+   * Did this member sign **the one transaction this reading came from**.
+   *
+   * Not a property of the wallet. The committee is fixed for the life of the
+   * address, but which members sign varies per transaction: a mainnet 4-of-7
+   * used three different signer sets across eight transactions, and two of its
+   * seven keys had never signed at all. Reading one transaction and presenting
+   * its bitmap as "who signs" cannot tell a permanently dormant key from one
+   * that sat out a single transfer.
+   *
+   * For the wallet-level question, see `analyze_multisig`.
+   */
+  signed_source_tx: boolean;
 }
 
 export interface MultisigCommittee {
@@ -103,7 +114,7 @@ export interface MultisigCommittee {
   members: MultisigMember[];
   /** Sum of every member's weight — the most a committee could ever muster. */
   total_weight: number;
-  /** Weight that actually signed the transaction this reading came from. */
+  /** Weight that signed the one transaction this reading came from. */
   signed_weight: number;
   /** Raw signer bitmap, kept so a caller can check the member flags. */
   bitmap: number;
@@ -221,10 +232,15 @@ function readCommittee(parsed: {
   for (const [index, entry] of multisig_pk.pk_map.entries()) {
     const [sdkScheme] = Object.keys(entry.pubKey);
     const scheme = SCHEME_NAMES[sdkScheme] ?? "unknown";
-    const signed = Boolean((bitmap >> index) & 1);
+    const signedSourceTx = Boolean((bitmap >> index) & 1);
     const raw = entry.pubKey[sdkScheme];
 
-    const member: MultisigMember = { index, scheme, weight: entry.weight, signed };
+    const member: MultisigMember = {
+      index,
+      scheme,
+      weight: entry.weight,
+      signed_source_tx: signedSourceTx,
+    };
 
     if (scheme === "zklogin") {
       // A zkLogin member is a ZkLoginPublicIdentifier (issuer + address seed),
@@ -251,7 +267,7 @@ function readCommittee(parsed: {
     threshold: multisig_pk.threshold,
     members,
     total_weight: members.reduce((n, m) => n + m.weight, 0),
-    signed_weight: members.filter((m) => m.signed).reduce((n, m) => n + m.weight, 0),
+    signed_weight: members.filter((m) => m.signed_source_tx).reduce((n, m) => n + m.weight, 0),
     bitmap,
   };
   return { committee, address: deriveMultisigAddress(members, multisig_pk.threshold) };
@@ -381,4 +397,143 @@ export function authenticationNote(auth: Authentication): string | undefined {
     return "This wallet authenticates with a passkey (WebAuthn), so its key lives in a device or platform keystore.";
   }
   return undefined;
+}
+
+/* ------------------------------------------------------------------ *
+ * Reverse enumeration: from known keys to the multisig they may share
+ * ------------------------------------------------------------------ */
+
+/**
+ * Candidate committees are capped here.
+ *
+ * The search is a permutation, not a combination, because member ORDER is
+ * hashed — the same two keys in the other order are a different wallet. That
+ * makes the space factorial and it stops being enumerable fast: 4 keys is 192
+ * candidates, 5 is 1,560, 6 is over 13,000. The cap refuses rather than
+ * silently truncating, because a truncated search that reports "no shared
+ * multisig" is worse than one that declines to answer.
+ */
+export const MAX_COMMITTEE_CANDIDATES = 2000;
+
+export interface CandidateCommittee {
+  /** The address this committee would hash to. */
+  address: string;
+  /** Member addresses in committee order. */
+  members: string[];
+  threshold: number;
+}
+
+interface CandidateKey {
+  address: string;
+  publicKey: PublicKey;
+}
+
+function* permutations<T>(items: T[]): Generator<T[]> {
+  if (items.length <= 1) {
+    yield items;
+    return;
+  }
+  for (let i = 0; i < items.length; i++) {
+    const rest = [...items.slice(0, i), ...items.slice(i + 1)];
+    for (const p of permutations(rest)) yield [items[i], ...p];
+  }
+}
+
+/** Every subset of size >= 2, as index lists. */
+function* subsets<T>(items: T[]): Generator<T[]> {
+  const n = items.length;
+  for (let mask = 1; mask < 1 << n; mask++) {
+    const picked = items.filter((_, i) => mask & (1 << i));
+    if (picked.length >= 2) yield picked;
+  }
+}
+
+/**
+ * Every multisig address a set of known keys could form, to be checked for
+ * existence on chain.
+ *
+ * **Weight 1 only.** Weights are unbounded, so admitting them makes the space
+ * infinite rather than merely large. A committee using non-uniform weights is
+ * therefore invisible to this search, and the caller must say so — reporting
+ * "no shared multisig found" without that caveat would state a negative the
+ * search never tested. No non-uniform committee has been observed on mainnet,
+ * but that is an absence of evidence, not a guarantee.
+ *
+ * Subsets of size 2 and up, every ordering of each, every threshold from 1 to
+ * the subset size. Deduplicated, because different orderings of a symmetric
+ * arrangement can collide.
+ *
+ * Throws once the candidate count would exceed
+ * {@link MAX_COMMITTEE_CANDIDATES}. A partial search answering a negative
+ * question is the one outcome worth refusing outright.
+ */
+export function enumerateCommittees(keys: CandidateKey[]): CandidateCommittee[] {
+  const unique = [...new Map(keys.map((k) => [normalize(k.address), k])).values()];
+  if (unique.length < 2) return [];
+
+  let projected = 0;
+  for (const subset of subsets(unique)) {
+    let orderings = 1;
+    for (let i = 2; i <= subset.length; i++) orderings *= i;
+    projected += orderings * subset.length;
+  }
+  if (projected > MAX_COMMITTEE_CANDIDATES) {
+    throw new Error(
+      `${unique.length} keys would generate ${projected} candidate committees, over the ${MAX_COMMITTEE_CANDIDATES} cap. ` +
+        "Member order is part of a multisig's address, so the search is factorial in committee size. " +
+        "Narrow the key set — a partial search cannot support a negative answer.",
+    );
+  }
+
+  const out = new Map<string, CandidateCommittee>();
+  for (const subset of subsets(unique)) {
+    for (const ordering of permutations(subset)) {
+      for (let threshold = 1; threshold <= ordering.length; threshold++) {
+        let address: string;
+        try {
+          address = normalize(
+            MultiSigPublicKey.fromPublicKeys({
+              threshold,
+              publicKeys: ordering.map((k) => ({ publicKey: k.publicKey, weight: 1 })),
+            }).toSuiAddress(),
+          );
+        } catch {
+          continue;
+        }
+        if (!out.has(address)) {
+          out.set(address, {
+            address,
+            members: ordering.map((k) => normalize(k.address)),
+            threshold,
+          });
+        }
+      }
+    }
+  }
+  return [...out.values()];
+}
+
+/**
+ * Recover the public key an address signs with, from one of its signatures.
+ *
+ * The precondition this imposes is worth stating at the call site: an address
+ * that has never SENT a transaction has published no public key, so it cannot
+ * take part in this search at all. Being funded is not enough.
+ */
+export function publicKeyFromSignatures(address: string, signatures: string[]): PublicKey | null {
+  const want = normalize(address);
+  for (const serialized of signatures) {
+    try {
+      const parsed = parseSerializedSignature(serialized);
+      if (parsed.signatureScheme === "MultiSig" || parsed.signatureScheme === "ZkLogin") continue;
+      const pk = publicKeyFor(
+        parsed.signatureScheme === "Passkey" ? "Secp256r1" : parsed.signatureScheme,
+        parsed.publicKey,
+      );
+      if (pk && normalize(pk.toSuiAddress()) === want) return pk;
+    } catch {
+      // Next signature.
+    }
+  }
+  return null;
 }

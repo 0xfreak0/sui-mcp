@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { describeSignatures } from "../utils/multisig.js";
 import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { formatStatus, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
@@ -41,6 +42,11 @@ export function registerTransactionTools(server: McpServer) {
           paths: [
             "digest", "transaction", "effects", "events",
             "checkpoint", "timestamp", "balance_changes",
+            // Who authorised this transaction. For a multisig this is the only
+            // place the per-transaction signer set exists: the committee is
+            // fixed, but WHICH members signed varies transaction to
+            // transaction, and that is the question a treasury drain asks.
+            "signatures",
           ],
         },
       };
@@ -76,6 +82,41 @@ export function registerTransactionTools(server: McpServer) {
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
         };
       }
+
+      // Who authorised this transaction. The gRPC `UserSignature` carries the
+      // signature's own BCS, so the shared parser handles it and one code path
+      // covers both transports.
+      const authorization = describeSignatures(
+        (tx?.signatures ?? [])
+          .map((s) => (s.bcs?.value ? Buffer.from(s.bcs.value).toString("base64") : ""))
+          .filter(Boolean),
+      ).map((sig, i) => ({
+        // Sender first, then the gas sponsor when one paid. Stated positionally
+        // AND resolved by derivation, so a reader can check it either way.
+        role: sig.address && sig.address === sender ? "sender" : i === 0 ? "sender" : "gas_sponsor",
+        scheme: sig.scheme,
+        ...(sig.address ? { address: sig.address } : {}),
+        ...(sig.multisig
+          ? {
+              multisig: {
+                shape: sig.multisig.members.every((m) => m.weight === 1)
+                  ? `${sig.multisig.threshold}-of-${sig.multisig.members.length}`
+                  : `threshold ${sig.multisig.threshold} of ${sig.multisig.total_weight} weight`,
+                threshold: sig.multisig.threshold,
+                // The point of reading signatures per transaction: WHICH keys
+                // authorised THIS one. The committee is fixed for the life of
+                // the address, so this is the only thing that varies.
+                signed_by: sig.multisig.members
+                  .filter((m) => m.signed_source_tx)
+                  .map((m) => ({ index: m.index, address: m.address, weight: m.weight })),
+                did_not_sign: sig.multisig.members
+                  .filter((m) => !m.signed_source_tx)
+                  .map((m) => ({ index: m.index, address: m.address, weight: m.weight })),
+              },
+            }
+          : {}),
+        ...(sig.zklogin ? { zklogin: sig.zklogin } : {}),
+      }));
 
       const rawEvents = tx?.events?.events ?? [];
 
@@ -168,6 +209,13 @@ export function registerTransactionTools(server: McpServer) {
                   : {}),
                 actions: decoded.actions,
                 token_flow: decoded.token_flow,
+                ...(authorization.length ? { authorization } : {}),
+                ...(authorization.some((a) => a.multisig)
+                  ? {
+                      authorization_note:
+                        "This transaction was authorised by a multisig. `signed_by` is the set of keys that signed THIS transaction — the committee itself is fixed for the life of the address, so a member under `did_not_sign` is still authorised and may have signed others. Use analyze_multisig for which keys are live across the wallet's history.",
+                    }
+                  : {}),
                 gas: formatGas(effects?.gasUsed),
                 epoch: bigintToString(effects?.epoch),
                 checkpoint: bigintToString(tx?.checkpoint),

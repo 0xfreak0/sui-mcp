@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.14.1 (2026-09-10)
+
+Four cases where a tool reported something it could not determine as something
+it had. Found by sweeping for the pattern rather than by any single failure.
+
+### Fixed
+- **`trace_object_history` named a burn address as an object's creator.**
+  Historical object versions fall outside the indexer's retention for anything
+  that has sat still, so a long-lived object comes back with one version.
+  Truncation was computed as "did the page come back full", which is false when
+  the page came back EMPTY — the opposite of what an empty page means here.
+
+  Verified on a real upgrade cap: published by one address, currently owned by
+  `0x2`, so it provably changed hands. The tool reported
+  `owner_change_count: 0`, `history_truncated: false`, and named the burn
+  address as its creator. Three false claims from one missing page. `created`
+  is now null, with `history_unavailable` saying the history is beyond
+  retention rather than absent.
+
+- **`find_pools` blamed the caller for its own failed query.** Each DEX is
+  queried separately and a failure returned an empty list, so that protocol
+  silently vanished and the hint said "check that the coin types are correct"
+  when the search never ran. Now reports `search_complete: false` and which
+  protocols went unqueried.
+
+- **`get_wallet_overview` summed unpriced holdings as zero.** Measured on three
+  mainnet wallets: 1 of 3, 46 of 50 and 5 of 15 holdings had no price. The
+  middle one reported a total of $1.86 for a wallet holding fifty coins. The
+  total now says how much of the wallet it covers, and what an absent price
+  usually means — no market price and nothing vouching for the coin is the
+  usual shape of a spam or impersonation token, though a newly listed asset
+  looks the same. That tool was also still naming coins by their struct name,
+  so a fake USDC displayed as `USDC`; holdings now carry `verified`.
+
+- **A paginated walk could restart from page one, or never return.** A
+  connection can claim `hasNextPage: true` and hand back a null `endCursor`.
+  `move-package.ts` pages with `for(;;)`, so that was an infinite loop reached
+  by `analyze_package`, `disassemble_module` and `package-audit`. Loops bounded
+  by a target terminated but re-read page one, double-counting timeline
+  entries, kiosk NFTs, signer-set frequencies, event rankings and denied
+  addresses. Nine call sites guarded.
+
+### Added
+- **A weekly Drift workflow.** The offline tests pin real mainnet signatures as
+  fixtures, which is what makes them fast and deterministic — and exactly why
+  they cannot notice that the chain, the SDK or the Sui GraphQL schema moved
+  underneath them. `npm run verify:live` is the only thing that catches it, and
+  it ran when somebody remembered. It now runs weekly and opens one issue on
+  failure, commenting on it thereafter rather than filing a duplicate. Not in
+  CI: it needs the network, and a flaky required check teaches people to ignore
+  failures.
+
 ## 1.14.0 (2026-09-10)
 
 Investigations can now say who controls a wallet, who wrote the code, why a

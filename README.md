@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
+Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
 
 64 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
 
@@ -52,6 +52,30 @@ get_address_fanout(<that funder>)
 That last step is the point. Several wallets tracing to one funder looks decisive until you measure the funder. Every funding result carries that measurement so a coincidence doesn't get reported as a link.
 
 Fan-out reports **shape as well as size**, because size alone doesn't separate the cases that matter. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts — 399 and 431 — and completely different flow: the exchange ran balanced at 0.73 out/in (deposits in, withdrawals out) while the funder ran 9.78 (it pays many and is paid by few). One is noise in an investigation; the other is the thing you're looking for.
+
+## Who can sign for this wallet?
+
+A Sui address is the hash of whatever authenticates it. For a multisig that means the threshold, every member key and every weight are baked into the address, and the committee travels inside every transaction the wallet sends. So membership isn't guesswork — you derive it and check it reproduces the address.
+
+```
+identify_address(0x045dadba…)
+  → multisig, 4-of-7, verified: true
+    seven member addresses, each resolved to its own name and labels
+
+analyze_multisig(0x045dadba…)
+  → 8 transactions, 3 different signer sets
+    members 3 and 4 signed every one
+    members 5 and 6 have never signed anything
+
+get_transaction(oxrJ3Bppuk…)
+  → signed_by [0,1,3,4], did_not_sign [2,5,6]
+```
+
+Two of seven keys have never been used, and the ones that do sign already carry the weight the threshold needs. That's a different treasury from the one the 4-of-7 label implies, and you can't see it from a single transaction — the committee is fixed, but who signs changes each time.
+
+It works backwards too. If a trace has already linked some wallets, `find_shared_multisig` derives every committee those keys could form and checks which of those addresses exist. A hit is proof rather than a resemblance, because the address *is* the hash of the committee. It also finds treasuries that never showed up in the trace at all, since a multisig is only visible if it happened to transact with something you looked at.
+
+Some limits, stated in the output rather than buried here: member order is part of the address, so the search is factorial and refuses past five keys; it only covers equal-weight committees; and a wallet that has never sent a transaction can't be classified at all, because it has produced no signature to read.
 
 ## The forensics skill
 
@@ -133,6 +157,7 @@ npm audit signatures
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
 - **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, PTB anomaly triage, oracle-vs-market deviation
+- **Multisig** — a Sui address is the hash of its authenticator, so the committee is read off the address itself. Names every member, says which keys are live and which have never signed, and shows who signed a given transaction. Also handles zkLogin and passkey wallets
 - **Move package analysis** — disassembly, heuristic risk scan, capability audit, and upgrade diffing, none of which need an external binary
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
 - **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface

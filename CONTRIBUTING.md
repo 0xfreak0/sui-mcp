@@ -23,8 +23,18 @@ npm test
 1. Create a file in `src/tools/` (one file per logical group of tools).
 2. Export a `register*` function that takes an `McpServer` and calls `server.tool()`.
 3. Import and call it from `src/tools/index.ts`.
-4. Use Zod schemas for input validation.
-5. Add tests in `test/` for any non-trivial logic.
+4. Use Zod schemas for input validation. For numbers and booleans use `numArg()`
+   and `boolArg()` from `src/tools/args.ts`, not bare `z.number()` / `z.boolean()` —
+   a model composing JSON will sometimes quote a value, and strict validation
+   turns that into a hard failure over nothing.
+5. Add the tool to a profile in `src/tools/profiles.ts`. A tool in no profile
+   still exists but nobody loads it by default.
+6. Update the advertised tool counts: the heading and intro in `README.md`, the
+   per-profile table in `README.md`, and the `description` in both
+   `package.json` and `server.json`. `test/packaging.test.ts` checks these
+   against `PROFILES` and will fail the build if they drift.
+7. Add a row for the tool in the README's tool table, in its matching section.
+8. Add tests in `test/` for any non-trivial logic.
 
 ## Guidelines
 

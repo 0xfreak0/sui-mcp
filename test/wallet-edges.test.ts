@@ -3,6 +3,9 @@ import {
   EdgeSet,
   clusterEdges,
   SIGNAL_WEIGHTS,
+  PARTIAL_CO_SIGNER_WEIGHT,
+  addCoSignerEdges,
+  DEFAULT_CO_SIGNER_LIMIT,
   type WalletEdge,
 } from "../src/utils/wallet-edges.js";
 
@@ -232,5 +235,205 @@ describe("the strict batch tuning misses ordinary personal alts", () => {
     // default is never "tightened" back to the batch value by eye.
     const { clusters } = clusterEdges(groundTruth, { minSignalTypes: 2, minWeight: 1.5 });
     expect(clusters).toHaveLength(0);
+  });
+});
+
+describe("addCoSignerEdges", () => {
+  const safe = "0xsafe";
+  const [m0, m1, m2] = ["0xm0", "0xm1", "0xm2"];
+
+  const committee = (threshold: number, weights: number[]) => ({
+    multisig: safe,
+    threshold,
+    members: weights.map((weight, i) => ({ address: `0xm${i}`, weight })),
+  });
+
+  it("links a unilateral member to the wallet it can spend", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(1, [1, 1])]);
+    const e = s.edges();
+    expect(e).toHaveLength(2);
+    expect(e[0].weight).toBe(SIGNAL_WEIGHTS.co_signer);
+    expect(e[0].signal_types).toEqual(["co_signer"]);
+  });
+
+  /**
+   * The trap this signal exists to avoid. A 4-of-7 treasury has seven signers
+   * BECAUSE they are meant to be separate parties; linking them to each other
+   * would report a DAO's governance as one operator's wallet crew.
+   */
+  it("never links two members to each other", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(4, [1, 1, 1, 1, 1, 1, 1])]);
+    for (const e of s.edges()) {
+      expect([e.wallet_a, e.wallet_b]).toContain(safe);
+    }
+  });
+
+  it("emits a star, one edge per member", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(4, [1, 1, 1, 1, 1, 1, 1])]);
+    expect(s.edges()).toHaveLength(7);
+  });
+
+  it("weights a member who cannot spend alone below the merge floor", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(2, [1, 1, 1])]);
+    const e = s.edges();
+    expect(e[0].weight).toBe(PARTIAL_CO_SIGNER_WEIGHT);
+    // Below 1.0, so it cannot merge a cluster on its own.
+    expect(clusterEdges(e, {}).clusters).toHaveLength(0);
+  });
+
+  it("treats weight against threshold, not member count", () => {
+    // One member holds 3 of a threshold of 3: unilateral despite 3 members.
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(3, [3, 1, 1])]);
+    const byMember = new Map(s.edges().map((e) => [e.wallet_a === safe ? e.wallet_b : e.wallet_a, e]));
+    expect(byMember.get(m0)!.weight).toBe(SIGNAL_WEIGHTS.co_signer);
+    expect(byMember.get(m1)!.weight).toBe(PARTIAL_CO_SIGNER_WEIGHT);
+    expect(byMember.get(m2)!.weight).toBe(PARTIAL_CO_SIGNER_WEIGHT);
+  });
+
+  it("says in the detail whether the member can spend alone", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(1, [1, 1])]);
+    expect(s.edges()[0].signals[0].detail).toContain("alone");
+    const t = new EdgeSet();
+    addCoSignerEdges(t, [committee(2, [1, 1])]);
+    expect(t.edges()[0].signals[0].detail).toContain("cannot");
+  });
+
+  it("merges a unilateral member into a cluster with the wallet", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [committee(1, [1, 1])]);
+    const { clusters } = clusterEdges(s.edges(), {});
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].members).toEqual([safe, m0, m1].sort());
+  });
+
+  it("ignores a committee with no members", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [{ multisig: safe, threshold: 1, members: [] }]);
+    expect(s.edges()).toHaveLength(0);
+  });
+
+  it("skips a member whose address is the multisig itself", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [
+      { multisig: safe, threshold: 1, members: [{ address: safe, weight: 1 }] },
+    ]);
+    expect(s.edges()).toHaveLength(0);
+  });
+});
+
+describe("clusterEdges — evidence tier", () => {
+  it("rates a cluster built only on unilateral co-signature chain-derived", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [
+      { multisig: "0xsafe", threshold: 1, members: [{ address: "0xm0", weight: 1 }] },
+    ]);
+    expect(clusterEdges(s.edges(), {}).clusters[0].evidence_tier).toBe("chain-derived");
+  });
+
+  it("rates a cluster built on behavioural signals heuristic", () => {
+    const s = new EdgeSet();
+    s.add("cofunded", "0xa", "0xb", "same funder", ["0xd1"], "0xf");
+    expect(clusterEdges(s.edges(), {}).clusters[0].evidence_tier).toBe("heuristic");
+  });
+
+  /**
+   * Weakest link, the same rule `min_edge_weight` already follows: a component
+   * that needed a behavioural edge to hold together is only as defensible as
+   * that edge, whatever else it contains.
+   */
+  it("drops a mixed cluster to heuristic", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, [
+      { multisig: "0xsafe", threshold: 1, members: [{ address: "0xm0", weight: 1 }] },
+    ]);
+    s.add("cofunded", "0xm0", "0xc", "same funder", ["0xd1"], "0xf");
+    const c = clusterEdges(s.edges(), {}).clusters[0];
+    expect(c.members).toContain("0xc");
+    expect(c.evidence_tier).toBe("heuristic");
+  });
+});
+
+describe("addCoSignerEdges — service keys", () => {
+  /**
+   * Found by running the real tool against a mainnet seed: one key sat on 31
+   * distinct 1-of-2 committees, each with a different second member, and the
+   * star fused 31 strangers into one 63-member cluster rated chain-derived and
+   * high. The key really can spend all 31 wallets — that part is true — but
+   * "shares an operator with" is a claim about the OTHER members, and a
+   * wallet provider's recovery key says nothing about them.
+   *
+   * Same guard the funder signals already apply, and for the same reason: an
+   * intermediary has to be measured before shared ancestry through it means
+   * anything.
+   */
+  const serviceCommittees = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      multisig: `0xsafe${i}`,
+      threshold: 1,
+      members: [
+        { address: "0xservice", weight: 1 },
+        { address: `0xuser${i}`, weight: 1 },
+      ],
+    }));
+
+  it("excludes a key that co-signs more wallets than the limit", () => {
+    const s = new EdgeSet();
+    const { excluded } = addCoSignerEdges(s, serviceCommittees(31), { memberLimit: 5 });
+    expect(excluded.map((e) => e.address)).toEqual(["0xservice"]);
+    expect(excluded[0].committees).toBe(31);
+    // Every user's own key still links to their own wallet.
+    for (const e of s.edges()) expect([e.wallet_a, e.wallet_b]).not.toContain("0xservice");
+    expect(s.edges()).toHaveLength(31);
+  });
+
+  it("does not fuse strangers once the service key is excluded", () => {
+    const s = new EdgeSet();
+    addCoSignerEdges(s, serviceCommittees(31), { memberLimit: 5 });
+    const { clusters } = clusterEdges(s.edges(), {});
+    // 31 separate two-member clusters, not one cluster of 62.
+    expect(clusters).toHaveLength(31);
+    expect(new Set(clusters.map((c) => c.size))).toEqual(new Set([2]));
+  });
+
+  it("keeps a key that co-signs only a few wallets", () => {
+    const s = new EdgeSet();
+    const { excluded } = addCoSignerEdges(s, serviceCommittees(3), { memberLimit: 5 });
+    expect(excluded).toHaveLength(0);
+    expect(s.edges()).toHaveLength(6);
+  });
+
+  /**
+   * The count is over the committees actually examined, so it is a lower
+   * bound: a key seen on six is on at least six. That only ever makes the
+   * filter fire late, never early, which is the safe direction — the cost of a
+   * missed exclusion is a fused cluster, and the cost of a false one is a lost
+   * true edge.
+   */
+  it("counts a member once per multisig, not once per appearance", () => {
+    const s = new EdgeSet();
+    const dup = [
+      { multisig: "0xsafe0", threshold: 1, members: [{ address: "0xk", weight: 1 }] },
+      { multisig: "0xsafe0", threshold: 1, members: [{ address: "0xk", weight: 1 }] },
+    ];
+    expect(addCoSignerEdges(s, dup, { memberLimit: 1 }).excluded).toHaveLength(0);
+  });
+
+  it("never excludes on the multisig side of the star", () => {
+    // A 10-member committee is not a hub; the cap is about keys, not wallets.
+    const s = new EdgeSet();
+    const big = {
+      multisig: "0xsafe",
+      threshold: 1,
+      members: Array.from({ length: 10 }, (_, i) => ({ address: `0xm${i}`, weight: 1 })),
+    };
+    const { excluded } = addCoSignerEdges(s, [big], { memberLimit: 5 });
+    expect(excluded).toHaveLength(0);
+    expect(s.edges()).toHaveLength(10);
   });
 });

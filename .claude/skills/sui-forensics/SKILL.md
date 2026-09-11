@@ -124,6 +124,25 @@ LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
 
+## A holder scan is not a ranking unless it finished
+
+`get_top_holders` and `analyze_token` walk coin objects in **object-id order**,
+which has nothing to do with balance. A scan that hits its budget returns the
+largest holder it happened to see.
+
+Measured on SUI: the reported top holder was 66 SUI at `max_scan` 200, 522 at
+400, 3,454 at 800 and 25,000 at 5,000 — **zero of the top five at 200 survived
+to 800**, and the real top holder holds millions. The number climbs with effort
+and never converges.
+
+- **Check `complete_ranking` before writing any concentration claim.** False
+  means the result is `sampled_holders`, carries no rank and no percentage of
+  supply, and cannot support "the top 10 hold X%".
+- **A complete scan is a real ranking** and may be used as one. That is only
+  reachable for coins and collections small enough to enumerate.
+- **Never compare two truncated scans.** Different budgets sample different
+  objects, so a difference between them says nothing about the chain.
+
 ## A balance change only sees coins
 
 Sui is object-based. A balance change is derived from `Coin<T>`, so everything
@@ -303,7 +322,7 @@ get the schema wrong in ways that fail silently.
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
 | Where did this object come from? | `trace_object_history` |
-| Who holds this token? | `get_top_holders` |
+| Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true |
 | What is this address doing over time? | `build_timeline` |
 | Write it down / hand it over | `save_finding`, `list_findings`, `export_case` |
 

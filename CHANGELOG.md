@@ -3,6 +3,26 @@
 ## Unreleased
 
 ### Fixed
+- **`get_top_holders` ranked a sample and called it the top.** The scan walks
+  coin objects in object-id order, which is unrelated to balance, so a scan that
+  hit its budget returned the largest holder it happened to see. Measured on
+  SUI, the reported top holder by scan depth: 66 SUI at `max_scan` 200, 522 at
+  400, 3,454 at 800, 25,000 at the default 5,000 — with **zero of the top five
+  at 200 surviving to 800**, while the real top holder holds millions. The
+  answer climbed with effort and never converged.
+
+  A truncated scan now returns `sampled_holders` with no rank and no percentage
+  of supply, plus a caveat saying these are not the largest holders. Only a
+  completed scan returns `top_holders` and `complete_ranking: true`. The
+  percentage is dropped rather than annotated because a sampled balance over the
+  real total supply looks authoritative and means nothing. `analyze_token` made
+  the same claim from the same scanner and got the same split.
+
+- **Both holder walks were missed by the null-cursor sweep in #101.** A null
+  `endCursor` alongside `hasNextPage: true` restarted each walk from page one,
+  counting the same coin objects again and adding their balances twice to the
+  same holders. Ten other paginated walks in the repo already carried the guard.
+
 - **Thirteen defects in object flow, all found before release.** An independent
   audit of the merged code plus four real mainnet wallets. Grouped by what the
   tool was saying that was not true:

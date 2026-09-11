@@ -253,6 +253,15 @@ Things that are easy to get wrong here:
   `npm run set-version` writes all of them; `test/packaging.test.ts` fails if
   they ever drift apart, and CI additionally refuses to publish when the git tag
   disagrees with `package.json`.
+- **The post-publish check runs against the EXACT version, not `@latest`.** The
+  dist-tag is a second thing that has to propagate, so verifying `@latest` can
+  fail while the version itself is already installable — and it would silently
+  pass against the previous release if the tag lagged.
+- **Anything that inspects a failed command's output must CAPTURE it.**
+  `stdio: "inherit"` prints to the console and leaves `err.stdout`/`err.stderr`
+  null, so a check that greps them sees only "Command failed: …". That is how
+  the publish retry sat broken through several releases while appearing to
+  exist.
 - **npm versions are permanent.** A version can be deprecated but not replaced,
   so the tag check runs before `npm publish`, not after.
 - **`npm publish` may skip `prepublishOnly` when run locally.** The

@@ -183,7 +183,8 @@ already deals with, sends dust from it, and waits for a human to copy the wrong
 row out of their own transaction history.
 
 `get_transaction_history` and `trace_funds` report `address_poisoning` when two
-addresses they touched render identically. Measured on mainnet: zero flags
+addresses they touched are close enough to be mistaken for one another.
+Measured on mainnet: zero flags
 across 75 random active wallets and 265 pages of history.
 
 - **The lookalike is not a counterparty.** It *sends* dust, so it appears only
@@ -193,8 +194,10 @@ across 75 random active wallets and 265 pages of history.
   whole chain, including recipients the trace declined to follow — an
   unfollowed branch imitating a followed one is the branch picked by eye.
 - **`direction_known: false` means the roles are not assigned.** The address
-  with the larger footprint is named as established. Where nothing separates
-  them, both are reported and neither is called the fake — check both.
+  with the larger footprint is named as established, and only when the gap is
+  wide enough to carry the claim: dust repeating inside one page is the normal
+  shape of this attack, so a 3-vs-1 count is not evidence. Where nothing
+  separates them, both are reported and neither is called the fake.
 - **A flag is about rendering, not intent.** It says two addresses collide in
   a truncated view. The corroboration is the lifecycle: a poisoning wallet is
   funded, fires dust, and sweeps its change back, often inside ten seconds.

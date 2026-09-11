@@ -162,6 +162,16 @@ Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2` and
 address is reported as `renounced_capabilities` — rights given up, the opposite
 of a handover.
 
+**Are these really the top holders?** Only when `complete_ranking` is true.
+`get_top_holders` walks coin objects in object-id order, which is unrelated to
+balance, so a scan that stops early returns the largest holder *it saw*. On SUI
+the reported top holder goes from 66 SUI at `max_scan` 200 to 3,454 at 800,
+with no overlap in the top five. A truncated scan therefore returns
+`sampled_holders` — no rank, no percentage of supply — and says so. Raise
+`max_scan` until `truncated` is false for a real ranking, which is only
+feasible for coins few enough to enumerate. `analyze_token` makes the same
+distinction.
+
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`
 when two of them render identically once truncated:
@@ -449,7 +459,7 @@ DeepBook v3 is a central limit order book, so it has no reserves — depth, spre
 |---|---|
 | `list_nfts` | List NFTs owned by a wallet, including kiosk-stored NFTs |
 | `list_nft_collections` | Lightweight collection summary with counts |
-| `get_top_holders` | Top holders of an NFT collection or token |
+| `get_top_holders` | Holders of an NFT collection or token — a ranking only when the scan completes |
 
 ### Staking
 

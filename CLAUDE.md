@@ -730,6 +730,28 @@ Only bridge chain ids observed on mainnet (0 = Sui, 10 = Ethereum) map to
 CAIP-2. Testnet/custom variants are reported by number, same non-guessing rule
 as Wormhole.
 
+### Holder scans rank a sample, not the chain
+
+`scanTokenTopHolders` walks `objects(filter: Coin<T>)` in **object-id order**,
+which is uncorrelated with balance. A scan that hits `maxScan` therefore returns
+the largest holder it SAW. Measured on SUI: top holder 66 SUI at `max_scan` 200,
+522 at 400, 3,454 at 800, 25,000 at 5,000, with zero of the top five surviving
+from 200 to 800 — while the real top holder holds millions. The answer climbs
+with effort and never converges.
+
+So a truncated scan returns `sampled_holders` with no rank and no percentage of
+supply, plus a caveat; only a completed scan returns `top_holders` and
+`complete_ranking: true`. `analyze_token` makes the same split. A sampled
+balance over the real total supply looks authoritative and means nothing, which
+is why the percentage is dropped rather than annotated.
+
+This follows `find_shared_multisig`: refusing beats truncating, because a
+partial search cannot support the claim the caller is asking for.
+
+Both walks were also missed by the null-cursor sweep in #101 — a null
+`endCursor` with `hasNextPage: true` restarted them from page one and added the
+same balances twice. Ten other walks carried the guard; these did not.
+
 ### Object flow: what moves that is not a coin
 
 A balance change is derived from `Coin<T>`, so **anything that is not a coin

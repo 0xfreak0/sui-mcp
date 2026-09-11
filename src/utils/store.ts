@@ -111,6 +111,23 @@ export const FANOUT_METHOD_VERSION = 3;
  */
 export const FUNDING_METHOD_VERSION = 1;
 
+/**
+ * Stamped into every cached transaction, and checked on read.
+ *
+ * A cached transaction's CHAIN data cannot go stale — a finalized transaction
+ * is immutable — but the DERIVED fields stored alongside it can. Object
+ * movements are computed at fetch time, so a row written by an earlier build
+ * carries that build's classification: matched by name suffix rather than in
+ * full, filtered to address-to-address, cut at 50 changes with no truncation
+ * flag. Reading it back is not a cache hit, it is a result from code that has
+ * since been found wrong.
+ *
+ * Bump this whenever the shape or the meaning of anything derived in
+ * `fetchTx` changes. Same reasoning as FUNDING_METHOD_VERSION, which exists
+ * because the answer depends on the dust floors that produced it.
+ */
+export const TX_METHOD_VERSION = 2;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (
   -- Canonical CAIP-10. The chain and address columns are its two halves,
@@ -679,7 +696,7 @@ export function saveTransaction(network: string, digest: string, payload: unknow
   if (!db) return false;
   let text: string;
   try {
-    text = JSON.stringify(payload);
+    text = JSON.stringify({ v: TX_METHOD_VERSION, payload });
   } catch {
     // A payload that will not serialise is not worth failing a trace over.
     return false;
@@ -701,7 +718,11 @@ export function getCachedTransaction<T>(network: string, digest: string): T | nu
     | undefined;
   if (!row?.payload) return null;
   try {
-    return JSON.parse(row.payload) as T;
+    const parsed = JSON.parse(row.payload) as { v?: number; payload?: T };
+    // An unstamped row predates versioning, and a stale stamp was written by
+    // code whose derived fields have since changed. Both are misses, not hits.
+    if (parsed?.v !== TX_METHOD_VERSION) return null;
+    return (parsed.payload ?? null) as T | null;
   } catch {
     return null;
   }

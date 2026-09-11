@@ -95,7 +95,7 @@ describe("get_transaction_history — address poisoning", () => {
     const r = await run({ address: VICTIM });
     expect(r.address_poisoning.pairs).toHaveLength(1);
     expect(r.address_poisoning.pairs[0].direction_known).toBe(false);
-    expect(r.address_poisoning.pairs[0].note).toMatch(/cannot be told apart/i);
+    expect(r.address_poisoning.pairs[0].note).toMatch(/cannot be told from this data/i);
   });
 
   it("does not put the sender into counterparties as a side effect", async () => {

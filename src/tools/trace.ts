@@ -1234,7 +1234,7 @@ export function registerTraceTools(server: McpServer) {
         // In the summary as well as the payload, for the same reason the bridge
         // exits are: the prose is what gets read, and a lookalike that only
         // appears in JSON is a warning nobody sees before they copy an address.
-        const lines = ["⚠ Addresses in this trace that render identically once truncated:"];
+        const lines = ["⚠ Addresses in this trace close enough to be mistaken for one another:"];
         for (const pair of poisoning.pairs) {
           lines.push(`  ${pair.rendered.established}  vs  ${pair.rendered.suspect}`);
           lines.push(`    ${pair.note}`);

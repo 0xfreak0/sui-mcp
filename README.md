@@ -174,10 +174,10 @@ distinction.
 
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`
-when two of them render identically once truncated:
+when two of them are close enough to be mistaken for one another:
 
 ```
-⚠ Addresses in this trace that render identically once truncated:
+⚠ Addresses in this trace close enough to be mistaken for one another:
   0xd649a4d5…57127127  vs  0xd642ef27…c75d7127
 ```
 
@@ -188,11 +188,15 @@ recipients and the branches a trace declined to follow — a poisoning wallet
 *sends*, so it never appears as a counterparty, and the lookalike is usually
 several hops from the address it imitates.
 
-A pair is reported at six or more matching characters with at least three at
-each end (about one collision in fifteen million pairs by chance). The address
-with the larger footprint is named as the established side; where nothing
-separates the two, the pair is reported with `direction_known: false` rather
-than guessing which is the fake.
+A pair is reported when at least three characters match at each end — about one
+collision in seventeen million pairs by chance. They do not render identically
+at every width; what they share is both ends, which is what defeats a glance and
+a short truncation.
+
+The address with the larger footprint is named as the established side, and only
+when the gap is wide enough to mean something — dust repeating inside one page
+is the normal shape of this attack, so a small margin is not evidence. Otherwise
+the pair is reported with `direction_known: false` rather than guessing.
 
 **Does this address pay other people's gas?** `get_address_fanout` reports
 `sponsor_shape` — invisible to value fan-out, since sponsoring moves none of

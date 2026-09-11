@@ -21,10 +21,16 @@
  * by two orders of magnitude. Attackers grind whichever end is cheaper, and the
  * victim's eye reads the concatenation, so the score is the sum.
  *
- * {@link MIN_MATCHING_CHARS} of 6, with {@link MIN_PER_END} of 3, puts the
- * per-pair collision probability near 7x10^-8 — under one expected false
- * positive across ten million pairs. That is the whole reason this can be
- * reported as a finding rather than a lead.
+ * The rule is a floor of {@link MIN_PER_END} at EACH end — 3 and 3. That puts
+ * the per-pair collision probability at 16^-6, about 6x10^-8: under one
+ * expected false positive across ten million pairs, which is why a pair can be
+ * reported at all.
+ *
+ * Do not make the rule asymmetric without changing the bucketing. Candidates
+ * are bucketed on their first {@link MIN_PER_END} characters, which is sound
+ * only because the prefix floor equals the bucket width. Admitting a 2+6 match
+ * while bucketing on 3 would put a genuine pair in two different buckets and
+ * report nothing at all.
  *
  * ## Why low-entropy addresses are excluded first
  *
@@ -35,8 +41,14 @@
  * structural reasons and are not evidence of targeting.
  */
 
-/** Total leading+trailing characters that must match before a pair is reported. */
-export const MIN_MATCHING_CHARS = 6;
+const MIN_PER_END_VALUE = 3;
+
+/**
+ * Total leading+trailing characters in a reportable pair. Derived, not
+ * enforced: with {@link MIN_PER_END} at 3 the floor of 3+3 already implies it.
+ * Kept because the collision arithmetic is stated against this number.
+ */
+export const MIN_MATCHING_CHARS = MIN_PER_END_VALUE * 2;
 
 /**
  * Minimum match at EACH end.
@@ -56,12 +68,20 @@ export const MIN_MATCHING_CHARS = 6;
  * is lost. A shared prefix with a divergent tail is the least deceptive shape,
  * not the most.
  */
-export const MIN_PER_END = 3;
+export const MIN_PER_END = MIN_PER_END_VALUE;
 
 export interface AddressActivity {
   /** How many transactions this address was seen in, over whatever was scanned. */
   transactions?: number;
-  /** Raw units received, summed across coin types. Zero is the poisoning shape. */
+  /**
+   * Raw units received, summed across coin types.
+   *
+   * Only ever compared against ZERO. Raw units are not comparable across coin
+   * types — 1 unit of an 18-decimal spam token outranks 5 SUI — and
+   * `funding.ts` already learned that lesson the hard way. What carries signal
+   * is "received nothing at all", which is the poisoning shape: funded, fires
+   * dust, abandoned.
+   */
   received?: bigint;
 }
 
@@ -126,30 +146,55 @@ function commonSuffix(a: string, b: string): number {
 }
 
 /**
- * Rank two addresses by how much of a footprint each has, so the pair can name
- * a likely impostor instead of two equals.
+ * The gap in transaction counts before one address may be called the impostor.
  *
- * Transaction count decides first; a tie falls through to value received,
- * because a poisoning address by design receives nothing — it is funded, it
- * sends, it is abandoned. Returns 0 when nothing distinguishes them, and the
- * caller must then report the pair without assigning roles.
+ * A 2-vs-1 margin is not evidence. Dust repeating inside one page is the normal
+ * shape of this attack, so a poisoner that sends three times beats a real
+ * counterparty seen once, and the tool would then point the accusation at the
+ * legitimate address. Measured on the pinned mainnet case, the real margin is
+ * 4-vs-1 — five dust sends invert it.
+ *
+ * The established side must also have been seen at least this many times, so a
+ * 3-vs-0 reading off a nearly empty page cannot assign roles either.
+ */
+export const DIRECTION_MIN_MARGIN = 3;
+
+/**
+ * Rank two addresses by footprint, or decline to.
+ *
+ * Returns 0 whenever the evidence cannot carry the claim, and the caller then
+ * reports the pair without assigning roles. Declining is cheap; naming the
+ * victim as the attacker is not.
  */
 function footprintOrder(a: AddressActivity | undefined, b: AddressActivity | undefined): number {
   const at = a?.transactions ?? 0;
   const bt = b?.transactions ?? 0;
-  if (at !== bt) return at > bt ? 1 : -1;
-  const ar = a?.received ?? 0n;
-  const br = b?.received ?? 0n;
-  if (ar !== br) return ar > br ? 1 : -1;
+  const hi = Math.max(at, bt);
+  const lo = Math.min(at, bt);
+
+  if (hi >= DIRECTION_MIN_MARGIN && hi - lo >= DIRECTION_MIN_MARGIN) {
+    return at > bt ? 1 : -1;
+  }
+
+  // Counts are too close to separate them. One remaining signal is decimals-
+  // safe: a poisoning address receives NOTHING. That only speaks when exactly
+  // one side received something, and never about how much.
+  const ar = (a?.received ?? 0n) > 0n;
+  const br = (b?.received ?? 0n) > 0n;
+  if (ar !== br) return ar ? 1 : -1;
   return 0;
 }
 
 function pairNote(p: LookalikePair): string {
-  const shape = `${p.prefix_chars} leading and ${p.suffix_chars} trailing characters`;
+  // Do NOT claim they "render identically in any truncated view". At 8+8 —
+  // the width this module itself renders — a 3+4 pair visibly differs. What
+  // is true is that they match at both ends, which is what defeats a glance
+  // and a short truncation.
+  const shape = `the first ${p.prefix_chars} and last ${p.suffix_chars} characters`;
   if (!p.direction_known) {
-    return `Two addresses in this result share ${shape}, so they render identically in any truncated view. Neither has a larger footprint than the other here, so which one is the impostor cannot be told apart from this data — check both before sending anything to either.`;
+    return `Two addresses in this result share ${shape}, close enough to be mistaken for one another at a glance or in a short truncation. Nothing here separates their footprints, so which one is the impostor cannot be told from this data — check both before sending anything to either.`;
   }
-  return `${p.rendered.suspect} shares ${shape} with ${p.rendered.established}, which has the larger footprint here. That is address poisoning: the lookalike exists so that a copy from transaction history lands on it instead. Verify the full 32 bytes of any address taken from this history before sending to it.`;
+  return `${p.rendered.suspect} shares ${shape} with ${p.rendered.established}, which has the larger footprint here. That is consistent with address poisoning: a lookalike exists so a copy taken from transaction history lands on it instead. The direction rests on activity seen in this result only. Verify the full 32 bytes of any address taken from this history before sending to it.`;
 }
 
 /**
@@ -167,6 +212,31 @@ export function findLookalikes(
   addresses: Iterable<string>,
   activity?: Map<string, AddressActivity>,
 ): LookalikePair[] {
+  // Index activity by NORMALIZED address. The map arrives keyed by whatever
+  // strings the caller collected — canonical ones from the chain, but the
+  // subject is whatever the caller typed, and the GraphQL API accepts
+  // uppercase and unpadded short forms. Looking up by the raw string then
+  // misses the subject's own footprint, it scores zero, and the victim's
+  // wallet gets named the impostor. `chain-id.ts`, `package-roots.ts` and
+  // `registry.ts` all normalize before using an address as a key.
+  const byHex = new Map<string, AddressActivity>();
+  if (activity) {
+    for (const [raw, act] of activity) {
+      const hex = normalize(raw);
+      if (!hex) continue;
+      const prev = byHex.get(hex);
+      byHex.set(
+        hex,
+        prev
+          ? {
+              transactions: (prev.transactions ?? 0) + (act.transactions ?? 0),
+              received: (prev.received ?? 0n) + (act.received ?? 0n),
+            }
+          : act,
+      );
+    }
+  }
+
   const buckets = new Map<string, { hex: string; original: string }[]>();
   const seen = new Set<string>();
 
@@ -174,6 +244,7 @@ export function findLookalikes(
     const hex = normalize(original);
     if (!hex || seen.has(hex) || lowEntropy(hex)) continue;
     seen.add(hex);
+    // Bucket width MUST equal the prefix floor — see MIN_PER_END.
     const key = hex.slice(0, MIN_PER_END);
     const bucket = buckets.get(key);
     if (bucket) bucket.push({ hex, original });
@@ -192,12 +263,14 @@ export function findLookalikes(
         if (prefix < MIN_PER_END || suffix < MIN_PER_END) continue;
         if (prefix + suffix < MIN_MATCHING_CHARS) continue;
 
-        const order = footprintOrder(activity?.get(a.original), activity?.get(b.original));
+        const order = footprintOrder(byHex.get(a.hex), byHex.get(b.hex));
         const [established, suspect] = order >= 0 ? [a, b] : [b, a];
 
         const pair: LookalikePair = {
-          established: established.original,
-          suspect: suspect.original,
+          // Canonical form, so a reported address matches itself downstream in
+          // save_finding and export_case.
+          established: `0x${established.hex}`,
+          suspect: `0x${suspect.hex}`,
           prefix_chars: prefix,
           suffix_chars: suffix,
           matching_chars: prefix + suffix,
@@ -269,7 +342,18 @@ export class ActivityLedger {
 }
 
 export interface LookalikeReport {
+  /** Distinct addresses actually compared, after normalizing and filtering. */
   addresses_compared: number;
+  /**
+   * Set when the SUBJECT of the investigation was itself excluded as
+   * structurally low-entropy — a vanity or zero-padded address.
+   *
+   * Only the subject. Low-entropy counterparties turn up on nearly every page
+   * (any page containing `0x0` has one), so reporting those would be noise.
+   * The subject is different: a vanity address is a PREFERRED poisoning
+   * target, and silently declining to check it reads as a clean result.
+   */
+  subject_excluded?: string;
   pairs: LookalikePair[];
   note: string;
 }
@@ -286,14 +370,43 @@ export interface LookalikeReport {
 export function lookalikeReport(
   addresses: Iterable<string>,
   activity?: Map<string, AddressActivity>,
+  subject?: string,
 ): LookalikeReport | null {
   const list = [...addresses];
   const pairs = findLookalikes(list, activity);
-  if (pairs.length === 0) return null;
+
+  // Count what was really compared, not the raw input: duplicates, different
+  // spellings of one address and unparseable entries all inflate `list.length`.
+  const compared = new Set<string>();
+  for (const a of list) {
+    const hex = normalize(a);
+    if (hex && !lowEntropy(hex)) compared.add(hex);
+  }
+
+  const subjectHex = subject ? normalize(subject) : null;
+  const subjectExcluded = subjectHex != null && lowEntropy(subjectHex);
+
+  if (pairs.length === 0 && !subjectExcluded) return null;
+
+  const excludedNote = subjectExcluded
+    ? `This address was itself left out of the comparison as structurally low-entropy — a vanity or zero-padded address, which collides with others of its kind by construction. A vanity address is a preferred poisoning target, so this is NOT a statement that it has not been targeted.`
+    : null;
+
+  if (pairs.length === 0) {
+    return {
+      addresses_compared: compared.size,
+      subject_excluded: subject,
+      pairs: [],
+      note: excludedNote!,
+    };
+  }
 
   return {
-    addresses_compared: list.length,
+    addresses_compared: compared.size,
+    ...(subjectExcluded ? { subject_excluded: subject } : {}),
     pairs,
-    note: `${pairs.length} pair${pairs.length === 1 ? "" : "s"} of addresses in this result render identically once truncated. Addresses were compared only within what was returned here, so this is not a complete scan of the wallet's counterparties.`,
+    note:
+      `${pairs.length} pair${pairs.length === 1 ? "" : "s"} of addresses in this result are close enough to be mistaken for one another. Addresses were compared only within what was returned here, so this is not a complete scan of the wallet's counterparties.` +
+      (excludedNote ? ` ${excludedNote}` : ""),
   };
 }

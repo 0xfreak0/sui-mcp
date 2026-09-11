@@ -1277,7 +1277,21 @@ export function registerTraceTools(server: McpServer) {
           note: "Per-hop USD at transaction time (Pyth, per-second); not summed across hops (same funds moving). See each balance change's price_usd / priced_at / price_age_sec.",
         },
         ...(poisoning ? { address_poisoning: poisoning } : {}),
-        ...(objectFlow ? { object_flow: objectFlow } : {}),
+        // The hop already carries these records in `object_transfers`; the
+        // trace-level block repeats the digest-level view, so it names them by
+        // id rather than serialising each one a second time.
+        ...(objectFlow
+          ? {
+              object_flow: {
+                movements: objectFlow.movements,
+                transfer_count: objectFlow.transfers.length,
+                capability_transfers: objectFlow.capability_transfers,
+                renounced_capabilities: objectFlow.renounced_capabilities,
+                ...(objectFlow.truncated ? { truncated: true } : {}),
+                note: objectFlow.note,
+              },
+            }
+          : {}),
         hops: enrichedHops,
         address_labels: addressLabels,
       };

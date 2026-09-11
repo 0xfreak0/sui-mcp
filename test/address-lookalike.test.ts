@@ -132,7 +132,7 @@ describe("findLookalikes — which one is the impostor", () => {
   it("refuses to assign roles when the footprints match", () => {
     const [pair] = findLookalikes([real, fake]);
     expect(pair!.direction_known).toBe(false);
-    expect(pair!.note).toMatch(/cannot be told apart/i);
+    expect(pair!.note).toMatch(/cannot be told from this data/i);
   });
 
   it("refuses to assign roles with activity that does not separate them", () => {
@@ -227,5 +227,120 @@ describe("ActivityLedger", () => {
     ledger.observe([{ address: A }, { address: B }]);
     expect(ledger.addressesLedBy(A)).toEqual([A, B]);
     expect(ledger.addressesLedBy("0xcc")).toEqual(["0xcc", A, B]);
+  });
+});
+
+describe("activity is looked up by NORMALIZED address", () => {
+  /**
+   * The ledger is keyed by the strings the chain returned; the subject is
+   * whatever the caller typed, and the GraphQL API accepts uppercase and
+   * unpadded short forms. Looking activity up by the raw string missed the
+   * subject's own footprint, so it scored zero and the VICTIM was named the
+   * impostor. Every other module that keys on an address normalizes first.
+   */
+  const victim = `0xcafe${"1".repeat(56)}beef`;
+  const poisoner = `0xcaf1${"2".repeat(56)}beef`;
+
+  it("does not invert direction when the caller spells it differently", () => {
+    const activity = new Map([
+      [victim, { transactions: 9, received: 100n }],
+      [poisoner, { transactions: 1, received: 0n }],
+    ]);
+    const [pair] = findLookalikes([victim.toUpperCase(), poisoner], activity);
+    expect(pair!.established.toLowerCase()).toBe(victim);
+    expect(pair!.suspect.toLowerCase()).toBe(poisoner);
+  });
+
+  it("emits canonical addresses so they match downstream", () => {
+    const [pair] = findLookalikes([victim.toUpperCase(), poisoner]);
+    expect(pair!.established).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(pair!.suspect).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+});
+
+describe("direction needs a real margin", () => {
+  const real = `0xcafe${"1".repeat(56)}beef`;
+  const fake = `0xcaf1${"2".repeat(56)}beef`;
+
+  /**
+   * Dust repeating inside one page is the normal shape of this attack, so a
+   * poisoner seen three times would otherwise outrank a real counterparty seen
+   * once — and the note would point the accusation at the legitimate address.
+   */
+  it("refuses to name a suspect on a 3-vs-1 margin", () => {
+    const activity = new Map([
+      [fake, { transactions: 3, received: 0n }],
+      [real, { transactions: 1, received: 500n }],
+    ]);
+    const [pair] = findLookalikes([real, fake], activity);
+    // The one decimals-safe signal still applies: the poisoner received
+    // nothing, so the real address is established — never the other way round.
+    expect(pair!.suspect).toBe(fake);
+  });
+
+  it("assigns roles once the gap is real", () => {
+    const activity = new Map([
+      [real, { transactions: 9, received: 0n }],
+      [fake, { transactions: 1, received: 0n }],
+    ]);
+    const [pair] = findLookalikes([real, fake], activity);
+    expect(pair!.established).toBe(real);
+    expect(pair!.direction_known).toBe(true);
+  });
+
+  /**
+   * Raw units are not comparable across coin types: 1 unit of an 18-decimal
+   * spam token would outrank 5 SUI. `funding.ts` learned this already, so the
+   * tiebreak asks only whether anything was received.
+   */
+  it("does not rank by raw amount across coin types", () => {
+    const activity = new Map([
+      [fake, { transactions: 1, received: 10n ** 18n }],
+      [real, { transactions: 1, received: 5_000_000_000n }],
+    ]);
+    expect(findLookalikes([real, fake], activity)[0]!.direction_known).toBe(false);
+  });
+});
+
+describe("lookalikeReport counts and discloses", () => {
+  const a = `0xcafe${"1".repeat(56)}beef`;
+  const b = `0xcaf1${"2".repeat(56)}beef`;
+
+  it("counts distinct compared addresses, not raw input", () => {
+    const r = lookalikeReport([a, a.toUpperCase(), b, "", "not-an-address"])!;
+    expect(r.addresses_compared).toBe(2);
+  });
+
+  /**
+   * Vanity and burn addresses are excluded because they collide by
+   * construction — but they are also a preferred poisoning target, so a silent
+   * exclusion reads as a clean result.
+   */
+  /**
+   * Only the SUBJECT. Low-entropy counterparties appear on nearly every page —
+   * anything containing 0x0 has one — so reporting those is noise. A vanity
+   * SUBJECT is different: declining to check it silently reads as clean.
+   */
+  it("says when the subject itself was excluded as low entropy", () => {
+    const vanity = `0x${"0".repeat(16)}${"7".repeat(48)}`;
+    const r = lookalikeReport([vanity, `0xdead${"3".repeat(56)}1234`], undefined, vanity)!;
+    expect(r.subject_excluded).toBe(vanity);
+    expect(r.note).toMatch(/preferred poisoning target/i);
+  });
+
+  it("stays silent about low-entropy counterparties", () => {
+    const burn = `0x${"0".repeat(64)}`;
+    expect(lookalikeReport([a, burn], undefined, a)).toBeNull();
+  });
+});
+
+describe("the note does not overclaim", () => {
+  it("never says the addresses render identically", () => {
+    const a = `0xcafe${"1".repeat(56)}beef`;
+    const b = `0xcaf1${"2".repeat(56)}beef`;
+    // At the 8+8 width this module itself renders, a 3+4 pair visibly differs.
+    const [pair] = findLookalikes([a, b]);
+    expect(pair!.note).not.toMatch(/render identically/i);
+    expect(pair!.note).toMatch(/at a glance or in a short truncation/i);
   });
 });

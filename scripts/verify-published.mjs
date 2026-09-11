@@ -51,23 +51,37 @@ process.exit(failed ? 1 : 0);
  * Install, retrying while npm still reports the version as missing.
  *
  * This runs seconds after `npm publish` in CI, and the registry does not index
- * a new version instantly — 1.10.0 published successfully and then failed here
- * with ETARGET one second later, which marked a good release as failed and
- * skipped the GitHub release job behind it.
+ * a new version instantly — a good release fails here with ETARGET a second
+ * after publishing, which marks it failed and skips the GitHub release job
+ * behind it.
  *
- * Only ETARGET/E404 is retried, since that is the propagation case. Anything
- * else is a real failure and should surface immediately rather than being
- * waited out.
+ * **The output must be CAPTURED, not inherited.** `stdio: "inherit"` sends
+ * npm's text to the console and leaves `err.stdout` and `err.stderr` null, so
+ * the propagation test below could only ever see `err.message` — "Command
+ * failed: npm install <spec>" — which contains no ETARGET. The retry then
+ * decided every propagation delay was a real failure and threw on the first
+ * attempt. That is why 1.15.0 failed despite this function existing.
+ *
+ * Only ETARGET/E404 is retried; anything else is a real failure and surfaces
+ * immediately rather than being waited out.
  */
 async function installWithRetry(spec, dir, attempts = 6) {
   for (let i = 1; i <= attempts; i++) {
     try {
-      execFileSync("npm", ["install", spec], { cwd: dir, stdio: "inherit" });
+      // Captured, then echoed, so a real failure is still readable in the log.
+      execFileSync("npm", ["install", spec], {
+        cwd: dir,
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+      });
       return;
     } catch (err) {
       const out = `${err.stdout ?? ""}${err.stderr ?? ""}${err.message ?? ""}`;
       const propagating = /ETARGET|E404|No matching version/i.test(out);
-      if (!propagating || i === attempts) throw err;
+      if (!propagating || i === attempts) {
+        console.error(out.trim());
+        throw err;
+      }
       const waitMs = i * 5000;
       console.log(`  not on the registry yet (attempt ${i}/${attempts}); retrying in ${waitMs / 1000}s`);
       await new Promise((r) => setTimeout(r, waitMs));

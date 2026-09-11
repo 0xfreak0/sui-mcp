@@ -1,34 +1,50 @@
 /**
  * What moved that was not a coin.
  *
- * `trace_funds` follows balance changes, which is the right primitive on an
- * account-based chain and the wrong one here. Sui is object-based: a balance
- * change is derived from `Coin<T>` objects, so anything that is not a coin
- * moves without producing one. Measured on mainnet, sampling the transaction
- * that last touched each object:
+ * A balance change is derived from `Coin<T>`, so on an object-based chain
+ * everything else — an NFT, a Kiosk item, a DeFi position, an admin
+ * capability — changes hands without producing one. Measured on mainnet,
+ * sampling the transaction that last touched each object: `package::UpgradeCap`
+ * 30 of 30 and `package::Publisher` 30 of 30 produced no non-gas balance
+ * change; `coin::TreasuryCap` 14 of 30.
  *
- * | type | sampled | no non-gas balance change |
- * |---|---|---|
- * | `package::UpgradeCap` | 30 | 30 |
- * | `package::Publisher`  | 30 | 30 |
- * | `coin::TreasuryCap`   | 30 | 14 |
+ * Reading it costs nothing extra: `objectChanges` rides the same
+ * `transaction(digest:)` query the trace already makes, and the archive's gRPC
+ * `changedObjects` rides the read mask it already requests.
  *
- * 74 of 90. So a trace that reads only balance changes reports "nothing moved"
- * for the transfer of mint authority or of the right to replace a package's
- * code — the highest-consequence transfers this chain has. It then picks the
- * story up at the first mint and calls that the origin.
+ * ## Five things that are easy to get wrong, all of them measured
  *
- * The codebase already knew the premise. `CLAUDE.md` says "Scam NFTs need no
- * handling here — they move no coin, so they never appear as an inflow." That
- * reasoning was used once, to dismiss scam NFTs, and never carried to the case
- * where the same invisibility is catastrophic.
- *
- * This module is pure. `objectChanges` rides the same `transaction(digest:)`
- * query the trace already makes, so reading it costs no extra request per hop —
- * the same economics as `detectBridges` reusing a hop's calls.
+ * - **Framework types are matched in FULL, never by suffix.** A package can
+ *   name its module `package` and its struct `UpgradeCap`, and suffix matching
+ *   would hand an airdropped fake the loudest warning this tool has. The
+ *   mirror is worse: naming a module `coin` and a struct `Coin` would get an
+ *   object EXCLUDED here as "already a balance change" while producing no
+ *   balance change either — invisible in both channels. `capabilities.ts`
+ *   already pins `0x2::…` in full; this follows it.
+ * - **A capability sent somewhere unspendable is renounced, not handed over.**
+ *   `upgrade-cap.ts` measured 27 of 30 UpgradeCap departures going to
+ *   `0x0`/`0x2`. Reporting those as "control changed hands, follow the
+ *   recipient" would make the loudest output wrong most of the time for the
+ *   type that motivated the feature.
+ * - **Custody is not only address-to-address.** A kiosk-held NFT is owned by
+ *   the Kiosk object, so a normal NFT trade reads `object -> object`. Measured
+ *   against four real wallets, filtering to address-to-address missed 10 of 28
+ *   genuine transfers, and `ObjectOwner -> ObjectOwner` was 538 of ~1,240
+ *   object changes in a recent sample.
+ * - **Old effects do not record the input owner.** Before roughly March 2024
+ *   mainnet returns `inputState: null` for EVERY change, not just created
+ *   ones: 117 of 117 non-created changes at checkpoint 20,000,000. Reading
+ *   that as "unwrapped" and dropping it silently loses every object transfer
+ *   over the chain's first year — the era a backward trace reaches. It is
+ *   reported as {@link MovementKind} `appeared`, with the ambiguity stated.
+ * - **`Coin<T>` is excluded** because the balance changes already state it,
+ *   and **mutations are excluded** because an object written to has not
+ *   changed hands.
  */
 
-/** How an object is held. Only `address` names a party a trace can follow. */
+import { isUnspendableAddress } from "./upgrade-cap.js";
+
+/** How an object is held. */
 export type OwnerKind = "address" | "object" | "shared" | "immutable" | "consensus" | "unknown";
 
 export interface OwnerRef {
@@ -39,94 +55,149 @@ export interface OwnerRef {
 
 export type MovementKind =
   | "transferred"
+  /**
+   * The object existed before this transaction and now belongs to someone, but
+   * the chain did not record who held it. Ambiguous between a real transfer
+   * and an unwrap; pre-2024 effects never stored input owners.
+   */
+  | "appeared"
   | "created"
   | "deleted"
   | "wrapped"
   | "unwrapped"
   | "mutated";
 
-/**
- * What an object is, for the purpose of deciding whether its movement is worth
- * reporting.
- *
- * `coin` exists to be EXCLUDED. A `Coin<T>` object movement is already stated
- * as a balance change, and reporting it again would double-count the one case
- * the existing trace handles correctly.
- */
-export type ObjectCategory = "capability" | "coin" | "kiosk" | "asset" | "unknown";
+export type ObjectCategory =
+  | "capability"
+  | "coin"
+  | "kiosk"
+  | "defi-position"
+  | "asset"
+  | "unknown";
 
 export interface ObjectMovement {
   object_id: string;
-  /** Full Move type, as the chain reports it. Null when it could not be read. */
   type: string | null;
-  /** Short `module::Name` form, for output that a human reads. */
+  /** Short `module::Name` form, for output a human reads. */
   type_short: string | null;
   kind: MovementKind;
   from: OwnerRef | null;
   to: OwnerRef | null;
   category: ObjectCategory;
-  /**
-   * Whether losing this object means losing control of something — mint
-   * authority, upgrade authority, an admin function. See
-   * {@link HIGH_CONSEQUENCE_TYPES}.
-   */
+  /** A framework capability whose powers are stateable. Never suffix-matched. */
   high_consequence: boolean;
+  /** The destination is unspendable: this is renunciation, not a handover. */
+  renounced?: boolean;
+  /** The chain did not record the previous holder. See `appeared`. */
+  source_unrecorded?: boolean;
+  /** Protocol that defined this type, when the registry knows it. */
+  protocol?: string;
   note?: string;
 }
 
+const ADDR2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
+
 /**
- * Types whose transfer is a finding on its own.
+ * Framework capabilities whose powers can be stated, keyed by FULL type.
  *
- * Matched on the `module::Name` suffix, not the full type, because the package
- * id is `0x2` for the framework ones but arbitrary for a protocol's own admin
- * cap — and because a type keeps the package that defined it, so this does not
- * drift across upgrades.
+ * Suffix matching is not acceptable here — see the module comment. Every key
+ * is a `0x2` framework type, which is defined at that address forever, so the
+ * full check costs nothing and cannot be spoofed.
  */
 export const HIGH_CONSEQUENCE_TYPES: Record<string, string> = {
-  "package::UpgradeCap":
+  [`${ADDR2}::package::UpgradeCap`]:
     "Whoever holds this can publish new code for the package. Transferring it transfers the ability to change what the contract does.",
-  "coin::TreasuryCap":
+  [`${ADDR2}::coin::TreasuryCap`]:
     "Mint and burn authority for this coin. Whoever holds it can create supply without limit.",
-  "coin::DenyCap":
+  [`${ADDR2}::coin::DenyCap`]:
     "Authority to freeze addresses for this coin, via the deny list.",
-  "package::Publisher":
+  [`${ADDR2}::coin::DenyCapV2`]:
+    "Authority to freeze addresses for this coin, via the deny list.",
+  [`${ADDR2}::package::Publisher`]:
     "Proof of publishing rights for the package, used to claim Display and other type-owned privileges.",
 };
 
-/** A type is a capability if it is named like one. Deliberately broad. */
-const CAP_SUFFIX = /(?:^|_|::)(?:[A-Za-z0-9]*)(?:Cap|Capability)$/;
+/** `0x2::coin::Coin`, in full. A look-alike from another package is NOT this. */
+const COIN_TYPE = `${ADDR2}::coin::Coin`;
+/** Kiosk types, in full. */
+const KIOSK_TYPES = new Set([`${ADDR2}::kiosk::Kiosk`, `${ADDR2}::kiosk::KioskOwnerCap`]);
 
-function shortType(type: string | null): string | null {
-  if (!type) return null;
-  // Strip generics first: `0x2::coin::Coin<0x2::sui::SUI>` -> `0x2::coin::Coin`.
+/** A name that looks like a capability but is not a known framework one. */
+const CAP_SUFFIX = /Cap(?:ability)?$/;
+
+/** Type names that a protocol uses for a position. Only consulted for a
+ *  package the protocol registry already vouches for, never on its own. */
+const POSITION_NAME =
+  /(?:Position|Obligation|Receipt|Account|Vault|Stake|Staked|Farm|Deposit|Locker|Ticket)/i;
+
+/**
+ * Strip generics and pad the defining address.
+ *
+ * `0x2::coin::Coin<0x2::sui::SUI>` -> `0x0000…0002::coin::Coin`. Both forms
+ * occur — the chain reports the padded one, callers and fixtures often write
+ * the short one — and matching a framework type in full is worthless if the
+ * two spellings do not meet. `protocols.json` normalizes its keys on load for
+ * exactly this reason.
+ */
+export function baseType(type: string): string {
   const base = type.split("<")[0] ?? type;
   const parts = base.split("::");
-  return parts.length >= 3 ? parts.slice(-2).join("::") : base;
+  if (parts.length < 2 || !parts[0]!.startsWith("0x")) return base;
+  const hex = parts[0]!.slice(2).toLowerCase();
+  if (hex.length === 0 || hex.length > 64 || !/^[0-9a-f]+$/.test(hex)) return base;
+  return [`0x${hex.padStart(64, "0")}`, ...parts.slice(1)].join("::");
 }
 
-/** `0x2::coin::Coin<...>` — already counted as a balance change. */
-function isCoin(type: string | null): boolean {
-  if (!type) return false;
-  const base = (type.split("<")[0] ?? type).split("::").slice(-2).join("::");
-  return base === "coin::Coin";
+export function shortType(type: string | null): string | null {
+  if (!type) return null;
+  const parts = baseType(type).split("::");
+  return parts.length >= 3 ? parts.slice(-2).join("::") : baseType(type);
 }
 
-export function categorize(type: string | null): ObjectCategory {
-  if (!type) return "unknown";
-  if (isCoin(type)) return "coin";
-  const short = shortType(type) ?? "";
-  if (short in HIGH_CONSEQUENCE_TYPES) return "capability";
-  if (CAP_SUFFIX.test(short)) return "capability";
-  if (/^kiosk::/.test(short)) return "kiosk";
-  return "asset";
+/** The package that DEFINED the type. Attribution hangs on this, not on a name. */
+export function definingPackage(type: string | null): string | null {
+  if (!type) return null;
+  const first = baseType(type).split("::")[0];
+  return first && first.startsWith("0x") ? first : null;
 }
 
 export function isHighConsequence(type: string | null): boolean {
-  const short = shortType(type);
-  return short != null && short in HIGH_CONSEQUENCE_TYPES;
+  return type != null && baseType(type) in HIGH_CONSEQUENCE_TYPES;
 }
 
-/** The GraphQL shapes this reads, narrowed to what is used. */
+/** What the protocol registry can tell us about a type's package. */
+export type ProtocolResolver = (packageId: string) => { name: string; type?: string } | null;
+
+/**
+ * Classify an object.
+ *
+ * `resolveProtocol` is optional and, when given, is what promotes an ordinary
+ * `asset` to a `defi-position`. That gate is deliberate: a type named
+ * `Position` proves nothing, but a type named `Position` DEFINED BY a package
+ * the registry already vouches for as a DEX or lending market is a financial
+ * position. Name-matching alone would be the guessing this project refuses.
+ */
+export function categorize(type: string | null, resolveProtocol?: ProtocolResolver): ObjectCategory {
+  if (!type) return "unknown";
+  const base = baseType(type);
+  if (base === COIN_TYPE) return "coin";
+  if (base in HIGH_CONSEQUENCE_TYPES) return "capability";
+  if (KIOSK_TYPES.has(base)) return "kiosk";
+
+  const name = base.split("::").pop() ?? "";
+  const pkg = definingPackage(type);
+  const protocol = pkg && resolveProtocol ? resolveProtocol(pkg) : null;
+
+  if (protocol && POSITION_NAME.test(name)) return "defi-position";
+  if (CAP_SUFFIX.test(name)) return "capability";
+  if (/^kiosk::/.test(shortType(type) ?? "")) return "kiosk";
+  return "asset";
+}
+
+/* ------------------------------------------------------------------ */
+/* GraphQL                                                             */
+/* ------------------------------------------------------------------ */
+
 export interface GqlOwner {
   __typename?: string;
   address?: { address?: string } | null;
@@ -161,29 +232,64 @@ export function readOwner(owner: GqlOwner | null | undefined): OwnerRef | null {
   }
 }
 
-function classifyKind(change: GqlObjectChange, from: OwnerRef | null, to: OwnerRef | null): MovementKind {
-  if (change.idCreated) return "created";
-  if (change.idDeleted) return "deleted";
-  // An object with no input state that was not created existed already and was
-  // unwrapped out of whatever held it; the mirror case is being wrapped INTO
-  // something, which reads as a disappearance without deletion.
-  if (!change.inputState && change.outputState) return "unwrapped";
-  if (change.inputState && !change.outputState) return "wrapped";
-  if (from && to && (from.kind !== to.kind || from.address !== to.address)) return "transferred";
-  return "mutated";
+function sameOwner(a: OwnerRef | null, b: OwnerRef | null): boolean {
+  if (!a || !b) return false;
+  return a.kind === b.kind && a.address === b.address;
 }
 
 /**
- * Turn one transaction's `objectChanges` into movements worth reporting.
- *
- * Excludes, in order:
- * - `Coin<T>`, which the balance changes already state. Reporting it twice
- *   would inflate exactly the case that already works.
- * - `mutated`, which is an object being written to, not changing hands. A
- *   trace that reported every mutation would drown in shared-object traffic;
- *   measured previously at 92% of transactions.
+ * @param inputRecorded whether the transport actually told us the input state.
+ *   GraphQL cannot distinguish "there was no input" from "the input owner was
+ *   never stored", so it passes `false` when `inputState` is absent; gRPC knows
+ *   and passes the real answer.
  */
-export function readObjectMovements(changes: GqlObjectChange[]): ObjectMovement[] {
+function classifyKind(
+  opts: { created: boolean; deleted: boolean; hasInput: boolean; hasOutput: boolean },
+  from: OwnerRef | null,
+  to: OwnerRef | null,
+): MovementKind {
+  const { created, deleted, hasInput, hasOutput } = opts;
+  // Deletion wins over creation: an entry claiming both is contradictory, and
+  // "this object is gone" is the safer of the two to report.
+  if (deleted) return "deleted";
+  if (created) return "created";
+  if (!hasInput && hasOutput) return "appeared";
+  if (hasInput && !hasOutput) return "wrapped";
+  if (sameOwner(from, to)) return "mutated";
+  return "transferred";
+}
+
+function finish(
+  m: Omit<ObjectMovement, "note" | "renounced">,
+): ObjectMovement {
+  const out: ObjectMovement = { ...m };
+  const full = m.type ? baseType(m.type) : null;
+
+  if (m.to?.kind === "address" && m.to.address && isUnspendableAddress(m.to.address)) {
+    out.renounced = true;
+  }
+
+  if (out.high_consequence && full) {
+    const power = HIGH_CONSEQUENCE_TYPES[full]!;
+    out.note = out.renounced
+      ? `Sent to ${m.to?.address}, an address nobody holds a key for. ${power} Those rights are RENOUNCED, not transferred — a deliberate act and a reduction in risk, not a warning.`
+      : power;
+  }
+
+  if (out.kind === "appeared") {
+    out.source_unrecorded = true;
+    out.note =
+      (out.note ? out.note + " " : "") +
+      "The chain did not record who held this before the transaction, which is normal for transactions before roughly March 2024. It is therefore not knowable from this alone whether it was transferred or unwrapped from something.";
+  }
+
+  return out;
+}
+
+export function readObjectMovements(
+  changes: GqlObjectChange[],
+  resolveProtocol?: ProtocolResolver,
+): ObjectMovement[] {
   const out: ObjectMovement[] = [];
 
   for (const change of changes) {
@@ -192,88 +298,242 @@ export function readObjectMovements(changes: GqlObjectChange[]): ObjectMovement[
       change.inputState?.asMoveObject?.contents?.type?.repr ??
       null;
 
-    const category = categorize(type);
+    const category = categorize(type, resolveProtocol);
     if (category === "coin") continue;
 
     const from = readOwner(change.inputState?.owner);
     const to = readOwner(change.outputState?.owner);
-    const kind = classifyKind(change, from, to);
-    if (kind === "mutated") continue;
-
-    const high = isHighConsequence(type);
-    const short = shortType(type);
-
-    out.push({
-      object_id: change.address ?? "",
-      type,
-      type_short: short,
-      kind,
+    const kind = classifyKind(
+      {
+        created: !!change.idCreated,
+        deleted: !!change.idDeleted,
+        hasInput: !!change.inputState,
+        hasOutput: !!change.outputState,
+      },
       from,
       to,
-      category,
-      high_consequence: high,
-      ...(high && short ? { note: HIGH_CONSEQUENCE_TYPES[short] } : {}),
-    });
+    );
+    if (kind === "mutated") continue;
+
+    const pkg = definingPackage(type);
+    const protocol = pkg && resolveProtocol ? resolveProtocol(pkg) : null;
+
+    out.push(
+      finish({
+        object_id: change.address ?? "",
+        type,
+        type_short: shortType(type),
+        kind,
+        from,
+        to,
+        category,
+        high_consequence: isHighConsequence(type),
+        ...(protocol ? { protocol: protocol.name } : {}),
+      }),
+    );
   }
 
   return out;
 }
 
-/** Movements where an object actually changed hands between two addresses. */
-export function transfersBetweenAddresses(movements: ObjectMovement[]): ObjectMovement[] {
-  return movements.filter(
-    (m) =>
-      m.kind === "transferred" &&
-      m.from?.kind === "address" &&
-      m.to?.kind === "address" &&
-      m.from.address !== m.to.address,
-  );
+/* ------------------------------------------------------------------ */
+/* gRPC — the archive path                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The archive DOES report object changes.
+ *
+ * An earlier version of this file claimed it does not, and disclaimed object
+ * flow on every archive hop. Verified false against mainnet: for a digest the
+ * fullnode has pruned, the archive returns `changedObjects` carrying
+ * `objectType`, `inputOwner` and `outputOwner` in full. It is also the only
+ * transport that can resolve the pre-2024 ambiguity, because it exposes
+ * `inputState` as an explicit EXISTS / DOES_NOT_EXIST rather than a null.
+ */
+export interface GrpcOwner {
+  kind?: number;
+  address?: string;
+}
+export interface GrpcChangedObject {
+  objectId?: string;
+  objectType?: string;
+  inputState?: number;
+  idOperation?: number;
+  inputOwner?: GrpcOwner | null;
+  outputOwner?: GrpcOwner | null;
+}
+
+/** Owner kind numbers, from `sui.rpc.v2.Owner.OwnerKind`. */
+const GRPC_OWNER_KIND: Record<number, OwnerKind> = {
+  0: "unknown",
+  1: "address",
+  2: "object",
+  3: "shared",
+  4: "immutable",
+  5: "consensus",
+};
+
+export function readGrpcOwner(owner: GrpcOwner | null | undefined): OwnerRef | null {
+  if (!owner || owner.kind === undefined) return null;
+  return {
+    kind: GRPC_OWNER_KIND[owner.kind] ?? "unknown",
+    address: owner.address ?? null,
+  };
+}
+
+/** `sui.rpc.v2.ChangedObject.InputObjectState` */
+const INPUT_DOES_NOT_EXIST = 1;
+const INPUT_EXISTS = 2;
+/** `sui.rpc.v2.ChangedObject.IdOperation` */
+const ID_CREATED = 2;
+const ID_DELETED = 3;
+
+export function readGrpcObjectChanges(
+  changes: GrpcChangedObject[],
+  resolveProtocol?: ProtocolResolver,
+): ObjectMovement[] {
+  const out: ObjectMovement[] = [];
+
+  for (const change of changes) {
+    const type = change.objectType ?? null;
+    const category = categorize(type, resolveProtocol);
+    if (category === "coin") continue;
+
+    const from = readGrpcOwner(change.inputOwner);
+    const to = readGrpcOwner(change.outputOwner);
+
+    // Unlike GraphQL, this transport states whether an input existed, so a
+    // missing owner on an existing input is knowable as "not recorded" rather
+    // than guessed.
+    const inputExisted = change.inputState === INPUT_EXISTS;
+    const inputAbsent = change.inputState === INPUT_DOES_NOT_EXIST;
+    const hasInput = inputExisted && from !== null;
+
+    const kind = classifyKind(
+      {
+        created: change.idOperation === ID_CREATED,
+        deleted: change.idOperation === ID_DELETED,
+        hasInput,
+        hasOutput: to !== null,
+      },
+      from,
+      to,
+    );
+    if (kind === "mutated") continue;
+    // An input that genuinely did not exist and was not created is an unwrap,
+    // which is a different claim from an unrecorded owner.
+    const resolved: MovementKind = kind === "appeared" && inputAbsent ? "unwrapped" : kind;
+
+    const pkg = definingPackage(type);
+    const protocol = pkg && resolveProtocol ? resolveProtocol(pkg) : null;
+
+    out.push(
+      finish({
+        object_id: change.objectId ?? "",
+        type,
+        type_short: shortType(type),
+        kind: resolved,
+        from,
+        to,
+        category,
+        high_consequence: isHighConsequence(type),
+        ...(protocol ? { protocol: protocol.name } : {}),
+      }),
+    );
+  }
+
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Reporting                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Movements where custody actually changed.
+ *
+ * NOT restricted to address-to-address. A kiosk-held NFT is owned by the Kiosk
+ * object, so the ordinary NFT trade is `object -> object`; requiring both ends
+ * to be addresses missed 10 of 28 real transfers across four mainnet wallets.
+ * `appeared` is included because dropping it loses the chain's first year.
+ */
+export function custodyChanges(movements: ObjectMovement[]): ObjectMovement[] {
+  return movements.filter((m) => {
+    if (m.kind === "transferred") return !sameOwner(m.from, m.to);
+    return m.kind === "appeared" || m.kind === "unwrapped" || m.kind === "wrapped";
+  });
+}
+
+/** Every address that took part in a custody change, for identity and labelling. */
+export function objectCounterparties(movements: ObjectMovement[]): string[] {
+  const out = new Set<string>();
+  for (const m of custodyChanges(movements)) {
+    for (const ref of [m.from, m.to]) {
+      if (ref?.kind === "address" && ref.address) out.add(ref.address);
+    }
+  }
+  return [...out];
 }
 
 export interface ObjectFlowSummary {
-  /** Every non-coin movement observed across the hops read. */
+  /** Every non-coin movement read, including creations and deletions. */
   movements: number;
-  /** Objects that changed hands between two addresses. */
+  /** Movements where custody changed. */
   transfers: ObjectMovement[];
-  /** The subset that carries control of something. */
+  /** Transfers of a framework capability that were NOT renunciations. */
   capability_transfers: ObjectMovement[];
+  /** Capabilities sent somewhere unspendable — a risk reduction, not a warning. */
+  renounced_capabilities: ObjectMovement[];
+  /** True when a transaction reported more object changes than were read. */
+  truncated?: boolean;
   note: string;
 }
 
 /**
- * Summarise object flow across a trace, or return null when there is nothing
- * to say.
+ * Summarise object flow, or return null when there is nothing to say.
  *
- * Null rather than an empty block, for the same reason the poisoning report is
- * absent rather than empty: a trace with no object movement is a fact about
- * those hops, and a permanently-present `object_flow: { transfers: [] }` would
- * read as a guarantee about the wallet.
+ * Takes the FULL movement list, not a pre-filtered one, so `movements` counts
+ * what its name says and the caller cannot silently narrow the input.
  */
-export function summarizeObjectFlow(movements: ObjectMovement[]): ObjectFlowSummary | null {
-  if (movements.length === 0) return null;
+export function summarizeObjectFlow(
+  movements: ObjectMovement[],
+  opts?: { truncated?: boolean },
+): ObjectFlowSummary | null {
+  const transfers = custodyChanges(movements);
+  if (transfers.length === 0 && !opts?.truncated) return null;
 
-  const transfers = transfersBetweenAddresses(movements);
-  const caps = transfers.filter((m) => m.high_consequence);
-  if (transfers.length === 0) return null;
+  const caps = transfers.filter((m) => m.high_consequence && !m.renounced);
+  const renounced = transfers.filter((m) => m.high_consequence && m.renounced);
 
-  let note: string;
+  const parts: string[] = [];
   if (caps.length > 0) {
     const names = [...new Set(caps.map((c) => c.type_short))].join(", ");
-    note =
-      `${caps.length} object${caps.length === 1 ? "" : "s"} carrying control changed hands in this trace (${names}). ` +
-      `A transfer like this moves authority, not value, so it produces no balance change and is invisible to fund tracing — ` +
-      `which is why it is reported here separately. Follow the recipient: what they can now do is the finding, and any coin movement may come later.`;
-  } else {
-    note =
-      `${transfers.length} non-coin object${transfers.length === 1 ? "" : "s"} changed hands in this trace. ` +
-      `Object transfers produce no balance change, so they do not appear in the hop amounts above. ` +
-      `Value carried as an NFT or inside an object moves this way.`;
+    parts.push(
+      `${caps.length} object${caps.length === 1 ? "" : "s"} carrying control changed hands (${names}). A transfer like this moves authority, not value, so it produces no balance change and is invisible to fund tracing. Follow the recipient: what they can now do is the finding, and any coin movement may come later.`,
+    );
+  }
+  if (renounced.length > 0) {
+    parts.push(
+      `${renounced.length} capability object${renounced.length === 1 ? " was" : "s were"} sent to an address nobody holds a key for. Those rights are renounced rather than transferred — a deliberate act and a reduction in risk, not a warning.`,
+    );
+  }
+  if (transfers.length > caps.length + renounced.length) {
+    parts.push(
+      `Non-coin objects changed hands, which produces no balance change and so does not appear in the hop amounts. Value carried as an NFT, a kiosk item or a DeFi position moves this way.`,
+    );
+  }
+  if (opts?.truncated) {
+    parts.push(
+      `At least one transaction reported more object changes than were read, so this list is incomplete — absence of a transfer here is not evidence it did not happen.`,
+    );
   }
 
   return {
     movements: movements.length,
     transfers,
     capability_transfers: caps,
-    note,
+    renounced_capabilities: renounced,
+    ...(opts?.truncated ? { truncated: true } : {}),
+    note: parts.join(" "),
   };
 }

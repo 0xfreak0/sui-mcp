@@ -1,5 +1,5 @@
 import { buildPythFeedMap } from "../discovery.js";
-import { verifiedCoin } from "./coin-registry.js";
+import { verifiedCoin, vouchFor } from "./coin-registry.js";
 import { pythApiKey } from "./price-providers.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 
@@ -73,8 +73,11 @@ export function decimalsForCoinType(coinType: string): number {
 export interface CoinDisplay {
   coin_type: string;
   symbol: string;
-  /** A curated list vouches for this exact coin type. */
-  verified: boolean;
+  /**
+   * A curated list vouches for this exact coin type. Null where no list covers
+   * the network at all — neither a claim nor a denial.
+   */
+  verified: boolean | null;
 }
 
 /**
@@ -87,10 +90,14 @@ export interface CoinDisplay {
  */
 export function displayCoin(coinType: string): CoinDisplay {
   const known = verifiedCoin(coinType);
+  const vouch = vouchFor(coinType);
   return {
     coin_type: coinType,
     symbol: known?.symbol ?? symbolOf(coinType),
-    verified: known !== null,
+    // Null rather than false where no curated list covers the network: a
+    // legitimate testnet asset must not be marked the way an impersonation
+    // token is.
+    verified: vouch === "not-curated-here" ? null : known !== null,
   };
 }
 

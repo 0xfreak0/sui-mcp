@@ -27,8 +27,31 @@
  * downstream.
  */
 
-import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
+import { EXTERNAL_HTTP_TIMEOUT_MS, getNetwork } from "../config.js";
 import registry from "../data/coins.json" with { type: "json" };
+
+/**
+ * The curated list holds **mainnet** coin types, and a coin type embeds a
+ * package ID.
+ *
+ * Package IDs are derived from the publish transaction, so the same type
+ * string on another network is a different thing or nothing at all. Checked on
+ * testnet: mainnet's `0xdba34672…::usdc::USDC` does not exist there, while a
+ * real testnet USDC lives at `0xa1ec7fc0…::usdc::USDC`. Consulting the list
+ * regardless of network therefore got BOTH answers wrong — it vouched for a
+ * coin that was absent, and refused to vouch for the genuine one.
+ *
+ * This is why the same reasoning does not apply to
+ * `labeled-addresses.json`, which is deliberately cross-network: addresses are
+ * KEY-derived, so one entity can legitimately hold the same address on several
+ * networks. Package IDs cannot.
+ *
+ * Off mainnet the answer is "no curated knowledge for this network" — not
+ * verified, and not unverified either.
+ */
+function registryApplies(): boolean {
+  return getNetwork() === "mainnet";
+}
 
 export interface RegistryCoin {
   coin_type: string;
@@ -68,11 +91,13 @@ for (const coin of data.coins) {
 
 /** Is this exact coin type on the verified list. */
 export function isVerifiedCoin(coinType: string): boolean {
+  if (!registryApplies()) return false;
   const t = normalizeCoinType(coinType);
   return t !== null && byType.has(t);
 }
 
 export function verifiedCoin(coinType: string): RegistryCoin | null {
+  if (!registryApplies()) return null;
   const t = normalizeCoinType(coinType);
   return t ? (byType.get(t) ?? null) : null;
 }
@@ -96,6 +121,9 @@ export type SymbolResolution =
  */
 export function resolveVerifiedSymbol(symbol: string): SymbolResolution {
   const key = symbol.trim().toUpperCase();
+  // Off mainnet every symbol is uncurated, which is the honest answer rather
+  // than resolving to a mainnet type that is not on this network.
+  if (!registryApplies()) return { status: "unverified", symbol: key };
 
   const pinned = data.canonical[key];
   if (pinned) {
@@ -153,7 +181,9 @@ const liveOnlyBySymbol = new Map<string, RegistryCoin[]>();
 
 /** Disable with SUI_DISABLE_LIVE_COIN_LIST=1 to pin behaviour to the repo file. */
 function liveEnabled(): boolean {
-  return process.env.SUI_DISABLE_LIVE_COIN_LIST !== "1";
+  // Aftermath's verified list is mainnet-only, so fetching it elsewhere would
+  // import mainnet types into a network they do not exist on.
+  return process.env.SUI_DISABLE_LIVE_COIN_LIST !== "1" && registryApplies();
 }
 
 async function fetchLive(): Promise<void> {
@@ -231,10 +261,18 @@ export function resetLiveCoins(): void {
   liveFetchedAt = 0;
 }
 
-export type CoinVouch = "verified" | "canonical" | "live" | null;
+export type CoinVouch = "verified" | "canonical" | "live" | "not-curated-here" | null;
 
-/** Which list vouches for this coin type, if any. */
+/**
+ * Which list vouches for this coin type.
+ *
+ * `not-curated-here` is distinct from `null`: off mainnet there is no curated
+ * list at all, so nothing can be said either way. Collapsing that into "not
+ * vouched for" would report a legitimate testnet asset the same way it reports
+ * an impersonation token.
+ */
 export function vouchFor(coinType: string): CoinVouch {
+  if (!registryApplies()) return "not-curated-here";
   const t = normalizeCoinType(coinType);
   if (!t) return null;
   if (byType.has(t)) return "verified";

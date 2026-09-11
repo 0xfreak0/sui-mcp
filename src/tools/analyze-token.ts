@@ -121,7 +121,15 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         // is unambiguous as an identifier — you get exactly what you asked
         // for — but that is not the same as anyone vouching for it, and the
         // impostor case arrives by type just as easily as by symbol.
-        verified: vouchFor(coinType) !== null,
+        // Null off mainnet: the curated list holds mainnet coin types, so it can
+        // say nothing either way about a coin on another network.
+        verified: vouchFor(coinType) === "not-curated-here" ? null : vouchFor(coinType) !== null,
+        ...(vouchFor(coinType) === "not-curated-here"
+          ? {
+              unverified_note:
+                "The curated coin list covers mainnet only, so nothing here vouches for or against this coin. A coin type embeds a package ID, and package IDs differ per network — USDC exists on testnet, at a different type from mainnet's.",
+            }
+          : {}),
         ...(vouchFor(coinType) === null
           ? {
               unverified_note:

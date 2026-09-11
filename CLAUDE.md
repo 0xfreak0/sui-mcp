@@ -762,6 +762,33 @@ Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
 
+### Address poisoning
+
+`address-lookalike.ts` reports two addresses close enough to be mistaken for
+one another. Four rules:
+
+- **Normalize before looking activity up.** The ledger is keyed by the strings
+  the chain returned; the subject is whatever the caller typed, and the
+  GraphQL API accepts uppercase and unpadded short forms. Keying on the raw
+  string lost the subject's own footprint, so it scored zero and the VICTIM was
+  named the impostor. Reported addresses are emitted canonical so they match
+  themselves in `save_finding` and `export_case`.
+- **Direction needs a real margin** (`DIRECTION_MIN_MARGIN`). Dust repeating
+  inside one page is the normal shape of this attack, so a 3-vs-1 count is not
+  evidence — on the pinned mainnet case the live margin is 4-vs-1, and five
+  dust sends invert it. Below the margin the pair is reported unordered.
+- **`received` is only ever compared against ZERO.** Raw units are not
+  comparable across coin types — 1 unit of an 18-decimal token outranks 5 SUI —
+  which `funding.ts` already learned. What carries signal is "received
+  nothing".
+- **Do not claim the addresses render identically.** At the 8+8 width this
+  module itself renders, a 3+4 pair visibly differs. The true claim is that
+  they match at both ends, which defeats a glance and a short truncation.
+
+The rule is a floor of `MIN_PER_END` at each end, and the candidate bucketing
+uses the same width. Making the rule asymmetric without changing the bucketing
+would put a genuine pair in two buckets and report nothing.
+
 ### Object flow: what moves that is not a coin
 
 A balance change is derived from `Coin<T>`, so **anything that is not a coin
@@ -800,9 +827,27 @@ Seven rules, every one of them a bug that shipped to `main` first:
   mainnet returns `inputState: null` for EVERY change — 117 of 117 non-created
   changes at checkpoint 20,000,000. Reading that as "unwrapped" and dropping it
   loses every object transfer over the chain's first year, the era a backward
-  trace reaches. It is reported as `appeared` with the ambiguity stated. Only
-  gRPC can resolve it, because it states `inputState` as EXISTS /
-  DOES_NOT_EXIST rather than a null.
+  trace reaches. It is reported as `appeared` with the ambiguity stated.
+- **`appeared` is custody ONLY when it lands on a party** — an address, an
+  object or a consensus owner. Admitting every `appeared` turned ordinary
+  shared-object traffic into custody changes: a live Pyth price update reported
+  three oracle objects as having changed hands, and 58 of 59 movements at
+  checkpoint 10,000,000 were storage or shared-object churn. With no recorded
+  source, a destination that is merely an ownership state carries no claim.
+  After this, those checkpoints report 1 movement each, both genuine.
+  `dynamic_field::Field` is excluded outright, like `Coin<T>` — it was 49 of
+  those 59.
+- **A capability can be given up three ways, not one.** Transfer to an
+  unspendable address, `public_freeze_object` (→ Immutable) and
+  `public_share_object` (→ Shared) all end exclusive control. All three set
+  `renounced`; `capabilities.ts` already distinguished these owners.
+- **Classify a capability BEFORE a position name.** `POSITION_NAME` is
+  unanchored and matches `Account`, `Obligation`, `Receipt`, `Vault` — testing
+  it first turned `custodian_v2::AccountCap` and
+  `lending_market::ObligationOwnerCap` into positions. The object that controls
+  a position is not the position. `0x2` and `0x3` are curated, so every
+  framework type reads as protocol-vouched; keep generic words like `Ticket`
+  out of `POSITION_NAME` for that reason.
 - **`objectChanges` is paginated, not truncated.** About 1 transaction in 400
   exceeds 50, and a real three-hop trace hit one with 101. The connection is
   ordered by object id, not importance, so keeping the first 50 drops a
@@ -812,7 +857,15 @@ Seven rules, every one of them a bug that shipped to `main` first:
   hits one.
 - **Object counterparties go through identity, labels and the poisoning check.**
   Whoever receives a capability is as much a party as whoever receives a coin.
-  They are added to `allAddresses` and to the `ActivityLedger`.
+  `address` AND `consensus` owners count — the query fetches the consensus
+  address, so dropping it wastes what was already paid for. Unspendable
+  addresses are excluded: a burn address is nobody.
+- **The transaction cache is stamped with `TX_METHOD_VERSION`.** Chain data in
+  a finalized transaction cannot go stale, but the fields DERIVED at fetch time
+  can — object movements are classified on the way in. A row written by an
+  earlier build carries that build's classification, so reading it back is not
+  a cache hit. Bump the stamp whenever anything derived in `fetchTx` changes
+  shape or meaning. Same reasoning as `FUNDING_METHOD_VERSION`.
 
 Two exclusions: `Coin<T>` (already a balance change; reporting both
 double-counts the case that always worked) and mutations (an object written to

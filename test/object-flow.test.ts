@@ -291,3 +291,125 @@ describe("summarizeObjectFlow", () => {
     expect(s.note).toMatch(/not evidence it did not happen/i);
   });
 });
+
+describe("appeared is not custody unless it lands on a party", () => {
+  /**
+   * `appeared` means the previous holder was not recorded, which before
+   * ~March 2024 is EVERY change. Admitting all of them turned ordinary
+   * shared-object traffic into custody changes: a live Pyth price update
+   * reported three oracle objects as having changed hands, and 58 of 59
+   * movements at checkpoint 10,000,000 were storage or shared-object churn.
+   */
+  const appeared = (type: string, to: unknown): GqlObjectChange => ({
+    address: "0x1",
+    idCreated: false,
+    idDeleted: false,
+    inputState: null,
+    outputState: state(type, to),
+  });
+
+  it("drops an unsourced object that is merely shared", () => {
+    const m = readObjectMovements([appeared("0xpyth::price_info::PriceInfoObject", { __typename: "Shared" })]);
+    expect(m[0]!.kind).toBe("appeared");
+    expect(custodyChanges(m)).toEqual([]);
+  });
+
+  it("drops an unsourced object that is merely immutable", () => {
+    const m = readObjectMovements([appeared("0xabc::cfg::Config", { __typename: "Immutable" })]);
+    expect(custodyChanges(m)).toEqual([]);
+  });
+
+  it("keeps an unsourced object that lands on an address", () => {
+    const m = readObjectMovements([appeared("0xabc::game::Game8192", addrOwner(B))]);
+    expect(custodyChanges(m)).toHaveLength(1);
+  });
+
+  it("excludes dynamic fields outright — storage, not assets", () => {
+    // 49 of 59 movements at checkpoint 10,000,000 were dynamic fields.
+    const m = readObjectMovements([
+      appeared(`${P2}::dynamic_field::Field<u64,u8>`, objOwner("0xparent")),
+    ]);
+    expect(m).toEqual([]);
+  });
+});
+
+describe("renouncing has three forms, not one", () => {
+  const cap = `${P2}::coin::TreasuryCap<0xa::t::T>`;
+  const to = (owner: unknown) =>
+    readObjectMovements([moved("0xcap", cap, addrOwner(A), owner)])[0]!;
+
+  it("treats freezing as renunciation", () => {
+    const m = to({ __typename: "Immutable" });
+    expect(m.renounced).toBe(true);
+    expect(m.note).toMatch(/RENOUNCED rather than transferred/);
+    expect(summarizeObjectFlow([m])!.capability_transfers).toHaveLength(0);
+  });
+
+  it("treats sharing as renunciation", () => {
+    const m = to({ __typename: "Shared" });
+    expect(m.renounced).toBe(true);
+    expect(summarizeObjectFlow([m])!.renounced_capabilities).toHaveLength(1);
+  });
+
+  it("still treats a transfer to a live address as a handover", () => {
+    expect(to(addrOwner(B)).renounced).toBeUndefined();
+  });
+});
+
+describe("categorize — a capability is not the position it controls", () => {
+  const reg = () => ({ name: "Suilend", type: "lending" });
+  it("does not turn ObligationOwnerCap into a defi-position", () => {
+    expect(categorize("0x5b54::lending_market::ObligationOwnerCap<0xa::b::C>", reg)).toBe("capability");
+    expect(categorize("0xdee9::custodian_v2::AccountCap", reg)).toBe("capability");
+  });
+  it("does not promote framework types on a generic word", () => {
+    expect(categorize(`${P2}::package::UpgradeTicket`, reg)).toBe("asset");
+  });
+  it("still promotes a real position", () => {
+    expect(categorize("0xcetus::position::Position", reg)).toBe("defi-position");
+  });
+});
+
+describe("gRPC classification honesty", () => {
+  const base = {
+    objectId: "0x1",
+    objectType: `${P2}::package::UpgradeCap`,
+    idOperation: 1,
+  };
+
+  it("does not call an ownerless change a transfer", () => {
+    // Neither side names an owner: there is nobody at either end, and the old
+    // default fired the capability warning with "? -> ?" as the parties.
+    expect(readGrpcObjectChanges([{ ...base, inputState: 2 }])).toEqual([]);
+  });
+
+  it("trusts a given owner over the state enum", () => {
+    const [m] = readGrpcObjectChanges([
+      { ...base, inputState: 0, inputOwner: { kind: 1, address: A }, outputOwner: { kind: 1, address: B } },
+    ]);
+    expect(m!.kind).toBe("transferred");
+    expect(m!.source_unrecorded).toBeUndefined();
+    expect(m!.from).toEqual({ kind: "address", address: A });
+  });
+});
+
+describe("objectCounterparties", () => {
+  it("includes consensus owners, whose address the query now fetches", () => {
+    const consensus = (a: string) => ({ __typename: "ConsensusAddressOwner", address: { address: a } });
+    const m = readObjectMovements([moved("0x1", "0xabc::hero::Hero", consensus(A), consensus(B))]);
+    expect(custodyChanges(m)).toHaveLength(1);
+    expect(objectCounterparties(m).sort()).toEqual([A, B].sort());
+  });
+
+  it("excludes a burn address, which is nobody", () => {
+    const burn = `0x${"0".repeat(64)}`;
+    const m = readObjectMovements([moved("0xcap", `${P2}::package::UpgradeCap`, addrOwner(A), addrOwner(burn))]);
+    expect(objectCounterparties(m)).toEqual([A]);
+  });
+});
+
+describe("baseType — uppercase 0X", () => {
+  it("pads it, so a real coin cannot escape the exclusion", () => {
+    expect(categorize("0X2::coin::Coin")).toBe("coin");
+  });
+});

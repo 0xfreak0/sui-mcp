@@ -161,7 +161,16 @@ export function registerHistoryTools(server: McpServer) {
         for (const bc of balanceChangeNodes) {
           const addr = bc.owner?.address;
           const amount = bc.amount;
-          if (addr) appearances.push({ address: addr, amount: BigInt(amount ?? 0) });
+          if (addr) {
+            let value = 0n;
+            try {
+              value = BigInt(amount ?? 0);
+            } catch {
+              // A malformed amount costs this address its received total, never
+              // the whole call. `trace.ts` guards the same conversion.
+            }
+            appearances.push({ address: addr, amount: value });
+          }
           if (addr && addr !== sender && amount && BigInt(amount) > 0n) {
             if (!counterpartyAddrs.includes(addr)) {
               counterpartyAddrs.push(addr);
@@ -202,7 +211,7 @@ export function registerHistoryTools(server: McpServer) {
       // the page, so it reliably outweighs a lookalike of itself and gets named
       // as the established side rather than the suspect. Listing it explicitly
       // also covers a page where it took no balance change at all.
-      const poisoning = lookalikeReport(ledger.addressesLedBy(address), ledger.activity);
+      const poisoning = lookalikeReport(ledger.addressesLedBy(address), ledger.activity, address);
 
       const result = {
         address,

@@ -143,7 +143,11 @@ describe("trace_funds — ordinary object transfers", () => {
         : Promise.resolve(capHandover("0xabc::hero::Hero")),
     );
     const { summary, data } = await run({ digest: "hop1", direction: "forward", hops: 3 });
-    expect(data.object_flow.transfers).toHaveLength(1);
+    // The trace-level block counts transfers; the records themselves live on
+    // the hop, so they are not serialised twice.
+    expect(data.object_flow.transfer_count).toBe(1);
+    expect(data.object_flow.transfers).toBeUndefined();
+    expect(data.hops[0].object_transfers).toHaveLength(1);
     expect(data.object_flow.capability_transfers).toHaveLength(0);
     expect(summary).not.toMatch(/Control of something changed hands/i);
     expect(summary).toMatch(/hero::Hero/);

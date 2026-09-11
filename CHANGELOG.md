@@ -3,6 +3,40 @@
 ## Unreleased
 
 ### Fixed
+- **Address poisoning could name the victim as the attacker.** Activity was
+  looked up by the raw input string while comparison used a normalized one, so
+  an address spelled uppercase or unpadded — both accepted by the GraphQL API —
+  lost its own footprint and scored zero. Lookups are normalized and reported
+  addresses are canonical.
+- **Direction was asserted on a 2-vs-1 count.** Dust repeating inside one page
+  is the normal shape of the attack, so a poisoner seen three times outranked a
+  real counterparty seen once. A margin is now required, and `received` is
+  compared only against zero — raw units are not comparable across coin types.
+- **The note claimed the addresses "render identically in any truncated
+  view".** At the width the tool itself renders, they do not.
+- `addresses_compared` counted raw input; a low-entropy SUBJECT is now
+  disclosed rather than silently skipped; `get_transaction_history` guards the
+  `BigInt` conversion that `trace_funds` already guarded.
+
+- **Object flow reported shared-object mutations as custody changes.** Movements
+  with no recorded previous holder — every change before ~March 2024 — were all
+  treated as custody. A Pyth price update reported three oracle objects as
+  having changed hands; 58 of 59 movements at checkpoint 10,000,000 were
+  storage or shared-object churn. Those checkpoints now report 1 each, both
+  genuine. `dynamic_field::Field` is excluded outright.
+- **Freezing or sharing a capability was reported as handing it over.** All
+  three ways of giving up control now set `renounced`.
+- **The transaction cache had no method version**, so movements classified by
+  earlier, wrong code were read back as current. Stamped with
+  `TX_METHOD_VERSION`.
+- **A capability was classified as the position it controls.**
+  `ObligationOwnerCap` and `AccountCap` read as `defi-position`.
+- Consensus owners were fetched and then dropped from identity, labels and the
+  poisoning check; unspendable addresses were pushed through them.
+- A gRPC change with no owner on either side classified as a transfer; an
+  `UNKNOWN` input state with an owner present claimed the holder was unknowable;
+  `0X` escaped address padding; transfer records were serialised twice.
+
 - **`get_top_holders` ranked a sample and called it the top.** The scan walks
   coin objects in object-id order, which is unrelated to balance, so a scan that
   hit its budget returned the largest holder it happened to see. Measured on

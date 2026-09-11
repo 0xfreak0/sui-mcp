@@ -119,6 +119,14 @@ export const HIGH_CONSEQUENCE_TYPES: Record<string, string> = {
 
 /** `0x2::coin::Coin`, in full. A look-alike from another package is NOT this. */
 const COIN_TYPE = `${ADDR2}::coin::Coin`;
+
+/**
+ * Dynamic fields are storage plumbing, not assets, and they dominate object
+ * changes on older transactions: 49 of 59 movements at checkpoint 10,000,000
+ * were `dynamic_field::Field`. Excluded for the same reason `Coin<T>` is —
+ * reporting them as custody changes buries every real one.
+ */
+const DYNAMIC_FIELD_TYPE = `${ADDR2}::dynamic_field::Field`;
 /** Kiosk types, in full. */
 const KIOSK_TYPES = new Set([`${ADDR2}::kiosk::Kiosk`, `${ADDR2}::kiosk::KioskOwnerCap`]);
 
@@ -127,8 +135,11 @@ const CAP_SUFFIX = /Cap(?:ability)?$/;
 
 /** Type names that a protocol uses for a position. Only consulted for a
  *  package the protocol registry already vouches for, never on its own. */
+// `Ticket` is deliberately absent: whitelist tickets, mint tickets and
+// `0x2::package::UpgradeTicket` are not positions, and `0x2`/`0x3` are curated
+// so every framework type would otherwise read as protocol-vouched.
 const POSITION_NAME =
-  /(?:Position|Obligation|Receipt|Account|Vault|Stake|Staked|Farm|Deposit|Locker|Ticket)/i;
+  /(?:Position|Obligation|Receipt|Account|Vault|Stake|Staked|Farm|Deposit|Locker)/i;
 
 /**
  * Strip generics and pad the defining address.
@@ -142,7 +153,7 @@ const POSITION_NAME =
 export function baseType(type: string): string {
   const base = type.split("<")[0] ?? type;
   const parts = base.split("::");
-  if (parts.length < 2 || !parts[0]!.startsWith("0x")) return base;
+  if (parts.length < 2 || !/^0x/i.test(parts[0]!)) return base;
   const hex = parts[0]!.slice(2).toLowerCase();
   if (hex.length === 0 || hex.length > 64 || !/^[0-9a-f]+$/.test(hex)) return base;
   return [`0x${hex.padStart(64, "0")}`, ...parts.slice(1)].join("::");
@@ -180,7 +191,7 @@ export type ProtocolResolver = (packageId: string) => { name: string; type?: str
 export function categorize(type: string | null, resolveProtocol?: ProtocolResolver): ObjectCategory {
   if (!type) return "unknown";
   const base = baseType(type);
-  if (base === COIN_TYPE) return "coin";
+  if (base === COIN_TYPE || base === DYNAMIC_FIELD_TYPE) return "coin";
   if (base in HIGH_CONSEQUENCE_TYPES) return "capability";
   if (KIOSK_TYPES.has(base)) return "kiosk";
 
@@ -188,8 +199,13 @@ export function categorize(type: string | null, resolveProtocol?: ProtocolResolv
   const pkg = definingPackage(type);
   const protocol = pkg && resolveProtocol ? resolveProtocol(pkg) : null;
 
-  if (protocol && POSITION_NAME.test(name)) return "defi-position";
+  // Capability first. POSITION_NAME is unanchored and matches `Account`,
+  // `Obligation`, `Receipt`, `Vault`, `Ticket` — so testing it first turned
+  // `custodian_v2::AccountCap` and `lending_market::ObligationOwnerCap` into
+  // positions. The object that CONTROLS a position is not the position, and
+  // `0x2`/`0x3` are curated, so every framework type is "vouched for".
   if (CAP_SUFFIX.test(name)) return "capability";
+  if (protocol && POSITION_NAME.test(name)) return "defi-position";
   if (/^kiosk::/.test(shortType(type) ?? "")) return "kiosk";
   return "asset";
 }
@@ -265,15 +281,24 @@ function finish(
   const out: ObjectMovement = { ...m };
   const full = m.type ? baseType(m.type) : null;
 
-  if (m.to?.kind === "address" && m.to.address && isUnspendableAddress(m.to.address)) {
-    out.renounced = true;
-  }
+  // Three ways to give up a capability, not one. transfer_to_0x0,
+  // public_freeze_object (-> Immutable) and public_share_object (-> Shared)
+  // all end the holder's exclusive control. capabilities.ts already
+  // distinguishes destroyed / immutable / shared owners for these types.
+  const frozenOrShared = m.to?.kind === "immutable" || m.to?.kind === "shared";
+  const sentToBurn =
+    m.to?.kind === "address" && !!m.to.address && isUnspendableAddress(m.to.address);
+  if (sentToBurn || frozenOrShared) out.renounced = true;
 
   if (out.high_consequence && full) {
     const power = HIGH_CONSEQUENCE_TYPES[full]!;
-    out.note = out.renounced
-      ? `Sent to ${m.to?.address}, an address nobody holds a key for. ${power} Those rights are RENOUNCED, not transferred — a deliberate act and a reduction in risk, not a warning.`
-      : power;
+    if (!out.renounced) {
+      out.note = power;
+    } else if (sentToBurn) {
+      out.note = `Sent to ${m.to?.address}, an address nobody holds a key for. ${power} Those rights are RENOUNCED, not transferred — a deliberate act and a reduction in risk, not a warning.`;
+    } else {
+      out.note = `Made ${m.to?.kind}. ${power} Nobody holds it exclusively any more, so those rights are RENOUNCED rather than transferred — a reduction in risk, not a warning.`;
+    }
   }
 
   if (out.kind === "appeared") {
@@ -405,9 +430,13 @@ export function readGrpcObjectChanges(
     // Unlike GraphQL, this transport states whether an input existed, so a
     // missing owner on an existing input is knowable as "not recorded" rather
     // than guessed.
-    const inputExisted = change.inputState === INPUT_EXISTS;
     const inputAbsent = change.inputState === INPUT_DOES_NOT_EXIST;
-    const hasInput = inputExisted && from !== null;
+    // "Do we know who held it before?" — which is exactly whether an owner was
+    // given, not what the state enum says. Keying this on INPUT_EXISTS made an
+    // UNKNOWN state with a populated owner claim the previous holder was
+    // unknowable while that holder sat in the same record; keying it on the
+    // owner alone keeps the pre-2024 shape (EXISTS, no owner) as `appeared`.
+    const hasInput = from !== null;
 
     const kind = classifyKind(
       {
@@ -420,6 +449,10 @@ export function readGrpcObjectChanges(
       to,
     );
     if (kind === "mutated") continue;
+    // Neither side named an owner. That is not a transfer — there is nobody at
+    // either end — and defaulting it to one fired the capability warning with
+    // "? -> ?" as the parties.
+    if (from === null && to === null) continue;
     // An input that genuinely did not exist and was not created is an unwrap,
     // which is a different claim from an unrecorded owner.
     const resolved: MovementKind = kind === "appeared" && inputAbsent ? "unwrapped" : kind;
@@ -457,10 +490,29 @@ export function readGrpcObjectChanges(
  * to be addresses missed 10 of 28 real transfers across four mainnet wallets.
  * `appeared` is included because dropping it loses the chain's first year.
  */
+/**
+ * Ownership states an object SITS IN, as opposed to a party that can hold it.
+ * Nothing is "handed to" shared or immutable in a way a trace can follow.
+ */
+function isPartyOwner(ref: OwnerRef | null): boolean {
+  return ref?.kind === "address" || ref?.kind === "object" || ref?.kind === "consensus";
+}
+
 export function custodyChanges(movements: ObjectMovement[]): ObjectMovement[] {
   return movements.filter((m) => {
     if (m.kind === "transferred") return !sameOwner(m.from, m.to);
-    return m.kind === "appeared" || m.kind === "unwrapped" || m.kind === "wrapped";
+    // `appeared` means the previous holder was not recorded, which before
+    // ~March 2024 is EVERY change. Admitting all of them turned ordinary
+    // shared-object traffic into custody: a Pyth price update reported three
+    // oracle objects as having changed hands, and 58 of 59 movements at
+    // checkpoint 10,000,000 were storage or shared-object churn.
+    //
+    // With no recorded source, a destination that is merely an ownership state
+    // carries no claim — an already-shared object being written to is
+    // indistinguishable from one being shared, and the former is almost all of
+    // them. A destination that is a party is still worth reporting.
+    if (m.kind === "appeared") return isPartyOwner(m.to);
+    return m.kind === "unwrapped" || m.kind === "wrapped";
   });
 }
 
@@ -469,7 +521,15 @@ export function objectCounterparties(movements: ObjectMovement[]): string[] {
   const out = new Set<string>();
   for (const m of custodyChanges(movements)) {
     for (const ref of [m.from, m.to]) {
-      if (ref?.kind === "address" && ref.address) out.add(ref.address);
+      // `consensus` is an address-owned object that needs consensus to use, so
+      // its owner is a real party. The query fetches that address; dropping it
+      // here cost it identity, labels and the lookalike comparison.
+      if (ref?.kind !== "address" && ref?.kind !== "consensus") continue;
+      if (!ref.address) continue;
+      // A burn address is not a counterparty. It has no identity to resolve and
+      // cannot be anybody's lookalike.
+      if (isUnspendableAddress(ref.address)) continue;
+      out.add(ref.address);
     }
   }
   return [...out];

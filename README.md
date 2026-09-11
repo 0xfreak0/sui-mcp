@@ -139,6 +139,25 @@ on-chain deny list in both directions. A frozen address usually holds none of
 the coin that froze it, so it checks every configured coin type rather than the
 ones it holds.
 
+**What moved that was not a coin?** `trace_funds` reports `object_flow`.
+Sui is object-based, so a balance change only covers `Coin<T>` — an NFT, a
+Kiosk or a capability changes hands without producing one:
+
+```
+--- Hop 1 (2025-01-10 10:25:31 UTC) ---
+Sender: 0x8c4f…5ee8
+Action: Transfer to recipient
+Objects:
+  package::UpgradeCap ⚠  0x8c4f…5ee8 -> 0xeda2…6c2b
+    Whoever holds this can publish new code for the package.
+```
+
+That hop previously read `Flows: gas only`, and the recipient did not appear in
+the output at all. Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap` and
+`Publisher` are marked as carrying control rather than value. An archive-served
+hop reports `object_flow_unavailable` instead of an empty list, because that
+transport cannot see object changes.
+
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`
 when two of them render identically once truncated:

@@ -730,6 +730,42 @@ Only bridge chain ids observed on mainnet (0 = Sui, 10 = Ethereum) map to
 CAIP-2. Testnet/custom variants are reported by number, same non-guessing rule
 as Wormhole.
 
+### Object flow: what moves that is not a coin
+
+A balance change is derived from `Coin<T>` objects, so **anything that is not a
+coin moves without producing one.** `trace_funds` reads `objectChanges` for
+that reason; do not remove it on the grounds that balance changes already cover
+value.
+
+Measured on mainnet, sampling the transaction that last touched each object:
+`package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 produced no
+non-gas balance change; `coin::TreasuryCap` 14 of 30. So a balance-only trace
+reports "nothing moved" for the transfer of mint authority or of the right to
+replace a package's code.
+
+- **`objectChanges` rides the same `transaction(digest:)` query**, so this
+  costs no extra request per hop — the same economics as `detectBridges`
+  reusing a hop's calls. Do not add a separate fetch.
+- **`Coin<T>` movements are excluded.** They are already stated as balance
+  changes, and reporting both double-counts the one case that always worked.
+- **Mutations are excluded.** An object being written to has not changed hands,
+  and shared-object traffic would otherwise drown the output.
+- **The archive cannot report object changes.** An archive hop sets
+  `object_flow_unavailable` rather than an empty list: "no objects moved" and
+  "this transport cannot see them" are opposite claims.
+- **`gas only` used to mean both "no value moved" and "value moved where a
+  balance change cannot see it".** It is now printed only when the fullnode
+  answered AND no object changed hands.
+- **`high_consequence` is only the four framework types whose powers are
+  known** (`UpgradeCap`, `TreasuryCap`, `DenyCap`, `Publisher`). A protocol's
+  own `AdminCap` is reported as a capability without a claim about what it
+  grants, because that is not knowable from the type name.
+
+Base rate is low and the sampling lesson is the bridge one again: 0 object
+transfers between addresses in 700 consecutive mainnet transactions, because
+recent traffic is DeFi mutating shared objects. Sample where caps and NFTs
+live, not by volume.
+
 ### Detecting a bridge exit vs. resolving one
 
 Keep these apart — conflating them is what makes "support every bridge" sound

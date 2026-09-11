@@ -115,7 +115,7 @@ describe("trace_funds — address poisoning across hops", () => {
   it("puts the warning in the summary, not only the payload", async () => {
     mockGqlQuery.mockImplementation(twoHops);
     const { summary } = await run({ digest: "hop1", direction: "forward", hops: 4 });
-    expect(summary).toMatch(/render identically once truncated/i);
+    expect(summary).toMatch(/close enough to be mistaken for one another/i);
   });
 
   it("omits the field entirely when nothing collides", async () => {

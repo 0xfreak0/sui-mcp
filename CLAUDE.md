@@ -762,6 +762,47 @@ Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
 
+### Watching an investigation, without drowning the agent
+
+`watch_addresses` / `poll_watch`, pure logic in `src/utils/watch.ts`, network in
+`watch-probe.ts`. The constraint is arithmetic, and it decides the architecture:
+
+Mainnet runs 4.25 checkpoints and ~74 transactions a second. Subscribing to the
+checkpoint stream is **1.1 GB/hour, about 323 million tokens an hour** — a 200k
+context fills in 2.2 seconds. Streaming chain data to a model is not expensive,
+it is impossible. The same measurement gives the way out: only **160 distinct
+addresses** were touched in those 30 seconds, so against a watch set of twenty
+the signal is roughly one part in a million.
+
+- **Poll, do not stream.** `afterCheckpoint` on the `transactions` filter is
+  EXCLUSIVE — verified on a wallet dead since January: after its last
+  checkpoint returns nothing, after the one before returns exactly one. So the
+  high-water checkpoint per address gives a delta with no gaps or duplicates,
+  at ~60 requests an hour against 1.1 GB. The latency traded away is latency
+  nobody consumes. Streaming wins past roughly fifty watched addresses, where
+  polling's per-address cost overtakes the stream's flat one.
+- **Native gRPC `subscribeCheckpoints` works on the public fullnode** if that
+  day comes. The gRPC-Web transport this server uses CANNOT do it (the call
+  fails at `fetch`), and the archive answers UNIMPLEMENTED.
+- **Two phases, forced by the service.** Measured: 20 aliases of digest +
+  checkpoint is 3,917 bytes and accepted; 30 is 5,877 and rejected on the
+  5,000-byte cap; 20 aliases WITH balance changes breaks the separate
+  300-node limit. So the delta query carries a minimal selection and detail is
+  a second fetch made only for digests that moved. That is also why a quiet
+  poll costs 13 tokens and one request.
+- **A new watch starts at the current checkpoint**, never zero. Seeding at zero
+  replays the wallet's whole history into the context on the first poll, which
+  is the cost the tool exists to avoid.
+- **The cursor advances even when a trigger suppressed every hit.** A filtered
+  transaction has still been seen; leaving the cursor behind re-reads it on
+  every poll forever.
+- **A full page means more happened than was reported.** Measured on a mainnet
+  address doing a transaction every two seconds: it fills the cap on every
+  poll. `more_pending` says so — a permanently lagging watch that reads as
+  complete is the same failure class as everything else in this file.
+- **`min_amount` filters VALUE only.** A labelled sink, or a transaction that
+  moved no coin (an NFT or a capability), is reported whatever its size.
+
 ### Address poisoning
 
 `address-lookalike.ts` reports two addresses close enough to be mistaken for

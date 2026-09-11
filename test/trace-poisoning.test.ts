@@ -44,7 +44,7 @@ const run = async (a: Args) => {
   return { summary: texts[0]!, data: json ? JSON.parse(json) : null };
 };
 
-/** Two addresses that render identically once truncated: 4 leading, 5 trailing. */
+/** Two addresses sharing 4 leading and 5 trailing characters. */
 const REAL = `0xd649a4${"1".repeat(53)}d7127`;
 const FAKE = `0xd649ef${"2".repeat(53)}d7127`;
 const PAYER = `0xaabbcc${"3".repeat(53)}90210`;

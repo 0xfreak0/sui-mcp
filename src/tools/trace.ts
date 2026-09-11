@@ -6,6 +6,8 @@ import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "..
 import { getLabel, isSink } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
+import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
+import type { Appearance } from "../utils/address-lookalike.js";
 import { pricesForRanking } from "../utils/price-providers.js";
 import {
   coinScale,
@@ -932,6 +934,44 @@ export function registerTraceTools(server: McpServer) {
         }
         parts.push(lines.join("\n"));
       }
+      // Address poisoning across the whole trace, not per hop.
+      //
+      // A trace is where this matters most and where a per-page check cannot
+      // reach: the lookalike and the address it imitates are usually several
+      // hops apart, so only the accumulated set of everyone the trace touched
+      // puts them side by side. The comparison covers senders, everyone who
+      // took a balance change, and the recipients the trace chose NOT to
+      // follow — an unfollowed branch that imitates a followed one is exactly
+      // the branch an investigator would otherwise pick by eye.
+      const ledger = new ActivityLedger();
+      for (const hop of enrichedHops) {
+        const appearances: Appearance[] = hop.sender ? [{ address: hop.sender }] : [];
+        for (const bc of hop.balance_changes) {
+          let amount = 0n;
+          try {
+            amount = BigInt(bc.amount);
+          } catch {
+            // A non-numeric amount only costs this address its received total,
+            // never its presence in the comparison.
+          }
+          appearances.push({ address: bc.address, amount });
+        }
+        for (const r of hop.unfollowed_recipients ?? []) appearances.push({ address: r.address });
+        ledger.observe(appearances);
+      }
+      const poisoning = lookalikeReport(ledger.addresses(), ledger.activity);
+      if (poisoning) {
+        // In the summary as well as the payload, for the same reason the bridge
+        // exits are: the prose is what gets read, and a lookalike that only
+        // appears in JSON is a warning nobody sees before they copy an address.
+        const lines = ["⚠ Addresses in this trace that render identically once truncated:"];
+        for (const pair of poisoning.pairs) {
+          lines.push(`  ${pair.rendered.established}  vs  ${pair.rendered.suspect}`);
+          lines.push(`    ${pair.note}`);
+        }
+        parts.push(lines.join("\n"));
+      }
+
       const summary = parts.join("\n\n");
 
       const fullData = {
@@ -966,6 +1006,7 @@ export function registerTraceTools(server: McpServer) {
           peak_hop: peakUsd > 0 ? Number(peakUsd.toFixed(2)) : null,
           note: "Per-hop USD at transaction time (Pyth, per-second); not summed across hops (same funds moving). See each balance change's price_usd / priced_at / price_age_sec.",
         },
+        ...(poisoning ? { address_poisoning: poisoning } : {}),
         hops: enrichedHops,
         address_labels: addressLabels,
       };

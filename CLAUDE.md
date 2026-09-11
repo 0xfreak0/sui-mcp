@@ -586,6 +586,20 @@ The boundary resolves them with `currentSuiAccount()`, which qualifies against
 whichever network `runWithNetwork` selected for that call. So do not thread a
 chain parameter through tool handlers — qualify at the point of storage.
 
+**Curated data keyed by a PACKAGE ID is mainnet-only.** A package ID is derived
+from its publish transaction, so the same ID on another network is a different
+package or none at all. `coins.json`, `protocols.json`, `protocol-roots.json`
+and `nft-collections.json` are all package-keyed, and consulting them off
+mainnet got both answers wrong: it vouched for mainnet's USDC type on testnet
+where that type does not exist, and refused to vouch for the real testnet USDC
+at `0xa1ec7fc0…::usdc::USDC`. Off mainnet the answer is `not-curated-here` —
+neither a claim nor a denial, because marking a legitimate testnet asset the
+way an impersonation token is marked is its own false statement.
+
+That is precisely why the asymmetry below is *not* a contradiction: addresses
+are KEY-derived, so one entity can legitimately hold the same address on
+several networks. Package IDs cannot.
+
 Label scoping has one deliberate asymmetry:
 
 - **Session and override labels** are keyed on the exact CAIP-10 account. A

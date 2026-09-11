@@ -1,3 +1,4 @@
+import { getNetwork } from "../config.js";
 import { createRequire } from "node:module";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { getMvrName, prefetchMvrNames } from "./mvr-names.js";
@@ -259,7 +260,24 @@ export function loadProtocolRegistry(): Record<string, ProtocolInfo> {
  * (see {@link prefetchProtocolNames}); without one this degrades to exact-match,
  * never to a blocking call.
  */
+/**
+ * The curated protocol files hold **mainnet** package IDs.
+ *
+ * A package ID is derived from its publish transaction, so the same ID on
+ * another network is a different package or none at all. Checked on testnet:
+ * a mainnet DeepBook package does not exist there, yet the registry still
+ * named it "DeepBook".
+ *
+ * `package-roots.ts` already scopes its CACHE by network for exactly this
+ * reason — "a mainnet lineage must never answer a testnet lookup" — but the
+ * static maps behind it did not.
+ */
+function curatedApplies(): boolean {
+  return getNetwork() === "mainnet";
+}
+
 export function lookupProtocol(packageId: string): ProtocolInfo | null {
+  if (!curatedApplies()) return null;
   const key = normalizeKey(packageId);
   if (!key) return null;
   const exact = PROTOCOL_MAP[key];
@@ -325,6 +343,7 @@ export async function prefetchProtocolNames(packageIds: Iterable<string>): Promi
  * so this is always safe to call.
  */
 export function lookupProtocolDisplay(packageId: string): ProtocolInfo | null {
+  if (!curatedApplies()) return null;
   const curated = lookupProtocol(packageId);
   if (curated) return curated;
   const mvrName = getMvrName(packageId);

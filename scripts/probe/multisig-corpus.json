@@ -1,0 +1,72 @@
+[
+ {
+  "address": "0x045dadba87e5ad53f12075a1f0fa94bd94550a3bcf2abbe316e2d3b16ceb9440",
+  "threshold": 4,
+  "members": [
+   "0xcdd528cc3594b169746c860498bd0a687891ccb73762f81d8c057dcc65efc5b5",
+   "0x32bc81f38e409bbf64595604e784563c8c333e34ce514fedca025305f91b1a22",
+   "0x3eaf8a7f21405a34194caa4d14d99e7f3a04ea83f5ff72a29cb825ee35308899",
+   "0xb1b2300a0739a9494b239ad972944c7e412e528b2b6ee4c17a2c20bc4f2436cb",
+   "0x6ad5d57e3d7c2d2d8f256c94574235bc982c736228caae40f3df486b3ef40308",
+   "0x01a8d12415411bbc702e776fc84dfbe3a4badc1d236854e4d48b6269cc3fe6dc",
+   "0x07ea31a5d353c425fa687c517511b9142c5d4f0003f58c3e6e5970c93a1121c0"
+  ],
+  "weights": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ]
+ },
+ {
+  "address": "0xa1eb94d1700652aa85b417b46fa6775575b8b98d3352d864fb5146eb45d335fb",
+  "threshold": 2,
+  "members": [
+   "0xe25b5d16ca31ddfdc31a7219c90f88bdfc56b606c13df6619aef22515580e293",
+   "0x33dcff7c593da0f4714ae03e300467121978340d4adc7659830deaeb7b518c5a",
+   "0x1cd37629fc3098e04e929283f94f55eec6d050666ea85f9365083d05c73a4d4c"
+  ],
+  "weights": [
+   1,
+   1,
+   1
+  ]
+ },
+ {
+  "address": "0x088e69d25fdcd212e70085e7560585789c8eea8d4df5a17817827c4e44847b07",
+  "threshold": 3,
+  "members": [
+   "0xdcfb4d3ade3ecb46798f69a75ea5f20ff5bbf843243f0e17e335ea696c0b6dcc",
+   "0x5128e6ec5fbf34c51bc2dffc4559ba9880b65b888da17c36fff77be65ef54216",
+   "0xd54bb9d1fcc19b6f487ead6417ceee4a9189005ba70da9f884e548bdbf43ed01",
+   "0x306c2a35f0da67127ef3ab0baab4d2d217729b4065e5a669fd7f4c24c55ba75f",
+   "0x0119cf27234a7a2f460a98135528314c3764e21ad3732f2b076d81e1f0f7373a",
+   "0x7a593d9c35a6363b478e2f82fb0bf5db62d71f4a843a843499f9d85b1a2e4e43"
+  ],
+  "weights": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ]
+ },
+ {
+  "address": "0xca8b84bfbb75fff25731d042452340af654379b761e5f4e2cf05721946cca17a",
+  "threshold": 2,
+  "members": [
+   "0xf4945f468b27f8e9eefbecf1f54c0bcdd3b9ee5ae4034438fda4ac58295c17d6",
+   "0x4d5bf483b9fd7fe2b88fa1bed5fd01a91cf35cead199be8118c087f96e8df39f",
+   "0xe7d71353dc226e3bb96283d81ca3952db5e5907b6b1648d73737b60a7c566c8f"
+  ],
+  "weights": [
+   1,
+   1,
+   1
+  ]
+ }
+]

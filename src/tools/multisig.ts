@@ -21,6 +21,7 @@ import {
   MAX_COMMITTEE_CANDIDATES,
 } from "../utils/multisig.js";
 import { summarizeSigners, signerHistoryNote, type SignerObservation } from "../utils/signer-history.js";
+import { summarizeFootprints } from "../utils/member-footprint.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** GraphQL page cap. */
@@ -28,6 +29,14 @@ const PAGE = 50;
 
 /** Aliased queries per request — the service's store-backed limit. */
 const ALIAS_BATCH = 20;
+
+/** Any transaction touching the address, sent or received. */
+const AFFECTED_PAGE = `query ($a: SuiAddress!, $first: Int!, $after: String) {
+  transactions(filter: { affectedAddress: $a }, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { digest effects { timestamp } signatures { signatureBytes } }
+  }
+}`;
 
 const SENT_PAGE = `query ($a: SuiAddress!, $first: Int!, $after: String) {
   transactions(filter: { sentAddress: $a }, first: $first, after: $after) {
@@ -128,6 +137,24 @@ export function registerMultisigTools(server: McpServer) {
         .filter((a): a is string => Boolean(a));
       const identities = await describeAddresses(memberAddresses).catch(() => new Map());
 
+      // Does each key exist anywhere outside this committee? Two queries per
+      // member, and it decides what else can be asked: funding, clustering and
+      // timing all need an address to have done something.
+      const footprints = await Promise.all(
+        memberAddresses.map(async (a) => {
+          const [sent, any] = await Promise.all([
+            gqlQuery<SentPageResult>(SENT_PAGE, { a, first: 1, after: null })
+              .then((r) => (r.transactions?.nodes?.length ?? 0) > 0)
+              .catch(() => false),
+            gqlQuery<SentPageResult>(AFFECTED_PAGE, { a, first: 1, after: null })
+              .then((r) => (r.transactions?.nodes?.length ?? 0) > 0)
+              .catch(() => false),
+          ]);
+          return { address: a, has_sent: sent, has_activity: any };
+        }),
+      );
+      const footprintSummary = summarizeFootprints(footprints);
+
       return {
         content: [
           {
@@ -156,6 +183,10 @@ export function registerMultisigTools(server: McpServer) {
                     ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
                   };
                 }),
+                key_exposure: {
+                  ...footprintSummary,
+                  members: footprints,
+                },
                 signer_sets: history.signer_sets,
                 dormant_members: history.dormant_members,
                 always_present: history.always_present,

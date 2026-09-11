@@ -10,7 +10,42 @@ cd sui-mcp
 npm install
 npm run build
 npm test
+npm run hooks:install
 ```
+
+`hooks:install` points `core.hooksPath` at `.githooks/`. Git does not clone
+hooks, so this is per-checkout and opt-in — a fresh clone has no protection
+until you run it.
+
+## Never publish
+
+Two things must not reach this repo, and both have reached it before:
+
+- **`claude.ai/code/session_...` URLs.** The repo is public; the transcript is
+  not. Coding agents offer a `Claude-Session:` commit trailer — do not accept
+  it. Keep `Co-Authored-By:`.
+- **A maintainer's own wallet addresses or SuiNS names**, in code, tests,
+  fixtures, docs *or commit messages*. Use neutral placeholders (`0xw1`).
+
+`.githooks/commit-msg` and `.githooks/pre-commit` enforce both. The message
+hook is the one that matters: every leak this repo has actually had was in a
+commit message, where a pre-commit hook never looks.
+
+Patterns live in two files:
+
+| File | Tracked | For |
+|---|---|---|
+| `.githooks/patterns` | yes | patterns that are safe to publish |
+| `.githooks/patterns.local` | **no** | patterns that are themselves the secret |
+
+The split is not optional. A hook that blocks your wallet address has to name
+it, and naming it in a tracked file publishes exactly what the hook exists to
+protect. Copy `patterns.local.example` and fill it in; the hook reports only
+that *a* private pattern matched, never which.
+
+CI re-runs the tracked patterns on every pull request, so `--no-verify` does
+not get a session URL merged. It cannot check the private list — those patterns
+are not in the repo — so that half rests on the local hook.
 
 ## Development
 

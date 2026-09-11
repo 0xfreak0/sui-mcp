@@ -27,6 +27,7 @@
     "prepublishOnly": "npm run build && npm test",
     "sync:protocol-roots": "node scripts/sync-protocol-roots.mjs",
     "sync:verified-coins": "node scripts/sync-verified-coins.mjs",
+    "hooks:install": "git config core.hooksPath .githooks && echo \"hooks enabled — copy .githooks/patterns.local.example to .githooks/patterns.local\"",
     "verify:live": "node scripts/verify-live.mjs"
   },
   "keywords": [

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Scans STAGED CONTENT. Pairs with commit-msg, which scans the message.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! git diff --cached | "$here/leak-scan.sh" "staged content"; then
+  echo "" >&2
+  echo "Nothing was committed. Remove the match, or add an exception to" >&2
+  echo ".githooks/patterns if it is a false positive." >&2
+  exit 1
+fi

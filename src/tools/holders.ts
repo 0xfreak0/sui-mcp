@@ -163,6 +163,38 @@ export interface TokenHolderResult {
   truncated: boolean;
 }
 
+
+/**
+ * A truncated holder scan is a SAMPLE, and must not be presented as a ranking.
+ *
+ * The walk reads `objects(filter: Coin<T>)` in object-id order, which is
+ * uncorrelated with balance. So a scan that stops early returns the largest
+ * holder IT HAPPENED TO SEE, not the largest holder. Measured on SUI, the
+ * reported "#1 holder" by scan depth:
+ *
+ *   max_scan 200  ->     66 SUI
+ *   max_scan 400  ->    522 SUI
+ *   max_scan 800  ->  3,454 SUI
+ *   max_scan 5000 -> 25,000 SUI
+ *
+ * Zero of the top five at 200 survived to 800. The number climbs with effort
+ * and never converges — the real top SUI holder holds millions. Ranking that
+ * is not "approximately right", it is an artefact of how far the scan ran.
+ *
+ * So when the scan is truncated the result carries `sampled_holders` rather
+ * than `top_holders`, with no rank and no percentage of supply. This follows
+ * `find_shared_multisig`: refusing beats truncating, because a partial search
+ * cannot support the claim the caller is asking for.
+ */
+function samplingCaveat(scanned: number, unique: number): string {
+  return (
+    `INCOMPLETE: this scan stopped after ${scanned} coin objects (${unique} distinct holders) and did not reach the end. ` +
+    `Objects are walked in object-id order, which has nothing to do with balance, so these are the largest holders WITHIN THE SAMPLE and not the largest holders of this coin. ` +
+    `Scanning further keeps finding bigger ones: on SUI the reported top holder went from 66 to 3,454 SUI between max_scan 200 and 800, with no overlap in the top five. ` +
+    `Raise max_scan until "truncated" is false to get a real ranking — which is only feasible for coins with few enough objects to enumerate.`
+  );
+}
+
 export async function scanTokenTopHolders(
   coinType: string,
   topN: number,
@@ -202,6 +234,11 @@ export async function scanTokenTopHolders(
 
     if (!data.objects.pageInfo.hasNextPage) break;
     cursor = data.objects.pageInfo.endCursor ?? undefined;
+    // A connection can claim another page and hand back a null cursor.
+    // Without this the next request starts from page one and the SAME coin
+    // objects are counted again, adding their balances twice to the same
+    // holders. Missed by the sweep in #101 that guarded every other walk.
+    if (!cursor) break;
 
     if (totalScanned >= maxScan) {
       truncated = true;
@@ -321,16 +358,33 @@ export function registerHolderTools(server: McpServer) {
               : null,
         }));
 
-        const result = {
-          mode: "token",
-          type: resolvedType,
-          total_supply: supplyResult,
-          total_scanned: scan.total_scanned,
-          unique_holders: scan.unique_holders,
-          truncated: scan.truncated,
-          cached: false,
-          top_holders: enrichedHolders,
-        };
+        // A complete scan is a ranking. A truncated one is a sample, and the
+        // shape says so: no rank, no percentage of supply (a sampled balance
+        // over a real denominator looks authoritative and means nothing).
+        const result = scan.truncated
+          ? {
+              mode: "token",
+              type: resolvedType,
+              total_supply: supplyResult,
+              total_scanned: scan.total_scanned,
+              unique_holders: scan.unique_holders,
+              truncated: true,
+              complete_ranking: false,
+              cached: false,
+              caveat: samplingCaveat(scan.total_scanned, scan.unique_holders),
+              sampled_holders: enrichedHolders.map(({ rank: _rank, percentage: _pct, ...rest }) => rest),
+            }
+          : {
+              mode: "token",
+              type: resolvedType,
+              total_supply: supplyResult,
+              total_scanned: scan.total_scanned,
+              unique_holders: scan.unique_holders,
+              truncated: false,
+              complete_ranking: true,
+              cached: false,
+              top_holders: enrichedHolders,
+            };
         setCache(cacheKey, JSON.stringify(result));
         return {
           content: [
@@ -366,6 +420,9 @@ export function registerHolderTools(server: McpServer) {
 
         if (!data.objects.pageInfo.hasNextPage) break;
         cursor = data.objects.pageInfo.endCursor ?? undefined;
+        // Same trap as the token scan: a null cursor here restarts the walk
+        // and double-counts owners.
+        if (!cursor) break;
 
         if (totalScanned >= maxScan) {
           truncated = true;
@@ -389,15 +446,31 @@ export function registerHolderTools(server: McpServer) {
         count,
       }));
 
-      const result = {
-        mode: "nft",
-        type: resolvedType,
-        total_scanned: totalScanned,
-        unique_holders: holderCounts.size,
-        truncated,
-        cached: false,
-        top_holders: topHolders,
-      };
+      const result = truncated
+        ? {
+            mode: "nft",
+            type: resolvedType,
+            total_scanned: totalScanned,
+            unique_holders: holderCounts.size,
+            truncated: true,
+            complete_ranking: false,
+            cached: false,
+            caveat:
+              `INCOMPLETE: this scan stopped after ${totalScanned} objects (${holderCounts.size} distinct holders) and did not reach the end of the collection. ` +
+              `Objects are walked in object-id order, not by how many anyone holds, so these are the biggest holders WITHIN THE SAMPLE and not the biggest holders of the collection. ` +
+              `Raise max_scan until "truncated" is false for a real ranking.`,
+            sampled_holders: topHolders.map(({ rank: _rank, ...rest }) => rest),
+          }
+        : {
+            mode: "nft",
+            type: resolvedType,
+            total_scanned: totalScanned,
+            unique_holders: holderCounts.size,
+            truncated: false,
+            complete_ranking: true,
+            cached: false,
+            top_holders: topHolders,
+          };
 
       setCache(cacheKey, JSON.stringify(result));
 

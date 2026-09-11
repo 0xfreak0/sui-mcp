@@ -184,9 +184,23 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       }
 
       if (holderResult) {
-        result.top_holders = holderResult.holders;
         result.unique_holders_scanned = holderResult.unique_holders;
         result.holder_scan_truncated = holderResult.truncated;
+        // Same distinction get_top_holders makes: the scan walks coin objects
+        // in object-id order, so a truncated one names the biggest holder it
+        // SAW, not the biggest holder. Concentration is the reason anyone
+        // reads this field, and a sampled top holder invites exactly the
+        // concentration claim the data cannot support.
+        if (holderResult.truncated) {
+          result.sampled_holders = holderResult.holders.map(
+            ({ rank: _rank, ...rest }) => rest,
+          );
+          result.holder_scan_note =
+            `INCOMPLETE: ${holderResult.total_scanned} coin objects scanned in object-id order, which is unrelated to balance. ` +
+            `These are the largest holders within that sample, not the largest holders of the coin, and they do not support a claim about supply concentration.`;
+        } else {
+          result.top_holders = holderResult.holders;
+        }
       }
 
       return {

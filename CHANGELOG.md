@@ -1,175 +1,48 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-- **Address poisoning could name the victim as the attacker.** Activity was
-  looked up by the raw input string while comparison used a normalized one, so
-  an address spelled uppercase or unpadded — both accepted by the GraphQL API —
-  lost its own footprint and scored zero. Lookups are normalized and reported
-  addresses are canonical.
-- **Direction was asserted on a 2-vs-1 count.** Dust repeating inside one page
-  is the normal shape of the attack, so a poisoner seen three times outranked a
-  real counterparty seen once. A margin is now required, and `received` is
-  compared only against zero — raw units are not comparable across coin types.
-- **The note claimed the addresses "render identically in any truncated
-  view".** At the width the tool itself renders, they do not.
-- `addresses_compared` counted raw input; a low-entropy SUBJECT is now
-  disclosed rather than silently skipped; `get_transaction_history` guards the
-  `BigInt` conversion that `trace_funds` already guarded.
-
-- **Object flow reported shared-object mutations as custody changes.** Movements
-  with no recorded previous holder — every change before ~March 2024 — were all
-  treated as custody. A Pyth price update reported three oracle objects as
-  having changed hands; 58 of 59 movements at checkpoint 10,000,000 were
-  storage or shared-object churn. Those checkpoints now report 1 each, both
-  genuine. `dynamic_field::Field` is excluded outright.
-- **Freezing or sharing a capability was reported as handing it over.** All
-  three ways of giving up control now set `renounced`.
-- **The transaction cache had no method version**, so movements classified by
-  earlier, wrong code were read back as current. Stamped with
-  `TX_METHOD_VERSION`.
-- **A capability was classified as the position it controls.**
-  `ObligationOwnerCap` and `AccountCap` read as `defi-position`.
-- Consensus owners were fetched and then dropped from identity, labels and the
-  poisoning check; unspendable addresses were pushed through them.
-- A gRPC change with no owner on either side classified as a transfer; an
-  `UNKNOWN` input state with an owner present claimed the holder was unknowable;
-  `0X` escaped address padding; transfer records were serialised twice.
-
-- **`get_top_holders` ranked a sample and called it the top.** The scan walks
-  coin objects in object-id order, which is unrelated to balance, so a scan that
-  hit its budget returned the largest holder it happened to see. Measured on
-  SUI, the reported top holder by scan depth: 66 SUI at `max_scan` 200, 522 at
-  400, 3,454 at 800, 25,000 at the default 5,000 — with **zero of the top five
-  at 200 surviving to 800**, while the real top holder holds millions. The
-  answer climbed with effort and never converged.
-
-  A truncated scan now returns `sampled_holders` with no rank and no percentage
-  of supply, plus a caveat saying these are not the largest holders. Only a
-  completed scan returns `top_holders` and `complete_ranking: true`. The
-  percentage is dropped rather than annotated because a sampled balance over the
-  real total supply looks authoritative and means nothing. `analyze_token` made
-  the same claim from the same scanner and got the same split.
-
-- **Both holder walks were missed by the null-cursor sweep in #101.** A null
-  `endCursor` alongside `hasNextPage: true` restarted each walk from page one,
-  counting the same coin objects again and adding their balances twice to the
-  same holders. Ten other paginated walks in the repo already carried the guard.
-
-- **Thirteen defects in object flow, all found before release.** An independent
-  audit of the merged code plus four real mainnet wallets. Grouped by what the
-  tool was saying that was not true:
-
-  *False claims*
-  - **"The archive does not report object changes" was wrong.** Its gRPC
-    `changedObjects` carries the type and BOTH owners, and the read mask already
-    requested it — verified against a digest the fullnode has pruned. Every
-    archive hop disclaimed object flow while holding the answer. It now reads it.
-  - **Renouncing a capability was reported as handing it over.** A cap sent to an
-    unspendable address triggered "control changed hands, follow the recipient".
-    `upgrade-cap.ts` measured 27 of 30 UpgradeCap departures going to `0x0`/`0x2`,
-    so the loudest output was wrong ~90% of the time for the type that motivated
-    the feature. Now `renounced_capabilities`, with the opposite reading.
-  - **A cached hop claimed the archive served it.** `tx.source === "cache"` was
-    already in hand and not consulted.
-  - **Every object transfer before ~March 2024 was dropped, printing `gas only`.**
-    Old effects return `inputState: null` for every change — 117 of 117 at
-    checkpoint 20,000,000 — which classified as "unwrapped" and was discarded.
-    Now reported as `appeared`, with the ambiguity stated.
-
-  *Missed detections*
-  - **Kiosk transfers were invisible.** A kiosk-held NFT is owned by the Kiosk
-    object, so the ordinary NFT trade reads `object -> object` and was filtered
-    out. Measured against four real wallets: 10 of 28 genuine transfers missed.
-  - **`objectChanges` truncated silently at 50.** About 1 transaction in 400
-    exceeds it and a real trace hit one with 101; the connection is ordered by
-    object id, so which 50 survived was arbitrary. Now paginated, with `more`
-    and `cursor` tracked separately so a null cursor cannot read as completeness.
-  - **`ConsensusAddressOwner.address` was never selected**, so consensus-owned
-    transfers classified as mutations and were dropped.
-  - **`coin::DenyCapV2` was absent** — the deny-list type regulated coins use.
-
-  *Security*
-  - **`high_consequence` was spoofable.** Matching on the `module::Name` suffix
-    meant `0xbad::package::UpgradeCap` fired the loudest warning; worse,
-    `0xevil::coin::Coin` was excluded as "already a balance change" while
-    producing none — invisible in both channels. Framework types are now pinned
-    in full, with the defining address padded so both spellings match.
-
-  *Completeness*
-  - **Object counterparties bypassed identity, labels, sinks and the
-    address-poisoning check.** The recipient of a capability got no name, no
-    label and no lookalike comparison, while the prose truncated their address.
-  - **A DeFi position was classified as a picture.** `position::Position`,
-    `SpoolAccount` and receipts read as plain assets. Now `defi-position`, gated
-    on the protocol registry vouching for the defining package rather than on
-    the type's name.
-  - `ObjectFlowSummary.movements` counted only transfers, not movements.
-
-  Traces with no object movement are unchanged at identical token cost;
-  kiosk-bearing traces cost roughly half what the first implementation did.
+## 1.15.0 (2026-09-11)
 
 ### Added
-- **`trace_funds` reports object flow.** A balance change is derived from
-  `Coin<T>`, so on an object-based chain everything that is not a coin changes
-  hands without producing one. Sampling the transaction that last touched each
-  object: `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 had
-  no non-gas balance change, `coin::TreasuryCap` 14 of 30. 74 of 90.
+- **Address-poisoning detection.** `get_transaction_history` and `trace_funds`
+  report `address_poisoning` when two addresses in a result are close enough to
+  be mistaken for one another — the attack where a lookalike address sends dust
+  so that an address copied from history lands on it. A pair is reported when at
+  least three characters match at each end. The comparison covers senders, since
+  a poisoning address sends rather than receives, and includes the subject's own
+  address. In a trace it spans all hops. Where activity does not clearly
+  separate the two, the pair is reported with `direction_known: false`.
 
-  So a balance-only trace reported "nothing moved" for the transfer of mint
-  authority or of the right to replace a package's code — and did not name the
-  recipient anywhere, which made the trace a dead end rather than a lead. On a
-  real mainnet handover the whole hop rendered as `Flows: gas only`.
+- **Object flow in `trace_funds`.** A balance change is derived from `Coin<T>`,
+  so objects that are not coins — NFTs, kiosk items, DeFi positions, admin
+  capabilities — change hands without producing one. `object_flow` and per-hop
+  `object_transfers` report those. Transfers of `UpgradeCap`, `TreasuryCap`,
+  `DenyCap`, `DenyCapV2` and `Publisher` are marked as carrying control; a
+  capability that is burned, frozen or shared is reported as
+  `renounced_capabilities` instead, which is the opposite finding. Object
+  changes ride the same query the trace already makes, so a trace where no
+  object moved is unchanged in size.
 
-  `objectChanges` rides the same `transaction(digest:)` query, so this costs no
-  extra request per hop and adds nothing to a trace where no object moved
-  (measured: identical token count before and after on a three-hop trace).
+### Changed
+- **`get_top_holders` and `analyze_token` return `sampled_holders` instead of
+  `top_holders` when a scan does not complete**, with no rank and no percentage
+  of supply, plus a caveat. A caller reading `top_holders` unconditionally will
+  find it absent on a truncated scan. Check `complete_ranking`.
 
-  Three distinctions the reading rests on:
-  - `Coin<T>` movements are excluded — already stated as balance changes, and
-    double-reporting would inflate the one case that always worked.
-  - Mutations are excluded. An object written to has not changed hands.
-  - An archive hop reports `object_flow_unavailable` rather than an empty list.
-    That transport cannot see object changes, and "none moved" is a different
-    claim from "could not look".
+### Fixed
+- **`get_top_holders` ranked a sample and presented it as the top holders.** The
+  scan walks coin objects in object-id order, which is unrelated to balance, so
+  a scan that stopped at its budget returned the largest holder it happened to
+  see. Measured on SUI, the reported top holder by `max_scan`: 66 SUI at 200,
+  522 at 400, 3,454 at 800, 25,000 at the default 5,000, with no overlap in the
+  top five between 200 and 800.
 
-  `high_consequence` covers only the four framework types whose powers are
-  known. A protocol's own `AdminCap` is reported as a capability with no claim
-  about what it grants.
+- **Both holder walks could restart and double-count.** A null `endCursor`
+  alongside `hasNextPage: true` sent the walk back to the first page, adding the
+  same balances again.
 
-- **Address-poisoning detection in `get_transaction_history` and `trace_funds`.**
-  Both now report `address_poisoning` when two addresses they touched render
-  identically once truncated — the attack where someone grinds an address
-  sharing the leading and trailing characters of one you already deal with,
-  sends dust from it, and waits for a human to copy the wrong row out of their
-  own history.
-
-  A pair is reported at six or more matching characters with at least three at
-  each end: roughly one chance collision in fifteen million pairs. Measured on
-  mainnet, zero flags across 75 random active wallets and 265 pages of history.
-
-  Two things the obvious implementation gets wrong, both found against real
-  cases and both pinned by tests:
-
-  - **The lookalike is not a counterparty.** It *sends* dust, so on the
-    victim's page it is the transaction's sender with a negative balance
-    change, and counterparty extraction drops both. The comparison runs over
-    every address on the page, plus the subject itself — a poisoner's best
-    target is the victim's own second wallet.
-  - **A symmetric `k`-character threshold misses real cases.** The confirmed
-    mainnet pairs match 3+4 and 5+3; `k=4` catches neither and `k=3` raises the
-    noise floor a hundredfold. The score is the total, floored at three per end
-    because no wallet truncates to two trailing characters — a 4+2 match was
-    flagged during development and turned out to be two co-recipients of one
-    2023 batch airdrop.
-
-  In a trace the comparison spans every hop and includes the recipients the
-  trace declined to follow, since the lookalike and the address it imitates are
-  usually hops apart and an unfollowed branch imitating a followed one is the
-  branch picked by eye. Where nothing separates the two addresses, the pair is
-  reported with `direction_known: false` rather than guessing which is the
-  fake.
+### Internal
+- Git hooks (`npm run hooks:install`) and a CI job that block a commit whose
+  message or staged content matches a configured pattern.
 
 ## 1.14.1 (2026-09-10)
 

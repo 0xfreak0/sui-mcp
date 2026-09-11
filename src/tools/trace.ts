@@ -379,7 +379,7 @@ function formatAmount(amount: string, coinType: string): string {
   // Two different warnings. "unverified" is about WHICH coin this is; "assumed
   // scale" is about whether the number is right at all.
   const marks = [
-    verified ? null : "unverified",
+    verified === false ? "unverified" : null,
     source === "assumed" ? "assumed scale" : null,
   ].filter(Boolean);
   return `${sign}${formatted} ${symbol}${marks.length ? ` (${marks.join(", ")})` : ""}`;

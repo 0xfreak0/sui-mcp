@@ -109,7 +109,9 @@ function formatAmount(rawAmount: string, coinType: string): string {
   const scale = coinScale(coinType);
   const { symbol, verified } = displayCoin(coinType);
   const human = toHumanAmount(rawAmount, scale.decimals);
-  return `${human} ${symbol}${verified ? "" : " (unverified)"}`;
+  // `verified === null` means no curated list covers this network, which is
+  // neither a claim nor a denial — so it gets no mark at all.
+  return `${human} ${symbol}${verified === false ? " (unverified)" : ""}`;
 }
 
 interface ChainStep {

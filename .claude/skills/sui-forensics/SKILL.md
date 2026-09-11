@@ -124,6 +124,29 @@ LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
 
+## A balance change only sees coins
+
+Sui is object-based. A balance change is derived from `Coin<T>`, so everything
+else — an NFT, a Kiosk, an admin capability — changes hands invisibly to fund
+tracing. Measured: of 90 sampled capability objects, 74 had a last transfer with
+no non-gas balance change at all.
+
+`trace_funds` reports `object_flow` for this. What it changes about method:
+
+- **`gas only` is no longer a conclusion.** It used to mean both "nothing
+  moved" and "something moved that cannot be seen here". A hop showing no coin
+  movement is only empty if `object_flow` is also absent.
+- **A capability transfer is the finding, and the coin movement may come
+  later.** Someone who takes a `TreasuryCap` mints afterwards; someone who
+  takes an `UpgradeCap` changes the code afterwards. Trace forward from the
+  recipient, not from the money.
+- **`high_consequence` is narrow on purpose.** Only `UpgradeCap`,
+  `TreasuryCap`, `DenyCap` and `Publisher` carry a stated power. A protocol's
+  own `AdminCap` is flagged as a capability with no claim about what it grants —
+  read the package with `analyze_package` before asserting one.
+- **An archive hop cannot answer this.** `object_flow_unavailable` means the
+  question was not asked, not that the answer was no.
+
 ## An address's rendering is not its identity
 
 Wallets and explorers truncate a 32-byte address to something like
@@ -266,6 +289,8 @@ get the schema wrong in ways that fail silently.
 | Has an issuer frozen this address? | `check_coin_restrictions` |
 | Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |
 | Is this address the one it looks like? | `get_transaction_history` and `trace_funds` → `address_poisoning` |
+| Did something move that was not a coin? | `trace_funds` → `object_flow` |
+| Who can mint / upgrade / freeze, and did that change hands? | `trace_funds` → `object_flow.capability_transfers` |
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |

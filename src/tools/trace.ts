@@ -6,6 +6,13 @@ import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "..
 import { getLabel, isSink } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
+import {
+  readObjectMovements,
+  summarizeObjectFlow,
+  transfersBetweenAddresses,
+  type GqlObjectChange,
+  type ObjectMovement,
+} from "../utils/object-flow.js";
 import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
 import { pricesForRanking } from "../utils/price-providers.js";
@@ -55,6 +62,19 @@ interface HopResult {
   }>;
   actions: string[];
   token_flow: { coin: string; amount: string; raw_type: string }[];
+  /**
+   * Non-coin objects that changed hands on this hop. Absent when none did.
+   * An NFT, a Kiosk or a capability moves without producing a balance change,
+   * so these do not appear in `balance_changes` and never will.
+   */
+  object_transfers?: ObjectMovement[];
+  /**
+   * Set when the transport that answered this hop cannot report object
+   * changes at all — the archive path. "No objects moved" and "could not
+   * read what moved" are opposite claims, and only one of them is knowable
+   * here.
+   */
+  object_flow_unavailable?: string;
   /** Note about how the next hop was chosen (swap follow-through, pool skip). */
   note?: string;
 }
@@ -73,6 +93,29 @@ const TX_QUERY = `
             coinType { repr }
             amount
             owner { address }
+          }
+        }
+        objectChanges(first: 50) {
+          nodes {
+            address
+            idCreated
+            idDeleted
+            inputState {
+              asMoveObject { contents { type { repr } } }
+              owner {
+                __typename
+                ... on AddressOwner { address { address } }
+                ... on ObjectOwner { address { address } }
+              }
+            }
+            outputState {
+              asMoveObject { contents { type { repr } } }
+              owner {
+                __typename
+                ... on AddressOwner { address { address } }
+                ... on ObjectOwner { address { address } }
+              }
+            }
           }
         }
       }
@@ -114,6 +157,9 @@ interface GqlTxResult {
       balanceChanges?: {
         nodes: GqlBalanceChangeNode[];
       };
+      objectChanges?: {
+        nodes: GqlObjectChange[];
+      };
     };
     kind?: {
       commands?: {
@@ -139,6 +185,12 @@ interface FetchedTx {
   commands: ReturnType<typeof adaptCommands>;
   /** Move calls reduced for bridge detection. */
   callSites: Array<{ packageId: string; module: string; function: string }>;
+  /**
+   * Non-coin objects that moved. Undefined means the transport could not
+   * report them, which is NOT the same as none having moved — see
+   * `object_flow_unavailable`.
+   */
+  objectMovements?: ObjectMovement[];
   timestamp: string | null;
   checkpoint: number | null;
   /**
@@ -202,6 +254,7 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
       grpcBalanceChanges: adaptBalanceChanges(bcNodes),
       commands,
       callSites: callSitesOf(commands),
+      objectMovements: readObjectMovements(tx.effects?.objectChanges?.nodes ?? []),
       timestamp: tx.effects?.timestamp ?? null,
       checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
       source: "fullnode",
@@ -466,9 +519,27 @@ function buildSummary(
       }
     }
 
-    if (gasOnly.length > 0 && significant.length === 0) {
-      lines.push("Flows:  gas only");
+    // "gas only" has meant two different things: no value moved, and value
+    // moved as an object where a balance change cannot see it. On a hop that
+    // handed over a capability, the second reading is the finding and the
+    // first is false.
+    const objectsHere = hop.object_transfers ?? [];
+    if (gasOnly.length > 0 && significant.length === 0 && objectsHere.length === 0) {
+      lines.push(hop.object_flow_unavailable ? "Flows:  no coin moved" : "Flows:  gas only");
     }
+
+    if (objectsHere.length > 0) {
+      lines.push("Objects:");
+      for (const m of objectsHere) {
+        const mark = m.high_consequence ? " ⚠" : "";
+        lines.push(
+          `  ${m.type_short ?? "unknown type"}${mark}  ${addrLabel(m.from?.address ?? "?", nameMap)} -> ${addrLabel(m.to?.address ?? "?", nameMap)}`,
+        );
+        if (m.note) lines.push(`    ${m.note}`);
+      }
+    }
+
+    if (hop.object_flow_unavailable) lines.push(`  (${hop.object_flow_unavailable})`);
 
     lines.push("");
   }
@@ -650,6 +721,18 @@ export function registerTraceTools(server: McpServer) {
           actions: decoded.actions,
           token_flow: decoded.token_flow,
         };
+
+        // Object flow. `undefined` means the transport could not report it;
+        // an empty array means it reported none. The two must not collapse.
+        if (tx.objectMovements === undefined) {
+          hopResult.object_flow_unavailable =
+            "This hop was served by the archive, which does not report object changes. " +
+            "Non-coin transfers on this hop cannot be seen — that is not a statement that none happened.";
+        } else {
+          const moved = transfersBetweenAddresses(tx.objectMovements);
+          if (moved.length > 0) hopResult.object_transfers = moved;
+        }
+
         traceHops.push(hopResult);
 
         // A bridge exit ends the on-chain trace. The coin was burned or locked,
@@ -960,6 +1043,29 @@ export function registerTraceTools(server: McpServer) {
         ledger.observe(appearances);
       }
       const poisoning = lookalikeReport(ledger.addresses(), ledger.activity);
+
+      // Object flow across the whole trace. Gathered here rather than per hop
+      // because a capability handed over on hop 1 and exercised on hop 4 is
+      // one story, and the hop-level lists cannot say that.
+      const allMovements = enrichedHops.flatMap((h) => h.object_transfers ?? []);
+      const objectFlow = summarizeObjectFlow(allMovements);
+      if (objectFlow && objectFlow.capability_transfers.length > 0) {
+        // In the prose as well as the payload, for the same reason bridge
+        // exits are: a trace whose coin amounts are all zero reads as "nothing
+        // happened", which is the wrong conclusion when authority moved.
+        const lines = ["⚠ Control of something changed hands in this trace:"];
+        for (const m of objectFlow.capability_transfers) {
+          lines.push(
+            `  ${m.type_short} — ${addrLabel(m.from?.address ?? "?", nameMap)} -> ${addrLabel(m.to?.address ?? "?", nameMap)}`,
+          );
+          lines.push(`    object ${m.object_id}`);
+          if (m.note) lines.push(`    ${m.note}`);
+        }
+        lines.push(
+          "  This produces no balance change, so fund tracing alone would report that nothing moved.",
+        );
+        parts.push(lines.join("\n"));
+      }
       if (poisoning) {
         // In the summary as well as the payload, for the same reason the bridge
         // exits are: the prose is what gets read, and a lookalike that only
@@ -1007,6 +1113,7 @@ export function registerTraceTools(server: McpServer) {
           note: "Per-hop USD at transaction time (Pyth, per-second); not summed across hops (same funds moving). See each balance change's price_usd / priced_at / price_age_sec.",
         },
         ...(poisoning ? { address_poisoning: poisoning } : {}),
+        ...(objectFlow ? { object_flow: objectFlow } : {}),
         hops: enrichedHops,
         address_labels: addressLabels,
       };

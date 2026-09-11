@@ -3,6 +3,34 @@
 ## Unreleased
 
 ### Added
+- **`trace_funds` reports object flow.** A balance change is derived from
+  `Coin<T>`, so on an object-based chain everything that is not a coin changes
+  hands without producing one. Sampling the transaction that last touched each
+  object: `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 had
+  no non-gas balance change, `coin::TreasuryCap` 14 of 30. 74 of 90.
+
+  So a balance-only trace reported "nothing moved" for the transfer of mint
+  authority or of the right to replace a package's code — and did not name the
+  recipient anywhere, which made the trace a dead end rather than a lead. On a
+  real mainnet handover the whole hop rendered as `Flows: gas only`.
+
+  `objectChanges` rides the same `transaction(digest:)` query, so this costs no
+  extra request per hop and adds nothing to a trace where no object moved
+  (measured: identical token count before and after on a three-hop trace).
+
+  Three distinctions the reading rests on:
+  - `Coin<T>` movements are excluded — already stated as balance changes, and
+    double-reporting would inflate the one case that always worked.
+  - Mutations are excluded. An object written to has not changed hands.
+  - An archive hop reports `object_flow_unavailable` rather than an empty list.
+    That transport cannot see object changes, and "none moved" is a different
+    claim from "could not look".
+
+  `high_consequence` covers only the four framework types whose powers are
+  known. A protocol's own `AdminCap` is reported as a capability with no claim
+  about what it grants.
+
+### Added
 - **Address-poisoning detection in `get_transaction_history` and `trace_funds`.**
   Both now report `address_poisoning` when two addresses they touched render
   identically once truncated — the attack where someone grinds an address

@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+### Fixed
+- **Thirteen defects in object flow, all found before release.** An independent
+  audit of the merged code plus four real mainnet wallets. Grouped by what the
+  tool was saying that was not true:
+
+  *False claims*
+  - **"The archive does not report object changes" was wrong.** Its gRPC
+    `changedObjects` carries the type and BOTH owners, and the read mask already
+    requested it — verified against a digest the fullnode has pruned. Every
+    archive hop disclaimed object flow while holding the answer. It now reads it.
+  - **Renouncing a capability was reported as handing it over.** A cap sent to an
+    unspendable address triggered "control changed hands, follow the recipient".
+    `upgrade-cap.ts` measured 27 of 30 UpgradeCap departures going to `0x0`/`0x2`,
+    so the loudest output was wrong ~90% of the time for the type that motivated
+    the feature. Now `renounced_capabilities`, with the opposite reading.
+  - **A cached hop claimed the archive served it.** `tx.source === "cache"` was
+    already in hand and not consulted.
+  - **Every object transfer before ~March 2024 was dropped, printing `gas only`.**
+    Old effects return `inputState: null` for every change — 117 of 117 at
+    checkpoint 20,000,000 — which classified as "unwrapped" and was discarded.
+    Now reported as `appeared`, with the ambiguity stated.
+
+  *Missed detections*
+  - **Kiosk transfers were invisible.** A kiosk-held NFT is owned by the Kiosk
+    object, so the ordinary NFT trade reads `object -> object` and was filtered
+    out. Measured against four real wallets: 10 of 28 genuine transfers missed.
+  - **`objectChanges` truncated silently at 50.** About 1 transaction in 400
+    exceeds it and a real trace hit one with 101; the connection is ordered by
+    object id, so which 50 survived was arbitrary. Now paginated, with `more`
+    and `cursor` tracked separately so a null cursor cannot read as completeness.
+  - **`ConsensusAddressOwner.address` was never selected**, so consensus-owned
+    transfers classified as mutations and were dropped.
+  - **`coin::DenyCapV2` was absent** — the deny-list type regulated coins use.
+
+  *Security*
+  - **`high_consequence` was spoofable.** Matching on the `module::Name` suffix
+    meant `0xbad::package::UpgradeCap` fired the loudest warning; worse,
+    `0xevil::coin::Coin` was excluded as "already a balance change" while
+    producing none — invisible in both channels. Framework types are now pinned
+    in full, with the defining address padded so both spellings match.
+
+  *Completeness*
+  - **Object counterparties bypassed identity, labels, sinks and the
+    address-poisoning check.** The recipient of a capability got no name, no
+    label and no lookalike comparison, while the prose truncated their address.
+  - **A DeFi position was classified as a picture.** `position::Position`,
+    `SpoolAccount` and receipts read as plain assets. Now `defi-position`, gated
+    on the protocol registry vouching for the defining package rather than on
+    the type's name.
+  - `ObjectFlowSummary.movements` counted only transfers, not movements.
+
+  Traces with no object movement are unchanged at identical token cost;
+  kiosk-bearing traces cost roughly half what the first implementation did.
+
 ### Added
 - **`trace_funds` reports object flow.** A balance change is derived from
   `Coin<T>`, so on an object-based chain everything that is not a coin changes
@@ -30,7 +84,6 @@
   known. A protocol's own `AdminCap` is reported as a capability with no claim
   about what it grants.
 
-### Added
 - **Address-poisoning detection in `get_transaction_history` and `trace_funds`.**
   Both now report `address_poisoning` when two addresses they touched render
   identically once truncated — the attack where someone grinds an address

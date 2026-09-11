@@ -140,12 +140,20 @@ no non-gas balance change at all.
   later.** Someone who takes a `TreasuryCap` mints afterwards; someone who
   takes an `UpgradeCap` changes the code afterwards. Trace forward from the
   recipient, not from the money.
+- **A renounced capability is the opposite finding.** A cap sent to an
+  unspendable address appears in `renounced_capabilities`, not
+  `capability_transfers`: 27 of 30 real UpgradeCap departures go that way, and
+  it is a risk reduction. Do not write it up as a handover.
 - **`high_consequence` is narrow on purpose.** Only `UpgradeCap`,
-  `TreasuryCap`, `DenyCap` and `Publisher` carry a stated power. A protocol's
-  own `AdminCap` is flagged as a capability with no claim about what it grants —
-  read the package with `analyze_package` before asserting one.
-- **An archive hop cannot answer this.** `object_flow_unavailable` means the
-  question was not asked, not that the answer was no.
+  `TreasuryCap`, `DenyCap`, `DenyCapV2` and `Publisher` carry a stated power. A
+  protocol's own `AdminCap` is flagged as a capability with no claim about what
+  it grants — read the package with `analyze_package` before asserting one.
+- **Kiosk moves are custody changes.** A kiosk-held NFT is owned by the Kiosk
+  object, so the trade reads `object -> object`. The controlling wallet is not
+  named by the movement itself; resolve it before attributing.
+- **`appeared` means the previous holder is not recorded**, which is normal
+  before roughly March 2024. It is not evidence of an unwrap, and not evidence
+  of a transfer — the chain did not say.
 
 ## An address's rendering is not its identity
 

@@ -1,0 +1,20 @@
+# Copy to `patterns.local` (gitignored) and fill in.
+#
+# One extended regex per line, matched case-insensitively, against both staged
+# content and the commit message. A match blocks the commit and the hook prints
+# only that a private pattern matched — never which one.
+#
+# What belongs here: anything whose presence in the repo is the problem, so it
+# cannot go in the tracked `patterns` file.
+#
+#   - your own wallet addresses (a 12-char prefix is enough and is not itself
+#     a usable address)
+#   - your own SuiNS names
+#   - any handle you do not want tied to this repo
+#
+# Examples, with the values replaced:
+#
+# 0xdeadbeef1234
+# 0xfeedface5678
+# mywallet\.sui
+# some-handle

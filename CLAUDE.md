@@ -195,6 +195,16 @@ and lose the narrative around it.
   committing or opening a PR.
 - **Never commit the maintainer's own wallet addresses or SuiNS names**, in code,
   tests, fixtures or docs. Use neutral placeholders (`0xw1`, `0xw2`).
+- **Never describe a past or present exposure in anything public** — a commit
+  message, PR title or body, issue, release note or doc. Saying what leaked,
+  where it leaked, or that anything leaked at all tells a reader exactly what to
+  search the history for. A fix ships as what the code now does, never as what
+  it used to allow. This applies to near-misses and to already-public facts: a
+  pointer is worth more to an attacker than the fact.
+- **Write PR titles and bodies plain and short.** What changed, why, how it was
+  verified. No narrative, no "here is what broke and what I learned", no
+  incident history. That belongs in chat, and reference docs are governed by
+  the Writing documentation rules above.
 
 ## Commands
 

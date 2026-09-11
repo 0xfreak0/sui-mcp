@@ -156,9 +156,13 @@ jobs:
       # Installs from npm in a clean directory and completes an MCP handshake,
       # so a tarball that publishes but won't start fails the release loudly
       # instead of sitting broken on the registry.
+      # The EXACT version just published, never `@latest`. The dist-tag is a
+      # second thing that has to propagate, so verifying `@latest` can fail
+      # even once the version itself is installable — and it would silently
+      # pass against the PREVIOUS release if the tag lagged.
       - name: Verify the published package installs and starts
         if: ${{ !inputs.dry_run }}
-        run: npm run verify:published
+        run: npm run verify:published -- "$(node -p "require('./package.json').version")"
 
   # Kept a separate job so `publish` keeps `contents: read`. That job holds
   # `id-token: write` for npm and the MCP registry; a single token that can both

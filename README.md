@@ -139,6 +139,28 @@ on-chain deny list in both directions. A frozen address usually holds none of
 the coin that froze it, so it checks every configured coin type rather than the
 ones it holds.
 
+**Is this address the one it looks like?** `get_transaction_history` and
+`trace_funds` compare every address they touch and report `address_poisoning`
+when two of them render identically once truncated:
+
+```
+⚠ Addresses in this trace that render identically once truncated:
+  0xd649a4d5…57127127  vs  0xd642ef27…c75d7127
+```
+
+An attacker generates an address sharing the leading and trailing characters of
+one you already deal with, sends dust from it, and waits for someone to copy the
+wrong row out of their own history. The check runs over senders, balance-change
+recipients and the branches a trace declined to follow — a poisoning wallet
+*sends*, so it never appears as a counterparty, and the lookalike is usually
+several hops from the address it imitates.
+
+A pair is reported at six or more matching characters with at least three at
+each end (about one collision in fifteen million pairs by chance). The address
+with the larger footprint is named as the established side; where nothing
+separates the two, the pair is reported with `direction_known: false` rather
+than guessing which is the fake.
+
 **Does this address pay other people's gas?** `get_address_fanout` reports
 `sponsor_shape` — invisible to value fan-out, since sponsoring moves none of
 the sponsor's own money. `relayer` is proven; `private_sponsor` off a truncated

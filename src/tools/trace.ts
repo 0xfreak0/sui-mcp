@@ -7,10 +7,13 @@ import { getLabel, isSink } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
 import {
+  custodyChanges,
+  objectCounterparties,
+  readGrpcObjectChanges,
   readObjectMovements,
   summarizeObjectFlow,
-  transfersBetweenAddresses,
   type GqlObjectChange,
+  type GrpcChangedObject,
   type ObjectMovement,
 } from "../utils/object-flow.js";
 import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
@@ -68,6 +71,8 @@ interface HopResult {
    * so these do not appear in `balance_changes` and never will.
    */
   object_transfers?: ObjectMovement[];
+  /** Set when more object changes existed than the page returned. */
+  object_changes_truncated?: string;
   /**
    * Set when the transport that answered this hop cannot report object
    * changes at all — the archive path. "No objects moved" and "could not
@@ -96,6 +101,7 @@ const TX_QUERY = `
           }
         }
         objectChanges(first: 50) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             address
             idCreated
@@ -106,6 +112,7 @@ const TX_QUERY = `
                 __typename
                 ... on AddressOwner { address { address } }
                 ... on ObjectOwner { address { address } }
+                ... on ConsensusAddressOwner { address { address } }
               }
             }
             outputState {
@@ -114,6 +121,7 @@ const TX_QUERY = `
                 __typename
                 ... on AddressOwner { address { address } }
                 ... on ObjectOwner { address { address } }
+                ... on ConsensusAddressOwner { address { address } }
               }
             }
           }
@@ -158,6 +166,7 @@ interface GqlTxResult {
         nodes: GqlBalanceChangeNode[];
       };
       objectChanges?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string };
         nodes: GqlObjectChange[];
       };
     };
@@ -186,11 +195,13 @@ interface FetchedTx {
   /** Move calls reduced for bridge detection. */
   callSites: Array<{ packageId: string; module: string; function: string }>;
   /**
-   * Non-coin objects that moved. Undefined means the transport could not
-   * report them, which is NOT the same as none having moved — see
-   * `object_flow_unavailable`.
+   * Non-coin objects that moved. Both transports can report these — the
+   * archive's gRPC `changedObjects` carries type and both owners — so this is
+   * undefined only for a row cached before object flow existed.
    */
   objectMovements?: ObjectMovement[];
+  /** The transaction reported more object changes than were read. */
+  objectChangesTruncated?: boolean;
   timestamp: string | null;
   checkpoint: number | null;
   /**
@@ -202,6 +213,98 @@ interface FetchedTx {
 }
 
 /** Pull Move calls out of decoder-shaped commands, for bridge detection. */
+/**
+ * Registry-backed protocol lookup for object types.
+ *
+ * Only a package the registry already vouches for can promote an object to a
+ * DeFi position. A type named `Position` proves nothing on its own; a type
+ * named `Position` defined by a curated DEX does. Synchronous and cache-only,
+ * per the registry contract, so it adds no requests.
+ */
+/**
+ * Read the remaining object changes of a transaction that exceeded one page.
+ *
+ * Measured: about 1 transaction in 400 carries more than 50 object changes,
+ * and a real three-hop trace hit one with 101. The connection is ordered by
+ * object id, not by importance, so which 50 arrive first is arbitrary with
+ * respect to whether the interesting transfer is among them — truncating
+ * silently would drop a capability transfer on a coin flip.
+ *
+ * Bounded rather than exhaustive: the caller states the cap it hit, which is
+ * the one thing a truncated read must never leave unsaid.
+ */
+const OBJECT_CHANGE_PAGES = 5;
+
+const MORE_OBJECT_CHANGES = `
+  query($digest: String!, $after: String) {
+    transaction(digest: $digest) {
+      effects {
+        objectChanges(first: 50, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            address
+            idCreated
+            idDeleted
+            inputState {
+              asMoveObject { contents { type { repr } } }
+              owner {
+                __typename
+                ... on AddressOwner { address { address } }
+                ... on ObjectOwner { address { address } }
+                ... on ConsensusAddressOwner { address { address } }
+              }
+            }
+            outputState {
+              asMoveObject { contents { type { repr } } }
+              owner {
+                __typename
+                ... on AddressOwner { address { address } }
+                ... on ObjectOwner { address { address } }
+                ... on ConsensusAddressOwner { address { address } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+async function readAllObjectChanges(
+  digest: string,
+  first: { pageInfo?: { hasNextPage?: boolean; endCursor?: string }; nodes: GqlObjectChange[] } | undefined,
+): Promise<{ nodes: GqlObjectChange[]; truncated: boolean }> {
+  const nodes = [...(first?.nodes ?? [])];
+  // `more` and `cursor` are tracked apart on purpose. A connection can claim
+  // another page and hand back a NULL cursor, and collapsing the two would
+  // report a complete read of a list we know is incomplete — the cursor trap
+  // CLAUDE.md documents, in the field that says whether to trust the answer.
+  let more = first?.pageInfo?.hasNextPage === true;
+  let cursor = more ? first?.pageInfo?.endCursor : undefined;
+  let pages = 1;
+
+  while (more && cursor && pages < OBJECT_CHANGE_PAGES) {
+    const next = await gqlQuery<GqlTxResult>(MORE_OBJECT_CHANGES, { digest, after: cursor }).catch(
+      () => null,
+    );
+    const conn = next?.transaction?.effects?.objectChanges;
+    // A failed follow-up is not an empty one: leave `more` set so the caller
+    // says the list is incomplete rather than asserting it is whole.
+    if (!conn) break;
+    nodes.push(...conn.nodes);
+    pages++;
+    more = conn.pageInfo?.hasNextPage === true;
+    cursor = conn.pageInfo?.endCursor;
+  }
+
+  return { nodes, truncated: more };
+}
+
+function protocolForPackage(packageId: string): { name: string; type?: string } | null {
+  const p = lookupProtocol(packageId);
+  return p ? { name: p.name, type: (p as { type?: string }).type } : null;
+}
+
 function callSitesOf(commands: ReturnType<typeof adaptCommands>) {
   const out: Array<{ packageId: string; module: string; function: string }> = [];
   for (const cmd of commands) {
@@ -244,6 +347,8 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
   if (tx && !hollow) {
     const bcNodes = tx.effects?.balanceChanges?.nodes ?? [];
     const commands = adaptCommands(tx.kind?.commands?.nodes ?? []);
+    // Costs a request only for the ~1 transaction in 400 that exceeds a page.
+    const objectChanges = await readAllObjectChanges(digest, tx.effects?.objectChanges);
     const fetched: FetchedTx = {
       sender: tx.sender?.address ?? null,
       balanceChanges: bcNodes.map((n) => ({
@@ -254,7 +359,8 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
       grpcBalanceChanges: adaptBalanceChanges(bcNodes),
       commands,
       callSites: callSitesOf(commands),
-      objectMovements: readObjectMovements(tx.effects?.objectChanges?.nodes ?? []),
+      objectMovements: readObjectMovements(objectChanges.nodes, protocolForPackage),
+      objectChangesTruncated: objectChanges.truncated,
       timestamp: tx.effects?.timestamp ?? null,
       checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
       source: "fullnode",
@@ -313,6 +419,16 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
     grpcBalanceChanges: grpcBc as ReturnType<typeof adaptBalanceChanges>,
     commands: commands as ReturnType<typeof adaptCommands>,
     callSites: callSitesOf(commands as ReturnType<typeof adaptCommands>),
+    // The archive DOES report object changes. An earlier version claimed it
+    // could not and disclaimed object flow on every archive hop; verified
+    // false against mainnet, where a digest the fullnode has pruned comes back
+    // with changedObjects carrying objectType and both owners. This transport
+    // is also the only one that can resolve the pre-2024 ambiguity, because it
+    // states inputState as EXISTS / DOES_NOT_EXIST rather than a null.
+    objectMovements: readGrpcObjectChanges(
+      (g.effects?.changedObjects ?? []) as GrpcChangedObject[],
+      protocolForPackage,
+    ),
     // gRPC returns a protobuf Timestamp ({seconds, nanos}), not a unix number.
     timestamp: timestampToIso(g.timestamp) ?? null,
     checkpoint: g.checkpoint != null ? Number(g.checkpoint) : null,
@@ -531,14 +647,21 @@ function buildSummary(
     if (objectsHere.length > 0) {
       lines.push("Objects:");
       for (const m of objectsHere) {
-        const mark = m.high_consequence ? " ⚠" : "";
-        lines.push(
-          `  ${m.type_short ?? "unknown type"}${mark}  ${addrLabel(m.from?.address ?? "?", nameMap)} -> ${addrLabel(m.to?.address ?? "?", nameMap)}`,
-        );
+        const mark = m.high_consequence && !m.renounced ? " ⚠" : "";
+        const who = (ref: typeof m.from) => {
+          if (!ref) return "?";
+          if (ref.kind === "address") return addrLabel(ref.address ?? "?", nameMap);
+          if (ref.kind === "object") return `kiosk/object ${String(ref.address ?? "?").slice(0, 10)}…`;
+          return ref.kind;
+        };
+        const label = m.protocol ? `${m.type_short} (${m.protocol})` : (m.type_short ?? "unknown type");
+        const arrow = m.kind === "appeared" ? "(previous holder not recorded) ->" : "->";
+        lines.push(`  ${label}${mark}  ${m.kind === "appeared" ? "" : who(m.from) + " "}${arrow} ${who(m.to)}`);
         if (m.note) lines.push(`    ${m.note}`);
       }
     }
 
+    if (hop.object_changes_truncated) lines.push(`  ⚠ ${hop.object_changes_truncated}`);
     if (hop.object_flow_unavailable) lines.push(`  (${hop.object_flow_unavailable})`);
 
     lines.push("");
@@ -583,6 +706,8 @@ export function registerTraceTools(server: McpServer) {
     async ({ digest, direction, hops, coin_type }) => {
       const maxHops = Math.min(hops ?? 3, 10);
       const traceHops: HopResult[] = [];
+      /** Full movement lists per hop — internal, never serialised. */
+      const movementsByHop = new Map<number, ObjectMovement[]>();
       let currentDigest: string | null = digest;
       // Set when a hop's next address is a known fund sink (exchange, bridge,
       // mixer, malicious wallet, burn) — following further would add noise.
@@ -722,15 +847,29 @@ export function registerTraceTools(server: McpServer) {
           token_flow: decoded.token_flow,
         };
 
-        // Object flow. `undefined` means the transport could not report it;
-        // an empty array means it reported none. The two must not collapse.
+        // Object flow. Both live transports report it, so `undefined` now means
+        // exactly one thing: a row cached before this field existed. Saying
+        // "the archive cannot see objects" for a cache hit was wrong twice
+        // over — the source is known two lines above, and the archive can.
         if (tx.objectMovements === undefined) {
           hopResult.object_flow_unavailable =
-            "This hop was served by the archive, which does not report object changes. " +
-            "Non-coin transfers on this hop cannot be seen — that is not a statement that none happened.";
+            tx.source === "cache"
+              ? "This hop came from the local store, cached before object flow was recorded. " +
+                "Re-run with the store disabled (unset SUI_STORE_PATH) to read it — this is not a statement that no objects moved."
+              : "Object changes were not reported for this hop. That is not a statement that none happened.";
         } else {
-          const moved = transfersBetweenAddresses(tx.objectMovements);
+          // Kept out of the hop payload on purpose: creations, deletions and
+          // wraps are needed to COUNT movements and to collect counterparties,
+          // but serialising them costs tokens for output nobody reads. A
+          // 13-movement kiosk hop carries one transfer.
+          movementsByHop.set(hopResult.hop, tx.objectMovements);
+          const moved = custodyChanges(tx.objectMovements);
           if (moved.length > 0) hopResult.object_transfers = moved;
+          if (tx.objectChangesTruncated) {
+            hopResult.object_changes_truncated =
+              `This transaction has more object changes than were read (${OBJECT_CHANGE_PAGES} pages of 50), ` +
+              "so the list above is incomplete. Changes are ordered by object id, not by importance.";
+          }
         }
 
         traceHops.push(hopResult);
@@ -853,6 +992,12 @@ export function registerTraceTools(server: McpServer) {
         for (const bc of hop.balance_changes) {
           if (bc.address) allAddresses.add(bc.address);
         }
+        // Object counterparties belong here too. Whoever receives a capability
+        // is as much a party to the trace as whoever receives a coin, and
+        // without this they get no name, no label, no sink check and no
+        // lookalike comparison — while the prose truncates their address,
+        // which is precisely the attack address_poisoning exists to catch.
+        for (const a of objectCounterparties(movementsByHop.get(hop.hop) ?? [])) allAddresses.add(a);
       }
 
       // Name, label and WHAT EACH ADDRESS IS, in two batched calls. A hop that
@@ -1040,6 +1185,9 @@ export function registerTraceTools(server: McpServer) {
           appearances.push({ address: bc.address, amount });
         }
         for (const r of hop.unfollowed_recipients ?? []) appearances.push({ address: r.address });
+        for (const a of objectCounterparties(movementsByHop.get(hop.hop) ?? [])) {
+          appearances.push({ address: a });
+        }
         ledger.observe(appearances);
       }
       const poisoning = lookalikeReport(ledger.addresses(), ledger.activity);
@@ -1047,8 +1195,10 @@ export function registerTraceTools(server: McpServer) {
       // Object flow across the whole trace. Gathered here rather than per hop
       // because a capability handed over on hop 1 and exercised on hop 4 is
       // one story, and the hop-level lists cannot say that.
-      const allMovements = enrichedHops.flatMap((h) => h.object_transfers ?? []);
-      const objectFlow = summarizeObjectFlow(allMovements);
+      const allMovements = [...movementsByHop.values()].flat();
+      const objectFlow = summarizeObjectFlow(allMovements, {
+        truncated: enrichedHops.some((h) => h.object_changes_truncated),
+      });
       if (objectFlow && objectFlow.capability_transfers.length > 0) {
         // In the prose as well as the payload, for the same reason bridge
         // exits are: a trace whose coin amounts are all zero reads as "nothing
@@ -1064,6 +1214,20 @@ export function registerTraceTools(server: McpServer) {
         lines.push(
           "  This produces no balance change, so fund tracing alone would report that nothing moved.",
         );
+        parts.push(lines.join("\n"));
+      }
+      // Renunciation is the opposite finding and must not borrow the warning.
+      // Measured in upgrade-cap.ts: 27 of 30 UpgradeCap departures go to an
+      // unspendable address, so treating those as handovers would make the
+      // loudest output wrong most of the time.
+      if (objectFlow && objectFlow.renounced_capabilities.length > 0) {
+        const lines = ["Capability rights renounced in this trace:"];
+        for (const m of objectFlow.renounced_capabilities) {
+          lines.push(
+            `  ${m.type_short} — ${addrLabel(m.from?.address ?? "?", nameMap)} -> ${m.to?.address} (unspendable)`,
+          );
+        }
+        lines.push("  A reduction in risk, not a warning: nobody can exercise these rights again.");
         parts.push(lines.join("\n"));
       }
       if (poisoning) {

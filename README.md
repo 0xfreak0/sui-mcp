@@ -152,11 +152,15 @@ Objects:
     Whoever holds this can publish new code for the package.
 ```
 
-That hop previously read `Flows: gas only`, and the recipient did not appear in
-the output at all. Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap` and
-`Publisher` are marked as carrying control rather than value. An archive-served
-hop reports `object_flow_unavailable` instead of an empty list, because that
-transport cannot see object changes.
+Kiosk moves count: a kiosk-held NFT is owned by the Kiosk object, so the
+ordinary NFT trade reads `object -> object` and is reported as a custody
+change. A DeFi position is named by its protocol (`position::Position
+(Cetus)`) rather than lumped in with pictures.
+
+Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2` and
+`Publisher` are marked as carrying control. A capability sent to an unspendable
+address is reported as `renounced_capabilities` — rights given up, the opposite
+of a handover.
 
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`

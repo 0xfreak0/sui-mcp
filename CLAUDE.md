@@ -732,34 +732,69 @@ as Wormhole.
 
 ### Object flow: what moves that is not a coin
 
-A balance change is derived from `Coin<T>` objects, so **anything that is not a
-coin moves without producing one.** `trace_funds` reads `objectChanges` for
-that reason; do not remove it on the grounds that balance changes already cover
+A balance change is derived from `Coin<T>`, so **anything that is not a coin
+moves without producing one.** `trace_funds` reads `objectChanges` for that
+reason; do not remove it on the grounds that balance changes already cover
 value.
 
 Measured on mainnet, sampling the transaction that last touched each object:
 `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 produced no
-non-gas balance change; `coin::TreasuryCap` 14 of 30. So a balance-only trace
-reports "nothing moved" for the transfer of mint authority or of the right to
-replace a package's code.
+non-gas balance change; `coin::TreasuryCap` 14 of 30.
 
-- **`objectChanges` rides the same `transaction(digest:)` query**, so this
-  costs no extra request per hop — the same economics as `detectBridges`
-  reusing a hop's calls. Do not add a separate fetch.
-- **`Coin<T>` movements are excluded.** They are already stated as balance
-  changes, and reporting both double-counts the one case that always worked.
-- **Mutations are excluded.** An object being written to has not changed hands,
-  and shared-object traffic would otherwise drown the output.
-- **The archive cannot report object changes.** An archive hop sets
-  `object_flow_unavailable` rather than an empty list: "no objects moved" and
-  "this transport cannot see them" are opposite claims.
-- **`gas only` used to mean both "no value moved" and "value moved where a
-  balance change cannot see it".** It is now printed only when the fullnode
-  answered AND no object changed hands.
-- **`high_consequence` is only the four framework types whose powers are
-  known** (`UpgradeCap`, `TreasuryCap`, `DenyCap`, `Publisher`). A protocol's
-  own `AdminCap` is reported as a capability without a claim about what it
-  grants, because that is not knowable from the type name.
+Seven rules, every one of them a bug that shipped to `main` first:
+
+- **The archive DOES report object changes.** Its gRPC `changedObjects`
+  carries `objectType`, `inputOwner` and `outputOwner`, and the read mask
+  already requests it. Verified against a digest the fullnode has pruned. Do
+  not reintroduce a caveat saying otherwise.
+- **Framework types are matched in FULL, never by suffix.** A package may name
+  its module `package` and its struct `UpgradeCap`; suffix matching hands an
+  airdropped fake the loudest output the tool has. The mirror is worse — naming
+  a module `coin` and a struct `Coin` would get an object EXCLUDED as "already
+  a balance change" while producing none, invisible in both channels.
+  `baseType` pads the defining address so `0x2::` and the padded form meet.
+- **Custody is not only address-to-address.** A kiosk-held NFT is owned by the
+  Kiosk object, so the ordinary NFT trade reads `object -> object`. Measured
+  against four real wallets, filtering to address-to-address missed 10 of 28
+  genuine transfers, and `ObjectOwner -> ObjectOwner` was 538 of ~1,240 object
+  changes in a recent sample. `custodyChanges` is the filter; there is no
+  address-only variant.
+- **A capability sent somewhere unspendable is RENOUNCED, not handed over.**
+  `upgrade-cap.ts` measured 27 of 30 UpgradeCap departures going to `0x0`/`0x2`.
+  Reporting those as handovers made the loudest output wrong ~90% of the time
+  for the type that motivated the feature. `renounced_capabilities` is a
+  separate field and carries the opposite reading.
+- **Old effects do not record the input owner.** Before roughly March 2024
+  mainnet returns `inputState: null` for EVERY change — 117 of 117 non-created
+  changes at checkpoint 20,000,000. Reading that as "unwrapped" and dropping it
+  loses every object transfer over the chain's first year, the era a backward
+  trace reaches. It is reported as `appeared` with the ambiguity stated. Only
+  gRPC can resolve it, because it states `inputState` as EXISTS /
+  DOES_NOT_EXIST rather than a null.
+- **`objectChanges` is paginated, not truncated.** About 1 transaction in 400
+  exceeds 50, and a real three-hop trace hit one with 101. The connection is
+  ordered by object id, not importance, so keeping the first 50 drops a
+  capability transfer on a coin flip. `readAllObjectChanges` walks up to
+  `OBJECT_CHANGE_PAGES`, tracks `more` and `cursor` SEPARATELY (a connection
+  can claim another page and return a null cursor), and states the cap when it
+  hits one.
+- **Object counterparties go through identity, labels and the poisoning check.**
+  Whoever receives a capability is as much a party as whoever receives a coin.
+  They are added to `allAddresses` and to the `ActivityLedger`.
+
+Two exclusions: `Coin<T>` (already a balance change; reporting both
+double-counts the case that always worked) and mutations (an object written to
+has not changed hands; shared-object traffic is 92% of transactions).
+
+**A DeFi position is not an asset, and the registry is what says so.** A type
+named `Position` proves nothing; a type named `Position` DEFINED BY a package
+`lookupProtocol` already vouches for is a financial position. Name-matching
+alone would be the guessing this project refuses, so `categorize` promotes to
+`defi-position` only behind a resolver.
+
+`high_consequence` is only the five framework types whose powers are stateable
+(`UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2`, `Publisher`). A protocol's
+own `AdminCap` is a capability with no claim about what it grants.
 
 Base rate is low and the sampling lesson is the bridge one again: 0 object
 transfers between addresses in 700 consecutive mainnet transactions, because

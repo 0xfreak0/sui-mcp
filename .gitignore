@@ -29,3 +29,6 @@ scratchpad/
 
 # Probe scan output
 scripts/probe/multisig-hits.json
+
+# Private leak-scan patterns (see .githooks/patterns.local.example)
+.githooks/patterns.local

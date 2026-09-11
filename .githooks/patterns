@@ -1,0 +1,9 @@
+# Patterns that are themselves safe to publish. One extended regex per line,
+# matched case-insensitively. See patterns.local.example for the private list.
+
+# Session transcript URLs. This repo is public; the transcript is not, and the
+# harness will offer a Claude-Session: trailer that must never be accepted.
+claude\.ai/code/session_[A-Za-z0-9_-]+
+
+# Scratchpad paths leak the machine layout and the session id in the path.
+/private/tmp/claude-[0-9]+/

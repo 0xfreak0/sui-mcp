@@ -124,6 +124,35 @@ LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
 
+## An address's rendering is not its identity
+
+Wallets and explorers truncate a 32-byte address to something like
+`0xd649a4d5…57127127`. Address poisoning exploits exactly that: an attacker
+grinds an address matching the leading and trailing characters of one the victim
+already deals with, sends dust from it, and waits for a human to copy the wrong
+row out of their own transaction history.
+
+`get_transaction_history` and `trace_funds` report `address_poisoning` when two
+addresses they touched render identically. Measured on mainnet: zero flags
+across 75 random active wallets and 265 pages of history.
+
+- **The lookalike is not a counterparty.** It *sends* dust, so it appears only
+  as a transaction's sender with a negative balance change. Anything that reads
+  the `counterparties` list alone will not see it.
+- **The pair is usually hops apart.** In a trace the comparison runs over the
+  whole chain, including recipients the trace declined to follow — an
+  unfollowed branch imitating a followed one is the branch picked by eye.
+- **`direction_known: false` means the roles are not assigned.** The address
+  with the larger footprint is named as established. Where nothing separates
+  them, both are reported and neither is called the fake — check both.
+- **A flag is about rendering, not intent.** It says two addresses collide in
+  a truncated view. The corroboration is the lifecycle: a poisoning wallet is
+  funded, fires dust, and sweeps its change back, often inside ten seconds.
+  Check the suspect with `get_transaction_history` before writing it up.
+- **A clean result covers what was read.** One page of history is not a
+  statement that the wallet was never targeted; the field is absent rather than
+  empty for that reason.
+
 ## Packages: who deployed it, and who can change it
 
 - **`publisher`** is the sender of the transaction that created the package —
@@ -236,6 +265,7 @@ get the schema wrong in ways that fail silently.
 | Why did this transaction fail? | `get_transaction` → `failure` (abort code, module, function) |
 | Has an issuer frozen this address? | `check_coin_restrictions` |
 | Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |
+| Is this address the one it looks like? | `get_transaction_history` and `trace_funds` → `address_poisoning` |
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |

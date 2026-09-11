@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Address-poisoning detection in `get_transaction_history` and `trace_funds`.**
+  Both now report `address_poisoning` when two addresses they touched render
+  identically once truncated — the attack where someone grinds an address
+  sharing the leading and trailing characters of one you already deal with,
+  sends dust from it, and waits for a human to copy the wrong row out of their
+  own history.
+
+  A pair is reported at six or more matching characters with at least three at
+  each end: roughly one chance collision in fifteen million pairs. Measured on
+  mainnet, zero flags across 75 random active wallets and 265 pages of history.
+
+  Two things the obvious implementation gets wrong, both found against real
+  cases and both pinned by tests:
+
+  - **The lookalike is not a counterparty.** It *sends* dust, so on the
+    victim's page it is the transaction's sender with a negative balance
+    change, and counterparty extraction drops both. The comparison runs over
+    every address on the page, plus the subject itself — a poisoner's best
+    target is the victim's own second wallet.
+  - **A symmetric `k`-character threshold misses real cases.** The confirmed
+    mainnet pairs match 3+4 and 5+3; `k=4` catches neither and `k=3` raises the
+    noise floor a hundredfold. The score is the total, floored at three per end
+    because no wallet truncates to two trailing characters — a 4+2 match was
+    flagged during development and turned out to be two co-recipients of one
+    2023 batch airdrop.
+
+  In a trace the comparison spans every hop and includes the recipients the
+  trace declined to follow, since the lookalike and the address it imitates are
+  usually hops apart and an unfollowed branch imitating a followed one is the
+  branch picked by eye. Where nothing separates the two addresses, the pair is
+  reported with `direction_known: false` rather than guessing which is the
+  fake.
+
 ## 1.14.1 (2026-09-10)
 
 Four cases where a tool reported something it could not determine as something

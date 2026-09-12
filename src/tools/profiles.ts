@@ -104,6 +104,8 @@ export const PROFILES = {
     "list_findings",
     "export_case",
     "delete_finding",
+      "watch_addresses",
+    "poll_watch",
   ],
 
   /** Contract analysis and transaction construction. */

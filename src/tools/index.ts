@@ -21,6 +21,7 @@ import { registerMonitorTools } from "./monitor.js";
 import { registerHolderTools } from "./holders.js";
 import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
+import { registerWatchTools } from "./watch.js";
 import { registerPoolTools } from "./pools.js";
 import { registerDeepBookTools } from "./deepbook.js";
 import { registerAggregateTools } from "./aggregate.js";
@@ -76,6 +77,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerPtbTools(server);
   registerStakingTools(server);
   registerHistoryTools(server);
+  registerWatchTools(server);
   registerTokenSearchTools(server);
   registerMonitorTools(server);
   registerHolderTools(server);

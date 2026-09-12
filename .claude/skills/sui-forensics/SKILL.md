@@ -326,6 +326,7 @@ get the schema wrong in ways that fail silently.
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
 | Where did this object come from? | `trace_object_history` |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true |
+| Has anything moved since I looked? | `watch_addresses` then `poll_watch` |
 | What is this address doing over time? | `build_timeline` |
 | Write it down / hand it over | `save_finding`, `list_findings`, `export_case` |
 

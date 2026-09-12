@@ -16,6 +16,7 @@
  */
 
 import { gqlQuery } from "../clients/graphql.js";
+import { readObjectMovements, type GqlObjectChange } from "./object-flow.js";
 import { planBatches, type DeltaTx, type WatchEntry } from "./watch.js";
 
 /** Digest + checkpoint only. Anything richer breaks the 300-node limit at 20. */
@@ -88,6 +89,24 @@ interface BalanceNode {
   coinType?: { repr?: string };
 }
 
+const OWNER_FRAGMENT =
+  "owner{__typename ... on AddressOwner{address{address}} ... on ObjectOwner{address{address}} ... on ConsensusAddressOwner{address{address}}}";
+
+const DETAIL_SELECTION =
+  "effects{balanceChanges{nodes{amount owner{address} coinType{repr}}}" +
+  `objectChanges(first:50){pageInfo{hasNextPage} nodes{address idCreated idDeleted ` +
+  `inputState{asMoveObject{contents{type{repr}}} ${OWNER_FRAGMENT}} ` +
+  `outputState{asMoveObject{contents{type{repr}}} ${OWNER_FRAGMENT}}}}}`;
+
+/**
+ * Digests per detail request.
+ *
+ * Five, not eight. Object changes are many nodes each, and the 300-node limit
+ * binds long before the byte cap: measured, 8 digests is 4,767 bytes and
+ * rejected as "over 300 nodes", while 5 is 2,982 bytes and accepted.
+ */
+const DETAIL_BATCH = 5;
+
 /**
  * Phase two: balance changes for the digests that actually moved.
  *
@@ -95,39 +114,49 @@ interface BalanceNode {
  * Batched over digests rather than addresses, because one transaction can
  * belong to several watched addresses and reading it twice would be waste.
  */
+export interface DeltaDetail {
+  balance_changes: NonNullable<DeltaTx["balance_changes"]>;
+  object_movements: DeltaTx["object_movements"];
+}
+
 export async function fetchDeltaDetail(
   digests: string[],
-): Promise<{ detail: Map<string, DeltaTx["balance_changes"]>; requests: number }> {
-  const detail = new Map<string, DeltaTx["balance_changes"]>();
+): Promise<{ detail: Map<string, DeltaDetail>; requests: number }> {
+  const detail = new Map<string, DeltaDetail>();
   let requests = 0;
   if (digests.length === 0) return { detail, requests };
 
-  // Same alias mechanism, same caps. Balance changes are several nodes each, so
-  // the batch is smaller than the delta batch above.
-  for (const batch of planBatches([...new Set(digests)], 8)) {
+  // Reached only when something already moved, so a quiet poll never pays for
+  // any of this. Object changes come along because a capability or an NFT
+  // changes hands WITHOUT a balance change, and a watch that reads only
+  // balances is blind to exactly the transfers worth waking someone for.
+  for (const batch of planBatches([...new Set(digests)], DETAIL_BATCH)) {
     const query =
       "query{" +
-      batch
-        .map(
-          (d, i) =>
-            `t${i}:transaction(digest:"${d}"){effects{balanceChanges{nodes{amount owner{address} coinType{repr}}}}}`,
-        )
-        .join("") +
+      batch.map((d, i) => `t${i}:transaction(digest:"${d}"){${DETAIL_SELECTION}}`).join("") +
       "}";
     requests++;
     const data = await gqlQuery<
-      Record<string, { effects?: { balanceChanges?: { nodes: BalanceNode[] } } } | null>
+      Record<
+        string,
+        {
+          effects?: {
+            balanceChanges?: { nodes: BalanceNode[] };
+            objectChanges?: { nodes: GqlObjectChange[] };
+          };
+        } | null
+      >
     >(query, {});
     batch.forEach((d, i) => {
-      const nodes = data[`t${i}`]?.effects?.balanceChanges?.nodes ?? [];
-      detail.set(
-        d,
-        nodes.map((n) => ({
+      const fx = data[`t${i}`]?.effects;
+      detail.set(d, {
+        balance_changes: (fx?.balanceChanges?.nodes ?? []).map((n) => ({
           address: n.owner?.address ?? "",
           amount: n.amount ?? "0",
           coin_type: n.coinType?.repr ?? "",
         })),
-      );
+        object_movements: readObjectMovements(fx?.objectChanges?.nodes ?? []),
+      });
     });
   }
 

@@ -170,9 +170,18 @@ addresses and where it last looked; `poll_watch` returns only what is new:
 ```
 
 That empty answer is 13 tokens and one request, which is what makes it callable
-on a loop. A hit names the address, digest, checkpoint and why it fired
-(`value_in`, `value_out`, `sink_reached`, `appeared`) — never the transaction
-itself, which stays a `get_transaction` call away.
+on a loop — nothing triggers a poll on its own, so the caller drives it. A hit
+names the address, digest, checkpoint and why it fired — never the transaction
+itself, which stays a `get_transaction` call away:
+
+| reason | |
+|---|---|
+| `value_in` / `value_out` | coin moved, with per-coin nets |
+| `capability_moved` | mint, upgrade, freeze or publish rights changed hands |
+| `object_moved` | an NFT, kiosk item or DeFi position changed hands |
+| `sink_reached` | a counterparty carries a sink label |
+| `lookalike_appeared` | a new counterparty renders like a watched address |
+| `appeared` | something happened that moved no coin and no named object |
 
 Watching starts from the current checkpoint, so adding an address does not
 replay its history. `min_amount` filters coin movements only: a labelled sink

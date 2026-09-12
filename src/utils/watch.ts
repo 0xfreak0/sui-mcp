@@ -40,6 +40,9 @@
  * happened", and it has to cost almost nothing to say.
  */
 
+import { findLookalikes } from "./address-lookalike.js";
+import { custodyChanges, type ObjectMovement } from "./object-flow.js";
+
 /** Addresses per delta request. The 5,000-byte query cap is what binds. */
 export const WATCH_BATCH_SIZE = 20;
 
@@ -64,9 +67,14 @@ export interface WatchEntry {
 export type HitReason =
   | "value_in"
   | "value_out"
+  /** Something happened that moved no coin and no object we could name. */
   | "appeared"
   | "sink_reached"
+  /** A framework capability changed hands: mint, upgrade, freeze or publish. */
   | "capability_moved"
+  /** A non-coin object changed hands — an NFT, a kiosk item, a position. */
+  | "object_moved"
+  /** A new counterparty renders like an address already in the watch set. */
   | "lookalike_appeared";
 
 export interface WatchHit {
@@ -79,6 +87,10 @@ export interface WatchHit {
   /** Net raw units for the watched address, summed per coin type. */
   net?: Record<string, string>;
   counterparties?: string[];
+  /** Short type names of non-coin objects that changed hands, if any. */
+  objects?: string[];
+  /** What a moved capability grants, when the type is one whose powers we know. */
+  capability_note?: string;
 }
 
 /** One address's new transactions, as the delta query returns them. */
@@ -88,6 +100,14 @@ export interface DeltaTx {
   timestamp?: string | null;
   sender?: string | null;
   balance_changes?: Array<{ address: string; amount: string; coin_type: string }>;
+  /**
+   * Non-coin objects that moved, from the phase-two fetch.
+   *
+   * A capability or an NFT changes hands WITHOUT producing a balance change, so
+   * a watch reading only balances is blind to exactly the transfers worth
+   * waking someone for: mint authority, upgrade rights, a stolen NFT.
+   */
+  object_movements?: ObjectMovement[];
 }
 
 /**
@@ -155,8 +175,14 @@ export function evaluate(
     }
 
     // A transaction that moved no coin still matters — an NFT or a capability
-    // moves without one, which is exactly what object flow is for. Saying
-    // nothing here would be the same blindness in a different tool.
+    // moves without one, which is exactly what object flow is for.
+    const moved = custodyChanges(tx.object_movements ?? []).filter(
+      (m) => m.from?.address === entry.address || m.to?.address === entry.address,
+    );
+    const capabilities = moved.filter((m) => m.high_consequence && !m.renounced);
+    if (capabilities.length) reasons.push("capability_moved");
+    else if (moved.length) reasons.push("object_moved");
+
     if (reasons.length === 0) reasons.push("appeared");
 
     for (const other of counterparties) {
@@ -169,6 +195,8 @@ export function evaluate(
     // A floor filters VALUE movements only. Suppressing `sink_reached` or a
     // coinless transaction because it carried little money would drop the
     // findings that have nothing to do with amount.
+    // A floor filters VALUE. A capability changing hands has no amount, so
+    // measuring it against one would drop the loudest finding the watch has.
     const onlyValue = reasons.every((r) => r === "value_in" || r === "value_out");
     if (floor > 0n && onlyValue && largest < floor) continue;
 
@@ -183,10 +211,47 @@ export function evaluate(
         ? { net: Object.fromEntries([...net].map(([coin, amount]) => [coin, amount.toString()])) }
         : {}),
       ...(counterparties.size ? { counterparties: [...counterparties] } : {}),
+      ...(moved.length ? { objects: moved.map((m) => m.type_short ?? "unknown") } : {}),
+      ...(capabilities[0]?.note ? { capability_note: capabilities[0].note } : {}),
     });
   }
 
   return { hits, last_checkpoint: high };
+}
+
+/**
+ * Flag hits whose counterparty renders like an address already being watched.
+ *
+ * Run over the whole poll rather than per transaction, because the pair is the
+ * finding and one half of it is the watch set. This is the case the detector
+ * exists for: someone grinds a lookalike of an address under investigation and
+ * sends dust, so it turns up as a NEW counterparty of the very wallet being
+ * watched. Pure, and it costs no request — the addresses are already in hand.
+ */
+export function flagLookalikes(watched: string[], hits: WatchHit[]): WatchHit[] {
+  const counterparties = new Set<string>();
+  for (const h of hits) for (const c of h.counterparties ?? []) counterparties.add(c);
+  if (counterparties.size === 0) return hits;
+
+  const pairs = findLookalikes([...new Set([...watched, ...counterparties])]);
+  if (pairs.length === 0) return hits;
+
+  // Only pairs that bring in something NEW. Two watched addresses resembling
+  // each other is a fact about the watch set, not an event, and re-reporting it
+  // on every poll would be noise.
+  const suspects = new Set<string>();
+  for (const p of pairs) {
+    for (const side of [p.established, p.suspect]) {
+      if (counterparties.has(side) && !watched.includes(side)) suspects.add(side);
+    }
+  }
+  if (suspects.size === 0) return hits;
+
+  return hits.map((h) =>
+    (h.counterparties ?? []).some((c) => suspects.has(c)) && !h.reasons.includes("lookalike_appeared")
+      ? { ...h, reasons: [...h.reasons, "lookalike_appeared" as const] }
+      : h,
+  );
 }
 
 export interface PollSummary {

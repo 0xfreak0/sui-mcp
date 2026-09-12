@@ -13,6 +13,12 @@
   cap is listed in `more_pending` rather than silently truncated. Requires
   `SUI_STORE_PATH`.
 
+  Hits carry a reason: `value_in`, `value_out`, `capability_moved`,
+  `object_moved`, `sink_reached`, `lookalike_appeared` or `appeared`. Detail
+  reads object changes as well as balances, because a capability changes hands
+  without producing a balance change — the transfer most worth waking someone
+  for. The lookalike check costs no request.
+
 ## 1.15.0 (2026-09-11)
 
 ### Added

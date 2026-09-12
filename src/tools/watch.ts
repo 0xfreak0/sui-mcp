@@ -10,7 +10,7 @@ import {
   storeStatus,
 } from "../utils/store.js";
 import { currentCheckpoint, fetchDeltaDetail, fetchDeltas } from "../utils/watch-probe.js";
-import { evaluate, summarizePoll, type WatchEntry } from "../utils/watch.js";
+import { evaluate, flagLookalikes, summarizePoll, type WatchEntry } from "../utils/watch.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const NO_STORE =
@@ -131,10 +131,14 @@ export function registerWatchTools(server: McpServer) {
 
       const hits = [];
       for (const entry of entries) {
-        const txs = (deltas.get(entry.address) ?? []).map((t) => ({
-          ...t,
-          balance_changes: detail.get(t.digest) ?? [],
-        }));
+        const txs = (deltas.get(entry.address) ?? []).map((t) => {
+          const d = detail.get(t.digest);
+          return {
+            ...t,
+            balance_changes: d?.balance_changes ?? [],
+            object_movements: d?.object_movements ?? [],
+          };
+        });
         if (txs.length === 0) continue;
 
         const result = evaluate(entry, txs, { isSink });
@@ -144,7 +148,12 @@ export function registerWatchTools(server: McpServer) {
         advanceWatch(network, entry.address, result.last_checkpoint);
       }
 
-      return out(summarizePoll(entries.length, hits, deltaRequests + detailRequests, saturated));
+      // Costs no request: every address is already in hand. A lookalike of a
+      // watched address turning up as a NEW counterparty of that same wallet is
+      // exactly the shape of address poisoning.
+      const flagged = flagLookalikes(entries.map((e) => e.address), hits);
+
+      return out(summarizePoll(entries.length, flagged, deltaRequests + detailRequests, saturated));
     },
   );
 }

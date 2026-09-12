@@ -800,8 +800,27 @@ the signal is roughly one part in a million.
   address doing a transaction every two seconds: it fills the cap on every
   poll. `more_pending` says so — a permanently lagging watch that reads as
   complete is the same failure class as everything else in this file.
-- **`min_amount` filters VALUE only.** A labelled sink, or a transaction that
-  moved no coin (an NFT or a capability), is reported whatever its size.
+- **`min_amount` filters VALUE only.** A labelled sink, a capability handover
+  or any object move has no amount to measure, so a floor must never suppress
+  one.
+- **Detail reads object changes, not just balances.** A capability changes
+  hands WITHOUT a balance change, which is the transfer most worth waking
+  someone for. `affectedAddress` does return those transactions — verified on a
+  real UpgradeCap handover, which appears in both parties' histories — so the
+  watch already fired on them and only needed to say WHAT moved. Batch is 5
+  digests, not 20: object changes are many nodes each and the 300-node limit
+  binds long before the byte cap (8 digests = 4,767 bytes, rejected).
+- **`flagLookalikes` costs no request.** The watch set and this poll's
+  counterparties are already in hand. It fires only when a NEW counterparty
+  resembles a WATCHED address — two watched addresses resembling each other is
+  a fact about the set, not an event.
+- **Every `HitReason` must actually be emitted.** The first version declared
+  `capability_moved` and `lookalike_appeared` in the type and produced neither,
+  which advertises detection that does not happen.
+
+**Nothing triggers a watch except `poll_watch`.** There is no timer, no push and
+no background process; the tool is cheap enough to call on a loop, which is not
+the same as monitoring. Say so rather than implying otherwise.
 
 ### Address poisoning
 

@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { readObjectMovements } from "../src/utils/object-flow.js";
 import {
   evaluate,
+  flagLookalikes,
   planBatches,
   summarizePoll,
   WATCH_BATCH_SIZE,
@@ -202,5 +204,102 @@ describe("summarizePoll — a saturated poll is not a complete one", () => {
 
   it("stays silent and tiny when nothing was capped", () => {
     expect(summarizePoll(5, [], 1).more_pending).toBeUndefined();
+  });
+});
+
+describe("evaluate — objects, not just coins", () => {
+  const P2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
+  const addrOwner = (a: string) => ({ __typename: "AddressOwner", address: { address: a } });
+  const st = (type: string, owner: unknown) => ({
+    asMoveObject: { contents: { type: { repr: type } } },
+    owner: owner as never,
+  });
+  const objTx = (type: string, from: string, to: string): DeltaTx => ({
+    digest: "dobj",
+    checkpoint: 101,
+    balance_changes: [],
+    object_movements: readObjectMovements([
+      { address: "0xobj", idCreated: false, idDeleted: false, inputState: st(type, addrOwner(from)), outputState: st(type, addrOwner(to)) },
+    ]),
+  });
+
+  /**
+   * A capability changes hands with NO balance change, which is precisely the
+   * transfer worth waking someone for: mint authority, upgrade rights.
+   */
+  it("fires capability_moved when mint authority leaves", () => {
+    const { hits } = evaluate(entry(), [objTx(`${P2}::coin::TreasuryCap<0xa::t::T>`, W, OTHER)]);
+    expect(hits[0]!.reasons).toContain("capability_moved");
+    expect(hits[0]!.reasons).not.toContain("appeared");
+    expect(hits[0]!.objects).toEqual(["coin::TreasuryCap"]);
+    expect(hits[0]!.capability_note).toMatch(/create supply without limit/i);
+  });
+
+  it("reports an ordinary object move without the capability language", () => {
+    const { hits } = evaluate(entry(), [objTx("0xabc::hero::Hero", W, OTHER)]);
+    expect(hits[0]!.reasons).toEqual(["object_moved"]);
+    expect(hits[0]!.capability_note).toBeUndefined();
+  });
+
+  /** An amount floor must never suppress a transfer that has no amount. */
+  it("never suppresses a capability move on min_amount", () => {
+    const { hits } = evaluate(entry({ min_amount: "99999999" }), [
+      objTx(`${P2}::package::UpgradeCap`, W, OTHER),
+    ]);
+    expect(hits).toHaveLength(1);
+  });
+
+  it("ignores an object move between two other parties", () => {
+    const { hits } = evaluate(entry(), [objTx("0xabc::hero::Hero", OTHER, SINK)]);
+    expect(hits[0]!.reasons).toEqual(["appeared"]);
+    expect(hits[0]!.objects).toBeUndefined();
+  });
+
+  /** A renounced capability is the opposite finding and must not read as theft. */
+  it("does not call a renunciation a capability move", () => {
+    const burn = `0x${"0".repeat(64)}`;
+    const { hits } = evaluate(entry(), [objTx(`${P2}::package::UpgradeCap`, W, burn)]);
+    expect(hits[0]!.reasons).toContain("object_moved");
+    expect(hits[0]!.reasons).not.toContain("capability_moved");
+  });
+});
+
+describe("flagLookalikes", () => {
+  const WATCHED = `0xcafe${"1".repeat(56)}beef`;
+  const TWIN = `0xcaf1${"2".repeat(56)}beef`;
+  const hit = (counterparties: string[]) => ({
+    address: WATCHED,
+    digest: "d1",
+    checkpoint: 1,
+    reasons: ["value_in" as const],
+    counterparties,
+  });
+
+  /**
+   * The shape of address poisoning against an investigation: a lookalike of a
+   * WATCHED address turns up as a new counterparty of that same wallet.
+   */
+  it("flags a new counterparty that resembles a watched address", () => {
+    const out = flagLookalikes([WATCHED], [hit([TWIN])]);
+    expect(out[0]!.reasons).toContain("lookalike_appeared");
+  });
+
+  it("does not flag an ordinary counterparty", () => {
+    const out = flagLookalikes([WATCHED], [hit([`0x9999${"3".repeat(56)}0000`])]);
+    expect(out[0]!.reasons).not.toContain("lookalike_appeared");
+  });
+
+  /**
+   * Two watched addresses resembling each other is a fact about the watch set,
+   * not an event. Re-reporting it every poll would be noise.
+   */
+  it("does not flag two watched addresses resembling each other", () => {
+    const out = flagLookalikes([WATCHED, TWIN], [hit([TWIN])]);
+    expect(out[0]!.reasons).not.toContain("lookalike_appeared");
+  });
+
+  it("leaves hits untouched when there are no counterparties", () => {
+    const h = [{ address: WATCHED, digest: "d", checkpoint: 1, reasons: ["appeared" as const] }];
+    expect(flagLookalikes([WATCHED], h)).toEqual(h);
   });
 });

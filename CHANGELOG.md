@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`watch_addresses` and `poll_watch`.** Record a set of addresses during an
+  investigation and collect only what is new since the last poll. An empty poll
+  is 13 tokens and one request; a hit names the address, digest, checkpoint and
+  why it fired, never the transaction itself. Watching starts at the current
+  checkpoint, so adding an address does not replay its history. `min_amount`
+  filters coin movements only — a labelled sink or a transfer that moves no
+  coin is reported whatever its size — and an address that fills the per-poll
+  cap is listed in `more_pending` rather than silently truncated. Requires
+  `SUI_STORE_PATH`.
+
+  Hits carry a reason: `value_in`, `value_out`, `capability_moved`,
+  `object_moved`, `sink_reached`, `lookalike_appeared` or `appeared`. Detail
+  reads object changes as well as balances, because a capability changes hands
+  without producing a balance change — the transfer most worth waking someone
+  for. The lookalike check costs no request.
+
 ## 1.15.0 (2026-09-11)
 
 ### Added

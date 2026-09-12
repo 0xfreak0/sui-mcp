@@ -209,6 +209,27 @@ CREATE TABLE IF NOT EXISTS findings (
   evidence    TEXT,
   created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS watches (
+  -- Chain-qualified, like every other key here, so a watch on one network
+  -- cannot report movement from another.
+  account         TEXT PRIMARY KEY,
+  network         TEXT NOT NULL,
+  address         TEXT NOT NULL,
+  label           TEXT,
+  -- Highest checkpoint already reported. afterCheckpoint is EXCLUSIVE, so
+  -- this is asked for directly and yields the delta with no overlap.
+  --
+  -- Seeded with the chain's current checkpoint when the watch is created, not
+  -- with zero: a new watch means "tell me what happens NEXT", and starting at
+  -- zero would replay the wallet's entire history into the agent's context on
+  -- the first poll, which is the failure this whole design exists to avoid.
+  last_checkpoint INTEGER NOT NULL,
+  -- Raw units of any coin. Filters value movements only; a sink or a coinless
+  -- transaction fires regardless of size.
+  min_amount      TEXT,
+  added_at        INTEGER NOT NULL
+);
 `;
 
 /**
@@ -726,4 +747,86 @@ export function getCachedTransaction<T>(network: string, digest: string): T | nu
   } catch {
     return null;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Watches                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface StoredWatch {
+  address: string;
+  label?: string;
+  last_checkpoint: number;
+  min_amount?: string;
+  added_at: number;
+}
+
+/** Add or replace a watch. Returns false when no store is configured. */
+export function saveWatch(network: string, w: StoredWatch): boolean {
+  initStore();
+  if (!db) return false;
+  db.prepare(
+    `INSERT INTO watches (account, network, address, label, last_checkpoint, min_amount, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(account) DO UPDATE SET
+       label = excluded.label,
+       min_amount = excluded.min_amount`,
+  ).run(
+    `${network}:${w.address}`,
+    network,
+    w.address,
+    w.label ?? null,
+    w.last_checkpoint,
+    w.min_amount ?? null,
+    w.added_at,
+  );
+  return true;
+}
+
+export function listWatches(network: string): StoredWatch[] {
+  initStore();
+  if (!db) return [];
+  const rows = db
+    .prepare(
+      `SELECT address, label, last_checkpoint, min_amount, added_at
+       FROM watches WHERE network = ? ORDER BY added_at`,
+    )
+    .all(network) as Array<{
+    address: string;
+    label: string | null;
+    last_checkpoint: number;
+    min_amount: string | null;
+    added_at: number;
+  }>;
+  return rows.map((r) => ({
+    address: r.address,
+    ...(r.label ? { label: r.label } : {}),
+    last_checkpoint: r.last_checkpoint,
+    ...(r.min_amount ? { min_amount: r.min_amount } : {}),
+    added_at: r.added_at,
+  }));
+}
+
+export function removeWatch(network: string, address: string): boolean {
+  initStore();
+  if (!db) return false;
+  const r = db.prepare(`DELETE FROM watches WHERE account = ?`).run(`${network}:${address}`) as {
+    changes?: number;
+  };
+  return (r.changes ?? 0) > 0;
+}
+
+/**
+ * Advance a watch's high-water mark.
+ *
+ * Called even when triggers suppressed every hit: a filtered transaction has
+ * still been seen, and leaving the cursor behind would re-read it on every
+ * poll forever.
+ */
+export function advanceWatch(network: string, address: string, checkpoint: number): void {
+  initStore();
+  if (!db) return;
+  db.prepare(
+    `UPDATE watches SET last_checkpoint = ? WHERE account = ? AND last_checkpoint < ?`,
+  ).run(checkpoint, `${network}:${address}`, checkpoint);
 }

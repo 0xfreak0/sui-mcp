@@ -180,6 +180,35 @@ reach for it. Someone lands on them to get work done.
 - **Show a call and its output.** Concrete beats prose for anything with
   arguments.
 
+### Prose that reads as machine-written
+
+The rules above say what to document. These say how to write it. Every pattern
+below was found in this repo's own README and removed; they are listed by name
+because "sound natural" is not a check anyone can apply.
+
+- **State the fact, then stop.** Do not build to a reveal and do not close a
+  paragraph with a summarising line. "That last step is the point." "Two
+  separate marks." "One is noise; the other is the thing you're looking for."
+  All three were deleted. If the paragraph needed a closer to land, the opening
+  sentence was wrong.
+- **No sentence fragments for emphasis.** A fragment reads as a beat of drama.
+  Write the full sentence.
+- **Em-dashes are for tables and bullet labels, not prose.** A mid-sentence
+  em-dash used as a pause is the single most recognisable tell. The README went
+  from 36 to 22, and all 22 that remain separate a bold label from its
+  description in a list or table. Use a comma, a colon, or a second sentence.
+- **No trailing "which is what/why" clauses.** "…13 tokens, which is what makes
+  it callable on a loop" became "…13 tokens, so it is cheap to call
+  repeatedly." The clause exists to editorialise about the fact just stated.
+- **No italics on a single word for stress.** If the emphasis matters, the
+  sentence should carry it.
+- **Avoid "X is not Y, it is Z"** and its relatives. Say what it is.
+- **Do not explain the significance of a number after giving it.** The reader
+  can see that 8,801 tokens is a lot.
+
+`npm run lint:prose` greps the docs for these and prints file:line. It is
+advisory, not a CI gate: a real exception should be easy to keep.
+
 This file is the exception, and only for *rules a future change would
 otherwise get wrong*. "Do not re-drop the archive fallback, it does return
 balance changes" is a rule. "I tried removing it and it broke" is a story —

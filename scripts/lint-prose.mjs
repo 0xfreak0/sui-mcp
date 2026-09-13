@@ -36,7 +36,9 @@ for (const file of FILES) {
     if (fenced) return;
     // Table rows and bullet labels use an em-dash as a separator by convention.
     const isTable = line.trimStart().startsWith("|");
-    const isBulletLabel = /^\s*[-*]\s+\*\*/.test(line);
+    // `- **Label** — description` and `- `cmd` — description` are both the
+    // label convention, not prose.
+    const isBulletLabel = /^\s*[-*]\s+(\*\*|`)/.test(line);
     for (const [re, what] of RULES) {
       if ((isTable || isBulletLabel) && what.startsWith("em-dash")) continue;
       if (re.test(line)) {

@@ -14,7 +14,7 @@ npm run hooks:install
 ```
 
 `hooks:install` points `core.hooksPath` at `.githooks/`. Git does not clone
-hooks, so this is per-checkout and opt-in — a fresh clone has no protection
+hooks, so this is per-checkout and opt-in. A fresh clone has no protection
 until you run it.
 
 ## Never publish
@@ -22,8 +22,8 @@ until you run it.
 Two things must not reach this repo, and both have reached it before:
 
 - **`claude.ai/code/session_...` URLs.** The repo is public; the transcript is
-  not. Coding agents offer a `Claude-Session:` commit trailer — do not accept
-  it. Keep `Co-Authored-By:`.
+  not. Coding agents offer a `Claude-Session:` commit trailer. Do not accept
+  it, and keep `Co-Authored-By:`.
 - **A maintainer's own wallet addresses or SuiNS names**, in code, tests,
   fixtures, docs *or commit messages*. Use neutral placeholders (`0xw1`).
 
@@ -44,8 +44,8 @@ protect. Copy `patterns.local.example` and fill it in; the hook reports only
 that *a* private pattern matched, never which.
 
 CI re-runs the tracked patterns on every pull request, so `--no-verify` does
-not get a session URL merged. It cannot check the private list — those patterns
-are not in the repo — so that half rests on the local hook.
+not get a session URL merged. It cannot check the private list, since those
+patterns are deliberately not in the repo, so that half rests on the local hook.
 
 ## Development
 
@@ -81,7 +81,7 @@ are not in the repo — so that half rests on the local hook.
   schema change, or before a release. The offline tests pin mainnet fixtures and
   cannot notice that the chain or the SDK moved underneath them.
 - Measuring something new? Write a throwaway script and delete it. Record the
-  number in a commit message or `CLAUDE.md` — a script kept to rediscover a
+  number in a commit message or `CLAUDE.md`. A script kept to rediscover a
   number you already wrote down just rots against live mainnet.
 
 ## Pull requests
@@ -93,14 +93,14 @@ are not in the repo — so that half rests on the local hook.
 ## Keeping the protocol registry current
 
 `src/data/protocols.json` maps package IDs to protocols, and it drifts two ways:
-new protocols launch, and — the one that bites — **existing protocols upgrade**.
+new protocols launch, and (the case that actually bites) **existing protocols upgrade**.
 A package upgrade produces a new package ID, so a protocol we already support
 silently stops decoding, with no error and no signal.
 
 Upgrades are handled by lineage rather than by hand. `src/data/protocol-roots.json`
 maps each curated package back to the root of its upgrade lineage (its version-1
 package ID), which is the same for every version a protocol will ever publish,
-so an upgrade nobody has curated still identifies — with its real category, not
+so an upgrade nobody has curated still identifies, with its real category, not
 just a name. Regenerate it whenever you add entries:
 
 ```bash
@@ -110,7 +110,7 @@ npm run sync:protocol-roots                # rewrites src/data/protocol-roots.js
 It refuses to write when two curated entries in one lineage disagree about the
 protocol's name or category, since that would mislabel every future version.
 `test/protocols-data.test.ts` fails if a curated protocol has no lineage
-coverage, which is what catches a forgotten re-run.
+coverage, which catches a forgotten re-run.
 
 Lineage resolution is a lookup, not a guarantee of freshness: a protocol that
 *redeploys* rather than upgrades mints an unrelated root that no lineage walk
@@ -120,13 +120,13 @@ discovered.
 ## Mocks must be shapes the service can actually produce
 
 A mock is an assertion about the outside world. When it asserts something
-false, the test stops testing anything — and it keeps passing, which is worse
+false, the test stops testing anything. It also keeps passing, which is worse
 than failing.
 
 Three bugs shipped green this way:
 
 - `activeValidators(first: 200)` was mocked as one page with no `pageInfo`.
-  Mainnet rejects that query outright — *"Page size is too large: 200 > 50"* —
+  Mainnet rejects that query outright ("Page size is too large: 200 > 50"),
   so `identify_address` had **never once** detected a validator and
   `get_staking_summary` failed on every call naming one. Every test passed.
 - Absence was mocked as `new Error("not found")`. The service signals it with a
@@ -149,7 +149,7 @@ httpOk(body) / httpError(401)     // fetch-shaped responses
 
 The distinction `notFoundError()` and `grpcError()` draw is load-bearing, not
 stylistic. Absence is an answer callers conclude things from —
-`identify_address` reports a wallet on it — while an outage means the question
+`identify_address` reports a wallet on it, while an outage means the question
 could not be asked. A test that blurs them proves nothing about the code that
 keeps them apart.
 
@@ -160,13 +160,13 @@ work around it by writing the literal by hand.
 
 Bridges live in `src/utils/bridge/detect.ts`, and the bar for adding one is
 higher than for a protocol entry: a marker that never fires is dead weight, and
-one that fires on the wrong call is worse than nothing.
+one that fires on the wrong call does more harm than none at all.
 
 **Verify on mainnet before adding anything.** Find the package, list its
 modules and structs, then sample real events to confirm the field names and see
 what a live payload actually contains. Every entry currently in the registry was
 added only after a real transaction was captured, and the payloads are the test
-fixtures — `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` are built
+fixtures. `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` are built
 from transactions named in their comments.
 
 Two things that sampling catches and guessing does not:
@@ -201,7 +201,7 @@ ready-to-edit `protocols.json` stubs but never writes to the registry:
 identifying the protocol behind an address and choosing its category are
 judgement calls.
 
-Before adding an entry, get evidence — never assert a package ID from memory:
+Before adding an entry, get evidence. Never assert a package ID from memory:
 
 - **Move Registry**: `https://mainnet.mvr.mystenlabs.com/v1/resolution/@org/app`
   returns the authoritative `package_id`. This is the best source when it works.
@@ -209,12 +209,12 @@ Before adding an entry, get evidence — never assert a package ID from memory:
   over GraphQL. Module names are usually self-identifying (`alphafi_*`,
   `batch_price_attestation`, `guardian_set`).
 
-MVR coverage is thin — roughly half of even our own curated registry is
+MVR coverage is thin. Roughly half of even our own curated registry is
 unregistered, and some large protocols (AlphaFi) have no MVR presence at all.
 That is why the registry is hand-maintained and MVR is only a fallback:
 `lookupProtocolDisplay` will show an MVR name for an unknown package, but
 `lookupProtocol` stays curated-only because fund tracing makes pass-through
-decisions from it. The lineage tier is on the curated side of that line — only
+decisions from it. The lineage tier sits on the curated side of that line: only
 the `UpgradeCap` holder can add a version, so a lineage is a fact the chain
 enforces, unlike a name anybody may register.
 
@@ -225,7 +225,7 @@ in both `registry.ts` and that test's list.
 ## Releasing
 
 The npm package is `sui-analytics-mcp`; the MCP Registry entry is
-`io.github.0xfreak0/sui-mcp`. They are different names on purpose — `sui-mcp` was
+`io.github.0xfreak0/sui-mcp`. The names differ on purpose, because `sui-mcp` was
 already taken on npm by an unrelated package.
 
 Releases are cut by pushing a version tag. `.github/workflows/publish.yml` runs
@@ -255,7 +255,7 @@ Things that are easy to get wrong here:
   disagrees with `package.json`.
 - **The post-publish check runs against the EXACT version, not `@latest`.** The
   dist-tag is a second thing that has to propagate, so verifying `@latest` can
-  fail while the version itself is already installable — and it would silently
+  fail while the version itself is already installable, and it would silently
   pass against the previous release if the tag lagged.
 - **Anything that inspects a failed command's output must CAPTURE it.**
   `stdio: "inherit"` prints to the console and leaves `err.stdout`/`err.stderr`
@@ -288,5 +288,5 @@ Things that are easy to get wrong here:
 ### What needs a new release
 
 Only changes to published code. Editing the README, CI, or docs doesn't require
-one — but note that `description` in `package.json` and `server.json` is what
+one, but note that `description` in `package.json` and `server.json` is what
 directory pages display, and updating it does mean a release.

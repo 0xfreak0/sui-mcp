@@ -1,13 +1,13 @@
 ---
 name: sui-forensics
-description: Method for investigating activity on the Sui blockchain with sui-mcp — how to open a case, which tool answers which question, what each evidence tier licenses you to claim, and the conclusions to refuse. Use when tracing stolen or laundered funds, attributing a wallet, identifying an unknown package, or assessing whether addresses share an operator.
+description: Method for investigating activity on the Sui blockchain with sui-mcp: how to open a case, which tool answers which question, what each evidence tier licenses you to claim, and the conclusions to refuse. Use when tracing stolen or laundered funds, attributing a wallet, identifying an unknown package, or assessing whether addresses share an operator.
 ---
 
 # Investigating on Sui
 
 The hard part of this work is not fetching data. It is knowing what the data
 does **not** say. Chain data is complete and public, which makes a wrong
-conclusion look exactly like a right one — fluent, specific, and sourced.
+conclusion look exactly like a right one: fluent, specific, and sourced.
 
 Everything below exists because the plain reading was wrong at least once.
 
@@ -37,8 +37,8 @@ holds one for a client.
 ## Opening a case
 
 1. **Set your sinks first.** Labels decide where a trace stops. Curated ones
-   ship nearly empty on purpose — attribution is case-specific and mostly not
-   publishable — so add what you know with `manage_labels`, or point
+   ship nearly empty on purpose, since attribution is case-specific and mostly
+   not publishable. Add what you know with `manage_labels`, or point
    `SUI_LABELS_FILE` at a private file for a whole case. A trace that runs past
    a known exchange, or stops at one you never told it about, is usually this.
 2. **Identify before you trace.** `identify_address`. A hop that is a package or
@@ -47,7 +47,7 @@ holds one for a client.
 3. **Trace with `trace_funds`.** Read `stop_reason` and `unfollowed` *before* the
    path: a trace follows one branch, and splitting across wallets is the ordinary
    laundering move.
-4. **Attribute with `find_funding_source`** — or `find_funding_sources` for
+4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
    several addresses at once, which also reports co-funding and its denominators.
    Then measure the funder with `get_address_fanout` before believing anything.
 5. **Cluster only once you have a reason to.** `build_wallet_edges` answers
@@ -64,7 +64,7 @@ Several wallets tracing to one funder is damning until you measure the funder:
 
 How to actually run the control:
 
-1. `sample_control_addresses` for a comparison group — addresses drawn the same
+1. `sample_control_addresses` for a comparison group: addresses drawn the same
    way as your subjects but with no reason to be related.
 2. Run the *same* test on them. If you are quoting "4 of 6 of these wallets share
    a funder", the number is meaningless until you know what 6 unrelated wallets
@@ -74,7 +74,7 @@ How to actually run the control:
 The same applies to co-funding. A payout to exactly the two addresses under
 investigation is close to decisive; one paying twenty, of which two are yours, is
 a list an unrelated wallet lands in by chance. The denominator is
-`transaction_recipient_count` — read it before the group.
+`transaction_recipient_count`. Read it before the group.
 
 ## What a cluster actually asserts
 
@@ -108,13 +108,13 @@ Three fields decide how much weight a cluster carries:
 ## A coin's symbol is not its identity
 
 8,008 mainnet coins share a symbol with another. 585 claim `SUI`, 100 claim
-`DEEP`. The imitators are named to be mistaken — "Sui v2 (migrate asset:
-suiv2.com)" — and nothing cheap tells them apart: the fake USDC's supply is
+`DEEP`. The imitators are named to be mistaken, for example "Sui v2 (migrate
+asset: suiv2.com)", and nothing cheap tells them apart: the fake USDC's supply is
 LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
 
 - **`verified: false` means nothing vouches for this coin**, not that it is
   fake. It is still the coin the transaction moved. What you may not write is
-  "the attacker moved 10,000 USDC" — you do not know which USDC.
+  "the attacker moved 10,000 USDC", because you do not know which USDC.
 - **A balance change carries `coin_verified`.** Use it. A trace through an
   imitator reads exactly like a trace through the real asset.
 - **`assumed scale` means the amount itself may be wrong.** Decimals for an
@@ -131,7 +131,7 @@ which has nothing to do with balance. A scan that hits its budget returns the
 largest holder it happened to see.
 
 Measured on SUI: the reported top holder was 66 SUI at `max_scan` 200, 522 at
-400, 3,454 at 800 and 25,000 at 5,000 — **zero of the top five at 200 survived
+400, 3,454 at 800 and 25,000 at 5,000. **Zero of the top five at 200 survived
 to 800**, and the real top holder holds millions. The number climbs with effort
 and never converges.
 
@@ -146,7 +146,7 @@ and never converges.
 ## A balance change only sees coins
 
 Sui is object-based. A balance change is derived from `Coin<T>`, so everything
-else — an NFT, a Kiosk, an admin capability — changes hands invisibly to fund
+else (an NFT, a Kiosk, an admin capability) changes hands invisibly to fund
 tracing. Measured: of 90 sampled capability objects, 74 had a last transfer with
 no non-gas balance change at all.
 
@@ -166,13 +166,13 @@ no non-gas balance change at all.
 - **`high_consequence` is narrow on purpose.** Only `UpgradeCap`,
   `TreasuryCap`, `DenyCap`, `DenyCapV2` and `Publisher` carry a stated power. A
   protocol's own `AdminCap` is flagged as a capability with no claim about what
-  it grants — read the package with `analyze_package` before asserting one.
+  it grants. Read the package with `analyze_package` before asserting one.
 - **Kiosk moves are custody changes.** A kiosk-held NFT is owned by the Kiosk
   object, so the trade reads `object -> object`. The controlling wallet is not
   named by the movement itself; resolve it before attributing.
 - **`appeared` means the previous holder is not recorded**, which is normal
   before roughly March 2024. It is not evidence of an unwrap, and not evidence
-  of a transfer — the chain did not say.
+  of a transfer. The chain did not say.
 
 ## An address's rendering is not its identity
 
@@ -191,7 +191,7 @@ across 75 random active wallets and 265 pages of history.
   as a transaction's sender with a negative balance change. Anything that reads
   the `counterparties` list alone will not see it.
 - **The pair is usually hops apart.** In a trace the comparison runs over the
-  whole chain, including recipients the trace declined to follow — an
+  whole chain, including recipients the trace declined to follow. An
   unfollowed branch imitating a followed one is the branch picked by eye.
 - **`direction_known: false` means the roles are not assigned.** The address
   with the larger footprint is named as established, and only when the gap is
@@ -213,7 +213,7 @@ across 75 random active wallets and 265 pages of history.
   upgraded package this is the original deployer, not whoever last upgraded.
 - **`holder_status` on the UpgradeCap** answers whether the code can still
   change. `burned` means the cap went somewhere unspendable and upgrade rights
-  are renounced — **that is a REDUCTION in risk**, and 27 of every 30 caps that
+  are renounced. **That is a REDUCTION in risk**, and 27 of every 30 caps that
   leave their publisher are burned rather than transferred. `transferred` is
   the uncommon one (about 2%), and even then it is not wrong on its own: teams
   move caps to treasuries and multisigs deliberately. Identify the holder.
@@ -228,7 +228,7 @@ module and function that raised it. Two readings to get right:
 - **An abort code is meaningless across packages.** Every package numbers its
   own aborts from zero, so `3` only means something beside the module that
   raised it. A `clever_error`, when present, names the constant the author
-  wrote — that is the answer, and the raw code is an implementation detail.
+  wrote. That is the answer, and the raw code is an implementation detail.
 - **Some failures are not rejections.** Congestion cancellation means the
   transaction was never invalid and a retry may succeed; out-of-gas says
   nothing about intent. Do not read either as an attempt that was stopped.
@@ -242,7 +242,7 @@ had already frozen the sender, which is attribution.
 **chain-derived attribution of an unusual kind**: not a protocol rule, but an
 issuer's own decision, recorded on chain and reversible by whoever holds the
 DenyCap. Somebody with authority over an asset concluded something about this
-address — worth knowing, and worth attributing to the issuer rather than to the
+address. Note it, and attribute it to the issuer rather than to the
 chain.
 
 - **A frozen address usually holds NONE of the coin that froze it.** Freezing
@@ -255,14 +255,14 @@ chain.
 ## Sponsorship
 
 `get_address_fanout` reports `sponsor_shape` alongside value fan-out, because
-paying someone's gas moves no value of your own — a relayer looks narrow by
+paying someone's gas moves no value of your own, so a relayer looks narrow by
 balance changes and is anything but.
 
 **`relayer` is proven; `private_sponsor` is provisional.** Breadth only grows
 with the window, and on one mainnet sponsor the count went 1 to 86 between a
 100- and an 800-transaction scan, crossing the threshold. If
 `sponsor_shape_provisional` is set, raise `max_transactions` before writing
-"narrow" — and never treat shared sponsorship through a relayer as a link.
+"narrow", and never treat shared sponsorship through a relayer as a link.
 
 ## Multisig
 
@@ -288,7 +288,7 @@ signed" over 8 transactions and over 200 are different claims; the tool reports
 
 `find_shared_multisig` searches the other way: given addresses you already
 suspect are related, it finds a multisig they jointly control even if it never
-appeared in your trace. A hit is proof. A **nil result is not** — it tests
+appeared in your trace. A hit is proof. A **nil result is not**, because it tests
 equal-weight committees of exactly the keys you passed, so it cannot rule out a
 weighted committee or one with a member you did not supply.
 
@@ -330,13 +330,13 @@ get the schema wrong in ways that fail silently.
 | What is this address doing over time? | `build_timeline` |
 | Write it down / hand it over | `save_finding`, `list_findings`, `export_case` |
 
-If a tool seems missing, call `enable_tools` — it is probably disabled rather
+If a tool seems missing, call `enable_tools`. It is probably disabled rather
 than absent. It takes `profile: "developer"` or `profiles: ["forensics",
 "developer"]`.
 
 **Cost, roughly.** Clustering one seed is ~50 queries and rises with
 `expand_budget`. A fan-out measurement is up to 20. Batch digests through
-`get_transactions` rather than looping `get_transaction` — ten separate calls is
+`get_transactions` rather than looping `get_transaction`. Ten separate calls is
 ten round trips for the same data.
 
 ## Conclusions to refuse
@@ -349,7 +349,7 @@ ten round trips for the same data.
 - **"Nothing was found, so nothing exists."** A pruned transaction and a wrong
   digest look identical. `not_found` is "could not look", not "not there".
 - **"They share a funder, therefore an operator."** Only if that funder is
-  narrow — and a single narrow funder is what `medium` confidence is made of.
+  narrow, and a single narrow funder is all `medium` confidence rests on.
   Corroboration is what moves it past that.
 - **"A batch payout means shared control."** Twenty addresses paid 5 SUI each in
   one transaction share a list, not an operator.
@@ -362,7 +362,7 @@ ten round trips for the same data.
 - **Naming a real person or company** from chain data plus a matching username.
   Handles are not unique and squatting is routine.
 - **An expired SuiNS name is still attribution, not the reverse.** Reverse lookup
-  goes silent once a name lapses, so `names_held` carries former aliases — the
+  goes silent once a name lapses, so `names_held` carries former aliases. The
   address was known by that name at the time of the activity. Do not read the
   current name as the only one.
 
@@ -397,7 +397,7 @@ get_transaction     <digest>  → the funding tx paid 20 addresses 5 SUI each.
 ```
 
 What gets written down: the trace, with digests, `chain-derived`. The funding
-source, with its fan-out measurement. **Not** the 17-member cluster — every edge
+source, with its fan-out measurement. **Not** the 17-member cluster, where every edge
 ran through one funder, and that funder made a twenty-way uniform payout, which
 is a list rather than an operator. The finding records the payout as a fact and
 says the cluster was not relied upon.
@@ -421,7 +421,7 @@ Say what you checked, what you found, and what you could not determine. A findin
 that names someone should carry the transaction digests that support it, so a
 reader can verify it without trusting you.
 
-When a result rests on one intermediary — one shared funder, one sponsor — say
+When a result rests on a single intermediary (one shared funder, one sponsor), say
 so. Sixteen edges through a single address is one fact stated sixteen times, and
 if that address turns out to be a payout service the whole thing falls at once.
 

@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd — then reconstruct it all on a timeline.
+Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd, then reconstruct it all on a timeline.
 
-67 tools. It also does the ordinary things well — wallet overviews, DeFi positions, NFTs, prices, Move package analysis — but the reason to pick this one is the forensics.
+67 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
 
 ## Install
 
-Add this to your MCP client config — Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP over stdio:
+Add this to your MCP client config (Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP over stdio):
 
 ```json
 {
@@ -31,7 +31,7 @@ Doing investigative work? Start with the forensics tools loaded:
 
 ## What an investigation looks like
 
-Ranking a lending protocol's wallets for a day, then testing whether a cluster is coordinated — six calls:
+Ranking a lending protocol's wallets for a day, then testing whether a cluster is coordinated, in six calls:
 
 ```
 aggregate_events(module: <package>, from: "2026-08-07T00:00:00Z", to: "now")
@@ -45,17 +45,17 @@ find_funding_sources(addresses: [...25], depth: "first_hop")
   → 23 of 25 share one funder, funded in three bursts of under a minute
 
 get_address_fanout(<that funder>)
-  → 1,623 recipients — "distributor", so co-funding alone proves nothing;
-    the second-level timing clustering is what carries it
+  → 1,623 recipients, classified "distributor", so shared funding alone
+    proves nothing here; the second-level timing clusters carry the case
 ```
 
-That last step is the point. Several wallets tracing to one funder looks decisive until you measure the funder. Every funding result carries that measurement so a coincidence doesn't get reported as a link.
+Several wallets tracing back to one funder looks decisive until you measure the funder itself. A distributor with 1,623 recipients funds unrelated wallets all day, so shared funding on its own says very little. Every funding result includes the fan-out measurement for this reason.
 
-Fan-out reports **shape as well as size**, because size alone doesn't separate the cases that matter. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts — 399 and 431 — and completely different flow: the exchange ran balanced at 0.73 out/in (deposits in, withdrawals out) while the funder ran 9.78 (it pays many and is paid by few). One is noise in an investigation; the other is the thing you're looking for.
+Fan-out reports shape as well as size. Measured on the same day, a known exchange and a sybil funder had almost identical counterparty counts, 399 and 431, but very different flow. The exchange ran balanced at 0.73 out/in, deposits in and withdrawals out. The funder ran 9.78, paying many addresses and being paid by few.
 
 ## Multisig
 
-A Sui address is the hash of whatever authenticates it. For a multisig, the threshold, every member key and every weight are part of that hash, so the committee can be read off the address and checked — derive it, confirm it reproduces the address.
+A Sui address is the hash of whatever authenticates it. For a multisig, the threshold, every member key and every weight are part of that hash, so the committee can be read off the address and checked by deriving it and confirming it reproduces the address.
 
 **Identify a wallet and its committee.** `identify_address` returns the shape, every member address, and each member resolved to its own name, labels and SuiNS history.
 
@@ -97,16 +97,16 @@ find_shared_multisig([0xafe2fafa…, 0xc848c5cc…])
 
 **Clustering.** `build_wallet_edges` emits a `co_signer` edge for any key that can spend a wallet on its own, and marks clusters built only from those `chain-derived` rather than `heuristic`. Keys sitting on more committees than the limit are treated as custody or wallet-provider keys and listed under `excluded_co_signers` instead of linking everyone who uses that provider.
 
-**Limits, also stated in the tool output.** Member order is part of the address, so `find_shared_multisig` is factorial in committee size and refuses past five keys; it covers equal-weight committees only, so a nil result is not a negative finding. A wallet that has never sent a transaction cannot be classified at all — it has produced no signature — and comes back as unknown rather than as an ordinary wallet.
+**Limits, also stated in the tool output.** Member order is part of the address, so `find_shared_multisig` is factorial in committee size and refuses past five keys; it covers equal-weight committees only, so a nil result is not a negative finding. A wallet that has never sent a transaction cannot be classified at all, because it has produced no signature. It comes back as unknown rather than as an ordinary wallet.
 
 zkLogin and passkey wallets go through the same path. zkLogin reports its OAuth issuer, which is all the chain discloses about the account.
 
 ## What a result tells you about itself
 
-Several tools now qualify their own answers, because a confident-looking number
-is worse than an absent one.
+Several tools qualify their own answers rather than returning a number that
+looks more certain than it is.
 
-**Is this coin the one you meant?** A symbol is not an identifier on Sui — 8,008
+**Is this coin the one you meant?** A symbol is not an identifier on Sui. 8,008
 mainnet coins share one with another, and imitators are named to be mistaken.
 `analyze_token` reports `verified`, and every balance change in a trace carries
 `coin_verified`:
@@ -116,9 +116,10 @@ mainnet coins share one with another, and imitators are named to be mistaken.
 +202.361728 USDC                           coin_verified=true
 ```
 
-Two separate marks. `unverified` is about *which* coin. `assumed scale` is about
-whether the number is right at all — decimals for an unknown coin are a guess,
-and 47 of 289 imitators declare a different scale from the coin they imitate.
+These are two separate marks. `unverified` refers to which coin it is.
+`assumed scale` refers to whether the amount is right: decimals for an unknown
+coin are a guess, and 47 of 289 imitators declare a different scale from the
+coin they imitate.
 
 An ambiguous symbol returns candidates rather than a coin. `USDC` matches seven
 legitimate verified coins on Sui (Circle's, Wormhole's, Celer's), so picking one
@@ -129,7 +130,7 @@ module and function that raised it, and a clever error's constant name where the
 author defined one.
 
 **Who deployed this, and can they still change it?** `analyze_package` and
-`identify_address` report `publisher` — the address that created the package,
+`identify_address` report `publisher`, the address that created the package,
 attributed to the lineage root. The UpgradeCap carries `holder_status`:
 `burned` means upgrade rights were renounced, which *reduces* risk, and is what
 27 of every 30 departing caps did.
@@ -140,7 +141,7 @@ the coin that froze it, so it checks every configured coin type rather than the
 ones it holds.
 
 **What moved that was not a coin?** `trace_funds` reports `object_flow`.
-Sui is object-based, so a balance change only covers `Coin<T>` — an NFT, a
+Sui is object-based, so a balance change only covers `Coin<T>`. An NFT, a
 Kiosk or a capability changes hands without producing one:
 
 ```
@@ -152,15 +153,15 @@ Objects:
     Whoever holds this can publish new code for the package.
 ```
 
-Kiosk moves count: a kiosk-held NFT is owned by the Kiosk object, so the
-ordinary NFT trade reads `object -> object` and is reported as a custody
-change. A DeFi position is named by its protocol (`position::Position
-(Cetus)`) rather than lumped in with pictures.
+Kiosk moves are included. A kiosk-held NFT is owned by the Kiosk object, so an
+ordinary NFT trade reads `object -> object`, and that counts as a custody
+change. DeFi position objects are named by their protocol, for example
+`position::Position (Cetus)`.
 
 Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2` and
 `Publisher` are marked as carrying control. A capability sent to an unspendable
-address is reported as `renounced_capabilities` — rights given up, the opposite
-of a handover.
+address is reported under `renounced_capabilities` instead, since those rights
+have been given up rather than transferred.
 
 **What has happened since I last looked?** `watch_addresses` records a set of
 addresses and where it last looked; `poll_watch` returns only what is new:
@@ -169,10 +170,10 @@ addresses and where it last looked; `poll_watch` returns only what is new:
 { "watched": 20, "active": 0, "hits": [], "requests": 1 }
 ```
 
-That empty answer is 13 tokens and one request, which is what makes it callable
-on a loop — nothing triggers a poll on its own, so the caller drives it. A hit
-names the address, digest, checkpoint and why it fired — never the transaction
-itself, which stays a `get_transaction` call away:
+That empty answer is 13 tokens and one request, so it is cheap to call
+repeatedly. Nothing triggers a poll on its own; the caller drives it. A hit
+names the address, digest, checkpoint and why it fired. It does not include the
+transaction, which you read separately with `get_transaction`:
 
 | reason | |
 |---|---|
@@ -191,13 +192,13 @@ silently truncated. Requires `SUI_STORE_PATH`.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks coin objects in object-id order, which is unrelated to
-balance, so a scan that stops early returns the largest holder *it saw*. On SUI
-the reported top holder goes from 66 SUI at `max_scan` 200 to 3,454 at 800,
-with no overlap in the top five. A truncated scan therefore returns
-`sampled_holders` — no rank, no percentage of supply — and says so. Raise
-`max_scan` until `truncated` is false for a real ranking, which is only
-feasible for coins few enough to enumerate. `analyze_token` makes the same
-distinction.
+balance. A scan that stops early returns the largest holder it happened to see.
+On SUI the reported top holder goes from 66 SUI at `max_scan` 200 to 3,454 at
+800, with no overlap in the top five. A truncated scan therefore returns
+`sampled_holders`, without a rank or a percentage of supply, along with a
+caveat. Raise `max_scan` until `truncated` is false to get a real ranking; that
+is only practical for coins with few enough objects to enumerate.
+`analyze_token` reports the same distinction.
 
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`
@@ -210,31 +211,32 @@ when two of them are close enough to be mistaken for one another:
 
 An attacker generates an address sharing the leading and trailing characters of
 one you already deal with, sends dust from it, and waits for someone to copy the
-wrong row out of their own history. The check runs over senders, balance-change
-recipients and the branches a trace declined to follow — a poisoning wallet
-*sends*, so it never appears as a counterparty, and the lookalike is usually
-several hops from the address it imitates.
+wrong row out of their own history. The check covers senders, balance-change
+recipients and the branches a trace declined to follow. A poisoning wallet sends
+rather than receives, so it never shows up as a counterparty, and the lookalike
+is usually several hops from the address it imitates.
 
-A pair is reported when at least three characters match at each end — about one
-collision in seventeen million pairs by chance. They do not render identically
-at every width; what they share is both ends, which is what defeats a glance and
-a short truncation.
+A pair is reported when at least three characters match at each end, roughly one
+collision in seventeen million pairs by chance. The two addresses do not render
+identically at every width; they match at both ends, which is enough to fool a
+glance or a short truncation.
 
-The address with the larger footprint is named as the established side, and only
-when the gap is wide enough to mean something — dust repeating inside one page
-is the normal shape of this attack, so a small margin is not evidence. Otherwise
-the pair is reported with `direction_known: false` rather than guessing.
+The address with the larger footprint is named as the established side, but only
+when the gap is wide enough to support it. Dust repeating inside a single page
+is normal for this attack, so a small margin proves nothing. Below that, the
+pair is reported with `direction_known: false`.
 
 **Does this address pay other people's gas?** `get_address_fanout` reports
-`sponsor_shape` — invisible to value fan-out, since sponsoring moves none of
-the sponsor's own money. `relayer` is proven; `private_sponsor` off a truncated
-scan is flagged provisional, because breadth only grows with the window.
+`sponsor_shape`. This is invisible to value fan-out, since sponsoring moves
+none of the sponsor's own money. `relayer` is proven; `private_sponsor` off a
+truncated scan is flagged provisional, since breadth only grows with the
+window.
 
 ## The forensics skill
 
-The server gives Claude chain access. It does not, on its own, give it method —
-which tool answers which question, what a control group is for, or which
-conclusions to refuse. That lives in a skill shipped alongside it.
+The server gives Claude chain access, but not method: which tool answers which
+question, what a control group is for, and which conclusions to refuse. That
+lives in a skill shipped alongside it.
 
 ```bash
 mkdir -p ~/.claude/skills
@@ -244,16 +246,16 @@ cp -r "$(npm root -g)/sui-analytics-mcp/.claude/skills/sui-forensics" ~/.claude/
 Or copy `.claude/skills/sui-forensics/` out of this repo. It loads automatically
 once present; there is nothing to configure.
 
-It covers the evidence tiers and what each licenses you to claim, the order to
-work in, the base-rate check that stops shared ancestry reading as collusion,
-and the conclusions to refuse — "no edge found, so they are unrelated" being the
-one that costs most.
+It covers the evidence tiers and what each one lets you claim, the order to work
+in, the base-rate check that keeps shared ancestry from reading as collusion,
+and the conclusions to refuse. "No edge found, so they are unrelated" is the
+most common of those.
 
 ## Tool profiles
 
 All 67 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
-When you ask for something outside the current set — "trace where these funds went" — the model calls `enable_tools` and the tracing tools appear immediately, no restart. You never have to pick a profile.
+When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile.
 
 To start with more, set `SUI_TOOLS`:
 
@@ -284,13 +286,13 @@ The server has no credentials and no ability to move funds:
 
 ### What the process actually does
 
-Supply-chain scanners report the capabilities a package uses, without the reason. Here is the full list for this one:
+Supply-chain scanners report which capabilities a package uses but not why. The full list for this one:
 
 | Capability | Where it's used |
 |---|---|
 | Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts). |
 | Filesystem | Temp files for `decompile_module`, and reading `SUI_LABELS_FILE` if you set it. |
-| Subprocess | One call, in [`src/tools/decompiler.ts`](src/tools/decompiler.ts), to the decompiler binary *you* build and point at. `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
+| Subprocess | One call, in [`src/tools/decompiler.ts`](src/tools/decompiler.ts), to the decompiler binary you build and configure yourself. It uses `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
 | Environment | The `SUI_`-prefixed variables in [`.env.example`](.env.example), plus two optional price-provider keys (`PYTH_API_KEY`, `CMC_API_KEY`). Nothing else is read. |
 
 There is no `eval`, no dynamic `require`, no minified or obfuscated code, and no telemetry. Inputs that come from the chain are treated as untrusted: `decompile_module` validates module names before they reach a filesystem path, and bounds how many modules one call will process.
@@ -324,7 +326,7 @@ All environment variables are optional. See [`.env.example`](.env.example) for t
 
 ### Price sources
 
-Current USD prices come from **Aftermath**, which is free and needs no key — that is the default path and it covers everything except historical pricing.
+Current USD prices come from **Aftermath**, which is free and needs no key. That is the default path, and it covers everything except historical pricing.
 
 Two paid sources are opt-in and engage only when their key is set, so nobody is billed by accident and nothing degrades if you set neither:
 
@@ -333,17 +335,17 @@ Two paid sources are opt-in and engage only when their key is set, so nobody is 
 | `PYTH_API_KEY` | Historical prices (`get_token_prices` with `at`), oracle-vs-market comparison. Pyth's Hermes endpoint began requiring authentication for price *values*; feed discovery is still open. |
 | `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
 
-Without a key, tools that need a paid source say so explicitly rather than returning a null price — a missing price and a price of zero are different claims.
+Without a key, tools that need a paid source say so explicitly rather than returning a null price. A missing price and a price of zero mean different things.
 
 ### Optional local store
 
-Set `SUI_STORE_PATH` to keep address labels and fan-out measurements across sessions. It uses Node's built-in `node:sqlite`, so it adds no dependency and no native build. Unset by default — nothing is written to disk unless you ask for it, which matters because an investigation store is a record of which addresses you looked at.
+Set `SUI_STORE_PATH` to keep address labels and fan-out measurements across sessions. It uses Node's built-in `node:sqlite`, so it adds no dependency and no native build. It is unset by default, and nothing is written to disk unless you set it. An investigation store is a record of which addresses you looked at, so that default is deliberate.
 
 ```json
 "env": { "SUI_STORE_PATH": "/Users/you/.local/share/sui-mcp/store.db" }
 ```
 
-Fund traces are deliberately not cached: a trace is a function of your labels, so a stored one would silently disagree with a fresh run the moment a label changed.
+Fund traces are not cached. A trace depends on your label set, so a stored result would disagree with a fresh run as soon as a label changed.
 
 ```json
 {
@@ -359,7 +361,7 @@ Fund traces are deliberately not cached: a trace is a function of your labels, s
 
 ## Move decompiler (optional)
 
-64 of the 67 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options before you reach for it:
+64 of the 67 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -476,7 +478,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 ### DeepBook
 
-DeepBook v3 is a central limit order book, so it has no reserves — depth, spread and traded price come from the [DeepBook indexer](https://docs.sui.io/standards/deepbookv3-indexer) rather than from a pool object. Mainnet and testnet only.
+DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread and traded price come from the [DeepBook indexer](https://docs.sui.io/standards/deepbookv3-indexer) rather than from a pool object. Mainnet and testnet only.
 
 | Tool | Description |
 |---|---|

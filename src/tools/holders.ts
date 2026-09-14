@@ -694,9 +694,16 @@ export function registerHolderTools(server: McpServer) {
         address,
         name: nameMap.get(address) ?? null,
         count,
-        // Named the way the production indexer names it, so the two can be
-        // compared without translating vocabulary.
-        holder_kind: kioskDeclared.get(address) ? "kiosk_declared" : "wallet",
+        // Three-way, because a holder can be both. One address owning three
+        // NFTs outright and one through an unresolvable kiosk is not a guess:
+        // labelling the whole count `kiosk_declared` said the opposite, and a
+        // reader filtering for chain-derived holders would have dropped someone
+        // three quarters verified. `from_kiosk_owner_field` carries the split.
+        holder_kind: !kioskDeclared.get(address)
+          ? "wallet"
+          : kioskDeclared.get(address) === count
+            ? "kiosk_declared"
+            : "mixed",
         ...(kioskDeclared.get(address)
           ? { from_kiosk_owner_field: kioskDeclared.get(address) }
           : {}),

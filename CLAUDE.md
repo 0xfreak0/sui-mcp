@@ -879,9 +879,13 @@ Step 4 still needs an indexed mint history, which a per-call server
 does not have. `trace_object_history` answers it for ONE object, not for a
 scan. So the field is still used, because it is the only hint available without
 a query per kiosk and it is right about 60% of the time — and every holder it
-produced carries `holder_kind: "kiosk_declared"` and a
-`from_kiosk_owner_field` count beside the caveat. Do not drop those markers to
-tidy the payload.
+produced carries a `from_kiosk_owner_field` count beside the caveat. Do not
+drop those markers to tidy the payload.
+
+`holder_kind` is three-valued — `wallet`, `kiosk_declared`, `mixed` — because
+one address can hold some NFTs outright and others through a kiosk. Collapsing
+it to two called a holder with three verified NFTs and one kiosk NFT a guess
+outright, which a consumer filtering for chain-derived holders would drop.
 
 Two smaller rules from the same path:
 

@@ -274,6 +274,26 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
     expect(r.kiosk_caveat).toMatch(/KioskOwnerCap/);
   });
 
+  /**
+   * A holder can be both. Labelling the whole count `kiosk_declared` because
+   * one NFT of four came from a kiosk says the other three are a guess too,
+   * and a reader filtering for chain-derived holders would drop them.
+   */
+  it("calls a holder with both kinds mixed, and carries the split", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [plainNft(A), plainNft(A), plainNft(A), kioskNft(A, "0xkm")],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    const r = await run({ type: "0xk5::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.top_holders[0]).toMatchObject({
+      count: 4,
+      holder_kind: "mixed",
+      from_kiosk_owner_field: 1,
+    });
+  });
+
   it("leaves an ordinary address holder unmarked", async () => {
     mockGqlQuery.mockResolvedValue({
       objects: { nodes: [plainNft(B)], pageInfo: { hasNextPage: false } },

@@ -207,9 +207,10 @@ get_nft_sales({ hours: 24 })
 ```
 
 Those mappings are stored, and `get_top_holders` uses them: a kiosk it can name
-counts toward the real wallet and reports `holder_kind: "wallet"`, while one it
-cannot still carries `holder_kind: "kiosk_declared"` and a
-`from_kiosk_owner_field` count. The window is bounded because `events` has no
+counts toward the real wallet, while one it cannot keeps a
+`from_kiosk_owner_field` count. `holder_kind` is `wallet`, `kiosk_declared` or
+`mixed`, since one address can hold some NFTs outright and others through a
+kiosk. The window is bounded because `events` has no
 collection filter, so all-time volume would be unbounded paging. It reads
 TradePort, BlueMove and OriginByte. Requires `SUI_STORE_PATH` to keep what it
 learns.

@@ -130,7 +130,9 @@ export function registerLabelTools(server: McpServer) {
             is_sink: isSinkCategory(stored.category),
             note: stored.persisted
               ? "Saved to the local store — it will be here next session."
-              : "In-memory for this session only. Set SUI_STORE_PATH to persist labels across restarts.",
+              : storeStatus().enabled
+                ? "IN MEMORY ONLY: the store is configured but this write failed, so the label is gone at the end of this session. See the server's stderr."
+                : "In-memory for this session only. Set SUI_STORE_PATH to persist labels across restarts.",
           });
         }
 
@@ -138,14 +140,20 @@ export function registerLabelTools(server: McpServer) {
           if (!bulk?.length) {
             return jsonResult({ error: "'labels' array is required for import." });
           }
-          const { imported, skipped } = importLabels(bulk);
+          const { imported, skipped, persisted } = importLabels(bulk);
           return jsonResult({
             imported,
             skipped_count: skipped.length,
             ...(skipped.length ? { skipped } : {}),
-            note: storeStatus().enabled
-              ? "Saved to the local store."
-              : "In-memory only — set SUI_STORE_PATH to keep these across restarts.",
+            // Counted, not assumed from whether a store is configured. A
+            // configured store whose writes all fail reported the whole import
+            // as saved, and the set was gone at the next restart.
+            persisted,
+            note: !storeStatus().enabled
+              ? "In-memory only — set SUI_STORE_PATH to keep these across restarts."
+              : persisted === imported
+                ? "Saved to the local store."
+                : `IN MEMORY ONLY for ${imported - persisted} of ${imported}: the store is configured but those writes failed. See the server's stderr.`,
           });
         }
 
@@ -175,13 +183,16 @@ export function registerLabelTools(server: McpServer) {
 
         case "remove": {
           if (!address) return jsonResult({ error: "'address' is required for remove." });
-          const removed = removeSessionLabel(address);
+          const { removed, persisted_removal } = removeSessionLabel(address);
+          const stillStored = storeStatus().enabled && !persisted_removal && removed;
           return jsonResult({
             address,
             removed,
-            note: removed
-              ? "Session label removed."
-              : "No session label for that address (static/override labels cannot be removed here).",
+            note: stillStored
+              ? "Removed for this session, but the stored row could not be deleted, so it comes back at the next start. A sink label that returns keeps terminating traces."
+              : removed
+                ? "Session label removed."
+                : "No session label for that address (static/override labels cannot be removed here).",
           });
         }
       }

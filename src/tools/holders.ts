@@ -146,7 +146,7 @@ const COIN_PROBE_QUERY = `
   }
 `;
 
-async function looksLikeCoin(type: string): Promise<boolean> {
+async function looksLikeCoin(type: string): Promise<boolean | null> {
   try {
     const data = await gqlQuery<{ objects: { nodes: Array<{ address: string }> } }>(
       COIN_PROBE_QUERY,
@@ -154,9 +154,12 @@ async function looksLikeCoin(type: string): Promise<boolean> {
     );
     return (data.objects.nodes?.length ?? 0) > 0;
   } catch {
-    // A probe that could not run leaves the original guess in place. It must
-    // never be the reason the tool fails.
-    return false;
+    // Null, not false. Returning false reinstated the very guess this probe
+    // exists to correct, so one transient GraphQL error produced the original
+    // bug — a coin scanned as a collection, reporting no holders — and now
+    // labelled a complete ranking. It must never fail the tool either, so the
+    // caller carries the uncertainty into the result instead.
+    return null;
   }
 }
 
@@ -194,6 +197,11 @@ export interface TokenHolderResult {
   total_scanned: number;
   unique_holders: number;
   truncated: boolean;
+  /**
+   * Coin objects counted in `total_scanned` whose owner or balance could not be
+   * read, so they are attributed to nobody. Absent when there were none.
+   */
+  unresolved_owners?: number;
 }
 
 
@@ -239,6 +247,11 @@ export async function scanTokenTopHolders(
 
   const holderBalances = new Map<string, bigint>();
   const holderCounts = new Map<string, number>();
+  // Coin objects whose owner or balance this query could not read. The NFT
+  // walk counts these; dropping them here meant a holder could vanish from a
+  // "complete ranking" whose percentages are computed against the real total
+  // supply, with nothing saying a holder was missing.
+  let unresolved = 0;
   let cursor: string | undefined;
   let totalScanned = 0;
   let truncated = false;
@@ -260,6 +273,8 @@ export async function scanTokenTopHolders(
         const bal = BigInt(balanceStr);
         holderBalances.set(addr, (holderBalances.get(addr) ?? 0n) + bal);
         holderCounts.set(addr, (holderCounts.get(addr) ?? 0) + 1);
+      } else {
+        unresolved++;
       }
     }
 
@@ -271,7 +286,15 @@ export async function scanTokenTopHolders(
     // Without this the next request starts from page one and the SAME coin
     // objects are counted again, adding their balances twice to the same
     // holders. Missed by the sweep in #101 that guarded every other walk.
-    if (!cursor) break;
+    //
+    // It is a TRUNCATED stop, not a complete one: hasNextPage was true, so the
+    // connection said there is more and then would not say where. Breaking
+    // without setting the flag published a known-incomplete scan as a complete
+    // ranking, with ranks and percentages of supply restored.
+    if (!cursor) {
+      truncated = true;
+      break;
+    }
 
     if (totalScanned >= maxScan) {
       truncated = true;
@@ -292,7 +315,13 @@ export async function scanTokenTopHolders(
     count: holderCounts.get(address) ?? 0,
   }));
 
-  return { holders, total_scanned: totalScanned, unique_holders: holderBalances.size, truncated };
+  return {
+    holders,
+    total_scanned: totalScanned,
+    unique_holders: holderBalances.size,
+    truncated,
+    ...(unresolved ? { unresolved_owners: unresolved } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -340,8 +369,15 @@ export function registerHolderTools(server: McpServer) {
         return errorResult("Either 'type' or 'collection_name' must be provided.");
       }
 
-      const topN = Math.min(limit ?? 20, 100);
-      const maxScan = Math.min(max_scan ?? DEFAULT_MAX_SCAN, MAX_SCAN_LIMIT);
+      // Clamped at BOTH ends. `?? ` keeps a provided 0, so `max_scan: 0` left
+      // the walk's condition false from the start: no request was made and the
+      // empty result was reported as a complete ranking. A negative `limit`
+      // reached `slice(0, topN)` and silently dropped the last holders.
+      const topN = Math.min(Math.max(Math.trunc(limit ?? 20), 1), 100);
+      const maxScan = Math.min(
+        Math.max(Math.trunc(max_scan ?? DEFAULT_MAX_SCAN), 1),
+        MAX_SCAN_LIMIT,
+      );
 
       // Auto-detect mode. The string test catches the common shapes for free;
       // anything else is settled by asking the chain whether a Coin of this
@@ -352,8 +388,9 @@ export function registerHolderTools(server: McpServer) {
         resolvedType.includes("::coin::Coin<") ||
         resolvedType.includes("::sui::SUI") ||
         resolvedType.includes("::usdc::USDC");
-      const effectiveMode =
-        mode ?? (namedLikeCoin || (await looksLikeCoin(resolvedType)) ? "token" : "nft");
+      const probed = mode || namedLikeCoin ? null : await looksLikeCoin(resolvedType);
+      const modeGuessed = probed === null && !mode && !namedLikeCoin;
+      const effectiveMode = mode ?? (namedLikeCoin || probed === true ? "token" : "nft");
 
       // topN is part of the key because it is part of the answer: the cached
       // payload holds exactly `limit` holders, so serving a 20-holder entry to
@@ -375,6 +412,33 @@ export function registerHolderTools(server: McpServer) {
 
       if (effectiveMode === "token") {
         const scan = await scanTokenTopHolders(resolvedType, topN, maxScan);
+
+        // Same rule as the NFT branch: a walk that found nothing has not
+        // ranked anything, and saying so beats a complete ranking of zero.
+        if (scan.total_scanned === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    mode: "token",
+                    type: resolvedType,
+                    total_scanned: 0,
+                    unique_holders: 0,
+                    truncated: false,
+                    complete_ranking: false,
+                    cached: false,
+                    caveat:
+                      `No 0x2::coin::Coin<${resolvedType}> objects were found. That reads the same as a mistyped coin type, a coin that exists on another network, or an NFT collection type scanned as a coin — it is not evidence that the coin has no holders.`,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
 
         // Fetch total supply and resolve names in parallel
         const [supplyResult, nameMap] = await Promise.all([
@@ -410,6 +474,7 @@ export function registerHolderTools(server: McpServer) {
               complete_ranking: false,
               cached: false,
               caveat: samplingCaveat(scan.total_scanned, scan.unique_holders),
+              ...(scan.unresolved_owners ? { unresolved_owners: scan.unresolved_owners } : {}),
               sampled_holders: enrichedHolders.map(({ rank: _rank, percentage: _pct, ...rest }) => rest),
             }
           : {
@@ -421,6 +486,13 @@ export function registerHolderTools(server: McpServer) {
               truncated: false,
               complete_ranking: true,
               cached: false,
+              ...(scan.unresolved_owners
+                ? {
+                    unresolved_owners: scan.unresolved_owners,
+                    caveat:
+                      `${scan.unresolved_owners} of ${scan.total_scanned} coin objects have an owner or balance this tool could not read. They are attributed to nobody, so the percentages below are shares of total supply that do not account for them.`,
+                  }
+                : {}),
               top_holders: enrichedHolders,
             };
         setCache(cacheKey, JSON.stringify(result));
@@ -467,8 +539,12 @@ export function registerHolderTools(server: McpServer) {
         if (!data.objects.pageInfo.hasNextPage) break;
         cursor = data.objects.pageInfo.endCursor ?? undefined;
         // Same trap as the token scan: a null cursor here restarts the walk
-        // and double-counts owners.
-        if (!cursor) break;
+        // and double-counts owners. It stops the scan short of the end, so it
+        // is truncation rather than completion.
+        if (!cursor) {
+          truncated = true;
+          break;
+        }
 
         if (totalScanned >= maxScan) {
           truncated = true;
@@ -476,6 +552,41 @@ export function registerHolderTools(server: McpServer) {
         }
 
         await sleep(PAGE_DELAY_MS);
+      }
+
+
+      // Nothing was found. That is "could not look at anything of this type" —
+      // a typo, a collection that lives on another network, or a coin type
+      // scanned as a collection — and reporting it as a finished ranking of
+      // zero holders states the opposite of what is known. Not cached: the next
+      // caller should get a real attempt.
+      if (totalScanned === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  mode: effectiveMode,
+                  type: resolvedType,
+                  total_scanned: 0,
+                  unique_holders: 0,
+                  truncated: false,
+                  complete_ranking: false,
+                  cached: false,
+                  caveat:
+                    `No objects of type ${resolvedType} were found${effectiveMode === "nft" ? "" : " (searched as 0x2::coin::Coin<" + resolvedType + ">)"}. ` +
+                    `This is not a statement that the type has no holders: it reads the same as a mistyped type, a type that exists on another network, or the wrong mode for this type. ` +
+                    (modeGuessed
+                      ? "The mode could not be verified because the coin probe failed, so this may be a coin scanned as a collection — pass mode explicitly. "
+                      : "Pass mode explicitly if you know which this is. "),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
       }
 
       const sorted = [...holderCounts.entries()]
@@ -516,10 +627,12 @@ export function registerHolderTools(server: McpServer) {
             total_scanned: totalScanned,
             unique_holders: holderCounts.size,
             truncated: false,
-            // The whole collection was walked, but an object whose owner could
-            // not be read is not attributed to anyone, so the counts do not add
-            // up to the supply and a percentage built on them would be wrong.
-            complete_ranking: unresolvedOwners === 0,
+            // The walk reached the end, which is what this flag means. An
+            // object whose owner could not be read is a separate caveat, and it
+            // belongs in its own field: no value of max_scan can clear it, so
+            // folding it in here left the flag permanently false for the
+            // collection while a ranked list sat beside it saying otherwise.
+            complete_ranking: true,
             cached: false,
             ...(unresolvedOwners
               ? {

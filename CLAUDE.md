@@ -862,9 +862,12 @@ tidy the payload.
 
 Two smaller rules from the same path:
 
-- **Select `ConsensusAddressOwner`.** It is a real party with a readable
-  address, `trace.ts` and `watch-probe.ts` already select it, and the NFT
-  holder query did not — so a consensus-owned NFT counted as unresolvable.
+- **Select `ConsensusAddressOwner`.** Sampled 300 mainnet objects across five
+  types and found none, so this is not fixing a live miscount: it is a schema
+  variant the rest of the repo already selects (`trace.ts`, `watch-probe.ts`,
+  and five more handlers) and the NFT query did not. Cost is three lines of
+  query text. If party objects do appear, the alternative is counting a real
+  party as an unresolvable owner.
 - **`nft-collections.json` is package-keyed, so `collection_name` is
   mainnet-only.** Resolving a name off mainnet fed a mainnet type into another
   network's scan, which then found nothing and said so as though the collection

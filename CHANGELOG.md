@@ -94,8 +94,15 @@
   holder now carries `holder_kind` and a `from_kiosk_owner_field` count, with a
   caveat naming the reliable resolution.
 
-- **The NFT holder scan reads `ConsensusAddressOwner`**, which it previously
-  counted as an unresolvable owner.
+- **The NFT holder scan reads `ConsensusAddressOwner`**, which it would
+  otherwise count as an unresolvable owner. No mainnet object sampled reports
+  it today; the rest of the server already selects it.
+
+- **`get_object` reads the Display standard.** An NFT's name and image live in
+  `0x2::display::Display<T>`, which is registered per type and is not in the
+  object's own fields, so the tool promised display metadata and returned none
+  for the collections it was written for. The struct's fields are still
+  preferred, and `display_source` says which answered.
 
 - **`collection_name` is refused off mainnet.** The collection registry is
   keyed by package id, so resolving a name on another network scanned it with a

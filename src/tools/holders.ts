@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { numArg } from "./args.js";
 import { getNetwork } from "../config.js";
+import { loadKioskOwners } from "../utils/store.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
 import { batchResolveNames } from "../utils/names.js";
@@ -109,16 +110,24 @@ export type OwnerSource = "address" | "kiosk_declared";
  * without a query per kiosk and it is right about 60% of the time, and every
  * entry it produces says so.
  */
-function extractNftOwner(node: { owner?: OwnerNode }): { address: string; source: OwnerSource } | null {
+function extractNftOwner(
+  node: { owner?: OwnerNode },
+): { address: string; source: OwnerSource; kiosk_id?: string } | null {
   const addr = node.owner?.address;
   if (addr?.address && !addr.asObject) return { address: addr.address, source: "address" };
   const inner = addr?.asObject?.owner?.address;
   if (inner?.address && !inner.asObject) return { address: inner.address, source: "address" };
+  // Carried out so a sale-derived owner can replace the declared one later.
+  const kioskId = inner?.address;
   const kioskOwner = inner?.asObject?.asMoveObject?.contents?.json?.owner;
   // The json blob is untyped, so a non-string here would become a Map key and
   // land in the holder list verbatim.
   if (typeof kioskOwner === "string" && kioskOwner) {
-    return { address: kioskOwner, source: "kiosk_declared" };
+    return {
+      address: kioskOwner,
+      source: "kiosk_declared",
+      ...(kioskId ? { kiosk_id: kioskId } : {}),
+    };
   }
   return null;
 }
@@ -144,6 +153,7 @@ const NFT_OBJECTS_QUERY = `
                 owner {
                   ... on ObjectOwner {
                     address {
+                      address
                       asObject {
                         asMoveObject { contents { json } }
                       }
@@ -567,6 +577,10 @@ export function registerHolderTools(server: McpServer) {
       // 82 kiosks, so an unmarked count would put it at the top of a ranking
       // it does not belong in.
       const kioskDeclared = new Map<string, number>();
+      // Kiosk-held NFTs, held back from the counts until the store has had a
+      // chance to name a real owner for them. Keyed by kiosk so one lookup
+      // covers every NFT in it.
+      const pendingKiosk: Array<{ kiosk_id?: string; declared: string }> = [];
       let cursor: string | undefined;
       let totalScanned = 0;
       let truncated = false;
@@ -583,13 +597,15 @@ export function registerHolderTools(server: McpServer) {
 
         for (const node of data.objects.nodes) {
           const owner = extractNftOwner(node);
-          if (owner) {
-            holderCounts.set(owner.address, (holderCounts.get(owner.address) ?? 0) + 1);
-            if (owner.source === "kiosk_declared") {
-              kioskDeclared.set(owner.address, (kioskDeclared.get(owner.address) ?? 0) + 1);
-            }
-          } else {
+          if (!owner) {
             unresolvedOwners++;
+          } else if (owner.source === "kiosk_declared") {
+            pendingKiosk.push({
+              ...(owner.kiosk_id ? { kiosk_id: owner.kiosk_id } : {}),
+              declared: owner.address,
+            });
+          } else {
+            holderCounts.set(owner.address, (holderCounts.get(owner.address) ?? 0) + 1);
           }
         }
 
@@ -648,6 +664,24 @@ export function registerHolderTools(server: McpServer) {
         };
       }
 
+      // A marketplace sale names the buyer and the buyer's kiosk in one
+      // record, so a kiosk seen trading has a chain-derived owner. That beats
+      // the kiosk's own declared field, which does not follow the
+      // KioskOwnerCap and disagrees 40% of the time. Populate the table with
+      // get_nft_sales; this is a single store read whatever the scan's size.
+      const resolved = loadKioskOwners(
+        getNetwork(),
+        [...new Set(pendingKiosk.map((p) => p.kiosk_id).filter((k): k is string => !!k))],
+      );
+      let kioskResolved = 0;
+      for (const p of pendingKiosk) {
+        const real = p.kiosk_id ? resolved.get(p.kiosk_id) : undefined;
+        const address = real ?? p.declared;
+        holderCounts.set(address, (holderCounts.get(address) ?? 0) + 1);
+        if (real) kioskResolved++;
+        else kioskDeclared.set(address, (kioskDeclared.get(address) ?? 0) + 1);
+      }
+
       const sorted = [...holderCounts.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, topN);
@@ -668,8 +702,9 @@ export function registerHolderTools(server: McpServer) {
           : {}),
       }));
       const kioskAttributed = [...kioskDeclared.values()].reduce((a, b) => a + b, 0);
+      const kioskTotal = pendingKiosk.length;
       const kioskCaveat = kioskAttributed
-        ? `${kioskAttributed} of ${totalScanned} objects are held in kiosks and attributed using the kiosk's own \`owner\` field (\`from_kiosk_owner_field\` per holder). That field is set by the kiosk and is NOT updated when the KioskOwnerCap is transferred: measured over 300 mainnet kiosks, it disagreed with the actual cap holder 40% of the time, and one address was declared by 82 different kiosks. Confirm any holder carrying this before treating it as one party: the reliable resolution for a regular kiosk is the NFT's latest sale buyer, or its mint transaction sender if it has never traded, which trace_object_history can give you for a single object.`
+        ? `${kioskAttributed} of ${totalScanned} objects are held in kiosks and attributed using the kiosk's own \`owner\` field (\`from_kiosk_owner_field\` per holder). That field is set by the kiosk and is NOT updated when the KioskOwnerCap is transferred: measured over 300 mainnet kiosks, it disagreed with the actual cap holder 40% of the time, and one address was declared by 82 different kiosks. Run get_nft_sales over a window covering these kiosks' trades to replace the guess with the buyer named in the sale itself.`
         : null;
 
       const result = truncated
@@ -686,6 +721,7 @@ export function registerHolderTools(server: McpServer) {
               `Objects are walked in object-id order, not by how many anyone holds, so these are the biggest holders WITHIN THE SAMPLE and not the biggest holders of the collection. ` +
               `Raise max_scan until "truncated" is false for a real ranking.`,
             ...(unresolvedOwners ? { unresolved_owners: unresolvedOwners } : {}),
+            ...(kioskTotal ? { kiosk_held: kioskTotal, kiosk_resolved_from_sales: kioskResolved } : {}),
             ...(kioskCaveat
               ? { kiosk_attributed: kioskAttributed, kiosk_caveat: kioskCaveat }
               : {}),
@@ -704,6 +740,7 @@ export function registerHolderTools(server: McpServer) {
             // collection while a ranked list sat beside it saying otherwise.
             complete_ranking: true,
             cached: false,
+            ...(kioskTotal ? { kiosk_held: kioskTotal, kiosk_resolved_from_sales: kioskResolved } : {}),
             ...(kioskCaveat
               ? { kiosk_attributed: kioskAttributed, kiosk_caveat: kioskCaveat }
               : {}),

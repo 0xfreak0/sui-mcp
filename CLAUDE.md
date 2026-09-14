@@ -852,7 +852,30 @@ not use the field at any step:
 5. The kiosk id itself, tagged as a kiosk rather than a wallet so consumers can
    de-emphasise it.
 
-Steps 3 and 4 need an indexed sale and mint history, which a per-call server
+Step 3 is now available: `get_nft_sales` (`src/utils/nft-sales.ts` pure,
+`src/tools/nft-sales.ts` network) reads marketplace sale events, and every sale
+names the buyer beside the buyer's kiosk in one record. That is a chain-derived
+statement of ownership at that checkpoint, stored in `kiosk_owners` and
+consulted by the holder scan. Both legs are harvested — the seller held its
+kiosk just as surely — and a later checkpoint wins, because a kiosk can be sold.
+Measured: 600 TradePort sale events yielded 185 distinct mappings, and one
+24-hour window on one package yielded 54.
+
+Three rules for extending it:
+
+- **Every event type in `nft-sale-events.json` was confirmed to exist on
+  mainnet**, with its field names read off a real event. A type nobody emits
+  makes an empty result look like an absence of trading.
+- **Field names differ per marketplace and are tried as a list.** BlueMove
+  calls the id `item_id` and the price `amount`; OriginByte calls them `nft`
+  and uses `buyer_kiosk` rather than `buyer_kiosk_id`. A known type whose shape
+  does not parse is counted in `unreadable_events`, never skipped.
+- **`priced: false` events record custody with no amount.** A claim event has a
+  buyer and no price; counting it as a zero-value sale would drag an average
+  down with trades that were never priced. `sales` and `priced_sales` are
+  reported separately so volume has a visible denominator.
+
+Step 4 still needs an indexed mint history, which a per-call server
 does not have. `trace_object_history` answers it for ONE object, not for a
 scan. So the field is still used, because it is the only hint available without
 a query per kiosk and it is right about 60% of the time — and every holder it

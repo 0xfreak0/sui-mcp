@@ -229,7 +229,22 @@ describe("out-of-range arguments are clamped, not obeyed", () => {
  */
 describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
   /** owner -> dynamic field -> kiosk object, which declares `owner`. */
-  const kioskNft = (declared: string) => ({
+  const kioskNft = (declared: string, kioskId = "0xkiosk1") => ({
+    owner: {
+      address: {
+        asObject: {
+          owner: {
+            address: {
+              address: kioskId,
+              asObject: { asMoveObject: { contents: { json: { owner: declared } } } },
+            },
+          },
+        },
+      },
+    },
+  });
+  /** The same shape with the kiosk id missing from the response. */
+  const kioskNftNoId = (declared: string) => ({
     owner: {
       address: {
         asObject: {
@@ -267,6 +282,20 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
     expect(r.top_holders[0].holder_kind).toBe("wallet");
     expect(r.top_holders[0].from_kiosk_owner_field).toBeUndefined();
     expect(r.kiosk_caveat).toBeUndefined();
+  });
+
+  /**
+   * A kiosk id that did not come back must not cost the holder its marker.
+   * Dropping it because resolution is impossible would turn the weakest answer
+   * this tool gives into an unqualified one.
+   */
+  it("still marks a kiosk holder when the kiosk id is missing", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: { nodes: [kioskNftNoId(A)], pageInfo: { hasNextPage: false } },
+    });
+    const r = await run({ type: "0xk4::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.top_holders[0].holder_kind).toBe("kiosk_declared");
+    expect(r.kiosk_attributed).toBe(1);
   });
 
   /** The json blob is untyped, so a non-string would become a Map key. */

@@ -230,6 +230,24 @@ CREATE TABLE IF NOT EXISTS watches (
   min_amount      TEXT,
   added_at        INTEGER NOT NULL
 );
+
+-- Who held a kiosk, as stated by a marketplace sale event.
+--
+-- A kiosk's own owner field does not follow the KioskOwnerCap and disagrees
+-- with the real holder 40% of the time, so a holder scan cannot trust it. A
+-- sale event names the buyer and the buyer's kiosk in one record, which is a
+-- chain-derived statement of ownership at that checkpoint.
+--
+-- Snapshot, not a permanent fact: a kiosk can change hands, so the checkpoint
+-- is stored and a later observation wins. Network-keyed like everything else.
+CREATE TABLE IF NOT EXISTS kiosk_owners (
+  account         TEXT PRIMARY KEY,
+  network         TEXT NOT NULL,
+  kiosk_id        TEXT NOT NULL,
+  owner           TEXT NOT NULL,
+  checkpoint      INTEGER NOT NULL,
+  observed_at     INTEGER NOT NULL
+);
 `;
 
 /**
@@ -244,6 +262,7 @@ const INDEXES = `
 CREATE INDEX IF NOT EXISTS labels_chain ON labels(chain);
 CREATE INDEX IF NOT EXISTS findings_case ON findings(case_name);
 CREATE INDEX IF NOT EXISTS transactions_network ON transactions(network);
+CREATE INDEX IF NOT EXISTS kiosk_owners_network ON kiosk_owners(network);
 `;
 
 /**
@@ -810,6 +829,68 @@ export function getCachedTransaction<T>(network: string, digest: string): T | nu
 /* ------------------------------------------------------------------ */
 /* Watches                                                             */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Record kiosk ownership observed in a sale. Returns how many rows were kept.
+ *
+ * A later checkpoint wins, because a kiosk can be sold; an older observation
+ * arriving after a newer one is discarded rather than overwriting it, which is
+ * what the checkpoint comparison in the ON CONFLICT clause is for. Paging a
+ * sale window oldest-first makes that the common case, not a rare one.
+ */
+export function saveKioskOwners(
+  network: string,
+  rows: Array<{ kiosk_id: string; owner: string; checkpoint: number }>,
+): number {
+  initStore();
+  if (rows.length === 0) return 0;
+  return tryWrite("saveKioskOwners", 0, (db) => {
+    const stmt = db.prepare(
+      `INSERT INTO kiosk_owners (account, network, kiosk_id, owner, checkpoint, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account) DO UPDATE SET
+         owner = excluded.owner,
+         checkpoint = excluded.checkpoint,
+         observed_at = excluded.observed_at
+       WHERE excluded.checkpoint > kiosk_owners.checkpoint`,
+    );
+    const now = Date.now();
+    let kept = 0;
+    for (const r of rows) {
+      stmt.run(`${network}:${r.kiosk_id}`, network, r.kiosk_id, r.owner, r.checkpoint, now);
+      kept++;
+    }
+    return kept;
+  });
+}
+
+/** Known kiosk owners for the given kiosk ids, as a kiosk -> owner map. */
+export function loadKioskOwners(network: string, kioskIds: string[]): Map<string, string> {
+  initStore();
+  const out = new Map<string, string>();
+  if (!db || kioskIds.length === 0) return out;
+  const handle = db;
+  try {
+    // Chunked, because SQLite caps bound parameters and a holder scan can carry
+    // thousands of kiosks.
+    for (let i = 0; i < kioskIds.length; i += 400) {
+      const chunk = kioskIds.slice(i, i + 400);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = handle
+        .prepare(`SELECT kiosk_id, owner FROM kiosk_owners WHERE account IN (${placeholders})`)
+        .all(...chunk.map((k) => `${network}:${k}`)) as unknown as Array<{
+        kiosk_id: string;
+        owner: string;
+      }>;
+      for (const r of rows) out.set(r.kiosk_id, r.owner);
+    }
+  } catch {
+    // A lookup that cannot run leaves every holder attributed the way it was
+    // before, which is the documented weaker answer rather than no answer.
+    return out;
+  }
+  return out;
+}
 
 export interface StoredWatch {
   address: string;

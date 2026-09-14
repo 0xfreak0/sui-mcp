@@ -4,7 +4,7 @@
 
 Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd, then reconstruct it all on a timeline.
 
-67 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
+68 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
 
 ## Install
 
@@ -190,6 +190,39 @@ or a transfer that moves no coin is reported whatever its size. An address busy
 enough to fill the per-poll cap is listed in `more_pending` rather than being
 silently truncated. Requires `SUI_STORE_PATH`.
 
+**Who really holds a kiosk-stored NFT?** A kiosk-held NFT is owned by the Kiosk
+object, and a kiosk carries an `owner` field that `set_owner` writes. That field
+does not follow the `KioskOwnerCap`, so it names whoever set it last. Measured
+over 300 mainnet kiosks it disagreed with the real cap holder 40% of the time,
+and one address was declared by 82 different kiosks, which is enough to invent a
+top holder out of a platform address.
+
+`get_nft_sales` closes that gap. A marketplace sale names the buyer and the
+buyer's kiosk in one record, so any kiosk seen trading has a chain-derived
+owner:
+
+```
+get_nft_sales({ hours: 24 })
+{ "sales": 237, "volume_sui": "5982.3007", "kiosk_owners_learned": 249, "requests": 13 }
+```
+
+Those mappings are stored, and `get_top_holders` uses them. `holder_kind` names
+how each holder was arrived at, weakest evidence first: `kiosk_declared` from
+the kiosk's own field, `kiosk_resolved` from a sale record, `wallet` read from
+the object itself, and `mixed` when one address holds NFTs by more than one
+route. A sale-derived owner is chain-derived but a snapshot at that
+checkpoint, and a kiosk can be sold afterwards, so it is not reported as
+`wallet`. `from_kiosk_owner_field` and `from_sale_records` carry the split. The window is bounded because `events` has no
+collection filter, so all-time volume would be unbounded paging. It reads
+TradePort, BlueMove and OriginByte, and requires `SUI_STORE_PATH` to keep what
+it learns.
+
+`collection_type` narrows the result, but only for marketplaces that name the
+collection in the event, which most do not: in one measured window 70 of 73
+sales carried no collection type at all. Those are counted in
+`unattributable_sales` rather than filtered out quietly, so a small number of
+matches is never mistaken for a collection that did not trade.
+
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks coin objects in object-id order, which is unrelated to
 balance. A scan that stops early returns the largest holder it happened to see.
@@ -253,7 +286,7 @@ most common of those.
 
 ## Tool profiles
 
-All 67 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 68 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
 When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile.
 
@@ -266,7 +299,7 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 18 | Wallets, balances, transactions (single and batched), tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 29 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation, live address watching |
+| `forensics` | 30 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation, live address watching, NFT marketplace sales |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
 | `all` | 59 | Everything |
@@ -361,7 +394,7 @@ Fund traces are not cached. A trace depends on your label set, so a stored resul
 
 ## Move decompiler (optional)
 
-64 of the 67 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
+64 of the 68 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -424,7 +457,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (67)
+## Tools (68)
 
 ### Recommended Starting Points
 

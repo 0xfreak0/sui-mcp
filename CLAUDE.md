@@ -852,13 +852,54 @@ not use the field at any step:
 5. The kiosk id itself, tagged as a kiosk rather than a wallet so consumers can
    de-emphasise it.
 
-Steps 3 and 4 need an indexed sale and mint history, which a per-call server
+Step 3 is now available: `get_nft_sales` (`src/utils/nft-sales.ts` pure,
+`src/tools/nft-sales.ts` network) reads marketplace sale events, and every sale
+names the buyer beside the buyer's kiosk in one record. That is a chain-derived
+statement of ownership at that checkpoint, stored in `kiosk_owners` and
+consulted by the holder scan. Both legs are harvested — the seller held its
+kiosk just as surely — and a later checkpoint wins, because a kiosk can be sold.
+Measured: a 24-hour window across every registered marketplace is 13 requests
+for 237 sales and 249 distinct mappings.
+
+Two things the holder scan must keep doing with them. The mapping table is part
+of the NFT-mode cache key, because a payload cached without it answered the
+caveat's own instruction — run `get_nft_sales` — with the same unresolved
+ranking for 24 hours. And a sale-derived owner is a SNAPSHOT at that
+checkpoint, so it reports `holder_kind: "kiosk_resolved"` rather than
+`"wallet"`: a kiosk can be sold after the sale that named it.
+
+Four rules for extending it:
+
+- **A sale event rarely names the collection.** Measured: 70 of 73 mainnet
+  sales carry no `nft_type`, and the few that do emit the defining address
+  unprefixed and unpadded (`2dcd5252…::m::T`), which never compares equal to
+  the `0x`-padded form every other surface here uses. `canonicalType` fixes the
+  comparison; the missing field cannot be fixed, so those sales are counted in
+  `unattributable_sales` and a filtered result that found little says why.
+
+- **Every event type in `nft-sale-events.json` was confirmed to exist on
+  mainnet**, with its field names read off a real event. A type nobody emits
+  makes an empty result look like an absence of trading.
+- **Field names differ per marketplace and are tried as a list.** BlueMove
+  calls the id `item_id` and the price `amount`; OriginByte calls them `nft`
+  and uses `buyer_kiosk` rather than `buyer_kiosk_id`. A known type whose shape
+  does not parse is counted in `unreadable_events`, never skipped.
+- **`priced: false` events record custody with no amount.** A claim event has a
+  buyer and no price; counting it as a zero-value sale would drag an average
+  down with trades that were never priced. `sales` and `priced_sales` are
+  reported separately so volume has a visible denominator.
+
+Step 4 still needs an indexed mint history, which a per-call server
 does not have. `trace_object_history` answers it for ONE object, not for a
 scan. So the field is still used, because it is the only hint available without
 a query per kiosk and it is right about 60% of the time — and every holder it
-produced carries `holder_kind: "kiosk_declared"` and a
-`from_kiosk_owner_field` count beside the caveat. Do not drop those markers to
-tidy the payload.
+produced carries a `from_kiosk_owner_field` count beside the caveat. Do not
+drop those markers to tidy the payload.
+
+`holder_kind` is three-valued — `wallet`, `kiosk_declared`, `mixed` — because
+one address can hold some NFTs outright and others through a kiosk. Collapsing
+it to two called a holder with three verified NFTs and one kiosk NFT a guess
+outright, which a consumer filtering for chain-derived holders would drop.
 
 Two smaller rules from the same path:
 

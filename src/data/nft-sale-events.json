@@ -1,0 +1,50 @@
+{
+  "_comment": "Marketplace events that move an NFT for value. Every entry was confirmed to exist on mainnet by reading a real event and its field names; a name nobody emits is worse than an absent one, because it makes an empty result look like an absence of trading. Entries are keyed by the event's DEFINING package, which Sui stamps into the event type and which is stable across package upgrades — the same lineage rule the protocol registry uses. `priced: false` means the event records a custody change with no amount, so it contributes a kiosk owner but never volume.",
+  "events": [
+    {
+      "type": "0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027::listings::BuyEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
+      "type": "0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027::biddings::MatchCollectionBidEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
+      "type": "0xec175e537be9e48f75fa6929291de6454d2502f1091feb22c0d26a22821bbf28::kiosk_listings::BuyEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
+      "type": "0xc94af80a10796ad0732cca33b38a858f712256da0763a65bafb2a63cf3e6a0d0::kiosk_biddings::MatchBidWithPurchaseCapEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
+      "type": "0xc94af80a10796ad0732cca33b38a858f712256da0763a65bafb2a63cf3e6a0d0::kiosk_biddings::MatchCollectionBidWithPurchaseCapEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
+      "type": "0xc94af80a10796ad0732cca33b38a858f712256da0763a65bafb2a63cf3e6a0d0::kiosk_biddings::ClaimWithPurchaseCapEvent",
+      "marketplace": "TradePort",
+      "priced": false
+    },
+    {
+      "type": "0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab::tradeport_listings::BuySimpleListingEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
+      "type": "0xd5dd28cc24009752905689b2ba2bf90bfc8de4549b9123f93519bb8ba9bf9981::marketplace::BuyEvent",
+      "marketplace": "BlueMove",
+      "priced": true
+    },
+    {
+      "type": "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a::orderbook::TradeFilledEvent",
+      "marketplace": "OriginByte",
+      "priced": true
+    }
+  ]
+}

@@ -106,6 +106,7 @@ export const PROFILES = {
     "delete_finding",
     "watch_addresses",
     "poll_watch",
+    "get_nft_sales",
   ],
 
   /** Contract analysis and transaction construction. */

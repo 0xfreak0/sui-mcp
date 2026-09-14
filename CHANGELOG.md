@@ -86,6 +86,23 @@
   back at the next start, and for a `cex` label that silently keeps terminating
   traces. `delete_finding` reported success for an id matching nothing.
 
+- **`get_nft_sales`.** Marketplace sales over a bounded recent window, with
+  volume and per-marketplace totals. Reads TradePort, BlueMove and OriginByte.
+  Measured on mainnet, a 24-hour window across every registered marketplace is
+  13 requests for 237 sales and 5,982 SUI. `collection_type` narrows the result
+  where a marketplace names the collection in its event, which most do not, so
+  the sales it cannot judge are reported as `unattributable_sales`. `events` has no
+  collection filter, so the window is bounded and says so rather than paging a
+  marketplace to exhaustion.
+
+  Its other output is the useful one: a sale names the buyer and the buyer's
+  kiosk in the same record, so every sale is a chain-derived statement of who
+  held a kiosk. Those are stored, and `get_top_holders` now resolves a
+  kiosk-held NFT to that wallet instead of the kiosk's own declared owner.
+  Verified end to end: nine mappings resolved eleven NFTs in one collection
+  scan, which then ranked as `holder_kind: "kiosk_resolved"` — chain-derived,
+  but a snapshot at the sale's checkpoint rather than a current read.
+
 - **Kiosk-held NFTs are marked, not silently credited.** `get_top_holders`
   attributes them through the kiosk's own `owner` field, which is self-declared
   and is not updated when the `KioskOwnerCap` moves. Measured over 300 mainnet

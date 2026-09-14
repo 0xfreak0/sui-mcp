@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { numArg } from "./args.js";
 import { getNetwork } from "../config.js";
+import { kioskOwnerVersion, loadKioskOwners } from "../utils/store.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
 import { batchResolveNames } from "../utils/names.js";
@@ -54,7 +56,7 @@ interface OwnerNode {
     asObject?: {
       owner?: OwnerNode;
       asMoveObject?: {
-        contents?: { json?: { owner?: string } };
+        contents?: { type?: { repr?: string }; json?: { owner?: unknown } };
       };
     };
   };
@@ -80,7 +82,41 @@ interface CoinObjectsPage {
 }
 
 /** How an owner address was arrived at. The two are not equally trustworthy. */
+/**
+ * The framework Kiosk, padded, so a short and a canonical spelling both match.
+ * Full-type comparison is deliberate: suffix matching would hand an
+ * impersonating package the kiosk path.
+ */
+const KIOSK_TYPE = `${normalizeSuiAddress("0x2")}::kiosk::Kiosk`;
+
+/** Strip generics and pad the defining address before comparing. */
+function baseType(t: string): string {
+  const bare = t.split("<")[0]!.trim();
+  const parts = bare.split("::");
+  if (parts.length < 3) return bare;
+  const [addr, ...rest] = parts;
+  return [normalizeSuiAddress(addr!.toLowerCase()), ...rest].join("::");
+}
+
 export type OwnerSource = "address" | "kiosk_declared";
+
+/**
+ * Label a holder by the weakest evidence in its count.
+ *
+ * A holder whose NFTs all came one way is named for that way; anything with
+ * more than one source is `mixed`, so a consumer filtering on this field never
+ * treats a partly-inferred holding as fully chain-derived.
+ */
+function holderKind(
+  total: number,
+  declared: number,
+  fromSale: number,
+): "wallet" | "kiosk_declared" | "kiosk_resolved" | "mixed" {
+  if (declared === 0 && fromSale === 0) return "wallet";
+  if (declared === total) return "kiosk_declared";
+  if (fromSale === total) return "kiosk_resolved";
+  return "mixed";
+}
 
 /**
  * Resolve the holder of one NFT node.
@@ -109,15 +145,35 @@ export type OwnerSource = "address" | "kiosk_declared";
  * without a query per kiosk and it is right about 60% of the time, and every
  * entry it produces says so.
  */
-function extractNftOwner(node: { owner?: OwnerNode }): { address: string; source: OwnerSource } | null {
+function extractNftOwner(
+  node: { owner?: OwnerNode },
+): { address?: string; source: OwnerSource; kiosk_id?: string } | null {
   const addr = node.owner?.address;
   if (addr?.address && !addr.asObject) return { address: addr.address, source: "address" };
   const inner = addr?.asObject?.owner?.address;
   if (inner?.address && !inner.asObject) return { address: inner.address, source: "address" };
+  // The parent has to BE a Kiosk. `inner.address` only says the grandparent is
+  // some object, so treating that as a kiosk counted a Bag-held or
+  // TableVec-held NFT as kiosk-held and inflated the denominator the kiosk
+  // caveat is stated against. Matched in full, never by suffix — a package can
+  // name its own module `kiosk` and its struct `Kiosk`.
+  const parentType = inner?.asObject?.asMoveObject?.contents?.type?.repr;
+  const isKiosk = !!parentType && baseType(parentType) === KIOSK_TYPE;
+  const kioskId = isKiosk ? inner?.address : undefined;
   const kioskOwner = inner?.asObject?.asMoveObject?.contents?.json?.owner;
   // The json blob is untyped, so a non-string here would become a Map key and
   // land in the holder list verbatim.
-  if (typeof kioskOwner === "string" && kioskOwner) {
+  if (isKiosk && kioskId) {
+    // A kiosk whose declared owner is unusable still has an id, and the store
+    // may know who actually holds it. Discarding the id here threw away the
+    // only thing that could have resolved it.
+    return {
+      ...(typeof kioskOwner === "string" && kioskOwner ? { address: kioskOwner } : {}),
+      source: "kiosk_declared",
+      kiosk_id: kioskId,
+    };
+  }
+  if (isKiosk && typeof kioskOwner === "string" && kioskOwner) {
     return { address: kioskOwner, source: "kiosk_declared" };
   }
   return null;
@@ -144,8 +200,9 @@ const NFT_OBJECTS_QUERY = `
                 owner {
                   ... on ObjectOwner {
                     address {
+                      address
                       asObject {
-                        asMoveObject { contents { json } }
+                        asMoveObject { contents { type { repr } json } }
                       }
                     }
                   }
@@ -448,7 +505,12 @@ export function registerHolderTools(server: McpServer) {
       // the collection only has 20 holders rather than like a cache hit. The
       // network belongs in the key for the same reason a label does: the same
       // type on mainnet and testnet is a different set of holders.
-      const cacheKey = `${getNetwork()}:${effectiveMode}:${resolvedType}:${maxScan}:${topN}`;
+      // The kiosk-owner table is part of the answer in NFT mode, so it is part
+      // of the key. Without it, running get_nft_sales to resolve a scan's
+      // kiosks — which this tool's own caveat instructs — changed nothing for
+      // the 24 hours the previous payload stayed cached.
+      const kioskVersion = effectiveMode === "nft" ? kioskOwnerVersion(getNetwork()) : "-";
+      const cacheKey = `${getNetwork()}:${effectiveMode}:${resolvedType}:${maxScan}:${topN}:${kioskVersion}`;
       const cached = getCached(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
@@ -567,6 +629,15 @@ export function registerHolderTools(server: McpServer) {
       // 82 kiosks, so an unmarked count would put it at the top of a ranking
       // it does not belong in.
       const kioskDeclared = new Map<string, number>();
+      // Resolved from a sale record. Chain-derived, but a SNAPSHOT at the sale's
+      // checkpoint, which may be months old and which a later kiosk sale would
+      // have overtaken. Reporting it identically to an NFT read from its own
+      // owner field would be the one unmarked weaker answer in the payload.
+      const fromSale = new Map<string, number>();
+      // Kiosk-held NFTs, held back from the counts until the store has had a
+      // chance to name a real owner for them. Keyed by kiosk so one lookup
+      // covers every NFT in it.
+      const pendingKiosk: Array<{ kiosk_id?: string; declared?: string }> = [];
       let cursor: string | undefined;
       let totalScanned = 0;
       let truncated = false;
@@ -583,11 +654,15 @@ export function registerHolderTools(server: McpServer) {
 
         for (const node of data.objects.nodes) {
           const owner = extractNftOwner(node);
-          if (owner) {
+          if (!owner) {
+            unresolvedOwners++;
+          } else if (owner.source === "kiosk_declared") {
+            pendingKiosk.push({
+              ...(owner.kiosk_id ? { kiosk_id: owner.kiosk_id } : {}),
+              ...(owner.address ? { declared: owner.address } : {}),
+            });
+          } else if (owner.address) {
             holderCounts.set(owner.address, (holderCounts.get(owner.address) ?? 0) + 1);
-            if (owner.source === "kiosk_declared") {
-              kioskDeclared.set(owner.address, (kioskDeclared.get(owner.address) ?? 0) + 1);
-            }
           } else {
             unresolvedOwners++;
           }
@@ -648,6 +723,39 @@ export function registerHolderTools(server: McpServer) {
         };
       }
 
+      // A marketplace sale names the buyer and the buyer's kiosk in one
+      // record, so a kiosk seen trading has a chain-derived owner. That beats
+      // the kiosk's own declared field, which does not follow the
+      // KioskOwnerCap and disagrees 40% of the time. Populate the table with
+      // get_nft_sales; this is a single store read whatever the scan's size.
+      const resolved = loadKioskOwners(
+        getNetwork(),
+        [...new Set(pendingKiosk.map((p) => p.kiosk_id).filter((k): k is string => !!k))],
+      );
+      let kioskResolved = 0;
+      let kioskUnresolved = 0;
+      for (const p of pendingKiosk) {
+        const real = p.kiosk_id ? resolved.get(p.kiosk_id) : undefined;
+        const address = real ?? p.declared;
+        if (!address) {
+          // A kiosk with no resolvable owner at all: the store did not know it
+          // and its declared field was unusable. Counted in its own field as
+          // well as in unresolvedOwners, so the three kiosk numbers still sum
+          // to kiosk_held — a reader checking that would otherwise find it
+          // short with nothing saying why.
+          kioskUnresolved++;
+          unresolvedOwners++;
+          continue;
+        }
+        holderCounts.set(address, (holderCounts.get(address) ?? 0) + 1);
+        if (real) {
+          kioskResolved++;
+          fromSale.set(address, (fromSale.get(address) ?? 0) + 1);
+        } else {
+          kioskDeclared.set(address, (kioskDeclared.get(address) ?? 0) + 1);
+        }
+      }
+
       const sorted = [...holderCounts.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, topN);
@@ -660,16 +768,28 @@ export function registerHolderTools(server: McpServer) {
         address,
         name: nameMap.get(address) ?? null,
         count,
-        // Named the way the production indexer names it, so the two can be
-        // compared without translating vocabulary.
-        holder_kind: kioskDeclared.get(address) ? "kiosk_declared" : "wallet",
+        // Four values, because the three ways an owner is arrived at are not
+        // equally strong and one address can hold NFTs by more than one of
+        // them. `wallet` is read from the object itself; `kiosk_resolved` comes
+        // from a sale record, chain-derived but a snapshot; `kiosk_declared` is
+        // the kiosk's own mutable field. A holder owning three outright and one
+        // through an unresolvable kiosk is `mixed`, not a guess outright — a
+        // consumer filtering for verified holders would otherwise drop someone
+        // three quarters verified. The counts below carry the split.
+        holder_kind: holderKind(
+          count,
+          kioskDeclared.get(address) ?? 0,
+          fromSale.get(address) ?? 0,
+        ),
         ...(kioskDeclared.get(address)
           ? { from_kiosk_owner_field: kioskDeclared.get(address) }
           : {}),
+        ...(fromSale.get(address) ? { from_sale_records: fromSale.get(address) } : {}),
       }));
       const kioskAttributed = [...kioskDeclared.values()].reduce((a, b) => a + b, 0);
+      const kioskTotal = pendingKiosk.length;
       const kioskCaveat = kioskAttributed
-        ? `${kioskAttributed} of ${totalScanned} objects are held in kiosks and attributed using the kiosk's own \`owner\` field (\`from_kiosk_owner_field\` per holder). That field is set by the kiosk and is NOT updated when the KioskOwnerCap is transferred: measured over 300 mainnet kiosks, it disagreed with the actual cap holder 40% of the time, and one address was declared by 82 different kiosks. Confirm any holder carrying this before treating it as one party: the reliable resolution for a regular kiosk is the NFT's latest sale buyer, or its mint transaction sender if it has never traded, which trace_object_history can give you for a single object.`
+        ? `${kioskAttributed} of ${totalScanned} objects are held in kiosks and attributed using the kiosk's own \`owner\` field (\`from_kiosk_owner_field\` per holder). That field is set by the kiosk and is NOT updated when the KioskOwnerCap is transferred: measured over 300 mainnet kiosks, it disagreed with the actual cap holder 40% of the time, and one address was declared by 82 different kiosks. Run get_nft_sales over a window covering these kiosks' trades to replace the guess with the buyer named in the sale itself.`
         : null;
 
       const result = truncated
@@ -686,9 +806,15 @@ export function registerHolderTools(server: McpServer) {
               `Objects are walked in object-id order, not by how many anyone holds, so these are the biggest holders WITHIN THE SAMPLE and not the biggest holders of the collection. ` +
               `Raise max_scan until "truncated" is false for a real ranking.`,
             ...(unresolvedOwners ? { unresolved_owners: unresolvedOwners } : {}),
-            ...(kioskCaveat
-              ? { kiosk_attributed: kioskAttributed, kiosk_caveat: kioskCaveat }
+            ...(kioskTotal
+              ? {
+                  kiosk_held: kioskTotal,
+                  kiosk_resolved_from_sales: kioskResolved,
+                  kiosk_attributed: kioskAttributed,
+                  ...(kioskUnresolved ? { kiosk_unresolved: kioskUnresolved } : {}),
+                }
               : {}),
+            ...(kioskCaveat ? { kiosk_caveat: kioskCaveat } : {}),
             sampled_holders: topHolders.map(({ rank: _rank, ...rest }) => rest),
           }
         : {
@@ -704,9 +830,15 @@ export function registerHolderTools(server: McpServer) {
             // collection while a ranked list sat beside it saying otherwise.
             complete_ranking: true,
             cached: false,
-            ...(kioskCaveat
-              ? { kiosk_attributed: kioskAttributed, kiosk_caveat: kioskCaveat }
+            ...(kioskTotal
+              ? {
+                  kiosk_held: kioskTotal,
+                  kiosk_resolved_from_sales: kioskResolved,
+                  kiosk_attributed: kioskAttributed,
+                  ...(kioskUnresolved ? { kiosk_unresolved: kioskUnresolved } : {}),
+                }
               : {}),
+            ...(kioskCaveat ? { kiosk_caveat: kioskCaveat } : {}),
             ...(unresolvedOwners
               ? {
                   unresolved_owners: unresolvedOwners,

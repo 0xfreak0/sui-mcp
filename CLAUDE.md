@@ -821,6 +821,58 @@ Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
 
+### An NFT's holder is not its owner field
+
+`get_top_holders` in NFT mode resolves a kiosk-held NFT through
+`dynamic_field::Field<kiosk::Item>` to the Kiosk, then reads the Kiosk's own
+`owner` field. **That field is self-declared and mutable.** `set_owner` and
+`set_owner_custom` write it; nothing updates it when the `KioskOwnerCap` is
+transferred, so after a cap changes hands it still names whoever set it last.
+
+Measured on mainnet over 300 sampled `KioskOwnerCap`s, comparing each cap's
+real holder against the `owner` field of the kiosk it controls: **121 disagreed,
+40.3%**. The disagreement concentrates rather than scattering — one address is
+declared by 82 different kiosks, so an unmarked count invents a top holder out
+of a platform address and gets a concentration ranking wrong in the direction a
+reader will act on.
+
+A production Sui NFT indexer resolves this with a five-step waterfall and does
+not use the field at any step:
+
+1. `owner_kind = address` — the object's own owner. Common for airdrops and
+   direct mints, rare for anything trading-mediated.
+2. `PersonalKioskCap` → human owner. Covers **only** personal kiosks; most
+   trading-mediated collections sit in regular `0x2::kiosk::Kiosk` with no such
+   chain, and one real collection had 18,825 distinct kiosks with zero of them
+   resolvable this way.
+3. **The latest sale buyer for that NFT.** This is what actually carries a
+   regular kiosk.
+4. **The mint transaction's sender**, for an NFT minted into a kiosk and never
+   traded. On that same collection this closed the ~30% gap step 3 left.
+5. The kiosk id itself, tagged as a kiosk rather than a wallet so consumers can
+   de-emphasise it.
+
+Steps 3 and 4 need an indexed sale and mint history, which a per-call server
+does not have. `trace_object_history` answers it for ONE object, not for a
+scan. So the field is still used, because it is the only hint available without
+a query per kiosk and it is right about 60% of the time — and every holder it
+produced carries `holder_kind: "kiosk_declared"` and a
+`from_kiosk_owner_field` count beside the caveat. Do not drop those markers to
+tidy the payload.
+
+Two smaller rules from the same path:
+
+- **Select `ConsensusAddressOwner`.** Sampled 300 mainnet objects across five
+  types and found none, so this is not fixing a live miscount: it is a schema
+  variant the rest of the repo already selects (`trace.ts`, `watch-probe.ts`,
+  and five more handlers) and the NFT query did not. Cost is three lines of
+  query text. If party objects do appear, the alternative is counting a real
+  party as an unresolvable owner.
+- **`nft-collections.json` is package-keyed, so `collection_name` is
+  mainnet-only.** Resolving a name off mainnet fed a mainnet type into another
+  network's scan, which then found nothing and said so as though the collection
+  were empty. Same rule as `coins.json` and `protocols.json`.
+
 ### Store writes: which fail soft, and which must not
 
 A cache or cursor write that fails must never fail the read that produced it.

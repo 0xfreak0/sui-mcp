@@ -1,11 +1,52 @@
 import { z } from "zod";
 import { numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
+import { gqlQuery } from "../clients/graphql.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { clampPageSize } from "../utils/pagination.js";
 import { protoValueToJson } from "../utils/proto.js";
 import { formatOwner } from "../utils/formatting.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+/**
+ * The Display standard, which is NOT in the object's own fields.
+ *
+ * `0x2::display::Display<T>` is a template registered per TYPE and rendered
+ * per object, so an NFT's name and image usually live nowhere in its struct.
+ * Verified on a mainnet collection: `contents.json` holds
+ * `id, number, index, attributes, metadata_version` and nothing human-readable,
+ * while the rendered Display carries creator, description and image_url. The
+ * field-guessing below finds nothing there, so `get_object` promised display
+ * metadata and returned none for exactly the objects it was written for.
+ *
+ * gRPC has no rendered Display, so this is GraphQL — the same exception, for
+ * the same reason, as event field JSON.
+ */
+const DISPLAY_QUERY = `
+  query($id: SuiAddress!) {
+    object(address: $id) {
+      asMoveObject { contents { display { output } } }
+    }
+  }
+`;
+
+async function fetchDisplayStandard(objectId: string): Promise<Record<string, string> | null> {
+  try {
+    const d = await gqlQuery<{
+      object?: { asMoveObject?: { contents?: { display?: { output?: Record<string, unknown> | null } | null } | null } | null };
+    }>(DISPLAY_QUERY, { id: objectId });
+    const out = d.object?.asMoveObject?.contents?.display?.output;
+    if (!out) return null;
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(out)) {
+      if (typeof v === "string" && v) clean[k] = v;
+    }
+    return Object.keys(clean).length ? clean : null;
+  } catch {
+    // Supplementary. The object read already succeeded and is the answer.
+    return null;
+  }
+}
 
 function extractDisplay(content: unknown): Record<string, string | null> | null {
   if (!content || typeof content !== "object" || Array.isArray(content)) return null;
@@ -53,7 +94,19 @@ export function registerObjectTools(server: McpServer) {
       );
       const obj = res.object;
       const content = protoValueToJson(obj?.json);
-      const display = extractDisplay(content);
+      // The struct's own fields first, because they cost nothing. Only when
+      // they carry nothing is the rendered Display worth a second request.
+      let display: Record<string, string | null> | null = extractDisplay(content);
+      let displaySource: "object_fields" | "display_standard" | undefined = display
+        ? "object_fields"
+        : undefined;
+      if (!display && obj?.objectId) {
+        const rendered = await fetchDisplayStandard(obj.objectId);
+        if (rendered) {
+          display = rendered;
+          displaySource = "display_standard";
+        }
+      }
 
       const result: Record<string, unknown> = {
         object_id: obj?.objectId,
@@ -69,6 +122,7 @@ export function registerObjectTools(server: McpServer) {
 
       if (display) {
         result.display = display;
+        result.display_source = displaySource;
       }
 
       return {

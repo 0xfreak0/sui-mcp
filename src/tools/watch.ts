@@ -42,7 +42,7 @@ export function registerWatchTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Only report coin movements at or above this, in RAW units of any coin. Sinks and transactions that move no coin are reported regardless.",
+          'Only report coin movements at or above this, in RAW units of any coin (SUI has 9 decimals, so 0.5 SUI is "500000000"). Sinks and transactions that move no coin are reported regardless. Pass "0" to clear a floor set earlier; omitting it on a re-add keeps the existing one.',
         ),
     },
     async ({ action, addresses, label, min_amount }) => {
@@ -126,7 +126,9 @@ export function registerWatchTools(server: McpServer) {
       // An address already watched keeps its cursor (the ON CONFLICT clause
       // does not touch last_checkpoint), so reporting the current checkpoint for
       // it would promise a fresh start the next poll will not honour.
-      const existing = new Map(listWatches(network).map((w) => [w.address, w.last_checkpoint]));
+      const existing = new Map(
+        listWatches(network).map((w) => [normalizeWatchAddress(w.address) ?? w.address, w.last_checkpoint]),
+      );
       // saveWatch returns false when the write failed, and since that failure
       // is now swallowed to keep reads working, counting the input instead
       // would report addresses as watched that were never recorded.
@@ -201,8 +203,10 @@ export function registerWatchTools(server: McpServer) {
         .map((w) => ({
           // Normalized, not just validated. Balance changes come back canonical
           // padded lowercase, so a row holding `0x2` would match none of its own
-          // and read as its own counterparty with no amounts at all.
+          // and read as its own counterparty with no amounts at all. The stored
+          // spelling travels alongside because it is what keys the row.
           address: normalizeWatchAddress(w.address)!,
+          ...(normalizeWatchAddress(w.address) !== w.address ? { store_key: w.address } : {}),
           last_checkpoint: w.last_checkpoint,
           ...(w.label ? { label: w.label } : {}),
           ...(w.min_amount ? { min_amount: w.min_amount } : {}),
@@ -249,8 +253,13 @@ export function registerWatchTools(server: McpServer) {
         // seen, and not advancing would re-read it on every poll forever. A
         // cursor that could not be written is named, because the alternative is
         // an agent on a poll loop counting the same activity every time.
-        if (!advanceWatch(network, entry.address, result.last_checkpoint)) {
-          notAdvanced.push(entry.address);
+        // Only when it actually moves. The UPDATE carries `last_checkpoint < ?`,
+        // so re-asserting the current value legitimately changes no row and
+        // would otherwise be reported as a failed write.
+        if (result.last_checkpoint > entry.last_checkpoint) {
+          if (!advanceWatch(network, entry.store_key ?? entry.address, result.last_checkpoint)) {
+            notAdvanced.push(entry.address);
+          }
         }
       }
 

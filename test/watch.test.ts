@@ -383,7 +383,23 @@ describe("safeAdvance", () => {
   });
 
   it("never moves the cursor backwards", () => {
-    expect(safeAdvance([tx(10)], true, 50).checkpoint).toBe(50);
+    // Spans two checkpoints, so this reaches the `Math.max(high - 1, current)`
+    // guard rather than short-circuiting on the single-checkpoint stall.
+    const r = safeAdvance([tx(10), tx(11)], true, 50);
+    expect(r.checkpoint).toBe(50);
+    expect(r.stalled).toBe(false);
+  });
+
+  /**
+   * A FULL page is not the same claim as "there is more". At perAddress 1 every
+   * non-empty page is full and sits in one checkpoint, so reading full as
+   * saturated stalled the cursor on a single new transaction, forever.
+   */
+  it("advances on a single transaction when nothing more is pending", () => {
+    expect(safeAdvance([tx(101)], false, 100)).toEqual({
+      checkpoint: 101,
+      stalled: false,
+    });
   });
 
   it("leaves the cursor alone when nothing came back", () => {
@@ -397,10 +413,16 @@ describe("safeAdvance", () => {
  * reporting it reads as impersonation of the address under investigation.
  */
 describe("flagLookalikes only fires against a watched address", () => {
-  const WATCHED = "0xaaaabbbb" + "0".repeat(48) + "ccccdddd";
-  const LOOKALIKE = "0xaaaabbbb" + "1".repeat(48) + "ccccdddd";
-  const OTHER_A = "0xeeeeffff" + "2".repeat(48) + "11112222";
-  const OTHER_B = "0xeeeeffff" + "3".repeat(48) + "11112222";
+  // Every address here needs real entropy in the middle: `lowEntropy` drops a
+  // candidate with four or fewer distinct hex characters (or a run of twelve
+  // zeroes) BEFORE any bucketing, so a lazily built pair is discarded by the
+  // filter rather than by the rule under test, and the assertion passes with
+  // the fix reverted.
+  const mid = (seed: string) => (seed + "13579bdf2468ace0").repeat(3).slice(0, 48);
+  const WATCHED = "0xaaaabbbb" + mid("4f1c") + "ccccdddd";
+  const LOOKALIKE = "0xaaaabbbb" + mid("9b7e") + "ccccdddd";
+  const OTHER_A = "0xeeeeffff" + mid("2c6a") + "11112222";
+  const OTHER_B = "0xeeeeffff" + mid("8d3b") + "11112222";
 
   const hit = (counterparties: string[]) => ({
     address: WATCHED,

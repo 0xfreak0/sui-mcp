@@ -233,7 +233,20 @@ async function fetchAuthentication(addresses: string[]): Promise<Map<string, Aut
   // downgrading a real finding to an absent one, which this project treats as
   // worse than reporting "unknown". Same rule as watched addresses and as
   // digests in get_transactions.
-  const usable = addresses.filter((a) => isValidSuiAddress(normalizeSuiAddress(a)));
+  // The NORMALIZED form is what gets batched, because normalizeSuiAddress ADDS
+  // the 0x prefix: "2" passes a validity check applied to the normalized value
+  // and is then rejected by the service, which is the same whole-batch failure
+  // this filter exists to prevent.
+  //
+  // The result is keyed by the address the CALLER passed. Keying it canonically
+  // would silently drop authentication for any caller holding a short form —
+  // the identical mismatch that stopped a watch cursor advancing, one module
+  // over.
+  const usable: Array<{ query: string; original: string }> = [];
+  for (const original of addresses) {
+    const query = normalizeSuiAddress(original);
+    if (isValidSuiAddress(query)) usable.push({ query, original });
+  }
   for (let i = 0; i < usable.length; i += AUTH_BATCH_SIZE) {
     const chunk = usable.slice(i, i + AUTH_BATCH_SIZE);
     const query =
@@ -247,16 +260,18 @@ async function fetchAuthentication(addresses: string[]): Promise<Map<string, Aut
       "\n}";
     // Variables would need declaring in the operation signature, so the address
     // is inlined. That is only safe because the chunk was validated above.
-    const inlined = chunk.reduce((q, addr, j) => q.replace(`$a${j}`, JSON.stringify(addr)), query);
+    const inlined = chunk.reduce((q, a, j) => q.replace(`$a${j}`, JSON.stringify(a.query)), query);
     try {
       const r = await gqlQuery<Record<string, { nodes: { signatures: { signatureBytes: string }[] }[] }>>(
         inlined,
       );
-      chunk.forEach((addr, j) => {
+      chunk.forEach((a, j) => {
         const sigs = r[`a${j}`]?.nodes?.[0]?.signatures?.map((s) => s.signatureBytes);
         if (!sigs?.length) return;
-        const auth = readAuthentication(addr, sigs);
-        if (auth) out.set(addr, auth);
+        // Derived against the canonical form — an address IS the hash of its
+        // authenticator, so the re-derivation only matches the padded value.
+        const auth = readAuthentication(a.query, sigs);
+        if (auth) out.set(a.original, auth);
       });
     } catch {
       // Enrichment only. A trace the chain already answered must not fail here.

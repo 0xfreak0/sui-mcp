@@ -83,13 +83,15 @@ describe("a truncated scan is a SAMPLE, not a ranking", () => {
    */
   it("drops the percentage of supply", async () => {
     mockGqlQuery.mockImplementation(endless());
-    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 10 });
+    // A distinct depth, so this exercises the walk rather than the cache entry
+    // the test above just wrote. The key is network:mode:type:maxScan:topN.
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 11 });
     expect(r.sampled_holders[0].percentage).toBeUndefined();
   });
 
   it("says outright that these are not the largest holders", async () => {
     mockGqlQuery.mockImplementation(endless());
-    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 10 });
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 12 });
     expect(r.caveat).toMatch(/INCOMPLETE/);
     expect(r.caveat).toMatch(/not the largest holders/i);
     expect(r.caveat).toMatch(/object-id order/i);

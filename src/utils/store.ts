@@ -895,9 +895,12 @@ export function removeWatch(network: string, address: string): boolean {
 export function advanceWatch(network: string, address: string, checkpoint: number): boolean {
   initStore();
   return tryWrite("advanceWatch", false, (db) => {
-    db.prepare(
+    // `changes`, not a bare true. tryWrite only notices a THROW, so a statement
+    // that matched no row reported a cursor advance that never happened — and
+    // the caller's own "cursor did not move" warning could not see it.
+    const r = db.prepare(
       `UPDATE watches SET last_checkpoint = ? WHERE account = ? AND last_checkpoint < ?`,
-    ).run(checkpoint, `${network}:${address}`, checkpoint);
-    return true;
+    ).run(checkpoint, `${network}:${address}`, checkpoint) as { changes?: number };
+    return (r.changes ?? 0) > 0;
   });
 }

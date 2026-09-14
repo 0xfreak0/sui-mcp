@@ -40,10 +40,16 @@ export async function fetchDeltas(
   perAddress = 10,
 ): Promise<{ deltas: Map<string, DeltaTx[]>; requests: number; saturated: string[] }> {
   const deltas = new Map<string, DeltaTx[]>();
-  // Addresses whose delta came back FULL, so there is more than this poll saw.
-  // Measured on a real mainnet address doing a transaction every two seconds:
-  // it fills the cap on every poll, and without saying so the watch falls
-  // permanently behind while reporting confidently.
+  // Addresses with MORE than this poll reported. Measured on a real mainnet
+  // address doing a transaction every two seconds: it fills the cap on every
+  // poll, and without saying so the watch falls permanently behind while
+  // reporting confidently.
+  //
+  // Proven by asking for one more than will be reported, the same bound-not-a-
+  // count trick `probeRecipients` uses. A FULL page is not the same claim: at
+  // `perAddress` 1 every non-empty page is full, so treating full as "there is
+  // more" made a single new transaction look like a page cut in half and
+  // stalled the cursor permanently.
   const saturated: string[] = [];
   let requests = 0;
 
@@ -53,7 +59,7 @@ export async function fetchDeltas(
       batch
         .map(
           (e, i) =>
-            `a${i}:transactions(filter:{affectedAddress:"${e.address}",afterCheckpoint:${e.last_checkpoint}},first:${perAddress}){${DELTA_SELECTION}}`,
+            `a${i}:transactions(filter:{affectedAddress:"${e.address}",afterCheckpoint:${e.last_checkpoint}},first:${perAddress + 1}){${DELTA_SELECTION}}`,
         )
         .join("") +
       "}";
@@ -65,8 +71,11 @@ export async function fetchDeltas(
     const data = await gqlQuery<Record<string, { nodes: DeltaNode[] }>>(query, {});
 
     batch.forEach((e, i) => {
-      const nodes = data[`a${i}`]?.nodes ?? [];
-      if (nodes.length >= perAddress) saturated.push(e.address);
+      const all = data[`a${i}`]?.nodes ?? [];
+      // The extra node is proof, not payload: it is dropped rather than
+      // reported, so the caller still gets exactly `perAddress`.
+      const nodes = all.slice(0, perAddress);
+      if (all.length > perAddress) saturated.push(e.address);
       deltas.set(
         e.address,
         nodes

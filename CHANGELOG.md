@@ -86,6 +86,28 @@
   back at the next start, and for a `cex` label that silently keeps terminating
   traces. `delete_finding` reported success for an id matching nothing.
 
+- **Kiosk-held NFTs are marked, not silently credited.** `get_top_holders`
+  attributes them through the kiosk's own `owner` field, which is self-declared
+  and is not updated when the `KioskOwnerCap` moves. Measured over 300 mainnet
+  kiosks it disagreed with the real cap holder 40% of the time, and one address
+  was declared by 82 kiosks, so an unmarked scan invented a top holder. Each
+  holder now carries `holder_kind` and a `from_kiosk_owner_field` count, with a
+  caveat naming the reliable resolution.
+
+- **The NFT holder scan reads `ConsensusAddressOwner`**, which it would
+  otherwise count as an unresolvable owner. No mainnet object sampled reports
+  it today; the rest of the server already selects it.
+
+- **`get_object` reads the Display standard.** An NFT's name and image live in
+  `0x2::display::Display<T>`, which is registered per type and is not in the
+  object's own fields, so the tool promised display metadata and returned none
+  for the collections it was written for. The struct's fields are still
+  preferred, and `display_source` says which answered.
+
+- **`collection_name` is refused off mainnet.** The collection registry is
+  keyed by package id, so resolving a name on another network scanned it with a
+  mainnet type and reported the collection as empty.
+
 - **A watch no longer stalls on a single new transaction.** Saturation was
   inferred from a full page, but at `max_per_address: 1` every non-empty page
   is full and sits in one checkpoint, so the cursor never advanced and the same

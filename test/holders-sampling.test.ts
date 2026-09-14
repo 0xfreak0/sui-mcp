@@ -220,3 +220,64 @@ describe("out-of-range arguments are clamped, not obeyed", () => {
     expect(r.top_holders[0].address).toBe(A);
   });
 });
+
+/**
+ * A kiosk's `owner` field is written by `set_owner` and is NOT updated when the
+ * `KioskOwnerCap` is transferred. Measured over 300 mainnet kiosks it disagreed
+ * with the real cap holder 40% of the time, and the disagreement concentrates:
+ * one address was declared by 82 kiosks, which is enough to invent a top holder.
+ */
+describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
+  /** owner -> dynamic field -> kiosk object, which declares `owner`. */
+  const kioskNft = (declared: string) => ({
+    owner: {
+      address: {
+        asObject: {
+          owner: {
+            address: {
+              asObject: { asMoveObject: { contents: { json: { owner: declared } } } },
+            },
+          },
+        },
+      },
+    },
+  });
+  const plainNft = (owner: string) => ({ owner: { address: { address: owner } } });
+
+  it("tags a kiosk-declared holder and counts how many came that way", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [kioskNft(A), kioskNft(A), plainNft(B)],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    const r = await run({ type: "0xk1::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    const top = r.top_holders.find((h: { address: string }) => h.address === A);
+    expect(top.holder_kind).toBe("kiosk_declared");
+    expect(top.from_kiosk_owner_field).toBe(2);
+    expect(r.kiosk_attributed).toBe(2);
+    expect(r.kiosk_caveat).toMatch(/KioskOwnerCap/);
+  });
+
+  it("leaves an ordinary address holder unmarked", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: { nodes: [plainNft(B)], pageInfo: { hasNextPage: false } },
+    });
+    const r = await run({ type: "0xk2::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.top_holders[0].holder_kind).toBe("wallet");
+    expect(r.top_holders[0].from_kiosk_owner_field).toBeUndefined();
+    expect(r.kiosk_caveat).toBeUndefined();
+  });
+
+  /** The json blob is untyped, so a non-string would become a Map key. */
+  it("treats a non-string owner field as unresolvable", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [kioskNft({ nested: true } as unknown as string)],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    const r = await run({ type: "0xk3::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.unresolved_owners).toBe(1);
+  });
+});

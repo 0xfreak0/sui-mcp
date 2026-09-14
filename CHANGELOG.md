@@ -86,6 +86,21 @@
   back at the next start, and for a `cex` label that silently keeps terminating
   traces. `delete_finding` reported success for an id matching nothing.
 
+- **A watch no longer stalls on a single new transaction.** Saturation was
+  inferred from a full page, but at `max_per_address: 1` every non-empty page
+  is full and sits in one checkpoint, so the cursor never advanced and the same
+  transaction was reported as new on every poll. The delta query now asks for
+  one more row than it reports, so "there is more" is proven rather than
+  guessed.
+
+- **A watch on a non-canonical stored address advances again.** Normalizing
+  rows on read fixed balance-change matching and broke the cursor write, which
+  is keyed on the stored spelling. `advanceWatch` now reports whether a row
+  actually changed rather than whether the statement threw.
+
+- **`analyze_token` no longer reports a complete ranking of zero holders**, the
+  same guard `get_top_holders` received, and it surfaces `unresolved_owners`.
+
 - **One bad address no longer disables multisig detection for a whole batch.**
   `identify_address` and the investigation flows batch twenty addresses into one
   aliased query whose error is swallowed as enrichment, so a single unparseable

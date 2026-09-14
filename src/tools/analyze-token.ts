@@ -186,12 +186,22 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       if (holderResult) {
         result.unique_holders_scanned = holderResult.unique_holders;
         result.holder_scan_truncated = holderResult.truncated;
+        if (holderResult.unresolved_owners) {
+          result.holder_scan_unresolved_owners = holderResult.unresolved_owners;
+        }
         // Same distinction get_top_holders makes: the scan walks coin objects
         // in object-id order, so a truncated one names the biggest holder it
         // SAW, not the biggest holder. Concentration is the reason anyone
         // reads this field, and a sampled top holder invites exactly the
         // concentration claim the data cannot support.
-        if (holderResult.truncated) {
+        if (holderResult.total_scanned === 0) {
+          // Same rule get_top_holders follows: a walk that found nothing has
+          // not ranked anything. An empty top_holders beside
+          // holder_scan_truncated: false reads as "this coin has no holders",
+          // which is what a mistyped or cross-network type produces too.
+          result.holder_scan_note =
+            `No 0x2::coin::Coin<${coinType}> objects were found, so there is no holder scan to report. That reads the same as a mistyped coin type or one that exists on another network; it is not evidence that the coin has no holders.`;
+        } else if (holderResult.truncated) {
           result.sampled_holders = holderResult.holders.map(
             ({ rank: _rank, ...rest }) => rest,
           );

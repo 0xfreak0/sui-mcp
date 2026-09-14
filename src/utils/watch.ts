@@ -78,7 +78,15 @@ export function normalizeWatchAddress(raw: string): string | null {
 
 /** What a watch is looking at. Only addresses for now. */
 export interface WatchEntry {
+  /** Canonical padded form, compared against what the chain returns. */
   address: string;
+  /**
+   * The address as the store row holds it, which is what keys that row.
+   * Normalizing on read fixed comparison and broke the cursor: the UPDATE is
+   * keyed on the STORED string, so a legacy row spelled `0x2` matched nothing
+   * and its watch silently never advanced. Absent when the two are the same.
+   */
+  store_key?: string;
   /** Highest checkpoint already reported. Deltas are asked strictly after it. */
   last_checkpoint: number;
   /** Only report a coin movement at or above this, in raw units of any coin. */
@@ -216,7 +224,12 @@ export function evaluate(
   },
 ): { hits: WatchHit[]; last_checkpoint: number; stalled: boolean } {
   const hits: WatchHit[] = [];
-  const floor = bigOrZero(entry.min_amount);
+  // A stored floor is validated here too, not only where it was written: a row
+  // from an earlier build can hold "0.5", which threw inside BigInt and became
+  // a floor of zero, so the caller saw everything and was told nothing. An
+  // unusable value is no floor, which is what it already was — but now the
+  // read side agrees with the write side about what is acceptable.
+  const floor = /^\d+$/.test((entry.min_amount ?? "").trim()) ? bigOrZero(entry.min_amount) : 0n;
 
   for (const tx of txs) {
     const net = new Map<string, bigint>();

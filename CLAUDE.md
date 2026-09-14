@@ -894,6 +894,11 @@ nineteen, downgrading a real finding to an absent one. It filters before
 batching for that reason. A comment asserting the inputs are "hex strings we
 normalize" is not a validation; check that such a claim is backed by code.
 
+**Validate the value you are about to SEND.** `normalizeSuiAddress` adds the
+`0x` prefix, so `"2"` passes a check applied to the normalized form and is then
+rejected by the service — which fails the whole batch, the exact outcome the
+check was added to prevent. Both sites now batch the normalized value.
+
 ### Watching an investigation, without drowning the agent
 
 `watch_addresses` / `poll_watch`, pure logic in `src/utils/watch.ts`, network in
@@ -952,9 +957,24 @@ the signal is roughly one part in a million.
   then matches none of its own changes: the watched address lands in its own
   counterparty list, every transaction reads as `appeared`, and `min_amount`
   can never apply.
-- **`min_amount` is raw integer units and is validated.** `"0.5"` threw inside
-  `BigInt` and fell back to no floor at all, so a caller asking to see only
-  large movements saw everything and was told nothing.
+- **`min_amount` is raw integer units and is validated on write AND on read.**
+  `"0.5"` threw inside `BigInt` and fell back to no floor at all, so a caller
+  asking to see only large movements saw everything and was told nothing. A
+  re-add preserves an omitted floor and `"0"` clears one.
+- **A FULL page is not the claim "there is more".** `fetchDeltas` asks for
+  `perAddress + 1` and reports `perAddress`, so saturation is proven rather
+  than inferred — the same bound-not-a-count trick `probeRecipients` uses.
+  Reading "full" as "saturated" stalled the cursor on a single new transaction
+  at `max_per_address: 1`, where every non-empty page is full and sits in one
+  checkpoint.
+- **Normalize for COMPARISON, key writes by what the store holds.** The cursor
+  UPDATE is keyed on the stored address string, so normalizing a legacy row on
+  read fixed balance-change matching and silently stopped the watch advancing:
+  the statement matched no row, and `tryWrite` only notices a throw, so it
+  reported success. `WatchEntry.store_key` carries the stored spelling, and
+  `advanceWatch` returns `changes > 0`. The same trap sits in
+  `fetchAuthentication`, whose result map is keyed by the address the CALLER
+  passed while the query carries the canonical form.
 - **`min_amount` filters VALUE only.** A labelled sink, a capability handover
   or any object move has no amount to measure, so a floor must never suppress
   one.

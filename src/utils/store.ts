@@ -474,9 +474,41 @@ export function resetStore(): void {
   unavailableReason = null;
 }
 
+
+/**
+ * Run a store write, returning `fallback` if it throws.
+ *
+ * The store is a cache and a notebook beside a read-only server. A write that
+ * fails must not fail the read that produced it: the measurement already
+ * succeeded, and the caller is entitled to it whether or not it could be
+ * persisted.
+ *
+ * `saveTransaction` had this guard from the start, for the same reason stated
+ * there. Every other writer lacked it, and one of them surfaced as a tool
+ * crash: an older server process writing into a database a newer build had
+ * migrated failed with "NOT NULL constraint failed:
+ * fanout.sponsored_address_count", which took down `get_address_fanout`
+ * entirely rather than returning the fan-out it had just measured.
+ *
+ * Failures go to stderr, never stdout — stdout is the MCP transport.
+ */
+function tryWrite<T>(what: string, fallback: T, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    console.error(`[store] ${what} failed, continuing without persistence: ${(err as Error).message}`);
+    return fallback;
+  }
+}
+
 export function saveLabel(l: Omit<StoredLabel, "updated_at">): boolean {
   initStore();
   if (!db) return false;
+  const handle = db;
+  return tryWrite("saveLabel", false, () => {
+    const db = handle;
+  
+  
   db.prepare(
     `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -487,6 +519,7 @@ export function saveLabel(l: Omit<StoredLabel, "updated_at">): boolean {
        updated_at=excluded.updated_at`,
   ).run(l.account, l.chain, l.address, l.label, l.category, l.confidence, l.notes, Date.now());
   return true;
+});
 }
 
 export function loadLabels(): StoredLabel[] {
@@ -499,13 +532,24 @@ export function loadLabels(): StoredLabel[] {
 export function deleteLabel(account: string): boolean {
   initStore();
   if (!db) return false;
+  const handle = db;
+  return tryWrite("deleteLabel", false, () => {
+    const db = handle;
+  
+  
   db.prepare(`DELETE FROM labels WHERE account = ?`).run(account);
   return true;
+});
 }
 
 export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
   initStore();
   if (!db) return false;
+  const handle = db;
+  return tryWrite("saveFanout", false, () => {
+    const db = handle;
+  
+  
   db.prepare(
     `INSERT INTO fanout (account, recipient_count, sender_count, counterparty_count,
                          coin_type_count, out_in_ratio, flow_shape,
@@ -541,6 +585,7 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
     Date.now(),
   );
   return true;
+});
 }
 
 export interface Finding {
@@ -765,6 +810,11 @@ export interface StoredWatch {
 export function saveWatch(network: string, w: StoredWatch): boolean {
   initStore();
   if (!db) return false;
+  const handle = db;
+  return tryWrite("saveWatch", false, () => {
+    const db = handle;
+  
+  
   db.prepare(
     `INSERT INTO watches (account, network, address, label, last_checkpoint, min_amount, added_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -781,6 +831,7 @@ export function saveWatch(network: string, w: StoredWatch): boolean {
     w.added_at,
   );
   return true;
+});
 }
 
 export function listWatches(network: string): StoredWatch[] {
@@ -810,10 +861,16 @@ export function listWatches(network: string): StoredWatch[] {
 export function removeWatch(network: string, address: string): boolean {
   initStore();
   if (!db) return false;
+  const handle = db;
+  return tryWrite("removeWatch", false, () => {
+    const db = handle;
+  
+  
   const r = db.prepare(`DELETE FROM watches WHERE account = ?`).run(`${network}:${address}`) as {
     changes?: number;
   };
   return (r.changes ?? 0) > 0;
+});
 }
 
 /**

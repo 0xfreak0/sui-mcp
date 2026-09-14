@@ -229,13 +229,42 @@ describe("out-of-range arguments are clamped, not obeyed", () => {
  */
 describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
   /** owner -> dynamic field -> kiosk object, which declares `owner`. */
-  const kioskNft = (declared: string) => ({
+  const kioskNft = (declared: string, kioskId = "0xkiosk1") => ({
     owner: {
       address: {
         asObject: {
           owner: {
             address: {
-              asObject: { asMoveObject: { contents: { json: { owner: declared } } } },
+              address: kioskId,
+              asObject: {
+                asMoveObject: {
+                  contents: {
+                    type: { repr: "0x0000000000000000000000000000000000000000000000000000000000000002::kiosk::Kiosk" },
+                    json: { owner: declared },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  /** The same shape with the kiosk id missing from the response. */
+  const kioskNftNoId = (declared: string) => ({
+    owner: {
+      address: {
+        asObject: {
+          owner: {
+            address: {
+              asObject: {
+                asMoveObject: {
+                  contents: {
+                    type: { repr: "0x0000000000000000000000000000000000000000000000000000000000000002::kiosk::Kiosk" },
+                    json: { owner: declared },
+                  },
+                },
+              },
             },
           },
         },
@@ -259,6 +288,26 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
     expect(r.kiosk_caveat).toMatch(/KioskOwnerCap/);
   });
 
+  /**
+   * A holder can be both. Labelling the whole count `kiosk_declared` because
+   * one NFT of four came from a kiosk says the other three are a guess too,
+   * and a reader filtering for chain-derived holders would drop them.
+   */
+  it("calls a holder with both kinds mixed, and carries the split", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [plainNft(A), plainNft(A), plainNft(A), kioskNft(A, "0xkm")],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    const r = await run({ type: "0xk5::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.top_holders[0]).toMatchObject({
+      count: 4,
+      holder_kind: "mixed",
+      from_kiosk_owner_field: 1,
+    });
+  });
+
   it("leaves an ordinary address holder unmarked", async () => {
     mockGqlQuery.mockResolvedValue({
       objects: { nodes: [plainNft(B)], pageInfo: { hasNextPage: false } },
@@ -267,6 +316,20 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
     expect(r.top_holders[0].holder_kind).toBe("wallet");
     expect(r.top_holders[0].from_kiosk_owner_field).toBeUndefined();
     expect(r.kiosk_caveat).toBeUndefined();
+  });
+
+  /**
+   * A kiosk id that did not come back must not cost the holder its marker.
+   * Dropping it because resolution is impossible would turn the weakest answer
+   * this tool gives into an unqualified one.
+   */
+  it("still marks a kiosk holder when the kiosk id is missing", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: { nodes: [kioskNftNoId(A)], pageInfo: { hasNextPage: false } },
+    });
+    const r = await run({ type: "0xk4::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.top_holders[0].holder_kind).toBe("kiosk_declared");
+    expect(r.kiosk_attributed).toBe(1);
   });
 
   /** The json blob is untyped, so a non-string would become a Map key. */

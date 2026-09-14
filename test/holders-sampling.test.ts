@@ -139,3 +139,82 @@ describe("the cursor guard #101 missed", () => {
     expect((r.sampled_holders ?? r.top_holders)[0].count).toBe(1);
   });
 });
+
+/**
+ * A null `endCursor` beside `hasNextPage: true` is a real service shape this
+ * repo already guards against restarting on. Breaking out of the walk without
+ * marking it truncated published a known-incomplete scan as a complete ranking,
+ * with ranks and percentages of supply restored and the caveat gone.
+ */
+describe("a walk stopped by a null cursor is truncated, not complete", () => {
+  it("token mode reports a sample when the connection claims more and gives no cursor", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [coin(A, "300"), coin(B, "100")],
+        pageInfo: { hasNextPage: true, endCursor: null },
+      },
+    });
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 998 });
+    expect(r.truncated).toBe(true);
+    expect(r.complete_ranking).toBe(false);
+    expect(r.top_holders).toBeUndefined();
+    expect(r.sampled_holders[0].rank).toBeUndefined();
+    expect(r.sampled_holders[0].percentage).toBeUndefined();
+  });
+
+  it("nft mode does the same", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [{ owner: { address: { address: A } } }],
+        pageInfo: { hasNextPage: true, endCursor: null },
+      },
+    });
+    const r = await run({ type: "0xc2::art::NullCur", mode: "nft", limit: 5, max_scan: 1000 });
+    expect(r.truncated).toBe(true);
+    expect(r.complete_ranking).toBe(false);
+    expect(r.top_holders).toBeUndefined();
+  });
+});
+
+/** "Nothing of this type exists" and "this type has no holders" are opposites. */
+describe("an empty walk is not a complete ranking of zero holders", () => {
+  it("token mode says it found nothing rather than ranking nobody", async () => {
+    mockGqlQuery.mockResolvedValue({ objects: { nodes: [], pageInfo: { hasNextPage: false } } });
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 999 });
+    expect(r.complete_ranking).toBe(false);
+    expect(r.caveat).toMatch(/not evidence that the coin has no holders/);
+  });
+
+  it("nft mode does the same", async () => {
+    mockGqlQuery.mockResolvedValue({ objects: { nodes: [], pageInfo: { hasNextPage: false } } });
+    const r = await run({ type: "0xc4::art::Empty", mode: "nft", limit: 5, max_scan: 1000 });
+    expect(r.complete_ranking).toBe(false);
+    expect(r.caveat).toMatch(/No objects of type/);
+  });
+});
+
+/**
+ * `max_scan ?? DEFAULT` keeps a provided 0, so the walk condition was false from
+ * the start: no request was made and the empty result was reported as a
+ * complete ranking. A negative `limit` reached `slice(0, topN)` and dropped the
+ * last holders from the list.
+ */
+describe("out-of-range arguments are clamped, not obeyed", () => {
+  it("max_scan: 0 still scans", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: { nodes: [coin(A, "300")], pageInfo: { hasNextPage: false } },
+    });
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 0 });
+    expect(mockGqlQuery).toHaveBeenCalled();
+    expect(r.total_scanned).toBe(1);
+  });
+
+  it("limit: -1 does not silently drop the last holder", async () => {
+    mockGqlQuery.mockResolvedValue({
+      objects: { nodes: [coin(A, "300"), coin(B, "100")], pageInfo: { hasNextPage: false } },
+    });
+    const r = await run({ type: "0x2::sui::SUI", limit: -1, max_scan: 997 });
+    expect(r.top_holders.length).toBe(1);
+    expect(r.top_holders[0].address).toBe(A);
+  });
+});

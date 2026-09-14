@@ -62,12 +62,54 @@ export function registerWatchTools(server: McpServer) {
         return out({ error: "addresses is required for add and remove." });
       }
 
+      // Raw integer units only. "0.5", "1e9" and "1_000" all threw inside
+      // BigInt and fell back to no floor at all, so a caller asking to see only
+      // large movements got every movement and was told nothing.
+      if (min_amount !== undefined && !/^\d+$/.test(min_amount.trim())) {
+        return out({
+          error: `min_amount must be a whole number of RAW coin units, not "${min_amount}". SUI has 9 decimals, so 0.5 SUI is "500000000".`,
+        });
+      }
+
       // Rejected here rather than at the delta query, where one bad address
       // returns no data for the whole batch of twenty.
       const rejected = addresses.filter((a) => normalizeWatchAddress(a) === null);
-      const valid = addresses
-        .map((a) => normalizeWatchAddress(a))
-        .filter((a): a is string => a !== null);
+      // Deduplicated, so two spellings of one address are one watch and are
+      // counted as one. `added: 2` beside `watched: 1` was the alternative.
+      const valid = [
+        ...new Set(
+          addresses
+            .map((a) => normalizeWatchAddress(a))
+            .filter((a): a is string => a !== null),
+        ),
+      ];
+
+      // REMOVE runs before this check. A malformed row can exist in the store —
+      // written by an earlier build, or by hand — and poll_watch tells the
+      // caller to remove it by name. Refusing the only call that can clear it
+      // left that row unremovable except by editing the database.
+      if (action === "remove") {
+        const seen = new Set<string>();
+        const removed: string[] = [];
+        const notWatched: string[] = [];
+        for (const raw of addresses) {
+          const norm = normalizeWatchAddress(raw);
+          const key = norm ?? raw;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          // A row written before normalization holds the address as typed, so
+          // the raw form is tried too rather than calling a live watch
+          // "not watched".
+          const gone = (norm !== null && removeWatch(network, norm)) || removeWatch(network, raw);
+          (gone ? removed : notWatched).push(raw);
+        }
+        return out({
+          network,
+          removed: removed.length,
+          not_watched: notWatched,
+          watched: listWatches(network).length,
+        });
+      }
 
       if (valid.length === 0) {
         return out({
@@ -76,28 +118,15 @@ export function registerWatchTools(server: McpServer) {
         });
       }
 
-      if (action === "remove") {
-        // Rows added before normalization hold the address as it was typed, so
-        // the raw form is tried too rather than reporting a real watch as
-        // "not watched".
-        const removed = addresses.filter((raw) => {
-          const norm = normalizeWatchAddress(raw);
-          return (norm !== null && removeWatch(network, norm)) || removeWatch(network, raw);
-        });
-        return out({
-          network,
-          removed: removed.length,
-          not_watched: addresses.filter((a) => !removed.includes(a) && !rejected.includes(a)),
-          ...(rejected.length ? { rejected } : {}),
-          watched: listWatches(network).length,
-        });
-      }
-
       // A new watch starts from NOW. Seeding at zero would replay the wallet's
       // whole history into the caller's context on the first poll, which is
       // the cost this tool exists to avoid.
       const from = await currentCheckpoint();
       const added_at = Date.now();
+      // An address already watched keeps its cursor (the ON CONFLICT clause
+      // does not touch last_checkpoint), so reporting the current checkpoint for
+      // it would promise a fresh start the next poll will not honour.
+      const existing = new Map(listWatches(network).map((w) => [w.address, w.last_checkpoint]));
       // saveWatch returns false when the write failed, and since that failure
       // is now swallowed to keep reads working, counting the input instead
       // would report addresses as watched that were never recorded.
@@ -111,12 +140,23 @@ export function registerWatchTools(server: McpServer) {
         }),
       );
       const notSaved = valid.filter((a) => !saved.includes(a));
+      const readded = saved.filter((a) => existing.has(a));
 
       return out({
         network,
-        added: saved.length,
+        added: saved.filter((a) => !existing.has(a)).length,
         from_checkpoint: from,
         ...(rejected.length ? { rejected } : {}),
+        ...(readded.length
+          ? {
+              already_watched: readded.map((a) => ({
+                address: a,
+                from_checkpoint: existing.get(a)!,
+              })),
+              already_watched_note:
+                "These were already watched and keep the cursor they had, so the next poll reports back to that checkpoint rather than starting now.",
+            }
+          : {}),
         ...(notSaved.length
           ? {
               not_saved: notSaved,
@@ -159,7 +199,10 @@ export function registerWatchTools(server: McpServer) {
       const entries: WatchEntry[] = watches
         .filter((w) => normalizeWatchAddress(w.address) !== null)
         .map((w) => ({
-          address: w.address,
+          // Normalized, not just validated. Balance changes come back canonical
+          // padded lowercase, so a row holding `0x2` would match none of its own
+          // and read as its own counterparty with no amounts at all.
+          address: normalizeWatchAddress(w.address)!,
           last_checkpoint: w.last_checkpoint,
           ...(w.label ? { label: w.label } : {}),
           ...(w.min_amount ? { min_amount: w.min_amount } : {}),
@@ -181,7 +224,10 @@ export function registerWatchTools(server: McpServer) {
       const movedDigests = [...deltas.values()].flat().map((t) => t.digest);
       const { detail, requests: detailRequests } = await fetchDeltaDetail(movedDigests);
 
+      const saturatedSet = new Set(saturated);
       const hits = [];
+      const stalled: string[] = [];
+      const notAdvanced: string[] = [];
       for (const entry of entries) {
         const txs = (deltas.get(entry.address) ?? []).map((t) => {
           const d = detail.get(t.digest);
@@ -193,11 +239,19 @@ export function registerWatchTools(server: McpServer) {
         });
         if (txs.length === 0) continue;
 
-        const result = evaluate(entry, txs, { isSink });
+        const result = evaluate(entry, txs, {
+          isSink,
+          saturated: saturatedSet.has(entry.address),
+        });
         hits.push(...result.hits);
+        if (result.stalled) stalled.push(entry.address);
         // Advance even when every hit was suppressed: the transaction has been
-        // seen, and not advancing would re-read it on every poll forever.
-        advanceWatch(network, entry.address, result.last_checkpoint);
+        // seen, and not advancing would re-read it on every poll forever. A
+        // cursor that could not be written is named, because the alternative is
+        // an agent on a poll loop counting the same activity every time.
+        if (!advanceWatch(network, entry.address, result.last_checkpoint)) {
+          notAdvanced.push(entry.address);
+        }
       }
 
       // Costs no request: every address is already in hand. A lookalike of a
@@ -206,11 +260,24 @@ export function registerWatchTools(server: McpServer) {
       const flagged = flagLookalikes(entries.map((e) => e.address), hits);
 
       const summary = summarizePoll(entries.length, flagged, deltaRequests + detailRequests, saturated);
-      return out(
-        unpollable.length
-          ? { ...summary, unpollable: unpollable.map((w) => w.address) }
-          : summary,
-      );
+      return out({
+        ...summary,
+        ...(unpollable.length ? { unpollable: unpollable.map((w) => w.address) } : {}),
+        ...(stalled.length
+          ? {
+              stalled,
+              stalled_note:
+                "These addresses produced a full page inside a single checkpoint, so the cursor could not advance without dropping the rest of it. Raise max_per_address; polling again as-is returns the same page.",
+            }
+          : {}),
+        ...(notAdvanced.length
+          ? {
+              cursor_not_advanced: notAdvanced,
+              cursor_note:
+                "The watch cursor could not be written for these addresses, so the next poll will report this activity again.",
+            }
+          : {}),
+      });
     },
   );
 }

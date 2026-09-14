@@ -17,7 +17,7 @@ src/
 ├── index.ts              # MCP server entry point (stdio transport)
 ├── config.ts             # Network endpoints, constants
 ├── clients/              # gRPC + GraphQL client setup
-├── tools/                # One file per tool category (41 tools total)
+├── tools/                # One file per tool category (68 tools total)
 ├── protocols/            # Protocol registry for tx decoding
 ├── data/                 # Static JSON data (token registry, etc.)
 ├── utils/                # Shared helpers (formatting, SuiNS, etc.)
@@ -787,6 +787,36 @@ is why the percentage is dropped rather than annotated.
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.
 
+Three ways a walk stops, and only one of them is completion:
+
+- `hasNextPage: false` — the end. `complete_ranking: true`.
+- **A null `endCursor` while `hasNextPage` is true — TRUNCATION.** The
+  connection said there is more and would not say where. The guard that stops
+  the walk there was added to prevent a restart from page one, and leaving
+  `truncated` alone on that path published a known-incomplete scan as a
+  complete ranking, ranks and percentages restored.
+- The `max_scan` budget — truncation, already handled.
+
+**`complete_ranking` means the walk reached the end, nothing more.** An object
+whose owner could not be read is a separate field (`unresolved_owners`) and its
+own caveat. Folding it into the flag made the flag permanently false for a
+collection with one unreadable owner, while a ranked list sat beside it saying
+otherwise, and no value of `max_scan` could ever clear it.
+
+**A walk that found nothing has not ranked anything.** Zero objects reads the
+same as a mistyped type, a type that lives on another network, or a coin
+scanned as a collection. Reporting `complete_ranking: true, unique_holders: 0`
+states the opposite of what is known, and it was then cached for 24 hours.
+
+**Clamp tool numbers at BOTH ends.** `max_scan ?? DEFAULT` keeps a provided `0`,
+which left the walk condition false from the start: no request made, empty
+result, reported as a complete ranking. A negative `limit` reached
+`slice(0, topN)` and silently dropped the last holders.
+
+**A probe that could not run returns null, not the guess it was correcting.**
+`looksLikeCoin` returning `false` on a transient error reinstated exactly the
+misclassification it exists to prevent, and labelled the empty result complete.
+
 Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
@@ -822,6 +852,25 @@ Do NOT "fix" this by giving the sponsorship columns a DEFAULT. A cached row
 reporting 0 there would be claiming "not a sponsor" from data it never read,
 which is the failure the column comment already warns about.
 
+**Failing soft is half the contract; the caller must surface it.** A swallowed
+failure the tool then reports as success is worse than the crash it replaced,
+because nothing anywhere says the write did not happen. Three that had to be
+fixed after the guards went in:
+
+- `manage_labels remove` reported the session result only, so a store delete
+  that failed left the row to be seeded back at the next start — and a `cex`
+  label the investigator believes they retracted keeps terminating traces.
+- `manage_labels add` and `import` folded "store is off" and "the write failed"
+  into one falsy value, telling the user to set an env var they had already set.
+- `watch_addresses remove` rendered a failed delete as `not_watched`, asserting
+  an address is not watched while it still is.
+
+`false` from a guarded writer now means "not persisted" and the caller has to
+consult `storeStatus()` to say which kind. Anything that reports `saved`,
+`added`, `removed` or `deleted` must derive it from the write's result, and
+`delete` must check `changes` rather than returning true for an id that matched
+nothing.
+
 ### Never interpolate an unvalidated address into a batched query
 
 A delta query in `watch-probe.ts` puts twenty addresses into one aliased
@@ -836,6 +885,14 @@ reason: `normalizeSuiAddress` **pads without validating**, turning
 `isValidSuiAddress` rejects it. `normalizeWatchAddress` in `src/utils/watch.ts`
 is the pair, and it is applied both when a watch is added and when stored rows
 are read back.
+
+**There are two aliased-batch sites, not one.** `fetchAuthentication` in
+`src/utils/identity.ts` builds the same construction over `transactions`, and
+its chunk error is swallowed as "enrichment only" — so one bad address in a
+seed list silently removed multisig and zkLogin detection from the other
+nineteen, downgrading a real finding to an absent one. It filters before
+batching for that reason. A comment asserting the inputs are "hex strings we
+normalize" is not a validation; check that such a claim is backed by code.
 
 ### Watching an investigation, without drowning the agent
 
@@ -875,6 +932,29 @@ the signal is roughly one part in a million.
   address doing a transaction every two seconds: it fills the cap on every
   poll. `more_pending` says so — a permanently lagging watch that reads as
   complete is the same failure class as everything else in this file.
+- **`afterCheckpoint` is exclusive at CHECKPOINT granularity; the page cap cuts
+  at TRANSACTION granularity.** So a full page usually ends part-way through a
+  checkpoint, and advancing the cursor to that checkpoint excludes the rest of
+  it from every future poll. Measured on one mainnet address: 30 transactions
+  across 13 checkpoints, 8 of them holding more than one, so a boundary lands
+  mid-checkpoint most of the time — and only on the busy addresses this feature
+  is for. `safeAdvance` stops one checkpoint short of a saturated page. The
+  boundary is then re-read and may be reported twice, which is the right trade:
+  re-reporting is recoverable and silent loss is not. A full page inside ONE
+  checkpoint has no safe advance at all, so it reports `stalled` rather than
+  choosing between looping and dropping.
+- **`lookalike_appeared` requires a WATCHED side.** Accepting any pair where
+  either side was a new counterparty flagged two counterparties that merely
+  resembled each other, and reported it as something impersonating the address
+  under investigation.
+- **Stored rows are NORMALIZED on read, not merely validated.** Balance changes
+  come back canonical padded lowercase, so a row holding `0x2` polls fine and
+  then matches none of its own changes: the watched address lands in its own
+  counterparty list, every transaction reads as `appeared`, and `min_amount`
+  can never apply.
+- **`min_amount` is raw integer units and is validated.** `"0.5"` threw inside
+  `BigInt` and fell back to no floor at all, so a caller asking to see only
+  large movements saw everything and was told nothing.
 - **`min_amount` filters VALUE only.** A labelled sink, a capability handover
   or any object move has no amount to measure, so a floor must never suppress
   one.

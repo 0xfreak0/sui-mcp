@@ -17,6 +17,7 @@
  * chain already answered.
  */
 
+import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { getLabel } from "./labels.js";
 import { batchResolveNames } from "./names.js";
@@ -225,8 +226,16 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
  */
 async function fetchAuthentication(addresses: string[]): Promise<Map<string, Authentication>> {
   const out = new Map<string, Authentication>();
-  for (let i = 0; i < addresses.length; i += AUTH_BATCH_SIZE) {
-    const chunk = addresses.slice(i, i + AUTH_BATCH_SIZE);
+  // One unparseable address answers the WHOLE aliased batch with data: null,
+  // not a null for its own alias. The catch below treats that as "no
+  // authentication found" for all 20, so a single bad address in a seed list
+  // silently removes multisig and zkLogin detection from the other nineteen —
+  // downgrading a real finding to an absent one, which this project treats as
+  // worse than reporting "unknown". Same rule as watched addresses and as
+  // digests in get_transactions.
+  const usable = addresses.filter((a) => isValidSuiAddress(normalizeSuiAddress(a)));
+  for (let i = 0; i < usable.length; i += AUTH_BATCH_SIZE) {
+    const chunk = usable.slice(i, i + AUTH_BATCH_SIZE);
     const query =
       "query {\n" +
       chunk
@@ -236,8 +245,8 @@ async function fetchAuthentication(addresses: string[]): Promise<Map<string, Aut
         )
         .join("\n") +
       "\n}";
-    // Variables would need declaring in the operation signature; inlining the
-    // address is simpler and safe because these are hex strings we normalize.
+    // Variables would need declaring in the operation signature, so the address
+    // is inlined. That is only safe because the chunk was validated above.
     const inlined = chunk.reduce((q, addr, j) => q.replace(`$a${j}`, JSON.stringify(addr)), query);
     try {
       const r = await gqlQuery<Record<string, { nodes: { signatures: { signatureBytes: string }[] }[] }>>(

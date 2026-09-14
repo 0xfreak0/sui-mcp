@@ -674,11 +674,19 @@ export function listCases(): Array<{ case_name: string; finding_count: number; l
     .all() as unknown as Array<{ case_name: string; finding_count: number; last_updated: number }>;
 }
 
+/**
+ * Delete a finding. False when no row had that id.
+ *
+ * Unguarded for the same reason as `saveFinding`: this is the operation, not a
+ * cache side effect. The `changes` check matters just as much — returning true
+ * unconditionally told an investigator retracting a wrong conclusion with a
+ * mistyped id that it was gone, while it stayed in `export_case`.
+ */
 export function deleteFinding(id: number): boolean {
   initStore();
   if (!db) return false;
-  db.prepare(`DELETE FROM findings WHERE id = ?`).run(id);
-  return true;
+  const r = db.prepare(`DELETE FROM findings WHERE id = ?`).run(id) as { changes?: number };
+  return (r.changes ?? 0) > 0;
 }
 
 /**
@@ -819,8 +827,8 @@ export function saveWatch(network: string, w: StoredWatch): boolean {
       `INSERT INTO watches (account, network, address, label, last_checkpoint, min_amount, added_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(account) DO UPDATE SET
-         label = excluded.label,
-         min_amount = excluded.min_amount`,
+         label = COALESCE(excluded.label, watches.label),
+         min_amount = COALESCE(excluded.min_amount, watches.min_amount)`,
     ).run(
       `${network}:${w.address}`,
       network,
@@ -875,14 +883,21 @@ export function removeWatch(network: string, address: string): boolean {
  * still been seen, and leaving the cursor behind would re-read it on every
  * poll forever.
  */
-export function advanceWatch(network: string, address: string, checkpoint: number): void {
+/**
+ * Advance a watch's high-water mark. False when it could not be written.
+ *
+ * Fail-soft, because throwing would discard the hits the poll already computed
+ * and those are the answer the caller asked for. But the caller must be able to
+ * SEE that it failed: a cursor that silently did not move makes every later
+ * poll re-report the same activity as new, and an agent polling in a loop
+ * counts it every time.
+ */
+export function advanceWatch(network: string, address: string, checkpoint: number): boolean {
   initStore();
-  // A cursor that fails to advance re-reports the same transactions on the next
-  // poll. Throwing instead would discard the hits this poll already computed,
-  // and those are the answer the caller asked for.
-  tryWrite("advanceWatch", undefined, (db) => {
+  return tryWrite("advanceWatch", false, (db) => {
     db.prepare(
       `UPDATE watches SET last_checkpoint = ? WHERE account = ? AND last_checkpoint < ?`,
     ).run(checkpoint, `${network}:${address}`, checkpoint);
+    return true;
   });
 }

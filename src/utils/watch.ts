@@ -170,21 +170,55 @@ function bigOrZero(v: string | undefined): bigint {
  * been seen, and leaving the cursor behind would re-read it forever and report
  * it the moment the threshold changed.
  */
+/**
+ * Where the cursor may safely advance to, given a page that may be a prefix.
+ *
+ * `afterCheckpoint` is exclusive at CHECKPOINT granularity, but the page cap
+ * cuts at TRANSACTION granularity. So when a page comes back full, its last
+ * transaction is usually not the last one in its checkpoint, and advancing to
+ * that checkpoint excludes the rest of it from every future poll. Measured on
+ * one mainnet address: 30 transactions spanning 13 checkpoints, 8 of which held
+ * more than one — a boundary landing mid-checkpoint most of the time, and only
+ * on the busy addresses this feature exists for.
+ *
+ * So a saturated page stops one checkpoint SHORT of its own maximum. The
+ * boundary checkpoint is read again next poll and its transactions may be
+ * reported twice; re-reporting is recoverable and silent loss is not.
+ *
+ * When a full page sits entirely inside ONE checkpoint there is no safe
+ * advance: stopping short cannot make progress and advancing drops the
+ * remainder. That is reported rather than decided — `stalled` means the cap is
+ * below the address's per-checkpoint rate and only a larger `max_per_address`
+ * can move it.
+ */
+export function safeAdvance(
+  txs: DeltaTx[],
+  saturated: boolean,
+  current: number,
+): { checkpoint: number; stalled: boolean } {
+  const cps = txs.map((t) => t.checkpoint).filter((c) => c > 0);
+  if (cps.length === 0) return { checkpoint: current, stalled: false };
+  const high = Math.max(...cps);
+  if (!saturated) return { checkpoint: high, stalled: false };
+  const low = Math.min(...cps);
+  if (low === high) return { checkpoint: current, stalled: true };
+  return { checkpoint: Math.max(high - 1, current), stalled: false };
+}
+
 export function evaluate(
   entry: WatchEntry,
   txs: DeltaTx[],
   opts?: {
     isSink?: (address: string) => boolean;
     labelFor?: (address: string) => string | undefined;
+    /** This address's delta filled the per-poll cap, so the page is a prefix. */
+    saturated?: boolean;
   },
-): { hits: WatchHit[]; last_checkpoint: number } {
-  let high = entry.last_checkpoint;
+): { hits: WatchHit[]; last_checkpoint: number; stalled: boolean } {
   const hits: WatchHit[] = [];
   const floor = bigOrZero(entry.min_amount);
 
   for (const tx of txs) {
-    if (tx.checkpoint > high) high = tx.checkpoint;
-
     const net = new Map<string, bigint>();
     const counterparties = new Set<string>();
     for (const bc of tx.balance_changes ?? []) {
@@ -245,7 +279,8 @@ export function evaluate(
     });
   }
 
-  return { hits, last_checkpoint: high };
+  const advance = safeAdvance(txs, opts?.saturated ?? false, entry.last_checkpoint);
+  return { hits, last_checkpoint: advance.checkpoint, stalled: advance.stalled };
 }
 
 /**
@@ -265,13 +300,21 @@ export function flagLookalikes(watched: string[], hits: WatchHit[]): WatchHit[] 
   const pairs = findLookalikes([...new Set([...watched, ...counterparties])]);
   if (pairs.length === 0) return hits;
 
-  // Only pairs that bring in something NEW. Two watched addresses resembling
-  // each other is a fact about the watch set, not an event, and re-reporting it
-  // on every poll would be noise.
+  // Only pairs that bring in something NEW, and only against a WATCHED address.
+  // Two watched addresses resembling each other is a fact about the watch set,
+  // not an event. Two COUNTERPARTIES resembling each other is not about the
+  // subject at all: accepting either side independently flagged such a pair and
+  // reported it as something impersonating the address under investigation,
+  // which is a false claim about the strongest finding this check makes.
+  const watchedSet = new Set(watched);
   const suspects = new Set<string>();
   for (const p of pairs) {
-    for (const side of [p.established, p.suspect]) {
-      if (counterparties.has(side) && !watched.includes(side)) suspects.add(side);
+    const sides = [p.established, p.suspect] as const;
+    for (const [i, side] of sides.entries()) {
+      const other = sides[i === 0 ? 1 : 0];
+      if (counterparties.has(side) && !watchedSet.has(side) && watchedSet.has(other)) {
+        suspects.add(side);
+      }
     }
   }
   if (suspects.size === 0) return hits;

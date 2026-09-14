@@ -256,18 +256,28 @@ export function addSessionLabel(
   return { ...stored, persisted };
 }
 
-/** Remove a session label. Returns true if one existed. Does not affect static/override entries. */
-export function removeSessionLabel(address: string): boolean {
+/**
+ * Remove a session label.
+ *
+ * `removed` is the session state; `persisted_removal` says whether the store
+ * agreed. The two can differ, and the difference matters more than it looks: a
+ * store delete that fails leaves the row to be seeded back at the next start,
+ * so a `cex` label the investigator believes they retracted silently keeps
+ * terminating every trace that reaches it. Reporting only the session result
+ * called that a clean removal.
+ */
+export function removeSessionLabel(address: string): {
+  removed: boolean;
+  persisted_removal: boolean;
+} {
   let account: string;
   try {
     account = key(address);
   } catch {
-    return false;
+    return { removed: false, persisted_removal: false };
   }
-  // Remove from the store too, otherwise it reappears on the next start and
-  // looks like the deletion silently failed.
-  deleteStoredLabel(account);
-  return sessionLabels.delete(account);
+  const persisted_removal = deleteStoredLabel(account);
+  return { removed: sessionLabels.delete(account), persisted_removal };
 }
 
 /**
@@ -286,28 +296,42 @@ export function importLabels(
     notes?: string;
   }>,
   persist = true,
-): { imported: number; skipped: string[] } {
+): { imported: number; skipped: string[]; persisted: number } {
   const skipped: string[] = [];
   let imported = 0;
+
+  // Counted separately: "the store took it" is a different claim from "the
+  // label is in force this session", and reporting the second as the first told
+  // a team their imported attribution file was saved when none of it was.
+  let persisted = 0;
 
   for (const e of entries) {
     if (!e?.address || !e.label || !isLabelCategory(e.category)) {
       skipped.push(e?.address ?? "(missing address)");
       continue;
     }
-    addSessionLabel(
-      e.address,
-      {
-        label: e.label,
-        category: e.category,
-        confidence: (e.confidence as LabelConfidence | undefined) ?? undefined,
-        notes: e.notes,
-      },
-      persist,
-    );
-    imported++;
+    // addSessionLabel throws on an address it cannot parse, and a whitespace
+    // string passes the truthiness check above. Letting that escape aborted the
+    // batch partway, after rows were already written, against a documented
+    // skip-and-continue contract.
+    try {
+      const r = addSessionLabel(
+        e.address,
+        {
+          label: e.label,
+          category: e.category,
+          confidence: (e.confidence as LabelConfidence | undefined) ?? undefined,
+          notes: e.notes,
+        },
+        persist,
+      );
+      if (r.persisted) persisted++;
+      imported++;
+    } catch {
+      skipped.push(e.address);
+    }
   }
-  return { imported, skipped };
+  return { imported, skipped, persisted };
 }
 
 const LABEL_CATEGORIES: readonly string[] = [

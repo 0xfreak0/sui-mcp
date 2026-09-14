@@ -64,9 +64,9 @@ describe("session labels", () => {
   });
 
   it("removeSessionLabel reports whether one existed and never removes static", () => {
-    expect(removeSessionLabel(addr)).toBe(false);
+    expect(removeSessionLabel(addr).removed).toBe(false);
     addSessionLabel(addr, { label: "x", category: "other" });
-    expect(removeSessionLabel(addr)).toBe(true);
+    expect(removeSessionLabel(addr).removed).toBe(true);
     // Static entry is untouched by removal.
     removeSessionLabel(ZERO);
     expect(getLabel(ZERO)?.category).toBe("burn");

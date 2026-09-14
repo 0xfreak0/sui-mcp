@@ -70,7 +70,7 @@ describe("store writes fail soft", () => {
     err.mockRestore();
   });
 
-  it("saveWatch and removeWatch return false instead of throwing", async () => {
+  it("saveWatch returns false instead of throwing", async () => {
     const store = await import("../src/utils/store.js");
     store.initStore();
     rigTable(`CREATE TABLE watches (account TEXT PRIMARY KEY, impossible INTEGER NOT NULL)`, "watches");
@@ -78,7 +78,54 @@ describe("store writes fail soft", () => {
     expect(
       store.saveWatch("mainnet", { address: "0xa", last_checkpoint: 1, added_at: 1 }),
     ).toBe(false);
-    expect(() => store.removeWatch("mainnet", "0xa")).not.toThrow();
+    err.mockRestore();
+  });
+
+  /**
+   * A DELETE naming only `account` succeeds against a rigged NOT NULL table, so
+   * rigging the schema cannot make `removeWatch` fail and a test built that way
+   * passes with or without the guard. A trigger is what actually makes the
+   * statement throw.
+   */
+  it("removeWatch returns false instead of throwing", async () => {
+    const store = await import("../src/utils/store.js");
+    store.initStore();
+    // The row must exist: a BEFORE DELETE trigger fires per matched row, so
+    // without one the DELETE succeeds trivially and proves nothing.
+    store.saveWatch("mainnet", { address: "0xa", last_checkpoint: 1, added_at: 1 });
+    const raw = new DatabaseSync(path);
+    raw.exec(
+      `CREATE TRIGGER block_watch_delete BEFORE DELETE ON watches
+       BEGIN SELECT RAISE(ABORT, 'blocked'); END`,
+    );
+    raw.close();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(store.removeWatch("mainnet", "0xa")).toBe(false);
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/removeWatch failed/);
+    err.mockRestore();
+  });
+
+  it("deleteLabel returns false instead of throwing", async () => {
+    const store = await import("../src/utils/store.js");
+    store.initStore();
+    store.saveLabel({
+      account: "sui:mainnet:0xa",
+      chain: "sui:mainnet",
+      address: "0xa",
+      label: "x",
+      category: "cex",
+      confidence: "high",
+      notes: null,
+    } as never);
+    const raw = new DatabaseSync(path);
+    raw.exec(
+      `CREATE TRIGGER block_label_delete BEFORE DELETE ON labels
+       BEGIN SELECT RAISE(ABORT, 'blocked'); END`,
+    );
+    raw.close();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(store.deleteLabel("sui:mainnet:0xa")).toBe(false);
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/deleteLabel failed/);
     err.mockRestore();
   });
 

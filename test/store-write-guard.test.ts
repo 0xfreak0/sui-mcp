@@ -118,4 +118,71 @@ describe("store writes fail soft", () => {
     out.mockRestore();
     err.mockRestore();
   });
+  it("saveFirstFunder returns false instead of throwing", async () => {
+    const store = await import("../src/utils/store.js");
+    store.initStore();
+    rigTable(
+      `CREATE TABLE first_funders (account TEXT PRIMARY KEY, impossible INTEGER NOT NULL)`,
+      "first_funders",
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(store.saveFirstFunder("sui:mainnet:0xa", "sui:mainnet:0xb", "d")).toBe(false);
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/saveFirstFunder failed/);
+    err.mockRestore();
+  });
+
+  /**
+   * The existing try/catch in `saveTransaction` covers a payload that will not
+   * serialise, which is a different failure from the write itself throwing.
+   * Guarding one was mistaken for guarding both.
+   */
+  it("saveTransaction returns false when the write itself fails", async () => {
+    const store = await import("../src/utils/store.js");
+    store.initStore();
+    rigTable(
+      `CREATE TABLE transactions (key TEXT PRIMARY KEY, impossible INTEGER NOT NULL)`,
+      "transactions",
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(store.saveTransaction("mainnet", "digest", { a: 1 })).toBe(false);
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/saveTransaction failed/);
+    err.mockRestore();
+  });
+
+  /**
+   * A cursor that cannot advance re-reports the same transactions next poll.
+   * Throwing instead would discard the hits the poll already computed, which
+   * are the answer the caller asked for.
+   */
+  it("advanceWatch does not throw when the cursor write fails", async () => {
+    const store = await import("../src/utils/store.js");
+    store.initStore();
+    rigTable(`CREATE TABLE watches (account TEXT PRIMARY KEY, impossible INTEGER NOT NULL)`, "watches");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => store.advanceWatch("mainnet", "0xa", 99)).not.toThrow();
+    expect(String(err.mock.calls[0]?.[0])).toMatch(/advanceWatch failed/);
+    err.mockRestore();
+  });
+
+  /**
+   * Findings are the investigator's own record, not a cache, so this one is
+   * deliberately NOT guarded: `save_finding` reports `saved: true`, and
+   * swallowing the failure would make that a claim about evidence the store
+   * never took.
+   */
+  it("saveFinding still throws, because the write IS the operation", async () => {
+    const store = await import("../src/utils/store.js");
+    store.initStore();
+    rigTable(`CREATE TABLE findings (id INTEGER PRIMARY KEY, impossible INTEGER NOT NULL)`, "findings");
+    expect(() =>
+      store.saveFinding({
+        case_name: "c",
+        title: "t",
+        detail: null,
+        confidence: null,
+        addresses: [],
+        evidence: [],
+      }),
+    ).toThrow();
+  });
 });

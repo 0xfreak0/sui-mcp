@@ -40,11 +40,41 @@
  * happened", and it has to cost almost nothing to say.
  */
 
+import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { findLookalikes } from "./address-lookalike.js";
 import { custodyChanges, type ObjectMovement } from "./object-flow.js";
 
 /** Addresses per delta request. The 5,000-byte query cap is what binds. */
 export const WATCH_BATCH_SIZE = 20;
+
+/**
+ * Validate and pad a watched address, or return null.
+ *
+ * A delta query is built by interpolating twenty addresses into one aliased
+ * GraphQL document, and the service answers a single bad `SuiAddress` with a
+ * top-level `data: null` — not with a null for that one alias. Verified
+ * against mainnet: a batch of two where one address was `not-an-address`
+ * returned no data for either. So one mistyped address makes `poll_watch`
+ * report nothing for every OTHER address being watched, which is the failure a
+ * watch exists to prevent.
+ *
+ * This is the same rule `get_transactions` already follows for digests, where
+ * one malformed key among fifty returned nothing at all. The reason it needs
+ * its own check is that `normalizeSuiAddress` pads without validating:
+ * `not-an-address` becomes a well-formed-looking 66-character string that is
+ * not hex, and only `isValidSuiAddress` rejects it.
+ */
+export function normalizeWatchAddress(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let padded: string;
+  try {
+    padded = normalizeSuiAddress(trimmed.toLowerCase());
+  } catch {
+    return null;
+  }
+  return isValidSuiAddress(padded) ? padded : null;
+}
 
 /** What a watch is looking at. Only addresses for now. */
 export interface WatchEntry {
@@ -192,11 +222,10 @@ export function evaluate(
       }
     }
 
-    // A floor filters VALUE movements only. Suppressing `sink_reached` or a
-    // coinless transaction because it carried little money would drop the
-    // findings that have nothing to do with amount.
-    // A floor filters VALUE. A capability changing hands has no amount, so
-    // measuring it against one would drop the loudest finding the watch has.
+    // A floor filters VALUE movements only. Suppressing `sink_reached`, or a
+    // coinless transaction such as a capability changing hands, because it
+    // carried little money would drop the findings that have nothing to do
+    // with amount — including the loudest one the watch has.
     const onlyValue = reasons.every((r) => r === "value_in" || r === "value_out");
     if (floor > 0n && onlyValue && largest < floor) continue;
 

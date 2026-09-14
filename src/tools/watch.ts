@@ -10,7 +10,13 @@ import {
   storeStatus,
 } from "../utils/store.js";
 import { currentCheckpoint, fetchDeltaDetail, fetchDeltas } from "../utils/watch-probe.js";
-import { evaluate, flagLookalikes, summarizePoll, type WatchEntry } from "../utils/watch.js";
+import {
+  evaluate,
+  flagLookalikes,
+  normalizeWatchAddress,
+  summarizePoll,
+  type WatchEntry,
+} from "../utils/watch.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const NO_STORE =
@@ -56,12 +62,33 @@ export function registerWatchTools(server: McpServer) {
         return out({ error: "addresses is required for add and remove." });
       }
 
+      // Rejected here rather than at the delta query, where one bad address
+      // returns no data for the whole batch of twenty.
+      const rejected = addresses.filter((a) => normalizeWatchAddress(a) === null);
+      const valid = addresses
+        .map((a) => normalizeWatchAddress(a))
+        .filter((a): a is string => a !== null);
+
+      if (valid.length === 0) {
+        return out({
+          error: "No valid Sui addresses given. Expected 0x followed by up to 64 hex characters.",
+          rejected,
+        });
+      }
+
       if (action === "remove") {
-        const removed = addresses.filter((a) => removeWatch(network, a));
+        // Rows added before normalization hold the address as it was typed, so
+        // the raw form is tried too rather than reporting a real watch as
+        // "not watched".
+        const removed = addresses.filter((raw) => {
+          const norm = normalizeWatchAddress(raw);
+          return (norm !== null && removeWatch(network, norm)) || removeWatch(network, raw);
+        });
         return out({
           network,
           removed: removed.length,
-          not_watched: addresses.filter((a) => !removed.includes(a)),
+          not_watched: addresses.filter((a) => !removed.includes(a) && !rejected.includes(a)),
+          ...(rejected.length ? { rejected } : {}),
           watched: listWatches(network).length,
         });
       }
@@ -71,20 +98,31 @@ export function registerWatchTools(server: McpServer) {
       // the cost this tool exists to avoid.
       const from = await currentCheckpoint();
       const added_at = Date.now();
-      for (const address of addresses) {
+      // saveWatch returns false when the write failed, and since that failure
+      // is now swallowed to keep reads working, counting the input instead
+      // would report addresses as watched that were never recorded.
+      const saved = valid.filter((address) =>
         saveWatch(network, {
           address,
           ...(label ? { label } : {}),
           last_checkpoint: from,
           ...(min_amount ? { min_amount } : {}),
           added_at,
-        });
-      }
+        }),
+      );
+      const notSaved = valid.filter((a) => !saved.includes(a));
 
       return out({
         network,
-        added: addresses.length,
+        added: saved.length,
         from_checkpoint: from,
+        ...(rejected.length ? { rejected } : {}),
+        ...(notSaved.length
+          ? {
+              not_saved: notSaved,
+              warning: "These addresses could not be written to the store and are NOT being watched.",
+            }
+          : {}),
         watched: listWatches(network).length,
         note: "Watching from the current checkpoint forward — existing history is not reported. Call poll_watch to collect new activity.",
       });
@@ -115,13 +153,27 @@ export function registerWatchTools(server: McpServer) {
         return out({ watched: 0, hits: [], note: "Nothing is being watched. Add addresses with watch_addresses." });
       }
 
-      const entries: WatchEntry[] = watches.map((w) => ({
-        address: w.address,
-        last_checkpoint: w.last_checkpoint,
-        ...(w.label ? { label: w.label } : {}),
-        ...(w.min_amount ? { min_amount: w.min_amount } : {}),
-        added_at: w.added_at,
-      }));
+      // A row written before addresses were validated would take the whole
+      // batch down with it, so it is skipped and named rather than polled.
+      const unpollable = watches.filter((w) => normalizeWatchAddress(w.address) === null);
+      const entries: WatchEntry[] = watches
+        .filter((w) => normalizeWatchAddress(w.address) !== null)
+        .map((w) => ({
+          address: w.address,
+          last_checkpoint: w.last_checkpoint,
+          ...(w.label ? { label: w.label } : {}),
+          ...(w.min_amount ? { min_amount: w.min_amount } : {}),
+          added_at: w.added_at,
+        }));
+
+      if (entries.length === 0) {
+        return out({
+          watched: watches.length,
+          hits: [],
+          unpollable: unpollable.map((w) => w.address),
+          note: "Every watched address is malformed and cannot be queried. Remove them with watch_addresses.",
+        });
+      }
 
       const { deltas, requests: deltaRequests, saturated } = await fetchDeltas(entries, max_per_address);
 
@@ -153,7 +205,12 @@ export function registerWatchTools(server: McpServer) {
       // exactly the shape of address poisoning.
       const flagged = flagLookalikes(entries.map((e) => e.address), hits);
 
-      return out(summarizePoll(entries.length, flagged, deltaRequests + detailRequests, saturated));
+      const summary = summarizePoll(entries.length, flagged, deltaRequests + detailRequests, saturated);
+      return out(
+        unpollable.length
+          ? { ...summary, unpollable: unpollable.map((w) => w.address) }
+          : summary,
+      );
     },
   );
 }

@@ -762,6 +762,27 @@ Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
 
+### Store writes must fail soft
+
+The store is a cache and a notebook beside a read-only server, so a write that
+fails must never fail the read that produced it. Every writer goes through
+`tryWrite`, returns a falsy value on failure, and reports to **stderr** —
+stdout is the MCP transport.
+
+This is not hypothetical. An older server process writing into a database a
+newer build had migrated failed with `NOT NULL constraint failed:
+fanout.sponsored_address_count`, and that took down `get_address_fanout`
+entirely rather than returning the fan-out it had just measured. Process and
+schema drift apart whenever the server is left running across a rebuild, which
+is the normal case during development.
+
+`saveTransaction` had the guard from the start for exactly this reason; the
+other eight writers did not. When adding a writer, add the guard.
+
+Do NOT "fix" this by giving the sponsorship columns a DEFAULT. A cached row
+reporting 0 there would be claiming "not a sponsor" from data it never read,
+which is the failure the column comment already warns about.
+
 ### Watching an investigation, without drowning the agent
 
 `watch_addresses` / `poll_watch`, pure logic in `src/utils/watch.ts`, network in

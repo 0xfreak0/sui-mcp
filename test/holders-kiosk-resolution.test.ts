@@ -88,7 +88,7 @@ describe("a kiosk a sale has named resolves to the real wallet", () => {
     const r = await run({ type: "0xr1::a::B", mode: "nft", limit: 5, max_scan: 500 });
 
     expect(r.kiosk_resolved_from_sales).toBe(1);
-    expect(r.kiosk_attributed).toBeUndefined();
+    expect(r.kiosk_attributed).toBe(0);
     const holder = r.top_holders[0];
     expect(holder.address).toBe(REAL);
     expect(holder.holder_kind).toBe("kiosk_resolved");
@@ -122,7 +122,9 @@ describe("a kiosk a sale has named resolves to the real wallet", () => {
     const r = await run({ type: "0xr3::a::B", mode: "nft", limit: 5, max_scan: 500 });
     expect(r.total_scanned).toBe(3);
     expect(r.kiosk_held).toBe(2);
-    expect(r.kiosk_resolved_from_sales + r.kiosk_attributed).toBe(r.kiosk_held);
+    expect(
+      r.kiosk_resolved_from_sales + r.kiosk_attributed + (r.kiosk_unresolved ?? 0),
+    ).toBe(r.kiosk_held);
   });
 
   /**
@@ -170,5 +172,47 @@ describe("kiosk_owners storage", () => {
     store.initStore();
     store.saveKioskOwners("mainnet", [{ kiosk_id: KIOSK, owner: REAL, checkpoint: 1 }]);
     expect(store.loadKioskOwners("testnet", [KIOSK]).size).toBe(0);
+  });
+});
+
+/**
+ * A kiosk whose declared owner is unusable and which no sale has named belongs
+ * to nobody this tool can name. It is still a kiosk-held NFT, so the three
+ * kiosk numbers have to keep summing to `kiosk_held` — a reader checking that
+ * would otherwise find it short with nothing saying why.
+ */
+describe("a kiosk nothing can resolve", () => {
+  it("is counted in kiosk_unresolved, and the kiosk numbers still reconcile", async () => {
+    const { run } = await load();
+    mockGqlQuery.mockResolvedValue({
+      objects: {
+        nodes: [
+          {
+            owner: {
+              address: {
+                asObject: {
+                  owner: {
+                    address: {
+                      address: KIOSK,
+                      asObject: {
+                        asMoveObject: { contents: { json: { owner: { nested: true } } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    const r = await run({ type: "0xr5::a::B", mode: "nft", limit: 5, max_scan: 500 });
+    expect(r.kiosk_held).toBe(1);
+    expect(r.kiosk_unresolved).toBe(1);
+    expect(r.unresolved_owners).toBe(1);
+    expect(
+      r.kiosk_resolved_from_sales + r.kiosk_attributed + (r.kiosk_unresolved ?? 0),
+    ).toBe(r.kiosk_held);
   });
 });

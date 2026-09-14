@@ -247,7 +247,10 @@ export function registerNftSalesTools(server: McpServer) {
           : {}),
         ...(unread.length
           ? {
-              marketplaces_not_read: unread,
+              // Event types, not marketplaces: TradePort alone has six, so
+              // naming these "marketplaces" would say TradePort went unread
+              // when most of it was read.
+              event_types_not_read: unread,
               unread_note:
                 "The request budget ran out before these event types were queried at all, so any sales they carry are missing from the totals rather than absent from the chain. Raise max_pages.",
             }

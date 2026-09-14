@@ -710,12 +710,17 @@ export function registerHolderTools(server: McpServer) {
         [...new Set(pendingKiosk.map((p) => p.kiosk_id).filter((k): k is string => !!k))],
       );
       let kioskResolved = 0;
+      let kioskUnresolved = 0;
       for (const p of pendingKiosk) {
         const real = p.kiosk_id ? resolved.get(p.kiosk_id) : undefined;
         const address = real ?? p.declared;
         if (!address) {
           // A kiosk with no resolvable owner at all: the store did not know it
-          // and its declared field was unusable.
+          // and its declared field was unusable. Counted in its own field as
+          // well as in unresolvedOwners, so the three kiosk numbers still sum
+          // to kiosk_held — a reader checking that would otherwise find it
+          // short with nothing saying why.
+          kioskUnresolved++;
           unresolvedOwners++;
           continue;
         }
@@ -778,10 +783,15 @@ export function registerHolderTools(server: McpServer) {
               `Objects are walked in object-id order, not by how many anyone holds, so these are the biggest holders WITHIN THE SAMPLE and not the biggest holders of the collection. ` +
               `Raise max_scan until "truncated" is false for a real ranking.`,
             ...(unresolvedOwners ? { unresolved_owners: unresolvedOwners } : {}),
-            ...(kioskTotal ? { kiosk_held: kioskTotal, kiosk_resolved_from_sales: kioskResolved } : {}),
-            ...(kioskCaveat
-              ? { kiosk_attributed: kioskAttributed, kiosk_caveat: kioskCaveat }
+            ...(kioskTotal
+              ? {
+                  kiosk_held: kioskTotal,
+                  kiosk_resolved_from_sales: kioskResolved,
+                  kiosk_attributed: kioskAttributed,
+                  ...(kioskUnresolved ? { kiosk_unresolved: kioskUnresolved } : {}),
+                }
               : {}),
+            ...(kioskCaveat ? { kiosk_caveat: kioskCaveat } : {}),
             sampled_holders: topHolders.map(({ rank: _rank, ...rest }) => rest),
           }
         : {
@@ -797,10 +807,15 @@ export function registerHolderTools(server: McpServer) {
             // collection while a ranked list sat beside it saying otherwise.
             complete_ranking: true,
             cached: false,
-            ...(kioskTotal ? { kiosk_held: kioskTotal, kiosk_resolved_from_sales: kioskResolved } : {}),
-            ...(kioskCaveat
-              ? { kiosk_attributed: kioskAttributed, kiosk_caveat: kioskCaveat }
+            ...(kioskTotal
+              ? {
+                  kiosk_held: kioskTotal,
+                  kiosk_resolved_from_sales: kioskResolved,
+                  kiosk_attributed: kioskAttributed,
+                  ...(kioskUnresolved ? { kiosk_unresolved: kioskUnresolved } : {}),
+                }
               : {}),
+            ...(kioskCaveat ? { kiosk_caveat: kioskCaveat } : {}),
             ...(unresolvedOwners
               ? {
                   unresolved_owners: unresolvedOwners,

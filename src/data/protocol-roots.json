@@ -50,6 +50,10 @@
       "name": "Bluefin",
       "type": "perps"
     },
+    "0xd5dd28cc24009752905689b2ba2bf90bfc8de4549b9123f93519bb8ba9bf9981": {
+      "name": "BlueMove",
+      "type": "nft"
+    },
     "0x5d019c033bb8051fe9631cf910d0f4d077364d64ed4bb1940e98e6dc419a8d59": {
       "name": "Bucket",
       "type": "farm"
@@ -105,6 +109,14 @@
     "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": {
       "name": "Dipcoin",
       "type": "perps"
+    },
+    "0x7dcbc405496f4f6ecb70921b571ea9bfca09db7004efddd3dad33a524e7489e4": {
+      "name": "Drip",
+      "type": "nft"
+    },
+    "0xe50387176587c707c428c537b7b8fb530c3eaeadd16a45b1d975369f372dbc0a": {
+      "name": "Drip",
+      "type": "nft"
     },
     "0xc83d5406fd355f34d3ce87b35ab2c0b099af9d309ba96c17e40309502a49976f": {
       "name": "Ember",
@@ -170,6 +182,10 @@
       "name": "NAVI",
       "type": "lending"
     },
+    "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a": {
+      "name": "OriginByte",
+      "type": "nft"
+    },
     "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0": {
       "name": "Pyth",
       "type": "oracle"
@@ -217,6 +233,26 @@
     "0xd22b24490e0bae52676651b4f56660a5ff8022a2576e0089f79b3c88d44e08f0": {
       "name": "SuiNS",
       "type": "name_service"
+    },
+    "0x06cefebb11191abd347654200a6fd8ae47fa97b54506e4e680db64dae54d0b12": {
+      "name": "TradePort",
+      "type": "nft"
+    },
+    "0x53134eb544c5a0b5085e99efaf7eab13b28ad123de35d61f941f8c8c40b72033": {
+      "name": "TradePort",
+      "type": "nft"
+    },
+    "0xb42dbb7413b79394e1a0175af6ae22b69a5c7cc5df259cd78072b6818217c027": {
+      "name": "TradePort",
+      "type": "nft"
+    },
+    "0xec175e537be9e48f75fa6929291de6454d2502f1091feb22c0d26a22821bbf28": {
+      "name": "TradePort",
+      "type": "nft"
+    },
+    "0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab": {
+      "name": "TradePort",
+      "type": "nft"
     },
     "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1": {
       "name": "Turbos",

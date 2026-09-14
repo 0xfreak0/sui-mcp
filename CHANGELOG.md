@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.16.0 (2026-09-14)
 
 ### Added
 - **`watch_addresses` and `poll_watch`.** Record a set of addresses during an

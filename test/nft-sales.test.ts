@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  canonicalType,
   ownershipFrom,
   readSale,
   saleEventTypes,
@@ -169,5 +170,52 @@ describe("totalling sales", () => {
   it("handles amounts past Number.MAX_SAFE_INTEGER", () => {
     const big = "9007199254740993";
     expect(totalSales([sale(big, "X"), sale(big, "X")]).volume_mist).toBe("18014398509481986");
+  });
+});
+
+/**
+ * Marketplace events emit the defining address unprefixed and unpadded — a live
+ * BlueMove sale carries `2dcd5252…::bluemove_launchpad::SUIS` — while every
+ * other surface here uses the `0x`-padded form. An exact compare between the
+ * two never matches, so a caller filtering by the type any other tool gave them
+ * saw no sales at all.
+ */
+describe("canonicalType", () => {
+  const PADDED = `0x${"0".repeat(62)}2c`;
+
+  it("pads an unprefixed address so both spellings agree", () => {
+    expect(canonicalType("2c::m::T")).toBe(`${PADDED}::m::T`);
+    expect(canonicalType("2c::m::T")).toBe(canonicalType(`${PADDED}::m::T`));
+  });
+
+  it("is idempotent", () => {
+    const once = canonicalType("2c::m::T");
+    expect(canonicalType(once)).toBe(once);
+  });
+
+  it("normalises type arguments, not just the outer address", () => {
+    expect(canonicalType("2::coin::Coin<2c::m::T>")).toBe(
+      `${canonicalType("2::coin::Coin")}<${PADDED}::m::T>`,
+    );
+    expect(canonicalType("2::coin::Coin<2c::m::T>")).toBe(
+      canonicalType(`${canonicalType("0x2::coin::Coin")}<${PADDED}::m::T>`),
+    );
+  });
+
+  it("handles several type arguments, including nested ones", () => {
+    const out = canonicalType("2::p::Pool<2c::m::A, 2::q::Q<2c::m::B>>");
+    expect(out).toContain(`${PADDED}::m::A`);
+    expect(out).toContain(`${PADDED}::m::B`);
+    expect(out.startsWith("0x")).toBe(true);
+  });
+
+  it("leaves something that is not a Move type alone", () => {
+    expect(canonicalType("not-a-type")).toBe("not-a-type");
+    expect(canonicalType("")).toBe("");
+  });
+
+  it("does not alter a type that already matched", () => {
+    const t = "0x2::sui::SUI";
+    expect(canonicalType(t)).toBe(canonicalType(canonicalType(t)));
   });
 });

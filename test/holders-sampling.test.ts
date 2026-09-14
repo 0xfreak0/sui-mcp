@@ -236,7 +236,14 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
           owner: {
             address: {
               address: kioskId,
-              asObject: { asMoveObject: { contents: { json: { owner: declared } } } },
+              asObject: {
+                asMoveObject: {
+                  contents: {
+                    type: { repr: "0x0000000000000000000000000000000000000000000000000000000000000002::kiosk::Kiosk" },
+                    json: { owner: declared },
+                  },
+                },
+              },
             },
           },
         },
@@ -250,7 +257,14 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
         asObject: {
           owner: {
             address: {
-              asObject: { asMoveObject: { contents: { json: { owner: declared } } } },
+              asObject: {
+                asMoveObject: {
+                  contents: {
+                    type: { repr: "0x0000000000000000000000000000000000000000000000000000000000000002::kiosk::Kiosk" },
+                    json: { owner: declared },
+                  },
+                },
+              },
             },
           },
         },

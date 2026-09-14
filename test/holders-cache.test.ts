@@ -5,12 +5,24 @@ import { runWithNetwork } from "../src/config.js";
  * The cache key is built inline in the tool handler, so this reconstructs it
  * rather than importing it. The property under test is what belongs in the key,
  * which is a design claim worth pinning even without exercising the handler.
+ *
+ * The last segment is the kiosk-owner table's version, which is part of the key
+ * in NFT mode because the table is part of the answer there. A reconstruction
+ * that drifts from the handler pins a key the tool does not build, so it is
+ * kept in step deliberately — `test/holders-kiosk-resolution.test.ts` is what
+ * exercises the real one end to end.
  */
-const key = (mode: string, type: string, maxScan: number, topN: number) =>
-  `${runWithNetwork("mainnet", () => "mainnet")}:${mode}:${type}:${maxScan}:${topN}`;
+const key = (mode: string, type: string, maxScan: number, topN: number, kiosk = "-") =>
+  `${runWithNetwork("mainnet", () => "mainnet")}:${mode}:${type}:${maxScan}:${topN}:${kiosk}`;
 
-const keyOn = (network: "mainnet" | "testnet", mode: string, type: string, maxScan: number, topN: number) =>
-  runWithNetwork(network, () => `${network}:${mode}:${type}:${maxScan}:${topN}`);
+const keyOn = (
+  network: "mainnet" | "testnet",
+  mode: string,
+  type: string,
+  maxScan: number,
+  topN: number,
+  kiosk = "-",
+) => runWithNetwork(network, () => `${network}:${mode}:${type}:${maxScan}:${topN}:${kiosk}`);
 
 const TYPE = "0x2::sui::SUI";
 
@@ -40,4 +52,14 @@ describe("get_top_holders cache key", () => {
     expect(key("token", TYPE, 2000, 20)).not.toBe(key("token", TYPE, 5000, 20));
     expect(key("token", TYPE, 2000, 20)).not.toBe(key("nft", TYPE, 2000, 20));
   });
+
+  it("distinguishes kiosk-owner table states in NFT mode", () => {
+    // A ranking resolved its kiosks against the table as it stood. Without this
+    // segment, running get_nft_sales — which the tool's own caveat instructs —
+    // returned the same unresolved ranking until the entry expired.
+    expect(key("nft", TYPE, 2000, 20, "10:500:1700000000000")).not.toBe(
+      key("nft", TYPE, 2000, 20, "11:900:1700000000001"),
+    );
+  });
+
 });

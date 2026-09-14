@@ -29,6 +29,8 @@ const A = `0xaa${"1".repeat(62)}`;
 const DECLARED = `0xdd${"2".repeat(62)}`;
 const REAL = `0xbb${"3".repeat(62)}`;
 const KIOSK = `0xcc${"4".repeat(62)}`;
+/** The parent must really be a Kiosk; a Bag-held NFT is not kiosk-held. */
+const KIOSK_TYPE = "0x0000000000000000000000000000000000000000000000000000000000000002::kiosk::Kiosk";
 
 /** owner -> dynamic field -> kiosk, which declares an owner. */
 const kioskNft = (declared: string, kioskId: string) => ({
@@ -38,7 +40,11 @@ const kioskNft = (declared: string, kioskId: string) => ({
         owner: {
           address: {
             address: kioskId,
-            asObject: { asMoveObject: { contents: { json: { owner: declared } } } },
+            asObject: {
+              asMoveObject: {
+                contents: { type: { repr: KIOSK_TYPE }, json: { owner: declared } },
+              },
+            },
           },
         },
       },
@@ -195,7 +201,9 @@ describe("a kiosk nothing can resolve", () => {
                     address: {
                       address: KIOSK,
                       asObject: {
-                        asMoveObject: { contents: { json: { owner: { nested: true } } } },
+                        asMoveObject: {
+                          contents: { type: { repr: KIOSK_TYPE }, json: { owner: { nested: true } } },
+                        },
                       },
                     },
                   },

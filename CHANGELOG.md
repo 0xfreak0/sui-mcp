@@ -100,7 +100,8 @@
   held a kiosk. Those are stored, and `get_top_holders` now resolves a
   kiosk-held NFT to that wallet instead of the kiosk's own declared owner.
   Verified end to end: nine mappings resolved eleven NFTs in one collection
-  scan, which then ranked as `holder_kind: "wallet"`.
+  scan, which then ranked as `holder_kind: "kiosk_resolved"` — chain-derived,
+  but a snapshot at the sale's checkpoint rather than a current read.
 
 - **Kiosk-held NFTs are marked, not silently credited.** `get_top_holders`
   attributes them through the kiosk's own `owner` field, which is self-declared

@@ -206,11 +206,13 @@ get_nft_sales({ hours: 24 })
 { "sales": 237, "volume_sui": "5982.3007", "kiosk_owners_learned": 249, "requests": 13 }
 ```
 
-Those mappings are stored, and `get_top_holders` uses them: a kiosk it can name
-counts toward the real wallet, while one it cannot keeps a
-`from_kiosk_owner_field` count. `holder_kind` is `wallet`, `kiosk_declared` or
-`mixed`, since one address can hold some NFTs outright and others through a
-kiosk. The window is bounded because `events` has no
+Those mappings are stored, and `get_top_holders` uses them. `holder_kind` names
+how each holder was arrived at, weakest evidence first: `kiosk_declared` from
+the kiosk's own field, `kiosk_resolved` from a sale record, `wallet` read from
+the object itself, and `mixed` when one address holds NFTs by more than one
+route. A sale-derived owner is chain-derived but a snapshot at that
+checkpoint, and a kiosk can be sold afterwards, so it is not reported as
+`wallet`. `from_kiosk_owner_field` and `from_sale_records` carry the split. The window is bounded because `events` has no
 collection filter, so all-time volume would be unbounded paging. It reads
 TradePort, BlueMove and OriginByte, and requires `SUI_STORE_PATH` to keep what
 it learns.

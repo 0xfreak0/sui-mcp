@@ -60,14 +60,44 @@ const registry: Map<string, SaleEventEntry> = new Map();
  * type they got from any other tool silently saw no sales.
  */
 export function canonicalType(moveType: string): string {
-  const parts = moveType.trim().split("::");
-  if (parts.length < 3) return moveType.trim();
-  const [addr, ...rest] = parts;
-  try {
-    return [normalizeSuiAddress(addr!.toLowerCase()), ...rest].join("::");
-  } catch {
-    return moveType.trim();
+  const t = moveType.trim();
+  // Type arguments are types too, and a generic collection type would
+  // otherwise keep an unpadded address inside its brackets and still fail to
+  // compare equal. Recurse before touching the outer address.
+  const open = t.indexOf("<");
+  if (open !== -1 && t.endsWith(">")) {
+    const head = canonicalType(t.slice(0, open));
+    const args = splitTypeArgs(t.slice(open + 1, -1))
+      .map((a) => canonicalType(a))
+      .join(", ");
+    return `${head}<${args}>`;
   }
+  const parts = t.split("::");
+  if (parts.length < 3) return t;
+  const [addr, ...rest] = parts;
+  // No try/catch: normalizeSuiAddress pads without validating and does not
+  // throw. A non-hex segment yields a 66-character string that is nobody's
+  // address, which is harmless here because this value is only ever compared
+  // for equality, never used as an address.
+  return [normalizeSuiAddress(addr!.toLowerCase()), ...rest].join("::");
+}
+
+/** Split `A, B<C, D>` on the commas that are not inside brackets. */
+function splitTypeArgs(inner: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === "<") depth++;
+    else if (c === ">") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(inner.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(inner.slice(start));
+  return out.map((x) => x.trim()).filter((x) => x.length > 0);
 }
 
 /** Every sale event type this server knows how to read. */

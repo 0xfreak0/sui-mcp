@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { numArg } from "./args.js";
 import { getNetwork } from "../config.js";
 import { kioskOwnerVersion, loadKioskOwners } from "../utils/store.js";
@@ -55,7 +56,7 @@ interface OwnerNode {
     asObject?: {
       owner?: OwnerNode;
       asMoveObject?: {
-        contents?: { json?: { owner?: string } };
+        contents?: { type?: { repr?: string }; json?: { owner?: unknown } };
       };
     };
   };
@@ -81,6 +82,22 @@ interface CoinObjectsPage {
 }
 
 /** How an owner address was arrived at. The two are not equally trustworthy. */
+/**
+ * The framework Kiosk, padded, so a short and a canonical spelling both match.
+ * Full-type comparison is deliberate: suffix matching would hand an
+ * impersonating package the kiosk path.
+ */
+const KIOSK_TYPE = `${normalizeSuiAddress("0x2")}::kiosk::Kiosk`;
+
+/** Strip generics and pad the defining address before comparing. */
+function baseType(t: string): string {
+  const bare = t.split("<")[0]!.trim();
+  const parts = bare.split("::");
+  if (parts.length < 3) return bare;
+  const [addr, ...rest] = parts;
+  return [normalizeSuiAddress(addr!.toLowerCase()), ...rest].join("::");
+}
+
 export type OwnerSource = "address" | "kiosk_declared";
 
 /**
@@ -135,12 +152,18 @@ function extractNftOwner(
   if (addr?.address && !addr.asObject) return { address: addr.address, source: "address" };
   const inner = addr?.asObject?.owner?.address;
   if (inner?.address && !inner.asObject) return { address: inner.address, source: "address" };
-  // Carried out so a sale-derived owner can replace the declared one later.
-  const kioskId = inner?.address;
+  // The parent has to BE a Kiosk. `inner.address` only says the grandparent is
+  // some object, so treating that as a kiosk counted a Bag-held or
+  // TableVec-held NFT as kiosk-held and inflated the denominator the kiosk
+  // caveat is stated against. Matched in full, never by suffix — a package can
+  // name its own module `kiosk` and its struct `Kiosk`.
+  const parentType = inner?.asObject?.asMoveObject?.contents?.type?.repr;
+  const isKiosk = !!parentType && baseType(parentType) === KIOSK_TYPE;
+  const kioskId = isKiosk ? inner?.address : undefined;
   const kioskOwner = inner?.asObject?.asMoveObject?.contents?.json?.owner;
   // The json blob is untyped, so a non-string here would become a Map key and
   // land in the holder list verbatim.
-  if (kioskId) {
+  if (isKiosk && kioskId) {
     // A kiosk whose declared owner is unusable still has an id, and the store
     // may know who actually holds it. Discarding the id here threw away the
     // only thing that could have resolved it.
@@ -150,7 +173,7 @@ function extractNftOwner(
       kiosk_id: kioskId,
     };
   }
-  if (typeof kioskOwner === "string" && kioskOwner) {
+  if (isKiosk && typeof kioskOwner === "string" && kioskOwner) {
     return { address: kioskOwner, source: "kiosk_declared" };
   }
   return null;
@@ -179,7 +202,7 @@ const NFT_OBJECTS_QUERY = `
                     address {
                       address
                       asObject {
-                        asMoveObject { contents { json } }
+                        asMoveObject { contents { type { repr } json } }
                       }
                     }
                   }

@@ -884,16 +884,23 @@ export function saveKioskOwners(
  */
 export function kioskOwnerVersion(network: string): string {
   initStore();
-  if (!db) return "0:0";
+  if (!db) return "0:0:0";
   try {
     const r = db
       .prepare(
-        `SELECT COUNT(*) AS n, COALESCE(MAX(checkpoint), 0) AS hi FROM kiosk_owners WHERE network = ?`,
+        `SELECT COUNT(*) AS n, COALESCE(MAX(checkpoint), 0) AS hi,
+                COALESCE(MAX(observed_at), 0) AS seen
+         FROM kiosk_owners WHERE network = ?`,
       )
-      .get(network) as { n?: number; hi?: number } | undefined;
-    return `${r?.n ?? 0}:${r?.hi ?? 0}`;
+      .get(network) as { n?: number; hi?: number; seen?: number } | undefined;
+    // observed_at is what makes this move. Raising one existing row's
+    // checkpoint to a value below the table's maximum changes neither the count
+    // nor the maximum, so a version built from those two alone kept serving the
+    // stale ranking this key exists to invalidate — verified against a real
+    // store. observed_at is written on every accepted update.
+    return `${r?.n ?? 0}:${r?.hi ?? 0}:${r?.seen ?? 0}`;
   } catch {
-    return "0:0";
+    return "0:0:0";
   }
 }
 

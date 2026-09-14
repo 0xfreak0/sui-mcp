@@ -25,8 +25,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  * which is the context-burn this server exists to avoid. A window is bounded,
  * states its own edges, and answers the question anyone actually asks.
  *
- * Measured on mainnet, one TradePort package over a full 24 hours: 5 requests,
- * 214 sales, 5,126 SUI, and 54 kiosk-to-wallet mappings.
+ * Measured on mainnet, a 24-hour window across every registered event type: 13
+ * requests, 237 sales, 5,982 SUI, and 249 kiosk-to-wallet mappings. The floor
+ * is one request per registered type.
  *
  * ## Events page OLDEST first
  *
@@ -150,6 +151,11 @@ export function registerNftSalesTools(server: McpServer) {
         // like a marketplace with no sales.
         if (requests >= max_pages) {
           unread.push(eventType);
+          // Also truncated. Removing the old outer break stopped this being set
+          // when the budget ran out exactly on a type boundary, so a read that
+          // skipped whole marketplaces reported truncated: false beside a
+          // caveat saying it was incomplete.
+          truncated = true;
           continue;
         }
         for (;;) {
@@ -261,7 +267,9 @@ export function registerNftSalesTools(server: McpServer) {
           : {
               note: "Kiosk ownership was read but not stored: set SUI_STORE_PATH so get_top_holders can use it.",
             }),
-        ...(include_sales ? { sales } : {}),
+        // NOT `sales`: `...totals` already puts the sale COUNT there, and
+        // spreading the array over it left the count reported nowhere.
+        ...(include_sales ? { sale_records: sales } : {}),
       });
     },
   );

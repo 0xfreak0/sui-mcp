@@ -181,8 +181,12 @@ export function registerFindingsTools(server: McpServer) {
     async ({ finding_id }) => {
       const blocked = storeRequired();
       if (blocked) return blocked;
-      deleteFinding(finding_id);
-      return ok({ deleted: true, finding_id });
+      const deleted = deleteFinding(finding_id);
+      return ok({
+        deleted,
+        finding_id,
+        ...(deleted ? {} : { note: "No finding has that id. Nothing was deleted — check list_findings." }),
+      });
     },
   );
 }

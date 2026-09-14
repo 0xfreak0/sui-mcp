@@ -49,8 +49,47 @@
 
 - **`get_top_holders` counts NFTs whose owner it cannot resolve.** They were
   dropped, so holder counts silently described less than the supply — 4 of 2,555
-  on one mainnet collection. They are reported as `unresolved_owners`, and a
-  scan that has any is not a `complete_ranking`.
+  on one mainnet collection. They are reported as `unresolved_owners`. The coin
+  walk now counts them too.
+
+- **A holder scan stopped by a null cursor is reported as a sample.** The guard
+  that prevents the walk restarting from page one left the scan marked
+  complete, so a known-incomplete result carried ranks and percentages of
+  supply. `complete_ranking` now means the walk reached the end.
+
+- **A holder scan that found nothing no longer claims a complete ranking of
+  zero holders.** Zero objects reads the same as a mistyped type, a type from
+  another network, or a coin scanned as a collection, and the result says so
+  instead. `max_scan` and `limit` are clamped at both ends: `max_scan: 0`
+  previously made no request at all and reported a complete ranking.
+
+- **`poll_watch` no longer loses transactions at a page boundary.**
+  `afterCheckpoint` is exclusive per checkpoint while the page cap cuts per
+  transaction, so a full page usually ended part-way through a checkpoint and
+  the rest of it was excluded from every later poll. Measured on one mainnet
+  address: 30 transactions over 13 checkpoints, 8 holding more than one. The
+  cursor now stops one checkpoint short of a full page, and an address whose
+  full page sits inside a single checkpoint is reported as `stalled`.
+
+- **`lookalike_appeared` only fires against a watched address.** Two
+  counterparties resembling each other were reported as impersonating the
+  address under investigation.
+
+- **Watched addresses are normalized when read back, not only validated.** A
+  row holding a short form such as `0x2` matched none of its own balance
+  changes, so it appeared as its own counterparty and `min_amount` never
+  applied. `min_amount` is also validated: `"0.5"` silently removed the floor.
+
+- **Tools no longer report a write that failed as success.** `manage_labels`
+  remove, add and import, `watch_addresses` remove, and `delete_finding` all
+  derive their result from the write. A label whose store delete failed comes
+  back at the next start, and for a `cex` label that silently keeps terminating
+  traces. `delete_finding` reported success for an id matching nothing.
+
+- **One bad address no longer disables multisig detection for a whole batch.**
+  `identify_address` and the investigation flows batch twenty addresses into one
+  aliased query whose error is swallowed as enrichment, so a single unparseable
+  address removed authentication data for the other nineteen.
 
 ## 1.15.0 (2026-09-11)
 

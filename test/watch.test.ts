@@ -5,6 +5,7 @@ import {
   flagLookalikes,
   normalizeWatchAddress,
   planBatches,
+  safeAdvance,
   summarizePoll,
   WATCH_BATCH_SIZE,
   type DeltaTx,
@@ -343,5 +344,79 @@ describe("normalizeWatchAddress", () => {
 
   it("rejects an over-long address", () => {
     expect(normalizeWatchAddress("0x" + "a".repeat(65))).toBeNull();
+  });
+});
+
+/**
+ * `afterCheckpoint` is exclusive at CHECKPOINT granularity while the page cap
+ * cuts at TRANSACTION granularity, so a full page usually ends part-way through
+ * a checkpoint. Advancing to that checkpoint excludes the rest of it from every
+ * future poll. Measured on one mainnet address: 30 transactions over 13
+ * checkpoints, 8 of them holding more than one.
+ */
+describe("safeAdvance", () => {
+  const tx = (checkpoint: number, digest = `d${checkpoint}`) => ({ digest, checkpoint });
+
+  it("advances to the highest checkpoint when the page was not full", () => {
+    expect(safeAdvance([tx(10), tx(11), tx(12)], false, 9)).toEqual({
+      checkpoint: 12,
+      stalled: false,
+    });
+  });
+
+  it("stops one checkpoint short of a saturated page, so the boundary is re-read", () => {
+    // The page ended inside checkpoint 12; transactions there that did not fit
+    // would be excluded forever by afterCheckpoint: 12.
+    expect(safeAdvance([tx(10), tx(11), tx(12)], true, 9)).toEqual({
+      checkpoint: 11,
+      stalled: false,
+    });
+  });
+
+  it("does not advance when a full page sits inside one checkpoint", () => {
+    // Stopping short cannot make progress and advancing drops the remainder,
+    // so neither is chosen silently.
+    expect(safeAdvance([tx(12, "a"), tx(12, "b")], true, 11)).toEqual({
+      checkpoint: 11,
+      stalled: true,
+    });
+  });
+
+  it("never moves the cursor backwards", () => {
+    expect(safeAdvance([tx(10)], true, 50).checkpoint).toBe(50);
+  });
+
+  it("leaves the cursor alone when nothing came back", () => {
+    expect(safeAdvance([], false, 7)).toEqual({ checkpoint: 7, stalled: false });
+  });
+});
+
+/**
+ * The reason claims a new counterparty resembles a WATCHED address. Two
+ * counterparties resembling each other says nothing about the subject, and
+ * reporting it reads as impersonation of the address under investigation.
+ */
+describe("flagLookalikes only fires against a watched address", () => {
+  const WATCHED = "0xaaaabbbb" + "0".repeat(48) + "ccccdddd";
+  const LOOKALIKE = "0xaaaabbbb" + "1".repeat(48) + "ccccdddd";
+  const OTHER_A = "0xeeeeffff" + "2".repeat(48) + "11112222";
+  const OTHER_B = "0xeeeeffff" + "3".repeat(48) + "11112222";
+
+  const hit = (counterparties: string[]) => ({
+    address: WATCHED,
+    digest: "d",
+    checkpoint: 1,
+    reasons: ["value_in" as const],
+    counterparties,
+  });
+
+  it("flags a counterparty that resembles the watched address", () => {
+    const out = flagLookalikes([WATCHED], [hit([LOOKALIKE])]);
+    expect(out[0]!.reasons).toContain("lookalike_appeared");
+  });
+
+  it("does NOT flag two counterparties that resemble only each other", () => {
+    const out = flagLookalikes([WATCHED], [hit([OTHER_A, OTHER_B])]);
+    expect(out[0]!.reasons).not.toContain("lookalike_appeared");
   });
 });

@@ -127,6 +127,39 @@ const NFT_OBJECTS_QUERY = `
   }
 `;
 
+/**
+ * Does even one `Coin<T>` exist for this type?
+ *
+ * Used only to settle an auto-detected mode. A coin type and an NFT type have
+ * the same `0xpkg::module::Struct` shape, so nothing in the string separates
+ * `0xabc::suipump::SUIPUMP` from a collection — and guessing wrong scanned a
+ * real memecoin as NFTs and reported `unique_holders: 0`, which reads as "this
+ * has no holders" rather than "this was looked up as the wrong kind of thing".
+ * Coins are held as `0x2::coin::Coin<T>`, never as bare `T`, so one object of
+ * the wrapped type is proof.
+ */
+const COIN_PROBE_QUERY = `
+  query($type: String!) {
+    objects(filter: { type: $type }, first: 1) {
+      nodes { address }
+    }
+  }
+`;
+
+async function looksLikeCoin(type: string): Promise<boolean> {
+  try {
+    const data = await gqlQuery<{ objects: { nodes: Array<{ address: string }> } }>(
+      COIN_PROBE_QUERY,
+      { type: `0x2::coin::Coin<${type}>` },
+    );
+    return (data.objects.nodes?.length ?? 0) > 0;
+  } catch {
+    // A probe that could not run leaves the original guess in place. It must
+    // never be the reason the tool fails.
+    return false;
+  }
+}
+
 const COIN_OBJECTS_QUERY = `
   query($type: String!, $first: Int, $after: String) {
     objects(filter: { type: $type }, first: $first, after: $after) {
@@ -310,12 +343,17 @@ export function registerHolderTools(server: McpServer) {
       const topN = Math.min(limit ?? 20, 100);
       const maxScan = Math.min(max_scan ?? DEFAULT_MAX_SCAN, MAX_SCAN_LIMIT);
 
-      // Auto-detect mode: if it looks like a coin type, use token mode
-      const effectiveMode = mode ?? (
-        resolvedType.includes("::coin::Coin<") || resolvedType.includes("::sui::SUI") || resolvedType.includes("::usdc::USDC")
-          ? "token"
-          : "nft"
-      );
+      // Auto-detect mode. The string test catches the common shapes for free;
+      // anything else is settled by asking the chain whether a Coin of this
+      // type exists, because an arbitrary memecoin type looks exactly like a
+      // collection type and defaulting to NFT scanned it as one and reported no
+      // holders. An explicit `mode` is always obeyed and never probed.
+      const namedLikeCoin =
+        resolvedType.includes("::coin::Coin<") ||
+        resolvedType.includes("::sui::SUI") ||
+        resolvedType.includes("::usdc::USDC");
+      const effectiveMode =
+        mode ?? (namedLikeCoin || (await looksLikeCoin(resolvedType)) ? "token" : "nft");
 
       // topN is part of the key because it is part of the answer: the cached
       // payload holds exactly `limit` holders, so serving a 20-holder entry to
@@ -395,6 +433,12 @@ export function registerHolderTools(server: McpServer) {
 
       // NFT mode
       const holderCounts = new Map<string, number>();
+      // Objects whose owner the query could not resolve — a nesting shape
+      // `extractNftOwner` does not unwrap, or an owner kind it does not read.
+      // Dropping these silently understates the supply the holder counts are a
+      // share of, and makes "could not resolve an owner" look like "nobody
+      // holds it". Measured on one mainnet collection: 4 of 2,555.
+      let unresolvedOwners = 0;
       let cursor: string | undefined;
       let totalScanned = 0;
       let truncated = false;
@@ -413,6 +457,8 @@ export function registerHolderTools(server: McpServer) {
           const addr = extractNftOwner(node);
           if (addr) {
             holderCounts.set(addr, (holderCounts.get(addr) ?? 0) + 1);
+          } else {
+            unresolvedOwners++;
           }
         }
 
@@ -459,6 +505,9 @@ export function registerHolderTools(server: McpServer) {
               `INCOMPLETE: this scan stopped after ${totalScanned} objects (${holderCounts.size} distinct holders) and did not reach the end of the collection. ` +
               `Objects are walked in object-id order, not by how many anyone holds, so these are the biggest holders WITHIN THE SAMPLE and not the biggest holders of the collection. ` +
               `Raise max_scan until "truncated" is false for a real ranking.`,
+            ...(unresolvedOwners
+              ? { unresolved_owners: unresolvedOwners }
+              : {}),
             sampled_holders: topHolders.map(({ rank: _rank, ...rest }) => rest),
           }
         : {
@@ -467,8 +516,19 @@ export function registerHolderTools(server: McpServer) {
             total_scanned: totalScanned,
             unique_holders: holderCounts.size,
             truncated: false,
-            complete_ranking: true,
+            // The whole collection was walked, but an object whose owner could
+            // not be read is not attributed to anyone, so the counts do not add
+            // up to the supply and a percentage built on them would be wrong.
+            complete_ranking: unresolvedOwners === 0,
             cached: false,
+            ...(unresolvedOwners
+              ? {
+                  unresolved_owners: unresolvedOwners,
+                  caveat:
+                    `The whole collection was scanned, but ${unresolvedOwners} of ${totalScanned} objects have an owner this tool could not resolve. ` +
+                    `Those objects are counted in total_scanned and attributed to nobody, so holder counts are a ranking of the rest and do not sum to supply.`,
+                }
+              : {}),
             top_holders: topHolders,
           };
 

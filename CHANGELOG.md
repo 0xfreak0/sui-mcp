@@ -19,6 +19,39 @@
   without producing a balance change — the transfer most worth waking someone
   for. The lookalike check costs no request.
 
+- **NFT marketplaces in the protocol registry.** TradePort (six packages),
+  BlueMove, Drip (two) and OriginByte now resolve by name, so a marketplace sale
+  in a trace is attributed instead of showing as an unknown package. A Move type
+  keeps the package that defined it, so older sales carry older ids and every
+  generation is needed. The registry is 96 protocols, 11 of them `nft`.
+
+### Fixed
+- **A failed cache write no longer fails the read.** `get_address_fanout`
+  aborted with `NOT NULL constraint failed: fanout.sponsored_address_count`
+  when a server left running across a rebuild wrote into a migrated database.
+  The fan-out had already been measured. Cache and cursor writes now return a
+  falsy value and log to stderr instead of throwing. `save_finding` deliberately
+  still throws, because there the write is the operation rather than a side
+  effect of one.
+
+- **One bad address no longer costs a whole poll.** Watched addresses are
+  validated before they are stored and again when they are read back. A delta
+  query batches twenty addresses into one document and the service answers a
+  single unparseable address with no data at all, so one typo returned nothing
+  for every other watched address. `watch_addresses` now reports what it
+  rejected, and what it actually wrote — the count came from the input before,
+  so a failed write still read as watched.
+
+- **`get_top_holders` no longer reports a coin as an empty collection.** With no
+  `mode` given, a type that is neither `Coin<T>` nor a known symbol was scanned
+  as NFTs, and an ordinary memecoin type came back `unique_holders: 0`. The
+  mode is now settled by asking whether a `Coin` of that type exists.
+
+- **`get_top_holders` counts NFTs whose owner it cannot resolve.** They were
+  dropped, so holder counts silently described less than the supply — 4 of 2,555
+  on one mainnet collection. They are reported as `unresolved_owners`, and a
+  scan that has any is not a `complete_ranking`.
+
 ## 1.15.0 (2026-09-11)
 
 ### Added

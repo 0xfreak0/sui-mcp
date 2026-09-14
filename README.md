@@ -203,7 +203,7 @@ owner:
 
 ```
 get_nft_sales({ hours: 24 })
-{ "sales": 214, "volume_sui": "5125.9", "kiosk_owners_learned": 54, "requests": 5 }
+{ "sales": 237, "volume_sui": "5982.3007", "kiosk_owners_learned": 249, "requests": 13 }
 ```
 
 Those mappings are stored, and `get_top_holders` uses them: a kiosk it can name
@@ -212,8 +212,14 @@ counts toward the real wallet, while one it cannot keeps a
 `mixed`, since one address can hold some NFTs outright and others through a
 kiosk. The window is bounded because `events` has no
 collection filter, so all-time volume would be unbounded paging. It reads
-TradePort, BlueMove and OriginByte. Requires `SUI_STORE_PATH` to keep what it
-learns.
+TradePort, BlueMove and OriginByte, and requires `SUI_STORE_PATH` to keep what
+it learns.
+
+`collection_type` narrows the result, but only for marketplaces that name the
+collection in the event, which most do not: in one measured window 70 of 73
+sales carried no collection type at all. Those are counted in
+`unattributable_sales` rather than filtered out quietly, so a small number of
+matches is never mistaken for a collection that did not trade.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks coin objects in object-id order, which is unrelated to

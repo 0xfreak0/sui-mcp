@@ -858,10 +858,24 @@ names the buyer beside the buyer's kiosk in one record. That is a chain-derived
 statement of ownership at that checkpoint, stored in `kiosk_owners` and
 consulted by the holder scan. Both legs are harvested — the seller held its
 kiosk just as surely — and a later checkpoint wins, because a kiosk can be sold.
-Measured: 600 TradePort sale events yielded 185 distinct mappings, and one
-24-hour window on one package yielded 54.
+Measured: a 24-hour window across every registered marketplace is 13 requests
+for 237 sales and 249 distinct mappings.
 
-Three rules for extending it:
+Two things the holder scan must keep doing with them. The mapping table is part
+of the NFT-mode cache key, because a payload cached without it answered the
+caveat's own instruction — run `get_nft_sales` — with the same unresolved
+ranking for 24 hours. And a sale-derived owner is a SNAPSHOT at that
+checkpoint, so it reports `holder_kind: "kiosk_resolved"` rather than
+`"wallet"`: a kiosk can be sold after the sale that named it.
+
+Four rules for extending it:
+
+- **A sale event rarely names the collection.** Measured: 70 of 73 mainnet
+  sales carry no `nft_type`, and the few that do emit the defining address
+  unprefixed and unpadded (`2dcd5252…::m::T`), which never compares equal to
+  the `0x`-padded form every other surface here uses. `canonicalType` fixes the
+  comparison; the missing field cannot be fixed, so those sales are counted in
+  `unattributable_sales` and a filtered result that found little says why.
 
 - **Every event type in `nft-sale-events.json` was confirmed to exist on
   mainnet**, with its field names read off a real event. A type nobody emits

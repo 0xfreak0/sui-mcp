@@ -32,6 +32,7 @@
  * one carries the checkpoint it was observed at and a later observation wins.
  */
 
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -46,6 +47,27 @@ const registry: Map<string, SaleEventEntry> = new Map();
 {
   const raw = require("../data/nft-sale-events.json") as { events: SaleEventEntry[] };
   for (const e of raw.events) registry.set(e.type, e);
+}
+
+/**
+ * Canonical form of a Move type, so two spellings of one type compare equal.
+ *
+ * Marketplace events emit the defining address WITHOUT the `0x` prefix and
+ * unpadded — a live BlueMove sale carries
+ * `2dcd5252…::bluemove_launchpad::SUIS` — while every other surface in this
+ * server, `nft-collections.json` included, uses the padded `0x` form. An exact
+ * string compare between the two never matches, so a caller filtering by the
+ * type they got from any other tool silently saw no sales.
+ */
+export function canonicalType(moveType: string): string {
+  const parts = moveType.trim().split("::");
+  if (parts.length < 3) return moveType.trim();
+  const [addr, ...rest] = parts;
+  try {
+    return [normalizeSuiAddress(addr!.toLowerCase()), ...rest].join("::");
+  } catch {
+    return moveType.trim();
+  }
 }
 
 /** Every sale event type this server knows how to read. */
@@ -111,7 +133,7 @@ export function readSale(eventType: string, json: unknown): NftSale | null {
   const price = str(j, PRICE_FIELDS);
   return {
     nft_id,
-    ...(str(j, ["nft_type"]) ? { nft_type: str(j, ["nft_type"]) } : {}),
+    ...(str(j, ["nft_type"]) ? { nft_type: canonicalType(str(j, ["nft_type"])!) } : {}),
     ...(str(j, ["buyer"]) ? { buyer: str(j, ["buyer"]) } : {}),
     ...(str(j, ["seller"]) ? { seller: str(j, ["seller"]) } : {}),
     // Only from an event that carries an amount. A claim event has a buyer and

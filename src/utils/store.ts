@@ -857,11 +857,44 @@ export function saveKioskOwners(
     const now = Date.now();
     let kept = 0;
     for (const r of rows) {
-      stmt.run(`${network}:${r.kiosk_id}`, network, r.kiosk_id, r.owner, r.checkpoint, now);
-      kept++;
+      // `changes`, not one per statement. The ON CONFLICT clause rejects an
+      // observation no newer than the stored one, so counting attempts reported
+      // every row as written on a repeat run that wrote nothing at all.
+      const res = stmt.run(
+        `${network}:${r.kiosk_id}`,
+        network,
+        r.kiosk_id,
+        r.owner,
+        r.checkpoint,
+        now,
+      ) as { changes?: number };
+      kept += (res.changes ?? 0) > 0 ? 1 : 0;
     }
     return kept;
   });
+}
+
+/**
+ * How many kiosk owners are known, and how recent the newest is.
+ *
+ * Feeds the holder cache key. A cached ranking resolved its kiosks against the
+ * table as it stood at the time, so without this a caller who ran
+ * `get_nft_sales` — which the holder caveat tells them to do — got the same
+ * unresolved answer back for 24 hours, and the instruction did nothing.
+ */
+export function kioskOwnerVersion(network: string): string {
+  initStore();
+  if (!db) return "0:0";
+  try {
+    const r = db
+      .prepare(
+        `SELECT COUNT(*) AS n, COALESCE(MAX(checkpoint), 0) AS hi FROM kiosk_owners WHERE network = ?`,
+      )
+      .get(network) as { n?: number; hi?: number } | undefined;
+    return `${r?.n ?? 0}:${r?.hi ?? 0}`;
+  } catch {
+    return "0:0";
+  }
 }
 
 /** Known kiosk owners for the given kiosk ids, as a kiosk -> owner map. */

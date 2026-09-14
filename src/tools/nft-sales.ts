@@ -4,6 +4,7 @@ import { getNetwork } from "../config.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { saveKioskOwners, storeStatus } from "../utils/store.js";
 import {
+  canonicalType,
   ownershipFrom,
   readSale,
   saleEventTypes,
@@ -57,8 +58,16 @@ interface SalesPage {
   events: { nodes: SaleEventNode[]; pageInfo: { hasNextPage: boolean; endCursor?: string } };
 }
 
-/** Checkpoints per second on mainnet, measured. Used only to turn hours into a bound. */
-const CHECKPOINTS_PER_SECOND = 4.25;
+/**
+ * Checkpoints per second, used only to turn an hours argument into a bound.
+ *
+ * Mainnet measured 4.50 in September 2026, against 4.25 earlier in the year, so
+ * this drifts and any window derived from it is approximate. That is why the
+ * response reports `from_checkpoint`/`to_checkpoint` and the timestamps of the
+ * oldest and newest sale actually read, rather than echoing `hours` back as
+ * though it were the window covered.
+ */
+const CHECKPOINTS_PER_SECOND = 4.5;
 
 const CURRENT_CHECKPOINT = `{ checkpoint { sequenceNumber } }`;
 
@@ -74,7 +83,7 @@ async function currentCheckpoint(): Promise<number | null> {
 export function registerNftSalesTools(server: McpServer) {
   server.tool(
     "get_nft_sales",
-    "NFT marketplace sales over a recent window, with volume and per-marketplace totals. Optionally filtered to one collection. Reads TradePort, BlueMove and OriginByte sale events. Also records which wallet holds which kiosk, which is what makes get_top_holders able to name a real owner for a kiosk-held NFT.",
+    "NFT marketplace sales over a recent window, with volume and per-marketplace totals. Reads TradePort, BlueMove and OriginByte sale events. Also records which wallet holds which kiosk, which is what makes get_top_holders able to name a real owner for a kiosk-held NFT.",
     {
       hours: numArg()
         .min(1)
@@ -86,7 +95,7 @@ export function registerNftSalesTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Keep only sales of this Move type. Matched against the event's nft_type where the marketplace reports one.",
+          "Keep only sales of this Move type. Most marketplaces do not name the collection in the sale event, and those sales are reported as unattributable_sales rather than filtered out silently — a low count here is not evidence the collection did not trade.",
         ),
       max_pages: numArg()
         .min(1)
@@ -121,11 +130,28 @@ export function registerNftSalesTools(server: McpServer) {
       const unreadable: Record<string, number> = {};
       let requests = 0;
       let truncated = false;
+      // Min and max over every type, not first-seen and last-seen. Each type is
+      // paged separately, so assigning once at the start and overwriting at the
+      // end reported an "oldest" sale later than the "newest" one whenever more
+      // than one marketplace traded in the window.
       let oldest: string | null = null;
       let newest: string | null = null;
+      const wanted = collection_type ? canonicalType(collection_type) : undefined;
+      // Sales the filter cannot judge, because their marketplace does not emit
+      // the collection type. Measured on mainnet: 70 of 73 sales carry no
+      // nft_type at all, so a filtered result that did not say this reads as
+      // "this collection did not trade" when it means "cannot tell".
+      let unattributable = 0;
+      const unread: string[] = [];
 
       for (const eventType of saleEventTypes()) {
         let cursor: string | undefined;
+        // A type never queried is absent from the totals, which looks exactly
+        // like a marketplace with no sales.
+        if (requests >= max_pages) {
+          unread.push(eventType);
+          continue;
+        }
         for (;;) {
           if (requests >= max_pages) {
             truncated = true;
@@ -160,10 +186,16 @@ export function registerNftSalesTools(server: McpServer) {
                 if (!prior || o.checkpoint > prior.checkpoint) ownership.set(o.kiosk_id, o);
               }
             }
-            if (collection_type && sale.nft_type !== collection_type) continue;
+            if (wanted) {
+              if (!sale.nft_type) {
+                unattributable++;
+                continue;
+              }
+              if (sale.nft_type !== wanted) continue;
+            }
             if (node.timestamp) {
-              if (!oldest) oldest = node.timestamp;
-              newest = node.timestamp;
+              if (!oldest || node.timestamp < oldest) oldest = node.timestamp;
+              if (!newest || node.timestamp > newest) newest = node.timestamp;
             }
             sales.push(sale);
           }
@@ -174,10 +206,6 @@ export function registerNftSalesTools(server: McpServer) {
             truncated = true;
             break;
           }
-        }
-        if (requests >= max_pages) {
-          truncated = true;
-          break;
         }
       }
 
@@ -192,7 +220,10 @@ export function registerNftSalesTools(server: McpServer) {
       const totals = totalSales(sales);
       return out({
         network,
-        window_hours: hours,
+        // The REQUESTED window. What was covered is from_checkpoint to
+        // to_checkpoint, and the sale timestamps below bound what was actually
+        // seen — the checkpoint rate drifts, so the two are not the same claim.
+        requested_hours: hours,
         from_checkpoint: from,
         to_checkpoint: tip,
         ...(oldest ? { oldest_sale: oldest, newest_sale: newest } : {}),
@@ -203,9 +234,22 @@ export function registerNftSalesTools(server: McpServer) {
         kiosk_owners_stored: persisted,
         requests,
         truncated,
-        ...(truncated
+        ...(truncated || unread.length
           ? {
               caveat: `INCOMPLETE: the ${max_pages}-request cap was reached, so this covers only part of the window and the totals are a lower bound. Narrow 'hours' or raise 'max_pages'.`,
+            }
+          : {}),
+        ...(wanted && unattributable
+          ? {
+              unattributable_sales: unattributable,
+              unattributable_note: `${unattributable} sales in this window could not be tested against collection_type because their marketplace does not emit the collection type in the event. Most TradePort sales are in this group. A low or zero count here is not evidence that the collection did not trade.`,
+            }
+          : {}),
+        ...(unread.length
+          ? {
+              marketplaces_not_read: unread,
+              unread_note:
+                "The request budget ran out before these event types were queried at all, so any sales they carry are missing from the totals rather than absent from the chain. Raise max_pages.",
             }
           : {}),
         ...(Object.keys(unreadable).length ? { unreadable_events: unreadable } : {}),

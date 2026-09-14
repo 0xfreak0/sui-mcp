@@ -87,9 +87,11 @@
   traces. `delete_finding` reported success for an id matching nothing.
 
 - **`get_nft_sales`.** Marketplace sales over a bounded recent window, with
-  volume and per-marketplace totals, optionally filtered to one collection.
-  Reads TradePort, BlueMove and OriginByte. Measured on mainnet, one package
-  over 24 hours is 5 requests for 214 sales and 5,126 SUI. `events` has no
+  volume and per-marketplace totals. Reads TradePort, BlueMove and OriginByte.
+  Measured on mainnet, a 24-hour window across every registered marketplace is
+  13 requests for 237 sales and 5,982 SUI. `collection_type` narrows the result
+  where a marketplace names the collection in its event, which most do not, so
+  the sales it cannot judge are reported as `unattributable_sales`. `events` has no
   collection filter, so the window is bounded and says so rather than paging a
   marketplace to exhaustion.
 

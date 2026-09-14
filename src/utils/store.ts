@@ -478,23 +478,29 @@ export function resetStore(): void {
 /**
  * Run a store write, returning `fallback` if it throws.
  *
- * The store is a cache and a notebook beside a read-only server. A write that
- * fails must not fail the read that produced it: the measurement already
- * succeeded, and the caller is entitled to it whether or not it could be
- * persisted.
+ * **For caches and cursors only.** The rule is that a failed write must not
+ * fail the READ that produced it: the measurement already succeeded and the
+ * caller is entitled to it, persisted or not. A fan-out write failing with
+ * "NOT NULL constraint failed: fanout.sponsored_address_count" took down
+ * `get_address_fanout` entirely rather than returning the fan-out it had just
+ * measured, which is the shape this exists to prevent.
  *
- * `saveTransaction` had this guard from the start, for the same reason stated
- * there. Every other writer lacked it, and one of them surfaced as a tool
- * crash: an older server process writing into a database a newer build had
- * migrated failed with "NOT NULL constraint failed:
- * fanout.sponsored_address_count", which took down `get_address_fanout`
- * entirely rather than returning the fan-out it had just measured.
+ * It is therefore the WRONG wrapper for a writer whose write is the whole
+ * point. `saveFinding` and `deleteFinding` record the investigator's own
+ * conclusions, and a swallowed failure there means `save_finding` reports
+ * `saved: true` over evidence that was never stored. Those throw on purpose —
+ * see the note on `saveFinding`.
+ *
+ * The handle is passed in rather than read from the module binding so the body
+ * needs no null check and no local shadow to keep TypeScript's narrowing.
  *
  * Failures go to stderr, never stdout — stdout is the MCP transport.
  */
-function tryWrite<T>(what: string, fallback: T, fn: () => T): T {
+function tryWrite<T>(what: string, fallback: T, fn: (db: DatabaseLike) => T): T {
+  if (!db) return fallback;
+  const handle = db;
   try {
-    return fn();
+    return fn(handle);
   } catch (err) {
     console.error(`[store] ${what} failed, continuing without persistence: ${(err as Error).message}`);
     return fallback;
@@ -503,23 +509,18 @@ function tryWrite<T>(what: string, fallback: T, fn: () => T): T {
 
 export function saveLabel(l: Omit<StoredLabel, "updated_at">): boolean {
   initStore();
-  if (!db) return false;
-  const handle = db;
-  return tryWrite("saveLabel", false, () => {
-    const db = handle;
-  
-  
-  db.prepare(
-    `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(account) DO UPDATE SET
-       chain=excluded.chain, address=excluded.address,
-       label=excluded.label, category=excluded.category,
-       confidence=excluded.confidence, notes=excluded.notes,
-       updated_at=excluded.updated_at`,
-  ).run(l.account, l.chain, l.address, l.label, l.category, l.confidence, l.notes, Date.now());
-  return true;
-});
+  return tryWrite("saveLabel", false, (db) => {
+    db.prepare(
+      `INSERT INTO labels (account, chain, address, label, category, confidence, notes, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account) DO UPDATE SET
+         chain=excluded.chain, address=excluded.address,
+         label=excluded.label, category=excluded.category,
+         confidence=excluded.confidence, notes=excluded.notes,
+         updated_at=excluded.updated_at`,
+    ).run(l.account, l.chain, l.address, l.label, l.category, l.confidence, l.notes, Date.now());
+    return true;
+  });
 }
 
 export function loadLabels(): StoredLabel[] {
@@ -531,61 +532,51 @@ export function loadLabels(): StoredLabel[] {
 /** Delete by canonical CAIP-10 account id. */
 export function deleteLabel(account: string): boolean {
   initStore();
-  if (!db) return false;
-  const handle = db;
-  return tryWrite("deleteLabel", false, () => {
-    const db = handle;
-  
-  
-  db.prepare(`DELETE FROM labels WHERE account = ?`).run(account);
-  return true;
-});
+  return tryWrite("deleteLabel", false, (db) => {
+    db.prepare(`DELETE FROM labels WHERE account = ?`).run(account);
+    return true;
+  });
 }
 
 export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
   initStore();
-  if (!db) return false;
-  const handle = db;
-  return tryWrite("saveFanout", false, () => {
-    const db = handle;
-  
-  
-  db.prepare(
-    `INSERT INTO fanout (account, recipient_count, sender_count, counterparty_count,
-                         coin_type_count, out_in_ratio, flow_shape,
-                         sponsored_address_count, sponsored_transaction_count, sponsor_shape,
-                         scanned_transactions, truncated, measured_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(account) DO UPDATE SET
-       recipient_count=excluded.recipient_count,
-       sender_count=excluded.sender_count,
-       counterparty_count=excluded.counterparty_count,
-       coin_type_count=excluded.coin_type_count,
-       out_in_ratio=excluded.out_in_ratio,
-       flow_shape=excluded.flow_shape,
-       sponsored_address_count=excluded.sponsored_address_count,
-       sponsored_transaction_count=excluded.sponsored_transaction_count,
-       sponsor_shape=excluded.sponsor_shape,
-       scanned_transactions=excluded.scanned_transactions,
-       truncated=excluded.truncated,
-       measured_at=excluded.measured_at`,
-  ).run(
-    r.account,
-    r.recipient_count,
-    r.sender_count,
-    r.counterparty_count,
-    r.coin_type_count,
-    r.out_in_ratio,
-    r.flow_shape,
-    r.sponsored_address_count,
-    r.sponsored_transaction_count,
-    r.sponsor_shape,
-    r.scanned_transactions,
-    r.truncated,
-    Date.now(),
-  );
-  return true;
-});
+  return tryWrite("saveFanout", false, (db) => {
+    db.prepare(
+      `INSERT INTO fanout (account, recipient_count, sender_count, counterparty_count,
+                           coin_type_count, out_in_ratio, flow_shape,
+                           sponsored_address_count, sponsored_transaction_count, sponsor_shape,
+                           scanned_transactions, truncated, measured_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account) DO UPDATE SET
+         recipient_count=excluded.recipient_count,
+         sender_count=excluded.sender_count,
+         counterparty_count=excluded.counterparty_count,
+         coin_type_count=excluded.coin_type_count,
+         out_in_ratio=excluded.out_in_ratio,
+         flow_shape=excluded.flow_shape,
+         sponsored_address_count=excluded.sponsored_address_count,
+         sponsored_transaction_count=excluded.sponsored_transaction_count,
+         sponsor_shape=excluded.sponsor_shape,
+         scanned_transactions=excluded.scanned_transactions,
+         truncated=excluded.truncated,
+         measured_at=excluded.measured_at`,
+    ).run(
+      r.account,
+      r.recipient_count,
+      r.sender_count,
+      r.counterparty_count,
+      r.coin_type_count,
+      r.out_in_ratio,
+      r.flow_shape,
+      r.sponsored_address_count,
+      r.sponsored_transaction_count,
+      r.sponsor_shape,
+      r.scanned_transactions,
+      r.truncated,
+      Date.now(),
+    );
+    return true;
+  });
 }
 
 export interface Finding {
@@ -633,7 +624,15 @@ const rowToFinding = (r: FindingRow): Finding => ({
   created_at: r.created_at,
 });
 
-/** Record a finding. Returns its id, or null when the store is off. */
+/**
+ * Record a finding. Returns its id, or null when the store is off.
+ *
+ * Deliberately NOT wrapped in `tryWrite`. Every other writer here is a cache
+ * or a cursor, where the read already succeeded and persistence is a bonus.
+ * This one IS the operation: `save_finding` reports `saved: true`, and a
+ * swallowed failure would make that a claim about evidence the store never
+ * took. A write that fails must surface.
+ */
 export function saveFinding(f: Omit<Finding, "id" | "created_at">): number | null {
   initStore();
   if (!db) return null;
@@ -718,17 +717,18 @@ export function getCachedFanout(
  */
 export function saveFirstFunder(account: string, funderAccount: string, digest: string): boolean {
   initStore();
-  if (!db) return false;
-  db.prepare(
-    `INSERT INTO first_funders (account, funder_account, digest, method_version, computed_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(account) DO UPDATE SET
-       funder_account=excluded.funder_account,
-       digest=excluded.digest,
-       method_version=excluded.method_version,
-       computed_at=excluded.computed_at`,
-  ).run(account, funderAccount, digest, FUNDING_METHOD_VERSION, Date.now());
-  return true;
+  return tryWrite("saveFirstFunder", false, (db) => {
+    db.prepare(
+      `INSERT INTO first_funders (account, funder_account, digest, method_version, computed_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(account) DO UPDATE SET
+         funder_account=excluded.funder_account,
+         digest=excluded.digest,
+         method_version=excluded.method_version,
+         computed_at=excluded.computed_at`,
+    ).run(account, funderAccount, digest, FUNDING_METHOD_VERSION, Date.now());
+    return true;
+  });
 }
 
 /** A cached first funder, or null. Rows from older rules are ignored, not trusted. */
@@ -767,12 +767,17 @@ export function saveTransaction(network: string, digest: string, payload: unknow
     // A payload that will not serialise is not worth failing a trace over.
     return false;
   }
-  db.prepare(
-    `INSERT INTO transactions (key, network, digest, payload, fetched_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at`,
-  ).run(`${network}:${digest}`, network, digest, text, Date.now());
-  return true;
+  // The catch above covers an unserialisable payload, which is a DIFFERENT
+  // failure from the write itself throwing. Guarding one was mistaken for
+  // guarding both.
+  return tryWrite("saveTransaction", false, (db) => {
+    db.prepare(
+      `INSERT INTO transactions (key, network, digest, payload, fetched_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET payload=excluded.payload, fetched_at=excluded.fetched_at`,
+    ).run(`${network}:${digest}`, network, digest, text, Date.now());
+    return true;
+  });
 }
 
 /** A previously fetched transaction, or null. Never throws on bad stored JSON. */
@@ -809,29 +814,24 @@ export interface StoredWatch {
 /** Add or replace a watch. Returns false when no store is configured. */
 export function saveWatch(network: string, w: StoredWatch): boolean {
   initStore();
-  if (!db) return false;
-  const handle = db;
-  return tryWrite("saveWatch", false, () => {
-    const db = handle;
-  
-  
-  db.prepare(
-    `INSERT INTO watches (account, network, address, label, last_checkpoint, min_amount, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(account) DO UPDATE SET
-       label = excluded.label,
-       min_amount = excluded.min_amount`,
-  ).run(
-    `${network}:${w.address}`,
-    network,
-    w.address,
-    w.label ?? null,
-    w.last_checkpoint,
-    w.min_amount ?? null,
-    w.added_at,
-  );
-  return true;
-});
+  return tryWrite("saveWatch", false, (db) => {
+    db.prepare(
+      `INSERT INTO watches (account, network, address, label, last_checkpoint, min_amount, added_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account) DO UPDATE SET
+         label = excluded.label,
+         min_amount = excluded.min_amount`,
+    ).run(
+      `${network}:${w.address}`,
+      network,
+      w.address,
+      w.label ?? null,
+      w.last_checkpoint,
+      w.min_amount ?? null,
+      w.added_at,
+    );
+    return true;
+  });
 }
 
 export function listWatches(network: string): StoredWatch[] {
@@ -860,17 +860,12 @@ export function listWatches(network: string): StoredWatch[] {
 
 export function removeWatch(network: string, address: string): boolean {
   initStore();
-  if (!db) return false;
-  const handle = db;
-  return tryWrite("removeWatch", false, () => {
-    const db = handle;
-  
-  
-  const r = db.prepare(`DELETE FROM watches WHERE account = ?`).run(`${network}:${address}`) as {
-    changes?: number;
-  };
-  return (r.changes ?? 0) > 0;
-});
+  return tryWrite("removeWatch", false, (db) => {
+    const r = db.prepare(`DELETE FROM watches WHERE account = ?`).run(`${network}:${address}`) as {
+      changes?: number;
+    };
+    return (r.changes ?? 0) > 0;
+  });
 }
 
 /**
@@ -882,8 +877,12 @@ export function removeWatch(network: string, address: string): boolean {
  */
 export function advanceWatch(network: string, address: string, checkpoint: number): void {
   initStore();
-  if (!db) return;
-  db.prepare(
-    `UPDATE watches SET last_checkpoint = ? WHERE account = ? AND last_checkpoint < ?`,
-  ).run(checkpoint, `${network}:${address}`, checkpoint);
+  // A cursor that fails to advance re-reports the same transactions on the next
+  // poll. Throwing instead would discard the hits this poll already computed,
+  // and those are the answer the caller asked for.
+  tryWrite("advanceWatch", undefined, (db) => {
+    db.prepare(
+      `UPDATE watches SET last_checkpoint = ? WHERE account = ? AND last_checkpoint < ?`,
+    ).run(checkpoint, `${network}:${address}`, checkpoint);
+  });
 }

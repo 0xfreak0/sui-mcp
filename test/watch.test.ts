@@ -3,6 +3,7 @@ import { readObjectMovements } from "../src/utils/object-flow.js";
 import {
   evaluate,
   flagLookalikes,
+  normalizeWatchAddress,
   planBatches,
   summarizePoll,
   WATCH_BATCH_SIZE,
@@ -301,5 +302,46 @@ describe("flagLookalikes", () => {
   it("leaves hits untouched when there are no counterparties", () => {
     const h = [{ address: WATCHED, digest: "d", checkpoint: 1, reasons: ["appeared" as const] }];
     expect(flagLookalikes([WATCHED], h)).toEqual(h);
+  });
+});
+
+/**
+ * One bad address must never cost the other nineteen their poll.
+ *
+ * The delta query interpolates a whole batch into one aliased GraphQL document,
+ * and the service answers a single unparseable `SuiAddress` with a top-level
+ * `data: null` rather than a null for that alias. Verified against mainnet: a
+ * batch of two where one address was `not-an-address` returned no data for
+ * either.
+ */
+describe("normalizeWatchAddress", () => {
+  it("pads a short address to its canonical form", () => {
+    expect(normalizeWatchAddress("0x2")).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000002",
+    );
+  });
+
+  it("accepts a full address and lowercases it", () => {
+    const a = "0x" + "AB".repeat(32);
+    expect(normalizeWatchAddress(a)).toBe("0x" + "ab".repeat(32));
+  });
+
+  it("rejects a non-hex string that normalization would happily pad", () => {
+    // normalizeSuiAddress pads this into a 66-character string that LOOKS
+    // well-formed, which is why validity is checked separately.
+    expect(normalizeWatchAddress("not-an-address")).toBeNull();
+  });
+
+  it("rejects a value carrying GraphQL query text", () => {
+    expect(normalizeWatchAddress('0xa"} b:__typename x{')).toBeNull();
+  });
+
+  it("rejects empty and whitespace", () => {
+    expect(normalizeWatchAddress("")).toBeNull();
+    expect(normalizeWatchAddress("   ")).toBeNull();
+  });
+
+  it("rejects an over-long address", () => {
+    expect(normalizeWatchAddress("0x" + "a".repeat(65))).toBeNull();
   });
 });

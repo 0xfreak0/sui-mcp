@@ -791,12 +791,14 @@ Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
 
-### Store writes must fail soft
+### Store writes: which fail soft, and which must not
 
-The store is a cache and a notebook beside a read-only server, so a write that
-fails must never fail the read that produced it. Every writer goes through
-`tryWrite`, returns a falsy value on failure, and reports to **stderr** —
-stdout is the MCP transport.
+A cache or cursor write that fails must never fail the read that produced it.
+Those go through `tryWrite`, return a falsy value on failure, and report to
+**stderr** — stdout is the MCP transport. `saveFanout`, `saveTransaction`,
+`saveFirstFunder`, `saveLabel`, `saveWatch`, `removeWatch` and `advanceWatch`
+are all this kind: the measurement already succeeded and the caller is entitled
+to it, persisted or not.
 
 This is not hypothetical. An older server process writing into a database a
 newer build had migrated failed with `NOT NULL constraint failed:
@@ -805,12 +807,35 @@ entirely rather than returning the fan-out it had just measured. Process and
 schema drift apart whenever the server is left running across a rebuild, which
 is the normal case during development.
 
-`saveTransaction` had the guard from the start for exactly this reason; the
-other eight writers did not. When adding a writer, add the guard.
+**`saveFinding` and `deleteFinding` are the exception and must keep throwing.**
+There the write IS the operation, not a side effect of one: `save_finding`
+reports `saved: true`, so a swallowed failure turns that into a claim about
+evidence the store never took. "Wrap every writer" is the wrong generalisation,
+and the distinction is cache-or-cursor versus record.
+
+Guard the **statement**, not just its inputs. `saveTransaction` was read as
+already guarded because it has a try/catch, but that one covers a payload that
+will not serialise; the `.run()` beside it was unprotected. A guard over one
+failure is not a guard over another.
 
 Do NOT "fix" this by giving the sponsorship columns a DEFAULT. A cached row
 reporting 0 there would be claiming "not a sponsor" from data it never read,
 which is the failure the column comment already warns about.
+
+### Never interpolate an unvalidated address into a batched query
+
+A delta query in `watch-probe.ts` puts twenty addresses into one aliased
+GraphQL document, and the service answers a single unparseable `SuiAddress`
+with a top-level `data: null` — not a null for that one alias. Verified on
+mainnet: a batch of two where one address was `not-an-address` returned no data
+for either. So one mistyped address costs every other watched address its poll.
+
+Same rule as digests in `get_transactions`, and it needs its own check for a
+reason: `normalizeSuiAddress` **pads without validating**, turning
+`not-an-address` into a well-formed-looking 66-character string. Only
+`isValidSuiAddress` rejects it. `normalizeWatchAddress` in `src/utils/watch.ts`
+is the pair, and it is applied both when a watch is added and when stored rows
+are read back.
 
 ### Watching an investigation, without drowning the agent
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.17.0 (2026-09-15)
 
 ### Added
 - **`identify_address` reports address aliases.** `0x2::address_alias` lets a

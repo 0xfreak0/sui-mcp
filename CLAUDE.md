@@ -400,10 +400,20 @@ is the claim an investigator acts on. "Only this committee can spend this
 wallet" is now false in general, and a report that says so without checking
 aliases is wrong rather than merely incomplete.
 
-Measured on mainnet 2026-09-15, a complete scan: **63 `AddressAliases` objects,
-61 of them delegating** to an address other than the owner, 57 holding two
-entries. First `enable` calls land 2026-08-23. One key already sits on two
-different owners' sets.
+**The set REPLACES the signer, it does not extend it.** The verifier accepts a
+signature from any member in place of the address itself, and nothing keeps the
+owner in its own set. So an owner absent from its own set can no longer
+authorize for itself, and whether it is present is the finding rather than an
+assumption.
+
+Measured on mainnet 2026-09-15, a complete scan of all 63 `AddressAliases`
+objects:
+
+- **50 owners are absent from their own set**, so their own key is locked out.
+  Four of those name exactly one other address, which is a total handover.
+- Only **2** sets hold the owner alone.
+- 34 distinct alias keys, and **three already act for more than five owners**:
+  two for 22 each and one for 9.
 
 Three rules that follow:
 
@@ -414,10 +424,14 @@ Three rules that follow:
 - **Alias state is MUTABLE, so it cannot be cached like authentication.**
   `remove` and `replace_all` exist. The reasoning that lets a committee be
   cached forever does not transfer.
-- **The popularity filter will be needed before clustering on it.** One key on
-  two sets today is how a wallet provider's key on fifty sets would cluster
-  fifty strangers tomorrow — exactly the failure `DEFAULT_CO_SIGNER_LIMIT`
-  exists to prevent.
+- **The popularity filter is needed BEFORE clustering on it, not eventually.**
+  Two keys already act for 22 owners each, well past `DEFAULT_CO_SIGNER_LIMIT`
+  of 5. Clustering on aliases without that filter would link 22 unrelated
+  wallets through one service key, which is the failure the limit exists to
+  prevent.
+- **The object address is derived**, from `(0xa, AliasKey(owner))`, and the type
+  carries `key` without `store`, so one owner has at most one set and it can
+  never be transferred away. That is what makes reading a single object sound.
 
 **The signature is matched to an address by re-deriving it**, never by
 position. A gas-sponsored transaction carries `[sender, sponsor]` and position

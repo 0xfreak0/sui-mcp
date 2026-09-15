@@ -103,14 +103,20 @@ the funds.
 ```
 identify_address(0x434d9c12…)
   → aliases: [0x66b816ed…, 0x33a86fba…]
-    aliases_note: each of these can move the wallet's funds
+    owner_can_authorize: false
 ```
+
+The set replaces the signer rather than extending it, so `owner_can_authorize`
+decides who controls the wallet. When it is false the wallet's own key can no
+longer sign for it and only the listed addresses can move the funds. Measured
+across all 63 mainnet sets, 50 are in that state.
 
 An alias is control read from chain state, so you may write that the address can
 authorize for the wallet. It is not evidence of shared ownership, since a
-custodian holds authority for a client. The set is mutable, so it is true as of
-the read. Most wallets have never enabled the feature, so the field is usually
-absent.
+custodian holds authority for a client. A key that acts for many wallets is a
+service rather than a lead, and two mainnet keys already act for 22 each. The
+set is mutable, so it is true as of the read, and most wallets have never
+enabled the feature.
 
 **Clustering.** `build_wallet_edges` emits a `co_signer` edge for any key that can spend a wallet on its own, and marks clusters built only from those `chain-derived` rather than `heuristic`. Keys sitting on more committees than the limit are treated as custody or wallet-provider keys and listed under `excluded_co_signers` instead of linking everyone who uses that provider.
 

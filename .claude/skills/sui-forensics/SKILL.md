@@ -270,12 +270,11 @@ with the window, and on one mainnet sponsor the count went 1 to 86 between a
 members. That is chain-derived and costs one query. Three things follow that the
 plain reading gets wrong:
 
-- **The committee never changes, but that is not the same as "only the committee
-  can spend".** The committee is part of the address hash, so a member cannot be
-  rotated out the way a Gnosis Safe owner can. Address aliases are a separate
-  mechanism that does let a wallet authorize other addresses after the fact, so
-  check `aliases` before writing that a committee is the only way to move these
-  funds. See "Address aliases" below.
+- **The committee is fixed by the address.** It is part of the address hash, so
+  a member cannot be rotated out the way a Gnosis Safe owner can. Who may spend
+  is a separate question: address aliases let a wallet authorize other addresses
+  after the fact, so check `aliases` before writing that a committee is the only
+  way to move these funds. See "Address aliases" below.
 - **Who signs is per-transaction; who is authorised is not.** `get_transaction`
   gives `authorization.signed_by` for one transaction. A member under
   `did_not_sign` is still authorised and may have signed others, so do not
@@ -304,6 +303,13 @@ state at `0xa`). `identify_address` reports this as `aliases`.
   authorize for that wallet" as a fact. You may NOT write that they are the same
   person: a custodian holds authority for a client, the same distinction
   `co_signer` draws.
+- **Check `owner_can_authorize` before saying who controls the wallet.** The set
+  replaces the signer rather than extending it, so a wallet whose own address is
+  absent from its own set cannot authorize for itself and only the listed
+  addresses can move its funds. Measured: 50 of 63 mainnet sets are in that
+  state, so it is the normal case rather than the exception.
+- **A key on many sets is a service, not a lead.** Two mainnet keys already act
+  for 22 owners each.
 - **A wallet with no `AddressAliases` object has never enabled the feature**,
   which is the common case. That is an absent field, not a denial.
 - **The set is mutable.** `remove` and `replace_all` exist, so an alias is true
@@ -311,9 +317,8 @@ state at `0xa`). `identify_address` reports this as `aliases`.
 - **Check it before concluding a multisig committee is the only spender.** The
   committee cannot rotate; the wallet's alias set can.
 
-Measured on mainnet 2026-09-15: 63 wallets had enabled aliases, 61 delegating to
-someone other than themselves. It is new, so absence is unremarkable and presence
-is worth a second look.
+Measured on mainnet 2026-09-15: 63 wallets had enabled aliases. It is new, so
+absence is unremarkable and presence is worth a second look.
 
 ## Which tool answers what
 

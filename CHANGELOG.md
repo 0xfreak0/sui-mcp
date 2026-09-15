@@ -6,11 +6,12 @@
 - **`identify_address` reports address aliases.** `0x2::address_alias` lets a
   wallet authorize up to eight other addresses to act for it, so a committee
   being unable to rotate no longer means the committee is the only way to move
-  the funds. The alias set is read from the `AddressAliases` object the wallet
-  owns and reported as control rather than as shared ownership, since a
-  custodian holds authority for a client. The owner's own entry is dropped: a
-  set begins holding only itself, which is the absence of delegation. Absent
-  means the wallet never enabled the feature, which is the common case.
+  the funds. The set replaces the signer rather than extending it, so
+  `owner_can_authorize` says whether the wallet's own key can still sign for it:
+  50 of the 63 mainnet sets are wallets that can no longer authorize for
+  themselves. Reported as control rather than shared ownership, since a
+  custodian holds authority for a client, and a failed lookup is reported as
+  unknown rather than as an absence of delegation.
 
 ### Fixed
 - **Two documented invariants were false.** The forensics skill and CLAUDE.md

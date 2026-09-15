@@ -298,18 +298,27 @@ export function registerIdentifyTools(server: McpServer) {
                     "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
                 }),
             ...(committee ? { committee_members: committee } : {}),
-            // Absent means no AddressAliases object exists, which is the common
-            // case — the feature is weeks old. It is not a denial, so the field
-            // is omitted rather than reported as an empty list.
-            ...(aliases?.length
+            // Absent means no AddressAliases object exists. Most wallets have
+            // never enabled the feature, so the field is omitted rather than
+            // reported as an empty list.
+            ...(aliases
               ? {
-                  aliases,
-                  aliases_note:
-                    "These addresses have been authorized to act for this wallet through 0x2::address_alias, so each of them can move its funds. That is control, read from chain state, and not evidence of shared ownership — a custodian holds authority for a client. The set is mutable, so this is true as of now rather than permanently.",
+                  aliases: aliases.authorized,
+                  owner_can_authorize: aliases.owner_can_authorize,
+                  aliases_note: aliases.owner_can_authorize
+                    ? "These addresses have been authorized to act for this wallet through 0x2::address_alias, so each of them can move its funds, and the wallet's own key still can too. That is control read from chain state, and not evidence of shared ownership: a custodian holds authority for a client. The set is mutable, so it is true as of now."
+                    : "These addresses have been authorized to act for this wallet through 0x2::address_alias, and the wallet's own address is NOT among them. An alias set replaces the signer rather than extending it, so this wallet's own key can no longer authorize for it and only the addresses listed can move its funds. The set is mutable, so it is true as of now.",
+                }
+              : {}),
+            // A failed lookup is not an absence of delegation.
+            ...(identities.get(address)?.aliases_unavailable
+              ? {
+                  aliases_unavailable:
+                    "The alias set could not be read, so whether this wallet has authorized anyone else is unknown rather than settled.",
                 }
               : {}),
             hint: auth?.scheme === "multisig"
-              ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliases?.length ? " It has also authorized aliases, so the committee is not the only way to move these funds." : ""}`
+              ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliases ? " It has also authorized aliases, so the committee is not the only way to move these funds." : ""}`
               : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",
           }, null, 2),
         }],

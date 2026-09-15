@@ -47,6 +47,21 @@ const AUTH_BATCH_SIZE = 20;
 const ALIAS_TYPE = `${normalizeSuiAddress("0x2")}::address_alias::AddressAliases`;
 
 /**
+ * Aliases per alias-lookup request. NOT `AUTH_BATCH_SIZE`.
+ *
+ * That constant was measured against the `transactions` query, whose line is
+ * short. This one repeats the 97-character type string and a 66-character owner
+ * per alias, about 270 bytes each, so it crosses the service's 5,000-byte query
+ * cap far sooner. Measured: 18 aliases is 4,859 bytes and accepted, 19 is 5,129
+ * and rejected outright.
+ *
+ * Reusing 20 made every full batch fail, and the catch below turned that into
+ * "this wallet has delegated to nobody" for all twenty. Fifteen leaves room for
+ * the type string to grow without anyone re-deriving this.
+ */
+const ALIAS_BATCH_SIZE = 15;
+
+/**
  * SuiNS registrations, matched at module level.
  *
  * A Move type keeps the package that DEFINED it, so this does not drift when
@@ -107,6 +122,12 @@ export interface HeldName {
   expires_at?: string;
 }
 
+/** Who may authorize for an address, and whether the address itself still can. */
+export interface AliasSet {
+  authorized: string[];
+  owner_can_authorize: boolean;
+}
+
 export interface AddressIdentity {
   address: string;
   kind: AddressKind;
@@ -127,22 +148,28 @@ export interface AddressIdentity {
    */
   authentication?: Authentication;
   /**
-   * Addresses this wallet has authorized to act for it, via `0x2::address_alias`.
+   * Who may authorize for this wallet, via `0x2::address_alias`.
    *
-   * Chain-derived control, read from the `AddressAliases` object the wallet
-   * owns: each of these may authorize a transaction for it. That is NOT a claim
-   * of shared ownership — a custodian holds authority for a client, the same
-   * distinction `co_signer` draws.
+   * The alias set REPLACES the signer, it does not extend it: the verifier
+   * accepts a signature from any member of the set in place of the address
+   * itself. So the set is the authoritative list of who controls the wallet,
+   * and the owner's own presence in it is a fact that has to be reported rather
+   * than assumed.
    *
-   * The owner's own address is excluded, because a set begins holding only
-   * itself and that is the absence of delegation rather than an instance of it.
-   * Absent means no `AddressAliases` object exists, which is the common case for
-   * a feature enabled on 63 mainnet wallets as of 2026-09-15.
+   * Measured on mainnet 2026-09-15 across all 63 sets: **50 owners are absent
+   * from their own set**, so their own key can no longer authorize for them; 4
+   * of those name exactly one other address, which is a total handover. Only 2
+   * sets hold the owner alone.
+   *
+   * Chain-derived control, and not a claim of shared ownership: a custodian
+   * holds authority for a client, the same distinction `co_signer` draws.
    *
    * **Mutable**, unlike `authentication`: `remove` and `replace_all` exist, so
    * this is true as of the read and must not be cached the way a committee is.
    */
-  aliases?: string[];
+  aliases?: AliasSet;
+  /** The alias lookup failed. Not the same as the wallet having no aliases. */
+  aliases_unavailable?: boolean;
   /**
    * The identity of each multisig committee member, in committee order.
    *
@@ -233,43 +260,39 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
 }
 
 /**
- * How each address authenticates. Batched with aliases; never throws.
+ * Who may authorize for each wallet, via `0x2::address_alias`.
  *
- * One sent transaction is enough and the oldest is as good as the newest,
- * because an address commits to its authenticator in its own hash and can
- * never rotate it. That is also why nothing here is cached with a TTL — the
- * answer is fixed for the life of the address.
+ * The `AddressAliases` object is owned by the address it describes, at an
+ * address derived from `(0xa, AliasKey(owner))`, and the type carries `key`
+ * without `store` so it can never be transferred away. One owner therefore has
+ * at most one such object, which is what makes `first: 1` sound.
  *
- * An address with no sent transaction is simply absent from the result. It has
- * signed nothing, so there is nothing to read, and saying "single-key wallet"
- * would be a guess dressed as a finding.
+ * **The set replaces the signer rather than extending it.** The verifier
+ * accepts a signature from any member in place of the address itself, so an
+ * owner absent from its own set can no longer authorize for itself. That is
+ * reported, never assumed: measured across all 63 mainnet sets, 50 owners are
+ * absent from their own.
+ *
+ * Batched at `ALIAS_BATCH_SIZE`, which is NOT the authentication batch size —
+ * see the constant. Addresses are validated before being interpolated, since
+ * one unparseable address answers the WHOLE aliased batch with `data: null`.
+ *
+ * A chunk whose request failed is returned in `failed`, so the caller can say
+ * "could not check" instead of reporting silence as an absence of delegation.
  */
-/**
- * Which addresses each wallet has authorized to act for it.
- *
- * `0x2::address_alias` lets an address name up to eight others that may
- * authorize for it. The `AddressAliases` object is owned by the address it
- * describes, so this is a filtered object read per address, batched with
- * aliases like the authentication query and bounded by the same service caps.
- *
- * The owner's own address is dropped: a set begins holding only itself, and
- * reporting that as a delegation would turn "has enabled the feature" into
- * "has given someone else authority".
- *
- * Addresses are validated before being interpolated, for the reason the
- * authentication query above states — one unparseable address answers the
- * WHOLE aliased batch with `data: null`.
- */
-async function fetchAliases(addresses: string[]): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
+async function fetchAliases(
+  addresses: string[],
+): Promise<{ found: Map<string, AliasSet>; failed: Set<string> }> {
+  const out = new Map<string, AliasSet>();
+  const failed = new Set<string>();
   const usable: Array<{ query: string; original: string }> = [];
   for (const original of addresses) {
     const query = normalizeSuiAddress(original);
     if (isValidSuiAddress(query)) usable.push({ query, original });
   }
 
-  for (let i = 0; i < usable.length; i += AUTH_BATCH_SIZE) {
-    const chunk = usable.slice(i, i + AUTH_BATCH_SIZE);
+  for (let i = 0; i < usable.length; i += ALIAS_BATCH_SIZE) {
+    const chunk = usable.slice(i, i + ALIAS_BATCH_SIZE);
     const query =
       "query {\n" +
       chunk
@@ -291,19 +314,41 @@ async function fetchAliases(addresses: string[]): Promise<Map<string, string[]>>
         const contents = json?.aliases?.contents;
         if (!Array.isArray(contents)) return;
         const self = normalizeSuiAddress(a.query);
-        const others = contents
+        const authorized = contents
           .filter((x): x is string => typeof x === "string" && x.length > 0)
-          .map((x) => normalizeSuiAddress(x))
-          .filter((x) => x !== self);
-        if (others.length) out.set(a.original, others);
+          .map((x) => normalizeSuiAddress(x));
+        if (!authorized.length) return;
+        // The owner stays in the list. Whether it is there is the finding:
+        // the set replaces the signer rather than extending it, so an owner
+        // missing from its own set can no longer authorize for itself.
+        out.set(a.original, {
+          authorized,
+          owner_can_authorize: authorized.includes(self),
+        });
       });
-    } catch {
-      // Enrichment. A trace the chain already answered must not fail here.
+    } catch (err) {
+      // A failed lookup is not an absence of delegation. Recorded so the caller
+      // can say "could not check" rather than reporting silence as a finding.
+      for (const a of chunk) failed.add(a.original);
+      void err;
     }
   }
-  return out;
+  return { found: out, failed };
 }
 
+/**
+ * How each address authenticates. Batched with aliases; never throws.
+ *
+ * One sent transaction is enough and the oldest is as good as the newest,
+ * because an address commits to its authenticator in its own hash and can never
+ * rotate it. That is also why nothing here is cached with a TTL: the answer is
+ * fixed for the life of the address. Note this is a fact about DERIVATION, not
+ * about who may spend — see `fetchAliases`.
+ *
+ * An address with no sent transaction is simply absent from the result. It has
+ * signed nothing, so there is nothing to read, and saying "single-key wallet"
+ * would be a guess dressed as a finding.
+ */
 async function fetchAuthentication(addresses: string[]): Promise<Map<string, Authentication>> {
   const out = new Map<string, Authentication>();
   // One unparseable address answers the WHOLE aliased batch with data: null,
@@ -411,7 +456,9 @@ export async function describeAddresses(
     fetchKinds(unique),
     fetchHeldNames(unique),
     wantAuth ? fetchAuthentication(unique) : new Map<string, Authentication>(),
-    options.aliases ? fetchAliases(unique) : new Map<string, string[]>(),
+    options.aliases
+      ? fetchAliases(unique)
+      : { found: new Map<string, AliasSet>(), failed: new Set<string>() },
   ]);
 
   // Only packages are worth a protocol lookup, and the registry is cached, so
@@ -431,7 +478,8 @@ export async function describeAddresses(
       ...(label ? { label: label.label, label_category: label.category } : {}),
       ...(protocol ? { protocol } : {}),
       ...(auth.get(address) ? { authentication: auth.get(address) } : {}),
-      ...(aliases.get(address)?.length ? { aliases: aliases.get(address) } : {}),
+      ...(aliases.found.get(address) ? { aliases: aliases.found.get(address) } : {}),
+      ...(aliases.failed.has(address) ? { aliases_unavailable: true } : {}),
       ...(held.get(address)?.length ? { names_held: held.get(address) } : {}),
     });
   }

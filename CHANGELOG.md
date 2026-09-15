@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`identify_address` reports address aliases.** `0x2::address_alias` lets a
+  wallet authorize up to eight other addresses to act for it, so a committee
+  being unable to rotate no longer means the committee is the only way to move
+  the funds. The set replaces the signer rather than extending it, so
+  `owner_can_authorize` says whether the wallet's own key can still sign for it:
+  50 of the 63 mainnet sets are wallets that can no longer authorize for
+  themselves. `delegated_to` is the set without the wallet itself, since
+  enabling the feature seeds it with the wallet's own address and an empty
+  `delegated_to` means nobody else was authorized. Reported as control rather than shared ownership, since a
+  custodian holds authority for a client, and a failed lookup is reported as
+  unknown rather than as an absence of delegation.
+
+### Fixed
+- **Two documented invariants were false.** The forensics skill and CLAUDE.md
+  said an address has exactly one authenticator forever and that a multisig
+  committee cannot rotate. Both still hold for derivation, and neither holds
+  for who can spend. A report resting on them was wrong rather than
+  incomplete.
+
 ## 1.16.0 (2026-09-14)
 
 ### Added

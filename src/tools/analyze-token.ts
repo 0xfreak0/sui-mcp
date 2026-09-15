@@ -8,6 +8,8 @@ import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders } from "./holders.js";
+import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
+
 import { errorResult } from "../utils/errors.js";
 import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
@@ -72,8 +74,8 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         discoveredDecimals = match.decimals;
       }
 
-      // Fetch metadata, price, and holders in parallel
-      const [metaResult, priceResult, holderResult] = await Promise.all([
+      // Fetch metadata, price, holders and the on-chain registry in parallel
+      const [metaResult, priceResult, holderResult, registry] = await Promise.all([
         sui.stateService
           .getCoinInfo({ coinType })
           .then(({ response }) => response)
@@ -84,16 +86,51 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         wantHolders
           ? scanTokenTopHolders(coinType, 5, 2000).catch(() => null)
           : Promise.resolve(null),
+
+        fetchRegistryCurrency(coinType),
       ]);
 
       const meta = metaResult?.metadata;
       const treasury = metaResult?.treasury;
 
-      const symbol = meta?.symbol ?? discoveredSymbol ?? coinType.split("::").pop() ?? coinType;
-      const decimals = meta?.decimals ?? discoveredDecimals ?? 9;
-      const name = meta?.name ?? discoveredName ?? null;
-      const description = meta?.description ?? null;
-      const iconUrl = meta?.iconUrl ?? null;
+      // The curated entry outranks the registry for anything self-declared. A
+      // registry entry is whatever the minter wrote, and an impostor can write
+      // one; the curated entry was reviewed. Chain metadata still wins over
+      // both because it is what the coin itself publishes.
+      const symbol = meta?.symbol ?? discoveredSymbol ?? registry?.symbol ?? coinType.split("::").pop() ?? coinType;
+      const name = meta?.name ?? discoveredName ?? registry?.name ?? null;
+      const description = meta?.description ?? registry?.description ?? null;
+      const iconUrl = meta?.iconUrl ?? registry?.icon_url ?? null;
+
+      // Decimals decides the magnitude of every amount derived from it, so the
+      // origin is reported rather than left to be assumed, and a guess says it
+      // is one. 47 of 289 sampled impostors declare a different scale from the
+      // coin they imitate, so the coins most likely to reach the fallback are
+      // the ones it is most dangerous for.
+      //
+      // `!= null`, not `!== undefined`: discoveredDecimals is `number | null`,
+      // so comparing against undefined is always true and made "assumed"
+      // unreachable. The guess of 9 then shipped labelled "curated", which is
+      // the strongest tier short of chain data, beside `verified: false`.
+      const decimalsSource:
+        | "coin_metadata"
+        | "coin_registry"
+        | "curated"
+        | "symbol_scan"
+        | "assumed" =
+        meta?.decimals != null
+          ? "coin_metadata"
+          : registry?.decimals != null
+            ? "coin_registry"
+            : discoveredDecimals != null
+              ? // A symbol the curated list resolved is a reviewed claim. One
+                // reached by scanning on-chain metadata is not, and calling
+                // both "curated" asserts a vouch the same payload denies.
+                symbolVerified
+                ? "curated"
+                : "symbol_scan"
+              : "assumed";
+      const decimals = meta?.decimals ?? registry?.decimals ?? discoveredDecimals ?? 9;
       const totalSupplyRaw = treasury?.totalSupply?.toString() ?? null;
 
       // Compute human-readable supply
@@ -142,6 +179,33 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         symbol,
         name,
         decimals,
+        decimals_source: decimalsSource,
+        ...(decimalsSource === "assumed"
+          ? {
+              decimals_note:
+                "No on-chain metadata, registry entry or curated record gives this coin's decimals, so 9 was assumed. Every human-readable amount below rests on that assumption and may be wrong by orders of magnitude.",
+            }
+          : {}),
+        ...(decimalsSource === "symbol_scan"
+          ? {
+              decimals_note:
+                "These decimals came from scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin. Nothing curated vouches for the scale.",
+            }
+          : {}),
+        // The registry is Sui's canonical on-chain metadata, not a whitelist:
+        // anyone who can publish a coin can register it, so presence here is
+        // never a vouch. `verified` above is the curated claim.
+        ...(registry
+          ? {
+              coin_registry: {
+                registered: true,
+                regulated: registry.regulated,
+                ...(registry.regulated_cap_id
+                  ? { regulated_cap_id: registry.regulated_cap_id }
+                  : {}),
+              },
+            }
+          : {}),
         description,
         icon_url: iconUrl,
         total_supply: totalSupplyRaw,

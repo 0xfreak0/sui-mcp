@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`identify_address` reports address aliases.** `0x2::address_alias` lets a
+  wallet authorize up to eight other addresses to act for it, so a committee
+  being unable to rotate no longer means the committee is the only way to move
+  the funds. The alias set is read from the `AddressAliases` object the wallet
+  owns and reported as control rather than as shared ownership, since a
+  custodian holds authority for a client. The owner's own entry is dropped: a
+  set begins holding only itself, which is the absence of delegation. Absent
+  means the wallet never enabled the feature, which is the common case.
+
+### Fixed
+- **Two documented invariants were false.** The forensics skill and CLAUDE.md
+  said an address has exactly one authenticator forever and that a multisig
+  committee cannot rotate. Both still hold for derivation, and neither holds
+  for who can spend. A report resting on them was wrong rather than
+  incomplete.
+
 ## 1.16.0 (2026-09-14)
 
 ### Added

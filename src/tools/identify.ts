@@ -252,7 +252,12 @@ export function registerIdentifyTools(server: McpServer) {
         // so a multisig going unmentioned here is the omission that matters
         // most: nothing else in this response distinguishes a treasury
         // committee from one person's wallet.
-        describeAddresses([address], { expandMembers: true }).catch(
+        //
+        // Aliases are asked for here and nowhere else in a flow, because they
+        // answer the same question from the other side: since
+        // `0x2::address_alias`, a committee being unable to rotate no longer
+        // means the committee is the only way to move the funds.
+        describeAddresses([address], { expandMembers: true, aliases: true }).catch(
           () => new Map<string, AddressIdentity>(),
         ),
       ]);
@@ -261,6 +266,7 @@ export function registerIdentifyTools(server: McpServer) {
       const nonZeroTokens = ownedRes?.balances?.filter((b) => b.balance !== "0").length ?? 0;
       const auth = identities.get(address)?.authentication;
       const committee = identities.get(address)?.committee_members;
+      const aliases = identities.get(address)?.aliases;
 
       return {
         content: [{
@@ -292,8 +298,18 @@ export function registerIdentifyTools(server: McpServer) {
                     "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
                 }),
             ...(committee ? { committee_members: committee } : {}),
+            // Absent means no AddressAliases object exists, which is the common
+            // case — the feature is weeks old. It is not a denial, so the field
+            // is omitted rather than reported as an empty list.
+            ...(aliases?.length
+              ? {
+                  aliases,
+                  aliases_note:
+                    "These addresses have been authorized to act for this wallet through 0x2::address_alias, so each of them can move its funds. That is control, read from chain state, and not evidence of shared ownership — a custodian holds authority for a client. The set is mutable, so this is true as of now rather than permanently.",
+                }
+              : {}),
             hint: auth?.scheme === "multisig"
-              ? "This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds."
+              ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliases?.length ? " It has also authorized aliases, so the committee is not the only way to move these funds." : ""}`
               : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",
           }, null, 2),
         }],

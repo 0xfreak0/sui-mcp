@@ -43,6 +43,9 @@ const CHUNK = 50;
  */
 const AUTH_BATCH_SIZE = 20;
 
+/** Padded, so it matches the form the chain reports. */
+const ALIAS_TYPE = `${normalizeSuiAddress("0x2")}::address_alias::AddressAliases`;
+
 /**
  * SuiNS registrations, matched at module level.
  *
@@ -123,6 +126,23 @@ export interface AddressIdentity {
    * fresh personal wallet. `authentication_note` says so in words.
    */
   authentication?: Authentication;
+  /**
+   * Addresses this wallet has authorized to act for it, via `0x2::address_alias`.
+   *
+   * Chain-derived control, read from the `AddressAliases` object the wallet
+   * owns: each of these may authorize a transaction for it. That is NOT a claim
+   * of shared ownership — a custodian holds authority for a client, the same
+   * distinction `co_signer` draws.
+   *
+   * The owner's own address is excluded, because a set begins holding only
+   * itself and that is the absence of delegation rather than an instance of it.
+   * Absent means no `AddressAliases` object exists, which is the common case for
+   * a feature enabled on 63 mainnet wallets as of 2026-09-15.
+   *
+   * **Mutable**, unlike `authentication`: `remove` and `replace_all` exist, so
+   * this is true as of the read and must not be cached the way a committee is.
+   */
+  aliases?: string[];
   /**
    * The identity of each multisig committee member, in committee order.
    *
@@ -224,6 +244,66 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
  * signed nothing, so there is nothing to read, and saying "single-key wallet"
  * would be a guess dressed as a finding.
  */
+/**
+ * Which addresses each wallet has authorized to act for it.
+ *
+ * `0x2::address_alias` lets an address name up to eight others that may
+ * authorize for it. The `AddressAliases` object is owned by the address it
+ * describes, so this is a filtered object read per address, batched with
+ * aliases like the authentication query and bounded by the same service caps.
+ *
+ * The owner's own address is dropped: a set begins holding only itself, and
+ * reporting that as a delegation would turn "has enabled the feature" into
+ * "has given someone else authority".
+ *
+ * Addresses are validated before being interpolated, for the reason the
+ * authentication query above states — one unparseable address answers the
+ * WHOLE aliased batch with `data: null`.
+ */
+async function fetchAliases(addresses: string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const usable: Array<{ query: string; original: string }> = [];
+  for (const original of addresses) {
+    const query = normalizeSuiAddress(original);
+    if (isValidSuiAddress(query)) usable.push({ query, original });
+  }
+
+  for (let i = 0; i < usable.length; i += AUTH_BATCH_SIZE) {
+    const chunk = usable.slice(i, i + AUTH_BATCH_SIZE);
+    const query =
+      "query {\n" +
+      chunk
+        .map(
+          (_, j) =>
+            `  a${j}: objects(filter: { type: "${ALIAS_TYPE}", owner: $a${j} }, first: 1) { nodes { asMoveObject { contents { json } } } }`,
+        )
+        .join("\n") +
+      "\n}";
+    const inlined = chunk.reduce((q, a, j) => q.replace(`$a${j}`, JSON.stringify(a.query)), query);
+    try {
+      const r = await gqlQuery<
+        Record<string, { nodes: Array<{ asMoveObject?: { contents?: { json?: unknown } } }> }>
+      >(inlined);
+      chunk.forEach((a, j) => {
+        const json = r[`a${j}`]?.nodes?.[0]?.asMoveObject?.contents?.json as
+          | { aliases?: { contents?: unknown } }
+          | undefined;
+        const contents = json?.aliases?.contents;
+        if (!Array.isArray(contents)) return;
+        const self = normalizeSuiAddress(a.query);
+        const others = contents
+          .filter((x): x is string => typeof x === "string" && x.length > 0)
+          .map((x) => normalizeSuiAddress(x))
+          .filter((x) => x !== self);
+        if (others.length) out.set(a.original, others);
+      });
+    } catch {
+      // Enrichment. A trace the chain already answered must not fail here.
+    }
+  }
+  return out;
+}
+
 async function fetchAuthentication(addresses: string[]): Promise<Map<string, Authentication>> {
   const out = new Map<string, Authentication>();
   // One unparseable address answers the WHOLE aliased batch with data: null,
@@ -303,6 +383,14 @@ export interface DescribeOptions {
    * One extra round over the member set, never more: committees cannot nest.
    */
   expandMembers?: boolean;
+  /**
+   * Also read each address's alias set.
+   *
+   * Off by default and separate from `authentication`, because it is a
+   * different question — who may spend, rather than what the address is — and
+   * it costs its own batched request.
+   */
+  aliases?: boolean;
 }
 
 /**
@@ -318,11 +406,12 @@ export async function describeAddresses(
   if (unique.length === 0) return out;
 
   const wantAuth = options.authentication || options.expandMembers;
-  const [names, kinds, held, auth] = await Promise.all([
+  const [names, kinds, held, auth, aliases] = await Promise.all([
     batchResolveNames(unique).catch(() => new Map<string, string>()),
     fetchKinds(unique),
     fetchHeldNames(unique),
     wantAuth ? fetchAuthentication(unique) : new Map<string, Authentication>(),
+    options.aliases ? fetchAliases(unique) : new Map<string, string[]>(),
   ]);
 
   // Only packages are worth a protocol lookup, and the registry is cached, so
@@ -342,6 +431,7 @@ export async function describeAddresses(
       ...(label ? { label: label.label, label_category: label.category } : {}),
       ...(protocol ? { protocol } : {}),
       ...(auth.get(address) ? { authentication: auth.get(address) } : {}),
+      ...(aliases.get(address)?.length ? { aliases: aliases.get(address) } : {}),
       ...(held.get(address)?.length ? { names_held: held.get(address) } : {}),
     });
   }

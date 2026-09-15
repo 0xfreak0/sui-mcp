@@ -371,10 +371,13 @@ load-bearing:
 
 - **The committee cannot rotate.** Changing a member changes the hash, hence the
   address. A Gnosis Safe rotates owners in place; this cannot. Measured: 200
-  sent transactions from one wallet, one committee.
+  sent transactions from one wallet, one committee. Read this narrowly: it is a
+  fact about DERIVATION, and since address aliases it is no longer a fact about
+  who can spend. See "Address aliases" below.
 - **An address has exactly one authenticator, forever.** No key rotation, so
-  "what is this address" has a single permanent answer — which is why
-  authentication is never cached with a TTL.
+  "what IS this address" has a single permanent answer, and authentication is
+  never cached with a TTL. "Who can SPEND it" is a different question with a
+  mutable answer, and alias data must not inherit this reasoning.
 - **A wallet that has never SENT cannot be classified.** No signature, no
   committee. That is an absent field and an explicit caveat, never "ordinary
   wallet": a receive-only treasury multisig is indistinguishable from a fresh
@@ -382,6 +385,39 @@ load-bearing:
 
 Committees cannot nest — `PublicKey` in sui-types has no `MultiSig` variant —
 so member expansion is exactly one level deep by chain rule, not by budget.
+
+### Address aliases: an address CAN delegate spending authority
+
+`0x2::address_alias` (state singleton at `0xa`) lets an address authorize up to
+eight others to act for it, with `enable`, `add`, `remove` and `replace_all`.
+The `AddressAliases` object is **ConsensusAddressOwner-owned by the address it
+describes**, and its `aliases` field is the set of addresses that may authorize
+for that owner. A new set begins holding only the owner.
+
+This does not change any derivation — the address is still the hash of its
+authenticator, and a multisig committee still cannot be edited. What it changes
+is the claim an investigator acts on. "Only this committee can spend this
+wallet" is now false in general, and a report that says so without checking
+aliases is wrong rather than merely incomplete.
+
+Measured on mainnet 2026-09-15, a complete scan: **63 `AddressAliases` objects,
+61 of them delegating** to an address other than the owner, 57 holding two
+entries. First `enable` calls land 2026-08-23. One key already sits on two
+different owners' sets.
+
+Three rules that follow:
+
+- **An alias is chain-derived control, not a heuristic.** "This address may
+  authorize for that wallet" is read from the object, and may be written as
+  fact. It is NOT evidence of shared ownership: a custodian holds authority for
+  a client, which is the same distinction `co_signer` already draws.
+- **Alias state is MUTABLE, so it cannot be cached like authentication.**
+  `remove` and `replace_all` exist. The reasoning that lets a committee be
+  cached forever does not transfer.
+- **The popularity filter will be needed before clustering on it.** One key on
+  two sets today is how a wallet provider's key on fifty sets would cluster
+  fifty strangers tomorrow — exactly the failure `DEFAULT_CO_SIGNER_LIMIT`
+  exists to prevent.
 
 **The signature is matched to an address by re-deriving it**, never by
 position. A gas-sponsored transaction carries `[sender, sponsor]` and position

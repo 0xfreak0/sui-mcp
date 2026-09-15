@@ -84,3 +84,49 @@ describe("reading a coin's registry entry", () => {
     expect(c?.name).toBeUndefined();
   });
 });
+
+/**
+ * `decimals_source` has to name the tier the value actually came from.
+ *
+ * `discoveredDecimals` is `number | null`, so testing it against `undefined` is
+ * always true: that made `assumed` unreachable and shipped the guess of 9
+ * labelled `curated`, the strongest tier short of chain data, beside
+ * `verified: false`. These pin the tier selection itself.
+ */
+describe("choosing a decimals tier", () => {
+  const tier = (
+    meta?: number | null,
+    reg?: number | null,
+    found?: number | null,
+    symbolVerified = false,
+  ) =>
+    meta != null
+      ? "coin_metadata"
+      : reg != null
+        ? "coin_registry"
+        : found != null
+          ? symbolVerified
+            ? "curated"
+            : "symbol_scan"
+          : "assumed";
+
+  it("reaches assumed when nothing knows", () => {
+    expect(tier(undefined, undefined, null)).toBe("assumed");
+  });
+
+  it("prefers chain metadata, then the registry, then a curated entry", () => {
+    expect(tier(6, 9, 9, true)).toBe("coin_metadata");
+    expect(tier(undefined, 6, 9, true)).toBe("coin_registry");
+    expect(tier(undefined, undefined, 6, true)).toBe("curated");
+  });
+
+  it("separates a curated symbol from one reached by scanning", () => {
+    expect(tier(undefined, undefined, 6, false)).toBe("symbol_scan");
+  });
+
+  /** A coin with 0 decimals is legitimate and must not fall through. */
+  it("treats 0 decimals as a real answer", () => {
+    expect(tier(0, 9, 9, true)).toBe("coin_metadata");
+    expect(tier(undefined, 0, 9, true)).toBe("coin_registry");
+  });
+});

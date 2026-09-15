@@ -162,9 +162,13 @@ analyze_token(0xdba34672…::usdc::USDC)
 
 Being in that registry is not a vouch. Anyone who can publish a coin can
 register it, so an impostor's entry looks the same as the real asset's, and
-`verified` still reports only what the curated list says. What the registry adds
-is chain-derived decimals, and whether an issuer holds a cap that can freeze
+`verified` still reports only what the curated list says. The registry supplies
+chain-derived decimals, and whether an issuer holds a cap that can freeze
 holders.
+
+`decimals_source` is one of `coin_metadata`, `coin_registry`, `curated`,
+`symbol_scan` or `assumed`. The last two carry a note saying what the scale
+rests on.
 
 An ambiguous symbol returns candidates rather than a coin. `USDC` matches seven
 legitimate verified coins on Sui (Circle's, Wormhole's, Celer's), so picking one

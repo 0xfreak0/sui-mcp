@@ -93,24 +93,44 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       const meta = metaResult?.metadata;
       const treasury = metaResult?.treasury;
 
-      const symbol = meta?.symbol ?? registry?.symbol ?? discoveredSymbol ?? coinType.split("::").pop() ?? coinType;
-      // Decimals decides the magnitude of every amount derived from it, so
-      // where it came from is reported rather than left to be assumed. The
-      // fallback of 9 is a guess and says so: a coin with no metadata anywhere
-      // is exactly the impostor case, and 47 of 289 sampled impostors declare a
-      // different scale from the coin they imitate.
-      const decimalsSource: "coin_metadata" | "coin_registry" | "curated" | "assumed" =
-        meta?.decimals !== undefined
-          ? "coin_metadata"
-          : registry?.decimals !== undefined
-            ? "coin_registry"
-            : discoveredDecimals !== undefined
-              ? "curated"
-              : "assumed";
-      const decimals = meta?.decimals ?? registry?.decimals ?? discoveredDecimals ?? 9;
-      const name = meta?.name ?? registry?.name ?? discoveredName ?? null;
+      // The curated entry outranks the registry for anything self-declared. A
+      // registry entry is whatever the minter wrote, and an impostor can write
+      // one; the curated entry was reviewed. Chain metadata still wins over
+      // both because it is what the coin itself publishes.
+      const symbol = meta?.symbol ?? discoveredSymbol ?? registry?.symbol ?? coinType.split("::").pop() ?? coinType;
+      const name = meta?.name ?? discoveredName ?? registry?.name ?? null;
       const description = meta?.description ?? registry?.description ?? null;
       const iconUrl = meta?.iconUrl ?? registry?.icon_url ?? null;
+
+      // Decimals decides the magnitude of every amount derived from it, so the
+      // origin is reported rather than left to be assumed, and a guess says it
+      // is one. 47 of 289 sampled impostors declare a different scale from the
+      // coin they imitate, so the coins most likely to reach the fallback are
+      // the ones it is most dangerous for.
+      //
+      // `!= null`, not `!== undefined`: discoveredDecimals is `number | null`,
+      // so comparing against undefined is always true and made "assumed"
+      // unreachable. The guess of 9 then shipped labelled "curated", which is
+      // the strongest tier short of chain data, beside `verified: false`.
+      const decimalsSource:
+        | "coin_metadata"
+        | "coin_registry"
+        | "curated"
+        | "symbol_scan"
+        | "assumed" =
+        meta?.decimals != null
+          ? "coin_metadata"
+          : registry?.decimals != null
+            ? "coin_registry"
+            : discoveredDecimals != null
+              ? // A symbol the curated list resolved is a reviewed claim. One
+                // reached by scanning on-chain metadata is not, and calling
+                // both "curated" asserts a vouch the same payload denies.
+                symbolVerified
+                ? "curated"
+                : "symbol_scan"
+              : "assumed";
+      const decimals = meta?.decimals ?? registry?.decimals ?? discoveredDecimals ?? 9;
       const totalSupplyRaw = treasury?.totalSupply?.toString() ?? null;
 
       // Compute human-readable supply
@@ -164,6 +184,12 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           ? {
               decimals_note:
                 "No on-chain metadata, registry entry or curated record gives this coin's decimals, so 9 was assumed. Every human-readable amount below rests on that assumption and may be wrong by orders of magnitude.",
+            }
+          : {}),
+        ...(decimalsSource === "symbol_scan"
+          ? {
+              decimals_note:
+                "These decimals came from scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin. Nothing curated vouches for the scale.",
             }
           : {}),
         // The registry is Sui's canonical on-chain metadata, not a whitelist:

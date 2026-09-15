@@ -399,17 +399,35 @@ beside the real asset's and looks identical, so presence must never be reported
 as `verified`. The registry answers "what does the chain record about this
 coin", not "is this the coin you meant".
 
-It is worth reading for decimals. `analyze_token` fell back to 9 whenever
-neither `CoinMetadata` nor the curated list knew, and the coins that reach that
-fallback are the ones a wrong scale is most dangerous for: 47 of 289 sampled
-impostors declare a different scale from the coin they imitate, one by 10^9.
-`decimals_source` names the origin, and an assumed scale says so.
+It is worth reading for decimals. `analyze_token` still falls back to 9 when
+nothing knows, and the registry narrows how often that happens. The coins that
+reach the fallback are the ones a wrong scale is most dangerous for: 47 of 289
+sampled impostors declare a different scale from the coin they imitate, one by
+10^9.
 
-A `Currency` carries the coin type as a type ARGUMENT —
-`0x2::coin_registry::Currency<0x2::sui::SUI>` — so it is a direct filtered
-object read with no derivation to get wrong. Verified on mainnet: SUI returns
-decimals 9, Circle's USDC returns 6 with a `Regulated` variant naming its deny
-cap, which is the same authority `check_coin_restrictions` reads.
+**`decimals_source` has five tiers and they are not interchangeable**:
+`coin_metadata`, `coin_registry`, `curated`, `symbol_scan`, `assumed`. Two rules
+keep it honest, and both were violations first:
+
+- Test `discoveredDecimals != null`, never `!== undefined`. It is typed
+  `number | null`, so comparing against undefined is always true, which made
+  `assumed` unreachable and shipped the guess of 9 labelled `curated` beside
+  `verified: false`.
+- A symbol the curated list resolved and one reached by scanning on-chain
+  metadata are different tiers. Calling both `curated` asserts a vouch the same
+  payload denies in `unverified_note`.
+
+A `Currency` carries the coin type as a type ARGUMENT, written
+`0x2::coin_registry::Currency<0x2::sui::SUI>`, so it is a direct filtered object
+read with no derivation to get wrong. Verified on mainnet: SUI returns decimals
+9, Circle's USDC returns 6 with a `Regulated` variant naming its deny cap, which
+is the same authority `check_coin_restrictions` reads. Sampled 400 entries: the
+variants are `Unknown`, `Regulated` and `Unregulated`, a `Regulated` always
+carries a cap, and decimals was an integer every time.
+
+**The curated entry outranks the registry for anything self-declared.** A
+registry entry is whatever the minter wrote and an impostor can write one; the
+curated entry was reviewed.
 
 ### Address aliases: an address CAN delegate spending authority
 

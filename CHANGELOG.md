@@ -18,8 +18,10 @@
 - **`analyze_token` reads the on-chain coin registry.** `0x2::coin_registry`
   (state at `0xc`) is Sui's canonical home for coin metadata, and it now
   supplies decimals when `CoinMetadata` has none. `decimals_source` names where
-  the scale came from, and a coin nothing knows about says outright that 9 was
-  assumed rather than reporting the guess silently. A wrong scale misstates
+  the scale came from, across five tiers: `coin_metadata`, `coin_registry`,
+  `curated`, `symbol_scan` and `assumed`. A coin nothing knows about says
+  outright that 9 was assumed rather than reporting the guess silently, and a
+  symbol reached by scanning on-chain metadata is not reported as curated. A wrong scale misstates
   every amount derived from it, and 47 of 289 sampled impostors declare a
   different scale from the coin they imitate.
 

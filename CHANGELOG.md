@@ -15,6 +15,19 @@
   custodian holds authority for a client, and a failed lookup is reported as
   unknown rather than as an absence of delegation.
 
+- **`analyze_token` reads the on-chain coin registry.** `0x2::coin_registry`
+  (state at `0xc`) is Sui's canonical home for coin metadata, and it now
+  supplies decimals when `CoinMetadata` has none. `decimals_source` names where
+  the scale came from, and a coin nothing knows about says outright that 9 was
+  assumed rather than reporting the guess silently. A wrong scale misstates
+  every amount derived from it, and 47 of 289 sampled impostors declare a
+  different scale from the coin they imitate.
+
+  The registry also states whether a coin is regulated and names the cap that
+  can freeze holders. Presence in it is **not** a vouch: anyone who can publish
+  a coin can register it, so `verified` still means only that the curated list
+  vouched for the coin.
+
 ### Fixed
 - **Two documented invariants were false.** The forensics skill and CLAUDE.md
   said an address has exactly one authenticator forever and that a multisig

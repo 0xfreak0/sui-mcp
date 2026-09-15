@@ -386,6 +386,31 @@ load-bearing:
 Committees cannot nest — `PublicKey` in sui-types has no `MultiSig` variant —
 so member expansion is exactly one level deep by chain rule, not by budget.
 
+### The on-chain coin registry is not a whitelist
+
+`0x2::coin_registry` (state at `0xc`) is Sui's canonical on-chain coin metadata:
+decimals, symbol, name, description, icon, and whether the coin is regulated.
+`src/utils/onchain-coin-registry.ts` reads it. Do not confuse it with
+`src/utils/coin-registry.ts`, which is this project's CURATED list and is what
+`verified` reports.
+
+**Anyone who can publish a coin can register it.** An impostor's entry sits
+beside the real asset's and looks identical, so presence must never be reported
+as `verified`. The registry answers "what does the chain record about this
+coin", not "is this the coin you meant".
+
+It is worth reading for decimals. `analyze_token` fell back to 9 whenever
+neither `CoinMetadata` nor the curated list knew, and the coins that reach that
+fallback are the ones a wrong scale is most dangerous for: 47 of 289 sampled
+impostors declare a different scale from the coin they imitate, one by 10^9.
+`decimals_source` names the origin, and an assumed scale says so.
+
+A `Currency` carries the coin type as a type ARGUMENT —
+`0x2::coin_registry::Currency<0x2::sui::SUI>` — so it is a direct filtered
+object read with no derivation to get wrong. Verified on mainnet: SUI returns
+decimals 9, Circle's USDC returns 6 with a `Regulated` variant naming its deny
+cap, which is the same authority `check_coin_restrictions` reads.
+
 ### Address aliases: an address CAN delegate spending authority
 
 `0x2::address_alias` (state singleton at `0xa`) lets an address authorize up to

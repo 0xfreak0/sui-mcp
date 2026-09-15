@@ -8,6 +8,8 @@ import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders } from "./holders.js";
+import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
+
 import { errorResult } from "../utils/errors.js";
 import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
@@ -72,8 +74,8 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         discoveredDecimals = match.decimals;
       }
 
-      // Fetch metadata, price, and holders in parallel
-      const [metaResult, priceResult, holderResult] = await Promise.all([
+      // Fetch metadata, price, holders and the on-chain registry in parallel
+      const [metaResult, priceResult, holderResult, registry] = await Promise.all([
         sui.stateService
           .getCoinInfo({ coinType })
           .then(({ response }) => response)
@@ -84,16 +86,31 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         wantHolders
           ? scanTokenTopHolders(coinType, 5, 2000).catch(() => null)
           : Promise.resolve(null),
+
+        fetchRegistryCurrency(coinType),
       ]);
 
       const meta = metaResult?.metadata;
       const treasury = metaResult?.treasury;
 
-      const symbol = meta?.symbol ?? discoveredSymbol ?? coinType.split("::").pop() ?? coinType;
-      const decimals = meta?.decimals ?? discoveredDecimals ?? 9;
-      const name = meta?.name ?? discoveredName ?? null;
-      const description = meta?.description ?? null;
-      const iconUrl = meta?.iconUrl ?? null;
+      const symbol = meta?.symbol ?? registry?.symbol ?? discoveredSymbol ?? coinType.split("::").pop() ?? coinType;
+      // Decimals decides the magnitude of every amount derived from it, so
+      // where it came from is reported rather than left to be assumed. The
+      // fallback of 9 is a guess and says so: a coin with no metadata anywhere
+      // is exactly the impostor case, and 47 of 289 sampled impostors declare a
+      // different scale from the coin they imitate.
+      const decimalsSource: "coin_metadata" | "coin_registry" | "curated" | "assumed" =
+        meta?.decimals !== undefined
+          ? "coin_metadata"
+          : registry?.decimals !== undefined
+            ? "coin_registry"
+            : discoveredDecimals !== undefined
+              ? "curated"
+              : "assumed";
+      const decimals = meta?.decimals ?? registry?.decimals ?? discoveredDecimals ?? 9;
+      const name = meta?.name ?? registry?.name ?? discoveredName ?? null;
+      const description = meta?.description ?? registry?.description ?? null;
+      const iconUrl = meta?.iconUrl ?? registry?.icon_url ?? null;
       const totalSupplyRaw = treasury?.totalSupply?.toString() ?? null;
 
       // Compute human-readable supply
@@ -142,6 +159,27 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         symbol,
         name,
         decimals,
+        decimals_source: decimalsSource,
+        ...(decimalsSource === "assumed"
+          ? {
+              decimals_note:
+                "No on-chain metadata, registry entry or curated record gives this coin's decimals, so 9 was assumed. Every human-readable amount below rests on that assumption and may be wrong by orders of magnitude.",
+            }
+          : {}),
+        // The registry is Sui's canonical on-chain metadata, not a whitelist:
+        // anyone who can publish a coin can register it, so presence here is
+        // never a vouch. `verified` above is the curated claim.
+        ...(registry
+          ? {
+              coin_registry: {
+                registered: true,
+                regulated: registry.regulated,
+                ...(registry.regulated_cap_id
+                  ? { regulated_cap_id: registry.regulated_cap_id }
+                  : {}),
+              },
+            }
+          : {}),
         description,
         icon_url: iconUrl,
         total_supply: totalSupplyRaw,

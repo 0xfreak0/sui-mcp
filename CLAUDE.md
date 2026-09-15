@@ -371,10 +371,13 @@ load-bearing:
 
 - **The committee cannot rotate.** Changing a member changes the hash, hence the
   address. A Gnosis Safe rotates owners in place; this cannot. Measured: 200
-  sent transactions from one wallet, one committee.
+  sent transactions from one wallet, one committee. Read this narrowly: it is a
+  fact about DERIVATION, and since address aliases it is no longer a fact about
+  who can spend. See "Address aliases" below.
 - **An address has exactly one authenticator, forever.** No key rotation, so
-  "what is this address" has a single permanent answer — which is why
-  authentication is never cached with a TTL.
+  "what IS this address" has a single permanent answer, and authentication is
+  never cached with a TTL. "Who can SPEND it" is a different question with a
+  mutable answer, and alias data must not inherit this reasoning.
 - **A wallet that has never SENT cannot be classified.** No signature, no
   committee. That is an absent field and an explicit caveat, never "ordinary
   wallet": a receive-only treasury multisig is indistinguishable from a fresh
@@ -382,6 +385,56 @@ load-bearing:
 
 Committees cannot nest — `PublicKey` in sui-types has no `MultiSig` variant —
 so member expansion is exactly one level deep by chain rule, not by budget.
+
+### Address aliases: an address CAN delegate spending authority
+
+`0x2::address_alias` (state singleton at `0xa`) lets an address authorize up to
+eight others to act for it, with `enable`, `add`, `remove` and `replace_all`.
+The `AddressAliases` object is **ConsensusAddressOwner-owned by the address it
+describes**, and its `aliases` field is the set of addresses that may authorize
+for that owner. A new set begins holding only the owner.
+
+This does not change any derivation — the address is still the hash of its
+authenticator, and a multisig committee still cannot be edited. What it changes
+is the claim an investigator acts on. "Only this committee can spend this
+wallet" is now false in general, and a report that says so without checking
+aliases is wrong rather than merely incomplete.
+
+**The set REPLACES the signer, it does not extend it.** The verifier accepts a
+signature from any member in place of the address itself, and nothing keeps the
+owner in its own set. So an owner absent from its own set can no longer
+authorize for itself, and whether it is present is the finding rather than an
+assumption.
+
+Measured on mainnet 2026-09-15, a complete scan of all 63 `AddressAliases`
+objects:
+
+- **50 owners are absent from their own set**, so their own key is locked out.
+  Four of those name exactly one other address, which is a total handover.
+- Only **2** sets hold the owner alone. `enable` creates that shape, so it is
+  the feature being on with nobody authorized. `delegated_to` carries the set
+  without the owner for exactly this reason: reporting the owner as a party it
+  authorized invents a delegation, and it fired on a real mainnet multisig.
+- 34 distinct alias keys, and **three already act for more than five owners**:
+  two for 22 each and one for 9.
+
+Three rules that follow:
+
+- **An alias is chain-derived control, not a heuristic.** "This address may
+  authorize for that wallet" is read from the object, and may be written as
+  fact. It is NOT evidence of shared ownership: a custodian holds authority for
+  a client, which is the same distinction `co_signer` already draws.
+- **Alias state is MUTABLE, so it cannot be cached like authentication.**
+  `remove` and `replace_all` exist. The reasoning that lets a committee be
+  cached forever does not transfer.
+- **The popularity filter is needed BEFORE clustering on it, not eventually.**
+  Two keys already act for 22 owners each, well past `DEFAULT_CO_SIGNER_LIMIT`
+  of 5. Clustering on aliases without that filter would link 22 unrelated
+  wallets through one service key, which is the failure the limit exists to
+  prevent.
+- **The object address is derived**, from `(0xa, AliasKey(owner))`, and the type
+  carries `key` without `store`, so one owner has at most one set and it can
+  never be transferred away. That is what makes reading a single object sound.
 
 **The signature is matched to an address by re-deriving it**, never by
 position. A gas-sponsored transaction carries `[sender, sponsor]` and position

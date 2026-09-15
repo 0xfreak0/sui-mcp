@@ -109,8 +109,8 @@ identify_address(0x434d9c12…)
 An alias is control read from chain state, so you may write that the address can
 authorize for the wallet. It is not evidence of shared ownership, since a
 custodian holds authority for a client. The set is mutable, so it is true as of
-the read. A wallet that never enabled the feature has no alias field at all,
-which is the common case.
+the read. Most wallets have never enabled the feature, so the field is usually
+absent.
 
 **Clustering.** `build_wallet_edges` emits a `co_signer` edge for any key that can spend a wallet on its own, and marks clusters built only from those `chain-derived` rather than `heuristic`. Keys sitting on more committees than the limit are treated as custody or wallet-provider keys and listed under `excluded_co_signers` instead of linking everyone who uses that provider.
 

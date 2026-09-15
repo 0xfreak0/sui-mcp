@@ -149,6 +149,27 @@ These are two separate marks. `unverified` refers to which coin it is.
 coin are a guess, and 47 of 289 imitators declare a different scale from the
 coin they imitate.
 
+`analyze_token` narrows the guess by reading `0x2::coin_registry`, Sui's
+canonical on-chain coin metadata, and `decimals_source` names where the scale
+came from:
+
+```
+analyze_token(0xdba34672…::usdc::USDC)
+  → decimals: 6, decimals_source: coin_metadata
+    verified: true
+    coin_registry: { registered: true, regulated: regulated, regulated_cap_id: 0x699b3162… }
+```
+
+Being in that registry is not a vouch. Anyone who can publish a coin can
+register it, so an impostor's entry looks the same as the real asset's, and
+`verified` still reports only what the curated list says. The registry supplies
+chain-derived decimals, and whether an issuer holds a cap that can freeze
+holders.
+
+`decimals_source` is one of `coin_metadata`, `coin_registry`, `curated`,
+`symbol_scan` or `assumed`. The last two carry a note saying what the scale
+rests on.
+
 An ambiguous symbol returns candidates rather than a coin. `USDC` matches seven
 legitimate verified coins on Sui (Circle's, Wormhole's, Celer's), so picking one
 would misreport which asset moved.

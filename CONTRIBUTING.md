@@ -275,6 +275,13 @@ Things that are easy to get wrong here:
   the build output into the tarball. Don't remove it.
 - **`npm pack --dry-run`** lists exactly what would ship without publishing
   anything. The packaging test runs this too.
+- **npm publishes asynchronously.** `npm publish` answers 202 Accepted and the
+  version becomes readable some minutes later. Measured on 1.17.0: about six
+  minutes. The release workflow waits for it before submitting to the MCP
+  Registry, which validates against npm and rejects a version it cannot see.
+- **The publish step skips a version already on npm.** Re-running the job is the
+  only recovery GitHub offers and it restarts from the top, so without that a
+  re-run dies on "cannot publish over" before reaching the step that failed.
 - **`npm run verify:published`** installs the published package from npm into a
   temp directory and completes an MCP handshake against it. The packaging tests
   only see the working tree; this is what catches a tarball that installs but

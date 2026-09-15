@@ -108,9 +108,44 @@ jobs:
       # start an interactive 2FA flow because no usable credential arrived.
       # Verbose logging shows the exchange request and its response, which is
       # what distinguishes "npm never tried" from "npm tried and was refused".
+      # Skipped when the version is already on npm, so a re-run after a later
+      # step failed does not die on "cannot publish over 1.17.0" before it
+      # reaches the step that actually needs retrying. Re-running the job is the
+      # only recovery GitHub offers, and it restarts from the top.
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish --provenance --loglevel verbose
+        run: |
+          set -euo pipefail
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "sui-analytics-mcp@${VER}" version >/dev/null 2>&1; then
+            echo "sui-analytics-mcp@${VER} is already on npm; skipping publish."
+            exit 0
+          fi
+          npm publish --provenance --loglevel verbose
+
+      # npm answers a publish with 202 Accepted and makes the version readable
+      # some time later. Measured on the 1.17.0 release: about six minutes, and
+      # the MCP Registry rejected the submission two seconds after publish with
+      # "version '1.17.0' was not found (status: 404)".
+      #
+      # The registry validates against npm, so it has to wait for the same
+      # propagation `verify-published` already retries around. Same fix, second
+      # site.
+      - name: Wait for npm to serve the new version
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          VER="$(node -p "require('./package.json').version")"
+          for i in $(seq 1 40); do
+            if npm view "sui-analytics-mcp@${VER}" version --prefer-online >/dev/null 2>&1; then
+              echo "Visible on npm after ${i} attempt(s)."
+              exit 0
+            fi
+            echo "Attempt ${i}: ${VER} not on npm yet; waiting 15s."
+            sleep 15
+          done
+          echo "::error::sui-analytics-mcp@${VER} did not appear on npm within 10 minutes."
+          exit 1
 
       # npm writes the full request/response trace to its debug log, which is
       # discarded with the runner unless it is surfaced. Only runs on failure,

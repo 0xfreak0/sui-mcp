@@ -303,13 +303,17 @@ state at `0xa`). `identify_address` reports this as `aliases`.
   authorize for that wallet" as a fact. You may NOT write that they are the same
   person: a custodian holds authority for a client, the same distinction
   `co_signer` draws.
+- **Read `delegated_to`, not `aliases`.** `enable` seeds the set with the
+  wallet's own address, so a set holding only the owner means the feature is on
+  and nobody else was authorized. `delegated_to` is the set without the owner,
+  and an empty one widens nothing. Two of the 63 mainnet sets are that shape.
 - **Check `owner_can_authorize` before saying who controls the wallet.** The set
-  replaces the signer rather than extending it, so a wallet whose own address is
-  absent from its own set cannot authorize for itself and only the listed
-  addresses can move its funds. Measured: 50 of 63 mainnet sets are in that
-  state, so it is the normal case rather than the exception.
-- **A key on many sets is a service, not a lead.** Two mainnet keys already act
-  for 22 owners each.
+  replaces the signer rather than extending it, so a wallet absent from its own
+  set cannot authorize for itself and only `delegated_to` can move its funds.
+  Measured: 50 of 63 mainnet sets are in that state.
+- **A key acting for many wallets is a service.** Treat it the way
+  `excluded_co_signers` treats a custody key. Two mainnet keys already act for
+  22 owners each.
 - **A wallet with no `AddressAliases` object has never enabled the feature**,
   which is the common case. That is an absent field, not a denial.
 - **The set is mutable.** `remove` and `replace_all` exist, so an alias is true

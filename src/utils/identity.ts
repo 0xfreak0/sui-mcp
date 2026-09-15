@@ -122,10 +122,25 @@ export interface HeldName {
   expires_at?: string;
 }
 
-/** Who may authorize for an address, and whether the address itself still can. */
+/**
+ * Who may authorize for an address.
+ *
+ * Three shapes, and they are different findings:
+ *
+ * - `authorized` is the owner alone. The feature is enabled and nobody else can
+ *   act for the wallet. `enable` seeds the set this way, so this is the absence
+ *   of delegation rather than an instance of it.
+ * - The owner plus others. Both the wallet and the others can act.
+ * - The owner is ABSENT. The set replaces the signer, so the wallet's own key
+ *   can no longer act for it and only the others can.
+ */
 export interface AliasSet {
+  /** Every address that may authorize, exactly as the chain states it. */
   authorized: string[];
+  /** Whether the wallet's own address is among them. */
   owner_can_authorize: boolean;
+  /** `authorized` without the owner. Empty means nobody else was authorized. */
+  delegated_to: string[];
 }
 
 export interface AddressIdentity {
@@ -273,9 +288,10 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
  * reported, never assumed: measured across all 63 mainnet sets, 50 owners are
  * absent from their own.
  *
- * Batched at `ALIAS_BATCH_SIZE`, which is NOT the authentication batch size —
- * see the constant. Addresses are validated before being interpolated, since
- * one unparseable address answers the WHOLE aliased batch with `data: null`.
+ * Batched at `ALIAS_BATCH_SIZE`. That is deliberately not the authentication
+ * batch size; see the constant. Addresses are validated before being
+ * interpolated, since one unparseable address answers the WHOLE aliased batch
+ * with `data: null`.
  *
  * A chunk whose request failed is returned in `failed`, so the caller can say
  * "could not check" instead of reporting silence as an absence of delegation.
@@ -324,13 +340,16 @@ async function fetchAliases(
         out.set(a.original, {
           authorized,
           owner_can_authorize: authorized.includes(self),
+          delegated_to: authorized.filter((x) => x !== self),
         });
       });
     } catch (err) {
       // A failed lookup is not an absence of delegation. Recorded so the caller
-      // can say "could not check" rather than reporting silence as a finding.
+      // can say "could not check" rather than reporting silence as a finding,
+      // and reported to stderr so a query the service rejected is separable
+      // from a transport blip. Never stdout: that is the MCP transport.
       for (const a of chunk) failed.add(a.original);
-      void err;
+      console.error(`[identity] alias lookup failed for ${chunk.length} addresses: ${(err as Error).message}`);
     }
   }
   return { found: out, failed };

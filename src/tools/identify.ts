@@ -7,7 +7,7 @@ import { suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
-import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
+import { describeAddresses, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -90,6 +90,20 @@ async function findValidator(address: string): Promise<ValidatorMatch | null> {
     // which is why the caller must not present "wallet" as confirmed.
     return null;
   }
+}
+
+/**
+ * What a committee wallet's alias set means for the committee.
+ *
+ * A set holding only the owner widens nothing. A set the owner is absent from
+ * is a total lockout, and calling that "not the only way" would understate the
+ * loudest finding this tool produces.
+ */
+function aliasHint(aliases?: AliasSet): string {
+  if (!aliases || aliases.delegated_to.length === 0) return "";
+  return aliases.owner_can_authorize
+    ? " It has also authorized aliases, so the committee is not the only way to move these funds."
+    : " Its alias set does NOT include this address, so the committee can no longer authorize for it at all and only the addresses in delegated_to can move these funds.";
 }
 
 export function registerIdentifyTools(server: McpServer) {
@@ -301,13 +315,20 @@ export function registerIdentifyTools(server: McpServer) {
             // Absent means no AddressAliases object exists. Most wallets have
             // never enabled the feature, so the field is omitted rather than
             // reported as an empty list.
+            // Three readings, not two. A set holding only the owner is what
+            // `enable` creates, so it is the absence of delegation; reporting
+            // the owner as a party it authorized invents one.
             ...(aliases
               ? {
                   aliases: aliases.authorized,
                   owner_can_authorize: aliases.owner_can_authorize,
-                  aliases_note: aliases.owner_can_authorize
-                    ? "These addresses have been authorized to act for this wallet through 0x2::address_alias, so each of them can move its funds, and the wallet's own key still can too. That is control read from chain state, and not evidence of shared ownership: a custodian holds authority for a client. The set is mutable, so it is true as of now."
-                    : "These addresses have been authorized to act for this wallet through 0x2::address_alias, and the wallet's own address is NOT among them. An alias set replaces the signer rather than extending it, so this wallet's own key can no longer authorize for it and only the addresses listed can move its funds. The set is mutable, so it is true as of now.",
+                  delegated_to: aliases.delegated_to,
+                  aliases_note:
+                    aliases.delegated_to.length === 0
+                      ? "This wallet has enabled 0x2::address_alias and its set holds only its own address, so it has authorized nobody else. Nothing here widens who can move its funds. The set is mutable, so it is true as of now."
+                      : aliases.owner_can_authorize
+                        ? "The addresses in delegated_to have been authorized to act for this wallet through 0x2::address_alias, so each of them can move its funds, and the wallet's own key still can too. That is control read from chain state, and not evidence of shared ownership: a custodian holds authority for a client. The set is mutable, so it is true as of now."
+                        : "The addresses in delegated_to have been authorized to act for this wallet through 0x2::address_alias, and the wallet's own address is NOT among them. An alias set replaces the signer rather than extending it, so this wallet's own key can no longer authorize for it and only those addresses can move its funds. The set is mutable, so it is true as of now.",
                 }
               : {}),
             // A failed lookup is not an absence of delegation.
@@ -318,7 +339,7 @@ export function registerIdentifyTools(server: McpServer) {
                 }
               : {}),
             hint: auth?.scheme === "multisig"
-              ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliases ? " It has also authorized aliases, so the committee is not the only way to move these funds." : ""}`
+              ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliasHint(aliases)}`
               : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",
           }, null, 2),
         }],

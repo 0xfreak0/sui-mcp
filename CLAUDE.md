@@ -411,7 +411,10 @@ objects:
 
 - **50 owners are absent from their own set**, so their own key is locked out.
   Four of those name exactly one other address, which is a total handover.
-- Only **2** sets hold the owner alone.
+- Only **2** sets hold the owner alone. `enable` creates that shape, so it is
+  the feature being on with nobody authorized. `delegated_to` carries the set
+  without the owner for exactly this reason: reporting the owner as a party it
+  authorized invents a delegation, and it fired on a real mainnet multisig.
 - 34 distinct alias keys, and **three already act for more than five owners**:
   two for 22 each and one for 9.
 

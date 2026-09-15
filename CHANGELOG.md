@@ -9,7 +9,9 @@
   the funds. The set replaces the signer rather than extending it, so
   `owner_can_authorize` says whether the wallet's own key can still sign for it:
   50 of the 63 mainnet sets are wallets that can no longer authorize for
-  themselves. Reported as control rather than shared ownership, since a
+  themselves. `delegated_to` is the set without the wallet itself, since
+  enabling the feature seeds it with the wallet's own address and an empty
+  `delegated_to` means nobody else was authorized. Reported as control rather than shared ownership, since a
   custodian holds authority for a client, and a failed lookup is reported as
   unknown rather than as an absence of delegation.
 

@@ -47,7 +47,20 @@ describe("who may authorize for a wallet", () => {
   });
 
   /**
-   * The owner stays in the list. Dropping it loses the difference between
+   * `enable` seeds the set with the owner alone, so a set in that shape is the
+   * absence of delegation. Reporting the owner as a party it authorized invents
+   * one, and it fires on a real mainnet multisig treasury.
+   */
+  it("treats a set holding only the owner as no delegation", async () => {
+    respondWith([OWNER]);
+    const a = m_(await describeAddresses([OWNER], { aliases: true }));
+    expect(a?.authorized).toEqual([OWNER]);
+    expect(a?.owner_can_authorize).toBe(true);
+    expect(a?.delegated_to).toEqual([]);
+  });
+
+  /**
+   * The owner stays in `authorized`. Dropping it loses the difference between
    * "the owner and A can spend" and "only A can spend", which are opposite
    * conclusions about control.
    */
@@ -56,6 +69,7 @@ describe("who may authorize for a wallet", () => {
     const a = m_(await describeAddresses([OWNER], { aliases: true }));
     expect(a?.owner_can_authorize).toBe(true);
     expect(a?.authorized).toContain(OWNER);
+    expect(a?.delegated_to).toEqual([ALIAS_A]);
   });
 
   it("says the owner CANNOT authorize when it is absent from its own set", async () => {
@@ -63,6 +77,7 @@ describe("who may authorize for a wallet", () => {
     const a = m_(await describeAddresses([OWNER], { aliases: true }));
     expect(a?.owner_can_authorize).toBe(false);
     expect(a?.authorized).toEqual([ALIAS_A]);
+    expect(a?.delegated_to).toEqual([ALIAS_A]);
   });
 
   /** A short form from the chain has to compare equal to the padded owner. */
@@ -160,6 +175,11 @@ it("makes no alias request unless asked", async () => {
   expect(mockGqlQuery.mock.calls.some((c) => isAliasQuery(c[0]))).toBe(false);
 });
 
-function m_(m: Map<string, { aliases?: { authorized: string[]; owner_can_authorize: boolean } }>) {
+function m_(
+  m: Map<
+    string,
+    { aliases?: { authorized: string[]; owner_can_authorize: boolean; delegated_to: string[] } }
+  >,
+) {
   return m.get(OWNER)?.aliases;
 }

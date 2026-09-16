@@ -412,7 +412,10 @@ keep it honest, and both were violations first:
 - Test `discoveredDecimals != null`, never `!== undefined`. It is typed
   `number | null`, so comparing against undefined is always true, which made
   `assumed` unreachable and shipped the guess of 9 labelled `curated` beside
-  `verified: false`.
+  `verified: false`. TypeScript cannot catch it; the suite is the only guard,
+  so `decimalsTier` is exported and the test calls it. A first version
+  re-implemented the ternary in the test file and stayed green against the
+  reintroduced defect.
 - A symbol the curated list resolved and one reached by scanning on-chain
   metadata are different tiers. Calling both `curated` asserts a vouch the same
   payload denies in `unverified_note`.

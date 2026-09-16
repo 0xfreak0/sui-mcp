@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **The guard on `decimals_source` tested a copy of itself.** The tier decision
+  was re-implemented inside the test file, so reintroducing the defect it
+  guards left the whole suite green while `analyze_token` went back to
+  reporting an assumed scale as `curated`. The decision is now an exported
+  function the test calls, and the mutation that used to pass now fails two
+  cases. No behaviour change.
+
 ## 1.17.0 (2026-09-15)
 
 ### Added

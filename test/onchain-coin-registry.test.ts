@@ -14,6 +14,7 @@ const mockGqlQuery = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 
 const { fetchRegistryCurrency } = await import("../src/utils/onchain-coin-registry.js");
+const { decimalsTier } = await import("../src/tools/analyze-token.js");
 
 const currency = (json: unknown) => ({ objects: { nodes: [{ asMoveObject: { contents: { json } } }] } });
 
@@ -88,30 +89,30 @@ describe("reading a coin's registry entry", () => {
 /**
  * `decimals_source` has to name the tier the value actually came from.
  *
- * `discoveredDecimals` is `number | null`, so testing it against `undefined` is
- * always true: that made `assumed` unreachable and shipped the guess of 9
- * labelled `curated`, the strongest tier short of chain data, beside
- * `verified: false`. These pin the tier selection itself.
+ * This calls the REAL decision. The first version of this block re-implemented
+ * the ternary inside the test file, so it asserted that its own copy behaved:
+ * reintroducing the original defect left all 1,214 tests green while the live
+ * tool went back to labelling the guess of 9 as `curated`.
+ *
+ * The defect it guards is a comparison TypeScript cannot flag —
+ * `discoveredDecimals` is `number | null`, so `!== undefined` is always true —
+ * which makes this suite the only thing watching.
  */
 describe("choosing a decimals tier", () => {
   const tier = (
-    meta?: number | null,
-    reg?: number | null,
-    found?: number | null,
+    metaDecimals?: number | null,
+    registryDecimals?: number | null,
+    discoveredDecimals?: number | null,
     symbolVerified = false,
-  ) =>
-    meta != null
-      ? "coin_metadata"
-      : reg != null
-        ? "coin_registry"
-        : found != null
-          ? symbolVerified
-            ? "curated"
-            : "symbol_scan"
-          : "assumed";
+  ) => decimalsTier({ metaDecimals, registryDecimals, discoveredDecimals, symbolVerified });
 
   it("reaches assumed when nothing knows", () => {
     expect(tier(undefined, undefined, null)).toBe("assumed");
+  });
+
+  /** The exact shape of the original defect: null, not undefined. */
+  it("reaches assumed when the curated tier is null rather than undefined", () => {
+    expect(tier(null, null, null, true)).toBe("assumed");
   });
 
   it("prefers chain metadata, then the registry, then a curated entry", () => {
@@ -128,5 +129,6 @@ describe("choosing a decimals tier", () => {
   it("treats 0 decimals as a real answer", () => {
     expect(tier(0, 9, 9, true)).toBe("coin_metadata");
     expect(tier(undefined, 0, 9, true)).toBe("coin_registry");
+    expect(tier(undefined, undefined, 0, true)).toBe("curated");
   });
 });

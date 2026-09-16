@@ -15,6 +15,51 @@ import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+/** Where a coin's decimals came from, strongest evidence first. */
+export type DecimalsSource =
+  | "coin_metadata"
+  | "coin_registry"
+  | "curated"
+  | "symbol_scan"
+  | "assumed";
+
+/**
+ * Pick the tier that actually supplied the decimals.
+ *
+ * Exported so the tests exercise THIS rather than a copy. The guard for the
+ * defect below was first written as a re-implementation inside the test file,
+ * and reintroducing the defect left all 1,214 tests green while the live tool
+ * went back to mislabelling the guess.
+ *
+ * Decimals set the magnitude of every amount derived from them, and a guess has
+ * to say it is one: 47 of 289 sampled impostors declare a different scale from
+ * the coin they imitate, so the coins most likely to reach the fallback are the
+ * ones it is most dangerous for.
+ *
+ * **Test against null, not undefined.** `discoveredDecimals` is `number | null`,
+ * so `!== undefined` is always true and made `assumed` unreachable while the
+ * value chain's `??` still fell through to 9. The guess then shipped labelled
+ * `curated`, the strongest tier short of chain data, beside `verified: false`
+ * in the same payload. TypeScript cannot catch it: that comparison is legal.
+ *
+ * A symbol the curated list resolved and one reached by scanning on-chain
+ * metadata are separate tiers. Calling both `curated` asserts a vouch that
+ * `unverified_note` denies a few lines earlier.
+ */
+export function decimalsTier(input: {
+  metaDecimals?: number | null;
+  registryDecimals?: number | null;
+  discoveredDecimals?: number | null;
+  symbolVerified: boolean;
+}): DecimalsSource {
+  if (input.metaDecimals != null) return "coin_metadata";
+  if (input.registryDecimals != null) return "coin_registry";
+  if (input.discoveredDecimals != null) {
+    return input.symbolVerified ? "curated" : "symbol_scan";
+  }
+  return "assumed";
+}
+
 export function registerAnalyzeTokenTools(server: McpServer) {
   server.tool(
     "analyze_token",
@@ -102,34 +147,12 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       const description = meta?.description ?? registry?.description ?? null;
       const iconUrl = meta?.iconUrl ?? registry?.icon_url ?? null;
 
-      // Decimals decides the magnitude of every amount derived from it, so the
-      // origin is reported rather than left to be assumed, and a guess says it
-      // is one. 47 of 289 sampled impostors declare a different scale from the
-      // coin they imitate, so the coins most likely to reach the fallback are
-      // the ones it is most dangerous for.
-      //
-      // `!= null`, not `!== undefined`: discoveredDecimals is `number | null`,
-      // so comparing against undefined is always true and made "assumed"
-      // unreachable. The guess of 9 then shipped labelled "curated", which is
-      // the strongest tier short of chain data, beside `verified: false`.
-      const decimalsSource:
-        | "coin_metadata"
-        | "coin_registry"
-        | "curated"
-        | "symbol_scan"
-        | "assumed" =
-        meta?.decimals != null
-          ? "coin_metadata"
-          : registry?.decimals != null
-            ? "coin_registry"
-            : discoveredDecimals != null
-              ? // A symbol the curated list resolved is a reviewed claim. One
-                // reached by scanning on-chain metadata is not, and calling
-                // both "curated" asserts a vouch the same payload denies.
-                symbolVerified
-                ? "curated"
-                : "symbol_scan"
-              : "assumed";
+      const decimalsSource = decimalsTier({
+        metaDecimals: meta?.decimals,
+        registryDecimals: registry?.decimals,
+        discoveredDecimals,
+        symbolVerified,
+      });
       const decimals = meta?.decimals ?? registry?.decimals ?? discoveredDecimals ?? 9;
       const totalSupplyRaw = treasury?.totalSupply?.toString() ?? null;
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.18.0 (2026-09-21)
 
 ### Added
 - **`get_transaction` reports what a transaction touched.** `object_changes`

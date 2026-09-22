@@ -10,6 +10,11 @@ import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
+import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
+import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
+import { custodyChanges, readGrpcObjectChanges, summarizeObjectChanges } from "../utils/object-flow.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
 
 /**
  * Curated-only resolver for object types, matching what `trace.ts` passes at
@@ -21,10 +26,6 @@ function protocolForObjectType(packageId: string): { name: string } | null {
   const p = lookupProtocol(packageId);
   return p ? { name: p.name } : null;
 }
-import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
-import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
-import { custodyChanges, readGrpcObjectChanges, summarizeObjectChanges } from "../utils/object-flow.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerTransactionTools(server: McpServer) {
   server.tool(
@@ -285,6 +286,18 @@ export function registerTransactionTools(server: McpServer) {
                 // derived from Coin<T>, so an NFT, a capability or a DeFi
                 // position changes hands without producing one.
                 object_changes: objectSummary,
+                // The two counts describe different universes and a reader
+                // comparing them would otherwise be misled. `changed` counts
+                // every effect, including the coin that paid and any dynamic
+                // field the transaction walked; `object_transfers` keeps only
+                // what changed hands. Measured over 818 changed objects on
+                // mainnet, coins and dynamic fields were 48% of `changed`.
+                ...(objectSummary.changed > 0 && custody.length === 0
+                  ? {
+                      object_changes_note:
+                        "Objects were written but none changed hands. `changed` counts every effect, including the coin or balance that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
+                    }
+                  : {}),
                 ...(custody.length
                   ? {
                       object_transfers: custody.map((m) => ({
@@ -300,10 +313,16 @@ export function registerTransactionTools(server: McpServer) {
                         // not disagree about who a party is.
                         from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
                         to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
+                        category: m.category,
                         ...(m.high_consequence ? { high_consequence: true } : {}),
                         ...(m.renounced ? { renounced: true } : {}),
                         ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
                         ...(m.protocol ? { protocol: m.protocol } : {}),
+                        // The note states what a capability actually grants.
+                        // `high_consequence: true` alone says a finding exists
+                        // without saying what it is, and `trace.ts` carries the
+                        // full movement for exactly this reason.
+                        ...(m.note ? { note: m.note } : {}),
                       })),
                     }
                   : {}),

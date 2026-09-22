@@ -428,15 +428,11 @@ export interface ObjectChangeSummary {
  * stayed green against a production mutation that swapped created for deleted.
  *
  * **Deliberately does not separate the gas object.** An earlier version counted
- * `effects.gasObject` apart from the rest on the reasoning that every
- * transaction writes its own gas coin, so "one object changed" is meaningless
- * until you know whether that object was the gas coin. That premise is false:
- * measured on mainnet, **88% of sampled programmable transactions have no
- * `effects.gasObject` at all**, because gas is paid from a balance accumulator
- * rather than from a coin object. The split was therefore inert on most
- * transactions and inverted on the accumulator-paid empty transaction it was
- * written for. Raw counts beside `custodyChanges` answer the same question
- * without modelling how gas was paid.
+ * `effects.gasObject` apart from the rest, reasoning that every transaction
+ * writes its own gas coin. That premise does not hold: gas is often paid from a
+ * balance accumulator rather than a coin object, and such a transaction has no
+ * `effects.gasObject` for the split to exclude, so `non_gas_changed` collapsed
+ * to `changed`. See CLAUDE.md for the measurement and its era.
  */
 export function summarizeObjectChanges(changes: GrpcChangedObject[]): ObjectChangeSummary {
   return {

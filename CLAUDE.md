@@ -152,14 +152,25 @@ pool of gas coins.
 - **Do NOT reintroduce a gas-object split.** An earlier version counted
   `effects.gasObject` apart from the rest, reasoning that every transaction
   writes its own gas coin so `changed: 1` means nothing until you know whether
-  that object was the gas coin. **That premise is false.** Measured on mainnet,
-  88% of sampled programmable transactions have no `effects.gasObject` at all,
-  because gas is paid from a balance accumulator rather than a coin object, and
-  the accumulator write then appears as an ordinary change. A transaction may
-  also pay with several coins, which smashing deletes. The split was inert on
-  most transactions and inverted on the accumulator-paid empty transaction it
-  was written for. Raw counts beside `custodyChanges` answer the same question
-  without modelling how gas was paid.
+  that object was the gas coin. The premise does not hold, and the number
+  behind it is **era-dependent**, so it is recorded with its date: sampled
+  2026-09 over 1,191 programmable transactions, roughly three quarters carried
+  no `effects.gasObject` at all, while the same query over transactions before
+  checkpoint 275,000,000 (May 2026) found none without one. Gas moved to being
+  paid from a balance accumulator, and such a transaction has no gas object for
+  the split to exclude, so `non_gas_changed` collapsed to `changed`. A
+  transaction may also pay with several coins, which smashing deletes and which
+  a single-id exclusion counts as real deletions.
+
+  On the empty transaction that motivated the feature the split was correct, so
+  do not reintroduce it on the grounds that the motivating case was mishandled.
+  It was removed because it answers nothing on the majority of current
+  transactions while looking authoritative. Raw counts beside `custodyChanges`
+  answer the question without modelling how gas was paid.
+
+  **Any percentage about gas payment needs its era attached.** Two samples of
+  43 and 1,191 transactions gave 88% and 74%, and the per-checkpoint standard
+  deviation is wide enough that a narrow window reaches either by luck.
 - **Read the object changes; they are already paid for.** The `effects` read
   mask already returns `changedObjects`, and `readGrpcObjectChanges` and
   `custodyChanges` already exist for `trace_funds`. This tool simply was not

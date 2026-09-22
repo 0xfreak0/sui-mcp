@@ -273,23 +273,34 @@ sales carried no collection type at all. Those are counted in
 `unattributable_sales` rather than filtered out quietly, so a small number of
 matches is never mistaken for a collection that did not trade.
 
-**Did this transaction do nothing, or could we not tell?** `get_transaction`
-reports `command_count` alongside a count of the objects the transaction
-touched, so an empty `actions` list is readable as one or the other. A
-transaction that runs no commands still writes the object that paid for it, and
-bots use that to manage a pool of gas coins:
+**Did this transaction run no commands, or could we not decode them?**
+`get_transaction` reports `command_count` beside a count of the objects the
+transaction touched, so an empty `actions` list separates the two. A transaction
+that runs no commands still writes an effect, and bots use that to manage a pool
+of gas coins:
 
 ```
-get_transaction(F7xprc5y7Lmk…)
+get_transaction(F7xprc5y7LmkzMQqRjaEWexzupdtFTSPUXoF49GNepjY)
   → command_count: 0
+    actions: []
     object_changes: { changed: 1, created: 0, deleted: 0 }
-    object_transfers: absent
-    empty_transaction_note: ran no commands; this is not a decode failure
+    object_changes_note: objects were written but none changed hands
 ```
 
-`object_transfers` names anything that genuinely changed hands, and carries each
-party's owner kind: a kiosk-held NFT is owned by the Kiosk object, so an address
-on its own would read as a wallet.
+`object_transfers` names anything that genuinely changed hands, with each
+party's owner kind and the note explaining what a capability grants:
+
+```
+get_transaction(796Fr642E4W3XfvNcUWknTsDywd4RouMaCbqL5Ziptk)
+  → object_transfers[0]:
+      type:  popkins_nft::Popkins
+      from:  { kind: object, address: 0x1d6d9ccb… }
+      to:    { kind: object, address: 0xe0ee7531… }
+```
+
+Both parties there are Kiosk objects rather than wallets. `changed` counts every
+effect, including the coin or balance that paid, so it is a weaker signal than
+`object_transfers`.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks coin objects in object-id order, which is unrelated to

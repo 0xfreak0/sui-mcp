@@ -182,3 +182,135 @@ describe("query_transactions", () => {
     expect(data.error).toContain("Only one of");
   });
 });
+
+/**
+ * What the tool says when a transaction moved no coin.
+ *
+ * These assert on the HANDLER's output, not on the helpers it calls. The first
+ * version of this cover exercised `summarizeObjectChanges` and `custodyChanges`
+ * directly, so reverting the owner kind to a bare address — the exact defect it
+ * was written to guard — left the whole suite green.
+ */
+describe("get_transaction reports what a transaction touched", () => {
+  const EMPTY = "F7xprc5y7LmkzMQqRjaEWexzupdtFTSPUXoF49GNepjY";
+
+  /** A transaction with no commands, whose one changed object is its own gas coin. */
+  function emptyTx(overrides: Record<string, unknown> = {}) {
+    return {
+      response: {
+        transaction: {
+          digest: EMPTY,
+          timestamp: { seconds: 1700000000n, nanos: 0 },
+          checkpoint: 50000n,
+          transaction: {
+            sender: "0xsender",
+            kind: {
+              data: {
+                oneofKind: "programmableTransaction",
+                programmableTransaction: { inputs: [], commands: [] },
+              },
+            },
+          },
+          effects: {
+            status: { success: true },
+            gasUsed: { computationCost: 1n, storageCost: 1n, storageRebate: 1n, nonRefundableStorageFee: 1n },
+            epoch: 500n,
+            changedObjects: [
+              {
+                objectId: "0xgascoin",
+                objectType: "0x2::coin::Coin<0x2::sui::SUI>",
+                idOperation: 1,
+                inputState: 2,
+                inputOwner: { kind: 1, address: "0xsender" },
+                outputOwner: { kind: 1, address: "0xsender" },
+              },
+            ],
+            ...(overrides.effects as object ?? {}),
+          },
+          events: { events: [] },
+          balanceChanges: [],
+        },
+      },
+    };
+  }
+
+  const run = async (payload: unknown, digest = EMPTY) => {
+    mockSui.ledgerService.getTransaction.mockResolvedValue(payload);
+    mockGqlQuery.mockResolvedValue({ transactionBlock: null });
+    const r = await tools.get("get_transaction")!({ digest, max_event_field_bytes: 0 });
+    return JSON.parse(r.content[0].text);
+  };
+
+  it("reports a command count of zero rather than only an empty actions list", async () => {
+    const j = await run(emptyTx());
+    expect(j.command_count).toBe(0);
+    expect(j.actions).toEqual([]);
+    expect(j.empty_transaction_note).toMatch(/ran no commands/);
+  });
+
+  it("counts the objects it touched", async () => {
+    const j = await run(emptyTx());
+    expect(j.object_changes).toEqual({ changed: 1, created: 0, deleted: 0 });
+  });
+
+  /**
+   * A kiosk-held NFT is owned by the Kiosk object. Reporting a bare address
+   * made a kiosk id read as a wallet, on a real TradePort sale where BOTH
+   * parties were kiosks.
+   */
+  it("names each party's owner KIND, so a kiosk is not reported as a wallet", async () => {
+    const kioskSale = emptyTx({
+      effects: {
+        status: { success: true },
+        gasUsed: { computationCost: 1n, storageCost: 1n, storageRebate: 1n, nonRefundableStorageFee: 1n },
+        epoch: 500n,
+        changedObjects: [
+          {
+            objectId: "0xnft",
+            objectType: "0xabc::popkins_nft::Popkins",
+            idOperation: 1,
+            inputState: 2,
+            inputOwner: { kind: 2, address: "0xsellerkiosk" },
+            outputOwner: { kind: 2, address: "0xbuyerkiosk" },
+          },
+        ],
+      },
+    });
+    const j = await run(kioskSale);
+    expect(j.object_transfers).toHaveLength(1);
+    expect(j.object_transfers[0]).toMatchObject({
+      kind: "transferred",
+      from: { kind: "object", address: "0xsellerkiosk" },
+      to: { kind: "object", address: "0xbuyerkiosk" },
+    });
+  });
+
+  /** The note a capability handover carries is the loudest finding this tool has. */
+  it("carries the note explaining what a transferred capability grants", async () => {
+    const capMove = emptyTx({
+      effects: {
+        status: { success: true },
+        gasUsed: { computationCost: 1n, storageCost: 1n, storageRebate: 1n, nonRefundableStorageFee: 1n },
+        epoch: 500n,
+        changedObjects: [
+          {
+            objectId: "0xcap",
+            objectType: "0x2::package::UpgradeCap",
+            idOperation: 1,
+            inputState: 2,
+            inputOwner: { kind: 1, address: "0xold" },
+            outputOwner: { kind: 1, address: "0xnew" },
+          },
+        ],
+      },
+    });
+    const j = await run(capMove);
+    expect(j.object_transfers[0]).toMatchObject({ high_consequence: true });
+    expect(j.object_transfers[0].note).toMatch(/publish new code/i);
+  });
+
+  it("omits object_transfers when nothing changed hands", async () => {
+    const j = await run(emptyTx());
+    expect(j.object_transfers).toBeUndefined();
+  });
+});

@@ -9,10 +9,23 @@ import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
-import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
+import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
 import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
+import { custodyChanges, readGrpcObjectChanges, summarizeObjectChanges } from "../utils/object-flow.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+
+/**
+ * Curated-only resolver for object types, matching what `trace.ts` passes at
+ * its own `readGrpcObjectChanges` call site. The display tier includes MVR
+ * names anyone can register, and this resolver gates a `defi-position`
+ * promotion rather than only naming something.
+ */
+function protocolForObjectType(packageId: string): { name: string } | null {
+  const p = lookupProtocol(packageId);
+  return p ? { name: p.name } : null;
+}
 
 export function registerTransactionTools(server: McpServer) {
   server.tool(
@@ -72,10 +85,25 @@ export function registerTransactionTools(server: McpServer) {
       const kind = transaction?.kind;
       const sender = transaction?.sender;
 
-      // Protocol-aware decoding
+      // Protocol-aware decoding.
+      //
+      // `commandCount` is reported because an empty `actions` array had more
+      // than one cause and no way to tell them apart: a transaction that ran no
+      // commands, and commands that could not be decoded. Verified on mainnet:
+      // an empty PTB carries `commands` as an EMPTY ARRAY, so the count is
+      // real rather than inferred from its absence.
+      //
+      // `kindUnreadable` covers a third case that no mainnet probe has
+      // produced — a transaction present in the response with no readable kind.
+      // A nonexistent or pruned digest throws NOT_FOUND instead and never
+      // reaches here. It is labelled rather than removed because the branch
+      // already existed and was returning an empty `actions` silently.
       let decoded;
+      let commandCount: number | null = null;
+      let kindUnreadable = false;
       if (kind?.data.oneofKind === "programmableTransaction") {
         const ptb = kind.data.programmableTransaction;
+        commandCount = ptb.commands?.length ?? 0;
         await prefetchProtocolNames(collectPackageIds(ptb.commands));
         decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
       } else if (kind?.data.oneofKind) {
@@ -85,12 +113,26 @@ export function registerTransactionTools(server: McpServer) {
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
         };
       } else {
+        kindUnreadable = true;
         decoded = {
           protocols: [] as string[],
           actions: [] as string[],
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
         };
       }
+
+      // What the transaction touched, which is the only evidence that anything
+      // happened when it moved no coin and ran no command. The response
+      // already carries `changedObjects`, so this reads data already paid for.
+      //
+      // `lookupProtocol`, not the display resolver: `readGrpcObjectChanges`
+      // uses it to promote a type to `defi-position`, which may only happen
+      // behind a curated vouch. `trace.ts` passes the curated one at its own
+      // call site and the two must not disagree.
+      const changedObjects = effects?.changedObjects ?? [];
+      const objectMovements = readGrpcObjectChanges(changedObjects, protocolForObjectType);
+      const custody = custodyChanges(objectMovements);
+      const objectSummary = summarizeObjectChanges(changedObjects);
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
@@ -223,7 +265,67 @@ export function registerTransactionTools(server: McpServer) {
                     }
                   : {}),
                 actions: decoded.actions,
+                ...(commandCount !== null ? { command_count: commandCount } : {}),
+                // Said outright, because an empty `actions` used to cover this
+                // case, a decode failure and an unreadable kind alike.
+                ...(commandCount === 0
+                  ? {
+                      empty_transaction_note:
+                        "This transaction ran no commands, which is not a decode failure: it executed and committed, and its only on-chain effect is whatever object_changes and object_transfers report below. Read those before concluding nothing happened. An empty transaction is used to advance the version of whatever object paid for it, and to publish a sender's public key for the first time.",
+                    }
+                  : {}),
+                ...(kindUnreadable
+                  ? {
+                      kind_unreadable_note:
+                        "The transaction kind could not be read, so no actions could be derived. That is a failed read, NOT a transaction that did nothing — do not report it as inactivity.",
+                    }
+                  : {}),
                 token_flow: decoded.token_flow,
+                // Reported always, because "no coin moved" is only an absence
+                // of value when nothing else moved either. A balance change is
+                // derived from Coin<T>, so an NFT, a capability or a DeFi
+                // position changes hands without producing one.
+                object_changes: objectSummary,
+                // The two counts describe different universes and a reader
+                // comparing them would otherwise be misled. `changed` counts
+                // every effect, including the coin that paid and any dynamic
+                // field the transaction walked; `object_transfers` keeps only
+                // what changed hands. Measured over 818 changed objects on
+                // mainnet, coins and dynamic fields were 48% of `changed`.
+                ...(objectSummary.changed > 0 && custody.length === 0
+                  ? {
+                      object_changes_note:
+                        "Objects were written but none changed hands. `changed` counts every effect, including the coin or balance that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
+                    }
+                  : {}),
+                ...(custody.length
+                  ? {
+                      object_transfers: custody.map((m) => ({
+                        object_id: m.object_id,
+                        type: m.type_short ?? m.type,
+                        kind: m.kind,
+                        // The owner KIND travels with the address. A
+                        // kiosk-held NFT is owned by the Kiosk object, so
+                        // reporting a bare address made a kiosk id read as a
+                        // wallet — verified on a TradePort sale where BOTH
+                        // parties were kiosks. `trace.ts` renders the same
+                        // movement as "kiosk/object 0x…" and the two tools must
+                        // not disagree about who a party is.
+                        from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
+                        to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
+                        category: m.category,
+                        ...(m.high_consequence ? { high_consequence: true } : {}),
+                        ...(m.renounced ? { renounced: true } : {}),
+                        ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
+                        ...(m.protocol ? { protocol: m.protocol } : {}),
+                        // The note states what a capability actually grants.
+                        // `high_consequence: true` alone says a finding exists
+                        // without saying what it is, and `trace.ts` carries the
+                        // full movement for exactly this reason.
+                        ...(m.note ? { note: m.note } : {}),
+                      })),
+                    }
+                  : {}),
                 ...(authorization.length ? { authorization } : {}),
                 ...(authorization.some((a) => a.multisig)
                   ? {

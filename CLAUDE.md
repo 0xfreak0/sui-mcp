@@ -134,6 +134,55 @@ call-target problem the protocol registry solves with lineage roots.
 Note `batchResolveNames` is not actually batched: it fans out one gRPC call per
 address. Fine at these sizes, but it is not the single request the name suggests.
 
+### An empty transaction is not an empty result
+
+`get_transaction` reports `command_count` and an `object_changes` summary, and
+both exist because a real mainnet transaction reported nothing while having
+executed. `F7xprc5y7Lmk…` ran zero commands, emitted no events and moved no
+coin, so `actions`, `token_flow` and `protocols` were all empty. It had written
+an object, and it was one of hundreds fired by a market-making bot to manage a
+pool of gas coins.
+
+- **An empty `actions` had more than one cause.** Zero commands and commands
+  that would not decode rendered identically, so `command_count` is reported.
+  An empty PTB carries `commands` as an EMPTY ARRAY, measured on mainnet. A
+  third branch labels a transaction whose kind cannot be read at all, which no
+  probe has produced: a pruned or nonexistent digest throws NOT_FOUND and never
+  reaches the decode.
+- **Do NOT reintroduce a gas-object split.** An earlier version counted
+  `effects.gasObject` apart from the rest, reasoning that every transaction
+  writes its own gas coin so `changed: 1` means nothing until you know whether
+  that object was the gas coin. The premise does not hold, and the number
+  behind it is **era-dependent**, so it is recorded with its date: sampled
+  2026-09 over 1,191 programmable transactions, roughly three quarters carried
+  no `effects.gasObject` at all, while the same query over transactions before
+  checkpoint 275,000,000 (May 2026) found none without one. Gas moved to being
+  paid from a balance accumulator, and such a transaction has no gas object for
+  the split to exclude, so `non_gas_changed` collapsed to `changed`. A
+  transaction may also pay with several coins, which smashing deletes and which
+  a single-id exclusion counts as real deletions.
+
+  On the empty transaction that motivated the feature the split was correct, so
+  do not reintroduce it on the grounds that the motivating case was mishandled.
+  It was removed because it answers nothing on the majority of current
+  transactions while looking authoritative. Raw counts beside `custodyChanges`
+  answer the question without modelling how gas was paid.
+
+  **Any percentage about gas payment needs its era attached.** Two samples of
+  43 and 1,191 transactions gave 88% and 74%, and the per-checkpoint standard
+  deviation is wide enough that a narrow window reaches either by luck.
+- **Read the object changes; they are already paid for.** The `effects` read
+  mask already returns `changedObjects`, and `readGrpcObjectChanges` and
+  `custodyChanges` already exist for `trace_funds`. This tool simply was not
+  calling them, so the deep-dive single-transaction tool saw less than the trace
+  did. Pass `lookupProtocol`, not the display resolver: the resolver gates a
+  `defi-position` promotion, and `trace.ts` passes the curated one.
+- **`object_transfers` carries the owner KIND, not a bare address.** A
+  kiosk-held NFT is owned by the Kiosk object, so an address alone made a kiosk
+  id read as a wallet. Verified on a TradePort sale where both parties were
+  kiosks. `trace.ts` renders the same movement as `kiosk/object 0x…` and the
+  two tools must not disagree about who a party is.
+
 ## Completeness beats payload size
 
 `get_transaction` returns decoded fields for **every** event by default.

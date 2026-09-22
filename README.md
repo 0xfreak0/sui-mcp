@@ -274,19 +274,22 @@ sales carried no collection type at all. Those are counted in
 matches is never mistaken for a collection that did not trade.
 
 **Did this transaction do nothing, or could we not tell?** `get_transaction`
-reports `command_count` and separates the gas object from every other object it
-touched. A transaction that runs no commands still writes the coin that paid for
-it, and bots use exactly that to manage a pool of gas coins:
+reports `command_count` alongside a count of the objects the transaction
+touched, so an empty `actions` list is readable as one or the other. A
+transaction that runs no commands still writes the object that paid for it, and
+bots use that to manage a pool of gas coins:
 
 ```
 get_transaction(F7xprc5y7Lmk…)
   → command_count: 0
-    object_changes: { changed: 1, non_gas_changed: 0 }
+    object_changes: { changed: 1, created: 0, deleted: 0 }
+    object_transfers: absent
     empty_transaction_note: ran no commands; this is not a decode failure
 ```
 
-An empty `actions` list used to cover that case, a decode failure and an
-unreadable transaction kind alike. The three are now distinguishable.
+`object_transfers` names anything that genuinely changed hands, and carries each
+party's owner kind: a kiosk-held NFT is owned by the Kiosk object, so an address
+on its own would read as a wallet.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks coin objects in object-id order, which is unrelated to

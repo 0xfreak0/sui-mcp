@@ -143,19 +143,34 @@ coin, so `actions`, `token_flow` and `protocols` were all empty. It had written
 an object, and it was one of hundreds fired by a market-making bot to manage a
 pool of gas coins.
 
-- **An empty `actions` had three causes and no way to tell them apart:** zero
-  commands, commands that would not decode, and a transaction kind that could
-  not be read at all. The third is "could not look" and must never render as the
-  first. Verified: an empty PTB carries no `commands` array, not an empty one,
-  so the count comes from `?? 0` rather than `.length`.
-- **Count the gas object separately.** Every transaction writes its own gas
-  coin, so `changed: 1` says nothing until you know whether that object was the
-  gas coin. `effects.gasObject` is in the same response.
+- **An empty `actions` had more than one cause.** Zero commands and commands
+  that would not decode rendered identically, so `command_count` is reported.
+  An empty PTB carries `commands` as an EMPTY ARRAY, measured on mainnet. A
+  third branch labels a transaction whose kind cannot be read at all, which no
+  probe has produced: a pruned or nonexistent digest throws NOT_FOUND and never
+  reaches the decode.
+- **Do NOT reintroduce a gas-object split.** An earlier version counted
+  `effects.gasObject` apart from the rest, reasoning that every transaction
+  writes its own gas coin so `changed: 1` means nothing until you know whether
+  that object was the gas coin. **That premise is false.** Measured on mainnet,
+  88% of sampled programmable transactions have no `effects.gasObject` at all,
+  because gas is paid from a balance accumulator rather than a coin object, and
+  the accumulator write then appears as an ordinary change. A transaction may
+  also pay with several coins, which smashing deletes. The split was inert on
+  most transactions and inverted on the accumulator-paid empty transaction it
+  was written for. Raw counts beside `custodyChanges` answer the same question
+  without modelling how gas was paid.
 - **Read the object changes; they are already paid for.** The `effects` read
   mask already returns `changedObjects`, and `readGrpcObjectChanges` and
   `custodyChanges` already exist for `trace_funds`. This tool simply was not
   calling them, so the deep-dive single-transaction tool saw less than the trace
-  did.
+  did. Pass `lookupProtocol`, not the display resolver: the resolver gates a
+  `defi-position` promotion, and `trace.ts` passes the curated one.
+- **`object_transfers` carries the owner KIND, not a bare address.** A
+  kiosk-held NFT is owned by the Kiosk object, so an address alone made a kiosk
+  id read as a wallet. Verified on a TradePort sale where both parties were
+  kiosks. `trace.ts` renders the same movement as `kiosk/object 0x…` and the
+  two tools must not disagree about who a party is.
 
 ## Completeness beats payload size
 

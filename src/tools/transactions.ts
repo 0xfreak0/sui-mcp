@@ -9,18 +9,21 @@ import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
-import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
-import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
-import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
-import { custodyChanges, readGrpcObjectChanges } from "../utils/object-flow.js";
+import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
 
 /**
- * `sui.rpc.v2.ChangedObject.IdOperation`, mirrored from `object-flow.ts` where
- * the same two values gate created/deleted. Kept local rather than exported so
- * the enum has one owner; if a third site needs them, export from there.
+ * Curated-only resolver for object types, matching what `trace.ts` passes at
+ * its own `readGrpcObjectChanges` call site. The display tier includes MVR
+ * names anyone can register, and this resolver gates a `defi-position`
+ * promotion rather than only naming something.
  */
-const ID_CREATED_OP = 2;
-const ID_DELETED_OP = 3;
+function protocolForObjectType(packageId: string): { name: string } | null {
+  const p = lookupProtocol(packageId);
+  return p ? { name: p.name } : null;
+}
+import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
+import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
+import { custodyChanges, readGrpcObjectChanges, summarizeObjectChanges } from "../utils/object-flow.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerTransactionTools(server: McpServer) {
@@ -83,12 +86,17 @@ export function registerTransactionTools(server: McpServer) {
 
       // Protocol-aware decoding.
       //
-      // `commandCount` is reported because an empty `actions` array had three
-      // different causes and no way to tell them apart: a transaction that ran
-      // no commands, commands that could not be decoded, and a transaction
-      // whose kind could not be read at all. The last is "could not look" and
-      // must never render as the first. Verified on mainnet: an empty PTB
-      // carries no `commands` array at all, not an empty one.
+      // `commandCount` is reported because an empty `actions` array had more
+      // than one cause and no way to tell them apart: a transaction that ran no
+      // commands, and commands that could not be decoded. Verified on mainnet:
+      // an empty PTB carries `commands` as an EMPTY ARRAY, so the count is
+      // real rather than inferred from its absence.
+      //
+      // `kindUnreadable` covers a third case that no mainnet probe has
+      // produced — a transaction present in the response with no readable kind.
+      // A nonexistent or pruned digest throws NOT_FOUND instead and never
+      // reaches here. It is labelled rather than removed because the branch
+      // already existed and was returning an empty `actions` silently.
       let decoded;
       let commandCount: number | null = null;
       let kindUnreadable = false;
@@ -114,24 +122,16 @@ export function registerTransactionTools(server: McpServer) {
 
       // What the transaction touched, which is the only evidence that anything
       // happened when it moved no coin and ran no command. The response
-      // already carries `changedObjects` — this reads data already paid for.
+      // already carries `changedObjects`, so this reads data already paid for.
       //
-      // The gas object is separated out rather than counted with the rest. A
-      // transaction always writes its gas coin, so "one object changed" is
-      // meaningless until you know whether that object was the gas coin: the
-      // difference is "nothing happened" against "something happened that
-      // balance changes cannot see".
-      const gasObjectId = effects?.gasObject?.objectId ?? null;
+      // `lookupProtocol`, not the display resolver: `readGrpcObjectChanges`
+      // uses it to promote a type to `defi-position`, which may only happen
+      // behind a curated vouch. `trace.ts` passes the curated one at its own
+      // call site and the two must not disagree.
       const changedObjects = effects?.changedObjects ?? [];
-      const objectMovements = readGrpcObjectChanges(changedObjects, lookupProtocolDisplay);
+      const objectMovements = readGrpcObjectChanges(changedObjects, protocolForObjectType);
       const custody = custodyChanges(objectMovements);
-      const nonGasChanged = changedObjects.filter((c) => c.objectId !== gasObjectId);
-      const objectSummary = {
-        changed: changedObjects.length,
-        non_gas_changed: nonGasChanged.length,
-        created: changedObjects.filter((c) => c.idOperation === ID_CREATED_OP).length,
-        deleted: changedObjects.filter((c) => c.idOperation === ID_DELETED_OP).length,
-      };
+      const objectSummary = summarizeObjectChanges(changedObjects);
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
@@ -270,7 +270,7 @@ export function registerTransactionTools(server: McpServer) {
                 ...(commandCount === 0
                   ? {
                       empty_transaction_note:
-                        "This transaction ran no commands. It is not a decode failure: the transaction executed and committed, and its only on-chain effect is whatever appears under object_changes below. An empty transaction still bumps the version of the object that paid for it, which is how it is used to manage a pool of gas coins or to publish a sender's public key.",
+                        "This transaction ran no commands, which is not a decode failure: it executed and committed, and its only on-chain effect is whatever object_changes and object_transfers report below. Read those before concluding nothing happened. An empty transaction is used to advance the version of whatever object paid for it, and to publish a sender's public key for the first time.",
                     }
                   : {}),
                 ...(kindUnreadable
@@ -285,20 +285,21 @@ export function registerTransactionTools(server: McpServer) {
                 // derived from Coin<T>, so an NFT, a capability or a DeFi
                 // position changes hands without producing one.
                 object_changes: objectSummary,
-                ...(objectSummary.changed > 0 && objectSummary.non_gas_changed === 0
-                  ? {
-                      object_changes_note:
-                        "The only object this transaction touched was the coin that paid for it. Every transaction writes its own gas object, so this is the shape of a transaction whose effect is that it happened at all rather than one that moved anything.",
-                    }
-                  : {}),
                 ...(custody.length
                   ? {
                       object_transfers: custody.map((m) => ({
                         object_id: m.object_id,
                         type: m.type_short ?? m.type,
                         kind: m.kind,
-                        from: m.from?.address ?? null,
-                        to: m.to?.address ?? null,
+                        // The owner KIND travels with the address. A
+                        // kiosk-held NFT is owned by the Kiosk object, so
+                        // reporting a bare address made a kiosk id read as a
+                        // wallet — verified on a TradePort sale where BOTH
+                        // parties were kiosks. `trace.ts` renders the same
+                        // movement as "kiosk/object 0x…" and the two tools must
+                        // not disagree about who a party is.
+                        from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
+                        to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
                         ...(m.high_consequence ? { high_consequence: true } : {}),
                         ...(m.renounced ? { renounced: true } : {}),
                         ...(m.source_unrecorded ? { source_unrecorded: true } : {}),

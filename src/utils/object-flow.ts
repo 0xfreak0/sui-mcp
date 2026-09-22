@@ -413,6 +413,39 @@ const INPUT_EXISTS = 2;
 const ID_CREATED = 2;
 const ID_DELETED = 3;
 
+/** Counts of what a transaction's effects touched. */
+export interface ObjectChangeSummary {
+  changed: number;
+  created: number;
+  deleted: number;
+}
+
+/**
+ * Count what a transaction's effects touched.
+ *
+ * Exported so the tool's tests exercise THIS rather than a copy. A first
+ * version of the guard re-implemented the counting inside the test file and
+ * stayed green against a production mutation that swapped created for deleted.
+ *
+ * **Deliberately does not separate the gas object.** An earlier version counted
+ * `effects.gasObject` apart from the rest on the reasoning that every
+ * transaction writes its own gas coin, so "one object changed" is meaningless
+ * until you know whether that object was the gas coin. That premise is false:
+ * measured on mainnet, **88% of sampled programmable transactions have no
+ * `effects.gasObject` at all**, because gas is paid from a balance accumulator
+ * rather than from a coin object. The split was therefore inert on most
+ * transactions and inverted on the accumulator-paid empty transaction it was
+ * written for. Raw counts beside `custodyChanges` answer the same question
+ * without modelling how gas was paid.
+ */
+export function summarizeObjectChanges(changes: GrpcChangedObject[]): ObjectChangeSummary {
+  return {
+    changed: changes.length,
+    created: changes.filter((c) => c.idOperation === ID_CREATED).length,
+    deleted: changes.filter((c) => c.idOperation === ID_DELETED).length,
+  };
+}
+
 export function readGrpcObjectChanges(
   changes: GrpcChangedObject[],
   resolveProtocol?: ProtocolResolver,

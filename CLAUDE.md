@@ -134,6 +134,29 @@ call-target problem the protocol registry solves with lineage roots.
 Note `batchResolveNames` is not actually batched: it fans out one gRPC call per
 address. Fine at these sizes, but it is not the single request the name suggests.
 
+### An empty transaction is not an empty result
+
+`get_transaction` reports `command_count` and an `object_changes` summary, and
+both exist because a real mainnet transaction reported nothing while having
+executed. `F7xprc5y7Lmk…` ran zero commands, emitted no events and moved no
+coin, so `actions`, `token_flow` and `protocols` were all empty. It had written
+an object, and it was one of hundreds fired by a market-making bot to manage a
+pool of gas coins.
+
+- **An empty `actions` had three causes and no way to tell them apart:** zero
+  commands, commands that would not decode, and a transaction kind that could
+  not be read at all. The third is "could not look" and must never render as the
+  first. Verified: an empty PTB carries no `commands` array, not an empty one,
+  so the count comes from `?? 0` rather than `.length`.
+- **Count the gas object separately.** Every transaction writes its own gas
+  coin, so `changed: 1` says nothing until you know whether that object was the
+  gas coin. `effects.gasObject` is in the same response.
+- **Read the object changes; they are already paid for.** The `effects` read
+  mask already returns `changedObjects`, and `readGrpcObjectChanges` and
+  `custodyChanges` already exist for `trace_funds`. This tool simply was not
+  calling them, so the deep-dive single-transaction tool saw less than the trace
+  did.
+
 ## Completeness beats payload size
 
 `get_transaction` returns decoded fields for **every** event by default.

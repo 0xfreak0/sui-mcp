@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+- **`get_transaction` reports what a transaction touched.** `object_changes`
+  gives the number of objects changed, created and deleted, counting the gas
+  object apart from the rest, and `object_transfers` names anything that
+  actually changed hands. A balance change is derived from `Coin<T>`, so an
+  NFT, a capability or a DeFi position moves without producing one. The
+  response already carried this data and the tool was not reading it.
+
+### Fixed
+- **An empty `actions` no longer covers three different situations.** A
+  transaction that ran no commands, one whose commands would not decode, and
+  one whose kind could not be read at all all rendered identically, and the
+  last is "could not look" rather than "nothing happened". `command_count` is
+  reported, and each case now says which it is. Found on a real mainnet
+  transaction that ran zero commands, moved no coin and reported nothing: it was
+  one of hundreds fired by a market-making bot to manage a pool of gas coins.
+
 ### Fixed
 - **The guard on `decimals_source` tested a copy of itself.** The tier decision
   was re-implemented inside the test file, so reintroducing the defect it

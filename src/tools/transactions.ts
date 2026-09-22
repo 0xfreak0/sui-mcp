@@ -12,6 +12,15 @@ import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
 import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
+import { custodyChanges, readGrpcObjectChanges } from "../utils/object-flow.js";
+
+/**
+ * `sui.rpc.v2.ChangedObject.IdOperation`, mirrored from `object-flow.ts` where
+ * the same two values gate created/deleted. Kept local rather than exported so
+ * the enum has one owner; if a third site needs them, export from there.
+ */
+const ID_CREATED_OP = 2;
+const ID_DELETED_OP = 3;
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerTransactionTools(server: McpServer) {
@@ -72,10 +81,20 @@ export function registerTransactionTools(server: McpServer) {
       const kind = transaction?.kind;
       const sender = transaction?.sender;
 
-      // Protocol-aware decoding
+      // Protocol-aware decoding.
+      //
+      // `commandCount` is reported because an empty `actions` array had three
+      // different causes and no way to tell them apart: a transaction that ran
+      // no commands, commands that could not be decoded, and a transaction
+      // whose kind could not be read at all. The last is "could not look" and
+      // must never render as the first. Verified on mainnet: an empty PTB
+      // carries no `commands` array at all, not an empty one.
       let decoded;
+      let commandCount: number | null = null;
+      let kindUnreadable = false;
       if (kind?.data.oneofKind === "programmableTransaction") {
         const ptb = kind.data.programmableTransaction;
+        commandCount = ptb.commands?.length ?? 0;
         await prefetchProtocolNames(collectPackageIds(ptb.commands));
         decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
       } else if (kind?.data.oneofKind) {
@@ -85,12 +104,34 @@ export function registerTransactionTools(server: McpServer) {
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
         };
       } else {
+        kindUnreadable = true;
         decoded = {
           protocols: [] as string[],
           actions: [] as string[],
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
         };
       }
+
+      // What the transaction touched, which is the only evidence that anything
+      // happened when it moved no coin and ran no command. The response
+      // already carries `changedObjects` — this reads data already paid for.
+      //
+      // The gas object is separated out rather than counted with the rest. A
+      // transaction always writes its gas coin, so "one object changed" is
+      // meaningless until you know whether that object was the gas coin: the
+      // difference is "nothing happened" against "something happened that
+      // balance changes cannot see".
+      const gasObjectId = effects?.gasObject?.objectId ?? null;
+      const changedObjects = effects?.changedObjects ?? [];
+      const objectMovements = readGrpcObjectChanges(changedObjects, lookupProtocolDisplay);
+      const custody = custodyChanges(objectMovements);
+      const nonGasChanged = changedObjects.filter((c) => c.objectId !== gasObjectId);
+      const objectSummary = {
+        changed: changedObjects.length,
+        non_gas_changed: nonGasChanged.length,
+        created: changedObjects.filter((c) => c.idOperation === ID_CREATED_OP).length,
+        deleted: changedObjects.filter((c) => c.idOperation === ID_DELETED_OP).length,
+      };
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
@@ -223,7 +264,48 @@ export function registerTransactionTools(server: McpServer) {
                     }
                   : {}),
                 actions: decoded.actions,
+                ...(commandCount !== null ? { command_count: commandCount } : {}),
+                // Said outright, because an empty `actions` used to cover this
+                // case, a decode failure and an unreadable kind alike.
+                ...(commandCount === 0
+                  ? {
+                      empty_transaction_note:
+                        "This transaction ran no commands. It is not a decode failure: the transaction executed and committed, and its only on-chain effect is whatever appears under object_changes below. An empty transaction still bumps the version of the object that paid for it, which is how it is used to manage a pool of gas coins or to publish a sender's public key.",
+                    }
+                  : {}),
+                ...(kindUnreadable
+                  ? {
+                      kind_unreadable_note:
+                        "The transaction kind could not be read, so no actions could be derived. That is a failed read, NOT a transaction that did nothing — do not report it as inactivity.",
+                    }
+                  : {}),
                 token_flow: decoded.token_flow,
+                // Reported always, because "no coin moved" is only an absence
+                // of value when nothing else moved either. A balance change is
+                // derived from Coin<T>, so an NFT, a capability or a DeFi
+                // position changes hands without producing one.
+                object_changes: objectSummary,
+                ...(objectSummary.changed > 0 && objectSummary.non_gas_changed === 0
+                  ? {
+                      object_changes_note:
+                        "The only object this transaction touched was the coin that paid for it. Every transaction writes its own gas object, so this is the shape of a transaction whose effect is that it happened at all rather than one that moved anything.",
+                    }
+                  : {}),
+                ...(custody.length
+                  ? {
+                      object_transfers: custody.map((m) => ({
+                        object_id: m.object_id,
+                        type: m.type_short ?? m.type,
+                        kind: m.kind,
+                        from: m.from?.address ?? null,
+                        to: m.to?.address ?? null,
+                        ...(m.high_consequence ? { high_consequence: true } : {}),
+                        ...(m.renounced ? { renounced: true } : {}),
+                        ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
+                        ...(m.protocol ? { protocol: m.protocol } : {}),
+                      })),
+                    }
+                  : {}),
                 ...(authorization.length ? { authorization } : {}),
                 ...(authorization.some((a) => a.multisig)
                   ? {

@@ -189,9 +189,10 @@ on-chain deny list in both directions. A frozen address usually holds none of
 the coin that froze it, so it checks every configured coin type rather than the
 ones it holds.
 
-**What moved that was not a coin?** `trace_funds` reports `object_flow`.
-Sui is object-based, so a balance change only covers `Coin<T>`. An NFT, a
-Kiosk or a capability changes hands without producing one:
+**What moved that was not a coin?** `trace_funds` reports `object_flow`, and
+`get_transaction` reports `object_changes` and `object_transfers` for one
+transaction. Sui is object-based, so a balance change only covers `Coin<T>`. An
+NFT, a Kiosk or a capability changes hands without producing one:
 
 ```
 --- Hop 1 (2025-01-10 10:25:31 UTC) ---
@@ -271,6 +272,21 @@ collection in the event, which most do not: in one measured window 70 of 73
 sales carried no collection type at all. Those are counted in
 `unattributable_sales` rather than filtered out quietly, so a small number of
 matches is never mistaken for a collection that did not trade.
+
+**Did this transaction do nothing, or could we not tell?** `get_transaction`
+reports `command_count` and separates the gas object from every other object it
+touched. A transaction that runs no commands still writes the coin that paid for
+it, and bots use exactly that to manage a pool of gas coins:
+
+```
+get_transaction(F7xprc5y7Lmk…)
+  → command_count: 0
+    object_changes: { changed: 1, non_gas_changed: 0 }
+    empty_transaction_note: ran no commands; this is not a decode failure
+```
+
+An empty `actions` list used to cover that case, a decode failure and an
+unreadable transaction kind alike. The three are now distinguishable.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks coin objects in object-id order, which is unrelated to

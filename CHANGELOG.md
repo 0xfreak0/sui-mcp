@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+- **`get_transaction` reports what a transaction touched.** `object_changes`
+  counts the objects changed, created and deleted, and `object_transfers` names
+  anything that changed hands, with each party's owner kind so a kiosk is not
+  reported as a wallet. A balance change is derived from `Coin<T>`, so an NFT, a
+  capability or a DeFi position moves without producing one. The response
+  already carried this data and the tool was not reading it.
+
+- **`command_count` on `get_transaction`.** An empty `actions` array covered
+  both a transaction that ran no commands and commands that would not decode.
+  Found on a real mainnet transaction that ran zero commands, moved no coin and
+  reported nothing at all: it was one of hundreds fired by a market-making bot
+  to manage a pool of gas coins.
+
 ### Fixed
 - **The guard on `decimals_source` tested a copy of itself.** The tier decision
   was re-implemented inside the test file, so reintroducing the defect it

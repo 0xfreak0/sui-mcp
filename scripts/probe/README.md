@@ -15,7 +15,7 @@ npm run build && npm run verify:live && npm test
 | `full-case.mjs` | Cross-tool consistency — two tools must not disagree about one fact. Committees, publishers, coin verification, deny-list directions. |
 | `gap-pass.mjs` | Paths the other sweeps do not reach: a coin that really is regulated, a capped history. |
 | `consistency-pass2.mjs` | Each feature since 1.13.0 against an INDEPENDENT source of the same fact — registry decimals vs on-chain metadata, gRPC vs GraphQL abort detail, our sponsor count vs a direct scan. |
-| `incident-pass.mjs` | The 1.19 investigation tools replayed on the Cetus and Nemo exploits through the built server over stdio: attack net vs the raw balance change, a reconstructed balance vs the sum of earlier changes, CCTP exits and beneficiaries, upgrade authority at the exploit, per-version disassembly, the case diagram. Both incidents are history, so the pinned facts cannot drift. |
+| `incident-pass.mjs` | The incident tools replayed on the Cetus and Nemo exploits through the built server over stdio, each answer against a raw chain read taken in the same run: attack and incident-loss nets against the raw balance changes, trace and flow-graph hops against the payer and next debit on chain, every bridge's beneficiary against its event or payload bytes, flow totals against per-transaction sums, upgrade history and cap custody against package versions and object changes, signatures and bytecode against each exact version, diffs against a line diff of both versions, a deny list against its Config's fields, and prices against DefiLlama read directly. Records every call's latency and size. |
 
 ## When to run them
 

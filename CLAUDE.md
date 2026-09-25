@@ -1734,9 +1734,9 @@ Rules a change is likely to break:
 - **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
   the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
   change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and
-  fan-out, the recipient probes, co-funding denominators, deposit detection and
-  screening all skip it. Only a sponsor that is not the sender is gas-only; a
-  self-paid sender's SUI change carries payments.
+  fan-out, the recipient probes, co-funding denominators, deposit detection,
+  screening and `summarize_address_flows` all skip it. Only a sponsor that is
+  not the sender is gas-only; a self-paid sender's SUI change carries payments.
 - **Screening reads `sent` windows for outgoing value and bridge exits.** An
   exploiter's wallet collects airdrop spam afterwards; the Cetus attacker's
   last 100 affected transactions contain no exit, its last 100 sent ones
@@ -1792,6 +1792,30 @@ Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
   naming a pool with amount fields in an unread shape goes to
   `undecoded_events`. One with no amount field (opening a position) moves
   nothing and is not listed.
+
+### Address flow summaries
+
+`summarize_address_flows` (`src/tools/flows.ts`, pure logic in
+`src/utils/address-flows.ts`) scans one address's transactions newest first
+inside the window, with balance changes and commands completed, the gas
+summary, and event types. Rules a change is likely to break:
+
+- **Gas comes off before any SUI total**, through `withoutGas` from
+  `trace-hop.ts`, and is reported as `gas`. A sponsor's SUI change is dropped
+  by `isSponsorGasChange`.
+- **A counterparty is never credited with more than the subject moved.** When
+  the other side of a coin adds up to more than the subject's change (a PTB
+  with a stranger's payment in it), the subject's amount is split in
+  proportion. What no address accounts for is `unattributed`, never dropped.
+- **Exits are read from event JSON fetched after the scan**, for transactions
+  the address sent that carry a bridge marker or whose event list the scan cut
+  at 50, in aliased batches of 20. Beneficiaries come from `readBridgeEvents`
+  (`src/utils/bridge/exits.ts`), the same function `resolve_bridge_transfer`
+  uses; do not decode bridge events a second way here. Wormholescan is not
+  called. A Mayan order's Wormhole leg is not an unresolved message.
+- **One price per coin, at the median transaction time.** The midpoint of the
+  window put the Nemo attacker's prices at 12:57, three hours before the
+  exploit.
 
 ## Key Patterns
 

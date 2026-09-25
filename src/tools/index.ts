@@ -44,6 +44,7 @@ import { registerMultisigTools } from "./multisig.js";
 import { registerRestrictionTools } from "./restrictions.js";
 import { registerScreeningTools } from "./screening.js";
 import { registerAttackTools } from "./attack.js";
+import { registerFlowTools } from "./flows.js";
 import { withNetworkParam } from "./with-network.js";
 import {
   applyProfiles,
@@ -110,6 +111,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerRestrictionTools(server);
   registerScreeningTools(server);
   registerAttackTools(server);
+  registerFlowTools(server);
 
   // Apply the startup profile, then register the switch that expands it.
   // `enable_tools` goes on the raw server so it is never itself gated — it is

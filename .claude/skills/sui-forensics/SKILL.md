@@ -415,6 +415,29 @@ summarize_incident_losses(digests: <265 Cetus exploit digests>)
 - **A total with unpriced coins is a lower bound.** Say so, and quote
   `unpriced_remainder` with it. An unpriced coin is not worth zero.
 
+`summarize_address_flows` answers the next questions about the attacker's
+wallet: what it took per asset, who paid it, and what left Sui to where.
+
+```
+summarize_address_flows(0x01229b3c…, from: "2025-09-07T00:00:00Z", to: "2025-09-07T23:59:59Z")
+  coverage: 30 transactions, complete
+  inflow_sources: 0x9e5590… 78.41 SUI (2 txs), 0x1f7b27… 39.45 SUI (1 tx)
+  unattributed_inflows: 144,835.79 SUI, 287,547.92 USDT, 185,016.40 HAEDAL … (exploit and swap proceeds)
+  bridge_exits.by_bridge: Circle CCTP, 8 txs, 2,408,672.76 USDC → eip155:1:0x135477aa…
+```
+
+- **`unattributed` is value no address paid or received**: swap proceeds,
+  protocol withdrawals, the exploit itself, burns. Its digests say which.
+- **Gas is reported apart.** SUI totals exclude it, and a sponsor's storage
+  rebate is never a counterparty.
+- **Beneficiaries are chain-derived.** A Wormhole message whose payload names
+  no recipient is listed in `unresolved_vaas`; `resolve_bridge_transfer` asks
+  Wormholescan where it was redeemed.
+- **Every coin is priced once, at the median transaction time.** Over a long
+  window, quote `usd_basis` with the totals.
+- **Check `coverage.complete`.** A scan the budget stopped covers only
+  `coverage.oldest` onwards; `continue_with` is the next call.
+
 ## Which tool answers what
 
 Reaching for raw GraphQL is almost always a sign you missed a tool. Two of the
@@ -457,6 +480,7 @@ get the schema wrong in ways that fail silently.
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract` and a CCTP leg marked `settlement_intermediate` are bridge contracts, not the recipient |
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
+| How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, every inflow source, top recipients, gas sponsors, bridge exits grouped by destination |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
 | Where did this object come from? | `trace_object_history` |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |

@@ -107,6 +107,9 @@ export const PROFILES = {
     // the time: the question every incident report opens with.
     "analyze_attack_tx",
     "summarize_incident_losses",
+    // Per-asset totals, every funder, the biggest payees and every bridge exit
+    // for one address in one call, instead of paging its history by hand.
+    "summarize_address_flows",
     "aggregate_events",
     "save_finding",
     "list_findings",

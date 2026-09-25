@@ -173,6 +173,29 @@ active since 2023 returned nothing, and its `activity_hours` described 2023.
   re-reads the boundary checkpoint, since other transactions of that address
   may sit in it.
 
+### A past balance is reconstructed from one anchor
+
+`address(atCheckpoint:).balance` answers only inside the consistent range
+(`serviceConfig.availableRange(type: "Address", field: "balance")`, about an
+hour). Older points are reconstructed in `src/utils/historical-balance.ts`:
+the balance at an anchor A minus the owner's changes in every transaction in
+checkpoints (C, A].
+
+- **Both reads use the same A.** The balance is read with `atCheckpoint: A`
+  and the scan filter stops at `beforeCheckpoint: A + 1`. Reading "now" twice
+  lets a transaction landing between the reads count on one side only. A sits
+  a few checkpoints below the range's newest end, because the anchored read is
+  a separate request and may reach a replica that is slightly behind.
+- **No partial sum is a balance.** A budget stop, a transaction whose balance
+  changes could not all be read, or a negative result gives `balance: null`
+  and `complete: false`, with `reached_checkpoint` saying how far back the
+  scan got.
+- **`affectedAddress` is the complete set.** It includes every owner of a
+  balance change, an object id with an address-balance deposit included
+  (verified on `BkxPKc7F…`, +4 SUI into a StakedSui's address balance).
+  Balance changes net coins and the address balance, so a reconstructed point
+  has no coin/address split; report null, never zero.
+
 ## A package ID names one version
 
 A Sui upgrade mints a new package ID, and two kinds of filter bind to one

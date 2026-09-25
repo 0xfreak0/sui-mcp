@@ -36,7 +36,15 @@ import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { packageOfEventType } from "./event-json.js";
 import { withArchiveFallback } from "./archive-fallback.js";
-import { formatStatus, describeFailure, bigintToString, timestampToIso, type FailureDetail } from "./formatting.js";
+import {
+  formatStatus,
+  describeFailure,
+  bigintToString,
+  timestampToIso,
+  failureKindFromGraphql,
+  KIND_NOTES,
+  type FailureDetail,
+} from "./formatting.js";
 import { isDigest } from "./digest.js";
 
 /**
@@ -156,16 +164,18 @@ interface GqlExecutionError {
  * Map GraphQL's execution error onto the same shape gRPC produces, so a caller
  * reading `failure` does not have to know which transport served the batch.
  *
- * The kind is always `MOVE_ABORT` here: GraphQL only populates
- * `executionError` for aborts, and reports every other failure as a bare
- * `FAILURE` status. `get_transaction` reads over gRPC and distinguishes all of
- * them — the same breadth-here-depth-there boundary this file applies to
- * events.
+ * GraphQL reports no failure kind. `abortCode` is set for Move aborts only,
+ * and every other failure is named from its message by
+ * {@link failureKindFromGraphql}. `get_transaction` reads over gRPC and gets
+ * the kind directly, along with details GraphQL does not expose — the same
+ * breadth-here-depth-there boundary this file applies to events.
  */
 function failureFromGraphql(e: GqlExecutionError): FailureDetail {
-  const out: FailureDetail = { kind: "MOVE_ABORT" };
+  const kind = failureKindFromGraphql(e.message, e.abortCode);
+  const out: FailureDetail = { kind };
   if (e.abortCode != null) out.abort_code = String(e.abortCode);
   if (e.message) out.description = e.message;
+  if (KIND_NOTES[kind]) out.note = KIND_NOTES[kind];
   const pkg = e.module?.package?.address;
   if (pkg || e.module?.name || e.function?.name || e.instructionOffset != null) {
     out.location = {

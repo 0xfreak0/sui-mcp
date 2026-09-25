@@ -318,6 +318,16 @@ for the outlier is the right trade. Bounding the payload is the caller's
 decision, and when they make it the response says plainly that it is not the
 complete event data.
 
+A default view is different from a cap when nothing is dropped from the answer,
+only moved behind an argument that the response names. `analyze_package` and
+`get_package` return a per-module summary (counts, entry and public function
+names) and compact JSON, because the full listing of `0x2` is 272k characters;
+`modules: [...]` or `detail: 'full'` returns struct shapes and signatures.
+`analyze_package` folds caps of one type and ownership into one entry that still
+lists every object and holder. `find_funding_sources` keeps each result's origin,
+first funder and first hop, and `include_chains` returns every hop; shared
+funders, co-funding and payments are computed from the full chains either way.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from

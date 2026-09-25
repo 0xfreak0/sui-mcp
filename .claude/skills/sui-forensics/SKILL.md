@@ -441,7 +441,7 @@ get the schema wrong in ways that fail silently.
 | Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
 | Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
-| What does this unknown package do? | `analyze_package` — struct shapes, API, capability audit |
+| What does this unknown package do? | `analyze_package` — per-module API summary and capability audit; `modules: [...]` for those modules' struct shapes and signatures |
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
 | What did an upgrade change? | `diff_package_upgrade` → hunks, `visibility_changes`, `linkage_changes` |
 | Can the code still be changed, and by whom? | `analyze_package` → the UpgradeCap's `holder_status` |

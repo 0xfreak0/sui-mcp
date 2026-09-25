@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.19.1 (2026-09-25)
 
 ### Fixed
 - **`disassemble_module` showed the latest version's bytecode for every

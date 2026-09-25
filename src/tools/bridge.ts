@@ -4,30 +4,12 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
+import { readBridgeEvents, sameForeignAddress } from "../utils/bridge/exits.js";
 import { detectBridges } from "../utils/bridge/detect.js";
-import {
-  decodeWormholePayload,
-  mayanBeneficiaries,
-  type Beneficiary,
-} from "../utils/bridge/beneficiary.js";
 import { fetchEventJson } from "../utils/event-json.js";
-import {
-  CCTP_DEPOSIT_EVENT_SUFFIX,
-  CCTP_MESSAGE_EVENT_SUFFIX,
-  parseDepositForBurn,
-  parseMessageHeader,
-} from "../utils/bridge/cctp.js";
-import {
-  CLAIM_EVENT_SUFFIX,
-  DEPOSIT_EVENT_SUFFIXES,
-  parseClaimEvent,
-  parseDepositEvent,
-  suiBridgeChainLabel,
-} from "../utils/bridge/sui-native.js";
 import {
   EVIDENCE_TIER_MEANING,
   WORMHOLE_CHAIN_SUI,
-  extractWormholeMessages,
   toForeignAccount,
   wormholeChainLabel,
   caip2ForWormholeChain,
@@ -144,12 +126,6 @@ function unqualifiedNote(qualify: boolean): string {
     : "Reported unqualified: Wormhole reuses its chain numbers across environments, so a CAIP-2 id derived off mainnet would name the wrong chain.";
 }
 
-/** Case-insensitive for hex, exact for base58. */
-function sameForeignAddress(a: string | null | undefined, b: string | null | undefined): boolean {
-  if (!a || !b) return false;
-  return a.startsWith("0x") ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
 export function registerBridgeTools(server: McpServer) {
   server.tool(
     "resolve_bridge_transfer",
@@ -191,7 +167,6 @@ export function registerBridgeTools(server: McpServer) {
         if (all) events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
         else eventsIncomplete = true;
       }
-      const messages = extractWormholeMessages(events);
       // Shared detector, so this tool and trace_funds agree on what counts as
       // a bridge exit rather than drifting apart.
       const eventTypes = events
@@ -202,89 +177,15 @@ export function registerBridgeTools(server: McpServer) {
           h.protocol !== "Wormhole" && h.protocol !== "Sui Bridge" && h.protocol !== "Circle CCTP",
       );
 
-      // CCTP: the burn event carries destination domain and recipient, so this
-      // half is chain-derived. The paired MessageSent supplies the source
-      // domain, which completes the transfer id.
-      const cctpHeader = (() => {
-        for (const e of events) {
-          const t = e?.contents?.type?.repr;
-          if (typeof t !== "string" || !t.endsWith(CCTP_MESSAGE_EVENT_SUFFIX)) continue;
-          const msg = (e.contents?.json as { message?: unknown } | undefined)?.message;
-          if (typeof msg === "string") {
-            const header = parseMessageHeader(msg);
-            if (header) return header;
-          }
-        }
-        return null;
-      })();
-
-      const cctpTransfers = events
-        .filter((e) => {
-          const t = e?.contents?.type?.repr;
-          return typeof t === "string" && t.endsWith(CCTP_DEPOSIT_EVENT_SUFFIX);
-        })
-        .map((e) => parseDepositForBurn(e.contents?.json, cctpHeader, qualify))
-        .filter((t): t is NonNullable<typeof t> => t !== null);
-
-      // Sui's native bridge carries its destination in the event, so this half
-      // is chain-derived — no indexer is consulted for it at all.
-      const nativeTransfers = events
-        .filter((e) => {
-          const t = e?.contents?.type?.repr;
-          return typeof t === "string" && DEPOSIT_EVENT_SUFFIXES.some((sfx) => t.endsWith(sfx));
-        })
-        .map((e) => parseDepositEvent(e.contents?.json))
-        .filter((t): t is NonNullable<typeof t> => t !== null);
-
-      // Inbound claims are value ARRIVING on Sui. Reporting one as an exit
-      // would send an investigator to the wrong chain entirely — but an entry
-      // is still worth resolving, since the claim quotes the origin chain's own
-      // transfer identity and a trace running backwards dead-ends without it.
-      const nativeInboundClaims = events
-        .filter((e) => {
-          const t = e?.contents?.type?.repr;
-          return typeof t === "string" && t.endsWith(CLAIM_EVENT_SUFFIX);
-        })
-        .map((e) => parseClaimEvent(e.contents?.json, qualify))
-        .filter((cl): cl is NonNullable<typeof cl> => cl !== null);
-
-      // Who each transfer pays on the far side. Mayan settles over CCTP and
-      // Wormhole into its own contracts, so its order event names the
-      // beneficiary and a CCTP leg of the same transaction that mints to a
-      // different address is settlement, not the destination.
-      const mayan = mayanBeneficiaries(events, qualify);
-      const settlesForMayan = (address: string | null) =>
-        mayan.length > 0 && !mayan.some((b) => sameForeignAddress(b.address, address));
-      const decodedMessages = messages.map((m) => decodeWormholePayload(m, qualify));
-      const beneficiaries: Beneficiary[] = [
-        ...mayan,
-        ...decodedMessages.flatMap((d) => (d?.beneficiary ? [d.beneficiary] : [])),
-        ...cctpTransfers
-          .filter((t) => !settlesForMayan(t.destinationAddress))
-          .map((t): Beneficiary => ({
-            evidence: "chain-derived",
-            protocol: "Circle CCTP",
-            source: "cctp-mint-recipient",
-            chain: t.destinationAccount ? t.destinationAccount.split(":").slice(0, 2).join(":") : null,
-            chain_label: t.destinationChainLabel,
-            cctp_domain: t.destinationDomain,
-            address: t.destinationAddress,
-            address_raw: t.mintRecipientRaw ?? "",
-            account: t.destinationAccount,
-            ...(t.amount ? { amount: t.amount } : {}),
-          })),
-        ...nativeTransfers.map((t): Beneficiary => ({
-          evidence: "chain-derived",
-          protocol: "Sui Bridge",
-          source: "sui-native-bridge",
-          chain: t.targetAccount ? t.targetAccount.split(":").slice(0, 2).join(":") : null,
-          chain_label: t.targetChainLabel,
-          address: t.targetAddress,
-          address_raw: t.targetAddress ?? "",
-          account: t.targetAccount,
-          ...(t.amount ? { amount: t.amount } : {}),
-        })),
-      ];
+      const {
+        cctpTransfers,
+        nativeTransfers,
+        nativeInboundClaims,
+        messages,
+        decodedMessages,
+        settlesForMayan,
+        beneficiaries,
+      } = readBridgeEvents(events, qualify);
 
       const bridgeSections = {
         ...(cctpTransfers.length

@@ -190,9 +190,10 @@ the coin that froze it, so it checks every configured coin type rather than the
 ones it holds.
 
 **What moved that was not a coin?** `trace_funds` reports `object_flow`, and
-`get_transaction` reports `object_changes` and `object_transfers` for one
-transaction. Sui is object-based, so a balance change only covers `Coin<T>`. An
-NFT, a Kiosk or a capability changes hands without producing one:
+`get_transaction` reports `object_changes`, `object_transfers` and
+`created_for` for one transaction. A balance change nets each owner's coins and
+address balance per coin type, so an NFT, a Kiosk or a capability changes hands
+without producing one:
 
 ```
 --- Hop 1 (2025-01-10 10:25:31 UTC) ---
@@ -299,8 +300,31 @@ get_transaction(796Fr642E4W3XfvNcUWknTsDywd4RouMaCbqL5Ziptk)
 ```
 
 Both parties there are Kiosk objects rather than wallets. `changed` counts every
-effect, including the coin or balance that paid, so it is a weaker signal than
-`object_transfers`.
+object effect, including the coin that paid, so it is a weaker signal than
+`object_transfers`. `created_for` lists objects minted to an owner other than
+the sender, which is a delivery even though nothing held them before.
+
+**Did funds move without a coin object?** An address balance holds funds
+credited to an address or an object id with no `Coin<T>` behind them.
+`get_transaction` lists each deposit and withdrawal, the withdrawals the
+transaction requested, and whether gas came from coins or the address balance:
+
+```
+get_transaction(CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay)
+  → object_changes: { changed: 0, created: 0, deleted: 0 }
+    address_balance_ops: [
+      { owner: 0xb71e…1d47, op: deposit,  amount: 1951 },
+      { owner: 0x7c8e…bdbf, op: withdraw, amount: 101951 } ]
+    funds_withdrawals: [ { amount: 1951, coin_type: …::sui::SUI, source: sender } ]
+    gas_source: address_balance
+```
+
+A coin folded into its owner's address balance is deleted while no value moves.
+That deposit carries `converted_from_coins` and a note saying so.
+`get_balance` and `get_wallet_overview` report `coin_balance` and
+`address_balance` beside each total, and `identify_address` and `get_object`
+list `address_balances` for an object id: funds the object holds itself, which
+are not among its fields and which only its defining module can withdraw.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks two things in object-id order, which is unrelated to
@@ -547,8 +571,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object. For a wallet, `names_held` lists every SuiNS registration it holds and whether it registered or used each one or was sent it by another address |
-| `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, recent txs |
+| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object. For an object, `address_balances` lists funds held in the object's own address balance. For a wallet, `names_held` lists every SuiNS registration it holds and whether it registered or used each one or was sent it by another address |
+| `get_wallet_overview` | Comprehensive wallet overview: balances (each split into `coin_balance` and `address_balance`), SuiNS name, staking, kiosks, recent txs |
 | `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. `subject_flow` is the wallet's own signed balance change per coin with formatted amounts; `token_flow` is the sender's |
 | `analyze_token` | Full token analysis: metadata, price, 24h change, supply, top holders |
 
@@ -563,7 +587,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `get_object` | Object by ID with type, owner, JSON content, and display metadata |
+| `get_object` | Object by ID with type, owner, JSON content, and display metadata; `address_balances` lists funds held in the object's own address balance, which are not among its fields |
 | `list_owned_objects` | List objects owned by an address with optional type filter |
 | `list_dynamic_fields` | Dynamic fields of an object (tables, kiosk contents, etc.) |
 
@@ -571,7 +595,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `get_balance` | Balance of a coin type for an address (defaults to SUI) |
+| `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
 | `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
 | `get_token_prices` | USD prices for tokens — current (Aftermath + Pyth), or historical via Pyth when `at` is set |
@@ -581,7 +605,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `get_transactions` | Reads up to 50 transactions in ONE call given their digests — sender, timing, balance changes, Move calls, and events with decoded fields. Ten digests go from ten round trips to one. Malformed digests are rejected before the request, because the server refuses a whole batch over one bad key |
-| `get_transaction` | Transaction by digest with protocol-decoded actions |
+| `get_transaction` | Transaction by digest with protocol-decoded actions, address-balance deposits and withdrawals, and where gas came from |
 | `query_transactions` | Filter transactions by sender, address, object, or function |
 | `query_events` | Filter events by type, sender, module, or checkpoint range |
 
@@ -659,7 +683,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `build_transfer` | Build an unsigned transfer of SUI or any coin (auto coin selection); returns BCS for `simulate_transaction` |
+| `build_transfer` | Build an unsigned transfer of SUI or any coin, drawing on coin objects and the address balance; returns BCS for `simulate_transaction` |
 | `build_staking` | Build an unsigned stake/unstake transaction (`action: stake\|unstake`) |
 | `simulate_transaction` | Dry-run a transaction to preview effects and gas cost |
 
@@ -667,7 +691,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes |
+| `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes, including `FundsWithdrawal` amounts and the gas source |
 | `check_activity` | Monitor address or object for new activity since a checkpoint |
 
 ### Incident Investigation

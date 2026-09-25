@@ -150,12 +150,12 @@ and never converges.
   objects at all, and `owner_kind: "object"` means the holder is an object
   (a bridge bank, a DeepBook balance manager), not a person's wallet.
 
-## A balance change only sees coins
+## What a balance change does not show
 
-Sui is object-based. A balance change is derived from `Coin<T>`, so everything
-else (an NFT, a Kiosk, an admin capability) changes hands invisibly to fund
-tracing. Measured: of 90 sampled capability objects, 74 had a last transfer with
-no non-gas balance change at all.
+A balance change nets each owner's coins and address balance per coin type.
+Everything that is not a coin (an NFT, a Kiosk, an admin capability) changes
+hands invisibly to fund tracing. Measured: of 90 sampled capability objects, 74
+had a last transfer with no non-gas balance change at all.
 
 `trace_funds` reports `object_flow` for this. What it changes about method:
 
@@ -180,6 +180,34 @@ no non-gas balance change at all.
 - **`appeared` means the previous holder is not recorded**, which is normal
   before roughly March 2024. It is not evidence of an unwrap, and not evidence
   of a transfer. The chain did not say.
+- **A mint to someone else is a delivery.** `get_transaction` lists objects
+  created for an owner other than the sender under `created_for`. A publisher
+  minting NFTs straight to two wallets produces no transfer and no balance
+  change.
+
+Funds also move without any coin object. An address balance holds funds
+credited to an address (or an object id) with no `Coin<T>` behind them:
+
+- **A wallet with no coin objects can still hold funds.** `get_balance` and
+  `get_wallet_overview` give `coin_balance` and `address_balance` beside the
+  total. A holder with `coin_balance: "0"` shows nothing in
+  `list_owned_objects`.
+- **Read address-balance activity from the transaction.** `get_transaction`
+  lists every deposit and withdrawal under `address_balance_ops`, the
+  withdrawals the transaction requested under `funds_withdrawals` (from the
+  `sender` or the gas `sponsor`), and `gas_source`. Accumulator writes are not
+  objects and are not counted in `object_changes`.
+- **A deleted coin is not necessarily spent.** A coin folded into its owner's
+  address balance is deleted while its value stays with the owner. That
+  deposit carries `converted_from_coins`; `balance_changes` say what the owner
+  actually gained or lost.
+- **An object can hold funds.** `identify_address` and `get_object` list
+  `address_balances` for an object id. Those funds are not among the object's
+  fields, and only its defining module can withdraw them.
+- **Pre-sign triage reads the withdrawal.** `decode_ptb` shows a
+  `FundsWithdrawal` input's `amount`, `coin_type` and `withdraw_from`. A PTB
+  that withdraws the whole address balance and calls `send_funds` to a
+  stranger moves everything without touching a coin.
 
 ## An address's rendering is not its identity
 
@@ -350,7 +378,10 @@ get the schema wrong in ways that fail silently.
 | Is this wallet automated? | `build_timeline` with `activity_hours` |
 | Where does this trace stop, and why? | `manage_labels` — sinks are yours to set |
 | What did this transaction do, with event values? | `get_transaction` |
-| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers` |
+| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers`, `created_for` |
+| Did funds move without a coin object? | `get_transaction` → `address_balance_ops`, `funds_withdrawals`, `gas_source` |
+| Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
+| Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — struct shapes, API, capability audit |
 | Who deployed this package? | `analyze_package` or `identify_address` → `publisher` |

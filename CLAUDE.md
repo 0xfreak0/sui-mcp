@@ -197,6 +197,28 @@ pool of gas coins.
   id read as a wallet. Verified on a TradePort sale where both parties were
   kiosks. `trace.ts` renders the same movement as `kiosk/object 0x…` and the
   two tools must not disagree about who a party is.
+- **Accumulator writes are not objects.** Effects list every address-balance
+  deposit or withdrawal as a `ChangedObject` with `outputState:
+  ACCUMULATOR_WRITE` and an `accumulatorWrite`; GraphQL `objectChanges` omits
+  them. Counted as objects, `CD2e4GVC…` (redeem 1951 MIST from the sender's
+  address balance, `send_funds` it on, gas from the address balance) reported
+  `changed: 2` and "none changed hands" while touching no object.
+  `summarizeObjectChanges` skips them; `address_balance_ops`,
+  `funds_withdrawals` (from the transaction's inputs) and `gas_source` (an
+  empty `gasPayment.objects`, or a reference whose digest ends in twenty 0xAC
+  bytes, is the address balance) report them instead. All three ride the
+  response already fetched.
+- **A deleted coin can be a self-sweep.** `34q8kUTe…` deleted a 704,848 SUI gas
+  coin and MERGEd it into the same owner's address balance while
+  `balance_changes` showed only the -100k payment. A coin deleted from owner X
+  plus a deposit of the same type to X is flagged on that deposit
+  (`converted_from_coins`), so a large deleted coin does not read as spent.
+- **A creation for someone else is not "none changed hands".** `custodyChanges`
+  leaves creations out, so Cetus's multisig minting NFTs to both exploiter
+  addresses (`8eHgw5hB…`) read as nothing moving. `createdFor` reports objects
+  created for an address, object or consensus owner other than the sender as
+  `created_for`, and the "none changed hands" note is withheld when there are
+  any.
 
 ## Completeness beats payload size
 
@@ -1345,10 +1367,12 @@ would put a genuine pair in two buckets and report nothing.
 
 ### Object flow: what moves that is not a coin
 
-A balance change is derived from `Coin<T>`, so **anything that is not a coin
-moves without producing one.** `trace_funds` reads `objectChanges` for that
-reason; do not remove it on the grounds that balance changes already cover
-value.
+A balance change nets each owner's `Coin<T>` objects and address balance per
+coin type, so **anything that is not a coin moves without producing one.**
+`trace_funds` reads `objectChanges` for that reason; do not remove it on the
+grounds that balance changes already cover value. Address-balance deposits and
+withdrawals do appear in balance changes, and a coin folded into its owner's
+address balance is deleted without any balance change at all.
 
 Measured on mainnet, sampling the transaction that last touched each object:
 `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 produced no

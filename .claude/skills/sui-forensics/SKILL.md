@@ -424,6 +424,11 @@ ten round trips for the same data.
   `h86261::h8b64d` and emitting DeepBook events *is* DeepBook.
   `protocols_from_events_only` marks that gap, and it is worth following:
   wrappers are what routers and laundering paths look like.
+- **`token_flow` is the sender's.** On a `get_transaction_history` or
+  `build_timeline` row it is the balance change of whoever sent the
+  transaction, so a transfer the subject received shows the sender's outflow.
+  The subject's own side is `subject_flow`: signed, formatted, with
+  `coin_verified`, and keyed by address in a timeline.
 
 ## A worked case
 

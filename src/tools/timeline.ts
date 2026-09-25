@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { boolArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
 import { batchResolveNames } from "../utils/names.js";
 import { getLabel } from "../utils/labels.js";
@@ -108,6 +108,10 @@ async function fetchAddressEntries(
         actions: decoded.actions,
         token_flow: decoded.token_flow,
         involved: [...involved],
+        // token_flow is the sender's; this is each tracked address's own side.
+        subject_flow: Object.fromEntries(
+          [...involved].map((a) => [a, addressFlow(adaptBalanceChanges(bcNodes), a)]),
+        ),
       });
     }
     if (!data.transactions.pageInfo.hasNextPage) break;

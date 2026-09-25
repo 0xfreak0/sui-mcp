@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { mergeTimelineEntries, parseTimeBound, type TimelineEntry } from "../src/utils/timeline.js";
 
-function entry(digest: string, checkpoint: number | null, timestamp: string | null, involved: string[]): TimelineEntry {
-  return { digest, checkpoint, timestamp, sender: null, status: "success", protocols: [], actions: [], token_flow: [], involved };
+function entry(
+  digest: string,
+  checkpoint: number | null,
+  timestamp: string | null,
+  involved: string[],
+  subject_flow: TimelineEntry["subject_flow"] = {},
+): TimelineEntry {
+  return { digest, checkpoint, timestamp, sender: null, status: "success", protocols: [], actions: [], token_flow: [], involved, subject_flow };
 }
 
 describe("parseTimeBound", () => {
@@ -35,6 +41,17 @@ describe("mergeTimelineEntries", () => {
     expect(merged).toHaveLength(2);
     expect(merged[0].digest).toBe("shared");
     expect(merged[0].involved.sort()).toEqual(["a", "b"]);
+  });
+
+  it("keeps every involved address's own flow when a tx is merged", () => {
+    const flow = (amount: string) => [
+      { coin: "SUI", amount, formatted: null, raw_type: "0x2::sui::SUI", coin_verified: true },
+    ];
+    const merged = mergeTimelineEntries(
+      [entry("shared", 5, "t", ["a"], { a: flow("-101847") }), entry("shared", 5, "t", ["b"], { b: flow("1847") })],
+      { limit: 10 },
+    );
+    expect(merged[0].subject_flow).toEqual({ a: flow("-101847"), b: flow("1847") });
   });
 
   it("windows by timestamp when bounds are given", () => {

@@ -549,7 +549,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 |---|---|
 | `identify_address` | Identify what a Sui address is: wallet, package, validator, or object |
 | `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, recent txs |
-| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions |
+| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. `subject_flow` is the wallet's own signed balance change per coin with formatted amounts; `token_flow` is the sender's |
 | `analyze_token` | Full token analysis: metadata, price, 24h change, supply, top holders |
 
 ### Chain & Network
@@ -690,7 +690,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `export_case` | Render a case as a Markdown report, highest-confidence findings first |
 | `delete_finding` | Retract a finding that turned out to be wrong |
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
-| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline |
+| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. `subject_flow` gives each involved address's own signed balance change, keyed by address; `token_flow` is the sender's |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |
 | `diff_package_upgrade` | Diff two package versions to detect malicious upgrades / backdoors |

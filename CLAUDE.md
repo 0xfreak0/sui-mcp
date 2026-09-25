@@ -1481,6 +1481,11 @@ data it already has, no extra query — and emits `bridge_exits`.
   gap, since a transaction whose calls are unreadable and whose events name a
   known protocol is what a router or wrapper looks like.
 - SDK `BalanceChange` has `address` (not `owner`)
+- **`token_flow` is the sender's balance change.** `decodeTransaction` builds it
+  from the sender alone, so on a row listed for another address an inflow reads
+  as the sender's outflow. A row about an address carries that address's own
+  side from `addressFlow` (`subject_flow` in history, keyed per involved address
+  in a timeline). Keep the `token_flow` name; consumers read it.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

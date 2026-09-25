@@ -10,14 +10,7 @@
  * answer is compared with a raw read; the rest pin facts that cannot change,
  * because both incidents are history.
  */
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const root = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
-const store = mkdtempSync(join(tmpdir(), "sui-incident-pass-"));
+import { startServer, gql, rawNet, checker, short, SUI } from "./lib/mcp-client.mjs";
 
 const NEMO_ATTACKER = "0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
 const NEMO_EXPLOIT = "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9";
@@ -30,83 +23,11 @@ const CETUS_MAYAN_EXIT = "6jMEFeap2GqxedFJPrQckmPwC78FeFodmkdCCjnFRWWb";
 const CETUS_BENEFICIARY = "0x89012a55cd6b88e407c9d4ae9b3425f55924919b";
 const BINANCE_DEPOSIT = "0x01740e57b294476b0ea72ead41ea91689c280b9277e0dcde98024c779f3a4efe";
 const BINANCE_HOT = "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd";
-const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 
-// ---- an MCP client over stdio, one server for the whole pass --------------
-const server = spawn(process.execPath, [join(root, "dist", "index.js")], {
-  env: { ...process.env, SUI_TOOLS: "all", SUI_STORE_PATH: join(store, "store.db") },
-  stdio: ["pipe", "pipe", "inherit"],
-});
-const pending = new Map();
-let nextId = 1;
-let buf = "";
-server.stdout.on("data", (d) => {
-  buf += d;
-  for (let i; (i = buf.indexOf("\n")) >= 0; ) {
-    const line = buf.slice(0, i);
-    buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    const msg = JSON.parse(line);
-    pending.get(msg.id)?.(msg);
-    pending.delete(msg.id);
-  }
-});
-const rpc = (method, params) =>
-  new Promise((resolve) => {
-    const id = nextId++;
-    pending.set(id, resolve);
-    server.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-  });
-
-/** A tool's first JSON object, or its text when it returned none. */
-async function call(name, args) {
-  const msg = await rpc("tools/call", { name, arguments: args });
-  if (msg.error) return { _error: msg.error.message };
-  const texts = (msg.result.content ?? []).map((c) => c.text ?? "");
-  const json = texts.find((t) => t.trim().startsWith("{"));
-  const out = json ? JSON.parse(json) : { _text: texts.join("\n") };
-  if (msg.result.isError) out._isError = true;
-  return out;
-}
-
-const gql = async (query, variables) => {
-  const r = await fetch("https://graphql.mainnet.sui.io/graphql", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query, variables }),
-  });
-  return (await r.json()).data;
-};
-
-/** One address's net change in one coin across the digests, read straight from the chain. */
-async function rawNet(digests, address, coinType) {
-  let net = 0n;
-  for (const digest of digests) {
-    const d = await gql(
-      `query($d:String!){ transaction(digest:$d){ effects { balanceChanges(first:50){ nodes { owner { address } coinType { repr } amount } } } } }`,
-      { d: digest },
-    );
-    for (const n of d?.transaction?.effects?.balanceChanges?.nodes ?? []) {
-      if (n.owner?.address === address && n.coinType?.repr === coinType) net += BigInt(n.amount);
-    }
-  }
-  return net;
-}
-
-const bad = [];
-const ck = (name, ok, detail = "") => {
-  console.log(`   ${ok ? "ok  " : "!!  "}${name}${detail ? `  ${detail}` : ""}`);
-  if (!ok) bad.push(`${name}${detail ? ` — ${detail}` : ""}`);
-};
-const short = (v) => String(v).slice(0, 80);
+const { call, callRaw, stop } = await startServer({ name: "incident-pass" });
+const { ck, finish } = checker();
 
 try {
-  await rpc("initialize", {
-    protocolVersion: "2025-06-18",
-    capabilities: {},
-    clientInfo: { name: "incident-pass", version: "1" },
-  });
-  server.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
 
   // ---- analyze_attack_tx: the attacker's net against the raw balance change
   console.log("\nanalyze_attack_tx on the Nemo exploit");
@@ -203,15 +124,10 @@ try {
   ck("it sweeps to the Binance hot wallet", dep.hot_wallet === BINANCE_HOT || dep.hot_wallet?.address === BINANCE_HOT, short(JSON.stringify(dep.hot_wallet)));
 
   // ---- size: the summary default holds --------------------------------------
-  const pkg = await rpc("tools/call", { name: "analyze_package", arguments: { package_id: "0x2" } });
+  const pkg = await callRaw("analyze_package", { package_id: "0x2" });
   const chars = (pkg.result?.content ?? []).reduce((n, c) => n + (c.text?.length ?? 0), 0);
   ck("analyze_package 0x2 stays under 60k characters", chars > 0 && chars < 60_000, `${chars}`);
 } finally {
-  server.kill();
-  rmSync(store, { recursive: true, force: true });
+  stop();
 }
-
-console.log(`\n${"=".repeat(64)}`);
-console.log(bad.length ? `${bad.length} PROBLEM(S):` : "no inconsistencies found");
-bad.forEach((p) => console.log(`  - ${p}`));
-if (bad.length) process.exitCode = 1;
+finish();

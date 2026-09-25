@@ -99,8 +99,11 @@ let unavailableReason: string | null = null;
  * address cannot say which chain they measured, so they are discarded rather
  * than assumed to be Sui mainnet. Unlike labels, that costs only a
  * re-measurement.
+ *
+ * 4 marks a gas sponsor's SUI change no longer counting as a payment, which
+ * lowered the recipient count of every sponsored sweep by one.
  */
-export const FANOUT_METHOD_VERSION = 3;
+export const FANOUT_METHOD_VERSION = 4;
 
 /**
  * Stamp for cached first-funder answers.

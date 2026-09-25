@@ -18,7 +18,7 @@ import { pricesForRanking } from "../utils/price-providers.js";
 import { measureFanout, type FanoutResult } from "../utils/fanout.js";
 import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
 import { detectFundingBursts, detectSubjectLinks } from "../utils/funding-signals.js";
-import { Budget, DEFAULT_POPULARITY_LIMIT, probeRecipients } from "../utils/edge-probe.js";
+import { Budget, countPaidAddresses, DEFAULT_POPULARITY_LIMIT, probeRecipients, type TxParties } from "../utils/edge-probe.js";
 import {
   BALANCE_CHANGES_SELECTION,
   completeTxConnections,
@@ -38,12 +38,16 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  */
 const TX_RECIPIENTS_QUERY = `query ($digest: String!) {
   transactionEffects(digest: $digest) {
+    transaction { sender { address } gasInput { gasSponsor { address } } }
     ${BALANCE_CHANGES_SELECTION}
   }
 }`;
 
 interface TxRecipientsResult {
-  transactionEffects: { balanceChanges: GqlConnection<GqlBalanceChangeNode> | null } | null;
+  transactionEffects: {
+    transaction?: TxParties | null;
+    balanceChanges: GqlConnection<GqlBalanceChangeNode> | null;
+  } | null;
 }
 
 /** Null when the transaction could not be read — never a default that reads as measured. */
@@ -55,12 +59,7 @@ async function countTxRecipients(digest: string): Promise<number | null> {
     // A partial list gives a lower bound, and a lower bound on the payout size
     // makes a batch read as bespoke. Unmeasured is the honest answer.
     if (truncated) return null;
-    const recipients = new Set<string>();
-    for (const n of nodes) {
-      // Positive only: the payer's own negative change is not a recipient.
-      if (n.owner?.address && n.amount && BigInt(n.amount) > 0n) recipients.add(n.owner.address);
-    }
-    return recipients.size;
+    return countPaidAddresses(nodes, r.transactionEffects.transaction);
   } catch {
     return null;
   }
@@ -396,13 +395,12 @@ export function registerFundingTools(server: McpServer) {
               }
             : null;
 
-        // A narrow address that pays one or two destinations is the shape of
-        // an exchange deposit address being swept (a sponsor's storage rebate
-        // counts as a second recipient in the fan-out). One more request reads
-        // the sweeps; the sponsor and destination are not measured here, so
-        // only a labelled exchange destination can make it `likely`.
+        // A narrow address that pays exactly one destination is the shape of
+        // an exchange deposit address being swept. One more request reads the
+        // sweeps; the sponsor and destination are not measured here, so only a
+        // labelled exchange destination can make it `likely`.
         const deposit =
-          !existing && result.classification === "narrow" && result.recipient_count <= 2 && result.sender_count >= 1
+          !existing && result.classification === "narrow" && result.recipient_count === 1 && result.sender_count >= 1
             ? await classifyDepositAddress(address, { measureSponsor: false, measureDestination: false }).catch(() => null)
             : null;
 

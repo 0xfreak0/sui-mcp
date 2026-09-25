@@ -33,6 +33,7 @@
 import { gqlQuery } from "../clients/graphql.js";
 import { BALANCE_CHANGES_SELECTION, completeTxConnections, readAllBalanceChanges, type GqlConnection } from "./tx-connections.js";
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
+import { isSponsorGasChange } from "./sponsor-gas.js";
 import { pickFundingTx, type FundingTx } from "./funding.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
@@ -180,6 +181,8 @@ const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
   transactions(filter: { sentAddress: $addr }, last: $last, before: $before) {
     nodes {
       digest
+      sender { address }
+      gasInput { gasSponsor { address } }
       effects { ${BALANCE_CHANGES_SELECTION} }
     }
     pageInfo { hasPreviousPage startCursor }
@@ -326,10 +329,15 @@ export async function probeRecipients(
     );
     budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     for (const [i, n] of page.transactions.nodes.entries()) {
+      const sender = n.sender?.address;
+      const sponsor = n.gasInput?.gasSponsor?.address;
       for (const bc of completed[i].balanceChanges) {
         const owner = bc.owner?.address;
         if (!owner || owner === address) continue;
         if (BigInt(bc.amount ?? "0") <= 0n) continue;
+        // The sponsor's storage rebate is not a payment, and a sponsor listed
+        // here would become a sibling candidate.
+        if (isSponsorGasChange(owner, bc.coinType?.repr, sender, sponsor)) continue;
         if (!members.has(owner)) members.set(owner, n.digest);
       }
     }
@@ -404,7 +412,10 @@ export async function probeSponsored(
  * sharing an operator. Without this the two are scored identically.
  */
 const TX_RECIPIENTS_QUERY = `query ($digest: String!) {
-  transactionEffects(digest: $digest) { ${BALANCE_CHANGES_SELECTION} }
+  transactionEffects(digest: $digest) {
+    transaction { sender { address } gasInput { gasSponsor { address } } }
+    ${BALANCE_CHANGES_SELECTION}
+  }
 }`;
 
 /** Null when the transaction could not be read — never a default that reads as measured. */
@@ -412,7 +423,10 @@ async function countTxRecipients(digest: string, budget: Budget): Promise<number
   if (!budget.take()) return null;
   try {
     const r = await gqlQuery<{
-      transactionEffects: { balanceChanges: GqlConnection<GqlBalanceChangeNode> } | null;
+      transactionEffects: {
+        transaction?: TxParties | null;
+        balanceChanges: GqlConnection<GqlBalanceChangeNode>;
+      } | null;
     }>(TX_RECIPIENTS_QUERY, { digest });
     const first = r.transactionEffects?.balanceChanges;
     if (!first) return null;
@@ -421,14 +435,33 @@ async function countTxRecipients(digest: string, budget: Budget): Promise<number
     budget.charge(all.reads);
     // A partial list would understate the batch and overstate the pair's weight.
     if (all.truncated) return null;
-    const recipients = new Set<string>();
-    for (const n of all.nodes) {
-      if (n.owner?.address && n.amount && BigInt(n.amount) > 0n) recipients.add(n.owner.address);
-    }
-    return recipients.size;
+    return countPaidAddresses(all.nodes, r.transactionEffects?.transaction);
   } catch {
     return null;
   }
+}
+
+/** Sender and gas sponsor of a transaction, as GraphQL selects them. */
+export interface TxParties {
+  sender?: { address?: string } | null;
+  gasInput?: { gasSponsor?: { address?: string } | null } | null;
+}
+
+/**
+ * Distinct addresses a transaction's balance changes paid: every positive
+ * change except the sender's own and a gas-only sponsor's storage rebate.
+ */
+export function countPaidAddresses(changes: GqlBalanceChangeNode[], parties: TxParties | null | undefined): number {
+  const sender = parties?.sender?.address;
+  const sponsor = parties?.gasInput?.gasSponsor?.address;
+  const recipients = new Set<string>();
+  for (const n of changes) {
+    const owner = n.owner?.address;
+    if (!owner || !n.amount || BigInt(n.amount) <= 0n) continue;
+    if (owner === sender || isSponsorGasChange(owner, n.coinType?.repr, sender, sponsor)) continue;
+    recipients.add(owner);
+  }
+  return recipients.size;
 }
 
 /**

@@ -140,6 +140,46 @@ describe("measureFanout", () => {
     expect(r.counterparty_count).toBe(0);
   });
 
+  // G9ygnUnq…: a deposit address sweeps 879,484 SUI to an exchange and the
+  // sweep's sponsor takes the storage rebate. The rebate is not a payment.
+  it("does not count a gas sponsor's storage rebate as a recipient or a sponsor's rebate as an inflow", async () => {
+    const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+    const DEPOSIT = "0x01740e57b294476b0ea72ead41ea91689c280b9277e0dcde98024c779f3a4efe";
+    const SPONSOR = "0x85c81a4f616f87a303ba2ae34eed758a2cc1938f80c186526cd3122375b87a95";
+    const HOT = "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd";
+    const sweep = {
+      transactions: {
+        nodes: [
+          {
+            digest: "G9ygnUnqC5VbLKt1Vr6KGvCRNzypmEs1SznHZgxpwiGP",
+            sender: { address: DEPOSIT },
+            gasInput: { gasSponsor: { address: SPONSOR } },
+            effects: {
+              balanceChanges: {
+                nodes: [
+                  { owner: { address: DEPOSIT }, amount: "-879484950900000", coinType: { repr: SUI } },
+                  { owner: { address: SPONSOR }, amount: "5748960", coinType: { repr: SUI } },
+                  { owner: { address: HOT }, amount: "879484950900000", coinType: { repr: SUI } },
+                ],
+              },
+            },
+          },
+        ],
+        pageInfo: { hasPreviousPage: false, startCursor: "c" },
+      },
+    };
+    gqlQuery.mockResolvedValue(sweep);
+    const deposit = await measureFanout(DEPOSIT, 50, false);
+    expect(deposit.recipient_count).toBe(1);
+
+    // Measured from the sponsor's side, its rebate is not value it took in,
+    // so neither party is a sender to it.
+    const sponsor = await measureFanout(SPONSOR, 50, false);
+    expect(sponsor.sender_count).toBe(0);
+    expect(sponsor.recipient_count).toBe(0);
+    expect(sponsor.sponsored_address_count).toBe(1);
+  });
+
   it("counts distinct coin types", async () => {
     gqlQuery.mockResolvedValueOnce(
       page([sendTo("0xb", "0x2::sui::SUI"), sendTo("0xc", "0xusdc::usdc::USDC")]),

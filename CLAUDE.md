@@ -1733,8 +1733,10 @@ Rules a change is likely to break:
 - **Every surface that shows a label shows its provenance** (`labelProvenance`).
 - **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
   the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
-  change. Deposit detection and screening skip it; `measureFanout` still counts
-  it as a recipient, which is why the fan-out deposit check gates on `<= 2`.
+  change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and
+  fan-out, the recipient probes, co-funding denominators, deposit detection and
+  screening all skip it. Only a sponsor that is not the sender is gas-only; a
+  self-paid sender's SUI change carries payments.
 - **Screening reads `sent` windows for outgoing value and bridge exits.** An
   exploiter's wallet collects airdrop spam afterwards; the Cetus attacker's
   last 100 affected transactions contain no exit, its last 100 sent ones

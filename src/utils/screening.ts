@@ -13,6 +13,7 @@ import { disclosedLabelSources, getLabel, labelProvenance, type LabelCategory } 
 import { sanctions } from "./sanctions.js";
 import { pricesForRanking } from "./price-providers.js";
 import { decimalsForCoinType, displayCoin, toHumanAmount, usdValue } from "./valuation.js";
+import { isSponsorGasChange } from "./sponsor-gas.js";
 
 /**
  * Exposure screening: is this address, directly or within a few hops, connected
@@ -82,11 +83,10 @@ export function flowsOf(subject: string, txs: ScreenTx[]): Flows {
     for (const c of tx.changes) {
       if (c.owner === subject) own.set(c.coinType, (own.get(c.coinType) ?? 0n) + c.amount);
     }
-    const gasOnly = tx.gasSponsor && tx.gasSponsor !== tx.sender ? tx.gasSponsor : null;
     for (const c of tx.changes) {
       if (c.owner === subject) continue;
       const mine = own.get(c.coinType) ?? 0n;
-      if (c.owner === gasOnly && /^0x0*2::sui::SUI$/.test(c.coinType)) continue;
+      if (isSponsorGasChange(c.owner, c.coinType, tx.sender, tx.gasSponsor)) continue;
       if (mine < 0n && c.amount > 0n) {
         push("out", c.owner, { digest: tx.digest, timestamp: tx.timestamp, coinType: c.coinType, amount: c.amount });
       } else if (mine > 0n && c.amount < 0n) {

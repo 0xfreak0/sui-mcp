@@ -1572,8 +1572,8 @@ data it already has, no extra query — and emits `bridge_exits`.
 - **The Sui wallet blocklist is `flagged_by`, tier third-party**, never a label
   or a sink, and mainnet-only (package-keyed). Package ids are stored as
   16-hex prefixes to keep the file near 2 MB; domains are not synced.
-### Historical prices
 
+### Historical prices
 
 `priceUsdAtTime` (`src/utils/valuation.ts`) is the one historical path, and
 `trace_funds`, `get_token_prices` with `at`, `analyze_attack_tx` and

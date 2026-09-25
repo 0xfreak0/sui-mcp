@@ -3,6 +3,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getLabel, labelProvenance } from "./labels.js";
 import { measureFanout, type FanoutResult } from "./fanout.js";
 import { decimalsForCoinType, displayCoin, toHumanAmount } from "./valuation.js";
+import { isSponsorGasChange } from "./sponsor-gas.js";
 
 /**
  * Is this address an exchange deposit address?
@@ -89,8 +90,6 @@ export interface DepositPattern {
 const human = (raw: bigint, coinType: string) =>
   `${toHumanAmount(raw, decimalsForCoinType(coinType))} ${displayCoin(coinType).symbol}`;
 
-const SUI_TYPE = /^0x0*2::sui::SUI$/;
-
 /** Per-coin net change for one owner in one transaction. */
 function netFor(tx: ScannedTx, owner: string): Map<string, bigint> {
   const out = new Map<string, bigint>();
@@ -139,7 +138,7 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
       const recipients = new Set<string>();
       for (const c of tx.changes) {
         if (c.owner === address || c.amount <= 0n) continue;
-        if (c.owner === sponsor && SUI_TYPE.test(c.coinType)) continue;
+        if (isSponsorGasChange(c.owner, c.coinType, tx.sender, tx.gasSponsor)) continue;
         if (lost.some(([coin]) => coin === c.coinType)) recipients.add(c.owner);
       }
       if (recipients.size !== 1) {
@@ -186,7 +185,7 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
       const from = new Set<string>();
       for (const c of tx.changes) {
         if (c.owner === address || c.amount >= 0n) continue;
-        if (c.owner !== tx.sender && c.owner === tx.gasSponsor && SUI_TYPE.test(c.coinType)) continue;
+        if (isSponsorGasChange(c.owner, c.coinType, tx.sender, tx.gasSponsor)) continue;
         if (gained.some(([coin]) => coin === c.coinType)) from.add(c.owner);
       }
       deposits.push({

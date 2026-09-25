@@ -3,6 +3,7 @@ import { getCachedFanout, saveFanout } from "./store.js";
 import { currentSuiAccount } from "./chain-id.js";
 import { BALANCE_CHANGES_SELECTION, completeTxConnections, type GqlConnection } from "./tx-connections.js";
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
+import { isSponsorGasChange } from "./sponsor-gas.js";
 
 /**
  * How many distinct addresses an address transacts with, in both directions.
@@ -386,16 +387,21 @@ export async function measureFanout(
       }
 
       const changes = completed[i].balanceChanges;
+      // A sponsor's SUI change is gas or its storage rebate, never a payment:
+      // counted, the sponsor of a sweep reads as a second recipient, and a
+      // sponsor measured as the subject reads its rebate as an inflow.
+      const gasOnly = (bc: GqlBalanceChangeNode) =>
+        isSponsorGasChange(bc.owner?.address, bc.coinType?.repr, sender, sponsor);
       // Whether this transaction moved value in or out decides which side each
       // counterparty belongs to, so read the subject's own change first.
-      const own = changes.find((c) => c.owner?.address === address);
+      const own = changes.find((c) => c.owner?.address === address && !gasOnly(c));
       const ownDelta = BigInt(own?.amount ?? "0");
 
       for (const bc of changes) {
         const owner = bc.owner?.address;
         if (!owner) continue;
         if (bc.coinType?.repr) coinTypes.add(bc.coinType.repr);
-        if (owner === address) continue;
+        if (owner === address || gasOnly(bc)) continue;
         // Subject paid out → the counterparty gaining value is a recipient.
         if (ownDelta < 0n && BigInt(bc.amount ?? "0") > 0n) recipients.add(owner);
         // Subject took value in → the counterparty losing value is a sender.

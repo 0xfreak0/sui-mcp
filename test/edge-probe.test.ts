@@ -9,7 +9,7 @@ vi.mock("../src/utils/store.js", () => ({
   saveFirstFunder: () => true,
 }));
 
-const { Budget, buildWalletEdges, probeRecipients, probeSponsored } = await import(
+const { Budget, buildWalletEdges, countPaidAddresses, probeRecipients, probeSponsored } = await import(
   "../src/utils/edge-probe.js"
 );
 
@@ -86,6 +86,32 @@ describe("probeRecipients — the bound, not the count", () => {
     await probeRecipients("0xF", 50, b);
     expect(b.used).toBe(2);
     expect(b.truncated).toBe(true);
+  });
+
+  it("does not make a sponsor that took the storage rebate a sibling candidate", async () => {
+    const sweep = payment("0xd1", "0xF", "0xa", "0x5905");
+    sweep.effects.balanceChanges.nodes.push({ owner: { address: "0x5905" }, amount: "5748960", coinType: { repr: SUI } });
+    mockGqlQuery.mockImplementation(async () => page([sweep], false));
+    const r = await probeRecipients("0xF", 50, new Budget(100));
+    expect([...r.members.keys()]).toEqual(["0xa"]);
+  });
+});
+
+describe("countPaidAddresses", () => {
+  const change = (owner: string, amount: string, coin = SUI) => ({ owner: { address: owner }, amount, coinType: { repr: coin } });
+
+  it("counts neither the sender nor a gas-only sponsor's rebate", () => {
+    const changes = [change("0xF", "-3000"), change("0xa", "1000"), change("0xb", "1000"), change("0x5905", "57")];
+    expect(
+      countPaidAddresses(changes, { sender: { address: "0xF" }, gasInput: { gasSponsor: { address: "0x5905" } } }),
+    ).toBe(2);
+  });
+
+  it("still counts a sponsor paid in a coin other than SUI", () => {
+    const changes = [change("0xF", "-3000", "0xusdc::usdc::USDC"), change("0x5905", "3000", "0xusdc::usdc::USDC")];
+    expect(
+      countPaidAddresses(changes, { sender: { address: "0xF" }, gasInput: { gasSponsor: { address: "0x5905" } } }),
+    ).toBe(1);
   });
 });
 

@@ -204,7 +204,8 @@ across 75 random active wallets and 265 pages of history.
   Check the suspect with `get_transaction_history` before writing it up.
 - **A clean result covers what was read.** One page of history is not a
   statement that the wallet was never targeted; the field is absent rather than
-  empty for that reason.
+  empty for that reason. The default page is the most recent activity; page
+  back with `next_cursor` to cover more of it.
 
 ## Packages: who deployed it, and who can change it
 
@@ -356,6 +357,7 @@ get the schema wrong in ways that fail silently.
 | Who can mint / upgrade / freeze, and did that change hands? | `trace_funds` → `object_flow.capability_transfers` |
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
+| What happened between two times? | `query_transactions`, `query_events`, `build_timeline` and `aggregate_events` take ISO bounds; `get_checkpoint {timestamp}` gives the checkpoint |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
 | Where did this object come from? | `trace_object_history` |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true |
@@ -410,6 +412,20 @@ ten round trips for the same data.
   `h86261::h8b64d` and emitting DeepBook events *is* DeepBook.
   `protocols_from_events_only` marks that gap, and it is worth following:
   wrappers are what routers and laundering paths look like.
+- **A package ID names one version.** An event's type carries the package that
+  defined its struct, which is often an older version than the one called;
+  `query_events` and `aggregate_events` rewrite such a type and report
+  `event_type_resolution`. A `function` or `module` filter matches calls through
+  one version only, and each version holds its own share of a protocol's calls:
+  read `function_scope` / `module_scope`, and use `all_versions: true` on
+  `query_transactions` to read the lineage as one list.
+- **Lists start at the newest row.** History, `query_transactions` and
+  `query_events` page back from the present unless `order: "oldest"` is set;
+  every page states its `order` and the `oldest_shown` / `newest_shown` times.
+- **A timeline walk has a budget.** In `build_timeline`, `coverage[].truncated`
+  means `per_address` ended that address's walk inside the window. Past its
+  `reached_checkpoint` the timeline is missing that address's activity; rerun
+  with its `continue_with` bound or a higher `per_address`.
 
 ## A worked case
 

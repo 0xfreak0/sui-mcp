@@ -66,8 +66,8 @@ export function buildCaseGraph(findings: Finding[], txs: CaseTx[], opts: CaseGra
     const id = `protocol:${names.join("+") || "unknown"}`;
     if (!seen.has(id)) {
       seen.add(id);
-      // Unnamed packages are listed only when nothing named was called: next
-      // to "Nemo", three hex prefixes are noise; alone, they are all there is.
+      // Unnamed packages are counted instead of listed when a named protocol
+      // was called in the same transaction.
       const named = names.filter((n) => !n.startsWith("0x"));
       const unnamed = names.length - named.length;
       const title = named.length

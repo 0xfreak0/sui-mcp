@@ -320,7 +320,7 @@ export class FlowEngine {
     // wallets are what the graph is following. Exchanges, bridges, mixers and
     // burn addresses end it.
     const label = getLabel(address);
-    if (!startAddress && isSink(address) && label?.category !== "malicious") {
+    if (!startAddress && isSink(address)) {
       if (label?.category === "bridge") {
         return { code: "bridge_exit", detail: `Labeled as a bridge (${label.label}). No curated marker was checked here; run resolve_bridge_transfer on the arriving transaction.`, nodeLevel: true };
       }

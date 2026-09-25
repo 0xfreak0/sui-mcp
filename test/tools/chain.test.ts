@@ -44,6 +44,9 @@ describe("get_chain_info", () => {
         server: "sui-node/1.0",
       },
     });
+    mockSui.ledgerService.getEpoch.mockResolvedValue({
+      response: { epoch: { referenceGasPrice: 100n } },
+    });
 
     const handler = tools.get("get_chain_info")!;
     const result = await handler({ epoch: undefined });
@@ -54,6 +57,8 @@ describe("get_chain_info", () => {
     expect(data.epoch).toBe("500");
     expect(data.checkpoint_height).toBe("100000");
     expect(data.timestamp).toBe("2023-11-14T22:13:20.000Z");
+    // The description promised a reference gas price that the response never had.
+    expect(data.reference_gas_price).toBe("100");
   });
 
   it("queries specific epoch with archive fallback", async () => {

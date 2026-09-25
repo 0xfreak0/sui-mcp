@@ -446,6 +446,29 @@ export function firstSpend(
 }
 
 /**
+ * Forward, every spend: each candidate after `current` in which `address`
+ * spent the tracked coin, in the order they happened. {@link firstSpend} is
+ * the first of these; a flow graph follows all of them until the traced
+ * amount is accounted for.
+ */
+export function allSpends(
+  candidates: CandidateTx[],
+  address: string,
+  coin: string | null,
+  skip: ReadonlySet<string>,
+  current?: string,
+): Array<{ tx: CandidateTx; spent: bigint }> {
+  const at = current ? candidates.findIndex((t) => t.digest === current) : -1;
+  const out: Array<{ tx: CandidateTx; spent: bigint }> = [];
+  for (const tx of candidates.slice(at + 1)) {
+    if (skip.has(tx.digest)) continue;
+    const net = changeFor(tx, address, coin, -1n);
+    if (net < 0n) out.push({ tx, spent: -net });
+  }
+  return out;
+}
+
+/**
  * Backward: every candidate in which `address` gained the tracked coin,
  * newest first.
  *

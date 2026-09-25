@@ -69,6 +69,9 @@ export const PROFILES = {
     "resolve_protocol_packages",
     "sample_control_addresses",
     "trace_funds",
+    // Every branch of the funds, and whether two addresses are connected at all.
+    "trace_flow_graph",
+    "find_flow_path",
     "resolve_bridge_transfer",
     "find_funding_source",
     "find_funding_sources",

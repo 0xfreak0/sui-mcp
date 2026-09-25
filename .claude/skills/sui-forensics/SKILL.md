@@ -51,7 +51,11 @@ holds one for a client.
    from there on the amounts include other funds. A hop with
    `signer_is_sender: false` was signed by `authorized_by` acting for the
    sender (an address alias or a protocol recovery); it is not the sender's own
-   act, and a forward trace stops there.
+   act, and a forward trace stops there. When the question is where *all* of
+   it went, use `trace_flow_graph`: it follows every branch and reports the
+   share of the value under each terminal. Read `coverage.truncated` and the
+   `budget` terminal before calling a share final, and remember the shares
+   rest on a first-in, first-out convention once funds are mixed.
 4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
    several addresses at once, which also reports co-funding and its denominators
    and every payment one subject signed to another (`subject_paid_subject`).
@@ -464,7 +468,10 @@ get the schema wrong in ways that fail silently.
 | question | tool |
 |---|---|
 | What is this address? | `identify_address` |
-| Where did the money go / come from? | `trace_funds`, `find_funding_source` |
+| Where did the money go / come from? | `trace_funds` (one branch), `find_funding_source` |
+| Where did ALL of it go, and how much reached each exit? | `trace_flow_graph` → `terminals`, `coverage` |
+| Is there any path from this wallet to that one (or to a foreign account a bridge paid)? | `find_flow_path` — a miss is not evidence; read `explored` |
+| A diagram for the report? | `format: "mermaid"` on `trace_flow_graph`, `find_flow_path`, `trace_funds`, `build_wallet_edges`; `export_case` with `format: "mermaid"` |
 | Several addresses at once? | `find_funding_sources` — shares work, reports co-funding |
 | Is this funder an exchange? | `get_address_fanout` |
 | Is this an exchange deposit address, and whose? | `classify_deposit_address` |

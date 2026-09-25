@@ -10,7 +10,7 @@ npm run build && npm run verify:live && npm test
 | Script | What it does |
 |---|---|
 | `dump-fixtures.mjs` | Regenerates `test/fixtures/signatures.json` from live mainnet. |
-| `adversarial.mjs` | Feeds every tool malformed and hostile input; passes only when they refuse or say "unknown". |
+| `adversarial.mjs` | Reads `tools/list` and generates malformed input for every field of every tool: missing, wrong type, null, blank, out of range, hostile strings chosen by what the field holds, unknown and misspelt argument names. A call passes when it answers within 60s, leaves the server up, fails with one readable line, and never answers a malformed input as valid. Ends with a per-tool table; about 3,200 calls in under 5 minutes. `VERBOSE=1` prints every case. |
 | `investigation.mjs` | Chained end-to-end run: a failed transaction, why it failed, who published the package, who they are, their fan-out and deny-list exposure. |
 | `full-case.mjs` | Cross-tool consistency — two tools must not disagree about one fact. Committees, publishers, coin verification, deny-list directions. |
 | `gap-pass.mjs` | Paths the other sweeps do not reach: a coin that really is regulated, a capped history. |

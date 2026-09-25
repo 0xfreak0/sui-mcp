@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
@@ -40,8 +40,7 @@ export function registerPackageLineageTools(server: McpServer) {
       package_id: addressArg()
         .optional()
         .describe("Any package ID in the lineage, of any age. Its whole upgrade history is walked."),
-      since: z
-        .string()
+      since: timePointArg()
         .optional()
         .describe(
           "How far back to probe for activity: ISO 8601 timestamp or checkpoint. Defaults to roughly the last day.",
@@ -81,6 +80,7 @@ export function registerPackageLineageTools(server: McpServer) {
         // for one protocol are often versions of a single package, and probing
         // the same address twice wastes a round trip per duplicate.
         const byAddress = new Map<string, { address: string; version: number }>();
+        let seedError: unknown;
         for (const seed of seeds) {
           try {
             const r = await gqlQuery<VersionsResult>(VERSIONS_QUERY, {
@@ -88,10 +88,19 @@ export function registerPackageLineageTools(server: McpServer) {
               last: max_versions ?? 8,
             });
             for (const n of r.packageVersions?.nodes ?? []) byAddress.set(n.address, n);
-          } catch {
+          } catch (err) {
             // A seed that is not a package (or does not exist) contributes
             // nothing rather than failing the whole lookup.
+            seedError ??= err;
           }
+        }
+        // No versions at all: an empty lineage reported as "nothing emitting"
+        // reads as a dead protocol when the ID was never a package.
+        if (byAddress.size === 0) {
+          if (seedError) throw seedError;
+          return errorResult(
+            `${package_id ?? seeds.join(", ")} is not a package on this network: no package versions were found for it.`,
+          );
         }
 
         const entries: LineageEntry[] = [];

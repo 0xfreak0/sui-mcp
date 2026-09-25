@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressListArg } from "./args.js";
+import { numArg, addressListArg, u64StringArg } from "./args.js";
 import { getNetwork } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { isWatchAlert } from "../utils/labels.js";
@@ -38,8 +38,7 @@ export function registerWatchTools(server: McpServer) {
         .string()
         .optional()
         .describe("Optional label applied to the addresses being added, e.g. 'victim' or 'suspect'"),
-      min_amount: z
-        .string()
+      min_amount: u64StringArg()
         .optional()
         .describe(
           'Only report coin movements at or above this, in RAW units of any coin (SUI has 9 decimals, so 0.5 SUI is "500000000"). Sinks and transactions that move no coin are reported regardless. Pass "0" to clear a floor set earlier; omitting it on a re-add keeps the existing one.',
@@ -179,6 +178,7 @@ export function registerWatchTools(server: McpServer) {
     "Return what has happened to watched addresses since the last poll, and nothing else. Cheap to call repeatedly: an empty result is a few dozen tokens. Each hit names a digest and why it fired; read the ones that matter with get_transaction.",
     {
       max_per_address: numArg()
+        .int()
         .min(1)
         .max(50)
         .optional()

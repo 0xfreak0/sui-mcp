@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { Transaction } from "@mysten/sui/transactions";
+import { bcs } from "@mysten/sui/bcs";
+import { fromBase64 } from "@mysten/sui/utils";
+import { errorResult } from "../utils/errors.js";
 import { lookupProtocolDisplay, lookupOperation, prefetchProtocolNames } from "../protocols/registry.js";
 import { flagPtbAnomalies, type FormattedCommand } from "../utils/ptb-anomalies.js";
 import { gasSource } from "../utils/address-balance.js";
@@ -169,7 +172,16 @@ export function registerDecodeTools(server: McpServer) {
         .describe("Base64-encoded BCS transaction bytes"),
     },
     async ({ transaction_bcs }) => {
-      const tx = Transaction.from(transaction_bcs);
+      // BCS parsing stops where the struct ends and ignores what follows, so
+      // 10,000 base64 'A's decoded as a transaction from 0x0 with no commands.
+      const bytes = fromBase64(transaction_bcs.trim());
+      const used = bcs.TransactionData.serialize(bcs.TransactionData.parse(bytes)).toBytes().length;
+      if (used !== bytes.length) {
+        return errorResult(
+          `Not one transaction: the first ${used} bytes decode as transaction data and ${bytes.length - used} bytes follow it.`,
+        );
+      }
+      const tx = Transaction.from(bytes);
       const data = tx.getData();
 
       // The SDK's Transaction shape differs from the gRPC one, so package IDs

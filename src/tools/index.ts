@@ -47,7 +47,7 @@ import { registerRestrictionTools } from "./restrictions.js";
 import { registerScreeningTools } from "./screening.js";
 import { registerAttackTools } from "./attack.js";
 import { registerFlowTools } from "./flows.js";
-import { withNetworkParam } from "./with-network.js";
+import { oneLineArgumentErrors, withNetworkParam } from "./with-network.js";
 import {
   applyProfiles,
   collectToolHandles,
@@ -65,6 +65,7 @@ export function registerAllTools(rawServer: McpServer) {
   //   collectToolHandles — records each registration so profiles can toggle it
   const handles: ToolHandles = new Map();
   explainDisabledTools(rawServer, handles);
+  oneLineArgumentErrors(rawServer);
   const server = collectToolHandles(withNetworkParam(rawServer), handles);
 
   registerChainTools(server);

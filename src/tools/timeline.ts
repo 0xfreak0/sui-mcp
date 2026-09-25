@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { boolArg, numArg, addressListArg } from "./args.js";
+import { boolArg, numArg, addressListArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
@@ -160,8 +160,8 @@ export function registerTimelineTools(server: McpServer) {
     "(Incident investigation) Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. Use it to reconstruct what happened across a set of wallets/objects during an incident. Bound it with `from`/`to` (ISO 8601 or checkpoint numbers); a time is resolved to the checkpoints stamped inside the window and applied in the query. With `from`, each address is read forward from the window start; without it, each address's most recent `per_address` transactions (before `to`, if given) are read. `coverage` reports per address how many transactions were read, whether `per_address` stopped the walk early (`truncated`), the checkpoint it reached, and the `from`/`to` that continues it. Each entry's `subject_flow` holds every involved tracked address's own signed balance change per coin, keyed by address; `token_flow` is the transaction sender's.",
     {
       addresses: addressListArg().min(1).max(10).describe("Addresses to merge into one timeline (1-10)"),
-      from: z.string().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
-      to: z.string().optional().describe("Window end: ISO date or a checkpoint number"),
+      from: timePointArg().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
+      to: timePointArg().optional().describe("Window end: ISO date or a checkpoint number"),
       limit: numArg().int().positive().max(200).optional().describe("Max timeline entries to return (default 60)"),
       per_address: numArg()
         .int()

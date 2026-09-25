@@ -145,12 +145,17 @@ export function registerPoolTools(server: McpServer) {
       if (!obj) return errorResult(`Object ${pool_id} not found`);
 
       const objectType = obj.type ?? "";
+      if (!objectType.includes("::")) {
+        return errorResult(`${pool_id} is a ${objectType || "non-Move object"}, not a pool.`);
+      }
       const typeParams = extractTypeParams(objectType);
       const packageId = extractPackageId(objectType);
 
-      // Determine protocol
-      let detectedProtocol = protocolHint?.toLowerCase() ?? null;
-      if (!detectedProtocol && packageId) {
+      // Determine protocol from the chain first. The hint only fills in when
+      // detection fails: taken first, protocol: "nonsense" relabelled a Cetus
+      // pool as "nonsense".
+      let detectedProtocol: string | null = null;
+      if (packageId) {
         // The ID here comes from the pool's *type*, so it is the package version
         // that declared the type — the lineage root for anything declared in v1,
         // but a later version for a type a protocol added on upgrade. Resolving
@@ -166,6 +171,18 @@ export function registerPoolTools(server: McpServer) {
         if (typeLower.includes("cetus")) detectedProtocol = "cetus";
         else if (typeLower.includes("deepbook") || typeLower.includes("clob")) detectedProtocol = "deepbook";
         else if (typeLower.includes("turbos")) detectedProtocol = "turbos";
+      }
+      const hint = protocolHint?.trim().toLowerCase();
+      if (hint && detectedProtocol && !detectedProtocol.includes(hint)) {
+        return errorResult(
+          `${pool_id} belongs to ${detectedProtocol}, not ${JSON.stringify(hint.slice(0, 80))}. Omit protocol to use the detected one.`,
+        );
+      }
+      detectedProtocol ??= hint ?? null;
+      // Every pool type is generic over the coins it holds; the Clock is not,
+      // and 0x2 is a registered "protocol", so detection alone let it through.
+      if (typeParams.length === 0) {
+        return errorResult(`${pool_id} is a ${objectType}, which is not a pool this tool can read.`);
       }
 
       const json = (obj.json ?? {}) as Record<string, unknown>;

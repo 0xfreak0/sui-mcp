@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { addressArg, numArg } from "./args.js";
+import { addressArg, numArg, coinTypeArg, timePointArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { describeAddresses, identityNote, type AddressIdentity } from "../utils/identity.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
@@ -357,9 +357,9 @@ export function registerFlowGraphTools(server: McpServer) {
       digest: z.string().optional().describe("Starting transaction (Base58). Give this or `address`."),
       address: addressArg().optional().describe("Start from this address instead of a transaction: its outflows after `from` (forward) or inflows before `to` (backward)."),
       direction: z.enum(["forward", "backward"]).optional().describe("forward (default) follows where the value went; backward follows who paid it in."),
-      coin_type: z.string().optional().describe("Follow only this coin from the start (e.g. 0x2::sui::SUI). The graph still follows value across swaps. Omitted: every coin the start moved."),
-      from: z.string().optional().describe("Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search."),
-      to: z.string().optional().describe("Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search."),
+      coin_type: coinTypeArg().optional().describe("Follow only this coin from the start (e.g. 0x2::sui::SUI). The graph still follows value across swaps. Omitted: every coin the start moved."),
+      from: timePointArg().optional().describe("Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search."),
+      to: timePointArg().optional().describe("Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search."),
       max_depth: numArg().int().min(1).max(8).optional().describe("Hops to follow from the start (default 4, max 8)."),
       max_nodes: numArg().int().min(1).max(150).optional().describe("Address nodes to expand (default 40, max 150). Larger branches are expanded first."),
       min_share: numArg().min(0).max(1).optional().describe("Do not expand branches carrying less than this fraction of the traced value (default 0.01 = 1%). They are counted under coverage.pruned."),
@@ -433,9 +433,9 @@ export function registerFlowGraphTools(server: McpServer) {
       from: addressArg().describe("Address the value starts at."),
       to: z.string().describe("Address the value should reach: a Sui address, a foreign-chain address a bridge exit pays (0x + 40 hex for EVM, base58 for Solana), or a CAIP-10 account."),
       max_hops: numArg().int().min(1).max(6).optional().describe("Longest path to look for, in transfers (default 4, max 6)."),
-      coin_type: z.string().optional().describe("Start by following only this coin. Swaps are still followed."),
-      window_start: z.string().optional().describe("Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history."),
-      window_end: z.string().optional().describe("Only transactions before this: ISO date or checkpoint."),
+      coin_type: coinTypeArg().optional().describe("Start by following only this coin. Swaps are still followed."),
+      window_start: timePointArg().optional().describe("Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history."),
+      window_end: timePointArg().optional().describe("Only transactions before this: ISO date or checkpoint."),
       max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100)."),
       min_share: numArg().min(0).max(1).optional().describe("Do not expand branches below this fraction of each side's value (default 0.001)."),
       format: FORMAT_ARG,

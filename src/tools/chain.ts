@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { timePointArg, u64StringArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { bigintToString, timestampToIso } from "../utils/formatting.js";
@@ -12,7 +13,7 @@ export function registerChainTools(server: McpServer) {
     "get_chain_info",
     "Get current Sui network info: chain ID, epoch, checkpoint height, timestamp, and reference gas price. Optionally pass an epoch number to get details for a specific epoch.",
     {
-      epoch: z.string().optional().describe("Epoch number to query. Returns current epoch info if omitted."),
+      epoch: u64StringArg().optional().describe("Epoch number to query. Returns current epoch info if omitted."),
     },
     async ({ epoch }) => {
       if (epoch) {
@@ -101,13 +102,11 @@ export function registerChainTools(server: McpServer) {
     "get_checkpoint",
     "Get a Sui checkpoint by sequence number, digest or timestamp, or the latest if none is given. Returns its timestamp, epoch and network transaction count. Use it to turn a checkpoint number into a time, or a time into a checkpoint: with `timestamp` it returns the checkpoint nearest that moment, plus the last checkpoint before it and the first at or after it, which are the exact edges for a checkpoint-range filter. query_transactions, query_events, build_timeline and aggregate_events also accept ISO times directly.",
     {
-      sequence_number: z
-        .string()
+      sequence_number: u64StringArg()
         .optional()
         .describe("Checkpoint sequence number"),
       digest: z.string().optional().describe("Checkpoint digest (Base58)"),
-      timestamp: z
-        .string()
+      timestamp: timePointArg()
         .optional()
         .describe("ISO 8601 time (2025-05-22T12:36:00Z) or 'now': return the checkpoint nearest it"),
     },

@@ -2,19 +2,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { z } from "zod";
 import { createMockClient } from "../helpers/mock-grpc.js";
 import { grpcError, notFoundError } from "../helpers/service-shapes.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const mockSui = createMockClient();
 vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 
-const { withNetworkParam } = await import("../../src/tools/with-network.js");
+const { withNetworkParam, oneLineArgumentErrors } = await import("../../src/tools/with-network.js");
 const { getNetwork } = await import("../../src/config.js");
 const { addressArg, addressListArg, numArg, boolArg } = await import("../../src/tools/args.js");
 
 interface Registered {
   name: string;
   description: string;
+  /** The fields of the registered argument object. */
   schema: Record<string, unknown>;
+  /** The argument object itself, as the SDK parses with it. */
+  object: z.ZodTypeAny;
   annotations?: unknown;
   handler: (args: unknown, extra?: unknown) => unknown;
 }
@@ -25,13 +30,14 @@ function fakeServer() {
   const server = {
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: Record<string, unknown>; annotations?: unknown },
+      config: { description?: string; inputSchema: z.AnyZodObject; annotations?: unknown },
       handler: Registered["handler"],
     ) {
       registered.push({
         name,
         description: config.description ?? "",
-        schema: config.inputSchema ?? {},
+        schema: config.inputSchema.shape,
+        object: config.inputSchema,
         annotations: config.annotations,
         handler,
       });
@@ -127,9 +133,9 @@ describe("withNetworkParam", () => {
   });
 });
 
-/** Parse `args` through a registered tool's schema, the way the SDK does before calling it. */
-function parseLikeSdk(schema: Record<string, unknown>, args: unknown) {
-  return z.object(schema as z.ZodRawShape).safeParse(args);
+/** Parse `args` through a registered tool's argument object, the way the SDK does before calling it. */
+function parseLikeSdk(tool: Registered, args: unknown) {
+  return tool.object.safeParse(args);
 }
 
 describe("withNetworkParam: argument shapes", () => {
@@ -149,7 +155,7 @@ describe("withNetworkParam: argument shapes", () => {
       },
       async () => ({ content: [] }),
     );
-    const r = parseLikeSdk(registered[0].schema, {
+    const r = parseLikeSdk(registered[0], {
       limit: null,
       hops: null,
       include_prices: null,
@@ -163,7 +169,7 @@ describe("withNetworkParam: argument shapes", () => {
   it("still reports a required field sent as null", () => {
     const { server, registered } = fakeServer();
     withNetworkParam(server).tool("probe", "desc", { address: addressArg() }, async () => ({ content: [] }));
-    const r = parseLikeSdk(registered[0].schema, { address: null });
+    const r = parseLikeSdk(registered[0], { address: null });
     expect(r.success).toBe(false);
     expect(!r.success && r.error.issues[0].message).toBe("Required");
   });
@@ -176,7 +182,7 @@ describe("withNetworkParam: argument shapes", () => {
       { addresses: addressListArg().min(1), digests: z.array(z.string()).optional() },
       async () => ({ content: [] }),
     );
-    const r = parseLikeSdk(registered[0].schema, { addresses: "0x2", digests: "abc" });
+    const r = parseLikeSdk(registered[0], { addresses: "0x2", digests: "abc" });
     expect(r.success).toBe(true);
     expect(r.data).toEqual({ addresses: [`0x${"0".repeat(63)}2`], digests: ["abc"] });
   });
@@ -253,5 +259,78 @@ describe("withNetworkParam: errors", () => {
     expect(JSON.parse(returned.content[0].text).error).toBe(
       "Not found (looked up on testnet; if it came from another network, pass network: 'mainnet' or 'devnet')",
     );
+  });
+
+  // A tool quotes the caller's input back, and an argument holding NUL or an
+  // ANSI escape put those raw bytes into the reply.
+  it("escapes control characters a tool echoed into its error", async () => {
+    const { server, registered } = fakeServer();
+    const wrapped = withNetworkParam(server);
+    wrapped.tool("thrower", "desc", {}, async () => {
+      throw new Error("Module 'a\u0000b\u001b[31m' not found in 0x2");
+    });
+    wrapped.tool("returner", "desc", {}, async () => ({
+      content: [{ type: "text", text: JSON.stringify({ error: "Collection \"x\u0007\" not found" }) }],
+      isError: true,
+    }));
+    for (const tool of registered) {
+      const result = (await tool.handler({})) as { content: Array<{ text: string }> };
+      const error = JSON.parse(result.content[0].text).error as string;
+      expect(error, tool.name).not.toMatch(/[\u0000-\u001f]/);
+      expect(error, tool.name).toMatch(/\\u00(00|07)/);
+    }
+  });
+});
+
+describe("argument errors over the protocol", () => {
+  async function connect(register: (server: McpServer) => void) {
+    const server = new McpServer({ name: "t", version: "0" });
+    oneLineArgumentErrors(server);
+    register(server);
+    const client = new Client({ name: "c", version: "0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    return client;
+  }
+
+  const disassemble = (server: McpServer) => {
+    withNetworkParam(server).tool(
+      "disassemble_module",
+      "desc",
+      { package_id: addressArg(), module_name: z.string().optional(), limit: numArg().int().min(1).max(5).optional() },
+      async ({ module_name }: { module_name?: string }) => ({
+        content: [{ type: "text", text: JSON.stringify({ listed_modules: module_name === undefined }) }],
+      }),
+    );
+  };
+
+  // The SDK stripped unknown keys, so {module: "pool"} reached the handler as
+  // no module at all and the tool answered with the module list.
+  it("refuses a misspelt argument instead of answering without it", async () => {
+    const client = await connect(disassemble);
+    const r = (await client.callTool({ name: "disassemble_module", arguments: { package_id: "0x2", module: "pool" } })) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
+    expect(r.isError).toBe(true);
+    const { error } = JSON.parse(r.content[0].text) as { error: string };
+    expect(error).toMatch(/^Invalid arguments for disassemble_module: Unknown argument "module" \(did you mean module_name\?\)/);
+    expect(error).toMatch(/Valid arguments: package_id, module_name, limit, network\./);
+  });
+
+  // The SDK joins issues with newlines and prefixes "MCP error -32602".
+  it("reports several bad arguments on one line, each with its field", async () => {
+    const client = await connect(disassemble);
+    const r = (await client.callTool({
+      name: "disassemble_module",
+      arguments: { package_id: "0x" + "a".repeat(10_000), limit: 2.5 },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(r.isError).toBe(true);
+    const { error } = JSON.parse(r.content[0].text) as { error: string };
+    expect(error).not.toMatch(/\n|MCP error/);
+    expect(error).toMatch(/^Invalid arguments for disassemble_module: /);
+    expect(error).toMatch(/package_id: Not a Sui address: "0xaaa[a]*…"/);
+    expect(error).toMatch(/limit: Expected integer/);
+    expect(error.length).toBeLessThanOrEqual(601);
   });
 });

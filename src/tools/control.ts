@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressListArg } from "./args.js";
+import { numArg, addressListArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
@@ -52,11 +52,10 @@ export function registerControlTools(server: McpServer) {
         .describe(
           "The cohort under test. Excluded from the draw; leaving them in contaminates the comparison.",
         ),
-      from: z
-        .string()
+      from: timePointArg()
         .optional()
         .describe("Window start: ISO 8601 timestamp or a checkpoint number."),
-      to: z.string().optional().describe("Window end: ISO 8601 timestamp, 'now', or a checkpoint."),
+      to: timePointArg().optional().describe("Window end: ISO 8601 timestamp, 'now', or a checkpoint."),
       seed: numArg()
         .int()
         .optional()

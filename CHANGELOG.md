@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.19.0 (2026-09-25)
 
 Two public incidents were replayed end to end through the server: the Cetus
 exploit of 22 May 2025 and the Nemo exploit of 7 September 2025. Both runs,

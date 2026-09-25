@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerCoinTools(server: McpServer) {
   server.tool(
     "get_balance",
-    "Get the liquid balance of one coin type for a Sui address (defaults to SUI), optionally at a historical checkpoint. This counts spendable coins ONLY: staked SUI and value locked in DeFi positions do not appear here, so a wallet that looks nearly empty may not be — pair it with get_staking_summary and get_defi_positions before concluding anything about what an address holds. For every coin at once, use get_wallet_overview.",
+    "Get the liquid balance of one coin type for a Sui address or object (defaults to SUI), optionally at a historical checkpoint. `balance` is the total the owner can spend: `coin_balance` is held as Coin<T> objects and `address_balance` sits in the owner's address balance, which holds funds without any coin object, so a wallet with no coins can still hold a large balance. For an object id, `address_balance` is funds held by the object itself, which only its defining module can withdraw. Staked SUI and value locked in DeFi positions do not appear here, so a wallet that looks nearly empty may not be: pair it with get_staking_summary and get_defi_positions before concluding anything about what an address holds. For every coin at once, use get_wallet_overview.",
     {
       owner: z.string().describe("Owner address (0x...)"),
       coin_type: z
@@ -23,7 +23,7 @@ export function registerCoinTools(server: McpServer) {
         const coinType = coin_type ?? "0x2::sui::SUI";
         const data = await gqlQuery<{
           address: {
-            balance: { coinType: { repr: string }; totalBalance: string } | null;
+            balance: { coinType: { repr: string }; totalBalance: string; coinBalance: string | null; addressBalance: string | null } | null;
           } | null;
         }>(
           `query($owner: SuiAddress!, $coinType: String!, $checkpoint: UInt53) {
@@ -31,6 +31,8 @@ export function registerCoinTools(server: McpServer) {
               balance(coinType: $coinType) {
                 coinType { repr }
                 totalBalance
+                coinBalance
+                addressBalance
               }
             }
           }`,
@@ -43,6 +45,8 @@ export function registerCoinTools(server: McpServer) {
             text: JSON.stringify({
               coin_type: bal?.coinType.repr ?? coinType,
               balance: bal?.totalBalance ?? "0",
+              coin_balance: bal?.coinBalance ?? "0",
+              address_balance: bal?.addressBalance ?? "0",
               at_checkpoint,
             }, null, 2),
           }],
@@ -61,6 +65,8 @@ export function registerCoinTools(server: McpServer) {
               {
                 coin_type: res.balance.coinType,
                 balance: res.balance.balance,
+                coin_balance: res.balance.coinBalance,
+                address_balance: res.balance.addressBalance,
               },
               null,
               2

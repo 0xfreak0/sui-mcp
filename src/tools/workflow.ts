@@ -30,6 +30,8 @@ export function registerWorkflowTools(server: McpServer) {
                 nodes: Array<{
                   coinType: { repr: string };
                   totalBalance: string;
+                  coinBalance: string | null;
+                  addressBalance: string | null;
                 }>;
                 pageInfo: { hasNextPage: boolean };
               };
@@ -52,6 +54,8 @@ export function registerWorkflowTools(server: McpServer) {
                   nodes {
                     coinType { repr }
                     totalBalance
+                    coinBalance
+                    addressBalance
                   }
                   pageInfo { hasNextPage }
                 }
@@ -92,7 +96,12 @@ export function registerWorkflowTools(server: McpServer) {
       const nameResult = addrData?.defaultNameRecord?.domain ?? null;
       const rawBalances = (addrData?.balances.nodes ?? [])
         .filter((b) => b.totalBalance !== "0")
-        .map((b) => ({ coinType: b.coinType.repr, balance: b.totalBalance }));
+        .map((b) => ({
+          coinType: b.coinType.repr,
+          balance: b.totalBalance,
+          coinBalance: b.coinBalance ?? "0",
+          addressBalance: b.addressBalance ?? "0",
+        }));
       const hasNextPage = addrData?.balances.pageInfo.hasNextPage ?? false;
       const txResult = gqlResult;
       const coinTypes = rawBalances.map((b) => b.coinType);
@@ -144,6 +153,11 @@ export function registerWorkflowTools(server: McpServer) {
           // one with another. Marked here for the same reason a trace marks it.
           verified: known.verified,
           balance: b.balance,
+          // `balance` is the total. A holding with no Coin<T> objects sits
+          // entirely in the address balance, so list_owned_objects shows no
+          // coin for it while this shows the funds.
+          coin_balance: b.coinBalance,
+          address_balance: b.addressBalance,
         };
 
         if (include_prices) {

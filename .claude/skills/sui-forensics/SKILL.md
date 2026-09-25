@@ -324,6 +324,35 @@ state at `0xa`). `identify_address` reports this as `aliases`.
 Measured on mainnet 2026-09-15: 63 wallets had enabled aliases. It is new, so
 absence is unremarkable and presence is worth a second look.
 
+## Exploit transactions and incident losses
+
+`analyze_attack_tx` breaks down one transaction; `summarize_incident_losses`
+totals many, grouped by the pool each drained.
+
+```
+analyze_attack_tx("DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x")
+  profit: +10,024,321.275 haSUI $44.0M, +5,765,124.463 SUI $24.0M
+  flash swap (calls): pool::flash_swap repaid by pool::repay_flash_swap on 0x871d8a22…
+  swap on 0x871d8a22…: price_change_pct -99.999906 (sqrt price)
+  pool 0x871d8a22… lost $68.0M by its own events
+
+summarize_incident_losses(digests: <265 Cetus exploit digests>)
+  $193.7M across 103 priced coins; 92 more have no price, so a lower bound
+  265 pool groups, largest 0x871d8a22… $68.0M
+```
+
+- **Balance changes and pool losses are chain-derived.** A pool's loss is summed
+  from its own swap and liquidity events, and an event naming the pool in a
+  shape the tool does not read is listed in `undecoded_events`, not guessed.
+- **Flash legs, oracle touches and anomalies are heuristic.** They are matched
+  on function and event names. Check the paired calls before writing "flash
+  loan" in a report.
+- **USD is a provider's price, not the chain's.** Each price carries its
+  source, confidence and `price_offset_sec`. A price sampled after the exploit
+  may already reflect it; `price_at` sets the moment every coin is priced at.
+- **A total with unpriced coins is a lower bound.** Say so, and quote
+  `unpriced_remainder` with it. An unpriced coin is not worth zero.
+
 ## Which tool answers what
 
 Reaching for raw GraphQL is almost always a sign you missed a tool. Two of the
@@ -357,6 +386,9 @@ get the schema wrong in ways that fail silently.
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
+| What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
+| Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
+| What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
 | Where did this object come from? | `trace_object_history` |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true |
 | Has anything moved since I looked? | `watch_addresses` then `poll_watch` |

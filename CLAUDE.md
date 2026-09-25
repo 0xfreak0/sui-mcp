@@ -1405,7 +1405,8 @@ data it already has, no extra query — and emits `bridge_exits`.
 ### Historical prices
 
 `priceUsdAtTime` (`src/utils/valuation.ts`) is the one historical path, and
-`trace_funds` and `get_token_prices` with `at` both use it. Four rules:
+`trace_funds`, `get_token_prices` with `at`, `analyze_attack_tx` and
+`summarize_incident_losses` all use it. Four rules:
 
 - **DefiLlama is the keyless source, and its key is the PADDED coin type.**
   `sui:0x2::sui::SUI` resolves, but a stripped leading zero does not:
@@ -1424,6 +1425,27 @@ data it already has, no extra query — and emits `bridge_exits`.
 DefiLlama returns the sample it used, which can be hours from the second asked
 for: 50 of 103 Cetus-exploit prices at 10:30 UTC were more than an hour away.
 Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
+
+### Attack analysis
+
+`analyze_attack_tx` and `summarize_incident_losses` read over gRPC
+(`src/utils/attack-read.ts`), pure logic in `src/utils/attack-analysis.ts`.
+
+- **gRPC events carry their JSON.** `Event.json` is filled by the fullnode AND
+  the archive (verified on the Cetus and Nemo exploits, both pruned from the
+  fullnode), so a pruned transaction still has decoded event fields.
+  GraphQL's nested connections page at 20; the Nemo exploit has 214 commands
+  and 103 events.
+- **`batchGetTransactions` is bounded by the 4 MiB response, not a count.** 100
+  Cetus-exploit transactions fit in one call and 200 did not. Batches are 25,
+  and an overflowing batch is re-read one digest at a time.
+- **Flash pairing ignores framework singletons.** Nearly every DeFi call takes
+  the Clock (`0x6`); counting it as the object a borrow and a repay share
+  pairs any borrow with any repay.
+- **Pool losses come from the pool's own events, read by field name.** An event
+  naming a pool with amount fields in an unread shape goes to
+  `undecoded_events`. One with no amount field (opening a position) moves
+  nothing and is not listed.
 
 ## Key Patterns
 

@@ -99,6 +99,11 @@ export const OVERRIDES: Record<string, Override> = {
   screen_address: { meta: FULL_SIZE, structured: true },
   trace_funds: { structured: true },
   build_wallet_edges: { structured: true },
+  summarize_address_flows: { meta: FULL_SIZE, structured: true },
+  trace_flow_graph: { meta: FULL_SIZE, structured: true },
+  find_flow_path: { structured: true },
+  get_upgrade_history: { structured: true },
+  classify_deposit_address: { structured: true },
 };
 
 /** Words a title spells differently from the tool name. */

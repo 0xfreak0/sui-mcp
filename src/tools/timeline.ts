@@ -25,6 +25,7 @@ import {
   type ListOrder,
 } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { foldRepeats } from "../utils/formatting.js";
 
 interface TxNode {
   digest: string;
@@ -128,7 +129,7 @@ async function fetchAddressEntries(
         sender,
         status: node.effects?.status?.toLowerCase() === "success" ? "success" : (node.effects?.status?.toLowerCase() ?? "unknown"),
         protocols: decoded.protocols,
-        actions: decoded.actions,
+        actions: foldRepeats(decoded.actions),
         token_flow: decoded.token_flow,
         involved: [...involved],
         // token_flow is the sender's; this is each tracked address's own side.

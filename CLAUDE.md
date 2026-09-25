@@ -367,6 +367,12 @@ lists every object and holder. `find_funding_sources` keeps each result's origin
 first funder and first hop, and `include_chains` returns every hop; shared
 funders, co-funding and payments are computed from the full chains either way.
 
+A list row folds repeats: `get_transaction_history` and `build_timeline`
+actions and `query_transactions` `move_calls` go through `foldRepeats`, each
+distinct entry once with ` ×N`. The Nemo exploit's 214-command PTBs made a
+30-minute `build_timeline` 195k characters. `get_transaction` keeps every
+action in order, so the sequence is one call away.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from

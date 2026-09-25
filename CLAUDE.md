@@ -127,7 +127,7 @@ was missing from history, traces, funding and fan-out alike.
   returning null rather than an understated recipient count.
 - **Metered callers charge the follow-ups.** `CompletedTx.reads` counts them;
   `edge-probe.ts` charges them to its `Budget`, `watch-probe.ts` to `requests`.
-- `objectChanges` defaults to 1,024 per page; `trace.ts` pages it and
+- `objectChanges` defaults to 1,024 per page; `trace-read.ts` pages it and
   `watch-probe.ts` flags `object_changes_truncated`. Events of one transaction
   are paged by `event-json.ts`.
 
@@ -276,7 +276,7 @@ pool of gas coins.
   `custodyChanges` already exist for `trace_funds`. This tool simply was not
   calling them, so the deep-dive single-transaction tool saw less than the trace
   did. Pass `lookupProtocol`, not the display resolver: the resolver gates a
-  `defi-position` promotion, and `trace.ts` passes the curated one.
+  `defi-position` promotion, and `trace-read.ts` passes the curated one.
 - **`object_transfers` carries the owner KIND, not a bare address.** A
   kiosk-held NFT is owned by the Kiosk object, so an address alone made a kiosk
   id read as a wallet. Verified on a TradePort sale where both parties were
@@ -1329,7 +1329,7 @@ Two smaller rules from the same path:
 
 - **Select `ConsensusAddressOwner`.** Sampled 300 mainnet objects across five
   types and found none, so this is not fixing a live miscount: it is a schema
-  variant the rest of the repo already selects (`trace.ts`, `watch-probe.ts`,
+  variant the rest of the repo already selects (`trace-read.ts`, `watch-probe.ts`,
   and five more handlers) and the NFT query did not. Cost is three lines of
   query text. If party objects do appear, the alternative is counting a real
   party as an unresolvable owner.
@@ -1690,7 +1690,8 @@ its CCTP burn and Wormhole message are only visible as events.
 
 ### How `trace_funds` picks the next hop
 
-Pure logic in `src/utils/trace-hop.ts`, the searches in `src/tools/trace.ts`.
+Pure logic in `src/utils/trace-hop.ts`; the transaction read and the searches
+in `src/utils/trace-read.ts`.
 Rules a change is likely to break:
 
 - **Gas is removed before any SUI comparison.** The gas payer's SUI change

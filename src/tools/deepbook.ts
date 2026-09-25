@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import {
   fetchCandles,
@@ -99,8 +99,7 @@ export function registerDeepBookTools(server: McpServer) {
       limit: numArg().int().min(1).max(200).optional().describe("Max trades (default 50)."),
       start_time: numArg().int().optional().describe("Window start, Unix seconds."),
       end_time: numArg().int().optional().describe("Window end, Unix seconds."),
-      balance_manager_id: z
-        .string()
+      balance_manager_id: addressArg()
         .optional()
         .describe("Only trades where this balance manager was maker or taker."),
     },
@@ -173,6 +172,7 @@ export function registerDeepBookTools(server: McpServer) {
         .optional()
         .describe("End of window, Unix seconds. Defaults to now."),
       threshold_pct: numArg()
+        .nonnegative()
         .optional()
         .describe("Absolute deviation percent that counts as notable (default 1)."),
     },

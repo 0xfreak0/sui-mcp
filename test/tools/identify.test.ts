@@ -247,4 +247,48 @@ describe("identify_address error handling", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/not evidence the address is a wallet/i);
   });
+
+  it("reports a failed balance, name or token read as unknown, not zero", async () => {
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockGqlQuery.mockResolvedValue({
+      epoch: {
+        validatorSet: {
+          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        },
+      },
+    });
+    mockSui.getBalance.mockRejectedValue(grpcError("UNAVAILABLE"));
+    mockSui.nameService.reverseLookupName.mockRejectedValue(grpcError("DEADLINE_EXCEEDED"));
+    mockSui.listBalances.mockRejectedValue(grpcError("UNAVAILABLE"));
+
+    const res = await tools.get("identify_address")!({ address: "0xwallet" });
+    const data = JSON.parse(res.content[0].text);
+    expect(data.type).toBe("wallet");
+    expect(data.sui_balance).toBeNull();
+    expect(data.sui_balance_unavailable).toMatch(/unknown, not zero/);
+    expect(data.sui_name).toBeNull();
+    expect(data.sui_name_unavailable).toMatch(/DEADLINE_EXCEEDED/);
+    expect(data.token_count).toBeNull();
+    expect(data.token_count_unavailable).toBeDefined();
+  });
+
+  it("does not flag a name lookup that found no name", async () => {
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockGqlQuery.mockResolvedValue({
+      epoch: {
+        validatorSet: {
+          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        },
+      },
+    });
+    mockSui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "0" } });
+    mockSui.nameService.reverseLookupName.mockRejectedValue(notFoundError("no name record"));
+    mockSui.listBalances.mockResolvedValue({ balances: [] });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xwallet" })).content[0].text);
+    expect(data.sui_name).toBeNull();
+    expect(data.sui_name_unavailable).toBeUndefined();
+    expect(data.sui_balance).toBe("0");
+    expect(data.sui_balance_unavailable).toBeUndefined();
+  });
 });

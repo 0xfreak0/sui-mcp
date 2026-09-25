@@ -31,6 +31,7 @@ function registeredToolNames(): string[] {
       names.push(args[0] as string);
       return { enabled: true, enable() {}, disable() {} };
     },
+    server: { setRequestHandler() {} },
   } as unknown as McpServer;
   registerAllTools(fake);
   return names.filter((n) => n !== "enable_tools");

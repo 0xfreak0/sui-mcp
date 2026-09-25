@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { suivisionPackageUrl } from "../config.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
@@ -97,7 +98,7 @@ export function registerPackageTools(server: McpServer) {
     "get_package",
     "(Developer) Get a Sui Move package by its ID. Returns modules with structs (abilities + ordered fields in BCS declaration order) and functions categorized by visibility (entry, public, friend, private).",
     {
-      package_id: z.string().describe("Package ID (0x...)"),
+      package_id: addressArg().describe("Package ID (0x...)"),
     },
     async ({ package_id }) => {
       const { response: res } = await sui.movePackageService.getPackage({
@@ -191,7 +192,7 @@ export function registerPackageTools(server: McpServer) {
     "get_move_function",
     "(Developer) Get a specific Move function signature from a Sui package. Returns parameters, type parameters, return type, and visibility.",
     {
-      package_id: z.string().describe("Package ID (0x...)"),
+      package_id: addressArg().describe("Package ID (0x...)"),
       module_name: z.string().describe("Module name"),
       function_name: z.string().describe("Function name"),
     },

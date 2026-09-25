@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressListArg } from "./args.js";
 import { getNetwork } from "../config.js";
+import { errorResult } from "../utils/errors.js";
 import { isSink } from "../utils/labels.js";
 import {
   advanceWatch,
@@ -30,8 +31,7 @@ export function registerWatchTools(server: McpServer) {
       action: z
         .enum(["add", "remove", "list"])
         .describe("add, remove, or list the current watch set"),
-      addresses: z
-        .array(z.string())
+      addresses: addressListArg()
         .optional()
         .describe("Addresses to add or remove (0x...)"),
       label: z
@@ -51,7 +51,7 @@ export function registerWatchTools(server: McpServer) {
         content: [{ type: "text" as const, text: JSON.stringify(o, null, 2) }],
       });
 
-      if (!storeStatus().enabled) return out({ error: NO_STORE });
+      if (!storeStatus().enabled) return errorResult(NO_STORE);
 
       if (action === "list") {
         const watches = listWatches(network);
@@ -59,16 +59,16 @@ export function registerWatchTools(server: McpServer) {
       }
 
       if (!addresses?.length) {
-        return out({ error: "addresses is required for add and remove." });
+        return errorResult("addresses is required for add and remove.");
       }
 
       // Raw integer units only. "0.5", "1e9" and "1_000" all threw inside
       // BigInt and fell back to no floor at all, so a caller asking to see only
       // large movements got every movement and was told nothing.
       if (min_amount !== undefined && !/^\d+$/.test(min_amount.trim())) {
-        return out({
-          error: `min_amount must be a whole number of RAW coin units, not "${min_amount}". SUI has 9 decimals, so 0.5 SUI is "500000000".`,
-        });
+        return errorResult(
+          `min_amount must be a whole number of RAW coin units, not "${min_amount}". SUI has 9 decimals, so 0.5 SUI is "500000000".`,
+        );
       }
 
       // Rejected here rather than at the delta query, where one bad address
@@ -112,10 +112,13 @@ export function registerWatchTools(server: McpServer) {
       }
 
       if (valid.length === 0) {
-        return out({
-          error: "No valid Sui addresses given. Expected 0x followed by up to 64 hex characters.",
-          rejected,
-        });
+        return {
+          ...out({
+            error: "No valid Sui addresses given. Expected 0x followed by up to 64 hex characters.",
+            rejected,
+          }),
+          isError: true,
+        };
       }
 
       // A new watch starts from NOW. Seeding at zero would replay the wallet's
@@ -188,7 +191,7 @@ export function registerWatchTools(server: McpServer) {
         content: [{ type: "text" as const, text: JSON.stringify(o, null, 2) }],
       });
 
-      if (!storeStatus().enabled) return out({ error: NO_STORE });
+      if (!storeStatus().enabled) return errorResult(NO_STORE);
 
       const watches = listWatches(network);
       if (watches.length === 0) {

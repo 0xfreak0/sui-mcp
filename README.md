@@ -436,6 +436,10 @@ npm audit signatures
 
 All environment variables are optional. See [`.env.example`](.env.example) for the full list; the common ones are `SUI_NETWORK` (default network), `SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (custom RPC endpoints), and `SUI_LABELS_FILE` (address attribution labels for fund tracing).
 
+GraphQL requests retry a rate limit (HTTP 429), a 5xx or a dropped connection up to four times with backoff, time out after 30 seconds, and run at most eight at a time per network. If the public endpoint still rate-limits a heavy investigation, set `SUI_GRAPHQL_URL` to a private one.
+
+Address arguments accept any case, a short form (`0x2`), the hex without `0x`, or a SuiNS name (`example.sui`). A name is resolved on the call's network and echoed back as `resolved_from`.
+
 ### Price sources
 
 Current USD prices come from **Aftermath**, which is free and needs no key. That is the default path, and it covers everything except historical pricing.

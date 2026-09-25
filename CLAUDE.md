@@ -202,12 +202,68 @@ Numeric and boolean tool args use `numArg()` / `boolArg()` from
 `src/tools/args.ts`, never bare `z.number()` / `z.boolean()`. A model composing
 JSON will sometimes quote a value (`max_hops: "8"`), and strict validation turns
 that into a hard failure for something whose intent was never ambiguous.
-Coercion does not loosen the advertised contract — the generated JSON schema is
-byte-identical — and `"abc"` is still rejected.
+Leniency does not loosen the advertised contract: the generated JSON schema is
+byte-identical, and `"abc"` is still rejected.
+
+`numArg` is not `z.coerce.number()`. `Number("")`, `Number(" ")` and
+`Number(false)` are all 0, so an empty placeholder became `limit: 0` and the
+tool answered with an empty page and `has_next_page: false`. Only a string that
+spells a decimal number is converted. `NumArg` overrides `_addCheck` and
+`setLimit` because zod builds every `.int()` / `.min()` / `.max()` with a
+hard-coded `new ZodNumber`, which would drop the string handling. Put the
+service's cap in the schema (`.int().min(1).max(50)` on a GraphQL page size)
+rather than clamping silently in the handler.
 
 `boolArg` is deliberately not `z.coerce.boolean()`, which applies JavaScript
 truthiness and turns the string `"false"` into `true`. Silently inverting a
 caller's intent is worse than the rejection this is meant to fix.
+
+Every Sui address, object ID or package ID param uses `addressArg()` /
+`addressListArg()`. They trim, lower-case, add `0x`, pad to 64 hex digits and
+reject anything that is not hex (`canonicalSuiAddress` in `chain-id.ts`, the
+same rule the store applies). The chain reports addresses canonically, so a
+handler comparing a raw upper-case or short argument against chain data never
+matches: an upper-case address turned `find_funding_source` into a dead end, a
+fan-out into zero counterparties, and a validator into a wallet. Params that
+also take an MVR name (`@org/app`) or a CAIP-10 id (`manage_labels`,
+`save_finding`) stay `z.string()` and normalise in the handler.
+
+`addressArg` also accepts a SuiNS name (`name.sui`) and leaves it as the name.
+`withNetworkParam` finds address fields with `isAddressSchema`, resolves names
+on the call's network before the handler runs, and adds `resolved_from` plus a
+note that the name is a purchasable handle. An unregistered name is an error,
+not a pass-through.
+
+`withNetworkParam` also wraps every field so `null` means unset (an optional
+field gets its default, a required one reports "Required") and a bare string
+where a list is expected becomes a one-item list. This runs as a `z.preprocess`
+on each field, so the JSON schema is the field's own.
+
+### Errors a tool returns
+
+`withNetworkParam` catches a thrown error and returns `errorResult` with one
+line from `describeError` (`src/utils/errors.ts`): percent-escapes decoded,
+`graphql-request`'s JSON dump cut, first non-empty line only, 500 characters at
+most. A not-found names the network it was looked up on and the other networks
+to try. The same cleaning runs over an `isError` result a tool built itself.
+
+`gqlQuery` retries 429, 5xx and connection resets (`GRAPHQL_TRANSPORT` in
+`config.ts`: 4 attempts, jittered exponential backoff, `Retry-After` honoured up
+to 8s), gives each attempt a 30s `AbortSignal.timeout`, and allows 8 requests in
+flight per network. An exhausted 429 reports the endpoint and suggests
+`SUI_GRAPHQL_URL`; a GraphQL error reports its first message. Callers never see
+`ClientError`.
+
+A read that fails must not render as empty or zero. When the core read of a
+tool fails, return `isError`. When a secondary read fails, set its value to
+`null` and add a `*_unavailable` string saying what is unknown, as
+`identify_address` does for `sui_balance`, `sui_name`, `token_count` and
+`aliases`, and `get_wallet_overview` for `staked_sui_count` and `kiosk_count`.
+
+A call to a tool that the active profile disabled gets a reply naming its
+profile and the `enable_tools` call. `explainDisabledTools` in `toolset.ts`
+wraps the SDK's `tools/call` handler as the SDK installs it, so it must run
+before the first tool registers.
 
 ## Writing documentation
 
@@ -766,7 +822,9 @@ rule is *wrong* elsewhere. Left-padding a 20-byte EVM address to 32 bytes
 invents an address belonging to nobody, and lowercasing a Solana address
 destroys base58, which is case-significant. An unknown chain is rejected rather
 than passed through, so an unnormalized id never reaches storage where it would
-fail to match its own canonical form.
+fail to match its own canonical form. The Sui rule checks the hex before it
+pads, because `normalizeSuiAddress` alone turns `0xzz` into a 66-character
+string that a case report would list and a label would mark as a sink.
 
 Sui-scoped callers (traces, balances, fan-out) still pass bare `0x…` strings.
 The boundary resolves them with `currentSuiAccount()`, which qualifies against

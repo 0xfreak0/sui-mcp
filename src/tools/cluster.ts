@@ -1,5 +1,4 @@
-import { z } from "zod";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressListArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { getLabel } from "../utils/labels.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
@@ -46,8 +45,7 @@ export function registerClusterTools(server: McpServer) {
     "build_wallet_edges",
     "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address — the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference — each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
     {
-      addresses: z
-        .array(z.string())
+      addresses: addressListArg()
         .min(1)
         .max(25)
         .describe("Seed addresses to examine (1-25). Give it every address you already suspect belongs together — links between seeds are the exactly-verified ones."),

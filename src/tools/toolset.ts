@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { errorResult } from "../utils/errors.js";
 import {
   DEFAULT_PROFILES,
@@ -55,6 +56,37 @@ function isToggleable(value: unknown): value is ToggleableTool {
     typeof (value as ToggleableTool).enable === "function" &&
     typeof (value as ToggleableTool).disable === "function"
   );
+}
+
+/**
+ * Answer a call to a disabled tool with the profile that holds it.
+ *
+ * The SDK replies "Tool trace_funds disabled", which names neither the profile
+ * nor `enable_tools`, and a model reading it concludes the tool is broken. The
+ * SDK's `tools/call` handler is installed when the first tool registers, so
+ * this wraps `setRequestHandler` beforehand: calls to an enabled tool go
+ * straight through, and a disabled one gets the hint without reaching the SDK.
+ *
+ * Call once, before any tool is registered on `server`.
+ */
+export function explainDisabledTools(server: McpServer, handles: ToolHandles): void {
+  type Handler = (request: { params: { name: string } }, extra: unknown) => unknown;
+  const inner = server.server;
+  const setRequestHandler = inner.setRequestHandler.bind(inner) as (schema: unknown, handler: Handler) => void;
+  inner.setRequestHandler = ((schema: unknown, handler: Handler) => {
+    if (schema !== CallToolRequestSchema) return setRequestHandler(schema, handler);
+    return setRequestHandler(schema, (request, extra) => {
+      const name = request.params.name;
+      if (handles.get(name)?.enabled !== false) return handler(request, extra);
+      const profile = PROFILE_NAMES.find((p) => (PROFILES[p] as readonly string[]).includes(name));
+      return errorResult(
+        profile
+          ? `${name} is in the '${profile}' profile, which is not enabled in this session. ` +
+              `Call enable_tools({ profile: '${profile}' }), then call ${name} again.`
+          : `${name} is disabled in this session. Call enable_tools({ profile: 'all' }), then call ${name} again.`,
+      );
+    });
+  }) as typeof inner.setRequestHandler;
 }
 
 /**

@@ -313,4 +313,19 @@ describe("get_transaction reports what a transaction touched", () => {
     const j = await run(emptyTx());
     expect(j.object_transfers).toBeUndefined();
   });
+
+  it("says decoding was skipped when max_event_field_bytes is 0", async () => {
+    const withEvents = emptyTx();
+    withEvents.response.transaction.events = {
+      events: [
+        { packageId: "0x2", module: "coin", eventType: "0x2::coin::CoinBalanceChange", sender: "0xsender" },
+        { packageId: "0x2", module: "coin", eventType: "0x2::coin::CoinBalanceChange", sender: "0xsender" },
+      ],
+    } as never;
+    const j = await run(withEvents);
+    expect(j.events).toHaveLength(2);
+    expect(j.events[0].parsed).toBeUndefined();
+    expect(j.event_fields_omitted).toBe(2);
+    expect(j.event_fields_budget_note).toMatch(/skipped because you set max_event_field_bytes=0/);
+  });
 });

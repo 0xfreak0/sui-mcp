@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { describeAddresses } from "../utils/identity.js";
 import { restrictionNote } from "../utils/deny-list.js";
@@ -32,8 +32,7 @@ export function registerRestrictionTools(server: McpServer) {
         .string()
         .optional()
         .describe("Full coin type (e.g. '0xabc::usdc::USDC'). Lists every address frozen for it."),
-      address: z
-        .string()
+      address: addressArg()
         .optional()
         .describe(
           "Address to check. Without coin_type, checks the coins this address actually holds — being frozen for a coin it has never touched is not a finding.",

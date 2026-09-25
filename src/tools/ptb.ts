@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { addressArg } from "./args.js";
 import { Transaction } from "@mysten/sui/transactions";
 import { sui } from "../clients/grpc.js";
 import { errorResult } from "../utils/errors.js";
@@ -24,8 +25,8 @@ export function registerPtbTools(server: McpServer) {
     "build_transfer",
     "Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. For SUI it splits from the gas coin; for other coins it selects and merges the sender's coins to cover the amount. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
-      sender: z.string().describe("Sender address (0x...)"),
-      recipient: z.string().describe("Recipient address (0x...)"),
+      sender: addressArg().describe("Sender address (0x...)"),
+      recipient: addressArg().describe("Recipient address (0x...)"),
       amount: z
         .string()
         .describe("Amount in the coin's smallest unit (raw, no decimals; for SUI this is MIST — 1 SUI = 1e9 MIST)"),
@@ -93,10 +94,10 @@ export function registerPtbTools(server: McpServer) {
     "Build an unsigned transaction to stake or unstake SUI. action='stake' delegates SUI to a validator (needs validator_address + amount_mist); action='unstake' withdraws a StakedSui object (needs staked_sui_id). Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
       action: z.enum(["stake", "unstake"]).describe("'stake' to delegate SUI, 'unstake' to withdraw a StakedSui"),
-      sender: z.string().describe("Sender address (0x...)"),
-      validator_address: z.string().optional().describe("(stake) Validator address to stake with (0x...)"),
+      sender: addressArg().describe("Sender address (0x...)"),
+      validator_address: addressArg().optional().describe("(stake) Validator address to stake with (0x...)"),
       amount_mist: z.string().optional().describe("(stake) Amount to stake in MIST (1 SUI = 1e9 MIST)"),
-      staked_sui_id: z.string().optional().describe("(unstake) Object ID of the StakedSui to withdraw"),
+      staked_sui_id: addressArg().optional().describe("(unstake) Object ID of the StakedSui to withdraw"),
     },
     async ({ action, sender, validator_address, amount_mist, staked_sui_id }) => {
       const tx = new Transaction();

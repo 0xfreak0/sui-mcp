@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressListArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
@@ -124,7 +124,7 @@ export function registerTimelineTools(server: McpServer) {
     "build_timeline",
     "(Incident investigation) Build a single chronological, protocol-decoded timeline of activity across multiple addresses — merged, de-duplicated, and ordered by checkpoint. Use it to reconstruct what happened across a set of wallets/objects during an incident. Optionally bound by a time window (`from`/`to` as ISO dates or checkpoint numbers).",
     {
-      addresses: z.array(z.string()).min(1).max(10).describe("Addresses to merge into one timeline (1-10)"),
+      addresses: addressListArg().min(1).max(10).describe("Addresses to merge into one timeline (1-10)"),
       from: z.string().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
       to: z.string().optional().describe("Window end: ISO date or a checkpoint number"),
       limit: numArg().int().positive().max(200).optional().describe("Max timeline entries to return (default 60)"),

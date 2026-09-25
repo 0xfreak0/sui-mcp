@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, coinTypeArg } from "./args.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { getLabel, isSink, labelProvenance, type LabelProvenance } from "../utils/labels.js";
@@ -404,8 +404,7 @@ export function registerTraceTools(server: McpServer) {
         .max(10)
         .optional()
         .describe("Max hops to follow (default 3, max 10)"),
-      coin_type: z
-        .string()
+      coin_type: coinTypeArg()
         .optional()
         .describe("Start by following this coin type, and restrict the DISPLAYED balance changes to it (e.g. 0x2::sui::SUI; the short and padded forms match). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown and the first hop picks the largest flow."),
       format: z

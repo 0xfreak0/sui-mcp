@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { coinTypeArg, numArg, refinePoint } from "./args.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { pythApiKey, availableSources, fetchDefiLlama } from "../utils/price-providers.js";
 import { isVerifiedCoin } from "../utils/coin-registry.js";
@@ -101,7 +101,7 @@ export function registerPriceTools(server: McpServer) {
     "Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. Needs no API key. Current prices come from Aftermath, then DefiLlama, then Pyth. Historical prices come from Pyth when PYTH_API_KEY is set and the coin is on the verified list, and from DefiLlama otherwise. Every price names its source, confidence and the time of the sample it came from, and every coin that could not be priced is listed under `unpriced` with the reason. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
     {
       coin_types: z
-        .array(z.string())
+        .array(coinTypeArg())
         .min(1)
         .max(100)
         .describe(
@@ -109,6 +109,7 @@ export function registerPriceTools(server: McpServer) {
         ),
       at: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Optional: price AT this point in time, as Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices."),
     },

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
-import { numArg } from "./args.js";
+import { numArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
@@ -321,8 +321,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
     "(Incident investigation) Upgrade governance across a package's whole lineage. For every version: package id, publish/upgrade transaction, time, sender, the sender's signing scheme (single key, zkLogin, passkey, or multisig with its threshold and which members signed), and who held the UpgradeCap at that moment. Flags an UpgradeCap round trip (it leaves its usual holder, an upgrade ships, and it returns within `round_trip_hours`), an upgrade signed by a single key while the cap is usually multisig-held, an upgrade-policy change, and a cap that was destroyed (package made immutable), wrapped, frozen, shared or sent to an unspendable address. Pass `as_of` to ask who held upgrade authority at a moment and which version was the newest then. Also lists non-framework dependency relinks per version. Accepts any version's 0x id or an MVR name (@org/app).",
     {
       package: z.string().describe("Any version's package ID (0x...) or an MVR name (@org/app)"),
-      as_of: z
-        .string()
+      as_of: timePointArg()
         .optional()
         .describe("ISO 8601 timestamp, 'now', or checkpoint number: report the cap holder and newest version at that moment"),
       round_trip_hours: numArg()

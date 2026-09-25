@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { numArg } from "./args.js";
+import { numArg, refinePoint } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
 import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
@@ -309,10 +309,12 @@ export function registerAttackTools(server: McpServer) {
         .describe("Read every transaction this address sent inside the window instead of a digest list."),
       start: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Window start with `sender`: a checkpoint number or ISO 8601 time. Inclusive."),
       end: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Window end with `sender`: a checkpoint number or ISO 8601 time. Inclusive."),
       max_transactions: numArg()
@@ -327,6 +329,7 @@ export function registerAttackTools(server: McpServer) {
         .describe("Address whose gains to total. Defaults to `sender`, or to each transaction's sender."),
       price_at: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Price every coin at this moment (Unix seconds or ISO 8601). Defaults to the first successful transaction's time, before prices reacted."),
       max_groups: numArg()

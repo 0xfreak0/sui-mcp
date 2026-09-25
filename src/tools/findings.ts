@@ -309,7 +309,7 @@ export function registerFindingsTools(server: McpServer) {
     "delete_finding",
     "(Incident investigation) Remove a finding by id — for retracting something that turned out to be wrong. Use list_findings to get ids. Requires SUI_STORE_PATH.",
     {
-      finding_id: numArg().int().describe("Finding id from list_findings."),
+      finding_id: numArg().int().min(1).describe("Finding id from list_findings."),
     },
     async ({ finding_id }) => {
       const blocked = storeRequired();

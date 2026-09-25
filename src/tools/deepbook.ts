@@ -97,8 +97,8 @@ export function registerDeepBookTools(server: McpServer) {
     {
       pool_name: z.string().describe("Pool name such as 'SUI_USDC'."),
       limit: numArg().int().min(1).max(200).optional().describe("Max trades (default 50)."),
-      start_time: numArg().int().optional().describe("Window start, Unix seconds."),
-      end_time: numArg().int().optional().describe("Window end, Unix seconds."),
+      start_time: numArg().int().min(0).optional().describe("Window start, Unix seconds."),
+      end_time: numArg().int().min(0).optional().describe("Window end, Unix seconds."),
       balance_manager_id: addressArg()
         .optional()
         .describe("Only trades where this balance manager was maker or taker."),
@@ -169,6 +169,7 @@ export function registerDeepBookTools(server: McpServer) {
       limit: numArg().int().min(1).max(100).optional().describe("Candles to compare (default 24)."),
       end_time: numArg()
         .int()
+        .min(0)
         .optional()
         .describe("End of window, Unix seconds. Defaults to now."),
       threshold_pct: numArg()

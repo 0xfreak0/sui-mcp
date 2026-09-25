@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, coinTypeArg, timePointArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { errorResult } from "../utils/errors.js";
 import { formatCoinAmount } from "../utils/coin-amount.js";
@@ -22,8 +22,7 @@ export function registerCoinTools(server: McpServer) {
     {
       owner: addressArg().optional().describe("Owner address (0x...). Required; `address` is accepted in its place."),
       address: addressArg().optional().describe("Alias for `owner`."),
-      coin_type: z
-        .string()
+      coin_type: coinTypeArg()
         .optional()
         .describe("Coin type (default: 0x2::sui::SUI)"),
       at_checkpoint: numArg()
@@ -31,8 +30,7 @@ export function registerCoinTools(server: McpServer) {
         .nonnegative()
         .optional()
         .describe("Balance as of the end of this checkpoint. Give this or `at`, not both."),
-      at: z
-        .string()
+      at: timePointArg()
         .optional()
         .describe(
           "Balance as of this time (ISO 8601, e.g. 2025-09-07T16:00:00Z): the last checkpoint stamped at or before it. Give this or `at_checkpoint`, not both.",
@@ -158,8 +156,7 @@ export function registerCoinTools(server: McpServer) {
     "get_coin_info",
     "Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). Returns name, symbol, decimals, description, icon URL, and total supply. If you only have a name or symbol, use search_token first to find the coin type.",
     {
-      coin_type: z
-        .string()
+      coin_type: coinTypeArg()
         .describe("Coin type (e.g. 0x2::sui::SUI)"),
     },
     async ({ coin_type }) => {

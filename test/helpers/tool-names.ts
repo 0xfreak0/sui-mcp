@@ -14,12 +14,15 @@ export function registeredTools(): RegisteredTool[] {
     // registerAllTools wraps the protocol server's request handler to explain
     // calls to disabled tools, so the fake has to expose one.
     server: { setRequestHandler() {} },
-    tool(name: string, description: string, schema: Record<string, { description?: string }>) {
-      const params = Object.values(schema ?? {})
+    registerTool(
+      name: string,
+      config: { description?: string; inputSchema?: Record<string, { description?: string }> },
+    ) {
+      const params = Object.values(config.inputSchema ?? {})
         .map((s) => s?.description)
         .filter((d): d is string => typeof d === "string");
-      out.push({ name, texts: [description, ...params] });
-      return { enabled: true, enable() {}, disable() {} };
+      out.push({ name, texts: [config.description ?? "", ...params] });
+      return { enabled: true, enable() {}, disable() {}, update() {} };
     },
   } as unknown as McpServer;
   registerAllTools(fake);

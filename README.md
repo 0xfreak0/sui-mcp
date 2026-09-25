@@ -395,11 +395,20 @@ in, the base-rate check that keeps shared ancestry from reading as collusion,
 and the conclusions to refuse. "No edge found, so they are unrelated" is the
 most common of those.
 
+Clients without skills get the same method as MCP prompts. Each one states the
+task and the order of tool calls, followed by the skill sections that govern it:
+
+| Prompt | Arguments | For |
+|---|---|---|
+| `investigate_address` | `address`, optional `network`, `case_name` | What an address is, who funded it, where its money went |
+| `trace_incident` | `subject` (attack digest or attacker address), optional `network`, `case_name` | What an exploit took, how, and where it went |
+| `attribute_cluster` | `addresses` (comma-separated), optional `network`, `case_name` | Whether several addresses share an operator, with a control group |
+
 ## Tool profiles
 
-All 68 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 68 tools loaded at once cost about 26k tokens of context on every request (103k characters of tool list; `core` alone is about 6k tokens and `core,forensics` about 21k), and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
 
-When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile.
+When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile. `enable_tools` names every tool that is still off, and the server's `instructions` name the profiles and the main investigation tools, so a client that shows them to the model knows what to ask for. Profile names are case-insensitive.
 
 To start with more, set `SUI_TOOLS`:
 
@@ -415,7 +424,7 @@ To start with more, set `SUI_TOOLS`:
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
 | `all` | 59 | Everything |
 
-Runtime switching relies on `notifications/tools/list_changed`. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
+Runtime switching relies on `notifications/tools/list_changed`, sent once per `enable_tools` call. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
 
 Upgrading from 1.1.x, where every tool loaded at startup? Set `SUI_TOOLS=all` to keep that behaviour.
 
@@ -453,7 +462,8 @@ npm audit signatures
 
 ## Capabilities
 
-- **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
+- **Per-call network** — every chain tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default. Tools that only use the local store (`list_findings`, `export_case`, `delete_finding`) do not take it.
+- **MCP metadata** — every tool has a title and annotations: chain reads are `readOnlyHint: true`, and the tools that write the store (`save_finding`, `delete_finding`, `manage_labels`, `watch_addresses`, `poll_watch`) are not, with `destructiveHint` on the ones that delete. `trace_funds`, `find_funding_sources`, `build_wallet_edges`, `analyze_attack_tx` and `screen_address` also return their JSON as `structuredContent`. Tools whose complete result is the point (`get_transaction`, `get_transactions`, `find_funding_sources`, `analyze_attack_tx`, `summarize_incident_losses`, `screen_address`) declare `anthropic/maxResultSizeChars`, so Claude Code keeps their results inline up to 500k characters.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
 - **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, exploit-transaction breakdown and incident loss totals in USD at block time, PTB anomaly triage, oracle-vs-market deviation
 - **Multisig** — a Sui address is the hash of its authenticator, so the committee is read off the address itself. Names every member, says which keys are live and which have never signed, and shows who signed a given transaction. Also handles zkLogin and passkey wallets
@@ -504,6 +514,8 @@ Set `SUI_STORE_PATH` to keep address labels and fan-out measurements across sess
 ```
 
 Fund traces are not cached. A trace depends on your label set, so a stored result would disagree with a fresh run as soon as a label changed.
+
+Each recorded case is also a resource, `sui://case/{name}`, holding the Markdown report `export_case` renders. `resources/list` lists every case in the store.
 
 ```json
 {

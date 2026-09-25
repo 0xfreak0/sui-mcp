@@ -96,7 +96,7 @@ describe("resolve_bridge_transfer", () => {
     const data = await call({ digest: "D" });
     const dest = data.wormhole_messages[0].destination;
     expect(dest.status).toBe("completed");
-    expect(dest.account).toBe("eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed");
+    expect(dest.redeemed_via_contract.account).toBe("eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -143,10 +143,10 @@ describe("resolve_bridge_transfer", () => {
     const dest = data.wormhole_messages[0].destination;
     // On testnet, Wormhole chain 2 is Sepolia — calling it eip155:1 would file
     // a testnet address under a mainnet chain and read as verified.
-    expect(dest.account).toBeNull();
+    expect(dest.redeemed_via_contract.account).toBeNull();
     expect(dest.chain).toBeNull();
     expect(dest.wormhole_chain_id).toBe(2);
-    expect(dest.address_note).toMatch(/reuses its chain numbers/i);
+    expect(dest.redeemed_via_contract.address_note).toMatch(/reuses its chain numbers/i);
   });
 
   it("says the network has no index rather than querying the wrong one", async () => {
@@ -185,5 +185,39 @@ describe("resolve_bridge_transfer", () => {
     mockGqlQuery.mockResolvedValue({ transaction: null });
     const res = await runWithNetwork("mainnet", () => resolve({ digest: "nope" }));
     expect(res.isError).toBe(true);
+  });
+
+  it("names Mayan's beneficiary and marks the CCTP leg as settlement (6jMEFeap…)", async () => {
+    // 54.4M of the Cetus attacker's 61.3M USDC left through Mayan. The CCTP
+    // burn mints to Mayan's contract 0x875d…, which was reported as the
+    // destination account with a next step to record it.
+    const pkg = "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df";
+    mockGqlQuery.mockResolvedValue(
+      txWith([
+        {
+          contents: {
+            type: { repr: "0x2aa6::deposit_for_burn::DepositForBurn" },
+            json: {
+              nonce: "80750",
+              amount: "1000000000000",
+              mint_recipient: "0x000000000000000000000000875d6d37ec55c8cf220b9e5080717549d8aa8eca",
+              destination_domain: 0,
+            },
+          },
+        },
+        {
+          contents: {
+            type: { repr: `${pkg}::init_order::OrderCreated` },
+            json: { addr_dest: "0x00000000000000000000000089012a55cd6b88e407c9d4ae9b3425f55924919b", chain_dest: 2 },
+          },
+        },
+        { contents: { type: { repr: `${pkg}::init_order::InitMctpLogged` }, json: {} } },
+      ]),
+    );
+    const data = await call({ digest: "D", include_destination: false });
+    expect(data.beneficiaries.map((b: { account: string }) => b.account)).toEqual([
+      "eip155:1:0x89012a55cd6b88e407c9d4ae9b3425f55924919b",
+    ]);
+    expect(data.circle_cctp[0].role).toBe("settlement_intermediate");
   });
 });

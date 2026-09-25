@@ -84,7 +84,7 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     callMarkers: ["calculate_mctp_fee::", "init_order::log_initialize_mctp"],
     eventMarkers: ["init_order::InitMctpLogged"],
     resolution: "detect-only",
-    note: "Mayan is a cross-chain swap layer that routes over other bridges — observed on mainnet settling through Wormhole and Circle CCTP in the same transaction. Those legs are reported separately and are what to follow; this entry names the service that initiated the transfer, which its own order id can be looked up against.",
+    note: "Mayan is a cross-chain swap layer that settles over other bridges, observed on mainnet through Wormhole and Circle CCTP in the same transaction. Those legs pay Mayan's own contracts on the far side, so their recipient is not the beneficiary. resolve_bridge_transfer reads the beneficiary from Mayan's order event (`beneficiaries`).",
   },
   {
     id: "cctp",
@@ -133,6 +133,19 @@ function matchesCall(marker: string, signature: string): boolean {
 }
 
 /**
+ * Does an event type carry the `module::Name` marker?
+ *
+ * Type arguments are stripped first: a generic event such as
+ * `oft::OFTSent<0x…::coin::COIN>` ends in its type argument, so a suffix test
+ * on the raw string never matches it. The comparison is on the whole
+ * `::module::Name` tail, so `xpublish_message::WormholeMessage` does not pass
+ * for `publish_message::WormholeMessage`.
+ */
+export function matchesEvent(marker: string, eventType: string): boolean {
+  return eventType.split("<")[0].endsWith(`::${marker}`);
+}
+
+/**
  * Every bridge this transaction appears to have used.
  *
  * Two tiers, in order of precision:
@@ -153,9 +166,7 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
     const byCall = calls.some((c) =>
       proto.callMarkers.some((m) => matchesCall(m, callSignature(c))),
     );
-    const byEvent = eventTypes.some((t) =>
-      proto.eventMarkers.some((m) => t.endsWith(`::${m}`) || t.endsWith(m)),
-    );
+    const byEvent = eventTypes.some((t) => proto.eventMarkers.some((m) => matchesEvent(m, t)));
     if (byCall || byEvent) {
       hits.set(proto.name, {
         protocol: proto.name,
@@ -169,9 +180,15 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
   // Registry tier: any curated package typed as a bridge. Uses lookupProtocol,
   // so it inherits the lineage tier and keeps identifying a bridge after it
   // upgrades — and stays curated-only, never an MVR name anyone could register.
+  //
+  // A protocol with curated markers is decided by those markers alone. A call
+  // into its package is not an exit: every Pyth price update calls Wormhole's
+  // `vaa::parse_and_verify`, which reported a NAVI deposit as value leaving
+  // Sui. 14 of 30 sampled NAVI deposits carried that call.
   for (const call of calls) {
     const proto = lookupProtocol(call.packageId);
     if (proto?.type !== "bridge" || hits.has(proto.name)) continue;
+    if (BRIDGE_PROTOCOLS.some((b) => b.name === proto.name)) continue;
     hits.set(proto.name, {
       protocol: proto.name,
       resolution: "detect-only",

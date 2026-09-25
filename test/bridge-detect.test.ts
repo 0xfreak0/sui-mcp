@@ -78,20 +78,38 @@ describe("detectBridges", () => {
     expect(hits).toHaveLength(1);
   });
 
-  it("catches a curated bridge package with no marker of its own", () => {
-    // The general tier: any package typed `bridge` in protocols.json is
-    // detected with no per-protocol work, which is what makes adding a bridge
-    // a one-line change rather than a new resolver.
-    const hits = detectBridges([
-      {
-        packageId: "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4",
-        module: "whatever",
-        function: "unknown_entry",
-      },
-    ]);
-    expect(hits).toHaveLength(1);
-    expect(hits[0].matched).toBe("protocol-registry");
-    expect(hits[0].resolution).toBe("detect-only");
+  it("does not call a Pyth price update through Wormhole core a bridge exit", () => {
+    // EpA8fqmv… is a NAVI deposit of 400 SUI. Its Pyth update verifies a VAA
+    // in the Wormhole core package, which the registry types `bridge`; the
+    // registry tier reported "Value left Sui via Wormhole".
+    const naviDeposit: CallSite[] = [
+      { packageId: "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4", module: "vaa", function: "parse_and_verify" },
+      { packageId: "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0", module: "pyth", function: "update_single_price_feed" },
+      { packageId: "0x512f2826", module: "incentive_v3", function: "entry_deposit" },
+    ];
+    expect(detectBridges(naviDeposit, ["0x55300367::event::PriceFeedUpdateEvent"])).toEqual([]);
+  });
+
+  it("matches an event marker on a generic event type", () => {
+    // A type argument ends the type string, so a suffix test on the raw repr
+    // never matched a generic event.
+    const hits = detectBridges([], ["0x5306f64e::publish_message::WormholeMessage<0x1::coin::COIN>"]);
+    expect(hits.map((h) => h.protocol)).toEqual(["Wormhole"]);
+    expect(detectBridges([], ["0xabc::xpublish_message::WormholeMessage"])).toEqual([]);
+  });
+
+  it("finds an exit reached through a wrapper package from its events", () => {
+    // 777Emr4V…: Mayan's bridge_with_fee wrapper burns USDC over CCTP to Base.
+    // No marker call is in the PTB; the events are the only signal.
+    const hits = detectBridges(
+      [{ packageId: "0xb5bd3599", module: "bridge_with_fee", function: "prepare_bridge_with_fee" }],
+      [
+        "0x2aa6c5d56376c371f88a6cc42e852824994993cb9bab8d3e6450cbe3cb32b94e::deposit_for_burn::DepositForBurn",
+        "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage",
+        "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df::init_order::InitMctpLogged",
+      ],
+    );
+    expect(hits.map((h) => h.protocol).sort()).toEqual(["Circle CCTP", "Mayan MCTP", "Wormhole"]);
   });
 });
 

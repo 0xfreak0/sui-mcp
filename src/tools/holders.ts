@@ -329,6 +329,79 @@ const ADDRESS_BALANCE_QUERY = `
   }
 `;
 
+/** Aliased `address.balance` reads per request, which keeps a query under the service's 5,000 bytes. */
+const BALANCE_BATCH = 20;
+
+export interface HolderBalance {
+  balance: string;
+  coin_balance: string | null;
+  address_balance: string | null;
+}
+
+/**
+ * Each address's whole balance of `coinType`, read directly.
+ *
+ * A truncated walk has seen only some of a holder's coin objects, so the sum
+ * it built is a floor: XAGM's largest sampled holder summed to 9.1M of the
+ * 24.1M it holds. The sample picks WHO to show; this says what each one holds.
+ * An address whose read failed is absent from the map.
+ */
+export async function readHolderBalances(addresses: string[], coinType: string): Promise<Map<string, HolderBalance>> {
+  const out = new Map<string, HolderBalance>();
+  for (let i = 0; i < addresses.length; i += BALANCE_BATCH) {
+    const chunk = addresses.slice(i, i + BALANCE_BATCH);
+    const query =
+      `query($t: String!, ${chunk.map((_, j) => `$a${j}: SuiAddress!`).join(", ")}) {\n` +
+      chunk.map((_, j) => `  h${j}: address(address: $a${j}) { balance(coinType: $t) { totalBalance coinBalance addressBalance } }`).join("\n") +
+      "\n}";
+    const vars: Record<string, string> = { t: coinType };
+    chunk.forEach((a, j) => (vars[`a${j}`] = a));
+    try {
+      const data = await gqlQuery<
+        Record<string, { balance: { totalBalance: string; coinBalance: string | null; addressBalance: string | null } | null } | null>
+      >(query, vars);
+      chunk.forEach((a, j) => {
+        const b = data[`h${j}`]?.balance;
+        if (b) out.set(a, { balance: b.totalBalance, coin_balance: b.coinBalance, address_balance: b.addressBalance });
+      });
+    } catch {
+      // Reported per holder as unavailable by the caller.
+    }
+  }
+  return out;
+}
+
+/**
+ * A truncated scan's holders as a sample: no rank, and what each one holds read
+ * directly, since the walk saw only part of each holder's coins. The walk's own
+ * sums stay beside it as `*_in_sample`. Ordered by the direct balance.
+ */
+export async function sampledHolders(holders: TokenHolder[], coinType: string) {
+  const direct = await readHolderBalances(
+    holders.map((h) => h.address),
+    COIN_WRAPPER.exec(coinType)?.[1] ?? coinType,
+  );
+  return holders
+    .map(({ rank: _rank, balance, coin_balance, address_balance, ...rest }) => {
+      const read = direct.get(rest.address);
+      return {
+        ...rest,
+        balance: read?.balance ?? null,
+        coin_balance: read?.coin_balance ?? null,
+        address_balance: read?.address_balance ?? null,
+        balance_in_sample: balance,
+        coin_balance_in_sample: coin_balance,
+        address_balance_in_sample: address_balance,
+        ...(read ? {} : { balance_unavailable: "The direct balance read failed; only the sampled sum is known." }),
+      };
+    })
+    .sort((a, b) => {
+      const x = a.balance === null ? -1n : BigInt(a.balance);
+      const y = b.balance === null ? -1n : BigInt(b.balance);
+      return y > x ? 1 : y < x ? -1 : 0;
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Shared helper: scan token top holders
 // ---------------------------------------------------------------------------
@@ -412,6 +485,7 @@ function samplingCaveat(scan: TokenHolderResult): string {
     `INCOMPLETE: ${stoppedWalks(scan)} stopped before the end (${scan.unique_holders} distinct holders seen). ` +
     `Both are walked in object-id order, which has nothing to do with balance, so these are the largest holders WITHIN THE SAMPLE and not the largest holders of this coin. ` +
     `Scanning further keeps finding bigger ones: on SUI the reported top holder went from 66 to 3,454 SUI between max_scan 200 and 800, with no overlap in the top five. ` +
+    `Each holder's balance, coin_balance and address_balance are read directly for that address, since the walk saw only some of its coins; balance_in_sample and count are what the walk saw. ` +
     `Raise max_scan until "truncated" is false to get a real ranking, which is only feasible for coins with few enough objects to enumerate.`
   );
 }
@@ -722,6 +796,7 @@ export function registerHolderTools(server: McpServer) {
         // A complete scan is a ranking. A truncated one is a sample, and the
         // shape says so: no rank, no percentage of supply (a sampled balance
         // over a real denominator looks authoritative and means nothing).
+        const sampled = scan.truncated ? await sampledHolders(scan.holders, resolvedType) : [];
         const result = scan.truncated
           ? {
               mode: "token",
@@ -735,7 +810,7 @@ export function registerHolderTools(server: McpServer) {
               cached: false,
               caveat: samplingCaveat(scan),
               ...(scan.unresolved_owners ? { unresolved_owners: scan.unresolved_owners } : {}),
-              sampled_holders: enrichedHolders.map(({ rank: _rank, percentage: _pct, ...rest }) => rest),
+              sampled_holders: sampled,
             }
           : {
               mode: "token",

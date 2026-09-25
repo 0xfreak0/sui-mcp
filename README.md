@@ -410,8 +410,10 @@ truncated scan therefore returns `sampled_holders`, without a rank or a
 percentage of supply, along with a caveat naming which walk stopped. Raise
 `max_scan` (applied to each walk) until `truncated` is false to get a real
 ranking; that is only practical for coins with few enough objects to
-enumerate. Each holder carries `coin_balance` and `address_balance` beside the
-total, and `owner_kind`, because an address balance can belong to an object
+enumerate. In a sample, each holder's `balance` is read directly for that
+address, since the walk saw only some of its coins, and `balance_in_sample` is
+the walk's own sum. Each holder carries `coin_balance` and `address_balance`
+beside the total, and `owner_kind`, because an address balance can belong to an object
 such as a bridge's liquidity bank. `analyze_token` reports the same
 distinction.
 

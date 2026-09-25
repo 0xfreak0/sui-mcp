@@ -1319,6 +1319,12 @@ supply, plus a caveat; only a completed scan returns `top_holders` and
 balance over the real total supply looks authoritative and means nothing, which
 is why the percentage is dropped rather than annotated.
 
+**A sampled holder's sum is a floor.** The walk saw only the coin objects in
+its sample, so XAGM's largest sampled holder summed to 9.1M of the 24.1M its
+address holds. `sampledHolders` reads each sampled holder's whole balance with
+`address.balance(coinType)` (20 aliases a request) and keeps the walk's sums as
+`*_in_sample`; a failed read is `null` with `balance_unavailable`.
+
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.
 

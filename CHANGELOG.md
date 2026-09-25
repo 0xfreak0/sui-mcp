@@ -17,6 +17,13 @@
   protocols the transaction called, and value it paid that no address
   received is drawn into one, so a swap shows both legs.
 
+### Changed
+- The `investigate_address` and `trace_incident` prompts, the server
+  instructions and the forensics skill route through the tools added in
+  1.19.0: `summarize_address_flows`, `trace_flow_graph`, `find_flow_path`,
+  `classify_deposit_address` and `get_upgrade_history`. The skill no longer
+  says the shipped label set is nearly empty.
+
 ## 1.19.0 (2026-09-25)
 
 Two public incidents were replayed end to end through the server: the Cetus

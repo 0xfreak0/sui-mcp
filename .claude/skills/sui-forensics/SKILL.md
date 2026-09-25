@@ -36,14 +36,23 @@ holds one for a client.
 
 ## Opening a case
 
-1. **Set your sinks first.** Labels decide where a trace stops. Curated ones
-   ship nearly empty on purpose, since attribution is case-specific and mostly
-   not publishable. Add what you know with `manage_labels`, or point
-   `SUI_LABELS_FILE` at a private file for a whole case. A trace that runs past
-   a known exchange, or stops at one you never told it about, is usually this.
-2. **Identify before you trace.** `identify_address`. A hop that is a package or
-   a shared object is not "someone the funds went to", and a trace that treats a
-   DEX pool as a person is wrong from that point on.
+1. **Set your sinks first.** Labels decide where a trace stops. The shipped
+   set is first-party disclosures only (exchange proof-of-reserves wallets,
+   bridge objects from deployment docs, attackers named in the victim's own
+   incident report), each with its `source_url`. Everything case-specific is
+   yours to add with `manage_labels`, or point `SUI_LABELS_FILE` at a private
+   file for a whole case. A trace that runs past a known exchange, or stops at
+   one you never told it about, is usually this. Traces keep following a wallet
+   labelled `malicious`.
+2. **Identify and measure before you trace.** `identify_address`. A hop that is
+   a package or a shared object is not "someone the funds went to", and a trace
+   that treats a DEX pool as a person is wrong from that point on. Then
+   `summarize_address_flows` over the incident window gives what the address
+   took in and sent out per asset, every payer, and every bridge exit with its
+   far-side beneficiary, and `screen_address` gives its exposure to labelled
+   and sanctioned accounts. For an exploit, `analyze_attack_tx` on one attack
+   transaction and `summarize_incident_losses` over all of them say what was
+   taken and from which pools.
 3. **Trace with `trace_funds`.** Read `stop_reason` and `unfollowed_recipients`
    (forward) or `unfollowed_sources` (backward) *before* the path: a trace
    follows one branch, and splitting across wallets is the ordinary laundering
@@ -61,7 +70,10 @@ holds one for a client.
    and every payment one subject signed to another (`subject_paid_subject`).
    The walk stops at a funder that paid more than 50 distinct addresses: that is
    an exchange or service, and its own ancestry says nothing about the subject.
-   Then measure the funder with `get_address_fanout` before believing anything.
+   Then measure the funder with `get_address_fanout` before believing anything,
+   and run `classify_deposit_address` on a funder or a destination that looks
+   like an exchange. A deposit address names the exchange that can identify the
+   depositor; chain data does not go further.
 5. **Cluster only once you have a reason to.** `build_wallet_edges` answers
    "is this a new party or the same one", not "who is this".
 6. **Record with `save_finding`**, one claim per finding, with its `digests`
@@ -277,6 +289,16 @@ across 75 random active wallets and 265 pages of history.
   and `linkage_changes`. An upgrade can change behaviour by relinking a
   dependency while its own modules barely change; each relinked dependency
   carries the `diff_package_upgrade` call that shows what changed inside it.
+- **Ask who could upgrade at the time, not only now.** `get_upgrade_history`
+  joins every version to its publisher, the publisher's signing scheme and the
+  UpgradeCap's holder at that moment, and `as_of` answers for one instant. It
+  flags a `cap_round_trip`: the cap leaves its usual holder, a version ships,
+  and the cap comes back. On Nemo that was an eleven-minute loan to a single
+  key that shipped the vulnerable version. `analyze_package` shows only the
+  holder today.
+- **Read one version's bytecode by that version's address.**
+  `disassemble_module` and `get_move_function` return the version whose ID you
+  pass. To compare versions, `diff_package_upgrade` is still the tool.
 
 ## Why a transaction failed
 

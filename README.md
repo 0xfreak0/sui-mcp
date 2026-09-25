@@ -746,7 +746,7 @@ DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread 
 
 | Tool | Description |
 |---|---|
-| `resolve_name` | SuiNS name resolution (forward and reverse) |
+| `resolve_name` | SuiNS name resolution (forward and reverse). An unregistered, expired or targetless name resolves to null with a `name_note` saying which; a failed lookup is an error, never a null |
 
 ### Move Registry (MVR)
 

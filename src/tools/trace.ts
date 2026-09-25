@@ -51,6 +51,7 @@ import {
 } from "../utils/valuation.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { errorResult } from "../utils/errors.js";
+import { EXPORT_FORMATS, shortAddress, toCsv, toGraphJson, toMermaid, type ExportGraph } from "../utils/flow-export.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface HopResult {
@@ -261,6 +262,133 @@ function buildSummary(
   return lines.join("\n");
 }
 
+/** The branch one hop followed, in the direction the money moved. */
+interface FollowedHop {
+  hop: number;
+  digest: string;
+  from: string;
+  to: string;
+  coin: string | null;
+  amount: bigint;
+  basis: HopBasis;
+}
+
+function amountLabel(amount: string | bigint, coin: string | null): string {
+  return coin ? formatAmount(amount.toString(), coin).replace(/^[+-]/, "") : amount.toString();
+}
+
+/**
+ * The trace as a graph: the followed path solid, the branches each hop set
+ * aside dashed, bridge exits as their own nodes, and the stop reason at the
+ * end, so the diagram cannot read as "the money stopped here" when it did not.
+ */
+function traceGraph(
+  direction: "forward" | "backward",
+  followed: FollowedHop[],
+  hops: HopResult[],
+  bridgeExits: Array<{ digest: string; hits: BridgeHit[] }>,
+  stopReason: string | null,
+  nameMap: Map<string, string>,
+): ExportGraph {
+  const g: ExportGraph = { directed: true, nodes: [], edges: [] };
+  const ids = new Set<string>();
+  const wallet = (address: string) => {
+    if (ids.has(address)) return;
+    ids.add(address);
+    const name = nameMap.get(address);
+    g.nodes.push({ id: address, label: name ? [name, shortAddress(address)] : [shortAddress(address)], kind: "wallet", attrs: { address } });
+  };
+  for (const f of followed) {
+    wallet(f.from);
+    wallet(f.to);
+    g.edges.push({
+      from: f.from,
+      to: f.to,
+      label: `hop ${f.hop}: ${amountLabel(f.amount, f.coin)}`,
+      attrs: { hop: f.hop, digest: f.digest, coin_type: f.coin, amount: f.amount.toString(), basis: f.basis },
+    });
+  }
+  for (const h of hops) {
+    const actor = followed.find((f) => f.hop === h.hop);
+    const anchor = direction === "forward" ? (actor?.from ?? h.sender) : (actor?.to ?? h.sender);
+    if (!anchor) continue;
+    wallet(anchor);
+    for (const r of [...(h.unfollowed_recipients ?? []), ...(h.unfollowed_sources ?? [])]) {
+      if (!r.address) continue;
+      wallet(r.address);
+      const forwardEdge = direction === "forward";
+      g.edges.push({
+        from: forwardEdge ? anchor : r.address,
+        to: forwardEdge ? r.address : anchor,
+        label: `not followed: ${amountLabel(r.amount.replace(/^-/, ""), r.coin_type || null)}`,
+        dashed: true,
+        attrs: { hop: h.hop, digest: r.digest ?? h.digest, coin_type: r.coin_type, amount: r.amount },
+      });
+    }
+  }
+  for (const exit of bridgeExits) {
+    const hop = hops.find((h) => h.digest === exit.digest);
+    const id = `exit:${exit.digest}`;
+    g.nodes.push({ id, label: [`${[...new Set(exit.hits.map((x) => x.protocol))].join(" + ")} exit`, exit.digest.slice(0, 10) + "…"], kind: "bridge_exit", attrs: { digest: exit.digest } });
+    const from = followed.find((f) => f.digest === exit.digest)?.from ?? hop?.sender;
+    if (from) {
+      wallet(from);
+      g.edges.push({ from, to: id, label: `hop ${hop?.hop ?? "?"}`, attrs: { digest: exit.digest } });
+    }
+  }
+  if (stopReason) {
+    const last = followed.at(-1);
+    const at = last ? (direction === "forward" ? last.to : last.from) : hops[0]?.sender;
+    const text = stopReason.length > 90 ? `${stopReason.slice(0, 89)}…` : stopReason;
+    g.nodes.push({ id: "stop", label: ["stopped", text], kind: "note", attrs: { stop_reason: stopReason } });
+    if (at) {
+      wallet(at);
+      g.edges.push({ from: at, to: "stop", label: "", dashed: true });
+    }
+  }
+  return g;
+}
+
+/** One row per transfer the trace saw: followed or not. */
+function traceCsv(direction: "forward" | "backward", followed: FollowedHop[], hops: HopResult[], nameMap: Map<string, string>): string {
+  const rows: Array<Record<string, unknown>> = followed.map((f) => ({
+    hop: f.hop,
+    digest: f.digest,
+    timestamp: hops.find((h) => h.hop === f.hop)?.timestamp ?? "",
+    from: f.from,
+    from_label: nameMap.get(f.from) ?? "",
+    to: f.to,
+    to_label: nameMap.get(f.to) ?? "",
+    coin_type: f.coin ?? "",
+    amount_raw: f.amount.toString(),
+    amount: amountLabel(f.amount, f.coin),
+    basis: f.basis,
+    followed: "yes",
+  }));
+  for (const h of hops) {
+    const actor = followed.find((f) => f.hop === h.hop);
+    const anchor = (direction === "forward" ? actor?.from : actor?.to) ?? h.sender ?? "";
+    for (const r of [...(h.unfollowed_recipients ?? []), ...(h.unfollowed_sources ?? [])]) {
+      const forwardRow = direction === "forward";
+      rows.push({
+        hop: h.hop,
+        digest: r.digest ?? h.digest,
+        timestamp: h.timestamp ?? "",
+        from: forwardRow ? anchor : r.address,
+        from_label: nameMap.get(forwardRow ? anchor : r.address) ?? "",
+        to: forwardRow ? r.address : anchor,
+        to_label: nameMap.get(forwardRow ? r.address : anchor) ?? "",
+        coin_type: r.coin_type,
+        amount_raw: r.amount.replace(/^-/, ""),
+        amount: amountLabel(r.amount.replace(/^-/, ""), r.coin_type || null),
+        basis: "",
+        followed: "no",
+      });
+    }
+  }
+  return toCsv(["hop", "digest", "timestamp", "from", "from_label", "to", "to_label", "coin_type", "amount", "amount_raw", "basis", "followed"], rows);
+}
+
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
@@ -280,8 +408,15 @@ export function registerTraceTools(server: McpServer) {
         .string()
         .optional()
         .describe("Start by following this coin type, and restrict the DISPLAYED balance changes to it (e.g. 0x2::sui::SUI; the short and padded forms match). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown and the first hop picks the largest flow."),
+      format: z
+        .enum(EXPORT_FORMATS)
+        .optional()
+        .describe(
+          "Output format (default json). mermaid: a fenced ```mermaid diagram of the followed path, with unfollowed branches dashed, bridge exits and the stop reason. graph_json: {nodes, edges}. csv: one row per followed or unfollowed transfer. The prose summary comes first in every format but graph_json.",
+        ),
     },
-    async ({ digest, direction, hops, coin_type }) => {
+    async ({ digest, direction, hops, coin_type, format: formatArg }) => {
+      const format = formatArg ?? "json";
       const maxHops = Math.min(hops ?? 3, 10);
       // Compared and echoed in canonical form. GraphQL reports the padded type,
       // so `0x2::sui::SUI` compared as a raw string matched nothing and every
@@ -290,6 +425,8 @@ export function registerTraceTools(server: McpServer) {
       const traceHops: HopResult[] = [];
       /** Full movement lists per hop — internal, never serialised. */
       const movementsByHop = new Map<number, ObjectMovement[]>();
+      /** The branch each hop followed, for the graph formats. */
+      const followed: FollowedHop[] = [];
       let currentDigest: string | null = digest;
       // Why the trace ended. Every exit from the loop sets it: a trace that
       // just ends reads as "the money stopped here", which is the wrong
@@ -570,6 +707,23 @@ export function registerTraceTools(server: McpServer) {
               ? forwardDeadEnd(tx, actor, coinBefore, decision.consumed === true, decision.note)
               : backwardDeadEnd(tx, actor, coinBefore);
           break;
+        }
+        if (format !== "json") {
+          const coin = decision.nextCoinType;
+          const moved = coin
+            ? allChanges
+                .filter((c) => c.address === nextAddress && sameCoin(c.coin_type, coin))
+                .reduce((sum, c) => sum + nonGasAmount(c, gas), 0n)
+            : 0n;
+          followed.push({
+            hop: hop + 1,
+            digest: currentDigest,
+            from: direction === "forward" ? (actor ?? "?") : nextAddress,
+            to: direction === "forward" ? nextAddress : (actor ?? "?"),
+            coin,
+            amount: moved < 0n ? -moved : moved,
+            basis: decision.basis,
+          });
         }
         // Following the same actor across a swap or a self-credit is not a
         // cycle; value coming back to an earlier party is.
@@ -1018,6 +1172,19 @@ export function registerTraceTools(server: McpServer) {
         hops: enrichedHops,
         address_labels: addressLabels,
       };
+
+      if (format !== "json") {
+        const graph = traceGraph(direction, followed, enrichedHops, bridgeExits, terminationReason, nameMap);
+        if (format === "graph_json") {
+          return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph), null, 2) }] };
+        }
+        return {
+          content: [
+            { type: "text" as const, text: summary },
+            { type: "text" as const, text: format === "mermaid" ? toMermaid(graph) : traceCsv(direction, followed, enrichedHops, nameMap) },
+          ],
+        };
+      }
 
       return {
         content: [

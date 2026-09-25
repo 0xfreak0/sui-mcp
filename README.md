@@ -249,8 +249,10 @@ find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
     Wormhole, Sui Bridge
 ```
 
-`trace_flow_graph` and `find_flow_path` take `format: "mermaid"` (a fenced
-diagram that renders in a markdown viewer), `"graph_json"` or `"csv"`.
+`trace_flow_graph`, `find_flow_path`, `trace_funds` and `build_wallet_edges`
+take `format: "mermaid"` (a fenced diagram that renders in a markdown viewer),
+`"graph_json"` or `"csv"`. `export_case` with `format: "mermaid"` appends a
+fund-flow diagram of the transfers in the case's cited transactions.
 
 **What has happened since I last looked?** `watch_addresses` records a set of
 addresses and where it last looked; `poll_watch` returns only what is new:
@@ -750,7 +752,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing (forward or backward) that follows the tracked coin, follows value out of objects, and stops at labeled sinks, bridge exits and hubs, always with a `stop_reason` |
+| `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing (forward or backward) that follows the tracked coin, follows value out of objects, and stops at labeled sinks, bridge exits and hubs, always with a `stop_reason`. `format: mermaid\|graph_json\|csv` renders the followed path with the unfollowed branches dashed |
 | `trace_flow_graph` | Follows every branch of the funds from a transaction, or from an address after a time, forward or backward, and allocates the traced value across recipients in proportion to what each received (first in, first out when funds are mixed). Returns nodes, edges with amounts, USD and digests, `terminals` grouped by reason with the share of the value that ended there (bridge exits with the far-side beneficiary, sinks, hubs, unspent, deposits), and `coverage`. `format: mermaid\|graph_json\|csv` |
 | `find_flow_path` | Whether value moved from one address to another within `max_hops` (at most 6): searches forward from one end and backward from the other and returns each path with its digests and amounts. The target may be an EVM or Solana account a bridge exit paid. A missing path is reported with what was explored |
 | `analyze_attack_tx` | Break down one exploit transaction: each address's net per coin and in USD at block time, flash-loan and flash-swap legs paired borrow to repay, every swap's pool price before and after, what each pool lost by its own events, oracle calls inside the PTB, anomaly flags, and the attacker's profit. Reads PTBs of any size in full over gRPC |
@@ -763,13 +765,13 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
 | `classify_deposit_address` | Whether an address is an exchange deposit address (verdict likely/no/unknown, tier heuristic): full-balance sweeps to one hot wallet, relayer-sponsored gas, a labelled or hub-shaped destination. Returns the hot wallet, exchange label with its source_url, sweep sponsor, sweep digests and a deposits sample |
 | `screen_address` | Direct and indirect exposure (default 2 hops) to labelled malicious, exchange, bridge and mixer accounts and to OFAC-listed accounts across CCTP and Sui Bridge exits, with path digests, amounts, each label's source_url, and the coverage of the label and sanctions lists |
-| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first |
+| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first. `format: mermaid\|graph_json\|csv` draws the clusters |
 | `analyze_multisig` | For a multisig wallet, which committee keys are actually live and which have never signed, across its history. The committee is fixed for the life of the address; only who signs varies |
 | `find_shared_multisig` | Given addresses you suspect are related, derive every committee they could form and find the multisig they jointly control — a hit is proof, since the address IS the hash of its committee |
 | `check_coin_restrictions` | Read a regulated coin's on-chain deny list — which addresses its issuer froze, or which of every deny-listed coin type an address is frozen for. Chain-derived: it is the issuer's own decision, reversible by whoever holds the DenyCap |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
 | `list_findings` | List findings in a case, or every case with its count |
-| `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each |
+| `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each. `format: mermaid` appends a fund-flow diagram of the transfers in the findings' transactions; `graph_json` and `csv` export the diagram or the findings |
 | `delete_finding` | Retract a finding that turned out to be wrong |
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
 | `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue. `subject_flow` gives each involved address's own signed balance change, keyed by address; `token_flow` is the sender's |

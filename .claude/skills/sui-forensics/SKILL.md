@@ -431,7 +431,7 @@ get the schema wrong in ways that fail silently.
 | Where did the money go / come from? | `trace_funds` (one branch), `find_funding_source` |
 | Where did ALL of it go, and how much reached each exit? | `trace_flow_graph` → `terminals`, `coverage` |
 | Is there any path from this wallet to that one (or to a foreign account a bridge paid)? | `find_flow_path` — a miss is not evidence; read `explored` |
-| A diagram for the report? | `format: "mermaid"` on `trace_flow_graph` and `find_flow_path` |
+| A diagram for the report? | `format: "mermaid"` on `trace_flow_graph`, `find_flow_path`, `trace_funds`, `build_wallet_edges`; `export_case` with `format: "mermaid"` |
 | Several addresses at once? | `find_funding_sources` — shares work, reports co-funding |
 | Is this funder an exchange? | `get_address_fanout` |
 | Is this an exchange deposit address, and whose? | `classify_deposit_address` |

@@ -21,7 +21,7 @@ import type { EvidenceTier, Finding } from "./store.js";
  * unparseable is passed through with no chain rather than dropped — a report
  * must render whatever was recorded.
  */
-function splitReference(reference: string): { chain: ChainId | null; address: string } {
+export function splitReference(reference: string): { chain: ChainId | null; address: string } {
   if (!reference.includes(":")) return { chain: SUI_MAINNET, address: reference };
   try {
     const parsed = parseAccountId(reference, SUI_MAINNET);

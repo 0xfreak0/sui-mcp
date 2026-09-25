@@ -11,7 +11,13 @@ import {
   loadFindings,
   saveFinding,
   storeStatus,
+  type Finding,
 } from "../utils/store.js";
+import { buildCaseGraph, type CaseTx } from "../utils/case-graph.js";
+import { toCsv, toGraphJson, toMermaid } from "../utils/flow-export.js";
+import { fetchTx, formatAmount } from "../utils/trace-read.js";
+import { getLabel } from "../utils/labels.js";
+import { detectBridges } from "../utils/bridge/detect.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const ok = (payload: unknown) => ({
@@ -28,6 +34,44 @@ function storeRequired() {
       "\"env\": { \"SUI_STORE_PATH\": \"~/.local/share/sui-mcp/store.db\" }, then restart. " +
       "It uses Node's built-in SQLite and writes nothing until you set it.",
   );
+}
+
+/** Transactions read for a case diagram. */
+const CASE_GRAPH_DIGESTS = 50;
+
+/** The case's transfers, read from the transactions its findings cite. */
+async function caseFlowGraph(findings: Finding[]) {
+  const all = [...new Set(findings.flatMap((f) => f.digests))];
+  const digests = all.slice(0, CASE_GRAPH_DIGESTS);
+  const read = await Promise.all(digests.map((d) => fetchTx(d).catch(() => null)));
+  const txs: CaseTx[] = [];
+  const unread: string[] = [];
+  read.forEach((tx, i) => {
+    if (!tx) {
+      unread.push(digests[i]);
+      return;
+    }
+    const bridges = [...new Set(detectBridges(tx.callSites, tx.eventTypes ?? []).map((h) => h.protocol))];
+    txs.push({
+      digest: digests[i],
+      sender: tx.sender,
+      ...(bridges.length ? { bridges } : {}),
+      timestamp: tx.timestamp,
+      changes: tx.balanceChanges,
+      gas: { payer: tx.gasPayer ?? null, net: tx.netGas == null ? null : BigInt(tx.netGas) },
+    });
+  });
+  const graph = buildCaseGraph(findings, txs, {
+    nameOf: (a) => getLabel(a)?.label,
+    formatAmount: (raw, coin) => formatAmount(raw.toString(), coin).replace(/^[+-]/, ""),
+  });
+  return {
+    graph,
+    notes: {
+      ...(unread.length ? { unread_digests: unread } : {}),
+      ...(all.length > digests.length ? { digests_capped: all.length } : {}),
+    },
+  };
 }
 
 export function registerFindingsTools(server: McpServer) {
@@ -170,8 +214,14 @@ export function registerFindingsTools(server: McpServer) {
       include_appendix: boolArg()
         .optional()
         .describe("Append the full-address list (default true)."),
+      format: z
+        .enum(["markdown", "mermaid", "graph_json", "csv"])
+        .optional()
+        .describe(
+          "markdown (default): the report. mermaid: the report followed by a fund-flow diagram (a ```mermaid block) of the transfers in the findings' transactions between the case's addresses, with each finding's cross-chain accounts linked dashed; reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding.",
+        ),
     },
-    async ({ case_name, include_appendix }) => {
+    async ({ case_name, include_appendix, format }) => {
       const blocked = storeRequired();
       if (blocked) return blocked;
 
@@ -180,6 +230,42 @@ export function registerFindingsTools(server: McpServer) {
         return errorResult(
           `No findings recorded for case '${case_name}'. Use list_findings with no arguments to see existing cases.`,
         );
+      }
+
+      if (format === "csv") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: toCsv(
+                ["id", "evidence_tier", "confidence", "title", "detail", "addresses", "digests", "evidence", "created_at"],
+                findings.map((f) => ({
+                  ...f,
+                  evidence: f.evidence.join(" | "),
+                  created_at: f.created_at ? new Date(f.created_at).toISOString() : "",
+                })),
+              ),
+            },
+          ],
+        };
+      }
+      if (format === "mermaid" || format === "graph_json") {
+        const flow = await caseFlowGraph(findings);
+        if (format === "graph_json") {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(flow.graph), ...flow.notes }, null, 2) }] };
+        }
+        const report = renderCaseReport({ caseName: case_name, findings, includeAppendix: include_appendix });
+        const diagram = flow.graph.edges.length
+          ? toMermaid(flow.graph)
+          : "_No transfers between the case's addresses were found in its findings' transactions, and no finding links accounts on two chains._";
+        const caveats = [
+          "Solid arrows are transfers read from the chain in the findings' transactions, each recipient paired with the largest payer of that coin. Dashed arrows are cross-chain links a finding records.",
+          ...(flow.notes.unread_digests ? [`Not read: ${flow.notes.unread_digests.join(", ")}.`] : []),
+          ...(flow.notes.digests_capped ? [`Only the first ${CASE_GRAPH_DIGESTS} transactions were read.`] : []),
+        ];
+        return {
+          content: [{ type: "text" as const, text: `${report}\n## Fund flow\n\n${diagram}\n\n_${caveats.join(" ")}_\n` }],
+        };
       }
 
       // Returned as text, not JSON: the whole point is a document someone

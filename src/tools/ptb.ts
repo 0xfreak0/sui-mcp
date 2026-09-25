@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Transaction } from "@mysten/sui/transactions";
+import { Transaction, coinWithBalance } from "@mysten/sui/transactions";
 import { sui } from "../clients/grpc.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,7 +22,7 @@ async function buildResult(tx: Transaction, extra: Record<string, unknown>) {
 export function registerPtbTools(server: McpServer) {
   server.tool(
     "build_transfer",
-    "Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. For SUI it splits from the gas coin; for other coins it selects and merges the sender's coins to cover the amount. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
+    "Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. For SUI it splits from the gas coin; for other coins it draws the amount from the sender's coin objects and address balance together, so a sender holding the coin only in its address balance can still send it. Returns base64-encoded BCS bytes for simulation via simulate_transaction.",
     {
       sender: z.string().describe("Sender address (0x...)"),
       recipient: z.string().describe("Recipient address (0x...)"),
@@ -47,44 +47,15 @@ export function registerPtbTools(server: McpServer) {
         return buildResult(tx, { sender, recipient, amount, coin_type: type });
       }
 
-      // Other coins: gather enough of the sender's coins, merge, split, transfer.
-      const listResult = await sui.listCoins({ owner: sender, coinType: type, limit: 50, cursor: null });
-      const coins = listResult.objects;
-      if (!coins || coins.length === 0) {
-        return errorResult(`No coins of type ${type} found for address ${sender}`);
-      }
-
-      const sortedCoins = [...coins].sort((a, b) => {
-        const balA = BigInt(a.balance);
-        const balB = BigInt(b.balance);
-        return balB > balA ? 1 : balB < balA ? -1 : 0;
-      });
-
-      const selectedCoins: typeof sortedCoins = [];
-      let accumulated = 0n;
-      for (const coin of sortedCoins) {
-        selectedCoins.push(coin);
-        accumulated += BigInt(coin.balance);
-        if (accumulated >= targetAmount) break;
-      }
-      if (accumulated < targetAmount) {
-        return errorResult(
-          `Insufficient balance. Needed ${amount} but only found ${accumulated.toString()} across ${coins.length} coins of type ${type}`,
-        );
-      }
-
-      const primaryCoinRef = tx.object(selectedCoins[0].objectId);
-      if (selectedCoins.length > 1) {
-        tx.mergeCoins(primaryCoinRef, selectedCoins.slice(1).map((c) => tx.object(c.objectId)));
-      }
-      if (accumulated === targetAmount && selectedCoins.length === 1) {
-        tx.transferObjects([primaryCoinRef], recipient);
-      } else {
-        const splitCoin = tx.splitCoins(primaryCoinRef, [targetAmount]);
-        tx.transferObjects([splitCoin], recipient);
-      }
+      // Other coins: the SDK's coinWithBalance intent resolves at build time
+      // from both coin objects and the address balance (via a FundsWithdrawal
+      // input redeemed by 0x2::coin::redeem_funds). Selecting from listCoins
+      // alone found nothing for a sender holding the coin only in its address
+      // balance. An insufficient total is reported by the SDK with the amount
+      // required and available.
+      tx.transferObjects([coinWithBalance({ type, balance: targetAmount })], recipient);
       tx.setSender(sender);
-      return buildResult(tx, { sender, recipient, amount, coin_type: type, coins_used: selectedCoins.length });
+      return buildResult(tx, { sender, recipient, amount, coin_type: type });
     },
   );
 

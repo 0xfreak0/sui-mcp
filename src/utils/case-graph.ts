@@ -21,6 +21,11 @@ export interface CaseTx {
   gas: GasCharge;
   /** Bridge protocols the transaction's calls or events matched, when it is an exit. */
   bridges?: string[];
+  /**
+   * Protocols (or packages) the transaction called, framework excluded. Value
+   * that no address paid or received moved in or out of their shared objects.
+   */
+  protocols?: string[];
 }
 
 export interface CaseGraphOptions {
@@ -52,6 +57,31 @@ export function buildCaseGraph(findings: Finding[], txs: CaseTx[], opts: CaseGra
       : [`${chain ? chainDisplayName(chain) : "unknown chain"} ${shortAddress(address)}`];
     g.nodes.push({ id, label, kind: onSui ? "wallet" : "foreign", attrs: { address, ...(chain ? { chain } : {}) } });
   };
+  /**
+   * One node per set of protocols called, shared across transactions, so eight
+   * exploit transactions against one protocol draw one source with the total.
+   */
+  const protocolNode = (tx: CaseTx): string => {
+    const names = [...new Set(tx.protocols ?? [])].sort();
+    const id = `protocol:${names.join("+") || "unknown"}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      // Unnamed packages are listed only when nothing named was called: next
+      // to "Nemo", three hex prefixes are noise; alone, they are all there is.
+      const named = names.filter((n) => !n.startsWith("0x"));
+      const unnamed = names.length - named.length;
+      const title = named.length
+        ? [...named, ...(unnamed ? [`${unnamed} other package${unnamed > 1 ? "s" : ""}`] : [])].join(" + ")
+        : names.join(" + ") || "Unidentified contracts";
+      g.nodes.push({
+        id,
+        label: [title, "shared objects"],
+        kind: "protocol",
+        attrs: { protocols: names },
+      });
+    }
+    return id;
+  };
 
   for (const f of findings) {
     for (const ref of f.addresses) {
@@ -73,7 +103,20 @@ export function buildCaseGraph(findings: Finding[], txs: CaseTx[], opts: CaseGra
         if (c.address === r.address || !sameCoin(c.coin_type, r.coin_type) || BigInt(c.amount) >= 0n) continue;
         if (!payer || BigInt(c.amount) < BigInt(payer.amount)) payer = c;
       }
-      if (!payer || !(sui.has(payer.address) || sui.has(r.address))) continue;
+      if (!payer) {
+        // Nothing an address paid: the value came out of shared objects (a
+        // pool, a market, a vault). The Nemo exploit credited the attacker from
+        // Nemo's markets and no address paid it, so the diagram drew no arrow.
+        if (!sui.has(r.address)) continue;
+        const src = protocolNode(tx);
+        const key = `${src}>${r.address}>${r.coin_type}`;
+        const m = merged.get(key) ?? { from: src, to: r.address, coin: r.coin_type, amount: 0n, digests: [] };
+        m.amount += BigInt(r.amount);
+        if (!m.digests.includes(tx.digest)) m.digests.push(tx.digest);
+        merged.set(key, m);
+        continue;
+      }
+      if (!(sui.has(payer.address) || sui.has(r.address))) continue;
       const key = `${payer.address}>${r.address}>${r.coin_type}`;
       const m = merged.get(key) ?? { from: payer.address, to: r.address, coin: r.coin_type, amount: 0n, digests: [] };
       m.amount += BigInt(r.amount);
@@ -83,8 +126,28 @@ export function buildCaseGraph(findings: Finding[], txs: CaseTx[], opts: CaseGra
   }
   // A bridge exit burns or locks the coin, so no recipient shows it: what
   // the sender paid beyond what other addresses received goes to an exit node.
+  // Outside a bridge the same remainder went into the called protocols' shared
+  // objects: a swap's input coin, a deposit, a repaid loan.
   for (const tx of txs) {
-    if (!tx.bridges?.length || !tx.sender || !sui.has(tx.sender)) continue;
+    if (!tx.bridges?.length) {
+      const cs = withoutGas(tx.changes, tx.gas);
+      for (const c of cs) {
+        if (!sui.has(c.address) || BigInt(c.amount) >= 0n) continue;
+        const received = cs
+          .filter((o) => o.address !== c.address && sameCoin(o.coin_type, c.coin_type) && BigInt(o.amount) > 0n)
+          .reduce((sum, o) => sum + BigInt(o.amount), 0n);
+        const into = -BigInt(c.amount) - received;
+        if (into <= 0n) continue;
+        const dst = protocolNode(tx);
+        const key = `${c.address}>${dst}>${c.coin_type}`;
+        const m = merged.get(key) ?? { from: c.address, to: dst, coin: c.coin_type, amount: 0n, digests: [] };
+        m.amount += into;
+        if (!m.digests.includes(tx.digest)) m.digests.push(tx.digest);
+        merged.set(key, m);
+      }
+      continue;
+    }
+    if (!tx.sender || !sui.has(tx.sender)) continue;
     const id = `exit:${tx.digest}`;
     const cs = withoutGas(tx.changes, tx.gas);
     for (const c of cs) {
@@ -105,8 +168,9 @@ export function buildCaseGraph(findings: Finding[], txs: CaseTx[], opts: CaseGra
     }
   }
   for (const m of merged.values()) {
+    // Exit and protocol nodes were added when created, so addNode skips them.
     addNode(m.from, null, m.from);
-    if (!m.to.startsWith("exit:")) addNode(m.to, null, m.to);
+    addNode(m.to, null, m.to);
     g.edges.push({
       from: m.from,
       to: m.to,

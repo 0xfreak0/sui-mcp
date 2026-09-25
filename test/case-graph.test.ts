@@ -87,3 +87,45 @@ describe("buildCaseGraph", () => {
     expect(g.nodes.some((n) => n.id === STRANGER_A || n.id === STRANGER_B)).toBe(false);
   });
 });
+
+describe("buildCaseGraph — value held by shared objects", () => {
+  const cited = [finding({ id: 3, title: "Exploit", addresses: [`sui:mainnet:${ATTACKER}`], digests: ["drain1", "drain2", "swap"] })];
+  // Two exploit transactions credit the attacker from Nemo's markets. No
+  // address paid it, which is why the diagram used to draw no arrow at all.
+  const drain = (digest: string, amount: string): CaseTx => ({
+    digest,
+    sender: ATTACKER,
+    timestamp: null,
+    gas: { payer: ATTACKER, net: 5_000_000n },
+    protocols: ["Nemo"],
+    changes: [{ address: ATTACKER, amount: (BigInt(amount) - 5_000_000n).toString(), coin_type: SUI }],
+  });
+  // The attacker then swaps SUI for USDC in a pool: SUI goes in, USDC comes out,
+  // and neither side is an address.
+  const swap: CaseTx = {
+    digest: "swap",
+    sender: ATTACKER,
+    timestamp: null,
+    gas: { payer: ATTACKER, net: 0n },
+    protocols: ["Cetus"],
+    changes: [
+      { address: ATTACKER, amount: "-40000000000000", coin_type: SUI },
+      { address: ATTACKER, amount: "150000000000", coin_type: USDC },
+    ],
+  };
+  const g = buildCaseGraph(cited, [drain("drain1", "100000000000000"), drain("drain2", "44800000000000"), swap]);
+  const edge = (from: string, to: string, coin: string) =>
+    g.edges.find((e) => e.from === from && e.to === to && e.attrs?.coin_type === coin);
+
+  it("draws value released from a protocol's objects as one source, summed across transactions", () => {
+    const e = edge("protocol:Nemo", ATTACKER, SUI);
+    expect(e?.attrs?.amount).toBe("144800000000000");
+    expect(e?.attrs?.digests).toEqual(["drain1", "drain2"]);
+    expect(g.nodes.find((n) => n.id === "protocol:Nemo")?.kind).toBe("protocol");
+  });
+
+  it("draws both legs of a swap against a pool", () => {
+    expect(edge(ATTACKER, "protocol:Cetus", SUI)?.attrs?.amount).toBe("40000000000000");
+    expect(edge("protocol:Cetus", ATTACKER, USDC)?.attrs?.amount).toBe("150000000000");
+  });
+});

@@ -18,6 +18,8 @@ import { toCsv, toGraphJson, toMermaid } from "../utils/flow-export.js";
 import { fetchTx, formatAmount } from "../utils/trace-read.js";
 import { getLabel } from "../utils/labels.js";
 import { detectBridges } from "../utils/bridge/detect.js";
+import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const ok = (payload: unknown) => ({
@@ -39,6 +41,9 @@ function storeRequired() {
 /** Transactions read for a case diagram. */
 const CASE_GRAPH_DIGESTS = 50;
 
+/** Move stdlib, Sui framework and Sui system: called by nearly every transaction, never the protocol holding value. */
+const FRAMEWORK = new Set(["0x1", "0x2", "0x3"].map((a) => normalizeSuiAddress(a)));
+
 /** The case's transfers, read from the transactions its findings cite. */
 async function caseFlowGraph(findings: Finding[]) {
   const all = [...new Set(findings.flatMap((f) => f.digests))];
@@ -46,16 +51,31 @@ async function caseFlowGraph(findings: Finding[]) {
   const read = await Promise.all(digests.map((d) => fetchTx(d).catch(() => null)));
   const txs: CaseTx[] = [];
   const unread: string[] = [];
+  // Value a case address received that no address paid came out of the called
+  // protocols' shared objects, so those protocols need a name in the diagram.
+  const packages = new Set(
+    read.flatMap((tx) => tx?.callSites.map((c) => normalizeSuiAddress(c.packageId)) ?? []).filter((p) => !FRAMEWORK.has(p)),
+  );
+  await prefetchProtocolNames(packages).catch(() => undefined);
   read.forEach((tx, i) => {
     if (!tx) {
       unread.push(digests[i]);
       return;
     }
     const bridges = [...new Set(detectBridges(tx.callSites, tx.eventTypes ?? []).map((h) => h.protocol))];
+    const protocols = [
+      ...new Set(
+        tx.callSites
+          .map((c) => normalizeSuiAddress(c.packageId))
+          .filter((p) => !FRAMEWORK.has(p))
+          .map((p) => lookupProtocolDisplay(p)?.name ?? `${p.slice(0, 10)}…`),
+      ),
+    ];
     txs.push({
       digest: digests[i],
       sender: tx.sender,
       ...(bridges.length ? { bridges } : {}),
+      ...(protocols.length ? { protocols } : {}),
       timestamp: tx.timestamp,
       changes: tx.balanceChanges,
       gas: { payer: tx.gasPayer ?? null, net: tx.netGas == null ? null : BigInt(tx.netGas) },
@@ -218,7 +238,7 @@ export function registerFindingsTools(server: McpServer) {
         .enum(["markdown", "mermaid", "graph_json", "csv"])
         .optional()
         .describe(
-          "markdown (default): the report. mermaid: the report followed by a fund-flow diagram (a ```mermaid block) of the transfers in the findings' transactions between the case's addresses, with each finding's cross-chain accounts linked dashed; reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding.",
+          "markdown (default): the report. mermaid: the report followed by a fund-flow diagram (a ```mermaid block) of the transfers in the findings' transactions between the case's addresses, including value the case's addresses took out of or paid into protocols' shared objects (drawn as one node per protocol set), with each finding's cross-chain accounts linked dashed; reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding.",
         ),
     },
     async ({ case_name, include_appendix, format }) => {

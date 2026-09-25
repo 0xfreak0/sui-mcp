@@ -159,18 +159,25 @@ export function usdValue(raw: bigint | string, decimals: number, priceUsd: numbe
 }
 
 /**
- * The dominant recipient's total USD inflow for a hop, given per-change positive
- * inflows `{address, usd}`. We group by address and take the MAX (not the sum)
- * so a swap's input+output legs — which credit two different addresses (the
- * actor and the pool) — aren't double-counted, while a plain transfer still
- * reports the recipient's gain. Returns 0 when there are no positive inflows.
+ * The value one hop moved, given each priced balance change as `{address,
+ * usd}` with the change's sign. Each address's inflows are summed, and
+ * separately its outflows, and the largest of those totals is the hop's value.
+ *
+ * The largest, not the sum: a swap credits the actor and the pool, and a
+ * transfer debits the sender what it credits the recipient, so adding legs
+ * counts the same value twice. Outflows count because value can leave with no
+ * recipient on Sui: a bridge burn debits the sender and credits only a fee
+ * collector, so inflows alone would value a 100,000 USDC exit at its fee.
+ * Returns 0 when nothing priced moved.
  */
-export function dominantInflowUsd(inflows: Array<{ address: string; usd: number }>): number {
-  const byAddress = new Map<string, number>();
-  for (const { address, usd } of inflows) {
-    if (usd > 0) byAddress.set(address, (byAddress.get(address) ?? 0) + usd);
+export function dominantFlowUsd(flows: Array<{ address: string; usd: number }>): number {
+  const inflow = new Map<string, number>();
+  const outflow = new Map<string, number>();
+  for (const { address, usd } of flows) {
+    if (usd > 0) inflow.set(address, (inflow.get(address) ?? 0) + usd);
+    else if (usd < 0) outflow.set(address, (outflow.get(address) ?? 0) - usd);
   }
-  return byAddress.size ? Math.max(...byAddress.values()) : 0;
+  return Math.max(0, ...inflow.values(), ...outflow.values());
 }
 
 /** Format a USD number for human summaries ($1.23, $4.2K, $3.1M, $1.2B). */

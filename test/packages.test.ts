@@ -171,4 +171,18 @@ describe("formatSignature", () => {
     } as unknown as GrpcTypes.OpenSignature;
     expect(formatSignature(sig)).toBe("u64");
   });
+
+  it("keeps & and &mut: by value and by reference are different contracts", () => {
+    // Nemo v5 py::redeem_pt takes &mut PyState<T0>; without the reference it
+    // reads as consuming the pool state.
+    const body = {
+      type: GrpcTypes.OpenSignatureBody_Type.DATATYPE,
+      typeName: "0x2b71::py::PyState",
+      typeParameterInstantiation: [{ type: GrpcTypes.OpenSignatureBody_Type.TYPE_PARAMETER, typeParameter: 0, typeParameterInstantiation: [] }],
+    };
+    const sig = (reference?: GrpcTypes.OpenSignature_Reference) => ({ reference, body }) as unknown as GrpcTypes.OpenSignature;
+    expect(formatSignature(sig(GrpcTypes.OpenSignature_Reference.MUTABLE))).toBe("&mut 0x2b71::py::PyState<T0>");
+    expect(formatSignature(sig(GrpcTypes.OpenSignature_Reference.IMMUTABLE))).toBe("&0x2b71::py::PyState<T0>");
+    expect(formatSignature(sig())).toBe("0x2b71::py::PyState<T0>");
+  });
 });

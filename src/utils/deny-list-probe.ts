@@ -335,6 +335,8 @@ export async function readCoinRestrictions(
   };
 
   let cursor: string | null = null;
+  let complete = false;
+  let pauseSeen = false;
   for (let i = 0; i < maxPages; i++) {
     const conn = await page(configId, cursor);
     if (!conn) break;
@@ -345,6 +347,7 @@ export async function readCoinRestrictions(
       const value = effectiveSetting(setting, epoch);
 
       if (type.endsWith(GLOBAL_PAUSE_KEY)) {
+        pauseSeen = true;
         out.globally_paused = value;
         continue;
       }
@@ -361,7 +364,10 @@ export async function readCoinRestrictions(
       if (Number.isFinite(at)) entry.effective_after_epoch = at;
       out.denied.push(entry);
     }
-    if (!conn.pageInfo.hasNextPage) break;
+    if (!conn.pageInfo.hasNextPage) {
+      complete = true;
+      break;
+    }
     cursor = conn.pageInfo.endCursor;
     // Another page claimed with no cursor restarts the walk. Bounded by
     // maxPages so it terminates, but it would re-read page one and report the
@@ -369,5 +375,8 @@ export async function readCoinRestrictions(
     if (!cursor) break;
     if (i === maxPages - 1 && conn.pageInfo.hasNextPage) out.truncated = true;
   }
+  // Every field was read and none is a GlobalPauseKey: the issuer never
+  // paused the coin, and the chain reads that as not paused.
+  if (complete && !pauseSeen) out.globally_paused = false;
   return out;
 }

@@ -5,11 +5,13 @@ import {
   findValidatorByAddress,
   type ValidatorJson,
 } from "../utils/validators.js";
-import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { protoValueToJson } from "../utils/proto.js";
+import { listOwnedWithJson } from "../utils/owned-objects.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+const STAKED_SUI_TYPE = "0x3::staking_pool::StakedSui";
+/** Positions read before a total is refused. About 250 characters each. */
+const MAX_STAKE_POSITIONS = 1000;
 
 export function registerStakingTools(server: McpServer) {
   server.tool(
@@ -140,63 +142,27 @@ export function registerStakingTools(server: McpServer) {
 
   server.tool(
     "get_staking_summary",
-    "Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance — a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.",
+    "Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance — a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
     },
     async ({ address }) => {
-      const ownedRes = await sui.listOwnedObjects({
-        owner: address,
-        type: "0x3::staking_pool::StakedSui",
-        limit: 50,
-        cursor: null,
-      });
-      const truncated = ownedRes.hasNextPage ?? false;
+      const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, MAX_STAKE_POSITIONS);
 
-      // Fetch all staking objects in parallel instead of sequentially
-      const objectResults = await Promise.all(
-        ownedRes.objects.map(async (obj) => {
-          const { response: objRes } = await sui.ledgerService.getObject({
-            objectId: obj.objectId,
-            readMask: {
-              paths: ["object_id", "version", "object_type", "json"],
-            },
-          });
-          return { objectId: obj.objectId, object: objRes.object };
-        })
-      );
-
-      const positions: Array<{
-        object_id: string;
-        pool_id: string | null;
-        principal_mist: string | null;
-        stake_activation_epoch: string | null;
-      }> = [];
-
-      let totalStakedMist = BigInt(0);
-
-      for (const { objectId, object: fullObj } of objectResults) {
-        const json = protoValueToJson(fullObj?.json) as Record<
-          string,
-          unknown
-        > | null;
-
-        const poolId = (json?.pool_id as string) ?? null;
-        const principal = (json?.principal as string) ?? null;
-        const activationEpoch =
-          (json?.stake_activation_epoch as string) ?? null;
-
-        if (principal) {
-          totalStakedMist += BigInt(principal);
-        }
-
-        positions.push({
-          object_id: objectId,
-          pool_id: poolId,
+      let totalStakedMist = 0n;
+      const positions = objects.map((o) => {
+        const principal = typeof o.json?.principal === "string" ? o.json.principal : null;
+        if (principal) totalStakedMist += BigInt(principal);
+        return {
+          object_id: o.objectId,
+          pool_id: typeof o.json?.pool_id === "string" ? o.json.pool_id : null,
           principal_mist: principal,
-          stake_activation_epoch: activationEpoch,
-        });
-      }
+          stake_activation_epoch:
+            typeof o.json?.stake_activation_epoch === "string" ? o.json.stake_activation_epoch : null,
+        };
+      });
+      // A position whose principal could not be read makes the sum short.
+      const summed = complete && positions.every((p) => p.principal_mist !== null);
 
       return {
         content: [
@@ -205,9 +171,16 @@ export function registerStakingTools(server: McpServer) {
             text: JSON.stringify(
               {
                 address,
-                total_staked_mist: totalStakedMist.toString(),
+                total_staked_mist: summed ? totalStakedMist.toString() : null,
+                ...(summed
+                  ? {}
+                  : {
+                      total_unavailable: complete
+                        ? "A position's principal could not be read, so no total is given."
+                        : `The wallet holds more than ${MAX_STAKE_POSITIONS} StakedSui objects; these are the first ${positions.length} and no total is given.`,
+                    }),
                 position_count: positions.length,
-                truncated,
+                truncated: !complete,
                 positions,
               },
               null,

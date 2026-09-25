@@ -250,3 +250,15 @@ export function timestampToIso(ts?: { seconds: bigint; nanos: number }): string 
   const millis = Number(ts.seconds) * 1000 + Math.floor(ts.nanos / 1_000_000);
   return new Date(millis).toISOString();
 }
+
+/**
+ * Each distinct entry once, in first-seen order, with ` ×N` after one that
+ * occurred N > 1 times. A PTB repeats the same call hundreds of times: one Nemo
+ * exploit transaction decoded to 46k characters of actions in a single history
+ * row. `get_transaction` keeps every command in order.
+ */
+export function foldRepeats(items: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(item, (counts.get(item) ?? 0) + 1);
+  return [...counts].map(([item, n]) => (n > 1 ? `${item} ×${n}` : item));
+}

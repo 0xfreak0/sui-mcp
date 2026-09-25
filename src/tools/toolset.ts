@@ -10,6 +10,7 @@ import {
   toolsForProfiles,
   type ProfileName,
 } from "./profiles.js";
+import { toolArgsSchema } from "./args.js";
 import { toolPolicy } from "./tool-meta.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -233,7 +234,7 @@ export function registerToolsetTool(
       title: policy.title,
       description: enableToolsDescription(state.active),
       annotations: policy.annotations,
-      inputSchema: {
+      inputSchema: toolArgsSchema({
         /**
          * Accepts one name or several, under either key.
          *
@@ -249,7 +250,7 @@ export function registerToolsetTool(
         profiles: profileArg
           .optional()
           .describe("Alias for `profile`. Same values; use whichever reads better."),
-      },
+      }),
     },
     async ({ profile, profiles }) => {
       const requested = [...new Set([...toList(profile), ...toList(profiles)])];

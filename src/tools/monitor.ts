@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, timePointArg, u64StringArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { formatOwner } from "../utils/formatting.js";
@@ -21,14 +21,14 @@ export function registerMonitorTools(server: McpServer) {
         .optional()
         .describe("Object ID to check for version changes. Provide either address or object_id."),
       since_checkpoint: numArg()
+        .int()
+        .min(0)
         .optional()
         .describe("(address mode) Only show activity after this checkpoint number"),
-      since_timestamp: z
-        .string()
+      since_timestamp: timePointArg()
         .optional()
         .describe('(address mode) Only show activity after this ISO timestamp (e.g. "2024-01-15T00:00:00Z")'),
-      since_version: z
-        .string()
+      since_version: u64StringArg()
         .optional()
         .describe("(object mode) Only report if version is newer than this"),
       limit: numArg()
@@ -45,6 +45,9 @@ export function registerMonitorTools(server: McpServer) {
     async ({ address, object_id, since_checkpoint, since_timestamp, since_version, limit, cursor }) => {
       if (!address && !object_id) {
         return errorResult("Provide either 'address' or 'object_id'.");
+      }
+      if (address && object_id) {
+        return errorResult("Give 'address' or 'object_id', not both: they select different checks.");
       }
 
       // Object mode: check version change

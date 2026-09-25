@@ -5,6 +5,7 @@ import {
   getLabel,
   isSink,
   isSinkCategory,
+  isWatchAlert,
   removeSessionLabel,
 } from "../src/utils/labels.js";
 import { runWithNetwork } from "../src/config.js";
@@ -12,13 +13,15 @@ import { runWithNetwork } from "../src/config.js";
 const ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 describe("isSinkCategory", () => {
-  it("treats cex/bridge/mixer/malicious/burn as sinks", () => {
-    for (const c of ["cex", "bridge", "mixer", "malicious", "burn"] as const) {
+  it("treats cex/bridge/mixer/burn as sinks", () => {
+    for (const c of ["cex", "bridge", "mixer", "burn"] as const) {
       expect(isSinkCategory(c)).toBe(true);
     }
   });
-  it("does not treat protocol/defi/validator/other as sinks", () => {
-    for (const c of ["protocol", "defi", "validator", "other"] as const) {
+  it("does not treat malicious/protocol/defi/validator/other as sinks", () => {
+    // A trace follows a labelled attacker, so `is_sink: true` on one told the
+    // reader the opposite of what trace_funds and trace_flow_graph do.
+    for (const c of ["malicious", "protocol", "defi", "validator", "other"] as const) {
       expect(isSinkCategory(c)).toBe(false);
     }
   });
@@ -51,7 +54,9 @@ describe("session labels", () => {
     const found = getLabel(`  ${addr.toUpperCase().replace("0X", "0x")}  `);
     expect(found?.label).toBe("Attacker #1");
     expect(found?.source).toBe("session");
-    expect(isSink(addr)).toBe(true);
+    // A labelled attacker is followed by a trace, and still alerts a watch.
+    expect(isSink(addr)).toBe(false);
+    expect(isWatchAlert(addr)).toBe(true);
   });
 
   it("session labels take precedence over static", () => {

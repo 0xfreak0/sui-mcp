@@ -22,6 +22,8 @@ export interface GraphqlTransportOptions {
   concurrency: number;
   /** How to wait between attempts. A seam for tests; defaults to a real timer. */
   sleep?: (ms: number) => Promise<unknown>;
+  /** Names the service in a timeout or connection error (default "GraphQL"). */
+  service?: string;
 }
 
 /** A FIFO counting semaphore. */
@@ -63,7 +65,7 @@ function errorCode(err: unknown): string | undefined {
 }
 
 /**
- * A `fetch` for one GraphQL endpoint that queues, times out and retries.
+ * A `fetch` for one GraphQL or gRPC-web endpoint that queues, times out and retries.
  *
  * Each attempt waits for a slot in the endpoint's limiter and runs under its
  * own `AbortSignal.timeout`. A 429 or 5xx is retried after the `Retry-After`
@@ -78,6 +80,7 @@ export function retryingFetch(
   const limiter = new Limiter(options.concurrency);
   const host = new URL(endpoint).host;
   const wait = options.sleep ?? sleep;
+  const service = options.service ?? "GraphQL";
 
   return async (input, init) => {
     for (let attempt = 1; ; attempt++) {
@@ -95,12 +98,12 @@ export function retryingFetch(
         response = await globalThis.fetch(input, { ...init, signal });
       } catch (err) {
         if ((err as Error)?.name === "TimeoutError") {
-          throw new Error(`GraphQL request to ${host} timed out after ${options.timeoutMs / 1000}s`);
+          throw new Error(`${service} request to ${host} timed out after ${options.timeoutMs / 1000}s`);
         }
         const code = errorCode(err);
         if (!code || !RETRYABLE_CODES.has(code)) throw err;
         if (last) {
-          throw new Error(`GraphQL request to ${host} failed (${code}); tried ${attempt} times`);
+          throw new Error(`${service} request to ${host} failed (${code}); tried ${attempt} times`);
         }
         await wait(backoff);
         continue;

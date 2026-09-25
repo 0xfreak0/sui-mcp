@@ -132,6 +132,7 @@ export async function fetchAftermath(coinTypes: string[]): Promise<Map<string, P
  * ------------------------------------------------------------------ */
 
 const DEFILLAMA_PRICES_URL = "https://coins.llama.fi/prices";
+const DEFILLAMA_PERCENTAGE_URL = "https://coins.llama.fi/percentage";
 
 /**
  * Coins per request. Keys are ~90 characters, so 25 keeps the URL near 2.3 KB,
@@ -255,6 +256,43 @@ export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Prom
     }
   }
   return { quotes, unanswered, unsupported };
+}
+
+/**
+ * Percent change over the last 24 hours, from DefiLlama's `/percentage`
+ * endpoint, keyed by the coin types asked for. A coin DefiLlama does not list
+ * is absent from its answer and from this map, as is every coin of a batch
+ * whose request failed: an unknown change is never a zero.
+ *
+ * Aftermath's `priceChange24HoursPercentage` is not used: it reads 0.0 for
+ * every coin, SUI included, on days SUI moved 17%.
+ */
+export async function fetchDefiLlamaChange24h(coinTypes: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const keyToCoins = new Map<string, string[]>();
+  for (const coinType of new Set(coinTypes)) {
+    const key = defiLlamaKey(coinType);
+    if (key) keyToCoins.set(key, [...(keyToCoins.get(key) ?? []), coinType]);
+  }
+  const keys = [...keyToCoins.keys()];
+  for (let i = 0; i < keys.length; i += DEFILLAMA_BATCH) {
+    const chunk = keys.slice(i, i + DEFILLAMA_BATCH);
+    try {
+      const resp = await fetch(`${DEFILLAMA_PERCENTAGE_URL}/${chunk.join(",")}?period=24h`, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
+      });
+      if (!resp.ok) continue;
+      const coins = ((await resp.json()) as { coins?: Record<string, unknown> } | null)?.coins ?? {};
+      for (const [key, pct] of Object.entries(coins)) {
+        if (typeof pct !== "number" || !Number.isFinite(pct)) continue;
+        for (const coinType of keyToCoins.get(key) ?? []) out.set(coinType, pct);
+      }
+    } catch {
+      // Best-effort: these coins are left out, which the caller reports as null.
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ *

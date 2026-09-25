@@ -55,9 +55,13 @@ export function formatSignatureBody(body: GrpcTypes.OpenSignatureBody): string {
   }
 }
 
+/** A parameter or return type as Move writes it, with `&` / `&mut` kept: by value and by reference are different contracts. */
 export function formatSignature(sig: GrpcTypes.OpenSignature): string {
   if (!sig.body) return "unknown";
-  return formatSignatureBody(sig.body);
+  const body = formatSignatureBody(sig.body);
+  if (sig.reference === GrpcTypes.OpenSignature_Reference.MUTABLE) return `&mut ${body}`;
+  if (sig.reference === GrpcTypes.OpenSignature_Reference.IMMUTABLE) return `&${body}`;
+  return body;
 }
 
 function formatTypeParam(tp: GrpcTypes.TypeParameter) {
@@ -290,8 +294,8 @@ function formatSdkSignatureBody(body: SuiClientTypes.OpenSignatureBody): string 
     }
     return name;
   }
-  if ("typeParameter" in body && body.$kind === "typeParameter") {
-    return `T${body.typeParameter}`;
+  if (body.$kind === "typeParameter") {
+    return `T${body.index}`;
   }
   return body.$kind;
 }

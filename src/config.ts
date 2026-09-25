@@ -124,7 +124,8 @@ export const MAX_PAGE_SIZE = 1000;
  * `fetch` has no default timeout — an unresponsive host would otherwise hang
  * the call until undici's ~300s header timeout, long past the point any client
  * still cares. One constant so every external call fails on the same clock.
- * gRPC carries its own deadlines; GraphQL uses {@link GRAPHQL_TRANSPORT}.
+ * GraphQL uses {@link GRAPHQL_TRANSPORT} and the fullnode's gRPC-web calls
+ * {@link GRPC_TRANSPORT}; the archive's native gRPC carries its own deadlines.
  */
 export const EXTERNAL_HTTP_TIMEOUT_MS = 10_000;
 
@@ -149,6 +150,15 @@ export const GRAPHQL_TRANSPORT = {
   timeoutMs: 30_000,
   concurrency: 8,
 } as const;
+
+/**
+ * The same policy for the fullnode's gRPC-web calls (`sui.*`), which go through
+ * `fetch` too. The fullnode answers a burst with HTTP 429, which the gRPC-web
+ * transport reports as `RESOURCE_EXHAUSTED` with an empty message. A tool that
+ * resolves names for a 200-counterparty transaction makes 200 lookups, and
+ * unqueued they exhausted the limit for the calls after them as well.
+ */
+export const GRPC_TRANSPORT = GRAPHQL_TRANSPORT;
 
 export const DECOMPILER_PATH = process.env.SUI_DECOMPILER_PATH ?? "move-decompiler";
 

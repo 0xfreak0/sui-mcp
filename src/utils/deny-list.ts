@@ -102,7 +102,7 @@ export interface CoinRestrictions {
   coin_type: string;
   /** The `Config` object holding this coin's deny state. */
   config_id: string;
-  /** Whole-coin pause. Null when the coin has never set one. */
+  /** Whole-coin pause. False when the coin never set one; null when the deny list was not read to the end. */
   globally_paused: boolean | null;
   denied: DeniedAddress[];
   /** True when the address page was cut short. */

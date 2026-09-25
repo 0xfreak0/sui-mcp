@@ -233,3 +233,15 @@ describe("check_activity", () => {
     expect(data.note).toMatch(/since_version/);
   });
 });
+
+describe("check_activity with both modes", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Both given ran object mode and dropped the address without a word.
+  it("refuses an address and an object_id together, before any request", async () => {
+    const result = await tools.get("check_activity")!({ address: `0x${"a".repeat(64)}`, object_id: `0x${"0".repeat(63)}6` });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toMatch(/not both/);
+    expect(mockSui.ledgerService.getObject).not.toHaveBeenCalled();
+  });
+});

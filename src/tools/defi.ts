@@ -1,6 +1,5 @@
 import { addressArg } from "./args.js";
-import { sui } from "../clients/grpc.js";
-import { protoValueToJson } from "../utils/proto.js";
+import { listOwnedWithJson } from "../utils/owned-objects.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const POSITION_TYPES = {
@@ -15,9 +14,8 @@ const POSITION_TYPES = {
 
 type ProtocolName = keyof typeof POSITION_TYPES;
 
-const READ_MASK = {
-  paths: ["object_id", "version", "digest", "object_type", "owner", "json"],
-};
+/** Positions of one protocol read before the list is reported as truncated. */
+const MAX_POSITIONS_PER_PROTOCOL = 1000;
 
 // ---------------------------------------------------------------------------
 // Per-protocol extractors: pull actionable fields from raw on-chain JSON
@@ -176,47 +174,17 @@ async function fetchPositions(
   protocol: ProtocolName,
 ): Promise<{ protocol: ProtocolName; positions: PositionEntry[]; truncated: boolean; error?: string }> {
   try {
-    const listResult = await sui.listOwnedObjects({
-      owner: address,
-      type: POSITION_TYPES[protocol],
-      limit: 50,
-      cursor: null,
-    });
-
-    if (listResult.objects.length === 0) {
-      return { protocol, positions: [], truncated: false };
-    }
-
-    const truncated = listResult.hasNextPage ?? false;
+    // Paged to the end with each object's JSON on the page, so a wallet with
+    // more than one page of positions is not summarised from its first 50.
+    const { objects, complete } = await listOwnedWithJson(address, POSITION_TYPES[protocol], MAX_POSITIONS_PER_PROTOCOL);
     const extractor = EXTRACTORS[protocol];
-
-    const positions = await Promise.all(
-      listResult.objects.map(async (obj): Promise<PositionEntry> => {
-        try {
-          const { response } = await sui.ledgerService.getObject({
-            objectId: obj.objectId,
-            readMask: READ_MASK,
-          });
-          const full = response.object;
-          const rawJson = protoValueToJson(full?.json) as RawJson | null;
-          return {
-            object_id: obj.objectId,
-            type: full?.objectType ?? obj.type ?? POSITION_TYPES[protocol],
-            version: full?.version?.toString() ?? obj.version?.toString(),
-            summary: rawJson ? extractor(rawJson) : {},
-          };
-        } catch {
-          return {
-            object_id: obj.objectId,
-            type: obj.type ?? POSITION_TYPES[protocol],
-            version: obj.version?.toString(),
-            summary: {},
-          };
-        }
-      }),
-    );
-
-    return { protocol, positions, truncated };
+    const positions = objects.map((obj): PositionEntry => ({
+      object_id: obj.objectId,
+      type: obj.type,
+      version: obj.version,
+      summary: obj.json ? extractor(obj.json) : {},
+    }));
+    return { protocol, positions, truncated: !complete };
   } catch (err) {
     return {
       protocol,

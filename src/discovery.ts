@@ -198,14 +198,23 @@ async function fetchDiscoveryTokens(): Promise<TokenScan> {
   return p;
 }
 
-export async function searchTokens(query: string): Promise<TokenInfo[]> {
-  const { tokens } = await fetchDiscoveryTokens();
+/**
+ * Name/symbol substring matches among the CoinMetadata objects the bounded scan
+ * read. `truncated` says the scan stopped before the end, so a coin absent
+ * here may still exist; `scanned` is how many coins were read.
+ */
+export async function searchTokens(
+  query: string,
+): Promise<{ tokens: TokenInfo[]; truncated: boolean; scanned: number }> {
+  const scan = await fetchDiscoveryTokens();
   const q = query.toLowerCase();
-  return tokens.filter(
-    (t) =>
-      t.name.toLowerCase().includes(q) ||
-      t.symbol.toLowerCase().includes(q),
-  );
+  return {
+    tokens: scan.tokens.filter(
+      (t) => t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q),
+    ),
+    truncated: scan.truncated,
+    scanned: scan.tokens.length,
+  };
 }
 
 /**

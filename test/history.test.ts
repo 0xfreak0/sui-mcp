@@ -14,6 +14,7 @@ vi.mock("../src/protocols/registry.js", () => ({
   prefetchProtocolNames: async () => {},
   lookupProtocol: () => null,
   lookupProtocolDisplay: () => null,
+  lookupOperation: () => null,
 }));
 
 const { registerHistoryTools } = await import("../src/tools/history.js");
@@ -179,5 +180,30 @@ describe("get_transaction_history reads every balance change", () => {
     expect(r.incomplete_transactions).toEqual([
       { digest, balance_changes_truncated: true, commands_truncated: false },
     ]);
+  });
+});
+
+describe("a row's actions", () => {
+  /**
+   * The Nemo exploit's CUedaeif… ran the same few calls hundreds of times, and
+   * its one history row carried 46k characters of actions. The row lists each
+   * distinct action once with its count; get_transaction keeps the sequence.
+   */
+  it("lists a repeated call once, with how many times it ran", async () => {
+    const call = (fn: string) => ({
+      __typename: "MoveCallCommand",
+      function: { name: fn, module: { name: "market", package: { address: `0x${"ab".repeat(32)}` } } },
+    });
+    const commands = [call("init"), ...Array.from({ length: 48 }, (_, i) => call(i % 2 ? "swap" : "voucher")), call("done")];
+    mockGqlQuery.mockResolvedValue(
+      page([{ ...tx("drain", "2025-09-07T16:05:11.505Z", SUBJECT, [[SUBJECT, "5"]]), kind: { commands: gqlPage(commands) } }]),
+    );
+    const r = await run({ address: SUBJECT, limit: 1 });
+    const actions: string[] = r.transactions[0].actions;
+    expect(actions).toHaveLength(4);
+    expect(actions[0]).toMatch(/::market::init$/);
+    expect(actions[1]).toMatch(/::market::voucher ×24$/);
+    expect(actions[2]).toMatch(/::market::swap ×24$/);
+    expect(actions[3]).toMatch(/::market::done$/);
   });
 });

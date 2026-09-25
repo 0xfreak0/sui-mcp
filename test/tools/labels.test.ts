@@ -114,4 +114,20 @@ describe("manage_labels export/import round-trip", () => {
     const found = await call({ action: "lookup", address: ADDR });
     expect(found.label.label).toBe("Hand written");
   });
+
+  // A malformed reference was looked up as it was and answered "label: null",
+  // which reads as an address that was checked and carries no label.
+  it("refuses a lookup, add or remove of something that is not an address", async () => {
+    for (const args of [
+      { action: "lookup", address: "0xZZ12" },
+      { action: "lookup", address: `0x${"a".repeat(65)}` },
+      { action: "add", address: "not-an-address", label: "x", category: "cex" },
+      { action: "remove", address: "0x12\u0000ab" },
+    ]) {
+      const res = await manageLabels(args);
+      expect(res.isError, JSON.stringify(args)).toBe(true);
+    }
+    const ok = await call({ action: "lookup", address: "eip155:1:0x135477aa627a3bcc3223bde10dd8e7c55a1f645c" });
+    expect(ok.account).toMatch(/^eip155:1:/);
+  });
 });

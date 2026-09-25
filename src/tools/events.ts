@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, refinePoint } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
@@ -57,10 +57,12 @@ export function registerEventTools(server: McpServer) {
         .describe("Filter by emitting module (e.g. 0x2::coin or 0x2)"),
       after_checkpoint: z
         .union([z.string(), z.number()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Only events after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes events at that time"),
       before_checkpoint: z
         .union([z.string(), z.number()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Only events before this point: a checkpoint number, or an ISO 8601 time, which includes events at that time"),
       order: z

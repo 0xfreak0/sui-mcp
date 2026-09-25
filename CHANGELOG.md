@@ -1,5 +1,97 @@
 # Changelog
 
+## Unreleased
+
+Every tool now has a live check against real mainnet data. Before this release
+24 of the 76 tools had one. `verify:live` replays the Cetus and Nemo exploits
+and checks each answer against a raw chain read taken in the same run, and a
+generated pass sends malformed input to every argument of every tool. The
+checks found the defects below, and each fix has a regression test.
+
+### Added
+- Three live checks in `npm run verify:live`: `attribution-pass` (funding,
+  clustering, multisig, events, history, holders), `surface-pass` (labels,
+  findings, watches, prompts, the case resource, and the core, market and
+  developer tools) and a deeper `incident-pass` (all eighteen incident and
+  package tools). Each fails any call over 60s or over its declared result
+  size.
+- `adversarial.mjs` is generated from `tools/list`: about 3,200 malformed and
+  hostile inputs across every field of every tool, with a per-tool pass/fail
+  table.
+
+### Changed
+- **Unknown argument names are refused.** The error names the closest valid
+  argument and lists the rest. A misspelt argument used to be dropped without
+  a word, so `disassemble_module {module: "pool"}` listed the modules instead
+  of disassembling one.
+- Blank strings are refused for every argument. `epoch: " "` returned epoch 0,
+  `sequence_number: " "` returned checkpoint 0, and `search_token {query: ""}`
+  returned every token.
+- History and timeline rows list each distinct action once with a count;
+  `query_transactions` does the same for Move calls. `get_transaction` still
+  lists every action in order.
+- `summarize_incident_losses` reports its window as `from`, `to`,
+  `after_checkpoint` and `before_checkpoint`, like the other windowed tools.
+- `is_sink` is false for `malicious` labels, matching traces, which follow
+  them. `watch_addresses` still raises `sink_reached` on a labelled attacker.
+
+### Fixed
+- **gRPC reads failed as "Unknown error" under load.** The fullnode answers a
+  busy client with `RESOURCE_EXHAUSTED` and no message. Requests are now
+  queued at 8 in flight and retried, and an empty error is reported by its
+  code.
+- **`trace_funds` valued a bridge exit at its fee.** A hop that burned 100,000
+  USDC was valued at the $10 its relayer received. A hop is now valued by the
+  largest amount any address sent or received.
+- **`get_top_holders` and `analyze_token` reported partial balances.** A holder
+  whose coins were only partly scanned showed the part seen. Each sampled
+  holder's balance is now read directly, with the scanned part kept as
+  `balance_in_sample`.
+- **`get_staking_summary` summed only the first 50 positions**, and
+  `get_defi_positions` read one page. Both read every page, and the total is
+  null when not every position could be read.
+- **`analyze_multisig` read a wallet's oldest transactions** to decide which
+  keys are live. It reads the newest.
+- **`compare_oracle_price` read Pyth at the candle's open** while the market
+  price is its close. Without `PYTH_API_KEY` it now says nothing was compared
+  instead of reporting zero flagged candles.
+- **The 24h price change was 0 for every coin.** Aftermath's field is always
+  0; `get_token_prices` and `analyze_token` take the change from DefiLlama.
+- **`find_pools` showed at most 10 pools per type**, never matched Turbos,
+  missed DeepBook v3, reported every pool in the query's token order, and read
+  a failed search as no pools.
+- **`search_token` could miss the real coin** behind impostors with the same
+  symbol. Verified coins come first and each result says whether it is
+  verified.
+- **`query_transactions` with `all_versions`** failed on lineages of more than
+  10 versions with "Query has over 300 nodes".
+- **`sample_control_addresses` and `summarize_incident_losses`** resolved a
+  time window to the nearest checkpoint instead of the checkpoints stamped
+  inside it, as the other windowed tools do.
+- **Signatures dropped `&` and `&mut`** in `get_package` and
+  `analyze_package`, and `get_move_function` named every type parameter
+  `typeParameter`.
+- **`get_package_dependency_graph` missed dependencies used only inside
+  function bodies.** It reads each package's linkage table.
+- **`check_coin_restrictions` reported `globally_paused: null`** for a coin
+  that never set a pause. It is false; null means the deny list was not read
+  to the end.
+- **`list_nfts` ignored `limit`**: `limit: 1` returned 50 NFTs.
+- **`get_chain_info` left out the reference gas price** its description names.
+- **`resolve_name`** now tells an unregistered or expired name (null, with a
+  note) apart from a malformed name or a failed lookup (errors).
+- Inputs that tools answered as if they were valid are refused: a malformed
+  coin type, a time of `"-5"` (read as a date in 6 BC), `"1e309"`, a u64 over
+  2^64-1, trailing bytes in `decode_ptb`, both `address` and `object_id` in
+  `check_activity`, a non-pool object in `get_pool_stats`, a non-package in
+  `resolve_protocol_packages`, an absent `value_field` in `aggregate_events`,
+  and `""` in `classify_deposit_address`, which classified the zero address.
+- `analyze_token` refuses a coin type that does not exist, and
+  `decompile_module` without a decompiler binary no longer suggests another
+  network.
+- Argument errors are one line of at most 600 characters and carry no control
+  characters from the input.
+
 ## 1.19.1 (2026-09-25)
 
 ### Fixed

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, coinTypeArg } from "./args.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { getLabel, isSink, labelProvenance, type LabelProvenance } from "../utils/labels.js";
@@ -41,7 +41,7 @@ import {
   coinScale,
   decimalsForCoinType,
   displayCoin,
-  dominantInflowUsd,
+  dominantFlowUsd,
   formatUsd,
   PRICE_STALE_THRESHOLD_SEC,
   priceUsdAtTime,
@@ -404,8 +404,7 @@ export function registerTraceTools(server: McpServer) {
         .max(10)
         .optional()
         .describe("Max hops to follow (default 3, max 10)"),
-      coin_type: z
-        .string()
+      coin_type: coinTypeArg()
         .optional()
         .describe("Start by following this coin type, and restrict the DISPLAYED balance changes to it (e.g. 0x2::sui::SUI; the short and padded forms match). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown and the first hop picks the largest flow."),
       format: z
@@ -737,12 +736,11 @@ export function registerTraceTools(server: McpServer) {
 
         // Stop at known sinks: once funds reach an exchange, bridge, mixer or
         // burn address, further hops are noise. A malicious label is not a
-        // stop: it marks the attacker whose money the trace is following, and
+        // sink: it marks the attacker whose money the trace is following, and
         // since the shipped labels name exploiters, stopping there ended every
         // exploit trace at hop 1. trace_flow_graph applies the same rule.
-        const sinkLabel = getLabel(nextAddress);
-        if (isSink(nextAddress) && sinkLabel?.category !== "malicious") {
-          const label = sinkLabel;
+        if (isSink(nextAddress)) {
+          const label = getLabel(nextAddress);
           terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
           // A bridge is the one sink that is not terminal, and a labeled one
           // may carry no curated Move-call marker at all — a relayer forward,
@@ -945,12 +943,12 @@ export function registerTraceTools(server: McpServer) {
       const enrichedHops = traceHops.map((hop, i) => {
         const prices = hopPrices[i];
         const blockUnix = hopUnix[i];
-        const inflows: Array<{ address: string; usd: number }> = [];
+        const flows: Array<{ address: string; usd: number }> = [];
         const balance_changes = hop.balance_changes.map((bc) => {
           const pp = prices.get(bc.coin_type) ?? null;
           const price = pp?.price ?? null;
           const usd = usdValue(bc.amount, pricingScale(bc.coin_type, pp).decimals, price);
-          if (price != null && BigInt(bc.amount) > 0n) inflows.push({ address: bc.address, usd });
+          if (price != null) flows.push({ address: bc.address, usd: BigInt(bc.amount) < 0n ? -usd : usd });
           // How far is the price we used from the actual block time?
           const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
           const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
@@ -978,7 +976,7 @@ export function registerTraceTools(server: McpServer) {
             price_stale: stale || undefined,
           };
         });
-        const hopUsd = dominantInflowUsd(inflows);
+        const hopUsd = dominantFlowUsd(flows);
         return {
           ...hop,
           sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,

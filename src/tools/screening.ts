@@ -7,8 +7,7 @@
  */
 
 import { z } from "zod";
-import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
-import { numArg } from "./args.js";
+import { addressArg, numArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { classifyDepositAddress } from "../utils/deposit.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
@@ -32,7 +31,7 @@ export function registerScreeningTools(server: McpServer) {
     "classify_deposit_address",
     "(Incident investigation) Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. Verdict likely|no|unknown, tier heuristic, from three checks: every outflow is a full-balance sweep to one destination; the sweeps' gas is paid by a relayer-shaped sponsor; the destination is a labelled exchange wallet (with its source_url) or hub-shaped. Returns the hot wallet, exchange label and provenance, sweep sponsor, sweep digests and a deposits sample. About 1 request plus up to ~12 to measure the sponsor and an unlabelled destination.",
     {
-      address: z.string().describe("Candidate deposit address (0x...)."),
+      address: addressArg().describe("Candidate deposit address (0x...)."),
       max_transactions: numArg()
         .int()
         .min(5)
@@ -41,7 +40,6 @@ export function registerScreeningTools(server: McpServer) {
         .describe("Most recent transactions to read (default 50)."),
     },
     async ({ address, max_transactions }) => {
-      if (!isValidSuiAddress(normalizeSuiAddress(address))) return errorResult(`Not a Sui address: ${address}`);
       try {
         const result = await classifyDepositAddress(address, { last: max_transactions ?? 50 });
         return json({

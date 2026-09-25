@@ -136,9 +136,12 @@ async function discoverKiosks(owner: string): Promise<string[]> {
   return [...ids];
 }
 
-const KIOSK_FIELDS_QUERY = `query($kioskId: SuiAddress!, $cursor: String) {
+/** GraphQL's largest page. */
+const GQL_PAGE = 50;
+
+const KIOSK_FIELDS_QUERY = `query($kioskId: SuiAddress!, $cursor: String, $first: Int!) {
   object(address: $kioskId) {
-    dynamicFields(first: 50, after: $cursor) {
+    dynamicFields(first: $first, after: $cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
         name { type { repr } }
@@ -236,7 +239,10 @@ async function scanKioskPage(
   const items: NftEntry[] = [];
   let cursor = innerCursor;
   while (items.length < target) {
-    const data: KioskFieldsResponse = await gqlQuery<KioskFieldsResponse>(KIOSK_FIELDS_QUERY, { kioskId, cursor });
+    // Nearly every field of a kiosk is an item, so asking for what is still
+    // missing keeps a page at `target` instead of a fixed 50.
+    const first = Math.min(GQL_PAGE, target - items.length);
+    const data: KioskFieldsResponse = await gqlQuery<KioskFieldsResponse>(KIOSK_FIELDS_QUERY, { kioskId, cursor, first });
     const conn = data.object?.dynamicFields;
     if (!conn) {
       cursor = null;
@@ -277,12 +283,15 @@ const DIRECT_OBJECTS_QUERY = `query($owner: SuiAddress!, $cursor: String, $withD
   address(address: $owner) {
     objects(first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
-      nodes {
-        address
-        contents {
-          type { repr }
-          json @include(if: $withDetails)
-          display @include(if: $withDetails) { output }
+      edges {
+        cursor
+        node {
+          address
+          contents {
+            type { repr }
+            json @include(if: $withDetails)
+            display @include(if: $withDetails) { output }
+          }
         }
       }
     }
@@ -293,13 +302,16 @@ interface DirectObjectsResponse {
   address: {
     objects: {
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      nodes: Array<{
-        address: string;
-        contents: {
-          type: { repr: string };
-          json?: unknown;
-          display?: { output: Record<string, unknown> | null } | null;
-        } | null;
+      edges: Array<{
+        cursor: string;
+        node: {
+          address: string;
+          contents: {
+            type: { repr: string };
+            json?: unknown;
+            display?: { output: Record<string, unknown> | null } | null;
+          } | null;
+        };
       }>;
     };
   } | null;
@@ -316,8 +328,10 @@ function isLikelyNft(typeRepr: string): boolean {
 /**
  * Walk directly-owned (non-kiosk) objects until at least `target` NFTs are
  * collected or the address is exhausted. Excludes coins, KioskOwnerCaps,
- * PersonalKioskCaps, and staked SUI. May overshoot `target` (we don't break
- * mid-GraphQL-page).
+ * PersonalKioskCaps, and staked SUI. Stops at exactly `target`: when it fills
+ * mid-page, the next cursor is the last kept object's edge cursor. A page of
+ * 50 used to be returned whole, and 50 NFTs with SVG images was 150k
+ * characters for `limit: 1`.
  */
 async function listDirectNftsPage(
   owner: string,
@@ -338,7 +352,11 @@ async function listDirectNftsPage(
       cursor = null;
       break;
     }
-    for (const node of conn.nodes) {
+    for (const [i, { node }] of conn.edges.entries()) {
+      if (out.length >= target) {
+        // Full mid-page: resume after the last object kept.
+        return { items: out, nextCursor: conn.edges[i - 1].cursor };
+      }
       const typeRepr = node.contents?.type.repr ?? "unknown";
       if (typeRepr === "unknown" || !isLikelyNft(typeRepr)) continue;
       registerCollection(typeRepr);
@@ -427,7 +445,7 @@ function decodeCursor(s: string): ListNftsCursor {
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. May slightly overshoot `limit` because GraphQL pages are 50-at-a-time and we don't break mid-page. Use list_nft_collections for a cheaper count-only summary.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper count-only summary.",
     {
       address: addressArg().describe("Owner wallet address (0x...)"),
       limit: numArg()
@@ -435,7 +453,7 @@ export function registerNftTools(server: McpServer) {
         .min(1)
         .max(1000)
         .optional()
-        .describe("Target page size (default 50, max 1000). Result may slightly exceed this at GraphQL page boundaries."),
+        .describe("Most NFTs to return (default 50, max 1000)."),
       cursor: z
         .string()
         .optional()

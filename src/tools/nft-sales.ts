@@ -99,6 +99,7 @@ export function registerNftSalesTools(server: McpServer) {
           "Keep only sales of this Move type. Most marketplaces do not name the collection in the sale event, and those sales are reported as unattributable_sales rather than filtered out silently — a low count here is not evidence the collection did not trade.",
         ),
       max_pages: numArg()
+        .int()
         .min(1)
         .max(200)
         .optional()

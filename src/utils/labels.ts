@@ -89,15 +89,18 @@ interface LabelsFile {
 
 /**
  * Categories that represent a terminal destination for funds. When a trace
- * reaches one of these, following further hops adds noise — the money has left
+ * reaches one of these, following further hops adds noise: the money has left
  * the traceable surface (an exchange takes custody, a bridge crosses chains, a
  * mixer breaks the link) or is gone (burn). Fund tracing stops here.
+ *
+ * `malicious` is not one. It marks the attacker whose money a trace is
+ * following, so `is_sink` must be false for it or every tool that reports the
+ * flag contradicts the traces, which follow it.
  */
 const SINK_CATEGORIES: ReadonlySet<LabelCategory> = new Set<LabelCategory>([
   "cex",
   "bridge",
   "mixer",
-  "malicious",
   "burn",
 ]);
 
@@ -292,14 +295,20 @@ export function getLabel(address: string): AddressLabel | null {
   );
 }
 
-/**
- * True if the address carries a sink category (exchange, bridge, mixer, malicious,
- * burn). Tracing does not stop at `malicious`: that label marks the wallet being
- * followed. watch_addresses still reports reaching one.
- */
+/** True if the address carries a sink category (exchange, bridge, mixer, burn). */
 export function isSink(address: string): boolean {
   const label = getLabel(address);
   return label ? isSinkCategory(label.category) : false;
+}
+
+/**
+ * True if reaching this address should raise a watch hit: a sink, or a
+ * labelled attacker. Paying an exploiter is a finding even though a trace
+ * follows the exploiter rather than stopping there.
+ */
+export function isWatchAlert(address: string): boolean {
+  const label = getLabel(address);
+  return label ? isSinkCategory(label.category) || label.category === "malicious" : false;
 }
 
 /**

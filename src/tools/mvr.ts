@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { boolArg, numArg, addressListArg } from "./args.js";
+import { boolArg, numArg, addressListArg, mvrNameArg, mvrTypeArg } from "./args.js";
 import { moveRegistryUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { mvrFetch } from "../utils/mvr-client.js";
@@ -11,7 +11,7 @@ export function registerMvrTools(server: McpServer) {
     "Resolve one or more Move Registry (MVR) names to their on-chain package IDs. Names use the form '@org/app' (latest version) or '@org/app/N' for a pinned version. Use this to translate human-readable package names like '@suins/core' or '@deepbook/core' into addresses for use with other tools.",
     {
       names: z
-        .array(z.string())
+        .array(mvrNameArg())
         .min(1)
         .describe("One or more MVR names, e.g. ['@suins/core', '@deepbook/core/4']."),
     },
@@ -113,8 +113,7 @@ export function registerMvrTools(server: McpServer) {
     "mvr_get_package_info",
     "Get the full Move Registry record for a single package name: metadata (description, homepage, icon), current version, on-chain package_address, the package_info object ID, and git source info (repo, branch, path) when registered.",
     {
-      name: z
-        .string()
+      name: mvrNameArg()
         .describe("MVR name, e.g. '@suins/core'. Optionally version-pinned: '@suins/core/3'."),
     },
     async ({ name }) => {
@@ -171,7 +170,7 @@ export function registerMvrTools(server: McpServer) {
     "Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. No generics — for parameterized types include them as '<...>' and the registry will reject the request. Bulk-friendly.",
     {
       types: z
-        .array(z.string())
+        .array(mvrTypeArg())
         .min(1)
         .describe(
           "One or more struct paths, each '@org/app::module::Type'. Version-pinned names ('@org/app/N::module::Type') also accepted.",

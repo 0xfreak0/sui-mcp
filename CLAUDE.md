@@ -367,6 +367,12 @@ lists every object and holder. `find_funding_sources` keeps each result's origin
 first funder and first hop, and `include_chains` returns every hop; shared
 funders, co-funding and payments are computed from the full chains either way.
 
+A list row folds repeats: `get_transaction_history` and `build_timeline`
+actions and `query_transactions` `move_calls` go through `foldRepeats`, each
+distinct entry once with ` ×N`. The Nemo exploit's 214-command PTBs made a
+30-minute `build_timeline` 195k characters. `get_transaction` keeps every
+action in order, so the sequence is one call away.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from
@@ -405,10 +411,37 @@ on the call's network before the handler runs, and adds `resolved_from` plus a
 note that the name is a purchasable handle. An unregistered name is an error,
 not a pass-through.
 
-`withNetworkParam` also wraps every field so `null` means unset (an optional
-field gets its default, a required one reports "Required") and a bare string
-where a list is expected becomes a one-item list. This runs as a `z.preprocess`
-on each field, so the JSON schema is the field's own.
+Every tool's arguments are parsed with `toolArgsSchema` (`args.ts`), which
+`withNetworkParam` and `enable_tools` both use. It wraps every field so `null`
+means unset (an optional field gets its default, a required one reports
+"Required"), a bare string where a list is expected becomes a one-item list,
+and a blank string, alone or in a list, is refused. Handlers read a blank as
+unset (`if (coin_type)`), as zero (`BigInt(" ")` is 0, so `epoch: " "` returned
+genesis) or as match-everything (`search_token` with `query: ""`). This runs as
+a `z.preprocess` on each field, so the JSON schema is the field's own.
+
+The object is `.strict()`: an argument name the tool does not take is refused
+with the closest valid name and the full list. A plain `z.object` strips it, so
+`disassemble_module {module: "pool"}` listed the modules as if `module_name`
+had been left out. The advertised schema already said
+`additionalProperties: false`.
+
+Other value types follow the same rule: refuse what cannot mean anything
+rather than pass it on. A coin or struct type is `coinTypeArg()` (a malformed
+type matched nothing on the chain, so `0x2::a::b::c` read as "no deny list"). A
+time or checkpoint given as text is `timePointArg()`, or `.superRefine(refinePoint)`
+on a string-or-number field; `Date.parse("-5")` is a date in 6 BC. A `u64` as
+text is `u64StringArg()`. An MVR name is `mvrNameArg()`, because the name goes
+into the registry's URL path. `numArg` refuses `"1e309"`, which `Number()` makes
+Infinity. Each keeps the JSON schema of the base type; check with a `tools/list`
+diff when adding one.
+
+The SDK validates arguments before any handler, and joins several failures
+with newlines behind `MCP error -32602`. `oneLineArgumentErrors` rewrites that
+reply as `{"error": "Invalid arguments for <tool>: <field>: <message>; ..."}`,
+600 characters at most. An argument error quotes the caller's input through
+`quoteInput`: JSON-escaped and cut at 80 characters, so a 10,000-character
+argument does not come back as a 10,000-character error.
 
 ### Tool metadata
 
@@ -451,7 +484,8 @@ rather than one per tool.
 `withNetworkParam` catches a thrown error and returns `errorResult` with one
 line from `describeError` (`src/utils/errors.ts`): percent-escapes decoded,
 `graphql-request`'s JSON dump cut, first non-empty line only, 500 characters at
-most. A not-found names the network it was looked up on and the other networks
+most, control characters escaped (tools quote the caller's input back, and an
+argument holding NUL or an ANSI escape put the raw bytes in the reply). A not-found names the network it was looked up on and the other networks
 to try. The same cleaning runs over an `isError` result a tool built itself.
 
 `gqlQuery` retries 429, 5xx and connection resets (`GRAPHQL_TRANSPORT` in
@@ -861,9 +895,11 @@ a mainnet 4-of-7: 8 transactions, 3 distinct signer sets, and 2 of 7 keys had
 never signed. So `signed_source_tx` is named for the transaction it came from,
 `get_transaction` reports `authorization` for a specific transaction, and
 `analyze_multisig` (`src/utils/signer-history.ts`, pure) answers the
-wallet-level question. Every dormancy claim is stated against the transaction
-count it rests on — "never signed" over 8 and over 200 are different claims —
-and under two transactions it refuses to read a pattern at all.
+wallet-level question. It reads the most recent sent transactions, newest
+first, since which keys sign now is the question. Every dormancy claim is
+stated against the transaction count it rests on — "never signed" over 8 and
+over 200 are different claims — and under two transactions it refuses to read
+a pattern at all.
 
 **Finding them.** Multisig is rare: 2 in 79,052 signatures sampled at random on
 mainnet, both from one wallet. Random checkpoint sampling is the wrong
@@ -1316,6 +1352,12 @@ supply, plus a caveat; only a completed scan returns `top_holders` and
 `complete_ranking: true`. `analyze_token` makes the same split. A sampled
 balance over the real total supply looks authoritative and means nothing, which
 is why the percentage is dropped rather than annotated.
+
+**A sampled holder's sum is a floor.** The walk saw only the coin objects in
+its sample, so XAGM's largest sampled holder summed to 9.1M of the 24.1M its
+address holds. `sampledHolders` reads each sampled holder's whole balance with
+`address.balance(coinType)` (20 aliases a request) and keeps the walk's sums as
+`*_in_sample`; a failed read is `null` with `balance_unavailable`.
 
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.
@@ -1889,6 +1931,9 @@ change is likely to break:
   nor the same actor continuing is checked against sinks, protocols or hubs. The
   shipped disclosed labels name both exploiters, so stopping there ended every
   graph at hop 1. Exchanges, bridges, mixers and burn addresses still end it.
+  `malicious` is therefore not in `SINK_CATEGORIES`: every `is_sink` a tool
+  reports must agree with what the traces do. Watches still alert on it
+  through `isWatchAlert`.
 - **Level by level.** Every inflow found at one depth reaches a node before it
   is expanded. A node reached again later is expanded again from the new
   arrival, skipping transactions already allocated to it, unless the value came
@@ -1960,7 +2005,16 @@ change is likely to break:
   so an impostor ending `::sui::SUI` would get SUI's price. DefiLlama keys on
   the full type and prices a coin as itself or not at all.
 - **`compare_oracle_price` stays Pyth-only** (`sources: ["pyth"]`). Comparing
-  DeepBook against a market aggregate is not an oracle check.
+  DeepBook against a market aggregate is not an oracle check. The market
+  price is a candle's close, so the oracle is read at the candle's end (or the
+  window's end for a candle still open), never at its open: read at the open,
+  a `1d` candle compares a day's price move. Without `PYTH_API_KEY` nothing is
+  compared: `oracle_unavailable` says so and `flagged_count` is null, because
+  zero flagged candles reads as agreement.
+- **The 24h change comes from DefiLlama's `/percentage`**
+  (`fetchDefiLlamaChange24h`). Aftermath's `priceChange24HoursPercentage` is
+  0.0 for every coin (SUI read 0 on a day it rose 17%), so `get_token_prices`
+  and `analyze_token` never use it. A coin DefiLlama does not list gets null.
 - **An unpriced coin carries a code.** `request_failed` says nothing about the
   coin and must not be reported the way `not_listed` is.
 

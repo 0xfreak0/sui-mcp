@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { addressArg, numArg } from "./args.js";
+import { addressArg, numArg, coinTypeArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { errorResult } from "../utils/errors.js";
@@ -167,13 +167,11 @@ export function registerFlowTools(server: McpServer) {
     "(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.",
     {
       address: addressArg().describe("Address to summarise (0x... or a SuiNS name)."),
-      from: z
-        .string()
+      from: timePointArg()
         .optional()
         .describe("Window start: ISO 8601 time (2025-09-07T00:00:00Z) or a checkpoint number. Omit for the address's whole history back to the scan budget."),
-      to: z.string().optional().describe("Window end: ISO 8601 time, 'now', or a checkpoint number."),
-      coin_type: z
-        .string()
+      to: timePointArg().optional().describe("Window end: ISO 8601 time, 'now', or a checkpoint number."),
+      coin_type: coinTypeArg()
         .optional()
         .describe("Only this coin in the totals and counterparties (e.g. 0x2::sui::SUI). Bridge exits and gas are always reported in full."),
       max_transactions: numArg()

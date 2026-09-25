@@ -249,6 +249,34 @@ describe("query_transactions", () => {
     expect(typeof data.next_cursor).toBe("string");
   });
 
+  /**
+   * Nemo's lineage has 12 versions, and one document aliasing all 12 was
+   * refused with "Query has over 300 nodes". The service counts every field
+   * of every alias; measured, 10 fit without commands and 5 with them.
+   */
+  it.each([
+    [false, 10],
+    [true, 5],
+  ])("keeps each all_versions request under the service's node cap (include_functions %s)", async (includeFunctions, cap) => {
+    const ids = Array.from({ length: 12 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}`);
+    const seen: number[] = [];
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      if (q.includes("packageVersions")) return versionsPage(ids);
+      const aliases = Object.keys(v).filter((k) => /^f\d+$/.test(k)).length;
+      seen.push(aliases);
+      if (aliases > cap) throw new Error("GraphQL error: Query has over 300 nodes");
+      const out: Record<string, unknown> = {};
+      for (let k = 0; k < aliases; k++) {
+        out[`v${k}`] = { edges: [], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } };
+      }
+      return out;
+    });
+    const handler = tools.get("query_transactions")!;
+    const result = await handler({ function: `${ids[0]}::pool::swap`, all_versions: true, include_functions: includeFunctions });
+    expect(result.isError).toBeFalsy();
+    expect(seen.reduce((a, b) => a + b, 0)).toBe(12);
+  });
+
   it("lists every Move call of a transaction past the first page of commands", async () => {
     const digest = "FujboNeQt8NbbxzodUkhnna23DNQshKybq6ADLiokv8p";
     const commands = Array.from({ length: 60 }, (_, i) => ({
@@ -515,5 +543,20 @@ describe("get_transaction reports address-balance activity", () => {
     ]);
     expect(j.created_for[0]).toMatchObject({ type: "message_from_cetus::MessageFromCetus", kind: "created" });
     expect(j.gas_source).toBe("coins");
+  });
+});
+
+describe("get_transactions with no well-formed digest", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Every digest malformed came back as a success with `returned: 0`, which
+  // reads as a lookup that found nothing.
+  it("is an error that names the digests, and sends no request", async () => {
+    const result = await tools.get("get_transactions")!({ digests: ["notadigest0OIl", "notadigest0OIl", "1".repeat(44)] });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe(
+      `None of the digests is Base58: "notadigest0OIl", "${"1".repeat(44)}".`,
+    );
+    expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 });

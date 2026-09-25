@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { boolArg, numArg, addressArg } from "./args.js";
+import { boolArg, numArg, addressArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import {
   aggregateEvents,
+  readNumericPath,
   suggestValueFields,
   type AggregatableEvent,
 } from "../utils/aggregate.js";
@@ -70,12 +71,10 @@ export function registerAggregateTools(server: McpServer) {
           "Filter by the EMITTING package/module — the one whose function ran. Usually what you want when you know a protocol's package ID. Accepts 0x... or 0x...::module.",
         ),
       sender: addressArg().optional().describe("Only events sent by this address."),
-      from: z
-        .string()
+      from: timePointArg()
         .optional()
         .describe("Window start: ISO 8601 timestamp (2026-08-07T00:00:00Z) or a checkpoint number."),
-      to: z
-        .string()
+      to: timePointArg()
         .optional()
         .describe("Window end: ISO 8601 timestamp, 'now', or a checkpoint number."),
       group_by: z
@@ -195,6 +194,16 @@ export function registerAggregateTools(server: McpServer) {
           // double-count those events in the ranking.
           if (!cursor) break;
           if (!cursor) break;
+        }
+
+        // A path no event carries sums to 0 for every group, and a ranking of
+        // zeros reads as a measured one.
+        if (value_field && events.length > 0 && events.every((e) => readNumericPath(e.data, value_field) === null)) {
+          const fields = [...new Set([...samplesByType.values()].flatMap((d) => suggestValueFields(d)))];
+          return errorResult(
+            `value_field ${JSON.stringify(value_field.slice(0, 80))} is not a number in any of the ${events.length} events scanned. ` +
+              (fields.length ? `Numeric fields they carry: ${fields.slice(0, 20).join(", ")}.` : "They carry no numeric fields."),
+          );
         }
 
         const result = aggregateEvents(events, {

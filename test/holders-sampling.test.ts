@@ -50,6 +50,8 @@ beforeEach(() => {
 function coinsOnly(coins: () => unknown) {
   mockGqlQuery.mockImplementation((query: string, vars?: { type?: string; keys?: { address: string }[] }) => {
     if (query.includes("multiGetObjects")) return Promise.resolve({ multiGetObjects: vars!.keys!.map(() => null) });
+    // The direct balance read of a sampled holder: nothing at these addresses.
+    if (query.includes("balance(coinType")) return Promise.resolve({});
     if (query.includes("multiGetAddresses")) {
       return Promise.resolve({
         multiGetAddresses: vars!.keys!.map((k) => ({ address: k.address, objects: { nodes: [] } })),
@@ -119,6 +121,43 @@ describe("a truncated scan is a SAMPLE, not a ranking", () => {
     expect(r.caveat).toMatch(/not the largest holders/i);
     expect(r.caveat).toMatch(/object-id order/i);
   });
+
+  /**
+   * The walk saw only some of each sampled holder's coins, so its per-holder
+   * sum is a floor. On XAGM the largest sampled holder summed to 9.1M of the
+   * 24.1M its address holds.
+   */
+  it("reports what each sampled holder holds, read directly, beside the sampled sum", async () => {
+    const walk = endless();
+    mockGqlQuery.mockImplementation((query: string, vars?: Record<string, unknown>) => {
+      if (query.includes("balance(coinType")) {
+        // address(address:) { balance(coinType:) } for each alias, as the service answers it.
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(vars ?? {})) {
+          if (!k.startsWith("a")) continue;
+          const total = v === B ? "900" : "40";
+          out[`h${k.slice(1)}`] = { balance: { totalBalance: total, coinBalance: total, addressBalance: "0" } };
+        }
+        return Promise.resolve(out);
+      }
+      if (query.includes("multiGetObjects")) return Promise.resolve({ multiGetObjects: (vars!.keys as unknown[]).map(() => null) });
+      if (query.includes("multiGetAddresses")) {
+        return Promise.resolve({
+          multiGetAddresses: (vars!.keys as { address: string }[]).map((k) => ({ address: k.address, objects: { nodes: [] } })),
+        });
+      }
+      if (String(vars?.type).includes("::accumulator::Key<")) {
+        return Promise.resolve({ objects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } });
+      }
+      return walk();
+    });
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 13 });
+    expect(r.truncated).toBe(true);
+    // B saw only "1" per page in the sample but holds 900; it leads the sample.
+    expect(r.sampled_holders[0]).toMatchObject({ address: B, balance: "900", coin_balance: "900", address_balance: "0" });
+    expect(BigInt(r.sampled_holders[0].balance_in_sample)).toBeLessThan(900n);
+    expect(r.sampled_holders[1]).toMatchObject({ address: A, balance: "40" });
+  });
 });
 
 describe("the cursor guard #101 missed", () => {
@@ -145,7 +184,7 @@ describe("the cursor guard #101 missed", () => {
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 1234 });
     expect(calls).toBe(1);
     // 100, not 100 x however many times the loop restarted.
-    expect(r.sampled_holders?.[0]?.balance ?? r.top_holders?.[0]?.balance).toBe("100");
+    expect(r.sampled_holders?.[0]?.balance_in_sample ?? r.top_holders?.[0]?.balance).toBe("100");
   });
 
   it("applies the same guard to the NFT walk", async () => {

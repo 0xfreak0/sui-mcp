@@ -73,8 +73,11 @@ export const OVERRIDES: Record<string, Override> = {
   list_findings: { network: false, annotations: LOCAL_READ },
   export_case: { network: false, annotations: LOCAL_READ },
   // add/import write labels and `remove` deletes one.
+  // `list` and `export` return every label, and `export` must be whole for
+  // `import` to round-trip it: 123k characters with the shipped set.
   manage_labels: {
     title: "Manage address labels",
+    meta: FULL_SIZE,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   // add reads the current checkpoint; remove deletes a watch.

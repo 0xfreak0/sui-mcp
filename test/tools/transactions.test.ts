@@ -517,3 +517,18 @@ describe("get_transaction reports address-balance activity", () => {
     expect(j.gas_source).toBe("coins");
   });
 });
+
+describe("get_transactions with no well-formed digest", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Every digest malformed came back as a success with `returned: 0`, which
+  // reads as a lookup that found nothing.
+  it("is an error that names the digests, and sends no request", async () => {
+    const result = await tools.get("get_transactions")!({ digests: ["notadigest0OIl", "notadigest0OIl", "1".repeat(44)] });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe(
+      `None of the digests is Base58: "notadigest0OIl", "${"1".repeat(44)}".`,
+    );
+    expect(mockGqlQuery).not.toHaveBeenCalled();
+  });
+});

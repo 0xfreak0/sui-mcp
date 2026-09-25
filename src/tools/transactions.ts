@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { assignSignerRoles } from "../utils/multisig.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
-import { boolArg, numArg, addressArg } from "./args.js";
+import { boolArg, numArg, addressArg, refinePoint } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
@@ -525,6 +525,13 @@ export function registerTransactionTools(server: McpServer) {
     async ({ digests }) => {
       try {
         const { found, not_found, invalid, packages } = await fetchTransactions(digests);
+        // With no well-formed digest there is nothing to report but the
+        // refusal, and a success with zero transactions reads as a lookup.
+        if (invalid.length > 0 && found.length === 0 && not_found.length === 0) {
+          return errorResult(
+            `None of the digests is Base58: ${invalid.slice(0, 5).map((d) => JSON.stringify(d.slice(0, 60))).join(", ")}.`,
+          );
+        }
 
         // One prefetch for the whole batch, then synchronous lookups. Protocols
         // come from the Move call targets AND the event types, since a
@@ -597,10 +604,12 @@ export function registerTransactionTools(server: McpServer) {
         .describe("Filter by Move function (e.g. 0x2::coin::transfer or 0x2::pay). Mutually exclusive with affected_address and affected_object."),
       after_checkpoint: z
         .union([z.string(), z.number()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Only transactions after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes transactions at that time"),
       before_checkpoint: z
         .union([z.string(), z.number()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Only transactions before this point: a checkpoint number, or an ISO 8601 time, which includes transactions at that time"),
       order: z

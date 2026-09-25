@@ -34,3 +34,18 @@ describe("decode_ptb on address-balance withdrawals", () => {
     expect(j.gas_coins).toBeUndefined();
   });
 });
+
+describe("decode_ptb on bytes that are not one transaction", () => {
+  // BCS parsing stops where the struct ends, so 10,000 base64 'A's decoded
+  // as a transaction from 0x0 with no commands and the rest was ignored.
+  it("refuses bytes left over after the transaction data", async () => {
+    const result = await tools.get("decode_ptb")!({ transaction_bcs: "A".repeat(10_000) });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toMatch(/^Not one transaction: the first \d+ bytes decode .* and \d+ bytes follow it\.$/);
+  });
+
+  it("still decodes a real transaction that ends where its bytes end", async () => {
+    const result = await tools.get("decode_ptb")!({ transaction_bcs: fixture.CD2e4_transaction_bcs });
+    expect(result.isError).toBeUndefined();
+  });
+});

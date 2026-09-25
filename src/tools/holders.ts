@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
-import { numArg } from "./args.js";
+import { numArg, coinTypeArg } from "./args.js";
 import { getNetwork } from "../config.js";
 import { kioskOwnerVersion, loadKioskOwners } from "../utils/store.js";
 import { gqlQuery } from "../clients/graphql.js";
@@ -565,8 +565,7 @@ export function registerHolderTools(server: McpServer) {
     "get_top_holders",
     "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin<T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. Results cached 24h.",
     {
-      type: z
-        .string()
+      type: coinTypeArg()
         .optional()
         .describe(
           "Full Move type of the NFT or coin type (e.g. '0xabc::module::NFT' or '0x2::sui::SUI'). Auto-wraps coins in Coin<...> if needed."
@@ -595,6 +594,9 @@ export function registerHolderTools(server: McpServer) {
         .describe("Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address-balance entries separately, each up to this bound."),
     },
     async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
+      if (rawType && collection_name) {
+        return errorResult("Give 'type' or 'collection_name', not both: each names the collection to scan.");
+      }
       let resolvedType = rawType;
       if (!resolvedType && collection_name) {
         // The collection registry is keyed by PACKAGE ID, and a package id is

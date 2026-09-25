@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
+import { pagedTxConnection } from "../helpers/service-shapes.js";
 
 /**
  * A real mainnet digest. get_transaction rejects a malformed one before making
@@ -142,7 +143,7 @@ describe("query_transactions", () => {
             },
           },
         ],
-        pageInfo: { hasNextPage: false, endCursor: null },
+        pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
       },
     });
 
@@ -180,6 +181,97 @@ describe("query_transactions", () => {
     expect(result.isError).toBe(true);
     const data = JSON.parse(result.content[0].text);
     expect(data.error).toContain("Only one of");
+  });
+
+  const V1 = `0x${"1".repeat(64)}`;
+  const V2 = `0x${"2".repeat(64)}`;
+  const V3 = `0x${"3".repeat(64)}`;
+  const versionsPage = (ids: string[]) => ({
+    packageVersions: {
+      nodes: ids.map((address, i) => ({ address, version: i + 1 })),
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  const qtx = (digest: string, cp: number) => ({
+    digest,
+    sender: { address: "0xsender" },
+    effects: { status: "SUCCESS", checkpoint: { sequenceNumber: cp }, timestamp: new Date(cp * 1000).toISOString() },
+  });
+  const emptyTxPage = {
+    transactions: {
+      nodes: [],
+      pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+    },
+  };
+
+  /**
+   * A function filter matches calls through ONE package version, and each
+   * version of an upgraded package holds its own share of the calls.
+   */
+  it("names the other versions of a function filter's package", async () => {
+    mockGqlQuery.mockImplementation(async (q: string) =>
+      q.includes("packageVersions") ? versionsPage([V1, V2, V3]) : emptyTxPage,
+    );
+    const handler = tools.get("query_transactions")!;
+    const data = JSON.parse((await handler({ function: `${V1}::pool::swap` })).content[0].text);
+    expect(data.function_scope).toMatchObject({ version: 1, version_count: 3, original_package: V1 });
+    expect(data.function_scope.note).toMatch(/all_versions/);
+  });
+
+  it("reads every version of the lineage with all_versions, as one newest-first list", async () => {
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      if (q.includes("packageVersions")) return versionsPage([V1, V2]);
+      // One aliased connection per version, ascending like any `last:` page.
+      const byVersion: Record<string, unknown[]> = {
+        [`${V1}::pool::swap`]: [qtx("old-v1", 100), qtx("mid-v1", 300)],
+        [`${V2}::pool::swap`]: [qtx("v2-a", 200), qtx("v2-b", 400)],
+      };
+      const out: Record<string, unknown> = {};
+      for (const k of [0, 1]) {
+        const fn = (v[`f${k}`] as { function: string }).function;
+        out[`v${k}`] = {
+          edges: (byVersion[fn] ?? []).map((node) => ({ cursor: `c-${(node as { digest: string }).digest}`, node })),
+          pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+        };
+      }
+      return out;
+    });
+    const handler = tools.get("query_transactions")!;
+    const data = JSON.parse(
+      (await handler({ function: `${V1}::pool::swap`, all_versions: true, limit: 3 })).content[0].text,
+    );
+
+    expect(data.transactions.map((t: { digest: string }) => t.digest)).toEqual(["v2-b", "mid-v1", "v2-a"]);
+    expect(data.versions_read).toHaveLength(2);
+    // One call left unread in version 1, so there is a next page.
+    expect(data.has_next_page).toBe(true);
+    expect(typeof data.next_cursor).toBe("string");
+  });
+
+  it("lists every Move call of a transaction past the first page of commands", async () => {
+    const digest = "FujboNeQt8NbbxzodUkhnna23DNQshKybq6ADLiokv8p";
+    const commands = Array.from({ length: 60 }, (_, i) => ({
+      __typename: "MoveCallCommand",
+      function: { name: `f${i}`, module: { name: "m", package: { address: i < 55 ? V1 : V2 } } },
+    }));
+    const conn = pagedTxConnection(digest, commands, "commands");
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      const more = conn.respond(q, v);
+      if (more) return more;
+      if (q.includes("packageVersions")) return versionsPage([V1, V2]);
+      return {
+        transactions: {
+          nodes: [{ ...qtx(digest, 100), kind: { commands: conn.first } }],
+          pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+        },
+      };
+    });
+    const handler = tools.get("query_transactions")!;
+    const data = JSON.parse(
+      (await handler({ function: `${V1}::m`, include_functions: true })).content[0].text,
+    );
+    expect(data.transactions[0].move_calls).toHaveLength(60);
+    expect(data.transactions[0].matched_calls).toBe(55);
   });
 });
 

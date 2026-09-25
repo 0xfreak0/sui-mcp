@@ -13,6 +13,8 @@ const { Budget, buildWalletEdges, probeRecipients, probeSponsored } = await impo
   "../src/utils/edge-probe.js"
 );
 
+const { pagedTxConnection } = await import("./helpers/service-shapes.js");
+
 const SUI = "0x2::sui::SUI";
 const ONE_SUI = "1000000000";
 
@@ -111,6 +113,27 @@ describe("a narrow verdict off an incomplete scan is provisional", () => {
     const r = await probeRecipients("0xF", 5, new Budget(500));
     expect(r.popular).toBe(true);
     expect(r.complete).toBe(true);
+  });
+});
+
+describe("probeRecipients reads whole balance-change lists", () => {
+  it("finds recipients past a transaction's first page of 50, and charges the follow-up reads", async () => {
+    const changes = [
+      { owner: { address: "0xF" }, amount: "-60", coinType: { repr: SUI } },
+      ...Array.from({ length: 60 }, (_, i) => ({
+        owner: { address: `0x${(i + 1).toString(16).padStart(64, "0")}` },
+        amount: "1",
+        coinType: { repr: SUI },
+      })),
+    ];
+    const conn = pagedTxConnection("batch", changes, "balanceChanges");
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+      conn.respond(q, v) ?? page([{ digest: "batch", effects: { balanceChanges: conn.first } }]),
+    );
+    const b = new Budget(100);
+    const r = await probeRecipients("0xF", 100, b);
+    expect(r.members.size).toBe(60);
+    expect(b.used).toBe(2);
   });
 });
 

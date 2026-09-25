@@ -57,7 +57,7 @@ export function registerWorkflowTools(server: McpServer) {
                   pageInfo { hasNextPage }
                 }
               }
-              transactions(filter: { affectedAddress: $address }, first: $txFirst) {
+              transactions(filter: { affectedAddress: $address }, last: $txFirst) {
                 nodes {
                   digest
                   sender { address }
@@ -180,12 +180,15 @@ export function registerWorkflowTools(server: McpServer) {
         });
       }
 
-      const recentTransactions = txResult?.transactions.nodes.map((n) => ({
+      // `last` returns the five newest in ascending order; reversed so the
+      // first row is the most recent. `first` would return the address's
+      // five OLDEST transactions under a field named "recent".
+      const recentTransactions = [...(txResult?.transactions.nodes ?? [])].reverse().map((n) => ({
         digest: n.digest,
         sender: n.sender?.address,
         status: n.effects?.status,
         timestamp: n.effects?.timestamp,
-      })) ?? [];
+      }));
 
       const result: Record<string, unknown> = {
         address,

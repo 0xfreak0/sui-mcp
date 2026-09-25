@@ -129,6 +129,8 @@ export interface WatchHit {
   objects?: string[];
   /** What a moved capability grants, when the type is one whose powers we know. */
   capability_note?: string;
+  /** The transaction's lists were read in part; `net`, `counterparties` or `objects` may be short. */
+  incomplete?: Array<"balance_changes" | "object_changes">;
 }
 
 /** One address's new transactions, as the delta query returns them. */
@@ -146,6 +148,10 @@ export interface DeltaTx {
    * waking someone for: mint authority, upgrade rights, a stolen NFT.
    */
   object_movements?: ObjectMovement[];
+  /** A follow-up read for balance changes failed, so the list is partial. */
+  balance_changes_truncated?: boolean;
+  /** Object changes ran past the one page read. */
+  object_changes_truncated?: boolean;
 }
 
 /**
@@ -289,6 +295,14 @@ export function evaluate(
       ...(counterparties.size ? { counterparties: [...counterparties] } : {}),
       ...(moved.length ? { objects: moved.map((m) => m.type_short ?? "unknown") } : {}),
       ...(capabilities[0]?.note ? { capability_note: capabilities[0].note } : {}),
+      ...(tx.balance_changes_truncated || tx.object_changes_truncated
+        ? {
+            incomplete: [
+              ...(tx.balance_changes_truncated ? (["balance_changes"] as const) : []),
+              ...(tx.object_changes_truncated ? (["object_changes"] as const) : []),
+            ],
+          }
+        : {}),
     });
   }
 

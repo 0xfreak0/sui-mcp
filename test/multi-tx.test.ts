@@ -10,6 +10,7 @@ vi.mock("../src/utils/archive-fallback.js", () => ({
 }));
 
 const { fetchTransactions, MAX_DIGESTS } = await import("../src/utils/multi-tx.js");
+const { pagedTxConnection } = await import("./helpers/service-shapes.js");
 
 /** Real mainnet digests — Base58 that decodes to exactly 32 bytes. */
 const D1 = "YjD4uaPxdF61wAGViXsYyARij4v9NsiHtJGo3rXa6zN";
@@ -214,6 +215,30 @@ describe("fetchTransactions", () => {
     await fetchTransactions([D1, D1], 0);
     expect(mockGqlQuery.mock.calls[0][1].keys).toEqual([D1]);
     expect(MAX_DIGESTS).toBe(50);
+  });
+
+  /**
+   * FujboNeQt8Nbb…: 202 balance changes. A batch read of it used to report 20
+   * with no flag, and the sender's debit, sorting past row 20, was missing.
+   */
+  it("reports every balance change of a transaction past the first page", async () => {
+    const all = Array.from({ length: 202 }, (_, i) => ({
+      amount: i < 200 ? "1" : "-100",
+      owner: { address: i < 200 ? `0x${i.toString(16).padStart(64, "0")}` : "0xsender" },
+      coinType: { repr: "0x2::sui::SUI" },
+    }));
+    const conn = pagedTxConnection(D1, all, "balanceChanges");
+    const base = tx(D1);
+    mockGqlQuery.mockImplementation(
+      async (q: string, v: Record<string, unknown>) =>
+        conn.respond(q, v) ?? { multiGetTransactions: [{ ...base, effects: { ...base.effects, balanceChanges: conn.first } }] },
+    );
+
+    const r = await fetchTransactions([D1], 0);
+
+    expect(r.found[0].balance_changes).toHaveLength(202);
+    expect(r.found[0].balance_changes.filter((b) => b.address === "0xsender")).toHaveLength(2);
+    expect(r.found[0].balance_changes_truncated).toBeUndefined();
   });
 
   it("makes no request when nothing survives validation", async () => {

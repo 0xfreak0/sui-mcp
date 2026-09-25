@@ -100,11 +100,96 @@ Two rules:
   to exhaustion would put fifty digests back into dozens of requests. A
   transaction with more events says so and names `get_transaction`, which pages
   to the end. Breadth here, depth there, and the boundary is stated rather than
-  silently applied.
+  silently applied. Balance changes and commands are NOT a page here: they are
+  completed (below), because protocols and flows are concluded from them.
 
 A null entry is positional: it means that digest returned nothing, which is a
 wrong digest or a pruned transaction and the two are indistinguishable at this
 layer. `get_transaction` falls back to the archive; this does not.
+
+## Nested connections are pages
+
+`TransactionEffects.balanceChanges`, `ProgrammableTransaction.commands` and
+`TransactionEffects.events` are GraphQL connections. Selected without `first:`
+they return the service's default page of **20** (max 50) and say nothing about
+the rest unless `pageInfo` is selected. FujboNeQt8Nbb… has 202 balance changes;
+every GraphQL read of it saw 20, and the payer's debit, sorting past row 20,
+was missing from history, traces, funding and fan-out alike.
+
+- **Select them through `src/utils/tx-connections.ts`.**
+  `BALANCE_CHANGES_SELECTION` / `COMMANDS_SELECTION` ask for 50 with `pageInfo`,
+  and `completeTxConnections` (a page of transactions) or `readAllBalanceChanges`
+  / `readAllCommands` (one) page the rest by digest. A transaction under 50 rows
+  costs nothing extra; the transaction node must select `digest`.
+- **A failed continuation is `truncated`, never a short list.** Surface it
+  (`incomplete_transactions`, `balance_changes_truncated`, a watch hit's
+  `incomplete`) or refuse the conclusion, as `countTxRecipients` does by
+  returning null rather than an understated recipient count.
+- **Metered callers charge the follow-ups.** `CompletedTx.reads` counts them;
+  `edge-probe.ts` charges them to its `Budget`, `watch-probe.ts` to `requests`.
+- `objectChanges` defaults to 1,024 per page; `trace.ts` pages it and
+  `watch-probe.ts` flags `object_changes_truncated`. Events of one transaction
+  are paged by `event-json.ts`.
+
+The service also caps a query document at 5,000 bytes, 300 query nodes and 21
+aliased connections, which is why the selections are compact strings and
+aliased batches stay at 20.
+
+## Lists start at the newest row
+
+GraphQL's `first`/`after` returns the OLDEST rows. A list tool that pages with
+it shows an established address as it was years ago: `recent_transactions`
+listed a wallet's first five transactions, and the address-poisoning check ran
+over the oldest page, where recent dust never is. `get_transaction_history`,
+`query_transactions` and `query_events` default to `order: "newest"` through
+`orderedPageArgs` / `orderedPage` in `src/utils/pagination.ts`: `last`/`before`,
+each page reversed for display, `next_cursor` going back as `cursor` with the
+same `order`, and every page echoing `order`, `oldest_shown` and
+`newest_shown`. Selecting `BOTH_WAYS_PAGE_INFO` is required, since the newest
+walk continues on `hasPreviousPage` / `startCursor`.
+
+Forward walks remain where the question is "since X": first funding,
+`trace_funds` forward, `check_activity` with a baseline, `poll_watch`, and
+`build_timeline` with `from`. Anything else asking "what is this address doing"
+walks back, as `measureFanout` does.
+
+## Time windows go into the filter
+
+A window is applied as `afterCheckpoint` / `beforeCheckpoint`, never by
+filtering timestamps after fetching. Filtered afterwards, a window applies to
+whatever the first page held: `build_timeline` over one day of an address
+active since 2023 returned nothing, and its `activity_hours` described 2023.
+
+- **`resolveWindow` / `toFilterBound`** (`src/utils/checkpoint-time.ts`) turn an
+  ISO edge into the exclusive checkpoint the filter takes, using
+  `checkpointBracket`, which refines to two ADJACENT checkpoints either side of
+  the time. `toCheckpoint` stops within a minute, which is fine for a point
+  and wrong for an edge: a minute is a third of a three-minute incident
+  window. Both edges are inclusive in time.
+- **Parse before probing.** An unparseable bound is an error before any
+  request, never a silently unbounded read.
+- **A budget that stops a walk says where.** `build_timeline` reports per
+  address `truncated`, `reached_checkpoint` and a `continue_with` bound that
+  re-reads the boundary checkpoint, since other transactions of that address
+  may sit in it.
+
+## A package ID names one version
+
+A Sui upgrade mints a new package ID, and two kinds of filter bind to one
+version:
+
+- **Event types carry the DEFINING package**, the version that introduced the
+  struct. DeepBook margin's `LiquidationEvent` queried at the latest ID returned
+  nothing and at the original returned the liquidations. `resolveEventTypeFilter`
+  (`src/utils/package-versions.ts`) reads `typeOrigins` and rewrites the filter;
+  a module- or package-level type spanning several defining IDs keeps one and
+  lists the rest. Type origins never change, so they are cached per network.
+- **`function` and `module` filters match calls through that exact version.**
+  Each version sees a disjoint share of the calls, so a non-empty answer is
+  still partial. `versionScopeNote` names the lineage; `all_versions` on
+  `query_transactions` reads every version as aliased connections and merges
+  them (`src/utils/version-fanout.ts`), with a cursor recording each version's
+  position so no call is skipped or repeated across pages.
 
 ## Address identity in investigation flows
 
@@ -797,7 +882,9 @@ A region is not a city, and the same pattern is produced by two people who
 merely share a timezone or a working day. The reading says both.
 
 Computed per address, never merged: two addresses sharing a peak is the
-corroborating observation, and merging destroys it.
+corroborating observation, and merging destroys it. Computed over the
+transactions read inside `from`/`to`, not over the capped timeline, and never
+over anything outside the window.
 
 Not wired into clustering. That would need it to separate real pairs from a
 control group first.

@@ -550,8 +550,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `identify_address` | Identify what a Sui address is: wallet, package, validator, or object |
-| `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, recent txs |
-| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions |
+| `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, and the five most recent transactions, newest first |
+| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. Newest first by default (`order: "oldest"` starts at the first transaction); each page reports its order and the oldest and newest timestamps shown |
 | `analyze_token` | Full token analysis: metadata, price, 24h change, supply, top holders |
 
 ### Chain & Network
@@ -559,7 +559,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `get_chain_info` | Current chain ID, epoch, checkpoint height, timestamp, gas price |
-| `get_checkpoint` | Checkpoint details by sequence number or digest |
+| `get_checkpoint` | Checkpoint details by sequence number, digest or `timestamp`. With a timestamp it returns the nearest checkpoint plus the last one before and the first one at or after that moment |
 
 ### Objects
 
@@ -584,8 +584,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 |---|---|
 | `get_transactions` | Reads up to 50 transactions in ONE call given their digests — sender, timing, balance changes, Move calls, and events with decoded fields. Ten digests go from ten round trips to one. Malformed digests are rejected before the request, because the server refuses a whole batch over one bad key |
 | `get_transaction` | Transaction by digest with protocol-decoded actions |
-| `query_transactions` | Filter transactions by sender, address, object, or function |
-| `query_events` | Filter events by type, sender, module, or checkpoint range |
+| `query_transactions` | Filter transactions by sender, address, object, or function, bounded by checkpoints or ISO times. Newest first by default. A `function` filter matches one package version; `all_versions: true` reads the whole lineage as one list |
+| `query_events` | Filter events by type, sender, module, and a checkpoint or ISO time range. Newest first by default. An event type written with an upgraded package ID is rewritten to the package that defined the struct |
 
 ### DeFi
 
@@ -670,7 +670,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | Tool | Description |
 |---|---|
 | `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes |
-| `check_activity` | Monitor address or object for new activity since a checkpoint |
+| `check_activity` | One-shot check for new activity on an address (since a checkpoint, time or cursor) or an object (since a version) |
 
 ### Incident Investigation
 
@@ -692,7 +692,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each |
 | `delete_finding` | Retract a finding that turned out to be wrong |
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
-| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline |
+| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |
 | `diff_package_upgrade` | Diff two package versions to detect malicious upgrades / backdoors |

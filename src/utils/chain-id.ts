@@ -60,8 +60,29 @@ const EVM_ADDRESS = /^0x[0-9a-f]{40}$/;
 // characters people misread.
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
 
+/**
+ * The canonical form of a Sui address or object ID (`0x` + 64 lower-case hex
+ * digits), or null if `raw` is not one.
+ *
+ * Accepts the hex with or without `0x`, in any case, and left-pads it. The hex
+ * check comes first because `normalizeSuiAddress` pads without validating: it
+ * turns `"0xzz"` into a well-formed-looking 66-character string.
+ */
+export function canonicalSuiAddress(raw: string): string | null {
+  const text = raw.trim().toLowerCase();
+  const hex = text.startsWith("0x") ? text.slice(2) : text;
+  if (!/^[0-9a-f]{1,64}$/.test(hex)) return null;
+  return normalizeSuiAddress(hex);
+}
+
 const ADDRESS_RULES: Record<string, AddressRule> = {
-  sui: (a) => normalizeSuiAddress(a.toLowerCase()),
+  sui: (a) => {
+    const canonical = canonicalSuiAddress(a);
+    if (!canonical) {
+      throw new Error(`not a Sui address: ${a}. Expected 0x followed by up to 64 hex characters.`);
+    }
+    return canonical;
+  },
 
   eip155: (a) => {
     const lower = a.toLowerCase();

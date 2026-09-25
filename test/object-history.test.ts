@@ -13,6 +13,14 @@ describe("ownerDesc", () => {
     expect(ownerDesc({ __typename: "Immutable" })).toEqual({ kind: "immutable" });
     expect(ownerDesc(null)).toEqual({ kind: "unknown" });
   });
+
+  /** Regression: a party object was reported as `shared`, dropping its owner. */
+  it("keeps the single owner of a party object", () => {
+    expect(ownerDesc({ __typename: "ConsensusAddressOwner", address: { address: "0xea55" } })).toEqual({
+      kind: "consensus",
+      address: "0xea55",
+    });
+  });
 });
 
 describe("ownerKey", () => {
@@ -37,6 +45,15 @@ describe("computeOwnerChanges", () => {
     const changes = computeOwnerChanges([v("1", addr("0xa")), v("2", { kind: "shared" })]);
     expect(changes).toHaveLength(1);
     expect(changes[0].to).toEqual({ kind: "shared" });
+  });
+
+  it("sees a party transfer between two owners as a change of hands", () => {
+    const party = (a: string) => ({ kind: "consensus" as const, address: a });
+    const changes = computeOwnerChanges([v("1", addr("0xa")), v("2", party("0xa")), v("3", party("0xb"))]);
+    expect(changes.map((c) => [c.from, c.to])).toEqual([
+      [addr("0xa"), party("0xa")],
+      [party("0xa"), party("0xb")],
+    ]);
   });
 
   it("captures multiple hops in order", () => {

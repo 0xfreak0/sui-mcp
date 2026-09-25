@@ -21,11 +21,19 @@ vi.mock("../src/utils/identity.js", () => ({
   identityNote: () => null,
 }));
 vi.mock("../src/utils/labels.js", () => ({ getLabel: () => null, isSink: () => false }));
-vi.mock("../src/utils/price-providers.js", () => ({ pricesForRanking: async () => new Map() }));
+vi.mock("../src/utils/price-providers.js", () => ({
+  pricesForRanking: async () => new Map(),
+  pythApiKey: () => null,
+  fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),
+}));
 vi.mock("../src/utils/store.js", () => ({
   getCachedTransaction: () => null,
   saveTransaction: () => {},
 }));
+vi.mock("../src/utils/fanout.js", () => ({
+  measureFanout: async () => ({ classification: "narrow", counterparty_count: 2, scanned_transactions: 5, truncated: false }),
+}));
+const { candidates, gqlTx } = await import("./helpers/trace-shapes.js");
 
 const { registerTraceTools } = await import("../src/tools/trace.js");
 
@@ -51,29 +59,7 @@ const PAYER = `0xaabbcc${"3".repeat(53)}90210`;
 const MIDDLE = `0x112233${"4".repeat(53)}5f5f5`;
 
 /** A transaction in the shape trace_funds' GraphQL query returns. */
-const tx = (
-  digest: string,
-  sender: string,
-  changes: [string, string][],
-) => ({
-  transaction: {
-    digest,
-    sender: { address: sender },
-    effects: {
-      status: "SUCCESS",
-      timestamp: "2026-01-14T09:36:30Z",
-      checkpoint: { sequenceNumber: "1" },
-      balanceChanges: {
-        nodes: changes.map(([address, amount]) => ({
-          coinType: { repr: "0x2::sui::SUI" },
-          amount,
-          owner: { address },
-        })),
-      },
-    },
-    kind: { commands: { nodes: [] } },
-  },
-});
+const tx = (digest: string, sender: string, changes: [string, string][]) => ({ digest, sender, changes });
 
 beforeEach(() => mockGqlQuery.mockReset());
 
@@ -84,23 +70,18 @@ describe("trace_funds — address poisoning across hops", () => {
    * a hop, and one of them is on an unfollowed branch — the case a per-hop or
    * followed-path-only check misses.
    */
+  const hop1 = tx("hop1", PAYER, [
+    [PAYER, "-2000000000"],
+    [MIDDLE, "1500000000"],
+    [FAKE, "500000000"],
+  ]);
+  const hop2 = tx("hop2", MIDDLE, [[MIDDLE, "-1000000000"], [REAL, "1000000000"]]);
   const twoHops = (q: string, v: Record<string, unknown> = {}) => {
     if (String(q).includes("transactions(")) {
       // Next-hop lookup, keyed on the address the trace is standing on.
-      return Promise.resolve({
-        transactions: { nodes: v.address === MIDDLE ? [{ digest: "hop2" }] : [] },
-      });
+      return Promise.resolve(candidates(v.address === MIDDLE && String(q).includes("sentAddress") ? [hop2] : []));
     }
-    if (v.digest === "hop2") {
-      return Promise.resolve(tx("hop2", MIDDLE, [[MIDDLE, "-1000000000"], [REAL, "1000000000"]]));
-    }
-    return Promise.resolve(
-      tx("hop1", PAYER, [
-        [PAYER, "-2000000000"],
-        [MIDDLE, "1500000000"],
-        [FAKE, "500000000"],
-      ]),
-    );
+    return Promise.resolve(gqlTx(v.digest === "hop2" ? hop2 : hop1));
   };
 
   it("pairs addresses that never shared a hop", async () => {
@@ -120,10 +101,8 @@ describe("trace_funds — address poisoning across hops", () => {
 
   it("omits the field entirely when nothing collides", async () => {
     mockGqlQuery.mockImplementation((q: string) => {
-      if (String(q).includes("transactions(")) return Promise.resolve({ transactions: { nodes: [] } });
-      return Promise.resolve(
-        tx("hop1", PAYER, [[PAYER, "-1000000000"], [MIDDLE, "1000000000"]]),
-      );
+      if (String(q).includes("transactions(")) return Promise.resolve(candidates([]));
+      return Promise.resolve(gqlTx(tx("hop1", PAYER, [[PAYER, "-1000000000"], [MIDDLE, "1000000000"]])));
     });
     const { data, summary } = await run({ digest: "hop1", direction: "forward", hops: 4 });
     expect(data.address_poisoning).toBeUndefined();

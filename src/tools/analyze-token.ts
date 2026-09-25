@@ -7,12 +7,13 @@ import {
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
-import { scanTokenTopHolders } from "./holders.js";
+import { scanTokenTopHolders, stoppedWalks } from "./holders.js";
 import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
 
 import { errorResult } from "../utils/errors.js";
 import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
+import { guardiansFlagsForCoin } from "../utils/guardians.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** Where a coin's decimals came from, strongest evidence first. */
@@ -199,6 +200,10 @@ export function registerAnalyzeTokenTools(server: McpServer) {
                   : " It was reached by scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin."),
             }
           : { verified_by: vouchFor(coinType) }),
+        // A third-party scam list, stated beside the curated answer rather
+        // than folded into it: it is evidence about the coin, weaker than the
+        // curated list and never attribution of anyone who holds it.
+        ...(guardiansFlagsForCoin(coinType).length > 0 ? { flagged_by: guardiansFlagsForCoin(coinType) } : {}),
         symbol,
         name,
         decimals,
@@ -273,11 +278,15 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       if (holderResult) {
         result.unique_holders_scanned = holderResult.unique_holders;
         result.holder_scan_truncated = holderResult.truncated;
+        // The ranking merges two walks: Coin<T> objects and address balances.
+        // Each holder carries the split, and these say how far each walk got.
+        result.holder_scan_coin_objects = holderResult.coin_objects_scanned;
+        result.holder_scan_address_balances = holderResult.address_balances_scanned;
         if (holderResult.unresolved_owners) {
           result.holder_scan_unresolved_owners = holderResult.unresolved_owners;
         }
-        // Same distinction get_top_holders makes: the scan walks coin objects
-        // in object-id order, so a truncated one names the biggest holder it
+        // Same distinction get_top_holders makes: the scan walks objects in
+        // object-id order, so a truncated one names the biggest holder it
         // SAW, not the biggest holder. Concentration is the reason anyone
         // reads this field, and a sampled top holder invites exactly the
         // concentration claim the data cannot support.
@@ -287,13 +296,13 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           // holder_scan_truncated: false reads as "this coin has no holders",
           // which is what a mistyped or cross-network type produces too.
           result.holder_scan_note =
-            `No 0x2::coin::Coin<${coinType}> objects were found, so there is no holder scan to report. That reads the same as a mistyped coin type or one that exists on another network; it is not evidence that the coin has no holders.`;
+            `No Coin<${coinType}> objects and no address balances of it were found, so there is no holder scan to report. That reads the same as a mistyped coin type or one that exists on another network. It is not evidence that the coin has no holders.`;
         } else if (holderResult.truncated) {
           result.sampled_holders = holderResult.holders.map(
             ({ rank: _rank, ...rest }) => rest,
           );
           result.holder_scan_note =
-            `INCOMPLETE: ${holderResult.total_scanned} coin objects scanned in object-id order, which is unrelated to balance. ` +
+            `INCOMPLETE: ${stoppedWalks(holderResult)} stopped before the end. Both walk in object-id order, which is unrelated to balance. ` +
             `These are the largest holders within that sample, not the largest holders of the coin, and they do not support a claim about supply concentration.`;
         } else {
           result.top_holders = holderResult.holders;

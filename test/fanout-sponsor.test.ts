@@ -23,7 +23,7 @@ const page = (sponsor: string, senders: string[], hasPrevious: boolean) => ({
   },
 });
 
-const SPONSOR = "0xsponsor";
+const SPONSOR = "0x5905";
 beforeEach(() => mockGqlQuery.mockReset());
 
 describe("sponsor breadth is provisional when the scan is truncated", () => {
@@ -67,21 +67,21 @@ describe("sponsor breadth is provisional when the scan is truncated", () => {
   it("caveats 'not a sponsor' only when the scan was cut short", async () => {
     mockGqlQuery.mockResolvedValue({
       transactions: {
-        nodes: [{ sender: { address: "0xz" }, gasInput: null, effects: { balanceChanges: { nodes: [] } } }],
+        nodes: [{ sender: { address: "0xee" }, gasInput: null, effects: { balanceChanges: { nodes: [] } } }],
         pageInfo: { hasPreviousPage: true, startCursor: "c" },
       },
     });
-    const cut = await measureFanout("0xquiet", 1, false);
+    const cut = await measureFanout("0x9e7", 1, false);
     expect(cut.sponsor_shape).toBe("not_a_sponsor");
     expect(cut.sponsor_interpretation).toMatch(/not evidence/i);
 
     mockGqlQuery.mockResolvedValue({
       transactions: {
-        nodes: [{ sender: { address: "0xz" }, gasInput: null, effects: { balanceChanges: { nodes: [] } } }],
+        nodes: [{ sender: { address: "0xee" }, gasInput: null, effects: { balanceChanges: { nodes: [] } } }],
         pageInfo: { hasPreviousPage: false },
       },
     });
-    const done = await measureFanout("0xquiet", 50, false);
+    const done = await measureFanout("0x9e7", 50, false);
     expect(done.sponsor_interpretation).toBeUndefined();
   });
 });

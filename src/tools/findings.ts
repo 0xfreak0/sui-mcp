@@ -3,13 +3,21 @@ import { boolArg, numArg } from "./args.js";
 import { currentSuiAccount } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { renderCaseReport } from "../utils/case-report.js";
+import { invalidDigestMessage, isDigest, normalizeDigest } from "../utils/digest.js";
 import {
   deleteFinding,
+  EVIDENCE_TIERS,
   listCases,
   loadFindings,
   saveFinding,
   storeStatus,
+  type Finding,
 } from "../utils/store.js";
+import { buildCaseGraph, type CaseTx } from "../utils/case-graph.js";
+import { toCsv, toGraphJson, toMermaid } from "../utils/flow-export.js";
+import { fetchTx, formatAmount } from "../utils/trace-read.js";
+import { getLabel } from "../utils/labels.js";
+import { detectBridges } from "../utils/bridge/detect.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const ok = (payload: unknown) => ({
@@ -28,10 +36,48 @@ function storeRequired() {
   );
 }
 
+/** Transactions read for a case diagram. */
+const CASE_GRAPH_DIGESTS = 50;
+
+/** The case's transfers, read from the transactions its findings cite. */
+async function caseFlowGraph(findings: Finding[]) {
+  const all = [...new Set(findings.flatMap((f) => f.digests))];
+  const digests = all.slice(0, CASE_GRAPH_DIGESTS);
+  const read = await Promise.all(digests.map((d) => fetchTx(d).catch(() => null)));
+  const txs: CaseTx[] = [];
+  const unread: string[] = [];
+  read.forEach((tx, i) => {
+    if (!tx) {
+      unread.push(digests[i]);
+      return;
+    }
+    const bridges = [...new Set(detectBridges(tx.callSites, tx.eventTypes ?? []).map((h) => h.protocol))];
+    txs.push({
+      digest: digests[i],
+      sender: tx.sender,
+      ...(bridges.length ? { bridges } : {}),
+      timestamp: tx.timestamp,
+      changes: tx.balanceChanges,
+      gas: { payer: tx.gasPayer ?? null, net: tx.netGas == null ? null : BigInt(tx.netGas) },
+    });
+  });
+  const graph = buildCaseGraph(findings, txs, {
+    nameOf: (a) => getLabel(a)?.label,
+    formatAmount: (raw, coin) => formatAmount(raw.toString(), coin).replace(/^[+-]/, ""),
+  });
+  return {
+    graph,
+    notes: {
+      ...(unread.length ? { unread_digests: unread } : {}),
+      ...(all.length > digests.length ? { digests_capped: all.length } : {}),
+    },
+  };
+}
+
 export function registerFindingsTools(server: McpServer) {
   server.tool(
     "save_finding",
-    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them — what you concluded, which addresses it concerns, and the evidence that supports it — then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them — what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it — then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
     {
       case_name: z
         .string()
@@ -42,6 +88,15 @@ export function registerFindingsTools(server: McpServer) {
         .enum(["high", "medium", "low"])
         .optional()
         .describe("How firmly this is established. Reports sort high confidence first."),
+      evidence_tier: z
+        .enum(EVIDENCE_TIERS)
+        .optional()
+        .describe(
+          "How the finding is known: 'chain-derived' (read from Sui itself, e.g. a transfer in a transaction), " +
+            "'indexer-attested' (a third party asserts it, e.g. a bridge indexer), or 'heuristic' (an inference " +
+            "from patterns, e.g. a shared funder). Default 'heuristic', the weakest, so an unstated tier is never " +
+            "read as a stronger one. export_case groups findings by it.",
+        ),
       addresses: z
         .array(z.string())
         .optional()
@@ -51,6 +106,10 @@ export function registerFindingsTools(server: McpServer) {
             "address on another chain, which is how a cross-chain case keeps both sides of a " +
             "bridge hop straight.",
         ),
+      digests: z
+        .array(z.string())
+        .optional()
+        .describe("Sui transaction digests the finding rests on. Each is checked to be a real digest before saving."),
       evidence: z
         .array(z.string())
         .optional()
@@ -58,7 +117,7 @@ export function registerFindingsTools(server: McpServer) {
           "What establishes it — tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted.",
         ),
     },
-    async ({ case_name, title, detail, confidence, addresses, evidence }) => {
+    async ({ case_name, title, detail, confidence, evidence_tier, addresses, digests, evidence }) => {
       const blocked = storeRequired();
       if (blocked) return blocked;
 
@@ -70,24 +129,34 @@ export function registerFindingsTools(server: McpServer) {
         qualified = (addresses ?? []).map(currentSuiAccount);
       } catch (err) {
         return errorResult(
-          `Could not record this finding: ${(err as Error).message}. ` +
+          `Could not record this finding: ${(err as Error).message.replace(/\.$/, "")}. ` +
             "Pass a bare address for the network this call targets, or a full CAIP-10 id.",
         );
       }
 
+      // A mistyped digest in a report is a citation nobody can follow.
+      const badDigest = (digests ?? []).find((d) => !isDigest(d));
+      if (badDigest !== undefined) {
+        return errorResult(`Could not record this finding: ${invalidDigestMessage(badDigest)}`);
+      }
+
+      const tier = evidence_tier ?? "heuristic";
       const id = saveFinding({
         case_name,
         title,
         detail: detail ?? null,
         confidence: confidence ?? null,
+        evidence_tier: tier,
         addresses: qualified,
         evidence: evidence ?? [],
+        digests: (digests ?? []).map(normalizeDigest),
       });
       return ok({
         saved: true,
         finding_id: id,
         case_name,
         title,
+        evidence_tier: tier,
         note: `Use export_case with case_name '${case_name}' to render the full report.`,
       });
     },
@@ -126,8 +195,10 @@ export function registerFindingsTools(server: McpServer) {
           id: f.id,
           title: f.title,
           confidence: f.confidence,
+          evidence_tier: f.evidence_tier,
           detail: f.detail,
           addresses: f.addresses,
+          digests: f.digests,
           evidence: f.evidence,
           recorded: f.created_at ? new Date(f.created_at).toISOString() : null,
         })),
@@ -137,14 +208,20 @@ export function registerFindingsTools(server: McpServer) {
 
   server.tool(
     "export_case",
-    "(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Highest-confidence findings first, with an appendix of full addresses. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.",
     {
       case_name: z.string().describe("Case to render."),
       include_appendix: boolArg()
         .optional()
         .describe("Append the full-address list (default true)."),
+      format: z
+        .enum(["markdown", "mermaid", "graph_json", "csv"])
+        .optional()
+        .describe(
+          "markdown (default): the report. mermaid: the report followed by a fund-flow diagram (a ```mermaid block) of the transfers in the findings' transactions between the case's addresses, with each finding's cross-chain accounts linked dashed; reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding.",
+        ),
     },
-    async ({ case_name, include_appendix }) => {
+    async ({ case_name, include_appendix, format }) => {
       const blocked = storeRequired();
       if (blocked) return blocked;
 
@@ -153,6 +230,42 @@ export function registerFindingsTools(server: McpServer) {
         return errorResult(
           `No findings recorded for case '${case_name}'. Use list_findings with no arguments to see existing cases.`,
         );
+      }
+
+      if (format === "csv") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: toCsv(
+                ["id", "evidence_tier", "confidence", "title", "detail", "addresses", "digests", "evidence", "created_at"],
+                findings.map((f) => ({
+                  ...f,
+                  evidence: f.evidence.join(" | "),
+                  created_at: f.created_at ? new Date(f.created_at).toISOString() : "",
+                })),
+              ),
+            },
+          ],
+        };
+      }
+      if (format === "mermaid" || format === "graph_json") {
+        const flow = await caseFlowGraph(findings);
+        if (format === "graph_json") {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(flow.graph), ...flow.notes }, null, 2) }] };
+        }
+        const report = renderCaseReport({ caseName: case_name, findings, includeAppendix: include_appendix });
+        const diagram = flow.graph.edges.length
+          ? toMermaid(flow.graph)
+          : "_No transfers between the case's addresses were found in its findings' transactions, and no finding links accounts on two chains._";
+        const caveats = [
+          "Solid arrows are transfers read from the chain in the findings' transactions, each recipient paired with the largest payer of that coin. Dashed arrows are cross-chain links a finding records.",
+          ...(flow.notes.unread_digests ? [`Not read: ${flow.notes.unread_digests.join(", ")}.`] : []),
+          ...(flow.notes.digests_capped ? [`Only the first ${CASE_GRAPH_DIGESTS} transactions were read.`] : []),
+        ];
+        return {
+          content: [{ type: "text" as const, text: `${report}\n## Fund flow\n\n${diagram}\n\n_${caveats.join(" ")}_\n` }],
+        };
       }
 
       // Returned as text, not JSON: the whole point is a document someone

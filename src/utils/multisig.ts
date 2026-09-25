@@ -348,6 +348,63 @@ export function readAuthentication(address: string, signatures: string[]): Authe
   return null;
 }
 
+/** What a signature did for a transaction, decided by derivation. */
+export type SignerRole = "sender" | "gas_sponsor" | "acting_for_sender" | "unresolved";
+
+export interface TransactionSigners {
+  signatures: Array<SignatureIdentity & { role: SignerRole }>;
+  /**
+   * Whether the sender's own key signed. False when every signature derives
+   * to an address and none of them is the sender: an address alias, or a
+   * protocol-level substitution such as the one that moved frozen funds out
+   * of the Cetus attacker's addresses. Null when a signature could not be
+   * derived, so the question cannot be settled.
+   */
+  signer_is_sender: boolean | null;
+  /** The addresses that authorized in the sender's place. */
+  authorized_by: string[];
+}
+
+/**
+ * Assign each signature its role by re-deriving it, never by position.
+ *
+ * A transaction carries the sender's authorization and, when someone else
+ * paid gas, the sponsor's. Since `0x2::address_alias` the sender's
+ * authorization may come from a different key, and a protocol upgrade can
+ * authorize a transaction for an address outright. Labelling the first
+ * signature `sender` then names the substitute as the sender, and every
+ * reading downstream attributes its actions to the address it acted for.
+ */
+export function assignSignerRoles(
+  sender: string | null | undefined,
+  gasOwner: string | null | undefined,
+  signatures: string[],
+): TransactionSigners {
+  const want = sender ? normalize(sender) : null;
+  const sponsor = gasOwner ? normalize(gasOwner) : null;
+  const described = describeSignatures(signatures);
+  const roles = described.map((sig) => {
+    const derived = sig.address ? normalize(sig.address) : null;
+    const role: SignerRole = !derived
+      ? "unresolved"
+      : derived === want
+        ? "sender"
+        : sponsor && sponsor !== want && derived === sponsor
+          ? "gas_sponsor"
+          : "acting_for_sender";
+    return { ...sig, role };
+  });
+  const bySender = roles.some((r) => r.role === "sender");
+  const unresolved = roles.some((r) => r.role === "unresolved");
+  return {
+    signatures: roles,
+    signer_is_sender: bySender ? true : unresolved || roles.length === 0 ? null : false,
+    authorized_by: bySender
+      ? []
+      : roles.filter((r) => r.role === "acting_for_sender").map((r) => normalize(r.address!)),
+  };
+}
+
 /**
  * What zkLogin does and does not reveal, stated once so a report cannot
  * overclaim it.

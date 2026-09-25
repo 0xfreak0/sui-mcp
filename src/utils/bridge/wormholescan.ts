@@ -54,8 +54,14 @@ export interface WormholescanOperation {
   destination: {
     wormholeChain: number | null;
     txHash: string | null;
-    /** The receiving address as the destination chain writes it. */
+    /**
+     * The contract the redemption transaction called, as the destination
+     * chain writes it. For a Token Bridge, NTT or relayer transfer this is the
+     * bridge's own contract, not the recipient of the funds.
+     */
     to: string | null;
+    /** The account that submitted the redemption. */
+    from: string | null;
     status: string | null;
     timestamp: string | null;
   } | null;
@@ -113,6 +119,7 @@ export function parseOperation(raw: unknown): WormholescanOperation | null {
           wormholeChain: num(target.chainId),
           txHash: str(target.transaction?.txHash),
           to: str(target.to),
+          from: str(target.from),
           status: str(target.status),
           timestamp: str(target.timestamp),
         }

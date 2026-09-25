@@ -17,6 +17,8 @@ export interface FundingTx {
   timestamp: string | null;
   checkpoint: string | null;
   changes: FundingChange[];
+  /** Who paid the gas, when the service reports it. Absent when not read. */
+  gasSponsor?: string | null;
 }
 
 export interface FundingResult {
@@ -35,6 +37,33 @@ export interface SkippedInflow {
   amount: string;
   coinType: string;
   reason: "below_sui_floor" | "below_usd_floor" | "unpriced_coin";
+}
+
+/** A party that paid gas for transactions the address sent. */
+export interface GasSponsor {
+  sponsor: string;
+  /** Transactions among those scanned whose gas this sponsor paid. */
+  transactions: number;
+  first_digest: string;
+}
+
+/**
+ * What the earliest transactions say about how an address was funded.
+ *
+ * `dustSkipped` is kept whether or not a funding was found: a wallet whose
+ * every inflow was below the floors is the case where the skipped list is the
+ * only evidence there is.
+ */
+export interface FundingAssessment {
+  funding: FundingResult | null;
+  dustSkipped: SkippedInflow[];
+  /**
+   * Parties that paid gas for transactions the address sent, most frequent
+   * first. Since gas can be paid from an address balance, a wallet can run
+   * with no SUI of its own and no qualifying inflow, and then its operator
+   * appears here and nowhere else.
+   */
+  sponsors: GasSponsor[];
 }
 
 export interface FundingOptions {
@@ -84,12 +113,16 @@ const SUI_TYPE_SUFFIX = "::sui::SUI";
  * outranks a real sender's -11 USDC (raw -11085939) purely because SUI has
  * three more decimals. The funder is now sought in the coin that actually
  * arrived.
+ *
+ * **No funding is still an answer.** When nothing qualifies, the skipped
+ * inflows and the gas sponsors of the transactions the address sent are
+ * returned with a null `funding`, so a dead end says what was seen.
  */
 export function pickFundingTx(
   txs: FundingTx[],
   address: string,
   opts: FundingOptions = {},
-): (FundingResult & { dustSkipped: SkippedInflow[] }) | null {
+): FundingAssessment {
   const minSui = opts.minSuiMist ?? DEFAULT_MIN_SUI_MIST;
   const minUsd = opts.minUsd ?? DEFAULT_MIN_USD;
   const valueUsd = opts.valueUsd;
@@ -146,16 +179,37 @@ export function pickFundingTx(
     }
 
     return {
-      digest: tx.digest,
-      funder: findFunder(tx, address, bestCoin),
-      timestamp: tx.timestamp,
-      checkpoint: tx.checkpoint,
-      amount: bestAmt.toString(),
-      coinType: bestCoin,
+      funding: {
+        digest: tx.digest,
+        funder: findFunder(tx, address, bestCoin),
+        timestamp: tx.timestamp,
+        checkpoint: tx.checkpoint,
+        amount: bestAmt.toString(),
+        coinType: bestCoin,
+      },
       dustSkipped,
+      sponsors: [],
     };
   }
-  return null;
+  return { funding: null, dustSkipped, sponsors: gasSponsorsOf(txs, address) };
+}
+
+/**
+ * Who paid gas for the transactions `address` sent, most frequent first.
+ *
+ * Paying your own gas is not sponsorship, so a sponsor equal to the address is
+ * skipped. A wallet that runs on zero SUI of its own, which gas paid from an
+ * address balance allows, has its operator here.
+ */
+function gasSponsorsOf(txs: FundingTx[], address: string): GasSponsor[] {
+  const bySponsor = new Map<string, GasSponsor>();
+  for (const tx of txs) {
+    if (tx.sender !== address || !tx.gasSponsor || tx.gasSponsor === address) continue;
+    const entry = bySponsor.get(tx.gasSponsor);
+    if (entry) entry.transactions++;
+    else bySponsor.set(tx.gasSponsor, { sponsor: tx.gasSponsor, transactions: 1, first_digest: tx.digest });
+  }
+  return [...bySponsor.values()].sort((a, b) => b.transactions - a.transactions);
 }
 
 /** Null when the inflow counts as funding, else why it does not. */

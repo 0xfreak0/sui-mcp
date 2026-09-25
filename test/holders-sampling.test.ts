@@ -37,13 +37,36 @@ const coin = (owner: string, balance: string) => ({
 const A = `0xaa${"1".repeat(62)}`;
 const B = `0xbb${"2".repeat(62)}`;
 
-beforeEach(() => mockGqlQuery.mockReset());
+beforeEach(() => {
+  mockGqlQuery.mockReset();
+});
+
+/**
+ * Serve `coins` to the coin walk. The address-balance walk finds no entries,
+ * and the identity lookup for the ranked holders finds nothing at their
+ * addresses, which is what both return for a coin held only in coin objects by
+ * wallets.
+ */
+function coinsOnly(coins: () => unknown) {
+  mockGqlQuery.mockImplementation((query: string, vars?: { type?: string; keys?: { address: string }[] }) => {
+    if (query.includes("multiGetObjects")) return Promise.resolve({ multiGetObjects: vars!.keys!.map(() => null) });
+    if (query.includes("multiGetAddresses")) {
+      return Promise.resolve({
+        multiGetAddresses: vars!.keys!.map((k) => ({ address: k.address, objects: { nodes: [] } })),
+      });
+    }
+    if (vars?.type?.includes("::accumulator::Key<")) {
+      return Promise.resolve({ objects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } });
+    }
+    return Promise.resolve(coins());
+  });
+}
 
 describe("a complete scan is a ranking", () => {
   it("ranks and reports percentages when the walk reached the end", async () => {
-    mockGqlQuery.mockResolvedValue({
+    coinsOnly(() => ({
       objects: { nodes: [coin(A, "300"), coin(B, "100")], pageInfo: { hasNextPage: false } },
-    });
+    }));
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 1000 });
     expect(r.complete_ranking).toBe(true);
     expect(r.truncated).toBe(false);
@@ -68,7 +91,7 @@ describe("a truncated scan is a SAMPLE, not a ranking", () => {
   };
 
   it("does not call them top_holders, and assigns no rank", async () => {
-    mockGqlQuery.mockImplementation(endless());
+    coinsOnly(endless());
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 10 });
     expect(r.truncated).toBe(true);
     expect(r.complete_ranking).toBe(false);
@@ -82,7 +105,7 @@ describe("a truncated scan is a SAMPLE, not a ranking", () => {
    * nothing, so the field is dropped rather than shown with a caveat.
    */
   it("drops the percentage of supply", async () => {
-    mockGqlQuery.mockImplementation(endless());
+    coinsOnly(endless());
     // A distinct depth, so this exercises the walk rather than the cache entry
     // the test above just wrote. The key is network:mode:type:maxScan:topN.
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 11 });
@@ -90,7 +113,7 @@ describe("a truncated scan is a SAMPLE, not a ranking", () => {
   });
 
   it("says outright that these are not the largest holders", async () => {
-    mockGqlQuery.mockImplementation(endless());
+    coinsOnly(endless());
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 12 });
     expect(r.caveat).toMatch(/INCOMPLETE/);
     expect(r.caveat).toMatch(/not the largest holders/i);
@@ -107,14 +130,14 @@ describe("the cursor guard #101 missed", () => {
    */
   it("stops instead of restarting and double-counting balances", async () => {
     let calls = 0;
-    mockGqlQuery.mockImplementation(() => {
+    coinsOnly(() => {
       calls++;
-      return Promise.resolve({
+      return {
         objects: {
           nodes: [coin(A, "100")],
           pageInfo: { hasNextPage: true, endCursor: null },
         },
-      });
+      };
     });
     // Distinct max_scan: the tool caches on (mode, type, max_scan, limit), so
     // reusing an earlier test's arguments would serve a cached result and the
@@ -150,12 +173,12 @@ describe("the cursor guard #101 missed", () => {
  */
 describe("a walk stopped by a null cursor is truncated, not complete", () => {
   it("token mode reports a sample when the connection claims more and gives no cursor", async () => {
-    mockGqlQuery.mockResolvedValue({
+    coinsOnly(() => ({
       objects: {
         nodes: [coin(A, "300"), coin(B, "100")],
         pageInfo: { hasNextPage: true, endCursor: null },
       },
-    });
+    }));
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 998 });
     expect(r.truncated).toBe(true);
     expect(r.complete_ranking).toBe(false);
@@ -181,7 +204,7 @@ describe("a walk stopped by a null cursor is truncated, not complete", () => {
 /** "Nothing of this type exists" and "this type has no holders" are opposites. */
 describe("an empty walk is not a complete ranking of zero holders", () => {
   it("token mode says it found nothing rather than ranking nobody", async () => {
-    mockGqlQuery.mockResolvedValue({ objects: { nodes: [], pageInfo: { hasNextPage: false } } });
+    coinsOnly(() => ({ objects: { nodes: [], pageInfo: { hasNextPage: false } } }));
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 999 });
     expect(r.complete_ranking).toBe(false);
     expect(r.caveat).toMatch(/not evidence that the coin has no holders/);
@@ -203,18 +226,18 @@ describe("an empty walk is not a complete ranking of zero holders", () => {
  */
 describe("out-of-range arguments are clamped, not obeyed", () => {
   it("max_scan: 0 still scans", async () => {
-    mockGqlQuery.mockResolvedValue({
+    coinsOnly(() => ({
       objects: { nodes: [coin(A, "300")], pageInfo: { hasNextPage: false } },
-    });
+    }));
     const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 0 });
     expect(mockGqlQuery).toHaveBeenCalled();
     expect(r.total_scanned).toBe(1);
   });
 
   it("limit: -1 does not silently drop the last holder", async () => {
-    mockGqlQuery.mockResolvedValue({
+    coinsOnly(() => ({
       objects: { nodes: [coin(A, "300"), coin(B, "100")], pageInfo: { hasNextPage: false } },
-    });
+    }));
     const r = await run({ type: "0x2::sui::SUI", limit: -1, max_scan: 997 });
     expect(r.top_holders.length).toBe(1);
     expect(r.top_holders[0].address).toBe(A);

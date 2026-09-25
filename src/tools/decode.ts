@@ -2,6 +2,7 @@ import { z } from "zod";
 import { Transaction } from "@mysten/sui/transactions";
 import { lookupProtocolDisplay, lookupOperation, prefetchProtocolNames } from "../protocols/registry.js";
 import { flagPtbAnomalies, type FormattedCommand } from "../utils/ptb-anomalies.js";
+import { gasSource } from "../utils/address-balance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 function formatInput(input: { $kind: string } & Record<string, unknown>): Record<string, unknown> {
@@ -139,13 +140,29 @@ function formatPureInput(input: { $kind: string } & Record<string, unknown>): Re
     }
     return { type: obj.$kind };
   }
+  if (input.$kind === "FundsWithdrawal") {
+    // A withdrawal from an address balance: the funds a drainer PTB takes are
+    // named here and nowhere else in the bytes, so the amount is the number
+    // that matters for triage.
+    const fw = input.FundsWithdrawal as {
+      reservation: { $kind: string; MaxAmountU64?: string };
+      typeArg: { $kind: string; Balance?: string };
+      withdrawFrom: { $kind: string };
+    };
+    return {
+      type: "FundsWithdrawal",
+      amount: fw.reservation.MaxAmountU64 ?? null,
+      coin_type: fw.typeArg.Balance ?? null,
+      withdraw_from: fw.withdrawFrom.$kind,
+    };
+  }
   return { type: input.$kind };
 }
 
 export function registerDecodeTools(server: McpServer) {
   server.tool(
     "decode_ptb",
-    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes. Returns the list of commands, inputs, protocol annotations, and a heuristic anomaly-triage pass (flags publishes/upgrades, calls into unrecognized packages, flash-loan patterns, multi-package composition) — without executing. Use get_transaction with a digest instead if you want to inspect an already-executed transaction.",
+    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes. Returns the list of commands, inputs, protocol annotations, and a heuristic anomaly-triage pass (flags publishes/upgrades, calls into unrecognized packages, flash-loan patterns, multi-package composition) — without executing. A FundsWithdrawal input shows the amount, coin type and whose address balance it draws on (Sender or Sponsor), and `gas_source` says whether gas is paid from coins or from the gas owner's address balance. Use get_transaction with a digest instead if you want to inspect an already-executed transaction.",
     {
       transaction_bcs: z
         .string()
@@ -166,6 +183,9 @@ export function registerDecodeTools(server: McpServer) {
       const commands = data.commands.map(formatCommand);
       const inputs = data.inputs.map(formatPureInput);
       const anomalies = flagPtbAnomalies(commands as FormattedCommand[]);
+      // Null when the bytes carry no gas data yet, which says nothing about
+      // where gas will come from.
+      const gas = data.gasData.payment ? gasSource(data.gasData.payment) : null;
 
       return {
         content: [
@@ -176,6 +196,9 @@ export function registerDecodeTools(server: McpServer) {
                 sender: data.sender,
                 gas_budget: data.gasData.budget,
                 gas_price: data.gasData.price,
+                // An empty payment list means gas comes out of the gas owner's
+                // address balance rather than a coin object.
+                ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
                 expiration: data.expiration,
                 command_count: commands.length,
                 input_count: inputs.length,

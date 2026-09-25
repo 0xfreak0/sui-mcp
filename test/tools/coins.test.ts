@@ -27,6 +27,8 @@ describe("get_balance", () => {
       balance: {
         coinType: "0x2::sui::SUI",
         balance: "5000000000",
+        coinBalance: "5000000000",
+        addressBalance: "0",
       },
     });
 
@@ -43,6 +45,8 @@ describe("get_balance", () => {
       balance: {
         coinType: "0xdba::usdc::USDC",
         balance: "1000000",
+        coinBalance: "1000000",
+        addressBalance: "0",
       },
     });
 
@@ -52,6 +56,33 @@ describe("get_balance", () => {
 
     expect(data.coin_type).toBe("0xdba::usdc::USDC");
     expect(data.balance).toBe("1000000");
+  });
+
+  /**
+   * 0xa727…0be6 on mainnet holds 704,848 SUI and owns no coin object: all of
+   * it sits in its address balance. The total alone gave no hint why
+   * list_owned_objects showed no coins.
+   */
+  it("splits the total into coin objects and address balance", async () => {
+    mockSui.getBalance.mockResolvedValue({
+      balance: {
+        coinType: "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        balance: "704848146271530",
+        coinBalance: "0",
+        addressBalance: "704848146271530",
+      },
+    });
+
+    const handler = tools.get("get_balance")!;
+    const data = JSON.parse(
+      (await handler({ owner: "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6" })).content[0].text,
+    );
+
+    expect(data).toMatchObject({
+      balance: "704848146271530",
+      coin_balance: "0",
+      address_balance: "704848146271530",
+    });
   });
 });
 

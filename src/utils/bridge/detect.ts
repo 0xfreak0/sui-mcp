@@ -23,6 +23,12 @@
  */
 
 import { lookupProtocol } from "../../protocols/registry.js";
+import { ALLBRIDGE_CCTP_EVENT, ALLBRIDGE_POOL_EVENT } from "./allbridge.js";
+import { AXELAR_TRANSFER_EVENT } from "./axelar.js";
+import { MAYAN_SWIFT_PACKAGE } from "./beneficiary.js";
+import { CELER_BURN_EVENT } from "./celer.js";
+import { matchesEvent } from "./event-type.js";
+import { LAYERZERO_PACKET_EVENT } from "./layerzero.js";
 
 /** How far this server can follow a transfer through a given protocol. */
 export type BridgeResolution =
@@ -34,9 +40,14 @@ export type BridgeResolution =
 export interface BridgeProtocol {
   id: string;
   name: string;
-  /** `module::function` suffixes on a Move call that mark an outbound transfer. */
+  /** `module::function` prefixes on a Move call that mark an outbound transfer. */
   callMarkers: string[];
-  /** Event type suffixes that mark an outbound transfer. */
+  /** `module::function` names matched exactly, where a prefix would catch a sibling function. */
+  exactCallMarkers?: string[];
+  /**
+   * Event types that mark an outbound transfer: `module::Name`, or
+   * `0xpkg::module::Name` pinned to the defining package (see `matchesEvent`).
+   */
   eventMarkers: string[];
   resolution: BridgeResolution;
   /** What the caller can do next. */
@@ -79,12 +90,12 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     // Attribution basis: the on-chain module naming (calculate_mctp_fee,
     // log_initialize_mctp), where MCTP is Mayan's cross-chain transfer
     // protocol. MVR has no registration for these packages, so the name is not
-    // independently confirmed by a registry — which is why this is a display
-    // name on a detect-only entry and gates no behaviour.
+    // independently confirmed by a registry — which is why the name is a display
+    // label and gates no behaviour.
     callMarkers: ["calculate_mctp_fee::", "init_order::log_initialize_mctp"],
     eventMarkers: ["init_order::InitMctpLogged"],
-    resolution: "detect-only",
-    note: "Mayan is a cross-chain swap layer that routes over other bridges — observed on mainnet settling through Wormhole and Circle CCTP in the same transaction. Those legs are reported separately and are what to follow; this entry names the service that initiated the transfer, which its own order id can be looked up against.",
+    resolution: "identifier",
+    note: "Mayan is a cross-chain swap layer that settles over other bridges, observed on mainnet through Wormhole and Circle CCTP in the same transaction. Those legs pay Mayan's own contracts on the far side, so their recipient is not the beneficiary. resolve_bridge_transfer reads the beneficiary from Mayan's order event (`beneficiaries`).",
   },
   {
     id: "cctp",
@@ -93,6 +104,62 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     eventMarkers: ["deposit_for_burn::DepositForBurn", "send_message::MessageSent"],
     resolution: "identifier",
     note: "Run resolve_bridge_transfer on this transaction. CCTP puts the destination domain and recipient in the burn event, so the far side is read from chain data rather than an indexer.",
+  },
+  {
+    id: "layerzero",
+    name: "LayerZero",
+    // Every OApp's send goes through endpoint_v2::send as a top-level PTB
+    // call. Exact: `send_compose` shares the prefix and is not an exit.
+    callMarkers: [],
+    exactCallMarkers: ["endpoint_v2::send"],
+    eventMarkers: [LAYERZERO_PACKET_EVENT],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. The LayerZero packet names the destination chain and the GUID, and for an OFT transfer the recipient, all read from chain data; LayerZero Scan supplies the delivery transaction.",
+  },
+  {
+    id: "axelar-its",
+    name: "Axelar ITS",
+    // The prefix also catches send_interchain_transfer_call, which Axelar's
+    // own probe traffic sends through its example package's `its` module.
+    callMarkers: ["interchain_token_service::send_interchain_transfer", "its::send_interchain_transfer_call"],
+    eventMarkers: [AXELAR_TRANSFER_EVENT],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. Axelar's InterchainTransfer event names the destination chain and address, so the far side is read from chain data. Axelarscan (axelarscan.io) shows the delivery for this Sui digest.",
+  },
+  {
+    id: "allbridge-core",
+    name: "Allbridge Core",
+    callMarkers: ["cctp_bridge_interface::bridge", "bridge_interface::swap_and_bridge"],
+    eventMarkers: [ALLBRIDGE_CCTP_EVENT, ALLBRIDGE_POOL_EVENT],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. Allbridge's TokensSentEvent names the destination chain and the recipient wallet, so the far side is read from chain data. The live route burns through Circle CCTP with the same nonce.",
+  },
+  {
+    id: "celer-cbridge",
+    name: "Celer cBridge",
+    callMarkers: ["peg_bridge::burn"],
+    eventMarkers: [CELER_BURN_EVENT],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. cBridge's BurnEvent names the destination chain and address and carries the burn id that the destination mint quotes back.",
+  },
+  {
+    id: "mayan-swift",
+    name: "Mayan Swift",
+    // Dormant on Sui since May 2025, but a dormant bridge is still an exit.
+    // Its events share the generic `init_order` names, so they are pinned.
+    callMarkers: ["calculate_swift_fee::"],
+    eventMarkers: [`${MAYAN_SWIFT_PACKAGE}::init_order::OrderCreated`, `${MAYAN_SWIFT_PACKAGE}::init_order::InitOrderLogged`],
+    resolution: "identifier",
+    note: "Run resolve_bridge_transfer on this transaction. The Swift order event names the destination chain and address, so the beneficiary is read from chain data.",
+  },
+  {
+    id: "meson",
+    name: "Meson",
+    // Meson's package defines no events, so only the call can mark it.
+    callMarkers: ["MesonSwap::postSwapFromInitiator"],
+    eventMarkers: [],
+    resolution: "detect-only",
+    note: "Meson emits no events on Sui and the recipient is not in the Sui transaction, so the destination cannot be read from chain data. The swap's id is the 32-byte encodedSwap passed as the first argument to postSwapFromInitiator; Meson's explorer API (explorer.meson.fi/api/v1/swap/0x<encodedSwap>) reports where it was released.",
   },
 ];
 
@@ -150,12 +217,11 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
   const hits = new Map<string, BridgeHit>();
 
   for (const proto of BRIDGE_PROTOCOLS) {
-    const byCall = calls.some((c) =>
-      proto.callMarkers.some((m) => matchesCall(m, callSignature(c))),
-    );
-    const byEvent = eventTypes.some((t) =>
-      proto.eventMarkers.some((m) => t.endsWith(`::${m}`) || t.endsWith(m)),
-    );
+    const byCall = calls.some((c) => {
+      const sig = callSignature(c);
+      return proto.callMarkers.some((m) => matchesCall(m, sig)) || (proto.exactCallMarkers?.includes(sig) ?? false);
+    });
+    const byEvent = eventTypes.some((t) => proto.eventMarkers.some((m) => matchesEvent(m, t)));
     if (byCall || byEvent) {
       hits.set(proto.name, {
         protocol: proto.name,
@@ -169,9 +235,15 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
   // Registry tier: any curated package typed as a bridge. Uses lookupProtocol,
   // so it inherits the lineage tier and keeps identifying a bridge after it
   // upgrades — and stays curated-only, never an MVR name anyone could register.
+  //
+  // A protocol with curated markers is decided by those markers alone. A call
+  // into its package is not an exit: every Pyth price update calls Wormhole's
+  // `vaa::parse_and_verify`, which reported a NAVI deposit as value leaving
+  // Sui. 14 of 30 sampled NAVI deposits carried that call.
   for (const call of calls) {
     const proto = lookupProtocol(call.packageId);
     if (proto?.type !== "bridge" || hits.has(proto.name)) continue;
+    if (BRIDGE_PROTOCOLS.some((b) => b.name === proto.name)) continue;
     hits.set(proto.name, {
       protocol: proto.name,
       resolution: "detect-only",

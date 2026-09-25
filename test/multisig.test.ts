@@ -7,6 +7,7 @@ import {
   enumerateCommittees,
   publicKeyFromSignatures,
   type MultisigMember,
+  assignSignerRoles,
 } from "../src/utils/multisig.js";
 import { Ed25519PublicKey } from "@mysten/sui/keypairs/ed25519";
 import fixtures from "./fixtures/signatures.json" with { type: "json" };
@@ -317,5 +318,25 @@ describe("publicKeyFromSignatures", () => {
   it("ignores a signature belonging to someone else", () => {
     // The sponsor's signature rides along on the multisig's transaction.
     expect(publicKeyFromSignatures("0x" + "7".repeat(64), fixtures.ms_1of2.signatures)).toBeNull();
+  });
+});
+
+describe("assignSignerRoles", () => {
+  const ms = fixtures.ms_2of3;
+  const ed = fixtures.ed25519;
+
+  it("names a signature that derives to neither sender nor sponsor as acting for the sender", () => {
+    // The recovery of the Cetus attacker's funds: sent as the attacker, signed
+    // by a multisig. The first signature used to be labelled "sender".
+    const r = assignSignerRoles(ed.address, ed.address, ms.signatures);
+    expect(r.signer_is_sender).toBe(false);
+    expect(r.authorized_by).toEqual([ms.address]);
+    expect(r.signatures[0].role).toBe("acting_for_sender");
+  });
+
+  it("labels the sponsor by derivation when the sender also signed", () => {
+    const r = assignSignerRoles(ms.address, ed.address, [...ms.signatures, ...ed.signatures]);
+    expect(r.signer_is_sender).toBe(true);
+    expect(r.signatures.map((s) => s.role)).toEqual(["sender", "gas_sponsor"]);
   });
 });

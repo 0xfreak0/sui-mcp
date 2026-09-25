@@ -1,13 +1,26 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
 import { batchResolveNames } from "../utils/names.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
+import {
+  BALANCE_CHANGES_SELECTION,
+  COMMANDS_SELECTION,
+  completeTxConnections,
+  type GqlConnection,
+} from "../utils/tx-connections.js";
+import {
+  BOTH_WAYS_PAGE_INFO,
+  orderedPage,
+  orderedPageArgs,
+  shownRange,
+  type BothWaysPageInfo,
+} from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface GqlTransactionNode {
@@ -16,82 +29,30 @@ interface GqlTransactionNode {
   effects?: {
     status: string;
     timestamp?: string;
-    balanceChanges?: {
-      nodes: GqlBalanceChangeNode[];
-    };
+    balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
   };
   kind?: {
-    commands?: {
-      nodes: GqlCommandNode[];
-    };
+    commands?: GqlConnection<GqlCommandNode>;
   };
 }
 
 interface GqlTransactionsResponse {
   transactions: {
     nodes: GqlTransactionNode[];
-    pageInfo: {
-      hasNextPage: boolean;
-      endCursor?: string;
-    };
+    pageInfo: BothWaysPageInfo;
   };
 }
 
 const HISTORY_QUERY = `
-  query($address: SuiAddress!, $first: Int, $after: String) {
-    transactions(filter: { affectedAddress: $address }, first: $first, after: $after) {
+  query($address: SuiAddress!, $first: Int, $after: String, $last: Int, $before: String) {
+    transactions(filter: { affectedAddress: $address }, first: $first, after: $after, last: $last, before: $before) {
       nodes {
         digest
         sender { address }
-        effects {
-          status
-          timestamp
-          balanceChanges {
-            nodes {
-              coinType { repr }
-              amount
-              owner { address }
-            }
-          }
-        }
-        kind {
-          ... on ProgrammableTransaction {
-            commands {
-              nodes {
-                ... on MoveCallCommand {
-                  __typename
-                  function {
-                    name
-                    module {
-                      name
-                      package { address }
-                    }
-                  }
-                }
-                ... on TransferObjectsCommand {
-                  __typename
-                }
-                ... on SplitCoinsCommand {
-                  __typename
-                }
-                ... on MergeCoinsCommand {
-                  __typename
-                }
-                ... on PublishCommand {
-                  __typename
-                }
-                ... on UpgradeCommand {
-                  __typename
-                }
-              }
-            }
-          }
-        }
+        effects { status timestamp ${BALANCE_CHANGES_SELECTION} }
+        kind { ... on ProgrammableTransaction { ${COMMANDS_SELECTION} } }
       }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
+      ${BOTH_WAYS_PAGE_INFO}
     }
   }
 `;
@@ -99,36 +60,48 @@ const HISTORY_QUERY = `
 export function registerHistoryTools(server: McpServer) {
   server.tool(
     "get_transaction_history",
-    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet. Returns a human-readable activity feed with protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI'), and token flow. Prefer this over query_transactions when exploring what a wallet has been doing.",
+    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet: protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI') and token flow for each transaction. Newest first by default; `order: 'oldest'` starts from the address's first transaction instead. Each page reports its `order` and the `oldest_shown`/`newest_shown` timestamps; pass `next_cursor` back as `cursor` with the same `order` to continue. Rows are decoded from each transaction's complete balance changes and commands. `address_poisoning` is checked over the page shown, so the default page covers recent activity. Each row's `subject_flow` is the queried address's own signed balance change per coin, with formatted amounts and coin_verified; `token_flow` is the transaction sender's, so on a transfer this address received it shows the sender's outflow. Prefer this over query_transactions when exploring what a wallet has been doing.",
     {
-      address: z.string().describe("Sui wallet address (0x...)"),
+      address: addressArg().describe("Sui wallet address (0x...)"),
       limit: numArg()
         .min(1)
         .max(50)
         .optional()
         .default(10)
         .describe("Number of transactions to return (default 10, max 50)"),
-      after: z
+      order: z
+        .enum(["newest", "oldest"])
+        .optional()
+        .describe("'newest' (default) starts at the most recent transaction and pages back in time; 'oldest' starts at the first and pages forward."),
+      cursor: z
         .string()
         .optional()
-        .describe("Pagination cursor for next page"),
+        .describe("`next_cursor` from the previous page. Continues in the same direction; pass the same `order`."),
     },
-    async ({ address, limit, after }) => {
+    async ({ address, limit, order, cursor }) => {
+      const direction = order ?? "newest";
       const variables: Record<string, unknown> = {
         address,
-        first: limit,
-        after: after ?? undefined,
+        ...orderedPageArgs(direction, limit, cursor),
       };
 
       const data = await gqlQuery<GqlTransactionsResponse>(HISTORY_QUERY, variables);
+      const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
+      // Balance changes and commands arrive 50 to a page. A transaction with
+      // more is completed here, before anything is decoded from it.
+      const completed = await completeTxConnections(
+        page.nodes.map((node) => ({
+          digest: node.digest,
+          balanceChanges: node.effects?.balanceChanges,
+          commands: node.kind?.commands,
+        })),
+      );
 
       // Resolve Move Registry names for every unknown package on this page in a
       // single request, before the synchronous decode pass below. Doing it
       // per-transaction inside the map would mean one round trip per tx.
       await prefetchProtocolNames(
-        data.transactions.nodes.flatMap((node) =>
-          collectPackageIds(adaptCommands(node.kind?.commands?.nodes ?? [])),
-        ),
+        completed.flatMap((c) => collectPackageIds(adaptCommands(c.commands))),
       );
 
       // First pass: decode transactions and extract counterparty addresses
@@ -144,10 +117,10 @@ export function registerHistoryTools(server: McpServer) {
       // real case. Verified on mainnet: the lookalike was the sender.
       const ledger = new ActivityLedger();
 
-      const decodedNodes = data.transactions.nodes.map((node) => {
+      const decodedNodes = page.nodes.map((node, i) => {
         const sender = node.sender?.address;
-        const commandNodes = node.kind?.commands?.nodes ?? [];
-        const balanceChangeNodes = node.effects?.balanceChanges?.nodes ?? [];
+        const commandNodes = completed[i].commands;
+        const balanceChangeNodes = completed[i].balanceChanges;
 
         const commands = adaptCommands(commandNodes);
         const balanceChanges = adaptBalanceChanges(balanceChangeNodes);
@@ -181,14 +154,14 @@ export function registerHistoryTools(server: McpServer) {
 
         ledger.observe(appearances);
 
-        return { node, sender, decoded, counterpartyAddrs };
+        return { node, sender, decoded, counterpartyAddrs, balanceChanges: balanceChangeNodes };
       });
 
       // Batch-resolve SuiNS names for all counterparty addresses
       const nameMap = await batchResolveNames([...allCounterpartyAddresses]);
 
       // Second pass: build output with counterparties
-      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs }) => ({
+      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs, balanceChanges }) => ({
         digest: node.digest,
         timestamp: node.effects?.timestamp ?? null,
         sender: sender ?? null,
@@ -198,6 +171,9 @@ export function registerHistoryTools(server: McpServer) {
         protocols: decoded.protocols,
         actions: decoded.actions,
         token_flow: decoded.token_flow,
+        // token_flow is the sender's. This is the queried address's own side,
+        // which is what a row in its history is about.
+        subject_flow: addressFlow(adaptBalanceChanges(balanceChanges), address),
         counterparties: counterpartyAddrs.map((addr) => ({
           address: addr,
           name: nameMap.get(addr) ?? null,
@@ -213,12 +189,35 @@ export function registerHistoryTools(server: McpServer) {
       // also covers a page where it took no balance change at all.
       const poisoning = lookalikeReport(ledger.addressesLedBy(address), ledger.activity, address);
 
+      // A continuation read that failed leaves a row decoded from part of its
+      // lists. Named here rather than dropped, so the row is not read as whole.
+      const incomplete = page.nodes.flatMap((node, i) =>
+        completed[i].balanceChangesTruncated || completed[i].commandsTruncated
+          ? [
+              {
+                digest: node.digest,
+                balance_changes_truncated: completed[i].balanceChangesTruncated,
+                commands_truncated: completed[i].commandsTruncated,
+              },
+            ]
+          : [],
+      );
+
       const result = {
         address,
+        order: direction,
+        ...shownRange(page.nodes.map((n) => n.effects?.timestamp)),
         transactions,
+        ...(incomplete.length
+          ? {
+              incomplete_transactions: incomplete,
+              incomplete_note:
+                "These rows were decoded from a partial list of balance changes or commands because a follow-up read failed. Read them with get_transaction before relying on them.",
+            }
+          : {}),
         ...(poisoning ? { address_poisoning: poisoning } : {}),
-        has_next_page: data.transactions.pageInfo.hasNextPage,
-        next_cursor: data.transactions.pageInfo.endCursor ?? null,
+        has_next_page: page.has_next_page,
+        next_cursor: page.next_cursor,
       };
 
       return {

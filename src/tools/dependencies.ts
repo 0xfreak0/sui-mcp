@@ -1,5 +1,4 @@
-import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -49,8 +48,11 @@ export function registerDependencyTools(server: McpServer) {
     "get_package_dependency_graph",
     "(Developer) Get the dependency graph of a Sui Move package. Analyzes function signatures to discover which other packages it depends on, with optional recursive traversal up to depth 3.",
     {
-      package_id: z.string().describe("Package ID (0x...)"),
+      package_id: addressArg().describe("Package ID (0x...)"),
       depth: numArg()
+        .int()
+        .min(1)
+        .max(3)
         .optional()
         .describe("Recursion depth (default 1, max 3). 1 = direct deps only."),
     },

@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { classifyCapType, classifyCapabilityRisk } from "../src/utils/capabilities.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { gqlPage } from "./helpers/service-shapes.js";
+
+const { gqlQuery } = vi.hoisted(() => ({ gqlQuery: vi.fn() }));
+vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
+
+const { auditPackageCapabilities, classifyCapType, classifyCapabilityRisk } = await import(
+  "../src/utils/capabilities.js"
+);
 
 const P2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
 
@@ -58,6 +65,69 @@ describe("classifyCapabilityRisk — treasury cap", () => {
     const r = classifyCapabilityRisk({ kind: "treasury", type: `${P2}::coin::TreasuryCap<0xabc::t::T>`, owner: "burned" });
     expect(r.risk).toBe("info");
     expect(r.note).toMatch(/renounced|fixed/i);
+  });
+});
+
+describe("classifyCapabilityRisk — party-held caps", () => {
+  /**
+   * A party object (ConsensusAddressOwner) has one owner. It was classed as
+   * shared, so a party-held TreasuryCap read "Mint authority is a shared
+   * object" at medium risk while one address could mint at will.
+   */
+  it("treats a party-held mint authority as held by its owner", () => {
+    const r = classifyCapabilityRisk({
+      kind: "treasury", type: `${P2}::coin::TreasuryCap<0xabc::t::T>`, owner: "consensus", ownerAddress: "0xbad",
+    });
+    expect(r.risk).toBe("high");
+    expect(r.note).toMatch(/held by 0xbad/);
+    expect(r.note).not.toMatch(/shared/);
+  });
+});
+
+describe("auditPackageCapabilities — party objects", () => {
+  const CAP = "0xdbf46ffe39f2525660a0235dd130961ce1250ef62252a75ca006459de167d80f";
+  const OWNER = "0xea5588c8b8cd44d4a78142fb07fb89af80a64931d0e129507bc5af41f82a647d";
+
+  beforeEach(() => {
+    gqlQuery.mockReset();
+    gqlQuery.mockImplementation(async (query: string) =>
+      query.includes("packageAt(version: 1)")
+        ? {
+            package: {
+              packageAt: {
+                previousTransaction: {
+                  effects: {
+                    objectChanges: gqlPage([
+                      {
+                        idCreated: true,
+                        outputState: {
+                          address: CAP,
+                          asMoveObject: { contents: { type: { repr: `${P2}::package::UpgradeCap` } } },
+                        },
+                      },
+                    ]),
+                  },
+                },
+              },
+            },
+          }
+        : {
+            object: {
+              owner: { __typename: "ConsensusAddressOwner", address: { address: OWNER } },
+              asMoveObject: { contents: { json: { policy: 0 } } },
+            },
+          },
+    );
+  });
+
+  it("reports the owner of a party-held UpgradeCap and compares it with the publisher", async () => {
+    const audit = await auditPackageCapabilities("0xpkg", OWNER);
+    expect(audit.capabilities[0]).toMatchObject({
+      owner: "consensus",
+      owner_address: OWNER,
+      holder_status: "publisher",
+      risk: "high",
+    });
   });
 });
 

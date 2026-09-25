@@ -17,7 +17,7 @@ describe("pickFundingTx", () => {
         { address: TARGET, amount: "5000000000", coinType: SUI },
       ]),
     ];
-    const r = pickFundingTx(txs, TARGET);
+    const r = pickFundingTx(txs, TARGET).funding;
     expect(r?.funder).toBe(CEX);
     expect(r?.amount).toBe("5000000000");
     expect(r?.coinType).toBe(SUI);
@@ -37,7 +37,7 @@ describe("pickFundingTx", () => {
         { address: TARGET, amount: "2000000000", coinType: SUI },
       ]),
     ];
-    const r = pickFundingTx(txs, TARGET);
+    const r = pickFundingTx(txs, TARGET).funding;
     expect(r?.digest).toBe("in");
     expect(r?.funder).toBe(CEX);
   });
@@ -46,7 +46,7 @@ describe("pickFundingTx", () => {
     const txs = [
       tx("mint", "0xfaucet", [{ address: TARGET, amount: "1000000000", coinType: SUI }]),
     ];
-    const r = pickFundingTx(txs, TARGET);
+    const r = pickFundingTx(txs, TARGET).funding;
     expect(r?.funder).toBe("0xfaucet");
   });
 
@@ -59,7 +59,7 @@ describe("pickFundingTx", () => {
         { address: TARGET, amount: "999999", coinType: OTHER },
       ]),
     ];
-    const r = pickFundingTx(txs, TARGET);
+    const r = pickFundingTx(txs, TARGET).funding;
     // With no price function, ranking falls back to raw magnitude — which is
     // only meaningful within one coin, hence the USD-aware test below.
     expect(r?.coinType).toBe(SUI);
@@ -80,14 +80,14 @@ describe("pickFundingTx", () => {
     ];
     const valueUsd = (coinType: string, raw: bigint) =>
       coinType === SUI ? Number(raw) / 1e9 * 0.75 : Number(raw) / 1e6 * 50;
-    const r = pickFundingTx(txs, TARGET, { valueUsd });
+    const r = pickFundingTx(txs, TARGET, { valueUsd }).funding;
     // 0.1 SUI ≈ $0.075 vs ~1 OTHER at $50.
     expect(r?.coinType).toBe(OTHER);
   });
 
   it("returns null when nothing funds the target", () => {
     const txs = [tx("x", TARGET, [{ address: TARGET, amount: "-1", coinType: SUI }])];
-    expect(pickFundingTx(txs, TARGET)).toBeNull();
+    expect(pickFundingTx(txs, TARGET).funding).toBeNull();
   });
 });
 
@@ -108,10 +108,10 @@ describe("pickFundingTx — dust is not funding", () => {
       ]),
     ];
     const r = pickFundingTx(txs, TARGET);
-    expect(r?.digest).toBe("real");
-    expect(r?.funder).toBe(CEX);
+    expect(r.funding?.digest).toBe("real");
+    expect(r.funding?.funder).toBe(CEX);
     // Skipped, not hidden — silent filtering is how a reader loses evidence.
-    expect(r?.dustSkipped).toEqual([
+    expect(r.dustSkipped).toEqual([
       { digest: "dust", amount: "1", coinType: SUI, reason: "below_sui_floor" },
     ]);
   });
@@ -129,8 +129,8 @@ describe("pickFundingTx — dust is not funding", () => {
     ];
     const valueUsd = (coinType: string) => (coinType === SUI ? 0.75 : null);
     const r = pickFundingTx(txs, TARGET, { valueUsd });
-    expect(r?.digest).toBe("real");
-    expect(r?.dustSkipped[0]).toMatchObject({ digest: "scam", reason: "unpriced_coin" });
+    expect(r.funding?.digest).toBe("real");
+    expect(r.dustSkipped[0]).toMatchObject({ digest: "scam", reason: "unpriced_coin" });
   });
 
   it("accepts a non-SUI inflow when there is no price oracle at all", () => {
@@ -141,7 +141,7 @@ describe("pickFundingTx — dust is not funding", () => {
       { address: CEX, amount: "-5000000", coinType: USDC },
       { address: TARGET, amount: "5000000", coinType: USDC },
     ])];
-    expect(pickFundingTx(txs, TARGET)?.digest).toBe("in");
+    expect(pickFundingTx(txs, TARGET).funding?.digest).toBe("in");
   });
 
   it("honours caller-supplied floors, for a faucet-scale investigation", () => {
@@ -149,8 +149,8 @@ describe("pickFundingTx — dust is not funding", () => {
       { address: CEX, amount: "-1", coinType: SUI },
       { address: TARGET, amount: "1", coinType: SUI },
     ])];
-    expect(pickFundingTx(txs, TARGET)).toBeNull();
-    expect(pickFundingTx(txs, TARGET, { minSuiMist: 0n })?.digest).toBe("tiny");
+    expect(pickFundingTx(txs, TARGET).funding).toBeNull();
+    expect(pickFundingTx(txs, TARGET, { minSuiMist: 0n }).funding?.digest).toBe("tiny");
   });
 });
 
@@ -170,7 +170,7 @@ describe("pickFundingTx — the funder must have sent what arrived", () => {
         { address: TARGET, amount: "11085939", coinType: USDC },
       ]),
     ];
-    const r = pickFundingTx(txs, TARGET);
+    const r = pickFundingTx(txs, TARGET).funding;
     expect(r?.coinType).toBe(USDC);
     expect(r?.funder).toBe(SENDER);
     expect(r?.funder).not.toBe(SPONSOR);
@@ -186,6 +186,55 @@ describe("pickFundingTx — the funder must have sent what arrived", () => {
         { address: TARGET, amount: "1000000", coinType: MINTED },
       ]),
     ];
-    expect(pickFundingTx(txs, TARGET)?.funder).toBe("0xminter");
+    expect(pickFundingTx(txs, TARGET).funding?.funder).toBe("0xminter");
+  });
+});
+
+describe("pickFundingTx — a dead end still says what it saw", () => {
+  // The shape of a mainnet relay wallet that pays gas from its operator's
+  // address balance: every inflow is ~1,900 MIST from the operator, and every
+  // transaction it sends has the operator as gas sponsor. Nothing clears the
+  // 0.01 SUI floor, so there is no funding, and the evidence is in the skipped
+  // inflows and the sponsor.
+  const OPERATOR = "0xoperator";
+  const PAYEE = "0xpayee";
+  const inflow = (digest: string, amount: string) =>
+    ({ ...tx(digest, OPERATOR, [
+      { address: OPERATOR, amount: `-${100000 + Number(amount)}`, coinType: SUI },
+      { address: TARGET, amount, coinType: SUI },
+    ]), gasSponsor: OPERATOR });
+  const relay = (digest: string, amount: string) =>
+    ({ ...tx(digest, TARGET, [
+      { address: PAYEE, amount, coinType: SUI },
+      { address: OPERATOR, amount: "-100000", coinType: SUI },
+      { address: TARGET, amount: `-${amount}`, coinType: SUI },
+    ]), gasSponsor: OPERATOR });
+  const txs: FundingTx[] = [
+    inflow("FS8u6Lub", "1847"),
+    relay("D7VqRJxX", "1847"),
+    inflow("14MmbE4g", "1987"),
+    relay("ELssxy2E", "1987"),
+  ];
+
+  it("keeps the skipped inflows when nothing qualifies", () => {
+    const r = pickFundingTx(txs, TARGET);
+    expect(r.funding).toBeNull();
+    expect(r.dustSkipped.map((d) => [d.digest, d.amount, d.reason])).toEqual([
+      ["FS8u6Lub", "1847", "below_sui_floor"],
+      ["14MmbE4g", "1987", "below_sui_floor"],
+    ]);
+  });
+
+  it("names who paid the gas of the transactions the address sent", () => {
+    const r = pickFundingTx(txs, TARGET);
+    expect(r.sponsors).toEqual([{ sponsor: OPERATOR, transactions: 2, first_digest: "D7VqRJxX" }]);
+  });
+
+  it("does not count self-paid gas, or gas on transactions someone else sent, as sponsorship", () => {
+    const own = { ...tx("own", TARGET, [{ address: TARGET, amount: "-1000", coinType: SUI }]), gasSponsor: TARGET };
+    // The operator's own inflow transactions carry the operator as gas payer
+    // too; the address did not send them, so they say nothing about who runs it.
+    const r = pickFundingTx([inflow("FS8u6Lub", "1847"), own], TARGET);
+    expect(r.sponsors).toEqual([]);
   });
 });

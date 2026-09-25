@@ -1,11 +1,13 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { errorResult } from "../utils/errors.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { clampPageSize } from "../utils/pagination.js";
 import { protoValueToJson } from "../utils/proto.js";
 import { formatOwner } from "../utils/formatting.js";
+import { objectAddressBalanceFields } from "../utils/address-balance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -68,9 +70,9 @@ function extractDisplay(content: unknown): Record<string, string | null> | null 
 export function registerObjectTools(server: McpServer) {
   server.tool(
     "get_object",
-    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs.",
+    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs. For the latest version it also lists `address_balances`: funds the object holds in its own address balance, which are not among its fields and which only its defining module can withdraw.",
     {
-      object_id: z.string().describe("The object ID (0x...)"),
+      object_id: addressArg().describe("The object ID (0x...)"),
       version: z.string().optional().describe("Specific version to fetch"),
     },
     async ({ object_id, version }) => {
@@ -94,6 +96,9 @@ export function registerObjectTools(server: McpServer) {
       );
       const obj = res.object;
       const content = protoValueToJson(obj?.json);
+      // Funds held in the object's own address balance are current state, so
+      // they are read only for the latest version, alongside the Display.
+      const heldRequest = !version && obj?.objectId ? objectAddressBalanceFields(obj.objectId) : null;
       // The struct's own fields first, because they cost nothing. Only when
       // they carry nothing is the rendered Display worth a second request.
       let display: Record<string, string | null> | null = extractDisplay(content);
@@ -107,6 +112,7 @@ export function registerObjectTools(server: McpServer) {
           displaySource = "display_standard";
         }
       }
+      const held = heldRequest ? await heldRequest : {};
 
       const result: Record<string, unknown> = {
         object_id: obj?.objectId,
@@ -118,6 +124,7 @@ export function registerObjectTools(server: McpServer) {
         storage_rebate: obj?.storageRebate?.toString(),
         content,
         balance: obj?.balance?.toString(),
+        ...held,
       };
 
       if (display) {
@@ -140,15 +147,18 @@ export function registerObjectTools(server: McpServer) {
     "list_owned_objects",
     "List raw objects owned by a Sui address with optional type filter and pagination. For NFTs specifically, prefer list_nfts (resolves kiosk storage, extracts display metadata). For a wallet summary, prefer get_wallet_overview.",
     {
-      owner: z.string().describe("Owner address (0x...)"),
+      owner: addressArg().optional().describe("Owner address (0x...). Required; `address` is accepted in its place."),
+      address: addressArg().optional().describe("Alias for `owner`."),
       object_type: z
         .string()
         .optional()
         .describe("Filter by object type (e.g. 0x2::coin::Coin<0x2::sui::SUI>)"),
-      limit: numArg().optional().describe("Max results (default 50, max 1000)"),
+      limit: numArg().int().min(1).max(1000).optional().describe("Max results (default 50, max 1000)"),
       cursor: z.string().optional().describe("Pagination cursor from previous response"),
     },
-    async ({ owner, object_type, limit, cursor }) => {
+    async ({ owner: ownerArg, address, object_type, limit, cursor }) => {
+      const owner = ownerArg ?? address;
+      if (!owner) return errorResult("Pass the wallet to list as `owner` (or `address`).");
       const res = await sui.listOwnedObjects({
         owner,
         type: object_type,
@@ -181,8 +191,8 @@ export function registerObjectTools(server: McpServer) {
     "list_dynamic_fields",
     "(Developer) List dynamic fields of a Sui object. Returns field names, types, and values. Useful for inspecting on-chain tables, kiosk contents, or other dynamic collections.",
     {
-      parent_id: z.string().describe("Parent object ID (0x...)"),
-      limit: numArg().optional().describe("Max results (default 50, max 1000)"),
+      parent_id: addressArg().describe("Parent object ID (0x...)"),
+      limit: numArg().int().min(1).max(1000).optional().describe("Max results (default 50, max 1000)"),
       cursor: z.string().optional().describe("Pagination cursor from previous response"),
     },
     async ({ parent_id, limit, cursor }) => {

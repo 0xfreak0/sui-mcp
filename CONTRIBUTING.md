@@ -61,7 +61,10 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
 4. Use Zod schemas for input validation. For numbers and booleans use `numArg()`
    and `boolArg()` from `src/tools/args.ts`, not bare `z.number()` / `z.boolean()` —
    a model composing JSON will sometimes quote a value, and strict validation
-   turns that into a hard failure over nothing.
+   turns that into a hard failure over nothing. For a Sui address, object ID or
+   package ID use `addressArg()` / `addressListArg()`, which return the
+   canonical form and accept SuiNS names; comparing a raw argument against chain
+   data fails silently on upper-case or short input.
 5. Add the tool to a profile in `src/tools/profiles.ts`. A tool in no profile
    still exists but nobody loads it by default.
 6. Update the advertised tool counts: the heading and intro in `README.md`, the
@@ -69,7 +72,12 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
    `package.json` and `server.json`. `test/packaging.test.ts` checks these
    against `PROFILES` and will fail the build if they drift.
 7. Add a row for the tool in the README's tool table, in its matching section.
-8. Add tests in `test/` for any non-trivial logic.
+8. If the tool writes a record to the store, or never reads the chain, add it
+   to `OVERRIDES` in `src/tools/tool-meta.ts`. Every other tool registers as a
+   read-only chain read with a `network` argument and a title derived from its
+   name. `test/tool-annotations.test.ts` fails when a tool that writes is
+   marked read-only.
+9. Add tests in `test/` for any non-trivial logic.
 
 ## Guidelines
 
@@ -167,7 +175,10 @@ modules and structs, then sample real events to confirm the field names and see
 what a live payload actually contains. Every entry currently in the registry was
 added only after a real transaction was captured, and the payloads are the test
 fixtures. `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` are built
-from transactions named in their comments.
+from transactions named in their comments; `test/fixtures/bridge-transactions.json`
+holds `resolve_bridge_transfer`'s own GraphQL response for one real
+transaction per newer bridge, keyed by digest. Capture a new one with the query
+in `src/tools/bridge.ts` and add it there.
 
 Two things that sampling catches and guessing does not:
 
@@ -177,16 +188,28 @@ Two things that sampling catches and guessing does not:
   have collided with DEX order books, which emit some of the highest-frequency
   events on mainnet. The markers carry `mctp` instead. Prefer a distinctive
   module or event name over a generic one, and add a test asserting the
-  lookalike does *not* match.
+  lookalike does *not* match. When the only exit event has a generic name
+  (`events::TokensSentEvent`), pin it to its package with a
+  `0xpkg::module::Name` marker; events keep the defining package's id across
+  upgrades. When a call marker's prefix would catch a sibling function, list
+  it in `exactCallMarkers`.
+
+To resolve a new bridge, write its decoder in `src/utils/bridge/<name>.ts`,
+pinned to the emitting package, and add it to `readBridgeEvents` in
+`src/utils/bridge/exits.ts`. Its beneficiary then reaches
+`resolve_bridge_transfer`, `screen_address` and any other caller of
+`readBridgeEvents` together. Give it a section in the tool and add its name to
+`SECTIONED` in `src/tools/bridge.ts`.
 
 Note that volume sampling will **not** surface bridges. A survey of 1200 recent
 mainnet events turned up 180 `order::OrderCanceled` and not one bridge event —
 bridge traffic is rare next to DEX and oracle activity. Probe candidate event
 types by name instead.
 
-Set `resolution` honestly. `identifier` means a shared id is quoted on both
-chains and the hop can be followed; `detect-only` means the exit is recognised
-and no more. Never point a caller at a resolver that cannot help them —
+Set `resolution` honestly. `identifier` means `resolve_bridge_transfer` reads
+the destination or an id quoted on both chains, so the hop can be followed;
+`detect-only` means the exit is recognised and no more (Meson, whose recipient
+is not in Sui data). Never point a caller at a resolver that cannot help them —
 `resolvableHit()` is the guard.
 
 ```bash

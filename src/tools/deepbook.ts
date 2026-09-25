@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import {
   fetchCandles,
@@ -99,8 +99,7 @@ export function registerDeepBookTools(server: McpServer) {
       limit: numArg().int().min(1).max(200).optional().describe("Max trades (default 50)."),
       start_time: numArg().int().optional().describe("Window start, Unix seconds."),
       end_time: numArg().int().optional().describe("Window end, Unix seconds."),
-      balance_manager_id: z
-        .string()
+      balance_manager_id: addressArg()
         .optional()
         .describe("Only trades where this balance manager was maker or taker."),
     },
@@ -173,6 +172,7 @@ export function registerDeepBookTools(server: McpServer) {
         .optional()
         .describe("End of window, Unix seconds. Defaults to now."),
       threshold_pct: numArg()
+        .nonnegative()
         .optional()
         .describe("Absolute deviation percent that counts as notable (default 1)."),
     },
@@ -200,11 +200,15 @@ export function registerDeepBookTools(server: McpServer) {
 
         // One Pyth query per candle: Hermes is a point-in-time API, so there is
         // no bulk form. Sequential rather than parallel to stay polite to a
-        // public endpoint; the candle count is bounded at 100.
+        // public endpoint; the candle count is bounded at 100. Pyth alone: a
+        // market aggregate such as DefiLlama is not the oracle a lending
+        // protocol liquidates on, so it cannot stand in for one here.
         const oracle = new Map<number, { price: number; publishTime: number }>();
         for (const [openMs] of candles) {
-          const prices = await priceUsdAtTime([pool.base_asset_id], Math.floor(openMs / 1000));
-          const p = prices.get(pool.base_asset_id);
+          const { points } = await priceUsdAtTime([pool.base_asset_id], Math.floor(openMs / 1000), {
+            sources: ["pyth"],
+          });
+          const p = points.get(pool.base_asset_id);
           if (p) oracle.set(openMs, { price: p.price, publishTime: p.publishTime });
         }
 

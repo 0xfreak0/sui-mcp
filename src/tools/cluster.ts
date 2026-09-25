@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressListArg } from "./args.js";
+import { EXPORT_FORMATS, shortAddress, toCsv, toGraphJson, toMermaid, type ExportGraph } from "../utils/flow-export.js";
 import { errorResult } from "../utils/errors.js";
 import { getLabel } from "../utils/labels.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
@@ -46,8 +47,7 @@ export function registerClusterTools(server: McpServer) {
     "build_wallet_edges",
     "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address — the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference — each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
     {
-      addresses: z
-        .array(z.string())
+      addresses: addressListArg()
         .min(1)
         .max(25)
         .describe("Seed addresses to examine (1-25). Give it every address you already suspect belongs together — links between seeds are the exactly-verified ones."),
@@ -96,6 +96,12 @@ export function registerClusterTools(server: McpServer) {
         .max(600)
         .optional()
         .describe("Hard ceiling on GraphQL requests (default 150). Check `truncated` in the response."),
+      format: z
+        .enum(EXPORT_FORMATS)
+        .optional()
+        .describe(
+          "Output format (default json). mermaid: a fenced ```mermaid diagram, one box per cluster, edges labelled with their signal types, pairs outside any cluster dashed. graph_json: {nodes, edges}. csv: one row per edge.",
+        ),
     },
     async ({
       addresses,
@@ -106,6 +112,7 @@ export function registerClusterTools(server: McpServer) {
       min_signal_types,
       max_cluster_size,
       query_budget,
+      format,
     }) => {
       try {
         // Clustering an exchange is meaningless work — it shares a funder or a
@@ -183,6 +190,70 @@ export function registerClusterTools(server: McpServer) {
             ...(note ? { note } : {}),
           };
         };
+
+        if (format && format !== "json") {
+          const label = (a: string) => {
+            const d = describe(a);
+            return d.name ?? d.label ?? d.protocol ?? shortAddress(a);
+          };
+          const clusterOf = new Map<string, number>();
+          clustered.clusters.forEach((c, i) => c.members.forEach((m) => clusterOf.set(m, i)));
+          const members = [...new Set([...addresses, ...allEdges.flatMap((e) => [e.wallet_a, e.wallet_b])])];
+          const graph: ExportGraph = {
+            directed: false,
+            nodes: members.map((a) => ({
+              id: a,
+              label: label(a) === shortAddress(a) ? [shortAddress(a)] : [label(a), shortAddress(a)],
+              kind: addresses.includes(a) ? "seed" : "wallet",
+              attrs: { address: a, seed: addresses.includes(a) },
+            })),
+            edges: allEdges.map((e) => ({
+              from: e.wallet_a,
+              to: e.wallet_b,
+              label: e.signal_types.join(", "),
+              // A pair no cluster merged is a lead, not a link.
+              dashed: clusterOf.get(e.wallet_a) === undefined || clusterOf.get(e.wallet_a) !== clusterOf.get(e.wallet_b),
+              attrs: { signal_types: e.signal_types, weight: e.weight, digests: [...new Set(e.signals.flatMap((sig) => sig.digests))] },
+            })),
+            groups: clustered.clusters.map((c, i) => ({
+              title: `cluster ${i + 1} (${c.evidence_tier}, ${c.confidence})`,
+              members: c.members,
+            })),
+          };
+          if (format === "graph_json") {
+            return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph), null, 2) }] };
+          }
+          const text =
+            format === "mermaid"
+              ? toMermaid(graph)
+              : toCsv(
+                  ["wallet_a", "wallet_a_label", "wallet_b", "wallet_b_label", "signal_types", "weight", "cluster", "digests"],
+                  allEdges.map((e) => ({
+                    wallet_a: e.wallet_a,
+                    wallet_a_label: label(e.wallet_a),
+                    wallet_b: e.wallet_b,
+                    wallet_b_label: label(e.wallet_b),
+                    signal_types: e.signal_types.join(" "),
+                    weight: e.weight,
+                    cluster:
+                      clusterOf.get(e.wallet_a) !== undefined && clusterOf.get(e.wallet_a) === clusterOf.get(e.wallet_b)
+                        ? clusterOf.get(e.wallet_a)! + 1
+                        : "",
+                    digests: [...new Set(e.signals.flatMap((sig) => sig.digests))].join(" "),
+                  })),
+                );
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `${allEdges.length} edge(s) among ${members.length} address(es), ${clustered.clusters.length} cluster(s). ` +
+                  "Edges are facts; clusters are an inference, and a missing edge is not evidence of separate control. Seeds are highlighted; the JSON format carries each edge's evidence.",
+              },
+              { type: "text" as const, text },
+            ],
+          };
+        }
 
         return {
           content: [

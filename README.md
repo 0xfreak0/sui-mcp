@@ -4,7 +4,7 @@
 
 Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd, then reconstruct it all on a timeline.
 
-68 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
+76 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
 
 ## Install
 
@@ -178,21 +178,37 @@ would misreport which asset moved.
 module and function that raised it, and a clever error's constant name where the
 author defined one.
 
-**Who deployed this, and can they still change it?** `analyze_package` and
-`identify_address` report `publisher`, the address that created the package,
-attributed to the lineage root. The UpgradeCap carries `holder_status`:
+**Who deployed this, and can they still change it?** `identify_address`
+reports `publisher`, the address that created the package, attributed to the
+lineage root. `analyze_package` reports it as `root_publisher`, beside
+`version_publisher`, the sender of the upgrade that created the version you
+passed. The UpgradeCap carries `holder_status`, judged against the root:
 `burned` means upgrade rights were renounced, which *reduces* risk, and is what
 27 of every 30 departing caps did.
+
+`analyze_package` also reports `upgrade_cap`, the cap's owner-change count and
+latest change. `get_upgrade_history` joins every version to its publisher, the
+publisher's signing scheme and the cap holder at that moment, and `as_of`
+answers who held upgrade authority at a given time:
+
+```
+get_upgrade_history { package: "0x0f286ad0…", as_of: "2025-09-07T16:03Z" }
+→ flags: cap_round_trip (v10, 11 minutes away from the 3-of-4 multisig),
+         single_key_upgrade (v10, v11)
+  as_of: holder 0xf55cc609… (ed25519) since 2025-08-10, newest_version 10
+```
 
 **Has an issuer frozen this address?** `check_coin_restrictions` reads the
 on-chain deny list in both directions. A frozen address usually holds none of
 the coin that froze it, so it checks every configured coin type rather than the
-ones it holds.
+ones it holds. A freeze by validators is node configuration, not chain state,
+and does not appear here.
 
 **What moved that was not a coin?** `trace_funds` reports `object_flow`, and
-`get_transaction` reports `object_changes` and `object_transfers` for one
-transaction. Sui is object-based, so a balance change only covers `Coin<T>`. An
-NFT, a Kiosk or a capability changes hands without producing one:
+`get_transaction` reports `object_changes`, `object_transfers` and
+`created_for` for one transaction. A balance change nets each owner's coins and
+address balance per coin type, so an NFT, a Kiosk or a capability changes hands
+without producing one:
 
 ```
 --- Hop 1 (2025-01-10 10:25:31 UTC) ---
@@ -212,6 +228,43 @@ Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2` and
 `Publisher` are marked as carrying control. A capability sent to an unspendable
 address is reported under `renounced_capabilities` instead, since those rights
 have been given up rather than transferred.
+
+**Where did all of it go?** `trace_funds` follows one branch. `trace_flow_graph`
+follows every branch and says what share of the traced value ended where. From
+the Nemo exploit transaction:
+
+```
+trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
+  → 144,835.8 SUI credited to the attacker, swapped to 492,236.5 USDC in 3
+    transactions, then burned through Circle CCTP in 3 more
+    terminals: bridge_exit 99.9% ($492.1K) → beneficiary eip155:1:0x135477aa…
+               below_threshold 0.07%
+```
+
+A node's traced amount is spent first in, first out: an address that pays out
+more than it received from these funds is treated as paying these funds first,
+and its payment carries only the traced part (`traced_amount`) onward. That is
+a convention, not something the chain records. Terminals are grouped by reason
+(`bridge_exit`, `sink`, `hub`, `unspent`, `consumed`, `signer_not_sender`,
+`budget`), and `coverage.truncated` says whether a limit cut the graph short.
+A labelled attacker is followed rather than treated as a sink.
+
+`find_flow_path(from, to)` asks whether any path connects two addresses. It
+searches forward from `from` and backward from `to` and joins them where the
+money arrived before it moved on. `to` may also be an account on another chain,
+which a path reaches through a bridge exit that pays it:
+
+```
+find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
+               window_start: "2025-05-22T10:30:00Z")
+  → 5 one-hop paths: Mayan MCTP (55 txs, 54.4M USDC), CCTP (7 txs),
+    Wormhole, Sui Bridge
+```
+
+`trace_flow_graph`, `find_flow_path`, `trace_funds` and `build_wallet_edges`
+take `format: "mermaid"` (a fenced diagram that renders in a markdown viewer),
+`"graph_json"` or `"csv"`. `export_case` with `format: "mermaid"` appends a
+fund-flow diagram of the transfers in the case's cited transactions.
 
 **What has happened since I last looked?** `watch_addresses` records a set of
 addresses and where it last looked; `poll_watch` returns only what is new:
@@ -299,18 +352,68 @@ get_transaction(796Fr642E4W3XfvNcUWknTsDywd4RouMaCbqL5Ziptk)
 ```
 
 Both parties there are Kiosk objects rather than wallets. `changed` counts every
-effect, including the coin or balance that paid, so it is a weaker signal than
-`object_transfers`.
+object effect, including the coin that paid, so it is a weaker signal than
+`object_transfers`. `created_for` lists objects minted to an owner other than
+the sender, which is a delivery even though nothing held them before.
+
+**Did funds move without a coin object?** An address balance holds funds
+credited to an address or an object id with no `Coin<T>` behind them.
+`get_transaction` lists each deposit and withdrawal, the withdrawals the
+transaction requested, and whether gas came from coins or the address balance:
+
+```
+get_transaction(CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay)
+  → object_changes: { changed: 0, created: 0, deleted: 0 }
+    address_balance_ops: [
+      { owner: 0xb71e…1d47, op: deposit,  amount: 1951 },
+      { owner: 0x7c8e…bdbf, op: withdraw, amount: 101951 } ]
+    funds_withdrawals: [ { amount: 1951, coin_type: …::sui::SUI, source: sender } ]
+    gas_source: address_balance
+```
+
+A coin folded into its owner's address balance is deleted while no value moves.
+That deposit carries `converted_from_coins` and a note saying so.
+`get_balance` and `get_wallet_overview` report `coin_balance` and
+`address_balance` beside each total, and `identify_address` and `get_object`
+list `address_balances` for an object id: funds the object holds itself, which
+are not among its fields and which only its defining module can withdraw.
+
+**What did this address hold at a past moment?** `get_balance` takes `at` (ISO
+8601) or `at_checkpoint`. GraphQL reads a balance directly only inside its
+consistent range, about the last hour (`method: consistent_read`). An older
+point is reconstructed (`method: reconstructed`): the balance at a recent
+anchor checkpoint, minus the owner's balance changes in that coin in every
+transaction after the requested checkpoint up to the anchor. Balance changes
+include address-balance deposits and withdrawals, so the result is exact when
+`complete` is true.
+
+```
+get_balance(owner: 0x01229b3c…c724, at: 2025-09-07T16:00:00Z)
+  → method: reconstructed, at_checkpoint: 187414630, complete: true,
+    balance: 78.654856875 SUI, transactions_scanned: 30,
+    anchor: { checkpoint: 326856716, balance: 93.696806819 SUI, … }
+```
+
+The scan reads at most `max_transactions` (default 1,000, max 10,000). When
+that runs out, `complete` is false, `balance` is null, and `reached_checkpoint`
+is the oldest checkpoint the scan got back to: every transaction after it was
+read. A reconstructed balance has no coin/address split, so `coin_balance` and
+`address_balance` are null and `anchor` carries the split at the anchor.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
-`get_top_holders` walks coin objects in object-id order, which is unrelated to
-balance. A scan that stops early returns the largest holder it happened to see.
-On SUI the reported top holder goes from 66 SUI at `max_scan` 200 to 3,454 at
-800, with no overlap in the top five. A truncated scan therefore returns
-`sampled_holders`, without a rank or a percentage of supply, along with a
-caveat. Raise `max_scan` until `truncated` is false to get a real ranking; that
-is only practical for coins with few enough objects to enumerate.
-`analyze_token` reports the same distinction.
+`get_top_holders` walks two things in object-id order, which is unrelated to
+balance: `Coin<T>` objects, and address balances (funds credited to an owner's
+address rather than held as a coin object). A scan that stops early returns
+the largest holder it happened to see. On SUI the reported top holder goes from
+66 SUI at `max_scan` 200 to 3,454 at 800, with no overlap in the top five. A
+truncated scan therefore returns `sampled_holders`, without a rank or a
+percentage of supply, along with a caveat naming which walk stopped. Raise
+`max_scan` (applied to each walk) until `truncated` is false to get a real
+ranking; that is only practical for coins with few enough objects to
+enumerate. Each holder carries `coin_balance` and `address_balance` beside the
+total, and `owner_kind`, because an address balance can belong to an object
+such as a bridge's liquidity bank. `analyze_token` reports the same
+distinction.
 
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`
@@ -363,11 +466,20 @@ in, the base-rate check that keeps shared ancestry from reading as collusion,
 and the conclusions to refuse. "No edge found, so they are unrelated" is the
 most common of those.
 
+Clients without skills get the same method as MCP prompts. Each one states the
+task and the order of tool calls, followed by the skill sections that govern it:
+
+| Prompt | Arguments | For |
+|---|---|---|
+| `investigate_address` | `address`, optional `network`, `case_name` | What an address is, who funded it, where its money went |
+| `trace_incident` | `subject` (attack digest or attacker address), optional `network`, `case_name` | What an exploit took, how, and where it went |
+| `attribute_cluster` | `addresses` (comma-separated), optional `network`, `case_name` | Whether several addresses share an operator, with a control group |
+
 ## Tool profiles
 
-All 68 tools loaded at once cost about 14k tokens of context on every request, and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 76 tools loaded at once cost about 29k tokens of context on every request (117k characters of tool list; `core` alone is about 7k tokens and `core,forensics` about 24k), and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 18 and keeps the rest one call away.
 
-When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile.
+When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile. `enable_tools` names every tool that is still off, and the server's `instructions` name the profiles and the main investigation tools, so a client that shows them to the model knows what to ask for. Profile names are case-insensitive.
 
 To start with more, set `SUI_TOOLS`:
 
@@ -378,12 +490,12 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 18 | Wallets, balances, transactions (single and batched), tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 30 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation, live address watching, NFT marketplace sales |
+| `forensics` | 38 | Fund tracing and flow graphs, path finding between addresses, address flow summaries, exploit and incident-loss analysis, exposure screening, exchange deposit-address detection, upgrade history, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation, live address watching, NFT marketplace sales |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
-| `all` | 59 | Everything |
+| `all` | 76 | Everything |
 
-Runtime switching relies on `notifications/tools/list_changed`. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
+Runtime switching relies on `notifications/tools/list_changed`, sent once per `enable_tools` call. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
 
 Upgrading from 1.1.x, where every tool loaded at startup? Set `SUI_TOOLS=all` to keep that behaviour.
 
@@ -402,7 +514,7 @@ Supply-chain scanners report which capabilities a package uses but not why. The 
 
 | Capability | Where it's used |
 |---|---|
-| Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts). |
+| Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath, DefiLlama and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts) and [`src/utils/price-providers.ts`](src/utils/price-providers.ts). |
 | Filesystem | Temp files for `decompile_module`, and reading `SUI_LABELS_FILE` if you set it. |
 | Subprocess | One call, in [`src/tools/decompiler.ts`](src/tools/decompiler.ts), to the decompiler binary you build and configure yourself. It uses `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
 | Environment | The `SUI_`-prefixed variables in [`.env.example`](.env.example), plus two optional price-provider keys (`PYTH_API_KEY`, `CMC_API_KEY`). Nothing else is read. |
@@ -421,14 +533,15 @@ npm audit signatures
 
 ## Capabilities
 
-- **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
+- **Per-call network** — every chain tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default. Tools that only use the local store (`list_findings`, `export_case`, `delete_finding`) do not take it.
+- **MCP metadata** — every tool has a title and annotations: chain reads are `readOnlyHint: true`, and the tools that write the store (`save_finding`, `delete_finding`, `manage_labels`, `watch_addresses`, `poll_watch`) are not, with `destructiveHint` on the ones that delete. `trace_funds`, `find_funding_sources`, `build_wallet_edges`, `analyze_attack_tx` and `screen_address` also return their JSON as `structuredContent`. Tools whose complete result is the point (`get_transaction`, `get_transactions`, `find_funding_sources`, `analyze_attack_tx`, `summarize_incident_losses`, `screen_address`) declare `anthropic/maxResultSizeChars`, so Claude Code keeps their results inline up to 500k characters.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
-- **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, PTB anomaly triage, oracle-vs-market deviation
+- **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, exploit-transaction breakdown and incident loss totals in USD at block time, PTB anomaly triage, oracle-vs-market deviation
 - **Multisig** — a Sui address is the hash of its authenticator, so the committee is read off the address itself. Names every member, says which keys are live and which have never signed, and shows who signed a given transaction. Also handles zkLogin and passkey wallets
 - **Move package analysis** — disassembly, heuristic risk scan, capability audit, publisher attribution, upgrade-cap holder status, and upgrade diffing, none of which need an external binary
 - **Asset verification** — a curated coin registry, so a trace says whether the asset it followed is the real one rather than an imitator wearing its symbol
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
-- **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
+- **Price aggregation** — Aftermath, DefiLlama, Pyth and CoinMarketCap behind one interface, current or at a past block time, with no key required
 - **Kiosk-aware** — resolves NFT ownership through Sui's kiosk system to actual wallet addresses
 - **Move Registry (MVR)** — resolves names like `@deepbook/core` to package addresses, and back
 
@@ -436,18 +549,32 @@ npm audit signatures
 
 All environment variables are optional. See [`.env.example`](.env.example) for the full list; the common ones are `SUI_NETWORK` (default network), `SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (custom RPC endpoints), and `SUI_LABELS_FILE` (address attribution labels for fund tracing).
 
+GraphQL requests retry a rate limit (HTTP 429), a 5xx or a dropped connection up to four times with backoff, time out after 30 seconds, and run at most eight at a time per network. If the public endpoint still rate-limits a heavy investigation, set `SUI_GRAPHQL_URL` to a private one.
+
+Address arguments accept any case, a short form (`0x2`), the hex without `0x`, or a SuiNS name (`example.sui`). A name is resolved on the call's network and echoed back as `resolved_from`.
+
 ### Price sources
 
-Current USD prices come from **Aftermath**, which is free and needs no key. That is the default path, and it covers everything except historical pricing.
+Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
+
+```
+get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
+  → price_usd 4.16, source "defillama", confidence 0.99,
+    price_time 2025-05-22T10:30:01Z, price_offset_sec 1
+```
+
+Every price names its source, the provider's confidence, and the time of the sample it came from; one more than an hour from the moment asked for is marked `stale`. Every coin that could not be priced is listed under `unpriced` with the reason, and a failed request is reported differently from a coin the provider does not list.
+
+DefiLlama and Aftermath key on the full coin type, so an impostor coin that copies a real coin's symbol is priced as itself or not at all. Pyth feeds are matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
 Two paid sources are opt-in and engage only when their key is set, so nobody is billed by accident and nothing degrades if you set neither:
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Historical prices (`get_token_prices` with `at`), oracle-vs-market comparison. Pyth's Hermes endpoint began requiring authentication for price *values*; feed discovery is still open. |
+| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
 | `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
 
-Without a key, tools that need a paid source say so explicitly rather than returning a null price. A missing price and a price of zero mean different things.
+A missing price and a price of zero mean different things, and no tool reports one as the other.
 
 ### Optional local store
 
@@ -458,6 +585,8 @@ Set `SUI_STORE_PATH` to keep address labels and fan-out measurements across sess
 ```
 
 Fund traces are not cached. A trace depends on your label set, so a stored result would disagree with a fresh run as soon as a label changed.
+
+Each recorded case is also a resource, `sui://case/{name}`, holding the Markdown report `export_case` renders. `resources/list` lists every case in the store.
 
 ```json
 {
@@ -473,7 +602,7 @@ Fund traces are not cached. A trace depends on your label set, so a stored resul
 
 ## Move decompiler (optional)
 
-64 of the 68 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
+72 of the 76 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -536,15 +665,15 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (68)
+## Tools (76)
 
 ### Recommended Starting Points
 
 | Tool | Description |
 |---|---|
-| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object |
-| `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, recent txs |
-| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions |
+| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object. For an object, `address_balances` lists funds held in the object's own address balance. For a wallet, `names_held` lists every SuiNS registration it holds and whether it registered or used each one or was sent it by another address |
+| `get_wallet_overview` | Comprehensive wallet overview: balances (each split into `coin_balance` and `address_balance`), SuiNS name, staking, kiosks, and the five most recent transactions, newest first |
+| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. Newest first by default (`order: "oldest"` starts at the first transaction); each page reports its order and the oldest and newest timestamps shown. `subject_flow` is the wallet's own signed balance change per coin with formatted amounts; `token_flow` is the sender's |
 | `analyze_token` | Full token analysis: metadata, price, 24h change, supply, top holders |
 
 ### Chain & Network
@@ -552,13 +681,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `get_chain_info` | Current chain ID, epoch, checkpoint height, timestamp, gas price |
-| `get_checkpoint` | Checkpoint details by sequence number or digest |
+| `get_checkpoint` | Checkpoint details by sequence number, digest or `timestamp`. With a timestamp it returns the nearest checkpoint plus the last one before and the first one at or after that moment |
 
 ### Objects
 
 | Tool | Description |
 |---|---|
-| `get_object` | Object by ID with type, owner, JSON content, and display metadata |
+| `get_object` | Object by ID with type, owner, JSON content, and display metadata; `address_balances` lists funds held in the object's own address balance, which are not among its fields |
 | `list_owned_objects` | List objects owned by an address with optional type filter |
 | `list_dynamic_fields` | Dynamic fields of an object (tables, kiosk contents, etc.) |
 
@@ -566,19 +695,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `get_balance` | Balance of a coin type for an address (defaults to SUI) |
+| `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total; now, or at a past time or checkpoint (reconstructed from balance changes outside the last hour) |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
 | `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
-| `get_token_prices` | USD prices for tokens — current (Aftermath + Pyth), or historical via Pyth when `at` is set |
+| `get_token_prices` | USD prices for tokens, current (Aftermath, then DefiLlama, then Pyth) or at a past moment when `at` is set (Pyth for verified coins with a key, DefiLlama otherwise). Each price carries its source, confidence and sample time; unpriced coins are listed with the reason |
 
 ### Transactions & Events
 
 | Tool | Description |
 |---|---|
 | `get_transactions` | Reads up to 50 transactions in ONE call given their digests — sender, timing, balance changes, Move calls, and events with decoded fields. Ten digests go from ten round trips to one. Malformed digests are rejected before the request, because the server refuses a whole batch over one bad key |
-| `get_transaction` | Transaction by digest with protocol-decoded actions |
-| `query_transactions` | Filter transactions by sender, address, object, or function |
-| `query_events` | Filter events by type, sender, module, or checkpoint range |
+| `get_transaction` | Transaction by digest with protocol-decoded actions, address-balance deposits and withdrawals, and where gas came from |
+| `query_transactions` | Filter transactions by sender, address, object, or function, bounded by checkpoints or ISO times. Newest first by default. A `function` filter matches one package version; `all_versions: true` reads the whole lineage as one list |
+| `query_events` | Filter events by type, sender, module, and a checkpoint or ISO time range. Newest first by default. An event type written with an upgraded package ID is rewritten to the package that defined the struct |
 
 ### DeFi
 
@@ -642,19 +771,19 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `get_package` | Move package modules, structs (with ordered fields), and functions |
+| `get_package` | Move package modules. By default a per-module summary (function and struct counts, entry and public function names); `modules: ['pool']` returns those modules' structs (with ordered fields) and function signatures, `detail: 'full'` every module's |
 | `get_move_function` | Specific Move function signature and parameters |
 | `get_package_dependency_graph` | Package dependency analysis with recursive traversal |
-| `analyze_package` | Summarize a package's API + heuristic risk scan (no binary; accepts 0x id or MVR name) |
+| `analyze_package` | Summarize a package's API + heuristic risk scan + capability audit (no binary; accepts 0x id or MVR name). The overview is a per-module summary and caps of one type are listed once with every holder; `modules: ['pool']` adds those modules' struct shapes and signatures, `detail: 'full'` returns everything |
 | `disassemble_module` | Disassemble Move bytecode via GraphQL (no binary; accepts 0x id or MVR name) |
 | `decompile_module` | Decompile Move bytecode to source (requires decompiler binary) |
-| `diff_package_upgrade` | (Security) Diff two package versions to spot what an upgrade changed — malicious-upgrade / backdoor detection |
+| `diff_package_upgrade` | (Security) Diff two package versions to spot what an upgrade changed — malicious-upgrade / backdoor detection. Unified hunks, functions added/removed/made more reachable, and relinked dependencies |
 
 ### Transaction Building
 
 | Tool | Description |
 |---|---|
-| `build_transfer` | Build an unsigned transfer of SUI or any coin (auto coin selection); returns BCS for `simulate_transaction` |
+| `build_transfer` | Build an unsigned transfer of SUI or any coin, drawing on coin objects and the address balance; returns BCS for `simulate_transaction` |
 | `build_staking` | Build an unsigned stake/unstake transaction (`action: stake\|unstake`) |
 | `simulate_transaction` | Dry-run a transaction to preview effects and gas cost |
 
@@ -662,31 +791,39 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes |
-| `check_activity` | Monitor address or object for new activity since a checkpoint |
+| `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes, including `FundsWithdrawal` amounts and the gas source |
+| `check_activity` | One-shot check for new activity on an address (since a checkpoint, time or cursor) or an object (since a version) |
 
 ### Incident Investigation
 
 | Tool | Description |
 |---|---|
-| `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing that stops at labeled sinks (forward or backward) |
-| `resolve_bridge_transfer` | Follow funds across a bridge, in either direction. Resolves **Wormhole** (VAA identity `(emitter chain, emitter address, sequence)`), **Sui's native bridge** and **Circle CCTP** — the latter two carry the destination chain and recipient in their own events, so their far side needs no indexer at all. Detects **Mayan MCTP** and any package the registry types as a bridge. Inbound claims resolve to their origin chain and transfer id rather than being mistaken for exits. Every result is tiered: `chain-derived` trusts nobody, `indexer-attested` is a lead to confirm |
-| `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
-| `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape, addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, and sub-minute funding bursts |
+| `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing (forward or backward) that follows the tracked coin, follows value out of objects, and stops at labeled sinks, bridge exits and hubs, always with a `stop_reason`. `format: mermaid\|graph_json\|csv` renders the followed path with the unfollowed branches dashed |
+| `trace_flow_graph` | Follows every branch of the funds from a transaction, or from an address after a time, forward or backward, and allocates the traced value across recipients in proportion to what each received (first in, first out when funds are mixed). Returns nodes, edges with amounts, USD and digests, `terminals` grouped by reason with the share of the value that ended there (bridge exits with the far-side beneficiary, sinks, hubs, unspent, deposits), and `coverage`. `format: mermaid\|graph_json\|csv` |
+| `find_flow_path` | Whether value moved from one address to another within `max_hops` (at most 6): searches forward from one end and backward from the other and returns each path with its digests and amounts. The target may be an EVM or Solana account a bridge exit paid. A missing path is reported with what was explored |
+| `analyze_attack_tx` | Break down one exploit transaction: each address's net per coin and in USD at block time, flash-loan and flash-swap legs paired borrow to repay, every swap's pool price before and after, what each pool lost by its own events, oracle calls inside the PTB, anomaly flags, and the attacker's profit. Reads PTBs of any size in full over gRPC |
+| `summarize_incident_losses` | Total an attacker's take across many transactions (a digest list, or a sender and window), grouped by the pool each one drained, in USD at the time of the attack. Coins with no price are listed with amounts, and the total is marked a lower bound when any are |
+| `summarize_address_flows` | One address over a window: per coin in/out/net with USD at the time, every address that paid it, the top recipients with identity and labels, who paid its gas and whose gas it paid, and every bridge exit it sent grouped by bridge and destination, with the far-side beneficiary read from chain data. Gas is reported apart from the totals, value with no counterparty address is `unattributed`, and `coverage` says whether the scan reached the start of the window |
+| `resolve_bridge_transfer` | Follow funds across a bridge, in either direction. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction for Wormhole Token Bridge, the Token Bridge Relayer, NTT, Mayan MCTP and Swift, CCTP, the native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge. The contract a transfer is delivered to is reported apart from the recipient (`redeemed_via_contract`, `destination_oapp`). Resolves **Wormhole** (VAA identity `(emitter chain, emitter address, sequence)`, redemption from Wormholescan), **LayerZero V2** (GUID, destination endpoint and OApp from the packet, delivery from LayerZero Scan), and **Sui's native bridge**, **Circle CCTP**, **Axelar ITS**, **Allbridge Core** and **Celer cBridge**, whose events carry the destination chain and recipient, so their far side needs no indexer. Detects **Meson**, whose destination is not in Sui data, and any package the registry types as a bridge. Transfers arriving on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) resolve to their origin chain and transfer id rather than being mistaken for exits. Every result is tiered: `chain-derived` trusts nobody, `indexer-attested` is a lead to confirm |
+| `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges and at any funder that paid more than 50 distinct addresses, the same limit `build_wallet_edges` uses. A dead end lists the dust it skipped and who sponsored the address's gas (`sponsored_by`) |
+| `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape (a chain counts only up to the first funder that is itself a subject), addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, every payment one subject signed to another (`subject_paid_subject`), and sub-minute funding bursts. Each result carries its origin, first funder and first hop; `include_chains: true` returns every hop |
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
 | `resolve_protocol_packages` | Find which of a protocol's package versions are actually emitting now — the bundled registry is a decode map full of historical IDs, and querying one returns nothing |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
-| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first |
+| `classify_deposit_address` | Whether an address is an exchange deposit address (verdict likely/no/unknown, tier heuristic): full-balance sweeps to one hot wallet, relayer-sponsored gas, a labelled or hub-shaped destination. Returns the hot wallet, exchange label with its source_url, sweep sponsor, sweep digests and a deposits sample |
+| `screen_address` | Direct and indirect exposure (default 2 hops) to labelled malicious, exchange, bridge and mixer accounts and to OFAC-listed accounts on the far side of bridge exits (every chain-derived `resolve_bridge_transfer` beneficiary), with path digests, amounts, each label's source_url, and the coverage of the label and sanctions lists |
+| `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first. `format: mermaid\|graph_json\|csv` draws the clusters |
 | `analyze_multisig` | For a multisig wallet, which committee keys are actually live and which have never signed, across its history. The committee is fixed for the life of the address; only who signs varies |
 | `find_shared_multisig` | Given addresses you suspect are related, derive every committee they could form and find the multisig they jointly control — a hit is proof, since the address IS the hash of its committee |
-| `check_coin_restrictions` | Read a regulated coin's on-chain deny list — which addresses its issuer froze, or whether a given address is frozen for the coins it holds. Chain-derived: it is the issuer's own decision, reversible by whoever holds the DenyCap |
+| `check_coin_restrictions` | Read a regulated coin's on-chain deny list — which addresses its issuer froze, or which of every deny-listed coin type an address is frozen for. Chain-derived: it is the issuer's own decision, reversible by whoever holds the DenyCap |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
 | `list_findings` | List findings in a case, or every case with its count |
-| `export_case` | Render a case as a Markdown report, highest-confidence findings first |
+| `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each. `format: mermaid` appends a fund-flow diagram of the transfers in the findings' transactions; `graph_json` and `csv` export the diagram or the findings |
 | `delete_finding` | Retract a finding that turned out to be wrong |
-| `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
-| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline |
+| `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call. `group_pnl` ranks the senders of the matched transactions by their own balance changes per coin and in USD, and marks PTBs that also called other protocols |
+| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue. `subject_flow` gives each involved address's own signed balance change, keyed by address; `token_flow` is the sender's |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
+| `get_upgrade_history` | Upgrade governance across a package lineage: per version the publish tx, sender, signing scheme (single key or multisig with threshold and signers) and UpgradeCap holder. Flags cap round trips around an upgrade, single-key upgrades of a multisig-held cap, policy changes and a destroyed or wrapped cap. `as_of` answers who held upgrade authority at a moment and which version was newest |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |
 | `diff_package_upgrade` | Diff two package versions to detect malicious upgrades / backdoors |
 

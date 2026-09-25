@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createMockClient } from "../helpers/mock-grpc.js";
+import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 
 const mockSui = createMockClient();
@@ -9,6 +9,10 @@ vi.mock("../../src/clients/grpc.js", () => ({
   sui: mockSui,
   archive: mockArchive,
 }));
+
+// The rendered Display is a GraphQL read; these objects have none.
+const mockGqlQuery = createMockGraphql();
+vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 
 const { registerObjectTools } = await import("../../src/tools/objects.js");
 
@@ -124,6 +128,87 @@ describe("get_object", () => {
     const data = JSON.parse(result.content[0].text);
 
     expect(data.display).toBeUndefined();
+  });
+
+  /**
+   * The jupnet bridge Bank 0x44cf…4b4b holds ~118k USDC in its own address
+   * balance. Its content lists a balances bag and no amounts, so the funds
+   * were invisible here.
+   */
+  it("lists funds the object holds in its own address balance", async () => {
+    const BANK = "0x44cf357eda762cf0cd86547f7bfcaa51a4b55de615c57903ab461f38ffed4b4b";
+    mockGqlQuery.mockResolvedValue({ object: { asMoveObject: { contents: { display: null } } } });
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: BANK,
+          version: 1019907195n,
+          objectType: "0x58978a0c0678f010ff0ced45da75bf76f2cc33b96508c9a616dc547651f78341::liquidity_pool::Bank",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 896326318n },
+        },
+      },
+    });
+    mockSui.listBalances.mockResolvedValue({
+      balances: [
+        {
+          coinType: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+          balance: "118304380703",
+          coinBalance: "0",
+          addressBalance: "118304380703",
+        },
+      ],
+      hasNextPage: false,
+      cursor: null,
+    });
+
+    const data = JSON.parse((await tools.get("get_object")!({ object_id: BANK })).content[0].text);
+
+    expect(data.address_balances).toEqual([
+      {
+        coin_type: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+        balance: "118304380703",
+        formatted: "118304.380703 USDC",
+      },
+    ]);
+    expect(data.address_balances_note).toMatch(/not among its fields/);
+  });
+
+  /** Address balances are current state; a historical version must not claim them. */
+  it("does not attach current address balances to a historical version", async () => {
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: "0xbank",
+          version: 5n,
+          objectType: "0xabc::liquidity_pool::Bank",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 1n },
+        },
+      },
+    });
+
+    const data = JSON.parse((await tools.get("get_object")!({ object_id: "0xbank", version: "5" })).content[0].text);
+
+    expect(mockSui.listBalances).not.toHaveBeenCalled();
+    expect(data.address_balances).toBeUndefined();
+  });
+
+  it("reports no address balances when the object holds none", async () => {
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: "0xpool",
+          version: 5n,
+          objectType: "0xabc::pool::Pool",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 1n },
+        },
+      },
+    });
+    mockSui.listBalances.mockResolvedValue({ balances: [], hasNextPage: false, cursor: null });
+
+    const data = JSON.parse((await tools.get("get_object")!({ object_id: "0xpool" })).content[0].text);
+
+    expect(data.address_balances).toBeUndefined();
+    expect(data.address_balances_error).toBeUndefined();
   });
 });
 

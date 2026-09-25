@@ -21,17 +21,8 @@
  * already give.
  */
 
-import { toBase58 } from "@mysten/sui/utils";
-import {
-  ETHEREUM,
-  SOLANA_MAINNET,
-  SUI_MAINNET,
-  formatAccountId,
-  isKnownChainId,
-  namespaceOf,
-  normalizeAddressForChain,
-  type ChainId,
-} from "../chain-id.js";
+import { ETHEREUM, SOLANA_MAINNET, SUI_MAINNET, type ChainId } from "../chain-id.js";
+import { foreignAccountId, unpadForeignAddress } from "./foreign-address.js";
 
 export const CCTP_DEPOSIT_EVENT_SUFFIX = "::deposit_for_burn::DepositForBurn";
 export const CCTP_MESSAGE_EVENT_SUFFIX = "::send_message::MessageSent";
@@ -107,35 +98,16 @@ export function parseMessageHeader(base64: string): CctpMessageHeader | null {
 
 /**
  * Decode CCTP's 32-byte recipient into the destination chain's own format.
- *
- * CCTP left-pads every address to 32 bytes. Un-padding is only unambiguous
- * once the destination chain is known: 12 leading zero bytes before a 20-byte
- * EVM address, the full 32 bytes for Sui, and base58 over all 32 for Solana.
- * A padded value that does not match its chain's shape returns null rather
- * than being trimmed into something address-shaped.
+ * See {@link unpadForeignAddress}: a padded value that does not match its
+ * chain's shape returns null rather than being trimmed into something
+ * address-shaped.
  */
 export function decodeMintRecipient(raw: string, destinationDomain: number): string | null {
   const chain = caip2ForCctpDomain(destinationDomain);
   if (!chain) return null;
-
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(raw.replace(/^0x/, ""), "hex");
-  } catch {
-    return null;
-  }
-  if (bytes.length !== 32) return null;
-
-  const ns = namespaceOf(chain);
-  if (ns === "eip155") {
-    // The first 12 bytes must be padding; if they are not, this is not an EVM
-    // address and trimming would invent one.
-    if (!bytes.subarray(0, 12).every((b) => b === 0)) return null;
-    return `0x${bytes.subarray(12).toString("hex")}`;
-  }
-  if (ns === "sui") return `0x${bytes.toString("hex")}`;
-  if (ns === "solana") return toBase58(bytes);
-  return null;
+  const hex = raw.replace(/^0x/, "");
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+  return unpadForeignAddress(Buffer.from(hex, "hex"), chain);
 }
 
 export interface CctpTransfer {
@@ -187,20 +159,11 @@ export function parseDepositForBurn(
     ? decodeMintRecipient(mintRecipientRaw, destinationDomain)
     : null;
 
-  let destinationAccount: string | null = null;
-  const chain = caip2ForCctpDomain(destinationDomain);
   // Off mainnet the domain table names the wrong chains, exactly as Wormhole's
   // numbering does, so the CAIP-2 claim is withheld there.
-  if (qualify && chain && destinationAddress && isKnownChainId(chain)) {
-    try {
-      destinationAccount = formatAccountId({
-        chain,
-        address: normalizeAddressForChain(chain, destinationAddress),
-      });
-    } catch {
-      destinationAccount = null;
-    }
-  }
+  const destinationAccount = qualify
+    ? foreignAccountId(caip2ForCctpDomain(destinationDomain), destinationAddress)
+    : null;
 
   return {
     transferId: sourceDomain !== null && nonce ? `${sourceDomain}/${nonce}` : null,

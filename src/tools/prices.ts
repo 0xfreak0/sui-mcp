@@ -1,22 +1,18 @@
 import { z } from "zod";
 import { numArg } from "./args.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
-import { pythApiKey, availableSources } from "../utils/price-providers.js";
+import { pythApiKey, availableSources, fetchDefiLlama } from "../utils/price-providers.js";
+import { isVerifiedCoin } from "../utils/coin-registry.js";
 import { errorResult } from "../utils/errors.js";
+import { displayCoin, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
 import { buildPythFeedMap } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Aftermath Finance public price API
 const AFTERMATH_PRICE_URL = "https://aftermath.finance/api/price-info";
 
-// Pyth Network Hermes API (free, public, no auth)
+// Pyth Network Hermes API. Feed discovery is open; price values need a key.
 const PYTH_HERMES_URL = "https://hermes.pyth.network";
-
-// Extract short symbol from full coin type string (e.g. "0x2::sui::SUI" -> "SUI")
-function extractSymbol(coinType: string): string {
-  const parts = coinType.split("::");
-  return parts.length >= 3 ? parts[parts.length - 1] : coinType;
-}
 
 export interface AftermathPriceEntry {
   price: number;
@@ -26,6 +22,7 @@ export interface AftermathPriceEntry {
 interface PriceResult {
   coin_type: string;
   symbol: string;
+  verified: boolean | null;
   price_usd: number | null;
   price_change_24h_percent: number | null;
   source: string;
@@ -101,7 +98,7 @@ export async function fetchPythPrices(
 export function registerPriceTools(server: McpServer) {
   server.tool(
     "get_token_prices",
-    "Get USD prices for Sui tokens — current by default, or historical when `at` is set. Current prices use Aftermath (primary) + Pyth (fallback); historical prices use the Pyth oracle at the given time. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
+    "Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. Needs no API key. Current prices come from Aftermath, then DefiLlama, then Pyth. Historical prices come from Pyth when PYTH_API_KEY is set and the coin is on the verified list, and from DefiLlama otherwise. Every price names its source, confidence and the time of the sample it came from, and every coin that could not be priced is listed under `unpriced` with the reason. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
     {
       coin_types: z
         .array(z.string())
@@ -113,10 +110,9 @@ export function registerPriceTools(server: McpServer) {
       at: z
         .union([numArg(), z.string()])
         .optional()
-        .describe("Optional: price AT this point in time — Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices."),
+        .describe("Optional: price AT this point in time, as Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices."),
     },
     async ({ coin_types, at }) => {
-      // Historical branch — price at a specific time via the Pyth oracle.
       if (at !== undefined) {
         let unixTs: number;
         if (typeof at === "number") {
@@ -126,53 +122,53 @@ export function registerPriceTools(server: McpServer) {
           if (isNaN(parsed)) return errorResult("Invalid `at`. Use Unix seconds or ISO 8601 format.");
           unixTs = Math.floor(parsed / 1000);
         }
-        // Hermes authenticates price queries now. Without a key every lookup
-        // below returns null, which reads as "this token had no value at that
-        // time" rather than "this server cannot ask". Say so instead.
-        if (!pythApiKey()) {
-          return errorResult(
-            "Historical prices are unavailable: Pyth Hermes now requires authentication for price " +
-              "queries, and no PYTH_API_KEY is set. Set one to enable historical pricing, or omit " +
-              "`at` for current prices, which come from a free source and need no key.",
-          );
-        }
-        const { feedIds, reverseMap } = await buildPythFeedMap(coin_types);
-        const coinTypesWithFeed = new Set<string>();
-        for (const cts of reverseMap.values()) for (const ct of cts) coinTypesWithFeed.add(ct);
-        const pythData = await fetchPythPrices(feedIds, unixTs);
-        const histPrices = coin_types.map((ct) => {
-          const symbol = extractSymbol(ct);
-          if (!coinTypesWithFeed.has(ct)) {
-            return { coin_type: ct, symbol, price_usd: null, confidence: null, timestamp: null, note: "No Pyth oracle feed available for this token." };
-          }
-          let entry: PythParsedPrice | undefined;
-          for (const [fid, cts] of reverseMap) {
-            if (cts.includes(ct)) { entry = pythData?.get(fid); break; }
-          }
-          if (!entry) {
-            return { coin_type: ct, symbol, price_usd: null, confidence: null, timestamp: unixTs, note: "Pyth oracle returned no data for this timestamp." };
-          }
-          const price = parsePythPrice(entry);
-          const confidence = Number(entry.price.conf) * 10 ** entry.price.expo;
-          return { coin_type: ct, symbol, price_usd: price, confidence, timestamp: entry.price.publish_time };
+        const { points, unpriced } = await priceUsdAtTime(coin_types, unixTs);
+        const prices = coin_types.map((ct) => {
+          const coin = displayCoin(ct);
+          const p = points.get(ct);
+          if (!p) return { coin_type: ct, symbol: coin.symbol, verified: coin.verified, price_usd: null };
+          const offset = p.publishTime - unixTs;
+          return {
+            coin_type: ct,
+            symbol: coin.symbol,
+            verified: coin.verified,
+            price_usd: p.price,
+            source: p.source,
+            ...(p.confidence !== undefined ? { confidence: p.confidence } : {}),
+            price_time: new Date(p.publishTime * 1000).toISOString(),
+            // Signed: negative means the sample predates the moment asked for.
+            price_offset_sec: offset,
+            ...(Math.abs(offset) > PRICE_STALE_THRESHOLD_SEC ? { stale: true } : {}),
+          };
         });
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify({ query_timestamp: unixTs, query_date: new Date(unixTs * 1000).toISOString(), price_sources: availableSources(), prices: histPrices }, null, 2),
+            text: JSON.stringify({
+              query_timestamp: unixTs,
+              query_date: new Date(unixTs * 1000).toISOString(),
+              price_sources: availableSources(),
+              confidence_note:
+                "DefiLlama's confidence is a 0-1 score for how well its sources agreed; Pyth's is a USD confidence interval. A price whose sample is more than an hour from the moment asked for is marked stale.",
+              prices,
+              ...(unpriced.length ? { unpriced } : {}),
+            }, null, 2),
           }],
         };
       }
 
-      // Dynamically resolve Pyth feed IDs
+      // Pyth is matched by symbol, so it is only asked about verified coins.
+      const pythCandidates = coin_types.filter((ct) => isVerifiedCoin(ct));
       const { feedIds: pythFeedIds, reverseMap: pythReverse } =
-        await buildPythFeedMap(coin_types);
+        await buildPythFeedMap(pythCandidates);
 
-      // Fetch from both sources in parallel
       const [aftermathData, pythData] = await Promise.all([
         fetchAftermathPrices(coin_types),
         fetchPythPrices(pythFeedIds),
       ]);
+      // DefiLlama fills what Aftermath did not answer.
+      const aftermathMissing = coin_types.filter((ct) => !(aftermathData?.[ct] && aftermathData[ct].price >= 0));
+      const llama = aftermathMissing.length > 0 ? await fetchDefiLlama(aftermathMissing) : null;
 
       const pythForCoin = new Map<string, PythParsedPrice>();
       if (pythData) {
@@ -184,7 +180,7 @@ export function registerPriceTools(server: McpServer) {
       }
 
       const prices: PriceResult[] = coin_types.map((ct) => {
-        const symbol = extractSymbol(ct);
+        const coin = displayCoin(ct);
         const afEntry = aftermathData?.[ct];
         const pyEntry = pythForCoin.get(ct);
 
@@ -195,30 +191,31 @@ export function registerPriceTools(server: McpServer) {
           afEntry && afEntry.price >= 0
             ? afEntry.priceChange24HoursPercentage
             : null;
-
+        const llamaPrice = llama?.quotes.get(ct)?.price ?? null;
         const pythPrice = pyEntry ? parsePythPrice(pyEntry) : null;
 
-        // Prefer Aftermath > Pyth for price
-        const priceUsd = aftermathPrice ?? pythPrice ?? null;
+        const priceUsd = aftermathPrice ?? llamaPrice ?? pythPrice ?? null;
         const change24h = aftermathChange ?? null;
 
-        // Determine source attribution
         const sources: string[] = [];
         if (aftermathPrice != null) sources.push("aftermath");
+        if (llamaPrice != null) sources.push("defillama");
         if (pythPrice != null) sources.push("pyth");
         const source = sources.length > 0 ? sources.join("+") : "none";
 
         const result: PriceResult = {
           coin_type: ct,
-          symbol,
+          symbol: coin.symbol,
+          verified: coin.verified,
           price_usd: priceUsd,
           price_change_24h_percent: change24h,
           source,
         };
 
         if (priceUsd == null) {
-          result.note =
-            "Price not available. The coin type may be invalid or not listed on any tracked DEX.";
+          result.note = llama?.unanswered.has(ct)
+            ? "Aftermath had no price and the DefiLlama request failed, so this is not evidence the coin has no market."
+            : "No source has a price for this exact coin type. The coin type may be invalid or not traded on any tracked venue.";
         }
 
         return result;

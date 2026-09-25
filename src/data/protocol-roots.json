@@ -182,6 +182,10 @@
       "name": "NAVI",
       "type": "lending"
     },
+    "0x2b71664477755b90f9fb71c9c944d5d0d3832fec969260e3f18efc7d855f57c4": {
+      "name": "Nemo",
+      "type": "yield"
+    },
     "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a": {
       "name": "OriginByte",
       "type": "nft"

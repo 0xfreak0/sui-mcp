@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { boolArg, numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import {
@@ -7,7 +7,14 @@ import {
   suggestValueFields,
   type AggregatableEvent,
 } from "../utils/aggregate.js";
-import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
+import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
+import { fetchPackageVersions, resolveEventTypeFilter, versionScopeNote } from "../utils/package-versions.js";
+import { readAttackTransactions } from "../utils/attack-read.js";
+import { participantPnl } from "../utils/participant-pnl.js";
+import { coinValuer, roundUsd } from "../utils/address-flows.js";
+import { priceUsdAtTime } from "../utils/valuation.js";
+import { getLabel } from "../utils/labels.js";
+import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const PAGE_QUERY = `query ($filter: EventFilter, $first: Int, $after: String) {
@@ -16,6 +23,7 @@ const PAGE_QUERY = `query ($filter: EventFilter, $first: Int, $after: String) {
       contents { type { repr } json }
       sender { address }
       timestamp
+      transaction { digest }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -27,6 +35,7 @@ interface EventPage {
       contents?: { type?: { repr: string }; json: unknown };
       sender?: { address: string };
       timestamp?: string;
+      transaction?: { digest?: string } | null;
     }>;
     pageInfo: { hasNextPage: boolean; endCursor?: string };
   };
@@ -35,6 +44,9 @@ interface EventPage {
 /** GraphQL caps a page at 50, so a big window is a lot of round trips. */
 const PAGE_SIZE = 50;
 const DEFAULT_MAX_EVENTS = 10_000;
+const DEFAULT_PNL_TRANSACTIONS = 500;
+/** P&L rows listed per sender. The row says how many more digests there are. */
+const PNL_DIGESTS = 5;
 
 export function registerAggregateTools(server: McpServer) {
   server.tool(
@@ -42,13 +54,14 @@ export function registerAggregateTools(server: McpServer) {
     "(Analytics) Rank addresses or event types by activity across a time window — the 'who were the top wallets on this protocol today' question — in one call instead of paginating thousands of events yourself. " +
       "Filter by event type, module or sender, bound by ISO timestamps or checkpoints, and group by sender or event type. " +
       "Call it WITHOUT value_field first: it returns counts plus a sample event and the numeric fields available, so you can see what the protocol emits (many carry their own USD valuation) and then re-run naming that field. " +
+      "With group_pnl it also ranks the senders of the matched transactions by what their own balances did in them, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
       "Always check `truncated` — a partial scan produces a confidently wrong ranking.",
     {
       event_type: z
         .string()
         .optional()
         .describe(
-          "Filter by the event STRUCT's type — the package that DEFINES the event, which is often not the package you called. Accepts 0x..., 0x...::module, or 0x...::module::EventName.",
+          "Filter by the event STRUCT's type: the package that DEFINES the event, which is often not the package you called. Accepts 0x..., 0x...::module, or 0x...::module::EventName. Any version's ID of the defining package works: the filter is rewritten to the version that defined the type, and `event_type_resolution` reports it.",
         ),
       module: z
         .string()
@@ -56,7 +69,7 @@ export function registerAggregateTools(server: McpServer) {
         .describe(
           "Filter by the EMITTING package/module — the one whose function ran. Usually what you want when you know a protocol's package ID. Accepts 0x... or 0x...::module.",
         ),
-      sender: z.string().optional().describe("Only events sent by this address."),
+      sender: addressArg().optional().describe("Only events sent by this address."),
       from: z
         .string()
         .optional()
@@ -76,6 +89,7 @@ export function registerAggregateTools(server: McpServer) {
           "Dotted path into the event JSON to sum, e.g. 'deposit_value'. Omit to get counts plus field suggestions.",
         ),
       value_scale: numArg()
+        .positive()
         .optional()
         .describe("Divisor for the summed value, e.g. 100 when a protocol reports USD cents."),
       top: numArg().int().min(1).max(200).optional().describe("Groups to return (default 20)."),
@@ -91,6 +105,17 @@ export function registerAggregateTools(server: McpServer) {
         .max(50_000)
         .optional()
         .describe(`Scan budget (default ${DEFAULT_MAX_EVENTS}). Raise for busy protocols, or narrow the window.`),
+      group_pnl: boolArg()
+        .optional()
+        .describe(
+          "Also rank the senders of the matched transactions by profit: for each distinct transaction behind the events, sum its sender's own balance changes per coin (gas included), value them in USD at the median transaction time, and flag PTBs where the filtered package is one leg of several. Answers 'who else profited in this window'.",
+        ),
+      pnl_max_transactions: numArg()
+        .int()
+        .min(1)
+        .max(2000)
+        .optional()
+        .describe(`Distinct transactions read for group_pnl, oldest first (default ${DEFAULT_PNL_TRANSACTIONS}). Check pnl.truncated.`),
     },
     async ({
       event_type,
@@ -104,6 +129,8 @@ export function registerAggregateTools(server: McpServer) {
       top,
       sort_order,
       max_events,
+      group_pnl,
+      pnl_max_transactions,
     }) => {
       try {
         if (!event_type && !module && !sender) {
@@ -112,17 +139,19 @@ export function registerAggregateTools(server: McpServer) {
           );
         }
 
-        // One latest-checkpoint probe shared by both bounds.
-        const latest = await latestCheckpoint();
-        const fromCp = await toCheckpoint(from, latest);
-        const toCp = await toCheckpoint(to, latest);
+        // Both edges resolved to the checkpoints stamped inside the window.
+        const window = await resolveWindow(from, to);
+        // An event carries the package version that DEFINED its struct; a type
+        // written with an upgraded ID would silently match nothing.
+        const typeFilter = event_type ? await resolveEventTypeFilter(event_type) : null;
+        const moduleScope = module ? await versionScopeNote(module, "module") : null;
 
         const filter: Record<string, unknown> = {};
-        if (event_type) filter.type = event_type;
+        if (typeFilter) filter.type = typeFilter.filter;
         if (module) filter.module = module;
         if (sender) filter.sender = sender;
-        if (fromCp) filter.afterCheckpoint = fromCp.checkpoint;
-        if (toCp) filter.beforeCheckpoint = toCp.checkpoint;
+        if (window.after?.checkpoint != null) filter.afterCheckpoint = window.after.checkpoint;
+        if (window.before?.checkpoint != null) filter.beforeCheckpoint = window.before.checkpoint;
 
         const budget = max_events ?? DEFAULT_MAX_EVENTS;
         const events: AggregatableEvent[] = [];
@@ -135,6 +164,8 @@ export function registerAggregateTools(server: McpServer) {
         // the wrong thing and suggests fields nobody wants to sum.
         const samplesByType = new Map<string, unknown>();
         const countsByType = new Map<string, number>();
+        // Distinct transactions behind the events, oldest first, for group_pnl.
+        const txDigests = new Set<string>();
 
         while (hasNext && events.length < budget) {
           const page: EventPage = await gqlQuery(PAGE_QUERY, {
@@ -150,6 +181,7 @@ export function registerAggregateTools(server: McpServer) {
               countsByType.set(t, (countsByType.get(t) ?? 0) + 1);
               if (!samplesByType.has(t) && n.contents?.json) samplesByType.set(t, n.contents.json);
             }
+            if (n.transaction?.digest) txDigests.add(n.transaction.digest);
             events.push({
               sender: n.sender?.address ?? null,
               type: n.contents?.type?.repr ?? null,
@@ -178,6 +210,16 @@ export function registerAggregateTools(server: McpServer) {
         // gets believed.
         const truncated = hasNext && events.length >= budget;
 
+        const pnl = group_pnl
+          ? await senderPnl([...txDigests], {
+              packages: [typeFilter?.filter, module].filter((f): f is string => !!f).map((f) => f.split("::")[0]),
+              max: pnl_max_transactions ?? DEFAULT_PNL_TRANSACTIONS,
+              top: top ?? 20,
+              sortOrder: sort_order ?? "desc",
+              eventsTruncated: truncated,
+            })
+          : null;
+
         return {
           content: [
             {
@@ -189,14 +231,9 @@ export function registerAggregateTools(server: McpServer) {
                     ...(module ? { module } : {}),
                     ...(sender ? { sender } : {}),
                   },
-                  window: {
-                    from: fromCp
-                      ? { checkpoint: fromCp.checkpoint, ...(fromCp.actual_time ? { resolved_time: fromCp.actual_time } : {}) }
-                      : null,
-                    to: toCp
-                      ? { checkpoint: toCp.checkpoint, ...(toCp.actual_time ? { resolved_time: toCp.actual_time } : {}) }
-                      : null,
-                  },
+                  window: describeWindow(from, to, window),
+                  ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
+                  ...(moduleScope ? { module_scope: moduleScope } : {}),
                   group_by: group_by ?? "sender",
                   events_scanned: events.length,
                   pages_fetched: pages,
@@ -245,6 +282,7 @@ export function registerAggregateTools(server: McpServer) {
                           "value_field set to one of its numeric_fields.",
                       }),
                   groups: result.groups,
+                  ...(pnl ? { pnl } : {}),
                 },
                 null,
                 2,
@@ -257,4 +295,94 @@ export function registerAggregateTools(server: McpServer) {
       }
     },
   );
+}
+
+/**
+ * Rank the senders of `digests` by what their own balances did in them.
+ *
+ * Read over gRPC with archive fallback, so every balance change and call is
+ * there however large the PTB and however old the window.
+ */
+async function senderPnl(
+  digests: string[],
+  opts: { packages: string[]; max: number; top: number; sortOrder: "asc" | "desc"; eventsTruncated: boolean },
+) {
+  const wanted = digests.slice(0, opts.max);
+  const [read, lineages] = await Promise.all([
+    readAttackTransactions(wanted),
+    Promise.all(opts.packages.map(async (p) => [p, ...((await fetchPackageVersions(p).catch(() => null)) ?? []).map((v) => v.address)])),
+  ]);
+  const lineage = opts.packages.length ? new Set(lineages.flat()) : null;
+  const rows = participantPnl(
+    read.txs.map((t) => ({ digest: t.digest, sender: t.sender, balanceChanges: t.balanceChanges, calls: t.calls })),
+    lineage,
+  );
+
+  const times = read.txs.map((t) => t.timestampMs).filter((t): t is number => t !== null).sort((a, b) => a - b);
+  const atSec = times.length ? Math.floor(times[Math.floor(times.length / 2)] / 1000) : undefined;
+  const coins = new Set(rows.flatMap((r) => [...r.net.keys()]));
+  const prices = await priceUsdAtTime([...coins], atSec);
+  const v = coinValuer(prices);
+  const others = new Set(rows.flatMap((r) => [...r.otherPackages]));
+  if (others.size) await prefetchProtocolNames(others).catch(() => {});
+
+  const ranked = rows
+    .map((r) => {
+      let gained = 0;
+      let lost = 0;
+      for (const [coin, raw] of r.net) {
+        const usd = v.usd(coin, raw);
+        if (usd === null) continue;
+        if (usd > 0) gained += usd;
+        else lost -= usd;
+      }
+      return { r, net: gained - lost, gained, lost };
+    })
+    .sort((a, b) => (opts.sortOrder === "asc" ? a.net - b.net : b.net - a.net));
+
+  return {
+    transactions_matched: digests.length,
+    transactions_read: read.txs.length,
+    ...(digests.length > wanted.length
+      ? {
+          truncated: true,
+          truncation_warning: `Read the oldest ${wanted.length} of ${digests.length} transactions. Raise pnl_max_transactions or narrow the window before ranking anyone.`,
+        }
+      : {}),
+    ...(opts.eventsTruncated ? { events_truncated: "The event scan hit its budget, so transactions after it are not in this ranking." } : {}),
+    ...(read.missing.length ? { missing_transactions: read.missing } : {}),
+    usd_basis: atSec
+      ? {
+          at: new Date(atSec * 1000).toISOString(),
+          meaning: "Each coin priced once, at the median transaction time (DefiLlama, or Pyth for verified coins when PYTH_API_KEY is set). Coins with no price are listed and left out of usd_net.",
+        }
+      : null,
+    ...(prices.unpriced.length ? { unpriced_coins: prices.unpriced.map((u) => ({ coin_type: u.coin_type, code: u.code })) } : {}),
+    meaning:
+      "Each sender's own balance changes summed over the matched transactions, gas included. A transaction marked multi-leg also called packages outside the filtered one, so its P&L may have been made there.",
+    senders: ranked.slice(0, opts.top).map(({ r, net, gained, lost }) => {
+      const label = getLabel(r.sender);
+      return {
+        sender: r.sender,
+        ...(label ? { label: label.label, label_category: label.category } : {}),
+        transactions: r.digests.length,
+        usd_net: roundUsd(net),
+        usd_gained: roundUsd(gained),
+        usd_lost: roundUsd(lost),
+        net: v.amounts(r.net),
+        ...(r.multiLeg.length
+          ? {
+              multi_leg_transactions: r.multiLeg.length,
+              other_packages: [...r.otherPackages].map((p) => ({
+                package: p,
+                ...(lookupProtocolDisplay(p) ? { protocol: lookupProtocolDisplay(p)!.name } : {}),
+              })),
+            }
+          : {}),
+        digests: r.digests.slice(0, PNL_DIGESTS),
+        ...(r.digests.length > PNL_DIGESTS ? { more_digests: r.digests.length - PNL_DIGESTS } : {}),
+      };
+    }),
+    ...(ranked.length > opts.top ? { senders_not_shown: ranked.length - opts.top } : {}),
+  };
 }

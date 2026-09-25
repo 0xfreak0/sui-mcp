@@ -124,9 +124,31 @@ export const MAX_PAGE_SIZE = 1000;
  * `fetch` has no default timeout — an unresponsive host would otherwise hang
  * the call until undici's ~300s header timeout, long past the point any client
  * still cares. One constant so every external call fails on the same clock.
- * gRPC and GraphQL are not covered here; their clients carry their own deadlines.
+ * gRPC carries its own deadlines; GraphQL uses {@link GRAPHQL_TRANSPORT}.
  */
 export const EXTERNAL_HTTP_TIMEOUT_MS = 10_000;
+
+/**
+ * How the GraphQL client treats its endpoint, per network.
+ *
+ * The heavy tools issue tens to hundreds of queries per call, and the public
+ * endpoint answers bursts with HTTP 429, so one unretried 429 would throw away
+ * the whole call.
+ *
+ * - `attempts`: tries per request, retrying on 429, 5xx and connection resets.
+ * - `baseDelayMs` / `maxDelayMs`: jittered exponential backoff between tries.
+ *   A `Retry-After` header wins, capped at `maxDelayMs`.
+ * - `timeoutMs`: per-attempt deadline. A timeout is not retried: a query that
+ *   ran this long will usually run this long again.
+ * - `concurrency`: requests in flight at once per network; the rest queue.
+ */
+export const GRAPHQL_TRANSPORT = {
+  attempts: 4,
+  baseDelayMs: 500,
+  maxDelayMs: 8_000,
+  timeoutMs: 30_000,
+  concurrency: 8,
+} as const;
 
 export const DECOMPILER_PATH = process.env.SUI_DECOMPILER_PATH ?? "move-decompiler";
 

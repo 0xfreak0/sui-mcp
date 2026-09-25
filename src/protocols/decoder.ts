@@ -1,20 +1,87 @@
 import type { GrpcTypes } from "@mysten/sui/grpc";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { formatCoinAmount } from "../utils/coin-amount.js";
+import { coinScale, displayCoin, type CoinScale } from "../utils/valuation.js";
 import { lookupProtocolDisplay, lookupOperation } from "./registry.js";
 
 export interface DecodedTransaction {
   protocols: string[];
   actions: string[];
+  /**
+   * The SENDER's balance changes, one per coin. On a row listed for some other
+   * address, this is what the sender paid or received, not that address.
+   */
   token_flow: {
     coin: string;
     amount: string;
+    formatted: string | null;
     raw_type: string;
   }[];
 }
 
+/** One address's net change in one coin, signed: negative means it paid. */
+export interface AddressFlow {
+  coin: string;
+  /** Raw base units, signed. */
+  amount: string;
+  /** Human units with the symbol, e.g. `"39.44771725 SUI"`. */
+  formatted: string | null;
+  raw_type: string;
+  coin_verified: boolean | null;
+  /** How the amount was scaled, present when no curated list vouches for the coin. */
+  coin_scale?: Exclude<CoinScale["source"], "curated">;
+}
+
+/**
+ * `address`'s own net balance change per coin in one transaction.
+ *
+ * `token_flow` is the sender's, so on a row in some other address's history an
+ * inflow reads as the sender's outflow. This is the flow a history or timeline
+ * row is actually about. Addresses are compared in canonical form, so a short
+ * or unpadded address still matches the chain's padded one.
+ */
+export function addressFlow(
+  balanceChanges: GrpcTypes.BalanceChange[],
+  address: string,
+): AddressFlow[] {
+  const want = normalizeSuiAddress(address);
+  const net = new Map<string, bigint>();
+  for (const bc of balanceChanges) {
+    if (!bc.address || !bc.coinType || normalizeSuiAddress(bc.address) !== want) continue;
+    let value: bigint;
+    try {
+      value = BigInt(bc.amount ?? "0");
+    } catch {
+      continue;
+    }
+    net.set(bc.coinType, (net.get(bc.coinType) ?? 0n) + value);
+  }
+  const out: AddressFlow[] = [];
+  for (const [coinType, value] of net) {
+    if (value === 0n) continue;
+    const coin = displayCoin(coinType);
+    out.push({
+      coin: shortCoinType(coinType),
+      amount: value.toString(),
+      formatted: formatCoinAmount(value, coinType),
+      raw_type: coinType,
+      // Structural, as in trace_funds: a report must see that the asset is
+      // unidentified without parsing the formatted string.
+      coin_verified: coin.verified,
+      ...(coin.verified ? {} : { coin_scale: coinScale(coinType).source }),
+    });
+  }
+  return out;
+}
+
+/**
+ * The name a reader sees for a coin: the curated symbol when the list vouches
+ * for this exact type, otherwise the struct name with its type arguments.
+ * Wormhole's wrapped assets are all `<package>::coin::COIN`, so the struct
+ * name alone named ten different assets `COIN`.
+ */
 function shortCoinType(coinType: string): string {
-  // "0x000...002::sui::SUI" → "SUI"
-  const parts = coinType.split("::");
-  return parts.length >= 3 ? parts[parts.length - 1] : coinType;
+  return displayCoin(coinType).symbol;
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -147,7 +214,8 @@ export function decodeTransaction(
     }
   }
 
-  // Token flow: sender's net balance changes
+  // Token flow: the SENDER's balance changes. `addressFlow` gives any other
+  // address's view of the same transaction.
   const tokenFlow: DecodedTransaction["token_flow"] = [];
   if (balanceChanges && sender) {
     for (const bc of balanceChanges) {
@@ -155,6 +223,7 @@ export function decodeTransaction(
         tokenFlow.push({
           coin: shortCoinType(bc.coinType ?? ""),
           amount: bc.amount ?? "0",
+          formatted: formatCoinAmount(bc.amount ?? "0", bc.coinType ?? ""),
           raw_type: bc.coinType ?? "",
         });
       }

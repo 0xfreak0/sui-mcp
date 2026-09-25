@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { chooseNextHop, type HopChange } from "../src/utils/trace-hop.js";
+import {
+  chooseNextHop,
+  firstSpend,
+  inflowsNewestFirst,
+  isSwapHop,
+  type CandidateTx,
+  type HopChange,
+} from "../src/utils/trace-hop.js";
 
 const SUI = "0x2::sui::SUI";
 const USDC = "0xa::coin::USDC";
@@ -10,16 +17,132 @@ const pool = "0xpool";
 const noPools = () => false;
 
 describe("chooseNextHop — backward", () => {
-  it("follows the sender regardless of changes", () => {
+  it("follows whoever paid the coin in, not the sender", () => {
+    // A zkSend claim (Dxhhx2… on mainnet) is sent by the link's key while the
+    // coin leaves the bag object that held it.
     const d = chooseNextHop({
-      sender: attacker,
-      changes: [],
+      sender: "0xlinkkey",
+      changes: [
+        { address: "0xbag", amount: "-200", coin_type: SUI },
+        { address: victim, amount: "200", coin_type: SUI },
+      ],
       actions: [],
       direction: "backward",
       trackedCoin: SUI,
       isPassThrough: noPools,
     });
-    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: SUI, isSwap: false });
+    expect(d.nextAddress).toBe("0xbag");
+  });
+
+  it("stops when nobody paid the coin in (a withdrawal or an exploit)", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [{ address: attacker, amount: "5000", coin_type: SUI }],
+      actions: ["Flash swap on Cetus"],
+      direction: "backward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+      recipient: attacker,
+    });
+    expect(d.nextAddress).toBeNull();
+  });
+
+  it("follows the actor across its own swap and switches to what it paid", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "189", coin_type: SUI },
+        { address: attacker, amount: "-213", coin_type: USDC },
+      ],
+      actions: ["Swap USDC → SUI on Aftermath"],
+      direction: "backward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+      recipient: attacker,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: USDC, basis: "swap-follow" });
+  });
+});
+
+describe("chooseNextHop — forward, value that no third party received", () => {
+  it("follows an exploit that credits only its caller, switching to what it gained", () => {
+    // DVMG3B2… (Cetus): flash swap, open/remove liquidity, repay; the sender
+    // nets +haSUI and +SUI and nobody else is paid. It used to stop here.
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "10000", coin_type: USDC },
+        { address: attacker, amount: "5000", coin_type: SUI },
+      ],
+      actions: ["Flash swap on Cetus", "Remove liquidity on Cetus"],
+      direction: "forward",
+      trackedCoin: null,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: USDC, basis: "self-credit" });
+  });
+
+  it("marks a deposit with no recipient as consumed", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [{ address: attacker, amount: "-400000000000", coin_type: SUI }],
+      actions: ["Call incentive_v3::entry_deposit on NAVI"],
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+      gas: { payer: attacker, net: 19_000_000n },
+    });
+    expect(d.nextAddress).toBeNull();
+    expect(d.consumed).toBe(true);
+  });
+
+  it("does not follow a recipient of a different coin on a plain hop", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "-1000", coin_type: SUI },
+        { address: victim, amount: "1000", coin_type: SUI },
+        { address: "0xother", amount: "999999999", coin_type: USDC },
+      ],
+      actions: ["Transfer to recipient"],
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+    });
+    expect(d.nextAddress).toBe(victim);
+  });
+
+  it("treats an undecoded swap_* call as a swap", () => {
+    // `_` is a word character, so /\bswap\b/ never matched swap_exact_*.
+    expect(isSwapHop(["Call 0x1234…abcd::market::swap_exact_pt_for_sy"])).toBe(true);
+    expect(isSwapHop(["Flash swap on Cetus"])).toBe(false);
+  });
+});
+
+describe("candidate selection", () => {
+  const gas = { payer: victim, net: 2_000_000n };
+  const tx = (digest: string, changes: HopChange[]): CandidateTx => ({ digest, sender: victim, gas, changes });
+
+  it("does not count gas as spending SUI", () => {
+    const gasOnly = tx("a", [{ address: victim, amount: "-2000000", coin_type: SUI }]);
+    const real = tx("b", [{ address: victim, amount: "-1002000000", coin_type: SUI }]);
+    expect(firstSpend([gasOnly, real], victim, SUI, new Set())?.tx.digest).toBe("b");
+  });
+
+  it("drops candidates up to the current hop in a same-checkpoint page", () => {
+    const earlier = tx("earlier", [{ address: victim, amount: "-5000000000", coin_type: SUI }]);
+    const current = tx("current", []);
+    const later = tx("later", [{ address: victim, amount: "-5000000000", coin_type: SUI }]);
+    expect(firstSpend([earlier, current, later], victim, SUI, new Set(), "current")?.tx.digest).toBe("later");
+  });
+
+  it("reads inflows newest first and ignores the address's own outflows", () => {
+    const out1 = tx("out1", [{ address: victim, amount: "-7000000000", coin_type: SUI }]);
+    const in1 = tx("in1", [{ address: victim, amount: "1000000000", coin_type: SUI }]);
+    const in2 = tx("in2", [{ address: victim, amount: "3000000000", coin_type: SUI }]);
+    const current = tx("current", [{ address: victim, amount: "-3000000000", coin_type: SUI }]);
+    const found = inflowsNewestFirst([in1, out1, in2, current], victim, SUI, new Set(), "current");
+    expect(found.map((f) => f.tx.digest)).toEqual(["in2", "in1"]);
   });
 });
 

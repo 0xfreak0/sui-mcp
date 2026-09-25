@@ -66,7 +66,9 @@ describe("resource registration", () => {
     expect(byName["wallet-balances-net"]).toBe("sui://{network}/wallet/{address}/balances");
     expect(byName["wallet-nfts"]).toBe("sui://wallet/{address}/nfts");
     expect(byName["wallet-nfts-net"]).toBe("sui://{network}/wallet/{address}/nfts");
-    expect(regs).toHaveLength(8);
+    // Cases live in the local store, so they have no network-scoped variant.
+    expect(byName["case"]).toBe("sui://case/{name}");
+    expect(regs).toHaveLength(9);
   });
 });
 

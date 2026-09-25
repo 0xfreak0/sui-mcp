@@ -97,17 +97,19 @@ await runWithNetwork("mainnet", async () => {
 
   const pkgId = await call("identify_address", { address: pkg });
   const pkgAnalysis = await call("analyze_package", { package_id: pkg });
+  // identify_address attributes the lineage root; analyze_package reports that
+  // as root_publisher, beside the version's own publisher.
   check(
     "identify_address and analyze_package agree on the publisher",
-    pkgId.publisher?.publisher === pkgAnalysis.publisher?.publisher,
-    `${String(pkgId.publisher?.publisher).slice(0, 14)} vs ${String(pkgAnalysis.publisher?.publisher).slice(0, 14)}`,
+    pkgId.publisher?.publisher === pkgAnalysis.root_publisher?.publisher,
+    `${String(pkgId.publisher?.publisher).slice(0, 14)} vs ${String(pkgAnalysis.root_publisher?.publisher).slice(0, 14)}`,
   );
   const upgradeCap = (pkgAnalysis.capabilities?.capabilities ?? []).find((c) => c.kind === "upgrade");
   check("upgrade cap classified", !!upgradeCap?.holder_status, `status=${upgradeCap?.holder_status}`);
   if (upgradeCap?.holder_status === "publisher") {
     check(
       "a 'publisher' status really does match the publisher",
-      upgradeCap.owner_address?.toLowerCase() === pkgAnalysis.publisher?.publisher?.toLowerCase(),
+      upgradeCap.owner_address?.toLowerCase() === pkgAnalysis.root_publisher?.publisher?.toLowerCase(),
     );
   }
 

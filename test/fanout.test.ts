@@ -10,6 +10,7 @@ const { getCachedFanout, saveFanout } = vi.hoisted(() => ({
 vi.mock("../src/utils/store.js", () => ({ getCachedFanout, saveFanout }));
 
 const { measureFanout } = await import("../src/utils/fanout.js");
+const { pagedTxConnection } = await import("./helpers/service-shapes.js");
 
 const ADDR = "0xaaa";
 
@@ -83,6 +84,29 @@ describe("classifyFanout", () => {
 });
 
 describe("measureFanout", () => {
+  it("attributes an airdrop's recipients when the subject's own row sorts past the first page", async () => {
+    // The subject pays 60 addresses; its debit is row 61, on the second page.
+    const changes = [
+      ...Array.from({ length: 60 }, (_, i) => ({
+        amount: "100",
+        owner: { address: `0x${i.toString(16).padStart(64, "0")}` },
+        coinType: { repr: "0x2::sui::SUI" },
+      })),
+      { amount: "-6000", owner: { address: ADDR }, coinType: { repr: "0x2::sui::SUI" } },
+    ];
+    const conn = pagedTxConnection("airdrop", changes, "balanceChanges");
+    gqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+      conn.respond(q, v) ?? {
+        transactions: {
+          nodes: [{ digest: "airdrop", effects: { balanceChanges: conn.first } }],
+          pageInfo: { hasPreviousPage: false, startCursor: "c" },
+        },
+      },
+    );
+    const r = await measureFanout(ADDR, 50);
+    expect(r.recipient_count).toBe(60);
+  });
+
   it("counts distinct counterparties, not transactions", async () => {
     gqlQuery.mockResolvedValueOnce(page([sendTo("0xbbb"), sendTo("0xbbb"), sendTo("0xccc")]));
     const r = await measureFanout(ADDR, 50);
@@ -114,6 +138,46 @@ describe("measureFanout", () => {
     gqlQuery.mockResolvedValueOnce(page([[{ owner: ADDR, amount: "-109880" }]]));
     const r = await measureFanout(ADDR, 50);
     expect(r.counterparty_count).toBe(0);
+  });
+
+  // G9ygnUnq…: a deposit address sweeps 879,484 SUI to an exchange and the
+  // sweep's sponsor takes the storage rebate. The rebate is not a payment.
+  it("does not count a gas sponsor's storage rebate as a recipient or a sponsor's rebate as an inflow", async () => {
+    const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+    const DEPOSIT = "0x01740e57b294476b0ea72ead41ea91689c280b9277e0dcde98024c779f3a4efe";
+    const SPONSOR = "0x85c81a4f616f87a303ba2ae34eed758a2cc1938f80c186526cd3122375b87a95";
+    const HOT = "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd";
+    const sweep = {
+      transactions: {
+        nodes: [
+          {
+            digest: "G9ygnUnqC5VbLKt1Vr6KGvCRNzypmEs1SznHZgxpwiGP",
+            sender: { address: DEPOSIT },
+            gasInput: { gasSponsor: { address: SPONSOR } },
+            effects: {
+              balanceChanges: {
+                nodes: [
+                  { owner: { address: DEPOSIT }, amount: "-879484950900000", coinType: { repr: SUI } },
+                  { owner: { address: SPONSOR }, amount: "5748960", coinType: { repr: SUI } },
+                  { owner: { address: HOT }, amount: "879484950900000", coinType: { repr: SUI } },
+                ],
+              },
+            },
+          },
+        ],
+        pageInfo: { hasPreviousPage: false, startCursor: "c" },
+      },
+    };
+    gqlQuery.mockResolvedValue(sweep);
+    const deposit = await measureFanout(DEPOSIT, 50, false);
+    expect(deposit.recipient_count).toBe(1);
+
+    // Measured from the sponsor's side, its rebate is not value it took in,
+    // so neither party is a sender to it.
+    const sponsor = await measureFanout(SPONSOR, 50, false);
+    expect(sponsor.sender_count).toBe(0);
+    expect(sponsor.recipient_count).toBe(0);
+    expect(sponsor.sponsored_address_count).toBe(1);
   });
 
   it("counts distinct coin types", async () => {
@@ -268,5 +332,66 @@ describe("cache depth", () => {
     expect(r.coin_type_count).toBe(3);
     expect(r.out_in_ratio).toBeCloseTo(9.25);
     expect(r.scanned_transactions).toBe(2000);
+  });
+});
+
+describe("a classification off a truncated scan is provisional", () => {
+  // The scan reads the most recent window. An address whose recent window is
+  // quiet can have paid thousands before it, so "narrow" off a scan that
+  // stopped at its budget is a lower bound. Reported as "meaningful and worth
+  // investigating", it made a distributor's early wallet read as a real origin.
+  it("marks narrow provisional and drops the 'meaningful' reading when the scan hit its budget", async () => {
+    gqlQuery
+      .mockResolvedValueOnce(page([sendTo("0xb1")], true, "c1"))
+      .mockResolvedValueOnce(page([sendTo("0xb2")], true, "c2"));
+    const r = await measureFanout(ADDR, 2);
+    expect(r.classification).toBe("narrow");
+    expect(r.classification_provisional).toBe(true);
+    expect(r.interpretation).not.toContain("meaningful and worth investigating");
+  });
+
+  it("leaves a scan that reached the end of the history unqualified", async () => {
+    gqlQuery.mockResolvedValueOnce(page([sendTo("0xb1")], false));
+    const r = await measureFanout(ADDR, 1000);
+    expect(r.classification).toBe("narrow");
+    expect(r.classification_provisional).toBeUndefined();
+  });
+
+  it("never qualifies hub, which is proven by what was seen", async () => {
+    getCachedFanout.mockReturnValue({
+      address: ADDR,
+      recipient_count: 1200,
+      sender_count: 10,
+      counterparty_count: 1210,
+      coin_type_count: 3,
+      out_in_ratio: 120,
+      flow_shape: "disperser",
+      scanned_transactions: 1000,
+      truncated: 1,
+      measured_at: Date.now(),
+      age_ms: 1000,
+    } as never);
+    const r = await measureFanout(ADDR, 1000);
+    expect(r.classification).toBe("hub");
+    expect(r.classification_provisional).toBeUndefined();
+  });
+
+  it("qualifies a truncated reading served from the cache the same way", async () => {
+    getCachedFanout.mockReturnValue({
+      address: ADDR,
+      recipient_count: 37,
+      sender_count: 4,
+      counterparty_count: 41,
+      coin_type_count: 3,
+      out_in_ratio: 9.25,
+      flow_shape: "disperser",
+      scanned_transactions: 1000,
+      truncated: 1,
+      measured_at: Date.now(),
+      age_ms: 1000,
+    } as never);
+    const r = await measureFanout(ADDR, 300);
+    expect(r.cached).toBe(true);
+    expect(r.classification_provisional).toBe(true);
   });
 });

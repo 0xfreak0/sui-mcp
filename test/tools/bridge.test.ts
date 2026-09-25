@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { runWithNetwork } from "../../src/config.js";
 
 const mockGqlQuery = vi.fn();
@@ -96,7 +97,7 @@ describe("resolve_bridge_transfer", () => {
     const data = await call({ digest: "D" });
     const dest = data.wormhole_messages[0].destination;
     expect(dest.status).toBe("completed");
-    expect(dest.account).toBe("eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed");
+    expect(dest.redeemed_via_contract.account).toBe("eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -143,10 +144,10 @@ describe("resolve_bridge_transfer", () => {
     const dest = data.wormhole_messages[0].destination;
     // On testnet, Wormhole chain 2 is Sepolia — calling it eip155:1 would file
     // a testnet address under a mainnet chain and read as verified.
-    expect(dest.account).toBeNull();
+    expect(dest.redeemed_via_contract.account).toBeNull();
     expect(dest.chain).toBeNull();
     expect(dest.wormhole_chain_id).toBe(2);
-    expect(dest.address_note).toMatch(/reuses its chain numbers/i);
+    expect(dest.redeemed_via_contract.address_note).toMatch(/reuses its chain numbers/i);
   });
 
   it("says the network has no index rather than querying the wrong one", async () => {
@@ -172,7 +173,7 @@ describe("resolve_bridge_transfer", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("names a detect-only protocol rather than reporting nothing happened", async () => {
+  it("names a protocol it cannot read a destination for rather than reporting nothing happened", async () => {
     mockGqlQuery.mockResolvedValue(txWith([MAYAN_EVENT]));
     const data = await call({ digest: "D" });
 
@@ -185,5 +186,127 @@ describe("resolve_bridge_transfer", () => {
     mockGqlQuery.mockResolvedValue({ transaction: null });
     const res = await runWithNetwork("mainnet", () => resolve({ digest: "nope" }));
     expect(res.isError).toBe(true);
+  });
+
+  it("names Mayan's beneficiary and marks the CCTP leg as settlement (6jMEFeap…)", async () => {
+    // 54.4M of the Cetus attacker's 61.3M USDC left through Mayan. The CCTP
+    // burn mints to Mayan's contract 0x875d…, which was reported as the
+    // destination account with a next step to record it.
+    const pkg = "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df";
+    mockGqlQuery.mockResolvedValue(
+      txWith([
+        {
+          contents: {
+            type: { repr: "0x2aa6::deposit_for_burn::DepositForBurn" },
+            json: {
+              nonce: "80750",
+              amount: "1000000000000",
+              mint_recipient: "0x000000000000000000000000875d6d37ec55c8cf220b9e5080717549d8aa8eca",
+              destination_domain: 0,
+            },
+          },
+        },
+        {
+          contents: {
+            type: { repr: `${pkg}::init_order::OrderCreated` },
+            json: { addr_dest: "0x00000000000000000000000089012a55cd6b88e407c9d4ae9b3425f55924919b", chain_dest: 2 },
+          },
+        },
+        { contents: { type: { repr: `${pkg}::init_order::InitMctpLogged` }, json: {} } },
+      ]),
+    );
+    const data = await call({ digest: "D", include_destination: false });
+    expect(data.beneficiaries.map((b: { account: string }) => b.account)).toEqual([
+      "eip155:1:0x89012a55cd6b88e407c9d4ae9b3425f55924919b",
+    ]);
+    expect(data.circle_cctp[0].role).toBe("settlement_intermediate");
+  });
+});
+
+/** resolve_bridge_transfer's own query, as mainnet returned it for each digest. */
+const FIXTURES: Record<string, unknown> = JSON.parse(
+  readFileSync(new URL("../fixtures/bridge-transactions.json", import.meta.url), "utf8"),
+);
+
+describe("resolve_bridge_transfer on the newer bridges", () => {
+  const LZ_SCAN = {
+    data: [
+      {
+        guid: "0xb108fd02770cbe42f914326c8941d6bd57086a77cd9434d394e6629dd83d1386",
+        status: { name: "DELIVERED" },
+        source: { status: "SUCCEEDED" },
+        pathway: { sender: { name: "wBTC" }, receiver: { address: "0x0555e30da8f98308edb960aa94c0db47230d2b9c" } },
+        destination: {
+          status: "SUCCEEDED",
+          tx: { txHash: "0xca09e0696b49f7ef759a7ad8114d6c8540ab3d88ef26367db88a9ce8dc91b210", blockTimestamp: 1790315927 },
+        },
+      },
+    ],
+  };
+
+  it("names a LayerZero OFT recipient from chain data and the delivery from LayerZero Scan (4rH8bqFB…)", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["4rH8bqFBzvaZFTvc74LH6DsHC79kHPm3TJD7tQc597Bg"]);
+    fetchMock.mockResolvedValueOnce(jsonResponse(LZ_SCAN));
+    const data = await call({ digest: "4rH8bqFBzvaZFTvc74LH6DsHC79kHPm3TJD7tQc597Bg" });
+
+    expect(data.beneficiaries.map((b: { account: string }) => b.account)).toEqual([
+      "eip155:1:0x5d99551ce4a2c1467adf632474424e7e22c72c66",
+    ]);
+    expect(data.layerzero[0].destination_oapp.address).toBe("0x0555e30da8f98308edb960aa94c0db47230d2b9c");
+    expect(data.layerzero[0].delivery).toMatchObject({
+      evidence: "indexer-attested",
+      transaction: "0xca09e0696b49f7ef759a7ad8114d6c8540ab3d88ef26367db88a9ce8dc91b210",
+    });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("scan.layerzero-api.com/v1/messages/tx/4rH8bqFB");
+  });
+
+  it("keeps the chain-derived LayerZero packet when the index is down", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["4rH8bqFBzvaZFTvc74LH6DsHC79kHPm3TJD7tQc597Bg"]);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 503, statusText: "Service Unavailable" });
+    const data = await call({ digest: "4rH8bqFBzvaZFTvc74LH6DsHC79kHPm3TJD7tQc597Bg" });
+
+    expect(data.layerzero[0].delivery.status).toBe("lookup_failed");
+    expect(data.beneficiaries[0].evidence).toBe("chain-derived");
+  });
+
+  it("names Allbridge's wallet as the beneficiary and marks its CCTP burn as the carrier (AyApNXU7…)", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["AyApNXU7fNRcism61V76ijzxbXKAefLL6U5wXooJVthc"]);
+    const data = await call({ digest: "AyApNXU7fNRcism61V76ijzxbXKAefLL6U5wXooJVthc" });
+
+    expect(data.beneficiaries.map((b: { account: string }) => b.account)).toEqual([
+      "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:EVouhT1HgMproxeVcFdmZERhbpnYS4taEV3tzG3zBbdV",
+    ]);
+    expect(data.circle_cctp[0].carries).toBe("Allbridge Core");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports Meson from its call, with no destination (7EyRb8Bb…)", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["7EyRb8BbLPKvKQmuH2ExUFDnzxV6d6nhKGWBxG18ohiZ"]);
+    const data = await call({ digest: "7EyRb8BbLPKvKQmuH2ExUFDnzxV6d6nhKGWBxG18ohiZ" });
+
+    expect(data.other_bridge_activity.map((h: { protocol: string }) => h.protocol)).toEqual(["Meson"]);
+    expect(data.beneficiaries).toBeUndefined();
+    expect(data.note).toMatch(/cannot read that protocol's destination/);
+  });
+
+  it("reports an NTT redemption into Sui as inbound, with its origin VAA (H2qXS8fT…)", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["H2qXS8fTHgeMvjME4aWShazkvLbp28DZc6ZrAGqKa6dU"]);
+    const data = await call({ digest: "H2qXS8fTHgeMvjME4aWShazkvLbp28DZc6ZrAGqKa6dU" });
+
+    expect(data.wormhole_inbound.direction).toBe("inbound");
+    expect(data.wormhole_inbound.redemptions[0].vaa_id).toBe(
+      "1/a84051ee54d531c23b904961e053801c73e446317a1a843421b5cfa2c1435fec/203",
+    );
+    expect(data.beneficiaries).toBeUndefined();
+    expect(data.note).toMatch(/ARRIVING on Sui/);
+  });
+
+  it("counts a Mayan Swift order as a resolved exit, not an unreadable one (3aVcL3mh…)", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["3aVcL3mhsmhrNbBS3L21YrF6tGXozpaHBB7TVJqpsEMR"]);
+    const data = await call({ digest: "3aVcL3mhsmhrNbBS3L21YrF6tGXozpaHBB7TVJqpsEMR" });
+
+    expect(data.beneficiaries[0].protocol).toBe("Mayan Swift");
+    expect(data.other_bridge_activity).toBeUndefined();
+    expect(data.note).toContain("Mayan Swift");
   });
 });

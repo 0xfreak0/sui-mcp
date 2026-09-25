@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decodeTransaction } from "../src/protocols/decoder.js";
+import { addressFlow, decodeTransaction } from "../src/protocols/decoder.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 
 function makeCommand(
@@ -126,5 +126,67 @@ describe("decodeTransaction", () => {
     expect(result.actions[0]).toContain("Deposit");
     expect(result.actions[0]).toContain("SUI");
     expect(result.actions[0]).toContain("Suilend");
+  });
+});
+
+describe("addressFlow", () => {
+  // FjkAurXTGnmq…: 0x1f7b27 sent the Nemo attacker 39.44771725 SUI. The
+  // sender-side token_flow reads -39449215130 on the attacker's own row.
+  const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+  const ATTACKER = "0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
+  const SENDER = "0x1f7b27844f2c4a0262b2c481f7ab956d10ace524c5a7b06c3742cfb8701db714";
+  const changes = [
+    makeBalanceChange(ATTACKER, SUI, "39447717250"),
+    makeBalanceChange(SENDER, SUI, "-39449215130"),
+  ];
+
+  it("gives the recipient its inflow, not the sender's outflow", () => {
+    expect(addressFlow(changes, ATTACKER)).toEqual([
+      {
+        coin: "SUI",
+        amount: "39447717250",
+        formatted: "39.44771725 SUI",
+        raw_type: SUI,
+        coin_verified: true,
+      },
+    ]);
+    expect(decodeTransaction([], changes, SENDER).token_flow[0].amount).toBe("-39449215130");
+  });
+
+  it("gives the sender its outflow, signed", () => {
+    const [flow] = addressFlow(changes, SENDER);
+    expect(flow.amount).toBe("-39449215130");
+    expect(flow.formatted).toBe("-39.44921513 SUI");
+  });
+
+  it("matches an address written without its leading zero", () => {
+    expect(addressFlow(changes, "0x1229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724")[0].amount).toBe(
+      "39447717250",
+    );
+  });
+
+  it("nets several changes in one coin and drops a net of zero", () => {
+    const flows = addressFlow(
+      [
+        makeBalanceChange(ATTACKER, SUI, "5"),
+        makeBalanceChange(ATTACKER, SUI, "-5"),
+        makeBalanceChange(ATTACKER, "0xdead::sui::SUI", "3000000000"),
+        makeBalanceChange(ATTACKER, "0xdead::sui::SUI", "-1000000000"),
+      ],
+      ATTACKER,
+    );
+    expect(flows).toHaveLength(1);
+    expect(flows[0].amount).toBe("2000000000");
+  });
+
+  it("marks a coin nothing vouches for, and how its amount was scaled", () => {
+    const [flow] = addressFlow([makeBalanceChange(ATTACKER, "0xdead::sui::SUI", "2000000000")], ATTACKER);
+    expect(flow.coin_verified).toBe(false);
+    expect(flow.coin_scale).toBe("assumed");
+    expect(flow.formatted).toContain("unverified");
+  });
+
+  it("is empty for an address with no balance change", () => {
+    expect(addressFlow(changes, "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf")).toEqual([]);
   });
 });

@@ -1,0 +1,265 @@
+{
+  "_comment": "gRPC GetTransaction shapes captured from mainnet (fullnode, archive for 8eHgw5). BigInt fields are strings ending in n; Pure input bytes omitted.",
+  "CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay": {
+    "inputs": [
+      {
+        "kind": 1
+      },
+      {
+        "kind": 5,
+        "fundsWithdrawal": {
+          "amount": "1951n",
+          "coinType": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+          "source": 1
+        }
+      }
+    ],
+    "gasPayment": {
+      "objects": [],
+      "owner": "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf",
+      "price": "100n",
+      "budget": "200000n"
+    },
+    "sender": "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf",
+    "changedObjects": [
+      {
+        "objectId": "0x28585f3c7b97b0120c3ffec0a93c6f7bc05f080c83dce800ca2f4c11bb48d1a7",
+        "inputState": 1,
+        "outputState": 4,
+        "idOperation": 1,
+        "accumulatorWrite": {
+          "address": "0xb71effa1cc4425928e0bda7c3b690a356245e705b01b5380b5d4d1a3497c1d47",
+          "accumulatorType": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>",
+          "operation": 1,
+          "value": "1951n"
+        }
+      },
+      {
+        "objectId": "0x9a9ff488db2fd70a5894f1f0b6f3be1f430fd06edc0b0ce18f02a2e39eaa68bc",
+        "inputState": 1,
+        "outputState": 4,
+        "idOperation": 1,
+        "accumulatorWrite": {
+          "address": "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf",
+          "accumulatorType": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>",
+          "operation": 2,
+          "value": "101951n"
+        }
+      }
+    ],
+    "balanceChanges": [
+      {
+        "address": "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf",
+        "coinType": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "amount": "-101951"
+      },
+      {
+        "address": "0xb71effa1cc4425928e0bda7c3b690a356245e705b01b5380b5d4d1a3497c1d47",
+        "coinType": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "amount": "1951"
+      }
+    ]
+  },
+  "34q8kUTe8Uoe3f6cD5wKmS7ZqgYg3uX8J7nAJEuGeGTF": {
+    "inputs": [
+      {
+        "kind": 1
+      },
+      {
+        "kind": 1
+      }
+    ],
+    "gasPayment": {
+      "objects": [
+        {
+          "objectId": "0x30ae9430fe2f6e98c167cfdb7083fd052acf74ca8131a7e4f068608f72bbe848",
+          "version": "0n",
+          "digest": "AABFXzUeRgiynQqvkZ8kVcW8gtLRqnjxWfLw2uECv9zB"
+        },
+        {
+          "objectId": "0x6b0e59544cd4d7c161e038fa13b6fb7314f442c1f86d2b0ce55576367469c40e",
+          "version": "966252635n",
+          "digest": "5JaRCpyK4RCwgRCwgqmaq4htGTnUHH3E5qWWWtvJnT2j"
+        }
+      ],
+      "owner": "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6",
+      "price": "100n",
+      "budget": "200000n"
+    },
+    "sender": "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6",
+    "changedObjects": [
+      {
+        "objectId": "0x052ddeba3f53ca17702d0722ec9434826d26291af3a509a5540358ad341fa1d3",
+        "inputState": 1,
+        "outputState": 4,
+        "idOperation": 1,
+        "accumulatorWrite": {
+          "address": "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6",
+          "accumulatorType": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>",
+          "operation": 1,
+          "value": "704848146266530n"
+        }
+      },
+      {
+        "objectId": "0x4b572946b79a2ea2ccc19c7d9f720133b72d00d1c8697c69f8c24f68643430bf",
+        "inputState": 1,
+        "outputState": 4,
+        "idOperation": 1,
+        "accumulatorWrite": {
+          "address": "0xa766f11b571df4a5d00464bd1009d57b1e5457bc0be08e2dfc0ce14cb1a50c07",
+          "accumulatorType": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>",
+          "operation": 1,
+          "value": "100000000000000n"
+        }
+      },
+      {
+        "objectId": "0x6b0e59544cd4d7c161e038fa13b6fb7314f442c1f86d2b0ce55576367469c40e",
+        "inputState": 2,
+        "inputVersion": "966252635n",
+        "inputDigest": "5JaRCpyK4RCwgRCwgqmaq4htGTnUHH3E5qWWWtvJnT2j",
+        "inputOwner": {
+          "kind": 1,
+          "address": "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6"
+        },
+        "outputState": 1,
+        "idOperation": 3,
+        "objectType": "0x0000000000000000000000000000000000000000000000000000000000000002::coin::Coin<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>"
+      }
+    ],
+    "balanceChanges": [
+      {
+        "address": "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6",
+        "coinType": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "amount": "-99999999121880"
+      },
+      {
+        "address": "0xa766f11b571df4a5d00464bd1009d57b1e5457bc0be08e2dfc0ce14cb1a50c07",
+        "coinType": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "amount": "100000000000000"
+      }
+    ]
+  },
+  "8eHgw5hBnALFJKPstXWcPgKjeh1av1CzFAz8n85Primr": {
+    "inputs": [
+      {
+        "kind": 1
+      }
+    ],
+    "gasPayment": {
+      "objects": [
+        {
+          "objectId": "0xa72f8f12b4288335d9d1bf1e9bbc71fe84aca4cafb87fa7df12d741c31ab93e3",
+          "version": "562831422n",
+          "digest": "4Vq5orKziRV3xc2BQbEf8i5vus1vNBdfayHcJBLLfMvZ"
+        }
+      ],
+      "owner": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47",
+      "price": "740n",
+      "budget": "700000000n"
+    },
+    "changedObjects": [
+      {
+        "objectId": "0x2b360dbb61b6e3a1ee6005371d1c51c58eb0fc57f8dd738559747a756609a6b0",
+        "inputState": 1,
+        "outputState": 2,
+        "outputVersion": "562831423n",
+        "outputDigest": "EykVevkd5k8jPe2Rf9mDbzPouyQctNXF8c4AVE6amtY2",
+        "outputOwner": {
+          "kind": 1,
+          "address": "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06"
+        },
+        "idOperation": 2,
+        "objectType": "0xcdcdf56710f0bca1d9e1e9b775ed9885d9e1beeb3b08ab792948b348fe69cb20::message_from_cetus::MessageFromCetus"
+      },
+      {
+        "objectId": "0x315366d0b2e5b4f8318461ebfc6e3e56277efde71c1f05f5e96468718b2ac772",
+        "inputState": 1,
+        "outputState": 2,
+        "outputVersion": "562831423n",
+        "outputDigest": "HAUSSCvZNuFQA1qfiP7NwTN2AecW7fsCv1FvdyN1z2gr",
+        "outputOwner": {
+          "kind": 1,
+          "address": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47"
+        },
+        "idOperation": 2,
+        "objectType": "0x0000000000000000000000000000000000000000000000000000000000000002::display::Display<0xcdcdf56710f0bca1d9e1e9b775ed9885d9e1beeb3b08ab792948b348fe69cb20::message_from_cetus::MessageFromCetus>"
+      },
+      {
+        "objectId": "0x5d373ba22cf02764df82f549503073079b7e04b956a06c4cf0b7d3987f6ba192",
+        "inputState": 1,
+        "outputState": 2,
+        "outputVersion": "562831423n",
+        "outputDigest": "7znyeVfUEi5Hv2TEUQhcpZS1VY1J8dc7fHzv6oHuFbux",
+        "outputOwner": {
+          "kind": 1,
+          "address": "0xcd8962dad278d8b50fa0f9eb0186bfa4cbdecc6d59377214c88d0286a0ac9562"
+        },
+        "idOperation": 2,
+        "objectType": "0xcdcdf56710f0bca1d9e1e9b775ed9885d9e1beeb3b08ab792948b348fe69cb20::message_from_cetus::MessageFromCetus"
+      },
+      {
+        "objectId": "0x832ffb3594d7e18e47b471be1dccc7f94cfc6e82ef4619cb6ea7b6b18e3bf046",
+        "inputState": 1,
+        "outputState": 2,
+        "outputVersion": "562831423n",
+        "outputDigest": "GP6Ya3JmcgjGra8Me8GzHDXPVqkmkNPUqfjhdkbT1sUN",
+        "outputOwner": {
+          "kind": 1,
+          "address": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47"
+        },
+        "idOperation": 2,
+        "objectType": "0x0000000000000000000000000000000000000000000000000000000000000002::package::UpgradeCap"
+      },
+      {
+        "objectId": "0xa72f8f12b4288335d9d1bf1e9bbc71fe84aca4cafb87fa7df12d741c31ab93e3",
+        "inputState": 2,
+        "inputVersion": "562831422n",
+        "inputDigest": "4Vq5orKziRV3xc2BQbEf8i5vus1vNBdfayHcJBLLfMvZ",
+        "inputOwner": {
+          "kind": 1,
+          "address": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47"
+        },
+        "outputState": 2,
+        "outputVersion": "562831423n",
+        "outputDigest": "3P7zB5iXM6wbBDrc2dZmXNK2EgGsPALgR4p8SJEzEXN7",
+        "outputOwner": {
+          "kind": 1,
+          "address": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47"
+        },
+        "idOperation": 1,
+        "objectType": "0x0000000000000000000000000000000000000000000000000000000000000002::coin::Coin<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>"
+      },
+      {
+        "objectId": "0xcdcdf56710f0bca1d9e1e9b775ed9885d9e1beeb3b08ab792948b348fe69cb20",
+        "inputState": 1,
+        "outputState": 3,
+        "outputVersion": "1n",
+        "outputDigest": "Enxqk9JUk1eRwaVCurSeJpLEWZKuyHQVnb86nSgukPtT",
+        "idOperation": 2,
+        "objectType": "package"
+      },
+      {
+        "objectId": "0xf7c79cb4795cc4b705049ac7840a9b3127998b35893611750cd63d040576f1f8",
+        "inputState": 1,
+        "outputState": 2,
+        "outputVersion": "562831423n",
+        "outputDigest": "7y7U4zDbma8BMF1DgZmfzKFoWsRgxp9F9icR9ednFQEP",
+        "outputOwner": {
+          "kind": 1,
+          "address": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47"
+        },
+        "idOperation": 2,
+        "objectType": "0x0000000000000000000000000000000000000000000000000000000000000002::package::Publisher"
+      }
+    ],
+    "balanceChanges": [
+      {
+        "address": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47",
+        "coinType": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "amount": "-19377480"
+      }
+    ],
+    "sender": "0xdbfd0b17fa804c98f51d552b050fb7f850b85db96fa2a0d79e50119525814a47"
+  },
+  "CD2e4_transaction_bcs": "AAACACC3Hv+hzEQlko4L2nw7aQo1YkXnBbAbU4C11NGjSXwdRwIAnwcAAAAAAAAABwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA3N1aQNTVUkAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIHYmFsYW5jZQxyZWRlZW1fZnVuZHMBBwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA3N1aQNTVUkAAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgdiYWxhbmNlCnNlbmRfZnVuZHMBBwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA3N1aQNTVUkAAgMAAAAAAQAAfI4s6wg5aAo7H3qhAh1FZwQF2S88iOeaodOqimALvb8AfI4s6wg5aAo7H3qhAh1FZwQF2S88iOeaodOqimALvb9kAAAAAAAAAEANAwAAAAAAAgHtBAAAAAAAAAHuBAAAAAAAAAAAIDWDSorBfKSPsUrI+ZwXyYdH6V3QcpSuQaRrOCJGpEmb98l+zw=="
+}

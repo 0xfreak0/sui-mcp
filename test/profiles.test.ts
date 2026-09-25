@@ -9,28 +9,34 @@ import {
   parseProfileList,
   toolsForProfiles,
 } from "../src/tools/profiles.js";
-import { applyProfiles, collectToolHandles, type ToolHandles } from "../src/tools/toolset.js";
+import { applyProfiles, collectToolHandles, explainDisabledTools, type ToolHandles } from "../src/tools/toolset.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerAllTools } from "../src/tools/index.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** Registers like the SDK does, returning a handle that records enable/disable. */
 function fakeServer() {
   const handles = new Map<string, { enabled: boolean }>();
+  const register = (name: string) => {
+    const h = {
+      enabled: true,
+      enable() {
+        h.enabled = true;
+      },
+      disable() {
+        h.enabled = false;
+      },
+      update() {},
+    };
+    handles.set(name, h);
+    return h;
+  };
   const server = {
-    tool(...args: unknown[]) {
-      const name = args[0] as string;
-      const h = {
-        enabled: true,
-        enable() {
-          h.enabled = true;
-        },
-        disable() {
-          h.enabled = false;
-        },
-      };
-      handles.set(name, h);
-      return h;
-    },
+    // collectToolHandles sees `tool`; withNetworkParam and enable_tools call `registerTool`.
+    tool: (...args: unknown[]) => register(args[0] as string),
+    registerTool: register,
+    server: { setRequestHandler() {} },
   } as unknown as McpServer;
   return { server, handles };
 }
@@ -39,10 +45,11 @@ function fakeServer() {
 function registeredToolNames(): string[] {
   const names: string[] = [];
   const fake = {
-    tool(...args: unknown[]) {
-      names.push(args[0] as string);
-      return { enabled: true, enable() {}, disable() {} };
+    registerTool(name: string) {
+      names.push(name);
+      return { enabled: true, enable() {}, disable() {}, update() {} };
     },
+    server: { setRequestHandler() {} },
   } as unknown as McpServer;
   registerAllTools(fake);
   return names;
@@ -253,5 +260,35 @@ describe("startup profile from SUI_TOOLS", () => {
     expect(handles.get("trace_funds")?.enabled).toBe(true);
     expect(handles.get("deepbook_orderbook")?.enabled).toBe(true);
     expect(handles.get("decompile_module")?.enabled).toBe(true);
+  });
+});
+
+describe("calling a disabled tool", () => {
+  // The SDK's own reply is "Tool trace_funds disabled", which names neither the
+  // profile nor enable_tools, and reads as a broken tool.
+  it("names the profile that holds it and how to turn it on", async () => {
+    const server = new McpServer({ name: "t", version: "0" });
+    const handles: ToolHandles = new Map();
+    explainDisabledTools(server, handles);
+    const wrapped = collectToolHandles(server, handles);
+    wrapped.tool("trace_funds", "desc", {}, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    wrapped.tool("get_chain_info", "desc", {}, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    handles.get("trace_funds")!.disable();
+
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "c", version: "0" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+
+    const off = await client.callTool({ name: "trace_funds", arguments: {} });
+    expect(off.isError).toBe(true);
+    const text = (off.content as Array<{ text: string }>)[0].text;
+    expect(JSON.parse(text).error).toBe(
+      "trace_funds is in the 'forensics' profile, which is not enabled in this session. " +
+        "Call enable_tools({ profile: 'forensics' }), then call trace_funds again.",
+    );
+
+    const on = await client.callTool({ name: "get_chain_info", arguments: {} });
+    expect((on.content as Array<{ text: string }>)[0].text).toBe("ran");
+    await client.close();
   });
 });

@@ -47,7 +47,7 @@ const ERROR_KIND_NAME = new Map<number, string>(
  * no gloss — and a note on every one would bury the few that change what a
  * reader should conclude.
  */
-const KIND_NOTES: Record<string, string> = {
+export const KIND_NOTES: Record<string, string> = {
   ADDRESS_DENIED_FOR_COIN:
     "The coin's issuer has denied this address. That is an off-chain decision recorded on chain by whoever holds the DenyCap, not a protocol rule — it is attribution, and it is reversible by the issuer.",
   COIN_TYPE_GLOBAL_PAUSE:
@@ -170,6 +170,75 @@ export function describeFailure(status?: GrpcTypes.ExecutionStatus): FailureDeta
   const note = KIND_NOTES[kind];
   if (note) out.note = note;
   return out;
+}
+
+/**
+ * The display text of each `ExecutionFailureStatus` variant in sui-types,
+ * mapped to the enum name gRPC reports for it.
+ *
+ * GraphQL's `ExecutionError` has no kind field. It carries `message`, which is
+ * that display text, and `abortCode`, which is set for Move aborts only. So a
+ * failure read over GraphQL can only be named by its message, and without
+ * this every one of them read as MOVE_ABORT: an out-of-gas transaction, which
+ * may have been valid, looked like a contract rejecting it.
+ */
+const MESSAGE_KINDS: Array<[RegExp, string]> = [
+  [/^Insufficient Gas\b/, "INSUFFICIENT_GAS"],
+  [/^Invalid Gas Object\b/, "INVALID_GAS_OBJECT"],
+  [/^INVARIANT VIOLATION\b/, "INVARIANT_VIOLATION"],
+  [/^Attempted to used feature that is not supported yet/, "FEATURE_NOT_YET_SUPPORTED"],
+  [/^Move object with size \d+ is larger than the maximum/, "OBJECT_TOO_BIG"],
+  [/^Move package with size \d+ is larger than the maximum/, "PACKAGE_TOO_BIG"],
+  [/^Circular Object Ownership\b/, "CIRCULAR_OBJECT_OWNERSHIP"],
+  [/^Insufficient coin balance for operation\b/, "INSUFFICIENT_COIN_BALANCE"],
+  [/^The coin balance overflows u64\b/, "COIN_BALANCE_OVERFLOW"],
+  [/^Publish Error, Non-zero Address\b/, "PUBLISH_ERROR_NON_ZERO_ADDRESS"],
+  [/^Sui Move Bytecode Verification Error\b/, "SUI_MOVE_VERIFICATION_ERROR"],
+  [/^Move Primitive Runtime Error\b/, "MOVE_PRIMITIVE_RUNTIME_ERROR"],
+  [/^Move Runtime Abort\b/, "MOVE_ABORT"],
+  [/^Move Bytecode Verification Error\b/, "VM_VERIFICATION_OR_DESERIALIZATION_ERROR"],
+  [/^MOVE VM INVARIANT VIOLATION\b/, "VM_INVARIANT_VIOLATION"],
+  [/^Function Not Found\b/, "FUNCTION_NOT_FOUND"],
+  [/^Arity mismatch for Move function\b/, "ARITY_MISMATCH"],
+  [/^Type arity mismatch for Move function\b/, "TYPE_ARITY_MISMATCH"],
+  [/^Non Entry Function Invoked\b/, "NON_ENTRY_FUNCTION_INVOKED"],
+  [/^Invalid command argument at \d+/, "COMMAND_ARGUMENT_ERROR"],
+  [/^Error for type argument at index \d+/, "TYPE_ARGUMENT_ERROR"],
+  [/^Unused result without the drop ability\b/, "UNUSED_VALUE_WITHOUT_DROP"],
+  [/^Invalid public Move function signature\b/, "INVALID_PUBLIC_FUNCTION_RETURN_TYPE"],
+  [/^Invalid Transfer Object\b/, "INVALID_TRANSFER_OBJECT"],
+  [/^Effects of size \d+ bytes too large\b/, "EFFECTS_TOO_LARGE"],
+  [/^Publish\/Upgrade Error, Missing dependency\b/, "PUBLISH_UPGRADE_MISSING_DEPENDENCY"],
+  [/^Publish\/Upgrade Error, Dependency downgrade\b/, "PUBLISH_UPGRADE_DEPENDENCY_DOWNGRADE"],
+  [/^Invalid package upgrade\b/, "PACKAGE_UPGRADE_ERROR"],
+  [/^Written objects of \d+ bytes too large\b/, "WRITTEN_OBJECTS_TOO_LARGE"],
+  [/^Certificate is on the deny list\b/, "CERTIFICATE_DENIED"],
+  [/^Sui Move Bytecode Verification Timeout\b/, "SUI_MOVE_VERIFICATION_TIMEDOUT"],
+  [/^The shared object operation is not allowed\b/, "CONSENSUS_OBJECT_OPERATION_NOT_ALLOWED"],
+  [/^Certificate cannot be executed due to a dependency on a deleted shared object\b/, "INPUT_OBJECT_DELETED"],
+  [/^Certificate is cancelled due to congestion on shared objects\b/, "EXECUTION_CANCELED_DUE_TO_CONSENSUS_OBJECT_CONGESTION"],
+  [/^Address \S+ is denied for coin\b/, "ADDRESS_DENIED_FOR_COIN"],
+  [/^Coin type is globally paused for use\b/, "COIN_TYPE_GLOBAL_PAUSE"],
+  [/^Certificate is cancelled because randomness could not be generated\b/, "EXECUTION_CANCELED_DUE_TO_RANDOMNESS_UNAVAILABLE"],
+  [/^Move vector element \(passed to MakeMoveVec\) with size\b/, "MOVE_VECTOR_ELEM_TOO_BIG"],
+  [/^Move value \(possibly an upgrade ticket or a dev-inspect value\) with size\b/, "MOVE_RAW_VALUE_TOO_BIG"],
+  [/^A valid linkage was unable to be determined\b/, "INVALID_LINKAGE"],
+  [/^Insufficient funds for funds accumulator withdrawal\b/, "INSUFFICIENT_FUNDS_FOR_WITHDRAW"],
+  [/^Non-exclusive write input object \S+ has been modified\b/, "NON_EXCLUSIVE_WRITE_INPUT_OBJECT_MODIFIED"],
+];
+
+/**
+ * The failure kind of a GraphQL `ExecutionError`, named as gRPC names it.
+ *
+ * A non-null `abortCode` is what makes a failure a Move abort; the message of
+ * an abort may be a package's own rendered clever error, so it is not matched
+ * for that case. Anything else is named from its message, and a message this
+ * build does not recognise is `unknown` rather than a guess.
+ */
+export function failureKindFromGraphql(message: string | null | undefined, abortCode: unknown): string {
+  if (abortCode !== null && abortCode !== undefined) return "MOVE_ABORT";
+  const text = (message ?? "").trim();
+  return MESSAGE_KINDS.find(([pattern]) => pattern.test(text))?.[1] ?? "unknown";
 }
 
 export function bigintToString(val?: bigint): string | undefined {

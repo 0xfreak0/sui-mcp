@@ -9,8 +9,10 @@ const finding = (over: Partial<Finding> = {}): Finding => ({
   title: "A thing was established",
   detail: null,
   confidence: null,
+  evidence_tier: "chain-derived",
   addresses: [],
   evidence: [],
+  digests: [],
   created_at: AT,
   ...over,
 });
@@ -50,6 +52,42 @@ describe("renderCaseReport", () => {
       findings: [finding({ title: "Unrated" }), finding({ title: "Rated", confidence: "low" })],
     });
     expect(md.indexOf("Rated")).toBeLessThan(md.indexOf("Unrated"));
+  });
+
+  /**
+   * The skill requires every claim to state its tier. A report that lists a
+   * heuristic cluster beside a chain-derived transfer with nothing to tell
+   * them apart is how a lead becomes an accusation.
+   */
+  it("groups findings by evidence tier, strongest first, and labels each", () => {
+    const md = renderCaseReport({
+      caseName: "c",
+      generatedAt: AT,
+      findings: [
+        finding({ title: "Shared funder", evidence_tier: "heuristic", confidence: "high" }),
+        finding({ title: "Redeemed on Ethereum", evidence_tier: "indexer-attested" }),
+        finding({ title: "Sent 5 SUI", evidence_tier: "chain-derived", confidence: "low" }),
+        finding({ title: "Old note", evidence_tier: null }),
+      ],
+    });
+    const at = (s: string) => md.indexOf(s);
+    expect(at("## Chain-derived")).toBeLessThan(at("### Sent 5 SUI"));
+    expect(at("### Sent 5 SUI")).toBeLessThan(at("## Indexer-attested"));
+    expect(at("## Indexer-attested")).toBeLessThan(at("### Redeemed on Ethereum"));
+    expect(at("### Redeemed on Ethereum")).toBeLessThan(at("## Heuristic"));
+    expect(at("## Heuristic")).toBeLessThan(at("### Shared funder"));
+    expect(at("### Shared funder")).toBeLessThan(at("## Tier not recorded"));
+    expect(md).toContain("**Evidence tier:** heuristic · **Confidence:** high");
+    expect(md).toContain("**Evidence tier:** not recorded");
+  });
+
+  it("lists the transactions a finding rests on", () => {
+    const md = renderCaseReport({
+      caseName: "c",
+      generatedAt: AT,
+      findings: [finding({ digests: ["BTMCNZd2kt6b1ALvntNC99GGo1nancJtJHAbxi5SnCpR"] })],
+    });
+    expect(md).toContain("**Transactions**\n\n- `BTMCNZd2kt6b1ALvntNC99GGo1nancJtJHAbxi5SnCpR`");
   });
 
   it("renders evidence, which is what makes a finding checkable", () => {

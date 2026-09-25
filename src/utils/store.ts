@@ -99,8 +99,11 @@ let unavailableReason: string | null = null;
  * address cannot say which chain they measured, so they are discarded rather
  * than assumed to be Sui mainnet. Unlike labels, that costs only a
  * re-measurement.
+ *
+ * 4 marks a gas sponsor's SUI change no longer counting as a payment, which
+ * lowered the recipient count of every sponsored sweep by one.
  */
-export const FANOUT_METHOD_VERSION = 3;
+export const FANOUT_METHOD_VERSION = 4;
 
 /**
  * Stamp for cached first-funder answers.
@@ -126,7 +129,7 @@ export const FUNDING_METHOD_VERSION = 1;
  * `fetchTx` changes. Same reasoning as FUNDING_METHOD_VERSION, which exists
  * because the answer depends on the dust floors that produced it.
  */
-export const TX_METHOD_VERSION = 2;
+export const TX_METHOD_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (
@@ -203,10 +206,14 @@ CREATE TABLE IF NOT EXISTS findings (
   title       TEXT NOT NULL,
   detail      TEXT,
   confidence  TEXT,
+  -- chain-derived | indexer-attested | heuristic. NULL for a finding recorded
+  -- before the tier was asked for: unknown, never defaulted after the fact.
+  evidence_tier TEXT,
   -- JSON arrays. Kept as text rather than join tables: a finding is a
   -- write-once note, and querying inside it is not a use case.
   addresses   TEXT,
   evidence    TEXT,
+  digests     TEXT,
   created_at  INTEGER NOT NULL
 );
 
@@ -374,6 +381,24 @@ function migrateFindingAddresses(opened: DatabaseLike): void {
 }
 
 /**
+ * Add the `evidence_tier` and `digests` columns to a findings table created
+ * before they existed.
+ *
+ * `CREATE TABLE IF NOT EXISTS` leaves an existing table's columns alone, so
+ * without this every save into an older store fails on the missing column.
+ * Detected by column list, like the labels migration, so it is idempotent.
+ * Existing rows keep a NULL tier: the investigator never stated one, and
+ * back-filling `heuristic` would put words in their mouth.
+ */
+function migrateFindingColumns(opened: DatabaseLike): void {
+  const columns = new Set(
+    (opened.prepare(`PRAGMA table_info(findings)`).all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  if (!columns.has("evidence_tier")) opened.exec(`ALTER TABLE findings ADD COLUMN evidence_tier TEXT`);
+  if (!columns.has("digests")) opened.exec(`ALTER TABLE findings ADD COLUMN digests TEXT`);
+}
+
+/**
  * Discard fan-out rows measured by an earlier method.
  *
  * `PRAGMA user_version` is a SQLite integer that lives in the file header — it
@@ -460,6 +485,7 @@ export function initStore(): void {
     // only one that discards rather than migrates.
     migrateLabelsToAccounts(opened);
     migrateFindingAddresses(opened);
+    migrateFindingColumns(opened);
     migrateFanoutCache(opened);
     // Only now is every table in its final shape.
     opened.exec(INDEXES);
@@ -598,16 +624,28 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
   });
 }
 
+/**
+ * How a finding is known, in the forensics skill's three tiers:
+ * `chain-derived` is read from Sui itself, `indexer-attested` is a third
+ * party's assertion, `heuristic` is an inference from patterns.
+ */
+export const EVIDENCE_TIERS = ["chain-derived", "indexer-attested", "heuristic"] as const;
+export type EvidenceTier = (typeof EVIDENCE_TIERS)[number];
+
 export interface Finding {
   id?: number;
   case_name: string;
   title: string;
   detail: string | null;
   confidence: string | null;
+  /** Null only for a finding recorded before the tier was asked for. */
+  evidence_tier: EvidenceTier | null;
   /** Addresses the finding is about. */
   addresses: string[];
   /** How it was established — tool calls, digests, counts. */
   evidence: string[];
+  /** Transaction digests the finding rests on, so each can be re-read. */
+  digests: string[];
   created_at?: number;
 }
 
@@ -617,8 +655,10 @@ interface FindingRow {
   title: string;
   detail: string | null;
   confidence: string | null;
+  evidence_tier: string | null;
   addresses: string | null;
   evidence: string | null;
+  digests: string | null;
   created_at: number;
 }
 
@@ -638,8 +678,12 @@ const rowToFinding = (r: FindingRow): Finding => ({
   title: r.title,
   detail: r.detail,
   confidence: r.confidence,
+  evidence_tier: (EVIDENCE_TIERS as readonly string[]).includes(r.evidence_tier ?? "")
+    ? (r.evidence_tier as EvidenceTier)
+    : null,
   addresses: parseList(r.addresses),
   evidence: parseList(r.evidence),
+  digests: parseList(r.digests),
   created_at: r.created_at,
 });
 
@@ -656,15 +700,17 @@ export function saveFinding(f: Omit<Finding, "id" | "created_at">): number | nul
   initStore();
   if (!db) return null;
   db.prepare(
-    `INSERT INTO findings (case_name, title, detail, confidence, addresses, evidence, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO findings (case_name, title, detail, confidence, evidence_tier, addresses, evidence, digests, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     f.case_name,
     f.title,
     f.detail ?? null,
     f.confidence ?? null,
+    f.evidence_tier ?? null,
     JSON.stringify(f.addresses ?? []),
     JSON.stringify(f.evidence ?? []),
+    JSON.stringify(f.digests ?? []),
     Date.now(),
   );
   const row = db.prepare(`SELECT last_insert_rowid() AS id`).get() as { id: number };

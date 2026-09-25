@@ -565,6 +565,38 @@ describe.skipIf(!hasSqlite)("legacy store migration", () => {
     expect(f.evidence).toEqual(["find_funding_sources depth=first_hop"]);
   });
 
+  /**
+   * A findings table from before evidence tiers had no `evidence_tier` or
+   * `digests` column, so every save into it failed on the missing column.
+   */
+  it("adds the tier and digests columns, leaving old findings' tier unstated", () => {
+    const path = join(dir, "legacy.db");
+    writeLegacyStore(path);
+
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    initStore();
+
+    const [old] = loadFindings("legacy-case");
+    // Never back-filled: the investigator did not state a tier.
+    expect(old.evidence_tier).toBeNull();
+    expect(old.digests).toEqual([]);
+
+    saveFinding({
+      case_name: "legacy-case",
+      title: "New",
+      detail: null,
+      confidence: null,
+      evidence_tier: "chain-derived",
+      addresses: [],
+      evidence: [],
+      digests: ["BTMCNZd2kt6b1ALvntNC99GGo1nancJtJHAbxi5SnCpR"],
+    });
+    const added = loadFindings("legacy-case").find((f) => f.title === "New")!;
+    expect(added.evidence_tier).toBe("chain-derived");
+    expect(added.digests).toEqual(["BTMCNZd2kt6b1ALvntNC99GGo1nancJtJHAbxi5SnCpR"]);
+  });
+
   it("is idempotent — reopening an already-migrated store changes nothing", () => {
     const path = join(dir, "legacy.db");
     writeLegacyStore(path);

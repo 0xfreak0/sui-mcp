@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,8 +13,7 @@ export function registerNameTools(server: McpServer) {
         .string()
         .optional()
         .describe("SuiNS name to resolve (e.g. 'example.sui')"),
-      address: z
-        .string()
+      address: addressArg()
         .optional()
         .describe("Address to reverse-lookup to a SuiNS name"),
     },

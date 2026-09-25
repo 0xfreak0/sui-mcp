@@ -13,7 +13,12 @@ import { assessCapHolder, type CapHolderStatus } from "./upgrade-cap.js";
  */
 
 export type CapKind = "upgrade" | "treasury" | "deny" | "admin";
-export type OwnerKind = "address" | "shared" | "immutable" | "burned" | "unknown";
+/**
+ * `consensus` is a party object (`ConsensusAddressOwner`): one address owns it,
+ * and its transactions are ordered through consensus the way a shared object's
+ * are. It is held by that address, not shared: only the owner can use it.
+ */
+export type OwnerKind = "address" | "consensus" | "shared" | "immutable" | "burned" | "unknown";
 export type CapRisk = "high" | "medium" | "low" | "info";
 
 export interface CapabilityInfo {
@@ -82,7 +87,15 @@ export function classifyCapabilityRisk(input: {
   policyLabel?: string;
 }): { risk: CapRisk; note: string } {
   const { kind, type, owner, ownerAddress, policyLabel } = input;
-  const who = ownerAddress ? ownerAddress : owner;
+  // A party object has exactly one owner, so it is held the way an
+  // address-owned object is. Reading it as shared would say anyone might
+  // reach a capability that only its owner can use.
+  const held = owner === "address" || owner === "consensus";
+  const who = ownerAddress
+    ? owner === "consensus"
+      ? `${ownerAddress} (a party object: one owner, transactions ordered through consensus)`
+      : ownerAddress
+    : owner;
   const shortType = type.split("::").slice(-2).join("::").split("<")[0];
 
   if (kind === "upgrade") {
@@ -92,7 +105,7 @@ export function classifyCapabilityRisk(input: {
     if (policyLabel === "immutable") {
       return { risk: "low", note: "UpgradeCap policy is immutable — the package can no longer be upgraded." };
     }
-    if (owner === "address") {
+    if (held) {
       return {
         risk: "high",
         note: `Package is upgradeable by ${who} (policy: ${policyLabel}). A malicious or compromised upgrade could change any logic in this package.`,
@@ -108,7 +121,7 @@ export function classifyCapabilityRisk(input: {
     if (owner === "burned") {
       return { risk: "info", note: `Mint authority (${shortType}) has been renounced — token supply is fixed.` };
     }
-    if (owner === "address") {
+    if (held) {
       return { risk: "high", note: `Mint authority (${shortType}) is held by ${who} — new tokens can be minted at will (inflation / rug risk).` };
     }
     if (owner === "shared") {
@@ -119,7 +132,7 @@ export function classifyCapabilityRisk(input: {
 
   if (kind === "deny") {
     if (owner === "burned") return { risk: "info", note: `Deny/freeze authority (${shortType}) has been destroyed.` };
-    if (owner === "address") {
+    if (held) {
       return { risk: "medium", note: `Denylist/freeze authority (${shortType}) is held by ${who} — can freeze addresses or block transfers of this coin.` };
     }
     return { risk: "low", note: `Denylist/freeze authority (${shortType}) owner is ${owner}.` };
@@ -127,7 +140,7 @@ export function classifyCapabilityRisk(input: {
 
   // admin / other *Cap
   if (owner === "burned") return { risk: "info", note: `Capability ${shortType} has been destroyed.` };
-  if (owner === "address") {
+  if (held) {
     return { risk: "low", note: `Privileged capability ${shortType} is held by ${who} — review what powers it grants.` };
   }
   return { risk: "info", note: `Capability ${shortType} owner is ${owner}.` };
@@ -183,6 +196,7 @@ const CAP_STATE_QUERY = `query ($id: SuiAddress!) {
     owner {
       __typename
       ... on AddressOwner { address { address } }
+      ... on ConsensusAddressOwner { address { address } }
     }
     asMoveObject { contents { json } }
   }
@@ -191,7 +205,8 @@ const CAP_STATE_QUERY = `query ($id: SuiAddress!) {
 function ownerKindOf(typename: string | undefined): OwnerKind {
   switch (typename) {
     case "AddressOwner": return "address";
-    case "Shared": case "ConsensusAddressOwner": return "shared";
+    case "ConsensusAddressOwner": return "consensus";
+    case "Shared": return "shared";
     case "Immutable": return "immutable";
     default: return "unknown";
   }
@@ -210,11 +225,15 @@ function ownerKindOf(typename: string | undefined): OwnerKind {
 export async function auditPackageCapabilities(
   packageId: string,
   /**
-   * The package's publisher, when the caller already resolved it.
+   * The address that published the lineage ROOT (version 1), when the caller
+   * already resolved it.
    *
-   * Passed in rather than looked up here so `analyze_package` does not resolve
-   * it twice — and so an UpgradeCap can be compared against it, which is the
-   * only thing that turns "held by 0xabc" into a finding.
+   * The caps scanned here are the ones version 1's publish transaction
+   * minted, so that publisher is the only one they can be compared against.
+   * The sender of a later version's upgrade is whoever held the cap at the
+   * time; comparing against it would report a cap that has since left the
+   * deployer as still held by the publisher. Passed in rather than looked up
+   * here so `analyze_package` does not resolve it twice.
    */
   publisher?: string | null,
 ): Promise<CapabilityAudit> {

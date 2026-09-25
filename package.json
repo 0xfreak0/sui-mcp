@@ -1,7 +1,7 @@
 {
   "name": "sui-analytics-mcp",
   "version": "1.18.0",
-  "description": "Read-only Sui analytics: 68 tools, protocol-aware tx decoding, no API keys or wallet.",
+  "description": "Read-only Sui analytics: 76 tools, protocol-aware tx decoding, no API keys or wallet.",
   "mcpName": "io.github.0xfreak0/sui-mcp",
   "type": "module",
   "bin": {
@@ -27,6 +27,9 @@
     "prepublishOnly": "npm run build && npm test",
     "sync:protocol-roots": "node scripts/sync-protocol-roots.mjs",
     "sync:verified-coins": "node scripts/sync-verified-coins.mjs",
+    "sync:disclosed-labels": "node scripts/sync-disclosed-labels.mjs",
+    "sync:sanctions": "node scripts/sync-sanctions.mjs",
+    "sync:guardians": "node scripts/sync-guardians.mjs",
     "hooks:install": "git config core.hooksPath .githooks && echo \"hooks enabled — copy .githooks/patterns.local.example to .githooks/patterns.local\"",
     "verify:live": "node scripts/verify-live.mjs",
     "lint:prose": "node scripts/lint-prose.mjs"

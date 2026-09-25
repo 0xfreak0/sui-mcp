@@ -3,8 +3,15 @@
  * transitions across an object's version history. Kept pure for unit-testing.
  */
 
+/**
+ * `consensus` is a party object (`ConsensusAddressOwner`, e.g. sent with
+ * `transfer::party_transfer`): exactly one address owns it and only that
+ * address can use it, while its transactions are ordered through consensus
+ * the way a shared object's are. It is address-held, not shared.
+ */
 export type OwnerDesc =
   | { kind: "address"; address: string }
+  | { kind: "consensus"; address: string }
   | { kind: "shared" }
   | { kind: "immutable" }
   | { kind: "unknown" };
@@ -30,8 +37,9 @@ export function ownerDesc(o: { __typename?: string; address?: { address: string 
   switch (o?.__typename) {
     case "AddressOwner":
       return { kind: "address", address: o.address?.address ?? "" };
-    case "Shared":
     case "ConsensusAddressOwner":
+      return { kind: "consensus", address: o.address?.address ?? "" };
+    case "Shared":
       return { kind: "shared" };
     case "Immutable":
       return { kind: "immutable" };
@@ -40,9 +48,9 @@ export function ownerDesc(o: { __typename?: string; address?: { address: string 
   }
 }
 
-/** Stable identity key for an owner (address value distinguishes address owners). */
+/** Stable identity key for an owner (the address distinguishes held owners). */
 export function ownerKey(o: OwnerDesc): string {
-  return o.kind === "address" ? `address:${o.address}` : o.kind;
+  return o.kind === "address" || o.kind === "consensus" ? `${o.kind}:${o.address}` : o.kind;
 }
 
 /**

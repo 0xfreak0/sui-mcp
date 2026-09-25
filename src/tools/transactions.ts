@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { describeSignatures } from "../utils/multisig.js";
+import { assignSignerRoles } from "../utils/multisig.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
@@ -12,7 +12,39 @@ import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
 import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
-import { custodyChanges, readGrpcObjectChanges, summarizeObjectChanges } from "../utils/object-flow.js";
+import {
+  createdFor,
+  custodyChanges,
+  readGrpcObjectChanges,
+  summarizeObjectChanges,
+  type ObjectMovement,
+} from "../utils/object-flow.js";
+import { gasSource, readAddressBalanceOps, readFundsWithdrawals } from "../utils/address-balance.js";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
+import { COMMANDS_SELECTION, completeTxConnections, type GqlConnection } from "../utils/tx-connections.js";
+import type { GqlCommandNode } from "../utils/gql-adapters.js";
+import {
+  BOTH_WAYS_PAGE_INFO,
+  orderedPage,
+  orderedPageArgs,
+  shownRange,
+  type BothWaysPageInfo,
+  type ListOrder,
+} from "../utils/pagination.js";
+import {
+  fetchPackageVersions,
+  versionScopeNote,
+  type PackageVersion,
+  type VersionScope,
+} from "../utils/package-versions.js";
+import {
+  decodeFanoutCursor,
+  encodeFanoutCursor,
+  mergeVersionPages,
+  type VersionPage,
+  type VersionStream,
+} from "../utils/version-fanout.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 
@@ -27,10 +59,106 @@ function protocolForObjectType(packageId: string): { name: string } | null {
   return p ? { name: p.name } : null;
 }
 
+interface QueriedTx {
+  digest: string;
+  sender?: { address: string };
+  gasInput?: { gasSponsor?: { address: string } | null };
+  kind?: { commands?: GqlConnection<GqlCommandNode> };
+  effects?: {
+    status: string;
+    gasEffects?: {
+      gasSummary?: {
+        computationCost: string;
+        storageCost: string;
+        storageRebate: string;
+      };
+    };
+    checkpoint?: { sequenceNumber: number };
+    timestamp?: string;
+  };
+}
+
+/** Aliased connections per request. The service refuses more than 21 per document. */
+const VERSION_ALIASES_PER_REQUEST = 20;
+
+function queriedTxFragment(includeFunctions: boolean): string {
+  // Commands are only selected on request: they multiply response size on a
+  // page of 50, and most callers only want the digest list.
+  const kind = includeFunctions ? `kind { ... on ProgrammableTransaction { ${COMMANDS_SELECTION} } }` : "";
+  return `fragment T on Transaction { digest sender { address } gasInput { gasSponsor { address } } ${kind} effects { status gasEffects { gasSummary { computationCost storageCost storageRebate } } checkpoint { sequenceNumber } timestamp } }`;
+}
+
+/**
+ * Read one page per package version with aliased connections, `fn`'s package
+ * swapped for each version's address.
+ */
+async function readVersionPages(
+  streams: VersionStream[],
+  filter: Record<string, unknown>,
+  fn: string,
+  order: ListOrder,
+  size: number,
+  includeFunctions: boolean,
+): Promise<Array<VersionPage<QueriedTx> | null>> {
+  const rest = fn.split("::").slice(1);
+  const pages: Array<VersionPage<QueriedTx> | null> = streams.map(() => null);
+  const active = streams.map((s, i) => ({ s, i })).filter(({ s }) => !s.done);
+  for (let start = 0; start < active.length; start += VERSION_ALIASES_PER_REQUEST) {
+    const chunk = active.slice(start, start + VERSION_ALIASES_PER_REQUEST);
+    const decls = chunk.map((_, k) => `$f${k}: TransactionFilter, $c${k}: String`).join(", ");
+    const paging = order === "newest" ? (k: number) => `last: $n, before: $c${k}` : (k: number) => `first: $n, after: $c${k}`;
+    const fields = chunk
+      .map((_, k) => `v${k}: transactions(filter: $f${k}, ${paging(k)}) { edges { cursor node { ...T } } ${BOTH_WAYS_PAGE_INFO} }`)
+      .join(" ");
+    const variables: Record<string, unknown> = { n: size };
+    chunk.forEach(({ s }, k) => {
+      variables[`f${k}`] = { ...filter, function: [s.address, ...rest].join("::") };
+      variables[`c${k}`] = s.cursor;
+    });
+    const r = await gqlQuery<Record<string, { edges: Array<{ cursor: string; node: QueriedTx }>; pageInfo: BothWaysPageInfo } | null>>(
+      `query ($n: Int, ${decls}) { ${fields} } ${queriedTxFragment(includeFunctions)}`,
+      variables,
+    );
+    chunk.forEach(({ i }, k) => {
+      const conn = r[`v${k}`];
+      if (!conn) return;
+      pages[i] = {
+        edges: conn.edges,
+        hasMore: order === "newest" ? conn.pageInfo.hasPreviousPage : conn.pageInfo.hasNextPage,
+      };
+    });
+  }
+  return pages;
+}
+
+/** One object movement as `get_transaction` reports it. */
+function movementOut(m: ObjectMovement) {
+  return {
+    object_id: m.object_id,
+    type: m.type_short ?? m.type,
+    kind: m.kind,
+    // The owner KIND travels with the address. A kiosk-held NFT is owned by
+    // the Kiosk object, so reporting a bare address made a kiosk id read as a
+    // wallet — verified on a TradePort sale where BOTH parties were kiosks.
+    // `trace.ts` renders the same movement as "kiosk/object 0x…" and the two
+    // tools must not disagree about who a party is.
+    from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
+    to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
+    category: m.category,
+    ...(m.high_consequence ? { high_consequence: true } : {}),
+    ...(m.renounced ? { renounced: true } : {}),
+    ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
+    ...(m.protocol ? { protocol: m.protocol } : {}),
+    // The note states what a capability actually grants. `high_consequence:
+    // true` alone says a finding exists without saying what it is, and
+    // `trace.ts` carries the full movement for exactly this reason.
+    ...(m.note ? { note: m.note } : {}),
+  };
+}
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case.",
+    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. Funds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -132,19 +260,36 @@ export function registerTransactionTools(server: McpServer) {
       const changedObjects = effects?.changedObjects ?? [];
       const objectMovements = readGrpcObjectChanges(changedObjects, protocolForObjectType);
       const custody = custodyChanges(objectMovements);
+      const deliveredOnCreation = createdFor(objectMovements, sender);
       const objectSummary = summarizeObjectChanges(changedObjects);
+      // Address balances hold funds without a coin object, so what they did is
+      // read from the accumulator writes and the transaction's inputs. Both
+      // ride the response already fetched.
+      const addressBalanceOps = readAddressBalanceOps(changedObjects);
+      const ptbInputs =
+        kind?.data.oneofKind === "programmableTransaction"
+          ? kind.data.programmableTransaction.inputs ?? []
+          : [];
+      const fundsWithdrawals = readFundsWithdrawals(ptbInputs);
+      const gas =
+        kind?.data.oneofKind === "programmableTransaction" && transaction?.gasPayment
+          ? gasSource(transaction.gasPayment.objects ?? [])
+          : null;
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
-      // covers both transports.
-      const authorization = describeSignatures(
+      // covers both transports. Roles are assigned by derivation: a signature
+      // that derives to neither the sender nor the gas sponsor authorized in
+      // the sender's place (an address alias or a protocol-level substitution).
+      const signers = assignSignerRoles(
+        sender,
+        transaction?.gasPayment?.owner,
         (tx?.signatures ?? [])
           .map((s) => (s.bcs?.value ? Buffer.from(s.bcs.value).toString("base64") : ""))
           .filter(Boolean),
-      ).map((sig, i) => ({
-        // Sender first, then the gas sponsor when one paid. Stated positionally
-        // AND resolved by derivation, so a reader can check it either way.
-        role: sig.address && sig.address === sender ? "sender" : i === 0 ? "sender" : "gas_sponsor",
+      );
+      const authorization = signers.signatures.map((sig) => ({
+        role: sig.role,
         scheme: sig.scheme,
         ...(sig.address ? { address: sig.address } : {}),
         ...(sig.multisig
@@ -198,7 +343,12 @@ export function registerTransactionTools(server: McpServer) {
           event_type: e.eventType,
           sender: e.sender,
         };
-        if (!parsedUsable) return base;
+        if (!parsedUsable) {
+          // A zero budget skips the lookup entirely, and every event counts
+          // as omitted: the reader asked for no fields, not for no disclosure.
+          if (fieldBudget === 0) fieldsOmitted++;
+          return base;
+        }
         const json = parsed![i].json;
         const size = JSON.stringify(json ?? null).length;
         if (spent + size > fieldBudget) {
@@ -282,51 +432,49 @@ export function registerTransactionTools(server: McpServer) {
                   : {}),
                 token_flow: decoded.token_flow,
                 // Reported always, because "no coin moved" is only an absence
-                // of value when nothing else moved either. A balance change is
-                // derived from Coin<T>, so an NFT, a capability or a DeFi
-                // position changes hands without producing one.
+                // of value when nothing else moved either. A balance change
+                // nets coins and address balances, so an NFT, a capability or
+                // a DeFi position changes hands without producing one.
                 object_changes: objectSummary,
                 // The two counts describe different universes and a reader
                 // comparing them would otherwise be misled. `changed` counts
-                // every effect, including the coin that paid and any dynamic
-                // field the transaction walked; `object_transfers` keeps only
-                // what changed hands. Measured over 818 changed objects on
-                // mainnet, coins and dynamic fields were 48% of `changed`.
-                ...(objectSummary.changed > 0 && custody.length === 0
+                // every object effect, including the coin that paid and any
+                // dynamic field the transaction walked; `object_transfers`
+                // keeps only what changed hands. Measured over 818 changed
+                // objects on mainnet, coins and dynamic fields were 48% of
+                // `changed`. Address-balance writes are not objects and are
+                // not counted.
+                ...(objectSummary.changed > 0 && custody.length === 0 && deliveredOnCreation.length === 0
                   ? {
                       object_changes_note:
-                        "Objects were written but none changed hands. `changed` counts every effect, including the coin or balance that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
+                        "Objects were written but none changed hands. `changed` counts every object effect, including the coin that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
                     }
                   : {}),
-                ...(custody.length
+                ...(custody.length ? { object_transfers: custody.map(movementOut) } : {}),
+                ...(deliveredOnCreation.length
                   ? {
-                      object_transfers: custody.map((m) => ({
-                        object_id: m.object_id,
-                        type: m.type_short ?? m.type,
-                        kind: m.kind,
-                        // The owner KIND travels with the address. A
-                        // kiosk-held NFT is owned by the Kiosk object, so
-                        // reporting a bare address made a kiosk id read as a
-                        // wallet — verified on a TradePort sale where BOTH
-                        // parties were kiosks. `trace.ts` renders the same
-                        // movement as "kiosk/object 0x…" and the two tools must
-                        // not disagree about who a party is.
-                        from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
-                        to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
-                        category: m.category,
-                        ...(m.high_consequence ? { high_consequence: true } : {}),
-                        ...(m.renounced ? { renounced: true } : {}),
-                        ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
-                        ...(m.protocol ? { protocol: m.protocol } : {}),
-                        // The note states what a capability actually grants.
-                        // `high_consequence: true` alone says a finding exists
-                        // without saying what it is, and `trace.ts` carries the
-                        // full movement for exactly this reason.
-                        ...(m.note ? { note: m.note } : {}),
-                      })),
+                      created_for: deliveredOnCreation.map(movementOut),
+                      created_for_note:
+                        "These objects were created in this transaction and handed to an owner other than the sender. A mint delivered to someone else moves no coin, so it produces no balance change.",
+                    }
+                  : {}),
+                ...(addressBalanceOps.length ? { address_balance_ops: addressBalanceOps } : {}),
+                ...(fundsWithdrawals.length
+                  ? {
+                      funds_withdrawals: fundsWithdrawals,
+                      funds_withdrawals_note:
+                        "Each entry is an input authorising a withdrawal from the sender's or the gas sponsor's address balance, up to `amount`. What was actually withdrawn is in address_balance_ops and balance_changes.",
                     }
                   : {}),
                 ...(authorization.length ? { authorization } : {}),
+                ...(signers.signer_is_sender === false
+                  ? {
+                      signer_is_sender: false,
+                      authorized_by: signers.authorized_by,
+                      signer_note:
+                        "The sender's own key did not sign this transaction. It was authorized by the address(es) in authorized_by, acting for the sender through an address alias or a protocol-level substitution, so it is not evidence of what the sender's owner did.",
+                    }
+                  : {}),
                 ...(authorization.some((a) => a.multisig)
                   ? {
                       authorization_note:
@@ -334,14 +482,16 @@ export function registerTransactionTools(server: McpServer) {
                     }
                   : {}),
                 gas: formatGas(effects?.gasUsed),
+                ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
                 epoch: bigintToString(effects?.epoch),
                 checkpoint: bigintToString(tx?.checkpoint),
                 event_count: events.length,
                 ...(fieldsOmitted
                   ? {
                       event_fields_omitted: fieldsOmitted,
-                      event_fields_budget_note:
-                        `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
+                      event_fields_budget_note: fieldBudget === 0
+                        ? `Decoded fields for all ${fieldsOmitted} event(s) were skipped because you set max_event_field_bytes=0. Their types and senders are still listed. Remove the cap to see them; this response is NOT the complete event data.`
+                        : `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
                     }
                   : {}),
                 ...(rawEvents.length > 0 && fieldBudget > 0 && !parsedUsable
@@ -432,15 +582,13 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query raw Sui transactions with specific filters (sender, affected address/object, function, checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). For human-readable wallet activity, prefer get_transaction_history instead.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes — a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
+    "Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order` and filters. For human-readable wallet activity, prefer get_transaction_history instead.\n\nVERSIONS: a `function` filter matches calls made through that exact package version, and each version of an upgraded package sees its own share of the calls. `function_scope` names the lineage when the package has other versions; `all_versions: true` reads every version as one merged list.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes: a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
     {
-      sender: z.string().optional().describe("Filter by sender address"),
-      affected_address: z
-        .string()
+      sender: addressArg().optional().describe("Filter by sender address"),
+      affected_address: addressArg()
         .optional()
         .describe("Filter by affected address (sender, sponsor, or recipient). Mutually exclusive with affected_object and function."),
-      affected_object: z
-        .string()
+      affected_object: addressArg()
         .optional()
         .describe("Filter by affected object ID. Mutually exclusive with affected_address and function."),
       function: z
@@ -448,19 +596,28 @@ export function registerTransactionTools(server: McpServer) {
         .optional()
         .describe("Filter by Move function (e.g. 0x2::coin::transfer or 0x2::pay). Mutually exclusive with affected_address and affected_object."),
       after_checkpoint: z
-        .string()
+        .union([z.string(), z.number()])
         .optional()
-        .describe("Only transactions after this checkpoint"),
+        .describe("Only transactions after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes transactions at that time"),
       before_checkpoint: z
-        .string()
+        .union([z.string(), z.number()])
         .optional()
-        .describe("Only transactions before this checkpoint"),
-      limit: numArg().optional().describe("Max results (default 20)"),
-      after: z.string().optional().describe("Pagination cursor"),
+        .describe("Only transactions before this point: a checkpoint number, or an ISO 8601 time, which includes transactions at that time"),
+      order: z
+        .enum(["newest", "oldest"])
+        .optional()
+        .describe("'newest' (default) starts at the most recent match and pages back; 'oldest' starts at the earliest and pages forward."),
+      limit: numArg().int().min(1).max(50).optional().describe("Max results (default 20, max 50)"),
+      cursor: z.string().optional().describe("`next_cursor` from the previous page. Pass the same `order` and filters."),
       include_functions: boolArg()
         .optional()
         .describe(
           "Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB.",
+        ),
+      all_versions: boolArg()
+        .optional()
+        .describe(
+          "With `function`: read calls made through every version of the package's lineage, merged into one list (default false). Without it only the named version is read.",
         ),
     },
     async ({
@@ -470,9 +627,11 @@ export function registerTransactionTools(server: McpServer) {
       function: fn,
       after_checkpoint,
       before_checkpoint,
+      order,
       limit,
-      after,
+      cursor,
       include_functions,
+      all_versions,
     }) => {
       // Sui GraphQL only allows one of these per query
       const exclusiveFilters = [
@@ -487,138 +646,150 @@ export function registerTransactionTools(server: McpServer) {
         );
       }
 
-      const filterParts: Record<string, unknown> = {};
-      if (sender) filterParts.sentAddress = sender;
-      if (affected_address) filterParts.affectedAddress = affected_address;
-      if (affected_object) filterParts.affectedObject = affected_object;
-      if (fn) filterParts.function = fn;
-      if (after_checkpoint)
-        filterParts.afterCheckpoint = parseInt(after_checkpoint);
-      if (before_checkpoint)
-        filterParts.beforeCheckpoint = parseInt(before_checkpoint);
+      if (all_versions && !fn) {
+        return errorResult("all_versions applies to a `function` filter. Pass function as well.");
+      }
 
-      // Commands are only selected on request: they multiply response size on
-      // a page of 50, and most callers only want the digest list.
-      const includeFns = include_functions
-        ? `kind { ... on ProgrammableTransaction {
-             commands(first: 25) { nodes { ... on MoveCallCommand {
-               function { name module { name package { address } } }
-             } } }
-           } }`
-        : "";
+      try {
+        const direction = order ?? "newest";
+        const size = limit ?? 20;
+        const window = await resolveWindow(after_checkpoint, before_checkpoint);
 
-      const query = `
-        query($filter: TransactionFilter, $first: Int, $after: String) {
-          transactions(filter: $filter, first: $first, after: $after) {
-            nodes {
-              digest
-              sender { address }
-              gasInput { gasSponsor { address } }
-              ${includeFns}
-              effects {
-                status
-                gasEffects {
-                  gasSummary {
-                    computationCost
-                    storageCost
-                    storageRebate
-                  }
-                }
-                checkpoint { sequenceNumber }
-                timestamp
-              }
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
+        const filterParts: Record<string, unknown> = {};
+        if (sender) filterParts.sentAddress = sender;
+        if (affected_address) filterParts.affectedAddress = affected_address;
+        if (affected_object) filterParts.affectedObject = affected_object;
+        if (fn) filterParts.function = fn;
+        if (window.after?.checkpoint != null) filterParts.afterCheckpoint = window.after.checkpoint;
+        if (window.before?.checkpoint != null) filterParts.beforeCheckpoint = window.before.checkpoint;
+
+        let nodes: QueriedTx[];
+        let hasNextPage: boolean;
+        let nextCursor: string | null;
+        let versions: PackageVersion[] | null = null;
+        let functionScope: VersionScope | null = null;
+
+        if (fn && all_versions) {
+          versions = await fetchPackageVersions(fn.split("::")[0]);
         }
-      `;
-      const variables = {
-        filter: Object.keys(filterParts).length > 0 ? filterParts : undefined,
-        first: limit ?? 20,
-        after: after ?? undefined,
-      };
-      const data = await gqlQuery<{
-        transactions: {
-          nodes: Array<{
-            digest: string;
-            sender?: { address: string };
-            gasInput?: { gasSponsor?: { address: string } | null };
-            kind?: {
-              commands?: {
-                nodes: Array<{
-                  function?: { name: string; module: { name: string; package: { address: string } } };
-                }>;
-              };
-            };
-            effects?: {
-              status: string;
-              gasEffects?: {
-                gasSummary?: {
-                  computationCost: string;
-                  storageCost: string;
-                  storageRebate: string;
-                };
-              };
-              checkpoint?: { sequenceNumber: number };
-              timestamp?: string;
-            };
-          }>;
-          pageInfo: { hasNextPage: boolean; endCursor?: string };
-        };
-      }>(query, variables);
 
-      const transactions = data.transactions.nodes.map((n) => {
-        const sponsor = n.gasInput?.gasSponsor?.address ?? null;
-        const calls = (n.kind?.commands?.nodes ?? [])
-          .filter((c) => c.function)
-          .map((c) => `${c.function!.module.package.address}::${c.function!.module.name}::${c.function!.name}`);
+        if (fn && all_versions && versions && versions.length > 1) {
+          const streams = cursor
+            ? decodeFanoutCursor(cursor, direction)
+            : versions.map((v): VersionStream => ({ address: v.address, done: false }));
+          if (!streams) {
+            return errorResult(
+              "cursor is not an all_versions cursor for this order. Pass the next_cursor of a previous all_versions page, with the same order.",
+            );
+          }
+          const pages = await readVersionPages(streams, filterParts, fn, direction, size, !!include_functions);
+          const merged = mergeVersionPages(
+            streams,
+            pages,
+            direction,
+            size,
+            (n) => n.digest,
+            (n) => n.effects?.checkpoint?.sequenceNumber,
+          );
+          nodes = merged.nodes;
+          hasNextPage = merged.has_next_page;
+          nextCursor = merged.has_next_page ? encodeFanoutCursor(direction, merged.streams) : null;
+        } else {
+          const [data, scope] = await Promise.all([
+            gqlQuery<{ transactions: { nodes: QueriedTx[]; pageInfo: BothWaysPageInfo } }>(
+              `query($filter: TransactionFilter, $first: Int, $after: String, $last: Int, $before: String) {
+                transactions(filter: $filter, first: $first, after: $after, last: $last, before: $before) {
+                  nodes { ...T }
+                  ${BOTH_WAYS_PAGE_INFO}
+                }
+              } ${queriedTxFragment(!!include_functions)}`,
+              {
+                filter: Object.keys(filterParts).length > 0 ? filterParts : undefined,
+                ...orderedPageArgs(direction, size, cursor),
+              },
+            ),
+            fn && !all_versions ? versionScopeNote(fn, "function") : Promise.resolve(null),
+          ]);
+          functionScope = scope;
+          const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
+          nodes = page.nodes;
+          hasNextPage = page.has_next_page;
+          nextCursor = page.next_cursor;
+        }
+
+        // Every Move call, not the first page of 50 commands: a PTB split
+        // across more reads as fewer protocol legs than it has.
+        const commands = include_functions
+          ? await completeTxConnections(nodes.map((n) => ({ digest: n.digest, commands: n.kind?.commands })))
+          : null;
+        // Calls into any version of the filtered lineage count as matched.
+        const lineage = new Set(
+          (versions ?? []).map((v) => normalizeSuiAddress(v.address)).concat(fn ? [normalizeSuiAddress(fn.split("::")[0])] : []),
+        );
+
+        const transactions = nodes.map((n, i) => {
+          const sponsor = n.gasInput?.gasSponsor?.address ?? null;
+          const callNodes = (commands?.[i].commands ?? []).filter((c) => c.function);
+          const calls = callNodes.map(
+            (c) => `${c.function!.module.package.address}::${c.function!.module.name}::${c.function!.name}`,
+          );
+
+          return {
+            digest: n.digest,
+            sender: n.sender?.address,
+            status: n.effects?.status,
+            checkpoint: n.effects?.checkpoint?.sequenceNumber,
+            timestamp: n.effects?.timestamp,
+            gas_sponsor: sponsor,
+            // Sponsorship is one of the stronger coordination signals on Sui: a
+            // swarm of wallets whose gas is paid by one address is not organic.
+            // The sponsor equals the sender for ordinary self-paid transactions.
+            gas_sponsored: sponsor !== null && sponsor !== n.sender?.address,
+            ...(include_functions
+              ? {
+                  move_calls: calls,
+                  ...(commands?.[i].commandsTruncated ? { move_calls_truncated: true } : {}),
+                  // How much of this PTB belongs to the filtered package, so
+                  // over-attribution is visible instead of assumed.
+                  ...(fn
+                    ? {
+                        matched_calls: callNodes.filter((c) =>
+                          lineage.has(normalizeSuiAddress(c.function!.module.package.address)),
+                        ).length,
+                        total_calls: calls.length,
+                      }
+                    : {}),
+                }
+              : {}),
+          };
+        });
 
         return {
-          digest: n.digest,
-          sender: n.sender?.address,
-          status: n.effects?.status,
-          checkpoint: n.effects?.checkpoint?.sequenceNumber,
-          timestamp: n.effects?.timestamp,
-          gas_sponsor: sponsor,
-          // Sponsorship is one of the stronger coordination signals on Sui: a
-          // swarm of wallets whose gas is paid by one address is not organic.
-          // The sponsor equals the sender for ordinary self-paid transactions.
-          gas_sponsored: sponsor !== null && sponsor !== n.sender?.address,
-          ...(include_functions
-            ? {
-                move_calls: calls,
-                // How much of this PTB belongs to the filtered package, so
-                // over-attribution is visible instead of assumed.
-                ...(fn
-                  ? {
-                      matched_calls: calls.filter((c) => c.startsWith(fn.split("::")[0])).length,
-                      total_calls: calls.length,
-                    }
-                  : {}),
-              }
-            : {}),
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  order: direction,
+                  window: describeWindow(after_checkpoint, before_checkpoint, window),
+                  ...shownRange(nodes.map((n) => n.effects?.timestamp)),
+                  ...(all_versions && versions
+                    ? { versions_read: versions.map((v) => ({ package: v.address, version: v.version })) }
+                    : {}),
+                  ...(functionScope ? { function_scope: functionScope } : {}),
+                  transactions,
+                  has_next_page: hasNextPage,
+                  next_cursor: nextCursor,
+                },
+                null,
+                2
+              ),
+            },
+          ],
         };
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                transactions,
-                has_next_page: data.transactions.pageInfo.hasNextPage,
-                next_cursor: data.transactions.pageInfo.endCursor,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 

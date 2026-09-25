@@ -1,15 +1,41 @@
-import { z } from "zod";
-import { errorResult, isNotFound } from "../utils/errors.js";
+import { addressArg } from "./args.js";
+import { describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { fetchActiveValidators, findValidatorByAddress } from "../utils/validators.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { suivisionPackageUrl } from "../config.js";
+import { getNetwork, suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
-import { describeAddresses, type AddressIdentity, type AliasSet } from "../utils/identity.js";
+import { describeAddresses, heldNamesNote, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
+import { formatCoinAmount } from "../utils/coin-amount.js";
+import { objectAddressBalanceFields } from "../utils/address-balance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getLabel, isSinkCategory, labelProvenance } from "../utils/labels.js";
+import { guardiansFlagsForObjectType, guardiansFlagsForPackage, type GuardiansFlag } from "../utils/guardians.js";
+
+/**
+ * The address's label with its provenance, spread into every case's result.
+ * The recommended first step is where an investigator learns that an address
+ * is a Binance reserve wallet or a named exploiter, and on what evidence.
+ */
+function labelFields(address: string) {
+  const found = getLabel(address);
+  if (!found) return {};
+  return {
+    label: {
+      label: found.label,
+      category: found.category,
+      source: found.source,
+      is_sink: isSinkCategory(found.category),
+      ...labelProvenance(found),
+      ...(found.notes ? { notes: found.notes } : {}),
+    },
+  };
+}
+
+const flaggedFields = (flags: GuardiansFlag[]) => (flags.length > 0 ? { flagged_by: flags } : {});
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
   packageVersions(address: $addr, last: 1) { nodes { address version } }
@@ -111,7 +137,7 @@ export function registerIdentifyTools(server: McpServer) {
     "identify_address",
     "(Recommended first step) Identify what a Sui address is: wallet, package, validator, or object. Returns a type classification with contextual summary (e.g. balance + SuiNS for wallets, module list for packages, stake info for validators). Use this before deciding which other tools to call.",
     {
-      address: z.string().describe("Sui address or object ID (0x...)"),
+      address: addressArg().describe("Sui address or object ID (0x...)"),
     },
     async ({ address }) => {
       // Try to get object at this address first.
@@ -196,6 +222,8 @@ export function registerIdentifyTools(server: McpServer) {
             text: JSON.stringify({
               address,
               type: "package",
+              ...labelFields(address),
+              ...flaggedFields(guardiansFlagsForPackage(address)),
               protocol,
               lineage,
               publisher,
@@ -217,6 +245,12 @@ export function registerIdentifyTools(server: McpServer) {
       if (obj && objectType && !objectType.startsWith("0x2::coin::Coin")) {
         const owner = formatOwner(obj.owner);
         const isShared = owner?.startsWith("shared");
+        // Funds an object holds in its own address balance are not among its
+        // fields, so neither this answer nor get_object's content would show
+        // them without asking. A bridge vault holding ~118k USDC this way read
+        // as an ordinary shared object.
+        const held = await objectAddressBalanceFields(address);
+        const holdsFunds = Array.isArray(held.address_balances) && held.address_balances.length > 0;
 
         return {
           content: [{
@@ -225,11 +259,18 @@ export function registerIdentifyTools(server: McpServer) {
               address,
               type: isShared ? "shared_object" : "object",
               object_type: objectType,
+              ...labelFields(address),
+              ...flaggedFields(guardiansFlagsForObjectType(objectType)),
               owner,
               version: obj.version?.toString(),
-              hint: isShared
-                ? "This is a shared object (e.g. a pool, registry, or protocol state). Use get_object for full content."
-                : "This is an owned object. Use get_object for full content.",
+              ...held,
+              hint:
+                (isShared
+                  ? "This is a shared object (e.g. a pool, registry, or protocol state). Use get_object for its fields."
+                  : "This is an owned object. Use get_object for its fields.") +
+                (holdsFunds
+                  ? " The funds under address_balances are held by the object itself and are not among those fields."
+                  : ""),
             }, null, 2),
           }],
         };
@@ -246,8 +287,9 @@ export function registerIdentifyTools(server: McpServer) {
               type: "validator",
               name: validator.name,
               staking_pool_sui_balance: validator.staking_pool_sui_balance,
+              staking_pool_sui_balance_formatted: formatCoinAmount(validator.staking_pool_sui_balance, "0x2::sui::SUI"),
               commission_rate_bps: validator.commission_rate_bps,
-              hint: "Use get_validator_detail for full info, or get_staking_summary for delegation positions.",
+              hint: `Use get_validators {"address": "${address}"} for full detail (credentials, staking stats, network addresses), or get_staking_summary for delegation positions.`,
             }, null, 2),
           }],
         };
@@ -255,12 +297,16 @@ export function registerIdentifyTools(server: McpServer) {
 
       // CASE 4: Treat as a wallet address — fetch summary data in parallel
       const [balanceRes, nameRes, ownedRes, identities] = await Promise.all([
-        sui.getBalance({ owner: address }).catch(() => null),
+        // Each read reports its own failure: a failed balance read is not a
+        // zero balance, and a failed name lookup is not the absence of a name.
+        sui.getBalance({ owner: address }).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
         sui.nameService
           .reverseLookupName({ address })
           .then(({ response }) => response.record?.name ?? null)
-          .catch(() => null),
-        sui.listBalances({ owner: address, limit: 10, cursor: null }).catch(() => null),
+          .catch((err: unknown) => (isNotFound(err) ? null : { failed: describeError(err, getNetwork()) })),
+        sui.listBalances({ owner: address, limit: 10, cursor: null }).catch((err: unknown) => ({
+          failed: describeError(err, getNetwork()),
+        })),
         // Who can spend from it, and — if that is a committee — who those
         // members are. This is the tool that answers "what is this address",
         // so a multisig going unmentioned here is the omission that matters
@@ -271,16 +317,47 @@ export function registerIdentifyTools(server: McpServer) {
         // answer the same question from the other side: since
         // `0x2::address_alias`, a committee being unable to rotate no longer
         // means the committee is the only way to move the funds.
+        // A failed lookup must not render as "never sent a transaction".
         describeAddresses([address], { expandMembers: true, aliases: true }).catch(
-          () => new Map<string, AddressIdentity>(),
+          () =>
+            new Map<string, AddressIdentity>([
+              [address, { address, kind: "wallet", authentication_unavailable: true, aliases_unavailable: true }],
+            ]),
         ),
       ]);
 
-      const suiBalance = balanceRes?.balance?.balance ?? "0";
-      const nonZeroTokens = ownedRes?.balances?.filter((b) => b.balance !== "0").length ?? 0;
+      const balanceFailed = "failed" in balanceRes ? balanceRes.failed : null;
+      const suiBalance = "failed" in balanceRes ? null : (balanceRes.balance?.balance ?? "0");
+      const nameFailed = nameRes !== null && typeof nameRes === "object" ? nameRes.failed : null;
+      const suiName = typeof nameRes === "string" ? nameRes : null;
+      const tokensFailed = "failed" in ownedRes ? ownedRes.failed : null;
+      const nonZeroTokens = "failed" in ownedRes ? null : (ownedRes.balances?.filter((b) => b.balance !== "0").length ?? 0);
       const auth = identities.get(address)?.authentication;
       const committee = identities.get(address)?.committee_members;
       const aliases = identities.get(address)?.aliases;
+      const identity = identities.get(address);
+      const namesNote = identity ? heldNamesNote(identity) : undefined;
+
+      // No live object and no signature, yet a transaction recorded this id as
+      // an object: the UID of something wrapped or deleted, such as a zkSend
+      // bag. Calling it a wallet sends the reader looking for an owner's key.
+      if (identity?.kind === "wrapped_or_deleted_object") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              address,
+              type: "wrapped_or_deleted_object",
+              object_seen_in: identity.object_seen_in,
+              sui_balance: suiBalance,
+              token_count: nonZeroTokens,
+              meaning:
+                "No live object is at this id and nothing has ever signed for it, but a transaction recorded it as an object id. It is the id of an object that was wrapped inside another object or deleted. Value sent to it is held by that object and leaves only through the module that owns it, in a transaction someone else sends.",
+              hint: `Use get_transaction on ${identity.object_seen_in} to see which object this was, and trace_funds forward to follow value out of it.`,
+            }, null, 2),
+          }],
+        };
+      }
 
       return {
         content: [{
@@ -288,18 +365,29 @@ export function registerIdentifyTools(server: McpServer) {
           text: JSON.stringify({
             address,
             type: "wallet",
-            sui_name: nameRes,
+            ...labelFields(address),
+            sui_name: suiName,
+            ...(nameFailed
+              ? { sui_name_unavailable: `The SuiNS reverse lookup failed (${nameFailed}), so whether this address has a name is unknown.` }
+              : {}),
             // Stated at the point of use, not just in the tool description: a
             // name is the strongest pull toward off-chain identity this server
             // emits, and it is the least verified thing in the response.
-            ...(nameRes
+            ...(suiName
               ? {
                   sui_name_caveat:
                     "Self-chosen, purchasable handle — not identity and not verified. Anyone may register a name resembling an exchange, project or person. Corroborate before treating it as attribution.",
                 }
               : {}),
             sui_balance: suiBalance,
+            sui_balance_formatted: formatCoinAmount(suiBalance, "0x2::sui::SUI"),
+            ...(balanceFailed
+              ? { sui_balance_unavailable: `The SUI balance read failed (${balanceFailed}), so the balance is unknown, not zero.` }
+              : {}),
             token_count: nonZeroTokens,
+            ...(tokensFailed
+              ? { token_count_unavailable: `The balance list read failed (${tokensFailed}), so how many tokens this address holds is unknown.` }
+              : {}),
             // Absent means this address has never SENT a transaction, so it
             // has produced no signature to read. That is not the same as an
             // ordinary single-key wallet, and the caveat says so rather than
@@ -308,9 +396,15 @@ export function registerIdentifyTools(server: McpServer) {
             ...(auth
               ? {}
               : {
-                  authentication_caveat:
-                    "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
+                  // Only one of three readings is "never sent": the lookup can
+                  // fail, and a sent transaction can be signed by someone else.
+                  authentication_caveat: identity?.authentication_unavailable
+                    ? "The lookup that reads this address's signatures failed, so how it authenticates, and whether it has sent anything, is unknown. Retry rather than reading this as a never-used address."
+                    : identity?.foreign_authorization
+                      ? `This address has sent transactions, but none of the ${identity.foreign_authorization.transactions_examined} examined carries its own signature: ${identity.foreign_authorization.digest} was authorized by ${identity.foreign_authorization.authorized_by.join(", ")}, acting for it through an address alias or a protocol-level substitution. How the address itself authenticates is unknown.`
+                      : "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
                 }),
+            ...(identity?.foreign_authorization ? { foreign_authorization: identity.foreign_authorization } : {}),
             ...(committee ? { committee_members: committee } : {}),
             // Absent means no AddressAliases object exists. Most wallets have
             // never enabled the feature, so the field is omitted rather than
@@ -338,6 +432,11 @@ export function registerIdentifyTools(server: McpServer) {
                     "The alias set could not be read, so whether this wallet has authorized anyone else is unknown rather than settled.",
                 }
               : {}),
+            // Every registration it holds, with how each one arrived. A name
+            // another address sent is reported so it is not read as the
+            // holder's own.
+            ...(identity?.names_held?.length ? { names_held: identity.names_held } : {}),
+            ...(namesNote ? { names_note: namesNote } : {}),
             hint: auth?.scheme === "multisig"
               ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliasHint(aliases)}`
               : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",

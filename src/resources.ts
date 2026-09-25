@@ -2,6 +2,8 @@ import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { sui } from "./clients/grpc.js";
 import { formatOwner } from "./utils/formatting.js";
 import { DEFAULT_NETWORK, isSuiNetwork, runWithNetwork, type SuiNetwork } from "./config.js";
+import { renderCaseReport } from "./utils/case-report.js";
+import { listCases, loadFindings, storeStatus } from "./utils/store.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Resource URI variables arrive as string | string[] | undefined.
@@ -147,6 +149,26 @@ async function walletNfts(uri: URL, vars: Vars): Promise<ResourceResult> {
   };
 }
 
+/**
+ * A recorded case as its Markdown report, the same document `export_case`
+ * renders. Cases live in the local store, so this is not per-network, and the
+ * list is every case the store holds.
+ */
+async function caseReport(uri: URL, vars: Vars): Promise<ResourceResult> {
+  const status = storeStatus();
+  if (!status.enabled) {
+    throw new Error(`Cases need the local store, which is off (${status.reason}). Set SUI_STORE_PATH and restart.`);
+  }
+  const caseName = decodeURIComponent(first(vars.name));
+  const findings = loadFindings(caseName);
+  if (findings.length === 0) {
+    throw new Error(`No findings recorded for case '${caseName}'. list_findings with no arguments lists the cases.`);
+  }
+  return {
+    contents: [{ uri: uri.href, mimeType: "text/markdown", text: renderCaseReport({ caseName, findings }) }],
+  };
+}
+
 export function registerAllResources(server: McpServer) {
   // Each resource is reachable as `sui://<path>` (default network) or
   // `sui://<network>/<path>` (mainnet | testnet | devnet).
@@ -171,5 +193,22 @@ export function registerAllResources(server: McpServer) {
     "wallet/{address}/nfts",
     "NFTs and non-coin objects for a Sui wallet",
     walletNfts,
+  );
+  server.resource(
+    "case",
+    new ResourceTemplate("sui://case/{name}", {
+      list: async () => ({
+        resources: storeStatus().enabled
+          ? listCases().map((c) => ({
+              uri: `sui://case/${encodeURIComponent(c.case_name)}`,
+              name: c.case_name,
+              description: `${c.finding_count} finding(s)`,
+              mimeType: "text/markdown",
+            }))
+          : [],
+      }),
+    }),
+    { description: "A recorded investigation case as a Markdown report, as export_case renders it", mimeType: "text/markdown" },
+    (uri, vars) => caseReport(uri, vars as Vars),
   );
 }

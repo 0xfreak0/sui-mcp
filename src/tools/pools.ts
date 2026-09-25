@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
@@ -127,7 +128,7 @@ export function registerPoolTools(server: McpServer) {
     "get_pool_stats",
     "Get stats for a DeFi liquidity pool on Sui given its object ID. Auto-detects the protocol (Cetus, DeepBook, Turbos, etc.) and returns token pair, reserves, fees, and current prices.",
     {
-      pool_id: z.string().describe("Pool object ID (0x...)"),
+      pool_id: addressArg().describe("Pool object ID (0x...)"),
       protocol: z
         .string()
         .optional()

@@ -17,13 +17,14 @@ src/
 ├── index.ts              # MCP server entry point (stdio transport)
 ├── config.ts             # Network endpoints, constants
 ├── clients/              # gRPC + GraphQL client setup
-├── tools/                # One file per tool category (68 tools total)
+├── tools/                # One file per tool category (76 tools total)
 ├── protocols/            # Protocol registry for tx decoding
 ├── data/                 # Static JSON data (token registry, etc.)
 ├── utils/                # Shared helpers (formatting, SuiNS, etc.)
 ├── discovery.ts          # Token discovery (static + Aftermath fallback)
 ├── discovery-nft.ts      # NFT collection discovery
-└── resources.ts          # MCP resources
+├── prompts.ts            # MCP prompts (task + forensics skill sections)
+└── resources.ts          # MCP resources (chain reads, sui://case/{name})
 ```
 
 Per-call network selection. `SUI_NETWORK` sets only the *default* (mainnet if
@@ -32,9 +33,11 @@ unset); every tool also takes an optional `network` arg ("mainnet" | "testnet"
 testnet value to mainnet).
 
 - `src/tools/with-network.ts` wraps `server.tool` once: it injects the `network`
-  arg into every tool's schema and runs each handler inside
-  `runWithNetwork(network)` (an `AsyncLocalStorage` context in `config.ts`).
-  Individual tool files are untouched.
+  arg into every chain tool's schema, runs each handler inside
+  `runWithNetwork(network)` (an `AsyncLocalStorage` context in `config.ts`), and
+  registers the tool through `registerTool` with the metadata from
+  `src/tools/tool-meta.ts` (see Tool metadata below). Individual tool files are
+  untouched.
 - `sui` / `archive` (grpc) and `gqlQuery` (graphql) are **proxies** over
   per-network client caches (`getClients`, `getGraphqlClient`). They re-resolve
   against `getNetwork()` on every access, so the same imported reference targets
@@ -100,11 +103,119 @@ Two rules:
   to exhaustion would put fifty digests back into dozens of requests. A
   transaction with more events says so and names `get_transaction`, which pages
   to the end. Breadth here, depth there, and the boundary is stated rather than
-  silently applied.
+  silently applied. Balance changes and commands are NOT a page here: they are
+  completed (below), because protocols and flows are concluded from them.
 
 A null entry is positional: it means that digest returned nothing, which is a
 wrong digest or a pruned transaction and the two are indistinguishable at this
 layer. `get_transaction` falls back to the archive; this does not.
+
+## Nested connections are pages
+
+`TransactionEffects.balanceChanges`, `ProgrammableTransaction.commands` and
+`TransactionEffects.events` are GraphQL connections. Selected without `first:`
+they return the service's default page of **20** (max 50) and say nothing about
+the rest unless `pageInfo` is selected. FujboNeQt8Nbb… has 202 balance changes;
+every GraphQL read of it saw 20, and the payer's debit, sorting past row 20,
+was missing from history, traces, funding and fan-out alike.
+
+- **Select them through `src/utils/tx-connections.ts`.**
+  `BALANCE_CHANGES_SELECTION` / `COMMANDS_SELECTION` ask for 50 with `pageInfo`,
+  and `completeTxConnections` (a page of transactions) or `readAllBalanceChanges`
+  / `readAllCommands` (one) page the rest by digest. A transaction under 50 rows
+  costs nothing extra; the transaction node must select `digest`.
+- **A failed continuation is `truncated`, never a short list.** Surface it
+  (`incomplete_transactions`, `balance_changes_truncated`, a watch hit's
+  `incomplete`) or refuse the conclusion, as `countTxRecipients` does by
+  returning null rather than an understated recipient count.
+- **Metered callers charge the follow-ups.** `CompletedTx.reads` counts them;
+  `edge-probe.ts` charges them to its `Budget`, `watch-probe.ts` to `requests`.
+- `objectChanges` defaults to 1,024 per page; `trace-read.ts` pages it and
+  `watch-probe.ts` flags `object_changes_truncated`. Events of one transaction
+  are paged by `event-json.ts`.
+
+The service also caps a query document at 5,000 bytes, 300 query nodes and 21
+aliased connections, which is why the selections are compact strings and
+aliased batches stay at 20.
+
+## Lists start at the newest row
+
+GraphQL's `first`/`after` returns the OLDEST rows. A list tool that pages with
+it shows an established address as it was years ago: `recent_transactions`
+listed a wallet's first five transactions, and the address-poisoning check ran
+over the oldest page, where recent dust never is. `get_transaction_history`,
+`query_transactions` and `query_events` default to `order: "newest"` through
+`orderedPageArgs` / `orderedPage` in `src/utils/pagination.ts`: `last`/`before`,
+each page reversed for display, `next_cursor` going back as `cursor` with the
+same `order`, and every page echoing `order`, `oldest_shown` and
+`newest_shown`. Selecting `BOTH_WAYS_PAGE_INFO` is required, since the newest
+walk continues on `hasPreviousPage` / `startCursor`.
+
+Forward walks remain where the question is "since X": first funding,
+`trace_funds` forward, `check_activity` with a baseline, `poll_watch`, and
+`build_timeline` with `from`. Anything else asking "what is this address doing"
+walks back, as `measureFanout` does.
+
+## Time windows go into the filter
+
+A window is applied as `afterCheckpoint` / `beforeCheckpoint`, never by
+filtering timestamps after fetching. Filtered afterwards, a window applies to
+whatever the first page held: `build_timeline` over one day of an address
+active since 2023 returned nothing, and its `activity_hours` described 2023.
+
+- **`resolveWindow` / `toFilterBound`** (`src/utils/checkpoint-time.ts`) turn an
+  ISO edge into the exclusive checkpoint the filter takes, using
+  `checkpointBracket`, which refines to two ADJACENT checkpoints either side of
+  the time. `toCheckpoint` stops within a minute, which is fine for a point
+  and wrong for an edge: a minute is a third of a three-minute incident
+  window. Both edges are inclusive in time.
+- **Parse before probing.** An unparseable bound is an error before any
+  request, never a silently unbounded read.
+- **A budget that stops a walk says where.** `build_timeline` reports per
+  address `truncated`, `reached_checkpoint` and a `continue_with` bound that
+  re-reads the boundary checkpoint, since other transactions of that address
+  may sit in it.
+
+### A past balance is reconstructed from one anchor
+
+`address(atCheckpoint:).balance` answers only inside the consistent range
+(`serviceConfig.availableRange(type: "Address", field: "balance")`, about an
+hour). Older points are reconstructed in `src/utils/historical-balance.ts`:
+the balance at an anchor A minus the owner's changes in every transaction in
+checkpoints (C, A].
+
+- **Both reads use the same A.** The balance is read with `atCheckpoint: A`
+  and the scan filter stops at `beforeCheckpoint: A + 1`. Reading "now" twice
+  lets a transaction landing between the reads count on one side only. A sits
+  a few checkpoints below the range's newest end, because the anchored read is
+  a separate request and may reach a replica that is slightly behind.
+- **No partial sum is a balance.** A budget stop, a transaction whose balance
+  changes could not all be read, or a negative result gives `balance: null`
+  and `complete: false`, with `reached_checkpoint` saying how far back the
+  scan got.
+- **`affectedAddress` is the complete set.** It includes every owner of a
+  balance change, an object id with an address-balance deposit included
+  (verified on `BkxPKc7F…`, +4 SUI into a StakedSui's address balance).
+  Balance changes net coins and the address balance, so a reconstructed point
+  has no coin/address split; report null, never zero.
+
+## A package ID names one version
+
+A Sui upgrade mints a new package ID, and two kinds of filter bind to one
+version:
+
+- **Event types carry the DEFINING package**, the version that introduced the
+  struct. DeepBook margin's `LiquidationEvent` queried at the latest ID returned
+  nothing and at the original returned the liquidations. `resolveEventTypeFilter`
+  (`src/utils/package-versions.ts`) reads `typeOrigins` and rewrites the filter;
+  a module- or package-level type spanning several defining IDs keeps one and
+  lists the rest. Type origins never change, so they are cached per network.
+- **`function` and `module` filters match calls through that exact version.**
+  Each version sees a disjoint share of the calls, so a non-empty answer is
+  still partial. `versionScopeNote` names the lineage; `all_versions` on
+  `query_transactions` reads every version as aliased connections and merges
+  them (`src/utils/version-fanout.ts`), with a cursor recording each version's
+  position so no call is skipped or repeated across pages.
 
 ## Address identity in investigation flows
 
@@ -124,8 +235,23 @@ Two things it adds that the flows were missing:
   aliases vanish from an investigation. The `SuinsRegistration` object outlives
   expiry, so held registrations are read directly and expired ones are flagged
   rather than dropped. Measured on one wallet: reverse lookup gave 1 name, the
-  registrations gave 10, six of them expired. An expired name is still
-  attribution — the address was known by it at the time of the activity.
+  registrations gave 10, six of them expired.
+
+Holding a registration is not attribution by itself: the NFT is transferable,
+and anyone can send one to any address. Each held name carries a `provenance`
+read from the registration's `previousTransaction`, fetched in the same
+held-names request, so it costs no extra call. An owned object can only be
+written by a transaction its owner sent, so a sender other than the holder means
+that transaction delivered it and the holder has not touched it since
+(`received_from_third_party`, with `received_from`). A name the holder sent the
+last write for, or that is its current reverse record (only the address itself
+can set that), is its own: the address was known by it. A missing
+`previousTransaction` is `unknown`, and must stay unknown rather than defaulting
+either way. `classifyHeldNames` is the one place this split is made; the notes
+in `identityNote`, `find_funding_sources` and `identify_address` all read it.
+Do not reintroduce "was known by" wording for a received name: the Cetus
+attacker holds a taunt name `0x407fb974` sent it after validators froze the
+wallet.
 
 The registration type is matched at **module** level. A Move type keeps the
 package that defined it, so this does not drift on upgrade — the opposite of the
@@ -176,12 +302,34 @@ pool of gas coins.
   `custodyChanges` already exist for `trace_funds`. This tool simply was not
   calling them, so the deep-dive single-transaction tool saw less than the trace
   did. Pass `lookupProtocol`, not the display resolver: the resolver gates a
-  `defi-position` promotion, and `trace.ts` passes the curated one.
+  `defi-position` promotion, and `trace-read.ts` passes the curated one.
 - **`object_transfers` carries the owner KIND, not a bare address.** A
   kiosk-held NFT is owned by the Kiosk object, so an address alone made a kiosk
   id read as a wallet. Verified on a TradePort sale where both parties were
   kiosks. `trace.ts` renders the same movement as `kiosk/object 0x…` and the
   two tools must not disagree about who a party is.
+- **Accumulator writes are not objects.** Effects list every address-balance
+  deposit or withdrawal as a `ChangedObject` with `outputState:
+  ACCUMULATOR_WRITE` and an `accumulatorWrite`; GraphQL `objectChanges` omits
+  them. Counted as objects, `CD2e4GVC…` (redeem 1951 MIST from the sender's
+  address balance, `send_funds` it on, gas from the address balance) reported
+  `changed: 2` and "none changed hands" while touching no object.
+  `summarizeObjectChanges` skips them; `address_balance_ops`,
+  `funds_withdrawals` (from the transaction's inputs) and `gas_source` (an
+  empty `gasPayment.objects`, or a reference whose digest ends in twenty 0xAC
+  bytes, is the address balance) report them instead. All three ride the
+  response already fetched.
+- **A deleted coin can be a self-sweep.** `34q8kUTe…` deleted a 704,848 SUI gas
+  coin and MERGEd it into the same owner's address balance while
+  `balance_changes` showed only the -100k payment. A coin deleted from owner X
+  plus a deposit of the same type to X is flagged on that deposit
+  (`converted_from_coins`), so a large deleted coin does not read as spent.
+- **A creation for someone else is not "none changed hands".** `custodyChanges`
+  leaves creations out, so Cetus's multisig minting NFTs to both exploiter
+  addresses (`8eHgw5hB…`) read as nothing moving. `createdFor` reports objects
+  created for an address, object or consensus owner other than the sender as
+  `created_for`, and the "none changed hands" note is withheld when there are
+  any.
 
 ## Completeness beats payload size
 
@@ -196,18 +344,126 @@ for the outlier is the right trade. Bounding the payload is the caller's
 decision, and when they make it the response says plainly that it is not the
 complete event data.
 
+Tools whose complete result is the point declare
+`_meta['anthropic/maxResultSizeChars']` (500k, Claude Code's ceiling) in
+`tool-meta.ts`. Claude Code otherwise writes a result over ~50k characters to a
+file and shows the model a 2 KB preview, which is a default cap by another
+route.
+
+A default view is different from a cap when nothing is dropped from the answer,
+only moved behind an argument that the response names. `analyze_package` and
+`get_package` return a per-module summary (counts, entry and public function
+names) and compact JSON, because the full listing of `0x2` is 272k characters;
+`modules: [...]` or `detail: 'full'` returns struct shapes and signatures.
+`analyze_package` folds caps of one type and ownership into one entry that still
+lists every object and holder. `find_funding_sources` keeps each result's origin,
+first funder and first hop, and `include_chains` returns every hop; shared
+funders, co-funding and payments are computed from the full chains either way.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from
 `src/tools/args.ts`, never bare `z.number()` / `z.boolean()`. A model composing
 JSON will sometimes quote a value (`max_hops: "8"`), and strict validation turns
 that into a hard failure for something whose intent was never ambiguous.
-Coercion does not loosen the advertised contract — the generated JSON schema is
-byte-identical — and `"abc"` is still rejected.
+Leniency does not loosen the advertised contract: the generated JSON schema is
+byte-identical, and `"abc"` is still rejected.
+
+`numArg` is not `z.coerce.number()`. `Number("")`, `Number(" ")` and
+`Number(false)` are all 0, so an empty placeholder became `limit: 0` and the
+tool answered with an empty page and `has_next_page: false`. Only a string that
+spells a decimal number is converted. `NumArg` overrides `_addCheck` and
+`setLimit` because zod builds every `.int()` / `.min()` / `.max()` with a
+hard-coded `new ZodNumber`, which would drop the string handling. Put the
+service's cap in the schema (`.int().min(1).max(50)` on a GraphQL page size)
+rather than clamping silently in the handler.
 
 `boolArg` is deliberately not `z.coerce.boolean()`, which applies JavaScript
 truthiness and turns the string `"false"` into `true`. Silently inverting a
 caller's intent is worse than the rejection this is meant to fix.
+
+Every Sui address, object ID or package ID param uses `addressArg()` /
+`addressListArg()`. They trim, lower-case, add `0x`, pad to 64 hex digits and
+reject anything that is not hex (`canonicalSuiAddress` in `chain-id.ts`, the
+same rule the store applies). The chain reports addresses canonically, so a
+handler comparing a raw upper-case or short argument against chain data never
+matches: an upper-case address turned `find_funding_source` into a dead end, a
+fan-out into zero counterparties, and a validator into a wallet. Params that
+also take an MVR name (`@org/app`) or a CAIP-10 id (`manage_labels`,
+`save_finding`) stay `z.string()` and normalise in the handler.
+
+`addressArg` also accepts a SuiNS name (`name.sui`) and leaves it as the name.
+`withNetworkParam` finds address fields with `isAddressSchema`, resolves names
+on the call's network before the handler runs, and adds `resolved_from` plus a
+note that the name is a purchasable handle. An unregistered name is an error,
+not a pass-through.
+
+`withNetworkParam` also wraps every field so `null` means unset (an optional
+field gets its default, a required one reports "Required") and a bare string
+where a list is expected becomes a one-item list. This runs as a `z.preprocess`
+on each field, so the JSON schema is the field's own.
+
+### Tool metadata
+
+`src/tools/tool-meta.ts` holds every tool's MCP metadata, applied by
+`withNetworkParam` at registration, so a new tool is covered without touching
+its file. The default is a chain read: a title derived from the name,
+`readOnlyHint: true`, `openWorldHint: true`, and the `network` argument. The
+`OVERRIDES` table lists the exceptions.
+
+- **A tool that writes a record is not read-only.** `save_finding`,
+  `delete_finding`, `manage_labels`, `watch_addresses` and `poll_watch` (it
+  advances each watch's cursor) have `readOnlyHint: false`, and the ones that
+  can delete have `destructiveHint: true`. A client auto-approves a read-only
+  tool, so a writer marked read-only writes without the user being asked. Cache
+  writes (`saveTransaction`, `saveFanout`, `saveFirstFunder`,
+  `saveKioskOwners`) do not count: a cached answer is the same answer.
+  `test/tool-annotations.test.ts` calls each writer against a temporary store
+  and fails when a tool that changed a row is marked read-only, or when a tool
+  marked as writing is not exercised there.
+- **`network: false` only for tools that never touch the chain and never
+  qualify a bare address.** `list_findings`, `export_case` and `delete_finding`
+  qualify. `save_finding`, `manage_labels` and `watch_addresses` do not: a bare
+  address they are given is recorded against the call's network. The injected
+  description is one line because it repeats in every schema; it was 23% of the
+  whole tool list at three sentences.
+- **`structured: true`** adds the first JSON-object text item as
+  `structuredContent`. It is opt-in because the payload then travels twice.
+  `trace_funds` puts its prose summary in the first item and its JSON in the
+  second, and the JSON is what becomes structured content.
+
+`enable_tools` is registered on the raw server and reads the same table. Its
+description lists every tool of each profile that is still off and must stay
+under 2,048 characters, where Claude Code cuts descriptions; past that, the
+longest lists turn into counts. Toggling tools goes through
+`batchToolListChanged`, which sends one `tools/list_changed` for the whole call
+rather than one per tool.
+
+### Errors a tool returns
+
+`withNetworkParam` catches a thrown error and returns `errorResult` with one
+line from `describeError` (`src/utils/errors.ts`): percent-escapes decoded,
+`graphql-request`'s JSON dump cut, first non-empty line only, 500 characters at
+most. A not-found names the network it was looked up on and the other networks
+to try. The same cleaning runs over an `isError` result a tool built itself.
+
+`gqlQuery` retries 429, 5xx and connection resets (`GRAPHQL_TRANSPORT` in
+`config.ts`: 4 attempts, jittered exponential backoff, `Retry-After` honoured up
+to 8s), gives each attempt a 30s `AbortSignal.timeout`, and allows 8 requests in
+flight per network. An exhausted 429 reports the endpoint and suggests
+`SUI_GRAPHQL_URL`; a GraphQL error reports its first message. Callers never see
+`ClientError`.
+
+A read that fails must not render as empty or zero. When the core read of a
+tool fails, return `isError`. When a secondary read fails, set its value to
+`null` and add a `*_unavailable` string saying what is unknown, as
+`identify_address` does for `sui_balance`, `sui_name`, `token_count` and
+`aliases`, and `get_wallet_overview` for `staked_sui_count` and `kiosk_count`.
+
+A call to a tool that the active profile disabled gets a reply naming its
+profile and the `enable_tools` call. `explainDisabledTools` in `toolset.ts`
+wraps the SDK's `tools/call` handler as the SDK installs it, so it must run
+before the first tool registers.
 
 ## Writing documentation
 
@@ -360,11 +616,52 @@ someone in a report. Three rules, in `src/utils/funding.ts`:
   coins named the gas sponsor: -0.036 SUI is raw -36000000 against a real
   sender's -11 USDC at raw -11085939, and SUI has three more decimals.
 
-Skipped inflows are reported as `dust_skipped`, never dropped silently. Inflow
-ranking is by USD where a price exists, for the same decimals reason.
+Skipped inflows are reported as `dust_skipped`, never dropped silently, and that
+includes the case where nothing qualified: `pickFundingTx` returns
+`{ funding: null, dustSkipped, sponsors }`, never a bare null. A bare null
+dropped the skipped list exactly when it was the only evidence. `sponsors` are
+the parties that paid gas for transactions the address sent, reported as
+`sponsored_by` at a dead end: gas can be paid from an address balance, so a
+relay wallet can run on zero SUI of its own with ~1,900-MIST inflows, and its
+operator then appears as sponsor and nowhere else. Inflow ranking is by USD
+where a price exists, for the same decimals reason.
 
 Scam NFTs need no handling here — they move no coin, so they never appear as an
 inflow. This is about coin dust only.
+
+### Where a funding walk stops
+
+Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
+
+- **A service-scale funder ends the walk.** Each hop's funder goes through
+  `probeRecipients` with `DEFAULT_POPULARITY_LIMIT`, the probe and the limit
+  `build_wallet_edges` uses to discard an intermediary, so the two tools cannot
+  disagree about whether an address is a service. More than 50 recipients stops
+  the walk: that funder's own first funding says who funded the exchange, not
+  who funded the subject. On the Nemo attacker the walk went four hops past a
+  261-recipient funder and called a 2023 wallet a narrow origin. Probes are
+  cached per call and share one `Budget`; a funder the budget did not reach is
+  `unmeasured`, and narrow off an incomplete probe is `provisional`.
+- **A hub origin is not re-measured with `measureFanout`.** Its 300-transaction
+  bidirectional window can classify a 60-recipient distributor as `narrow`,
+  which restores the reading the stop exists to prevent. For shared funders the
+  probe's verdict overrides the interpretation, not the measured numbers.
+- **A chain counts toward `shared_funders` only up to the first funder that is
+  itself a subject.** Past that point it is the other subject's ancestry,
+  already counted under its own result. Counting it again made one chain read
+  as two addresses sharing a narrow funder. The link is in
+  `subject_funded_subject`.
+- **`subject_paid_subject` asks each ordered pair.** `sentAddress` and
+  `affectedAddress` combine in one filter, so the answer does not depend on how
+  far back either history runs, and ten pairs fit in one aliased document
+  (`src/utils/subject-payments.ts`). Addresses are validated with
+  `normalizeWatchAddress` before batching. Pairs grow with the square of the
+  batch, so above 20 subjects only each subject's earliest transactions are
+  checked, and `subject_payment_scope` says so. It adds no clustering weight.
+
+`measureFanout` follows the same asymmetry: `hub` is proven by what was seen,
+while `narrow` or `distributor` off a truncated scan carries
+`classification_provisional` and loses the "meaningful" reading.
 
 ### What may be cached in a trace
 
@@ -534,6 +831,16 @@ Three rules that follow:
 **The signature is matched to an address by re-deriving it**, never by
 position. A gas-sponsored transaction carries `[sender, sponsor]` and position
 happens to work today, but a derivation is a fact the caller can check.
+
+**The sender's own key may not have signed.** An alias, or a protocol-level
+substitution like the vote that moved the Cetus attacker's frozen funds, signs
+in the sender's place. `assignSignerRoles` (`src/utils/multisig.ts`) labels a
+signature that derives to neither the sender nor the gas sponsor
+`acting_for_sender` and sets `signer_is_sender: false`. Every reader of "who
+sent this" has to carry that: `get_transaction` reports `authorized_by`,
+`describeAddresses` reports `foreign_authorization` instead of "never sent",
+`analyze_multisig` says the history proves nothing either way, and a forward
+trace stops at the hop.
 
 **A flag-3 signature that will not decode stays labelled `multisig`.** Legacy
 multisig (`multisig_legacy.rs`) shares the flag and the address derivation but
@@ -741,7 +1048,9 @@ A region is not a city, and the same pattern is produced by two people who
 merely share a timezone or a working day. The reading says both.
 
 Computed per address, never merged: two addresses sharing a peak is the
-corroborating observation, and merging destroys it.
+corroborating observation, and merging destroys it. Computed over the
+transactions read inside `from`/`to`, not over the capped timeline, and never
+over anything outside the window.
 
 Not wired into clustering. That would need it to separate real pairs from a
 control group first.
@@ -766,7 +1075,9 @@ rule is *wrong* elsewhere. Left-padding a 20-byte EVM address to 32 bytes
 invents an address belonging to nobody, and lowercasing a Solana address
 destroys base58, which is case-significant. An unknown chain is rejected rather
 than passed through, so an unnormalized id never reaches storage where it would
-fail to match its own canonical form.
+fail to match its own canonical form. The Sui rule checks the hex before it
+pads, because `normalizeSuiAddress` alone turns `0xzz` into a 66-character
+string that a case report would list and a label would mark as a sink.
 
 Sui-scoped callers (traces, balances, fan-out) still pass bare `0x…` strings.
 The boundary resolves them with `currentSuiAccount()`, which qualifies against
@@ -857,24 +1168,91 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
-### Chain-derived destinations: Sui native bridge and CCTP
+### Chain-derived destinations
 
-Two of the three resolvers need **no indexer for the destination** — the
-destination chain and recipient are in the events, so the far side is
-`chain-derived`. Wormhole cannot do this: a VAA names an emitter and a
-sequence, never a recipient, which is why its destination is
-`indexer-attested`. Prefer these when both are present in one transaction.
+Sui's native bridge, CCTP, Axelar ITS, Allbridge Core and Celer cBridge need
+**no indexer for the destination**: the destination chain and recipient are in
+their events, so the far side is `chain-derived`. A Wormhole VAA's identity
+names an emitter and a sequence, never a recipient, so its redemption is
+`indexer-attested`; the same holds for LayerZero delivery. The recipient is
+often in the message payload, though. `src/utils/bridge/exits.ts`
+(`readBridgeEvents`) collects every decoder into `beneficiaries`, and
+`resolve_bridge_transfer` and `screen_address` both read it:
 
-Each has its own chain numbering, none of them CAIP-2:
+- Token Bridge `Transfer` (payload 1): `to` + `toChain`, pinned to the Sui
+  Token Bridge emitter `ccceeb29…`.
+- `TransferWithPayload` (payload 3): `to` is the contract that consumes the
+  payload. Only the Token Bridge Relayer's inner `targetRecipient` is read, and
+  only from its known `fromAddress`.
+- NTT: `to` + `to_chain` behind the `0x9945ff10` transceiver prefix.
+- Mayan: `OrderCreated.addr_dest` (Wormhole chain id) and
+  `BridgeSubmittedWithFee.addr_dest` (CCTP domain), read only from the package
+  that emitted `InitMctpLogged` in the same transaction, because `init_order`
+  is a module name DEX order books share. Mayan Swift's `OrderCreated` is read
+  from Swift's own package `0x974af8e7…`, and its `hash` is the transfer id.
+- LayerZero V2: `messaging_channel::PacketSentEvent.encoded_packet` is the V1
+  packet, `version(1) ‖ nonce(8) ‖ srcEid(4) ‖ sender(32) ‖ dstEid(4) ‖
+  receiver(32) ‖ guid(32) ‖ message`. `receiver` is the destination OApp and
+  is reported as `destination_oapp`. For an OFT the message opens with
+  `sendTo(32) ‖ amountSD(u64)`; it is read only when an `oft::OFTSentEvent`
+  with the same GUID was emitted by the packet's `sender` package. A longer
+  message carries a compose call, and `sendTo` may then be a contract.
+- Axelar ITS: `events::InterchainTransfer<T>` carries `destination_chain`
+  (Axelar's chain name, compared case-insensitively) and
+  `destination_address` at its native length, 20 bytes for EVM.
+  `source_address` is the ITS channel, not the sender.
+- Allbridge Core: `events::TokensSentEvent` carries `destination_chain_id` and
+  `recipient_wallet_address`. The live route burns through CCTP with the same
+  nonce; the burn's mint recipient is where USDC lands (a token account on
+  Solana), so the CCTP leg is marked `carries: "Allbridge Core"` and the
+  wallet is the beneficiary.
+- Celer cBridge: `peg_bridge::BurnEvent` carries `to_chain` (an EIP-155 id as
+  a decimal string) and a 20-byte `to_addr`; `burn_id` is the transfer id.
+  Celer numbers non-EVM chains in the same space (Sui is 12370001), so
+  `eip155:N` is claimed only for a chain `chain-id.ts` knows.
+
+**The redemption names the contract, not the recipient.** Wormholescan's
+`targetChain.to` is the Token Bridge, the NTT manager or the relayer that the
+redemption called; it is reported as `redeemed_via_contract` and never as the
+destination account. `standarizedProperties.toAddress` is used only when the
+payload could not be decoded. A CCTP burn inside a Mayan transaction mints to
+Mayan's settlement contract and carries `role: "settlement_intermediate"`.
+A decoder is pinned to the sender, never to a payload shape alone: a shape
+match on another app's payload would name a stranger as the beneficiary.
+
+Each has its own chain numbering:
 
 | Protocol | Identity | Numbering | Verified |
 |---|---|---|---|
 | Sui native (`0xb`) | `(source_chain, seq_num)` | 0 = Sui, 10 = Ethereum | tx `4xLuY6N6…` |
 | Circle CCTP | `(source_domain, nonce)` | Circle domains; 8 = Sui, 3 = Arbitrum | tx `4rDEyqGe…` |
 | Wormhole | `(emitterChain, emitter, sequence)` | Wormhole chain ids; 21 = Sui | tx `7g4nQFx…` |
+| LayerZero V2 | `guid` | endpoint ids; 30378 = Sui, 30101 = Ethereum | tx `4rH8bqFB…` |
+| Axelar ITS | Sui digest (Axelarscan) | Axelar chain names, e.g. `Ethereum` | tx `6YaLkwRs…` |
+| Allbridge Core | `nonce` (shared with the CCTP burn) | Allbridge ids; 4 = Solana, 6 = Arbitrum | tx `AyApNXU7…` |
+| Celer cBridge | `burn_id` | EIP-155 ids | tx `AkW2h1WQ…` |
+| Mayan Swift | order `hash` | Wormhole chain ids | tx `3aVcL3mh…` |
 
-All three numberings are **reused across environments**, so a CAIP-2 claim
-derived from any of them is withheld off mainnet (`qualify`).
+Wormhole's, Circle's and the native bridge's numberings are **reused across
+environments**, so a CAIP-2 claim derived from them is withheld off mainnet
+(`qualify`). LayerZero endpoint ids are distinct per environment (mainnet
+30xxx, testnet 40xxx), and the Axelar, Allbridge, Celer and Swift decoders are
+pinned to mainnet packages, so none of them can name a mainnet chain for a
+testnet transfer.
+
+LayerZero Scan (`scan.layerzero-api.com/v1/messages/tx/{digest}`) supplies
+`delivery`, `indexer-attested`, matched back to the packet by GUID. It is
+mainnet-only and, like Wormholescan, never costs the chain-derived half when it
+fails. Meson is detect-only: its package defines no events and the recipient
+is not in the Sui transaction.
+
+Transfers **arriving** on Sui are reported under `*_inbound`, never as exits.
+A Wormhole Token Bridge redemption emits `complete_transfer::TransferRedeemed`
+with the origin VAA triple. An NTT redemption emits no event at all, so its VAA
+is read from the transaction's pure input (the bytes passed to
+`vaa::parse_and_verify`), and only when the payload opens with NTT's
+transceiver prefix and names Sui as `to_chain`. Pyth price updates verify VAAs
+too, and are not transfers.
 
 CCTP specifics: `DepositForBurn` carries `destination_domain` and a 32-byte
 `mint_recipient`; the paired `send_message::MessageSent` carries the raw
@@ -894,8 +1272,8 @@ third-party dependency for weaker information than the events already give.
 The strongest cross-chain evidence in the server, and the only case needing no
 third party for the destination: the outbound `bridge::TokenDepositedEvent`
 carries `target_chain` and `target_address` as raw bytes, so the far side is
-**chain-derived**. Wormhole cannot do this — a VAA names an emitter and a
-sequence, not a recipient — which is why its destination is indexer-attested.
+**chain-derived**, straight from the event rather than from a payload that
+has to be attributed to its sender first.
 
 `(source_chain, seq_num)` is the bridge's transfer id, quoted back by Ethereum
 on claim. Sui ↔ Ethereum only; `chain_ids` declares no other route.
@@ -935,7 +1313,24 @@ is why the percentage is dropped rather than annotated.
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.
 
-Three ways a walk stops, and only one of them is completion:
+**A coin is held in two places, and both are walked.** Besides `Coin<T>`
+objects, an owner can hold `T` in its address balance: a dynamic field of the
+accumulator root `0xacc` of type
+`0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<T>>,0x2::accumulator::U128>`,
+one per (owner, coin type), owner in `json.name.address`, amount in
+`json.value.value`. No coin object shows it. A coin-only walk ranked XAGM
+complete without its #2 holder (0xd70a55ed…, 13.74% of supply, all in the
+address balance), and USAD has no `Coin<T>` at all: its whole supply is one
+address balance. So the scan runs a second walk over that field type and
+merges it per holder, keeping `coin_balance` and `address_balance` beside the
+total. Each walk gets its own `max_scan` budget and its own truncation flag
+(`coin_walk_truncated`, `address_balance_walk_truncated`); `complete_ranking`
+needs both to reach the end. The owner of an address balance can be an object
+(a bridge `liquidity_pool::Bank`, a DeepBook `BalanceManager`), so each ranked
+holder carries `owner_kind` from `describeAddresses`.
+
+Three ways a walk stops, and only one of them is completion. Both walks follow
+the same rules:
 
 - `hasNextPage: false` — the end. `complete_ranking: true`.
 - **A null `endCursor` while `hasNextPage` is true — TRUNCATION.** The
@@ -951,10 +1346,11 @@ own caveat. Folding it into the flag made the flag permanently false for a
 collection with one unreadable owner, while a ranked list sat beside it saying
 otherwise, and no value of `max_scan` could ever clear it.
 
-**A walk that found nothing has not ranked anything.** Zero objects reads the
-same as a mistyped type, a type that lives on another network, or a coin
-scanned as a collection. Reporting `complete_ranking: true, unique_holders: 0`
-states the opposite of what is known, and it was then cached for 24 hours.
+**A walk that found nothing has not ranked anything.** No coin objects and no
+address balances reads the same as a mistyped type, a type that lives on
+another network, or a coin scanned as a collection. Reporting
+`complete_ranking: true, unique_holders: 0` states the opposite of what is
+known, and it was then cached for 24 hours.
 
 **Clamp tool numbers at BOTH ends.** `max_scan ?? DEFAULT` keeps a provided `0`,
 which left the walk condition false from the start: no request made, empty
@@ -964,6 +1360,10 @@ result, reported as a complete ranking. A negative `limit` reached
 **A probe that could not run returns null, not the guess it was correcting.**
 `looksLikeCoin` returning `false` on a transient error reinstated exactly the
 misclassification it exists to prevent, and labelled the empty result complete.
+The probe counts a type as a coin when any of four objects exists: a
+`Coin<T>`, an address-balance field for `T`, `CoinMetadata<T>`, or a registry
+`Currency<T>`. Probing for `Coin<T>` alone sent an address-balance-only coin to
+the NFT walk.
 
 Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
@@ -1053,7 +1453,7 @@ Two smaller rules from the same path:
 
 - **Select `ConsensusAddressOwner`.** Sampled 300 mainnet objects across five
   types and found none, so this is not fixing a live miscount: it is a schema
-  variant the rest of the repo already selects (`trace.ts`, `watch-probe.ts`,
+  variant the rest of the repo already selects (`trace-read.ts`, `watch-probe.ts`,
   and five more handlers) and the NFT query did not. Cost is three lines of
   query text. If party objects do appear, the alternative is counting a real
   party as an unresolvable owner.
@@ -1267,10 +1667,12 @@ would put a genuine pair in two buckets and report nothing.
 
 ### Object flow: what moves that is not a coin
 
-A balance change is derived from `Coin<T>`, so **anything that is not a coin
-moves without producing one.** `trace_funds` reads `objectChanges` for that
-reason; do not remove it on the grounds that balance changes already cover
-value.
+A balance change nets each owner's `Coin<T>` objects and address balance per
+coin type, so **anything that is not a coin moves without producing one.**
+`trace_funds` reads `objectChanges` for that reason; do not remove it on the
+grounds that balance changes already cover value. Address-balance deposits and
+withdrawals do appear in balance changes, and a coin folded into its owner's
+address balance is deleted without any balance change at all.
 
 Measured on mainnet, sampling the transaction that last touched each object:
 `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 produced no
@@ -1373,34 +1775,242 @@ impossible.
 1. Curated `callMarkers` / `eventMarkers` per protocol, matched by
    `module::function` *suffix and prefix* so they survive package upgrades and
    name variants (mainnet CCTP calls
-   `deposit_for_burn_with_caller_with_package_auth`, not the bare name).
-2. Any package `lookupProtocol` types as `bridge`. This is free and automatic:
-   adding a bridge to `protocols.json` gives detection immediately, and via
-   lineage roots it keeps working after that bridge upgrades.
+   `deposit_for_burn_with_caller_with_package_auth`, not the bare name). A
+   call whose prefix would catch a sibling goes in `exactCallMarkers`:
+   LayerZero's `endpoint_v2::send` shares a prefix with `send_compose`, which
+   is not an exit. Event types are compared with their type arguments
+   stripped, on the whole `::module::Name` tail: a generic event ends in its
+   type argument. An event marker written `0xpkg::module::Name` also pins the
+   package (`matchesEvent` in `event-type.ts`). Pinning is safe for events,
+   because an event is typed at the package that defined it and an upgrade
+   does not change that; it is not safe for calls, which name the version
+   called. Generic names (`events::TokensSentEvent`, `peg_bridge::BurnEvent`,
+   `init_order::OrderCreated`) are only ever matched pinned.
+2. Any package `lookupProtocol` types as `bridge` **and that has no curated
+   entry**. This is free and automatic: adding a bridge to `protocols.json`
+   gives detection immediately, and via lineage roots it keeps working after
+   that bridge upgrades. A protocol with curated markers is decided by its
+   markers alone. Every Pyth price update calls Wormhole core's
+   `vaa::parse_and_verify`, and a call into the package reported a NAVI
+   deposit as value leaving Sui.
 
 **Resolution** (where did it land?) does *not* generalize — each protocol has
 its own identity scheme and its own index — so each resolver is bespoke.
 `BridgeProtocol.resolution` records which a protocol has: `identifier` means
-followable, `detect-only` means we can name it and no more. Never point a
-caller at a resolver that cannot help them; `resolvableHit()` is the guard.
+`resolve_bridge_transfer` reads its destination or its cross-chain identity,
+`detect-only` means we can name it and no more (Meson). Never point a caller
+at a resolver that cannot help them; `resolvableHit()` is the guard.
 
 Markers must be **distinctive**, not merely present. A generic name like
 `init_order` collides with DEX order books, which emit some of the
-highest-frequency events on mainnet — the Mayan markers carry `mctp` instead.
-Sample before adding — `node scripts/find-unknown-packages.mjs` ranks by call
-count, but note that bridge traffic is low-frequency relative to DEX and oracle
-activity, so volume sampling will *not* surface bridges. Probe candidate event
-types by name instead.
+highest-frequency events on mainnet: the Mayan MCTP markers carry `mctp`, and
+Mayan Swift's events are pinned to its package. Sample before adding.
+`node scripts/find-unknown-packages.mjs` ranks by call count, but bridge
+traffic is low-frequency relative to DEX and oracle activity, so volume
+sampling will *not* surface bridges. Probe candidate event types by name
+instead.
+
+A redemption of a transfer arriving on Sui is never an exit. Detection has no
+marker for one; `resolve_bridge_transfer` reports it under `*_inbound`.
 
 There is deliberately **no heuristic tier**. Guessing that an unknown package
 looks bridge-shaped would manufacture exactly the unverifiable attribution this
 project refuses to ship.
 
-Detect from **Move calls, not sink labels.** A bridge burns or locks the coin
-and emits a message; it does not transfer value to a labelable recipient
-wallet, so `isSink` never fires on a real bridge exit and only one address
-label ships at all. `trace_funds` runs `detectBridges` over each hop's calls —
-data it already has, no extra query — and emits `bridge_exits`.
+Detect from **Move calls and events, not sink labels.** A bridge burns or
+locks the coin and emits a message; it does not transfer value to a labelable
+recipient wallet, so `isSink` never fires on a real bridge exit and only one
+address label ships at all. `trace_funds` runs `detectBridges` over each hop's
+calls and event types and emits `bridge_exits`. The events are not optional: a
+wrapper such as Mayan's `bridge_with_fee` puts no marker call in the PTB, and
+its CCTP burn and Wormhole message are only visible as events.
+
+### How `trace_funds` picks the next hop
+
+Pure logic in `src/utils/trace-hop.ts`; the transaction read and the searches
+in `src/utils/trace-read.ts`, which `trace_flow_graph` shares.
+Rules a change is likely to break:
+
+- **Gas is removed before any SUI comparison.** The gas payer's SUI change
+  includes gas, so without this every transaction reads as a SUI outflow.
+- **Forward follows the tracked coin.** On a plain hop only recipients of the
+  tracked coin are candidates, and the next hop is the recipient's first sent
+  transaction that spends that coin (up to 500 scanned), not its next
+  transaction of any kind.
+- **The actor is followed when nobody else received anything**: a swap
+  (`swap-follow`), an exploit, withdrawal or claim that credits only its caller
+  (`self-credit`), or the actor turning one asset into another (`conversion`).
+  None of these is a cycle.
+- **An object cannot send.** When the recipient has sent nothing since the hop,
+  the next hop is the first later transaction in which its balance of the coin
+  goes down, found through `affectedAddress` and marked
+  `reached_via: "released-from-object"`; the custody check does not apply.
+- **Backward follows who paid the coin in**, which is the owner of the largest
+  decrease, not the sender. Then the payer's most recent earlier inflow of that
+  coin, walking newest to oldest. A `last` page arrives ascending, so taking
+  its first element picks the oldest.
+- **A hub ends the trace.** A new party with 100+ counterparties in its last
+  200 transactions (`measureFanout`) pools other people's money, so its earlier
+  inflows (backward) and its next outflow (forward) are not these funds.
+- **A transaction its sender did not sign ends a forward trace.** The signer
+  acted for the sender (an alias or a protocol substitution), and following on
+  would attribute its actions to the sender.
+- **`stop_reason` is always set**, with the same name `find_funding_source`
+  uses. A trace that just ends reads as "the money stopped here".
+
+### Flow graphs: `trace_flow_graph` and `find_flow_path`
+
+Pure split and accounting rules in `src/utils/flow-graph.ts`, the BFS in
+`src/utils/flow-engine.ts`, renderers in `src/utils/flow-export.ts`. Rules a
+change is likely to break:
+
+- **Shares are first in, first out, and that is a convention.** A node's traced
+  amount goes to the transactions that moved it in order until it is used up;
+  each transaction's share goes to the parties it paid in proportion to the
+  amounts. An edge carries `amount` (what moved) and `traced` (the traced part):
+  a wallet that received 400 and paid 1,000 passes on 400. Never follow the
+  full 1,000 as if it were these funds.
+- **On a bridge exit the unpaid remainder is the exit.** Every Nemo CCTP burn
+  pays its relayer a SUI gas drop, and without `bridgeExit` the USDC read as
+  converted into the relayer's SUI and the graph walked off into a relayer
+  wallet instead of reaching the exit.
+- **Swap proceeds follow the traced input's part of the input.** A swap that
+  spent 0.1 SUI and 18,000 USDT for 18,000 USDC did not turn the SUI into
+  18,000 USDC. `splitSpend` scales the gain by the traced coin's value share of
+  everything the holder put in.
+- **A malicious label does not stop the graph**, and neither the start address
+  nor the same actor continuing is checked against sinks, protocols or hubs. The
+  shipped disclosed labels name both exploiters, so stopping there ended every
+  graph at hop 1. Exchanges, bridges, mixers and burn addresses still end it.
+- **Level by level.** Every inflow found at one depth reaches a node before it
+  is expanded. A node reached again later is expanded again from the new
+  arrival, skipping transactions already allocated to it, unless the value came
+  back to an address on its own path, which is a `cycle`.
+- **`budget` is never an ending.** Depth, node, move and read limits are
+  reported as `budget` with `coverage.truncated`; `below_threshold` is the
+  pruned share, not where the money went.
+- **A graph from one transaction follows that transaction's coins.** From the
+  Cetus exploit `DVMG3B2…` (SUI and haSUI) the value goes to the second wallet
+  `0xcd8962…` and the validator-signed recovery (`signer_not_sender`), with no
+  bridge exit: the attacker bridged USDC drained in other transactions. Start
+  from the attacker's address after the exploit time to see every exit.
+- **Beneficiaries are read per exit from the transaction's events**, GraphQL
+  first and the archive's gRPC events for a transaction GraphQL answers without
+  them, through `readBridgeEvents` (the same reading `resolve_bridge_transfer`
+  uses). Exits are grouped by protocol and beneficiary account.
+- **`find_flow_path` joins in time order.** A forward node meets a backward node
+  at the same address only when the forward side arrived no later than the
+  backward side paid on toward the target. A foreign-chain target is reached
+  forward only, through an exit whose beneficiary matches.
+- **Mermaid ids are `n0`, `n1`, …, never the caller's ids**, and labels go
+  through `mermaidText`, which escapes `#` before the entities it inserts.
+  `test/flow-export.test.ts` checks the output line by line against the
+  flowchart forms the renderer emits.
+
+### Shipped labels, screening and scam lists
+
+- **Shipped labels are first-party disclosures only**, generated into
+  `src/data/disclosed-labels.json` by `npm run sync:disclosed-labels`: exchange
+  proof-of-reserves lists (`proof-of-reserves-listed`), bridge deployment docs
+  (`official-docs`), attackers named in the victim's own incident report
+  (`victim-postmortem`). Every entry carries entity, evidence, source_url and
+  retrieved_at, and the script drops any address not found in its document.
+  Keys are `sui:mainnet:` or `eip155:1:`. OKX signs each address, but the
+  scheme has not been reproduced, so OKX rows claim a listing, nothing more.
+- **Every surface that shows a label shows its provenance** (`labelProvenance`).
+- **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
+  the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
+  change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and
+  fan-out, the recipient probes, co-funding denominators, deposit detection,
+  screening and `summarize_address_flows` all skip it. Only a sponsor that is
+  not the sender is gas-only; a self-paid sender's SUI change carries payments.
+- **Screening reads `sent` windows for outgoing value and bridge exits.** An
+  exploiter's wallet collects airdrop spam afterwards; the Cetus attacker's
+  last 100 affected transactions contain no exit, its last 100 sent ones
+  contain 100+. Bridge exposure counts curated call and event markers, never
+  the registry tier, which fires on price-VAA verification. Event markers
+  matter because a wrapper such as Mayan's `bridge_with_fee` has no marker call.
+- **OFAC lists zero Sui addresses** (SDN data as of 2026-09-23). Sanctions hits
+  can only come from the chain-derived `beneficiaries` of a bridge exit, read
+  once per exit transaction and attributed to the protocol that names them.
+- **The Sui wallet blocklist is `flagged_by`, tier third-party**, never a label
+  or a sink, and mainnet-only (package-keyed). Package ids are stored as
+  16-hex prefixes to keep the file near 2 MB; domains are not synced.
+
+### Historical prices
+
+`priceUsdAtTime` (`src/utils/valuation.ts`) is the one historical path, and
+`trace_funds`, `get_token_prices` with `at`, `analyze_attack_tx` and
+`summarize_incident_losses` all use it. Four rules:
+
+- **DefiLlama is the keyless source, and its key is the PADDED coin type.**
+  `sui:0x2::sui::SUI` resolves, but a stripped leading zero does not:
+  `sui:0x6864a6f9…::cetus::CETUS` returns nothing where `sui:0x06864a6f9…`
+  returns CETUS. A replay that stripped zeros lost CETUS and priced 96 of 195
+  Cetus-exploit coins; padded, it prices 103. `defiLlamaKey` pads; do not build
+  the key anywhere else.
+- **Pyth is asked about VERIFIED coins only.** Its feeds are found by symbol,
+  so an impostor ending `::sui::SUI` would get SUI's price. DefiLlama keys on
+  the full type and prices a coin as itself or not at all.
+- **`compare_oracle_price` stays Pyth-only** (`sources: ["pyth"]`). Comparing
+  DeepBook against a market aggregate is not an oracle check.
+- **An unpriced coin carries a code.** `request_failed` says nothing about the
+  coin and must not be reported the way `not_listed` is.
+
+DefiLlama returns the sample it used, which can be hours from the second asked
+for: 50 of 103 Cetus-exploit prices at 10:30 UTC were more than an hour away.
+Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
+
+### Attack analysis
+
+`analyze_attack_tx` and `summarize_incident_losses` read over gRPC
+(`src/utils/attack-read.ts`), pure logic in `src/utils/attack-analysis.ts`.
+
+- **gRPC events carry their JSON.** `Event.json` is filled by the fullnode AND
+  the archive (verified on the Cetus and Nemo exploits, both pruned from the
+  fullnode), so a pruned transaction still has decoded event fields.
+  GraphQL's nested connections page at 20; the Nemo exploit has 214 commands
+  and 103 events.
+- **`batchGetTransactions` is bounded by the 4 MiB response, not a count.** 100
+  Cetus-exploit transactions fit in one call and 200 did not. Batches are 25,
+  and an overflowing batch is re-read one digest at a time.
+- **Flash pairing ignores framework singletons.** Nearly every DeFi call takes
+  the Clock (`0x6`); counting it as the object a borrow and a repay share
+  pairs any borrow with any repay.
+- **Pool losses come from the pool's own events, read by field name.** An event
+  naming a pool with amount fields in an unread shape goes to
+  `undecoded_events`. One with no amount field (opening a position) moves
+  nothing and is not listed.
+
+### Address flow summaries
+
+`summarize_address_flows` (`src/tools/flows.ts`, pure logic in
+`src/utils/address-flows.ts`) scans one address's transactions newest first
+inside the window, with balance changes and commands completed, the gas
+summary, and event types. Rules a change is likely to break:
+
+- **Gas comes off before any SUI total**, through `withoutGas` from
+  `trace-hop.ts`, and is reported as `gas`. A sponsor's SUI change is dropped
+  by `isSponsorGasChange`.
+- **A counterparty is never credited with more than the subject moved.** When
+  the other side of a coin adds up to more than the subject's change (a PTB
+  with a stranger's payment in it), the subject's amount is split in
+  proportion. What no address accounts for is `unattributed`, never dropped.
+- **Exits are read from event JSON fetched after the scan**, for transactions
+  the address sent that carry a bridge marker or whose event list the scan cut
+  at 50, in aliased batches of 20. Beneficiaries come from `readBridgeEvents`
+  (`src/utils/bridge/exits.ts`), the same function `resolve_bridge_transfer`
+  uses; do not decode bridge events a second way here. Wormholescan is not
+  called. A Mayan order's Wormhole leg is not an unresolved message.
+- **One price per coin, at the median transaction time.** The midpoint of the
+  window put the Nemo attacker's prices at 12:57, three hours before the
+  exploit.
+
+`aggregate_events` `group_pnl` (`src/utils/participant-pnl.ts`) reads the
+distinct transactions behind the matched events over gRPC with archive
+fallback (`readAttackTransactions`), so no nested connection is a page. A
+transaction is multi-leg when it calls a package outside the filter's whole
+lineage (`fetchPackageVersions`); 0x1, 0x2 and 0x3 never count as a leg.
 
 ## Key Patterns
 
@@ -1418,6 +2028,36 @@ data it already has, no extra query — and emits `bridge_exits`.
   gap, since a transaction whose calls are unreadable and whose events name a
   known protocol is what a router or wrapper looks like.
 - SDK `BalanceChange` has `address` (not `owner`)
+- **A party object is owned, not shared.** GraphQL's `ConsensusAddressOwner`
+  (gRPC `CONSENSUS_ADDRESS`) has exactly one owner; select its
+  `address { address }` wherever an owner union is read, and report it as
+  `consensus` with that address. Mapping it to `shared` drops the one address
+  that can use the object.
+- **GraphQL's `ExecutionError` has no kind.** `abortCode` is set for Move aborts
+  only; every other failure is named from `message` by
+  `failureKindFromGraphql` (`src/utils/formatting.ts`), which returns
+  `unknown` for a message it does not recognise rather than `MOVE_ABORT`.
+- **An UpgradeCap is compared against the lineage root's publisher.** The caps
+  `auditPackageCapabilities` finds were minted by version 1's publish; a later
+  version's sender is whoever held the cap then. `analyze_package` reports
+  both as `root_publisher` and `version_publisher`.
+- **A package upgrade can change behaviour through its linkage alone.**
+  `diff_package_upgrade` reads each version's `linkage` and reports relinked
+  dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no
+  behaviour.
+- **`token_flow` is the sender's balance change.** `decodeTransaction` builds it
+  from the sender alone, so on a row listed for another address an inflow reads
+  as the sender's outflow. A row about an address carries that address's own
+  side from `addressFlow` (`subject_flow` in history, keyed per involved address
+  in a timeline). Keep the `token_flow` name; consumers read it.
+- **Upgrade history joins on the UpgradeCap's versions.** Every upgrade takes
+  the cap by `&mut`, so each upgrade is also a cap version, and top-level
+  `objectVersions(address:)` lists them oldest first even after the cap is
+  destroyed or wrapped (`object(address:)` is then null; the last
+  `affectedObject` transaction's gRPC `idOperation` tells the two apart). The
+  holder at an upgrade is the cap's INPUT owner, and `get_upgrade_history`'s
+  usual holder is measured in time held, not versions, so an eleven-minute
+  loan that shipped one version does not become the norm.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

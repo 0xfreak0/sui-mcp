@@ -2,8 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   availableSources,
   cmcApiKey,
+  defiLlamaKey,
   fetchAftermath,
   fetchCoinMarketCap,
+  fetchDefiLlama,
+  parseDefiLlamaPrices,
   pricesForRanking,
   pythApiKey,
 } from "../src/utils/price-providers.js";
@@ -72,17 +75,17 @@ describe("fetchAftermath", () => {
 });
 
 describe("opt-in providers", () => {
-  it("reports only the free source when no keys are set", () => {
-    expect(availableSources()).toEqual(["aftermath"]);
+  it("reports only the free sources when no keys are set", () => {
+    expect(availableSources()).toEqual(["aftermath", "defillama"]);
     expect(pythApiKey()).toBeNull();
     expect(cmcApiKey()).toBeNull();
   });
 
   it("adds a paid source only once its key is present", () => {
     process.env.PYTH_API_KEY = "k1";
-    expect(availableSources()).toEqual(["aftermath", "pyth"]);
+    expect(availableSources()).toEqual(["aftermath", "defillama", "pyth"]);
     process.env.CMC_API_KEY = "k2";
-    expect(availableSources()).toEqual(["aftermath", "pyth", "coinmarketcap"]);
+    expect(availableSources()).toEqual(["aftermath", "defillama", "pyth", "coinmarketcap"]);
   });
 
   it("treats a blank key as unset, so whitespace does not enable a paid call", () => {
@@ -128,5 +131,95 @@ describe("pricesForRanking", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("aftermath");
     // De-duplicated before the request.
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).coins).toEqual([SUI]);
+  });
+});
+
+const PADDED_SUI = `0x${"0".repeat(63)}2::sui::SUI`;
+const CETUS = "0x06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS";
+const HASUI = "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d::hasui::HASUI";
+
+/** A real `/prices/historical/1747909800/…` body, 2025-05-22 10:30:00 UTC. */
+const HISTORICAL_BODY = {
+  coins: {
+    [`sui:${PADDED_SUI}`]: { decimals: 9, symbol: "SUI", price: 4.16, timestamp: 1747909801, confidence: 0.99 },
+    [`sui:${CETUS}`]: { decimals: 9, symbol: "CETUS", price: 0.249101, timestamp: 1747909803, confidence: 0.99 },
+    [`sui:${HASUI}`]: { decimals: 9, symbol: "haSUI", price: 4.39, timestamp: 1747911452, confidence: 0.99 },
+  },
+};
+
+describe("defiLlamaKey", () => {
+  it("pads the address, because DefiLlama does not resolve a stripped leading zero", () => {
+    // Measured: sui:0x6864a6f9…::cetus::CETUS returns nothing, the padded key
+    // returns CETUS. The 2025 Cetus replay lost CETUS to exactly this.
+    expect(defiLlamaKey("0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS")).toBe(
+      `sui:${CETUS}`,
+    );
+    expect(defiLlamaKey("0x2::sui::SUI")).toBe(`sui:${PADDED_SUI}`);
+  });
+
+  it("has no key for a coin type with type parameters, which the comma list would split", () => {
+    expect(defiLlamaKey("0xabc::lp::LP<0x2::sui::SUI, 0xdef::usdc::USDC>")).toBeNull();
+    expect(defiLlamaKey("not a coin")).toBeNull();
+  });
+
+  it("refuses a module or struct that is not a Move identifier, since the key goes into a URL path", () => {
+    expect(defiLlamaKey("0x2::sui/../../x::SUI")).toBeNull();
+    expect(defiLlamaKey("0x2::sui::SUI?x=1")).toBeNull();
+  });
+});
+
+describe("parseDefiLlamaPrices", () => {
+  it("maps each key back to every spelling that asked for it, with time, confidence and decimals", () => {
+    const keyToCoins = new Map([
+      [`sui:${PADDED_SUI}`, ["0x2::sui::SUI", PADDED_SUI]],
+      [`sui:${HASUI}`, [HASUI]],
+    ]);
+    const out = parseDefiLlamaPrices(HISTORICAL_BODY, keyToCoins);
+    expect(out.get("0x2::sui::SUI")).toEqual({
+      price: 4.16,
+      source: "defillama",
+      at: 1747909801,
+      confidence: 0.99,
+      decimals: 9,
+      symbol: "SUI",
+    });
+    expect(out.get(PADDED_SUI)?.price).toBe(4.16);
+    expect(out.get(HASUI)?.at).toBe(1747911452);
+    // CETUS was in the body but not asked for.
+    expect(out.has(CETUS)).toBe(false);
+  });
+
+  it("drops an entry whose price is missing, negative or not finite", () => {
+    const key = `sui:${PADDED_SUI}`;
+    const keyToCoins = new Map([[key, [PADDED_SUI]]]);
+    for (const price of [undefined, -1, "4.16", Number.NaN]) {
+      expect(parseDefiLlamaPrices({ coins: { [key]: { price, timestamp: 1 } } }, keyToCoins).size).toBe(0);
+    }
+  });
+});
+
+describe("fetchDefiLlama", () => {
+  it("asks the historical endpoint at the second requested, with padded keys", async () => {
+    fetchMock.mockResolvedValue(ok(HISTORICAL_BODY));
+    const r = await fetchDefiLlama(["0x2::sui::SUI", CETUS], 1747909800);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `https://coins.llama.fi/prices/historical/1747909800/sui:${PADDED_SUI},sui:${CETUS}`,
+    );
+    expect(r.quotes.get("0x2::sui::SUI")?.price).toBe(4.16);
+    expect(r.quotes.get(CETUS)?.price).toBe(0.249101);
+  });
+
+  it("tells a failed request apart from a coin DefiLlama does not list", async () => {
+    // 30 coins: a first batch of 25 that fails and a second of 5 that answers
+    // with nothing. Only the first batch is "unanswered".
+    const coins = Array.from({ length: 30 }, (_, i) => `0x${(i + 16).toString(16)}::c::C`);
+    fetchMock.mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(ok({ coins: {} }));
+    const r = await fetchDefiLlama([...coins, "0xabc::lp::LP<0x2::sui::SUI>"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain("/prices/current/");
+    expect([...r.unanswered]).toEqual(coins.slice(0, 25));
+    expect(r.quotes.size).toBe(0);
+    expect([...r.unsupported]).toEqual(["0xabc::lp::LP<0x2::sui::SUI>"]);
   });
 });

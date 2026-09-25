@@ -31,6 +31,9 @@
  */
 
 import { gqlQuery } from "../clients/graphql.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections, readAllBalanceChanges, type GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
+import { isSponsorGasChange } from "./sponsor-gas.js";
 import { pickFundingTx, type FundingTx } from "./funding.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
@@ -47,7 +50,7 @@ import { assessCoFunding } from "./co-funding.js";
  * mainnet sample bears that out: in one 60-checkpoint window the single service
  * sponsor sat at 22 distinct senders while every other sponsor sat at 1 or 2.
  */
-const DEFAULT_POPULARITY_LIMIT = 50;
+export const DEFAULT_POPULARITY_LIMIT = 50;
 
 /**
  * Distinct parties in one transaction past which co-appearance means nothing.
@@ -126,6 +129,13 @@ export class Budget {
     this.used++;
     return true;
   }
+  /**
+   * Record requests already made that could not ask first: the follow-up
+   * reads that complete a transaction's balance changes.
+   */
+  charge(n: number): void {
+    this.used += n;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -141,7 +151,7 @@ const EARLIEST_QUERY = `query ($addr: SuiAddress!, $first: Int!) {
       effects {
         timestamp
         checkpoint { sequenceNumber }
-        balanceChanges { nodes { coinType { repr } amount owner { address } } }
+        ${BALANCE_CHANGES_SELECTION}
       }
     }
   }
@@ -160,7 +170,7 @@ const RECENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
       digest
       sender { address }
       gasInput { gasSponsor { address } }
-      effects { balanceChanges { nodes { amount owner { address } } } }
+      effects { ${BALANCE_CHANGES_SELECTION} }
     }
     pageInfo { hasPreviousPage startCursor }
   }
@@ -171,7 +181,9 @@ const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
   transactions(filter: { sentAddress: $addr }, last: $last, before: $before) {
     nodes {
       digest
-      effects { balanceChanges { nodes { amount owner { address } } } }
+      sender { address }
+      gasInput { gasSponsor { address } }
+      effects { ${BALANCE_CHANGES_SELECTION} }
     }
     pageInfo { hasPreviousPage startCursor }
   }
@@ -183,7 +195,7 @@ interface RecentPage {
       digest: string;
       sender?: { address: string } | null;
       gasInput?: { gasSponsor?: { address: string } | null } | null;
-      effects?: { balanceChanges: { nodes: Array<{ amount?: string; owner?: { address: string } }> } } | null;
+      effects?: { balanceChanges: GqlConnection<GqlBalanceChangeNode> } | null;
     }>;
     pageInfo: { hasPreviousPage: boolean; startCursor?: string };
   };
@@ -224,10 +236,16 @@ export async function firstFunderOf(
       addr: address,
       first: 12,
     });
-    const txs: FundingTx[] = data.transactions.nodes.map(toFundingTx);
+    // The subject's own inflow can sort past the first 50 balance changes of
+    // a batch payout; complete the lists before picking the funding.
+    const completed = await completeTxConnections(
+      data.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+    );
+    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
+    const txs: FundingTx[] = data.transactions.nodes.map((n, i) => toFundingTx(n, completed[i].balanceChanges));
     // Reuses the dust and gas-sponsor rules rather than re-deriving them: a
     // 1-MIST spam send must not become a cluster edge either.
-    const picked = pickFundingTx(txs, address);
+    const picked = pickFundingTx(txs, address).funding;
     if (!picked || picked.funder === "unknown") return null;
     saveFirstFunder(account, currentSuiAccount(picked.funder), picked.digest);
     return { funder: picked.funder, digest: picked.digest };
@@ -242,17 +260,17 @@ interface RawEarliest {
   effects: {
     timestamp: string | null;
     checkpoint: { sequenceNumber: number } | null;
-    balanceChanges: { nodes: Array<{ coinType?: { repr: string }; amount?: string; owner?: { address: string } }> };
+    balanceChanges: GqlConnection<GqlBalanceChangeNode>;
   } | null;
 }
 
-function toFundingTx(n: RawEarliest): FundingTx {
+function toFundingTx(n: RawEarliest, balanceChanges: GqlBalanceChangeNode[]): FundingTx {
   return {
     digest: n.digest,
     sender: n.sender?.address ?? null,
     timestamp: n.effects?.timestamp ?? null,
     checkpoint: n.effects?.checkpoint?.sequenceNumber?.toString() ?? null,
-    changes: (n.effects?.balanceChanges.nodes ?? [])
+    changes: balanceChanges
       .filter((c) => c.owner?.address && c.amount && c.coinType?.repr)
       .map((c) => ({ address: c.owner!.address, amount: c.amount!, coinType: c.coinType!.repr })),
   };
@@ -306,11 +324,20 @@ export async function probeRecipients(
       break;
     }
     pages++;
-    for (const n of page.transactions.nodes) {
-      for (const bc of n.effects?.balanceChanges.nodes ?? []) {
+    const completed = await completeTxConnections(
+      page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+    );
+    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
+    for (const [i, n] of page.transactions.nodes.entries()) {
+      const sender = n.sender?.address;
+      const sponsor = n.gasInput?.gasSponsor?.address;
+      for (const bc of completed[i].balanceChanges) {
         const owner = bc.owner?.address;
         if (!owner || owner === address) continue;
         if (BigInt(bc.amount ?? "0") <= 0n) continue;
+        // The sponsor's storage rebate is not a payment, and a sponsor listed
+        // here would become a sibling candidate.
+        if (isSponsorGasChange(owner, bc.coinType?.repr, sender, sponsor)) continue;
         if (!members.has(owner)) members.set(owner, n.digest);
       }
     }
@@ -386,7 +413,8 @@ export async function probeSponsored(
  */
 const TX_RECIPIENTS_QUERY = `query ($digest: String!) {
   transactionEffects(digest: $digest) {
-    balanceChanges { nodes { amount owner { address } } }
+    transaction { sender { address } gasInput { gasSponsor { address } } }
+    ${BALANCE_CHANGES_SELECTION}
   }
 }`;
 
@@ -395,18 +423,45 @@ async function countTxRecipients(digest: string, budget: Budget): Promise<number
   if (!budget.take()) return null;
   try {
     const r = await gqlQuery<{
-      transactionEffects: { balanceChanges: { nodes: Array<{ amount?: string; owner?: { address: string } }> } } | null;
+      transactionEffects: {
+        transaction?: TxParties | null;
+        balanceChanges: GqlConnection<GqlBalanceChangeNode>;
+      } | null;
     }>(TX_RECIPIENTS_QUERY, { digest });
-    const nodes = r.transactionEffects?.balanceChanges?.nodes;
-    if (!nodes) return null;
-    const recipients = new Set<string>();
-    for (const n of nodes) {
-      if (n.owner?.address && n.amount && BigInt(n.amount) > 0n) recipients.add(n.owner.address);
-    }
-    return recipients.size;
+    const first = r.transactionEffects?.balanceChanges;
+    if (!first) return null;
+    // The denominator is every recipient, not the first page of 50.
+    const all = await readAllBalanceChanges(digest, first);
+    budget.charge(all.reads);
+    // A partial list would understate the batch and overstate the pair's weight.
+    if (all.truncated) return null;
+    return countPaidAddresses(all.nodes, r.transactionEffects?.transaction);
   } catch {
     return null;
   }
+}
+
+/** Sender and gas sponsor of a transaction, as GraphQL selects them. */
+export interface TxParties {
+  sender?: { address?: string } | null;
+  gasInput?: { gasSponsor?: { address?: string } | null } | null;
+}
+
+/**
+ * Distinct addresses a transaction's balance changes paid: every positive
+ * change except the sender's own and a gas-only sponsor's storage rebate.
+ */
+export function countPaidAddresses(changes: GqlBalanceChangeNode[], parties: TxParties | null | undefined): number {
+  const sender = parties?.sender?.address;
+  const sponsor = parties?.gasInput?.gasSponsor?.address;
+  const recipients = new Set<string>();
+  for (const n of changes) {
+    const owner = n.owner?.address;
+    if (!owner || !n.amount || BigInt(n.amount) <= 0n) continue;
+    if (owner === sender || isSponsorGasChange(owner, n.coinType?.repr, sender, sponsor)) continue;
+    recipients.add(owner);
+  }
+  return recipients.size;
 }
 
 /**
@@ -494,7 +549,11 @@ async function profileSeed(
     } catch {
       break;
     }
-    for (const n of page.transactions.nodes) {
+    const completed = await completeTxConnections(
+      page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+    );
+    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
+    for (const [i, n] of page.transactions.nodes.entries()) {
       scanned++;
       const sender = n.sender?.address;
       const sponsor = n.gasInput?.gasSponsor?.address;
@@ -512,7 +571,7 @@ async function profileSeed(
       // somebody paying two wallets at once.
       // Direction is read from the subject's own net change, the same way
       // measureFanout separates recipients from senders.
-      const changes = n.effects?.balanceChanges.nodes ?? [];
+      const changes = completed[i].balanceChanges;
       const own = changes.find((c) => c.owner?.address === address);
       const ownDelta = BigInt(own?.amount ?? "0");
       for (const bc of changes) {
@@ -525,7 +584,7 @@ async function profileSeed(
 
       const parties = [
         ...new Set(
-          (n.effects?.balanceChanges.nodes ?? [])
+          changes
             .map((bc) => bc.owner?.address)
             .filter((a): a is string => Boolean(a) && a !== sender),
         ),

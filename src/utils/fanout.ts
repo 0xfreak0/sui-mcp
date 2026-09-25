@@ -1,6 +1,9 @@
 import { gqlQuery } from "../clients/graphql.js";
 import { getCachedFanout, saveFanout } from "./store.js";
 import { currentSuiAccount } from "./chain-id.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections, type GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
+import { isSponsorGasChange } from "./sponsor-gas.js";
 
 /**
  * How many distinct addresses an address transacts with, in both directions.
@@ -36,14 +39,13 @@ import { currentSuiAccount } from "./chain-id.js";
 const COUNTERPARTY_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
   transactions(filter: { affectedAddress: $addr }, last: $last, before: $before) {
     nodes {
+      digest
       # Sponsorship rides along on the scan this query already does. A relayer
       # pays gas for strangers and may move no value at all, so it is invisible
       # in balance changes — the signal that would otherwise be missed entirely.
       sender { address }
       gasInput { gasSponsor { address } }
-      effects {
-        balanceChanges { nodes { amount owner { address } coinType { repr } } }
-      }
+      effects { ${BALANCE_CHANGES_SELECTION} }
     }
     pageInfo { hasPreviousPage startCursor }
   }
@@ -52,17 +54,10 @@ const COUNTERPARTY_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: Str
 interface CounterpartyPage {
   transactions: {
     nodes: Array<{
+      digest: string;
       sender?: { address?: string } | null;
       gasInput?: { gasSponsor?: { address?: string } | null } | null;
-      effects: {
-        balanceChanges: {
-          nodes: Array<{
-            amount?: string;
-            owner?: { address: string };
-            coinType?: { repr: string };
-          }>;
-        };
-      } | null;
+      effects: { balanceChanges: GqlConnection<GqlBalanceChangeNode> } | null;
     }>;
     pageInfo: { hasPreviousPage: boolean; startCursor?: string };
   };
@@ -100,6 +95,12 @@ export interface FanoutResult {
    */
   classification: "hub" | "distributor" | "narrow";
   interpretation: string;
+  /**
+   * The classification rests on a scan that hit its budget, so the count is
+   * a lower bound. Never set for `hub`, which is proven by what was seen. See
+   * {@link reportedClassification}.
+   */
+  classification_provisional?: boolean;
   /**
    * Distinct addresses this one paid gas FOR, over the sample.
    *
@@ -252,6 +253,32 @@ export function classifyFanout(counterparties: number): {
 }
 
 /**
+ * The classification as it may be reported, given how the scan ended.
+ *
+ * Same asymmetry as {@link sponsorIsProvisional}. `hub` is proven by the
+ * counterparties seen. `narrow` and `distributor` off a truncated scan are
+ * lower bounds, because the scan reads the most recent window and a quiet
+ * recent window says nothing about what the address did before. Reporting
+ * "narrow, worth investigating" off such a scan is the reading that names an
+ * exchange's early wallet as a meaningful origin.
+ */
+export function reportedClassification(
+  counterparties: number,
+  truncated: boolean,
+): Pick<FanoutResult, "classification" | "interpretation" | "classification_provisional"> {
+  const { classification, interpretation } = classifyFanout(counterparties);
+  if (!truncated || classification === "hub") return { classification, interpretation };
+  return {
+    classification,
+    classification_provisional: true,
+    interpretation:
+      classification === "narrow"
+        ? "Narrow within the window scanned, but the scan reached its budget before the end of this address's history, so the count is a lower bound. Raise max_transactions before reading shared funding through it as meaningful."
+        : `${interpretation} The scan reached its budget before the end of this address's history, so the count is a lower bound and the address may be hub-scale.`,
+  };
+}
+
+/**
  * Count distinct counterparties of `address`, walking backwards from its most
  * recent activity and scanning at most `maxTransactions`.
  *
@@ -284,7 +311,6 @@ export async function measureFanout(
     const deepEnough =
       cached && (cached.truncated === 0 || cached.scanned_transactions >= maxTransactions);
     if (cached && deepEnough) {
-      const { classification, interpretation } = classifyFanout(cached.counterparty_count);
       return {
         address,
         recipient_count: cached.recipient_count,
@@ -320,8 +346,7 @@ export async function measureFanout(
           : {}),
         scanned_transactions: cached.scanned_transactions,
         truncated: cached.truncated === 1,
-        classification,
-        interpretation,
+        ...reportedClassification(cached.counterparty_count, cached.truncated === 1),
         cached: true,
         measured_ago_ms: cached.age_ms,
       };
@@ -345,7 +370,12 @@ export async function measureFanout(
       before: cursor,
     });
 
-    for (const node of page.transactions.nodes) {
+    // An airdrop's balance changes run past one page of 50; the subject's own
+    // row can sort anywhere in the list.
+    const completed = await completeTxConnections(
+      page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+    );
+    for (const [i, node] of page.transactions.nodes.entries()) {
       scanned++;
 
       // Paying your own gas is not sponsorship, so the sender must differ.
@@ -356,17 +386,22 @@ export async function measureFanout(
         sponsoredTxs++;
       }
 
-      const changes = node.effects?.balanceChanges.nodes ?? [];
+      const changes = completed[i].balanceChanges;
+      // A sponsor's SUI change is gas or its storage rebate, never a payment:
+      // counted, the sponsor of a sweep reads as a second recipient, and a
+      // sponsor measured as the subject reads its rebate as an inflow.
+      const gasOnly = (bc: GqlBalanceChangeNode) =>
+        isSponsorGasChange(bc.owner?.address, bc.coinType?.repr, sender, sponsor);
       // Whether this transaction moved value in or out decides which side each
       // counterparty belongs to, so read the subject's own change first.
-      const own = changes.find((c) => c.owner?.address === address);
+      const own = changes.find((c) => c.owner?.address === address && !gasOnly(c));
       const ownDelta = BigInt(own?.amount ?? "0");
 
       for (const bc of changes) {
         const owner = bc.owner?.address;
         if (!owner) continue;
         if (bc.coinType?.repr) coinTypes.add(bc.coinType.repr);
-        if (owner === address) continue;
+        if (owner === address || gasOnly(bc)) continue;
         // Subject paid out → the counterparty gaining value is a recipient.
         if (ownDelta < 0n && BigInt(bc.amount ?? "0") > 0n) recipients.add(owner);
         // Subject took value in → the counterparty losing value is a sender.
@@ -383,7 +418,6 @@ export async function measureFanout(
   const ratio = senders.size > 0 ? recipients.size / senders.size : null;
   const flowShape: FanoutResult["flow_shape"] =
     ratio === null ? "unknown" : ratio >= 3 ? "disperser" : ratio <= 0.33 ? "collector" : "balanced";
-  const { classification, interpretation } = classifyFanout(counterparties.size);
   const sponsorShape = classifySponsor(sponsored.size);
   // Persist every field the measurement produced. Storing only the total used
   // to make a cache hit report -1 for the in/out split and "unknown" for flow
@@ -421,7 +455,6 @@ export async function measureFanout(
     ...(sponsorIsProvisional(sponsorShape, hasNext) ? { sponsor_shape_provisional: true } : {}),
     scanned_transactions: scanned,
     truncated: hasNext,
-    classification,
-    interpretation,
+    ...reportedClassification(counterparties.size, hasNext),
   };
 }

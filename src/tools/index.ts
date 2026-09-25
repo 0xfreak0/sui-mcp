@@ -21,6 +21,7 @@ import { registerMonitorTools } from "./monitor.js";
 import { registerHolderTools } from "./holders.js";
 import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
+import { registerFlowGraphTools } from "./flow-graph.js";
 import { registerWatchTools } from "./watch.js";
 import { registerNftSalesTools } from "./nft-sales.js";
 import { registerPoolTools } from "./pools.js";
@@ -39,13 +40,18 @@ import { registerPackageAuditTools } from "./package-audit.js";
 import { registerFundingTools } from "./funding.js";
 import { registerTimelineTools } from "./timeline.js";
 import { registerObjectHistoryTools } from "./object-history.js";
+import { registerUpgradeHistoryTools } from "./upgrade-history.js";
 import { registerClusterTools } from "./cluster.js";
 import { registerMultisigTools } from "./multisig.js";
 import { registerRestrictionTools } from "./restrictions.js";
+import { registerScreeningTools } from "./screening.js";
+import { registerAttackTools } from "./attack.js";
+import { registerFlowTools } from "./flows.js";
 import { withNetworkParam } from "./with-network.js";
 import {
   applyProfiles,
   collectToolHandles,
+  explainDisabledTools,
   registerToolsetTool,
   startupProfiles,
   type ToolHandles,
@@ -58,6 +64,7 @@ export function registerAllTools(rawServer: McpServer) {
   //   withNetworkParam  — injects the per-call `network` arg (./with-network.ts)
   //   collectToolHandles — records each registration so profiles can toggle it
   const handles: ToolHandles = new Map();
+  explainDisabledTools(rawServer, handles);
   const server = collectToolHandles(withNetworkParam(rawServer), handles);
 
   registerChainTools(server);
@@ -85,6 +92,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerHolderTools(server);
   registerDecodeTools(server);
   registerTraceTools(server);
+  registerFlowGraphTools(server);
   registerPoolTools(server);
   registerDeepBookTools(server);
   registerAggregateTools(server);
@@ -101,9 +109,13 @@ export function registerAllTools(rawServer: McpServer) {
   registerFundingTools(server);
   registerTimelineTools(server);
   registerObjectHistoryTools(server);
+  registerUpgradeHistoryTools(server);
   registerClusterTools(server);
   registerMultisigTools(server);
   registerRestrictionTools(server);
+  registerScreeningTools(server);
+  registerAttackTools(server);
+  registerFlowTools(server);
 
   // Apply the startup profile, then register the switch that expands it.
   // `enable_tools` goes on the raw server so it is never itself gated — it is

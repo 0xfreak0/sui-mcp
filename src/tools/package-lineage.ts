@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
@@ -37,8 +37,7 @@ export function registerPackageLineageTools(server: McpServer) {
         .string()
         .optional()
         .describe("Protocol name as it appears in the bundled registry, e.g. 'Cetus', 'Suilend'."),
-      package_id: z
-        .string()
+      package_id: addressArg()
         .optional()
         .describe("Any package ID in the lineage, of any age. Its whole upgrade history is walked."),
       since: z

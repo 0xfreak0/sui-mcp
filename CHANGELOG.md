@@ -1,5 +1,264 @@
 # Changelog
 
+## Unreleased
+
+Two public incidents were replayed end to end through the server: the Cetus
+exploit of 22 May 2025 and the Nemo exploit of 7 September 2025. Both runs,
+together with an audit of address balances and of the tool surface, found reads
+that were cut short without saying so, lists that started at the wrong end, and
+traces that stopped or went the wrong way. Every such defect below was
+reproduced on mainnet before it was fixed and checked again after.
+
+### Added
+- **`analyze_attack_tx`.** Breaks down one exploit transaction: each address's
+  net per coin and in USD at block time, flash-loan and flash-swap legs paired
+  from borrow to repay, every swap's pool price before and after, what each
+  pool lost according to its own events, oracle calls and Pyth updates inside
+  the PTB, anomaly flags, and the attacker's profit. It reads the whole
+  transaction over gRPC with archive fallback, so the Nemo exploit's 214
+  commands and 103 events are all read.
+- **`summarize_incident_losses`.** Totals an attacker's take across a digest
+  list, or across a sender's transactions in a window, grouped by the pool each
+  transaction drained and priced at the time of the attack. Over the 265 Cetus
+  exploit transactions it reports $193.7M across 103 priced coins and lists the
+  92 it could not price, so the total is marked as a lower bound.
+- **`summarize_address_flows`.** One address over a window: per coin in, out
+  and net with USD; every address that paid it; the top recipients with
+  identity and labels; gas sponsorship in both directions; and every bridge
+  exit grouped by bridge and destination, with the far-side beneficiary. Both
+  replays needed this and had to page hundreds of transactions to get it.
+- **`trace_flow_graph` and `find_flow_path`.** The graph follows every branch
+  of the funds from a transaction, or from an address after a time, and
+  allocates the traced value across recipients in proportion to what each
+  received. It returns nodes, edges with USD and digests, and `terminals`
+  grouped by why each branch ended (bridge exit with beneficiary, sink, hub,
+  unspent, deposit) with the share that ended there. `find_flow_path` searches
+  for a value path between two addresses, including to an EVM or Solana
+  account a bridge exit paid, and says what it explored when it finds none.
+- **Graph export.** `format: mermaid | graph_json | csv` on `trace_flow_graph`,
+  `find_flow_path`, `trace_funds` and `build_wallet_edges`. `export_case` with
+  `format: mermaid` appends a fund-flow diagram of the findings' transactions.
+- **`get_upgrade_history`.** For every version of a package: the publish
+  transaction, sender, the sender's signing scheme (single key, zkLogin,
+  passkey, or multisig with the members that signed), who held the UpgradeCap
+  at that moment, and dependency relinks. It flags a cap round trip, an upgrade
+  signed by a single key while a multisig usually holds the cap, policy
+  changes, and a cap that was destroyed, wrapped, frozen or shared. `as_of`
+  says who held upgrade authority at a given time. On Nemo it finds the
+  eleven-minute loan of the cap to a single key during which the vulnerable
+  version shipped, and that the single key held the cap again at the time of
+  the exploit.
+- **`screen_address`.** Direct and indirect exposure (default 2 hops) to
+  labelled malicious, exchange, bridge and mixer accounts, and to sanctioned
+  accounts on the far side of bridge exits, with path digests, amounts and each
+  label's source.
+- **`classify_deposit_address`.** Decides whether an address is an exchange
+  deposit address from full-balance sweeps to one hot wallet, relayer-paid
+  sweep gas and a labelled or hub-shaped destination. Tier: heuristic.
+- **Shipped first-party labels.** Binance, OKX, Bybit and KuCoin
+  proof-of-reserves wallets; Wormhole, Circle CCTP, Sui Bridge and Mayan
+  objects from their deployment docs; and the Cetus and Nemo attacker addresses
+  named in those protocols' own incident reports. Each entry records entity,
+  evidence kind, source URL and retrieval date, and every tool that shows a
+  label shows where it came from. `npm run sync:disclosed-labels` regenerates
+  the set from the source documents.
+- **Sanctions and blocklist data.** The OFAC SDN digital currency list
+  (`npm run sync:sanctions`) contains no Sui addresses, and `screen_address`
+  says so; hits can only come from bridge beneficiaries. The Sui wallet
+  blocklist (`npm run sync:guardians`) appears as `flagged_by`, tier
+  third-party, in `analyze_token`, `analyze_package` and `identify_address`. It
+  is never a label or a sink.
+- **Historical USD without a key.** DefiLlama answers `get_token_prices` with
+  `at`, the per-hop USD in `trace_funds` and the new tools, and fills current
+  prices Aftermath does not list. SUI at the Cetus exploit prices at $4.16.
+- **Historical balances.** `get_balance` takes `at` (ISO) as well as
+  `at_checkpoint`, and reconstructs a balance older than GraphQL's consistent
+  range (about an hour) from the owner's balance changes since then. `method`,
+  `transactions_scanned` and `complete` say how it was derived; when the scan
+  budget runs out the balance is null rather than a partial sum.
+- **Bridge coverage.** `resolve_bridge_transfer` and `trace_funds` now handle
+  LayerZero V2 (destination endpoint, GUID and the OFT recipient), Axelar ITS,
+  Allbridge Core, Celer cBridge and Mayan Swift, with recipients read from the
+  Sui events. Meson is detected, and says its destination cannot be read from
+  chain data. Wormhole transfers arriving on Sui are reported under
+  `wormhole_inbound`.
+- **`aggregate_events` `group_pnl`.** Ranks the senders of the matched
+  transactions by their own balance changes and USD, and marks PTBs that also
+  called packages outside the filtered protocol.
+- **Address balances are reported.** `get_balance` and
+  `get_wallet_overview` split each total into `coin_balance` and
+  `address_balance`. `identify_address` and `get_object` list funds an object
+  holds in its own address balance (a bridge bank holds ~118k USDC this way).
+  `get_transaction` reports `address_balance_ops`, `funds_withdrawals` and
+  `gas_source`, and `decode_ptb` shows a `FundsWithdrawal`'s amount, coin and
+  source.
+- **`subject_flow` on history and timeline rows**, the queried address's own
+  signed change per coin. `token_flow` is the sender's, so a transfer the
+  address received used to read as the sender's outflow.
+- **`subject_paid_subject` in `find_funding_sources`**: every payment one
+  subject made to another, with digests and amounts, not only first fundings.
+- **Ordering and windows.** `order: newest | oldest` on
+  `get_transaction_history`, `query_transactions` and `query_events`; ISO times
+  in their checkpoint bounds; `get_checkpoint {timestamp}`;
+  `query_transactions` `all_versions` to read calls across a package lineage
+  as one list; `check_activity` `cursor`.
+- **Arguments.** Address arguments accept SuiNS names (echoed as
+  `resolved_from`), any case, and short hex. `get_balance` and
+  `list_owned_objects` accept `address` for `owner`, and a single string is
+  accepted where a list is expected.
+- **`save_finding` takes `evidence_tier`** (`chain-derived`,
+  `indexer-attested`, `heuristic`) and `digests`; `export_case` groups findings
+  by tier.
+- **`diff_package_upgrade`** lists added and removed functions, visibility
+  changes, and `linkage_changes`. The Cetus fix was a dependency relink
+  (integer-mate v3 to v5), which the diff now names together with the call
+  that diffs the dependency.
+- **`analyze_package`** reports `root_publisher`, `version_publisher` and an
+  `upgrade_cap` summary.
+- **MCP surface.** Every tool has a title and annotations, with the store
+  writers marked non-read-only. The main investigation tools return
+  `structuredContent` and declare `anthropic/maxResultSizeChars`. Prompts
+  `investigate_address`, `trace_incident` and `attribute_cluster` carry the
+  forensics skill for clients without skills. `sui://case/{name}` renders a
+  recorded case, and server `instructions` name the profiles and the main
+  tools.
+- Nemo is in the protocol registry.
+
+### Fixed
+- **Transaction reads stopped at 20 balance changes and 20 commands.** GraphQL
+  pages nested connections at 20, and reads across the server took the first
+  page as the whole list. `FujboNeQt8Nbb…` has 202 balance changes and the sender's debit
+  sorted past the 20th, so history showed no flow for it and a trace ranked
+  the next hop from a partial set; on the Cetus attacker it produced the wrong
+  funding origin. Every read now completes both lists, or says it could not.
+- **"Recent" meant oldest.** `get_wallet_overview.recent_transactions`,
+  `get_transaction_history`, `query_transactions` and `query_events` returned
+  an address's first transactions, so a wallet active today showed rows from
+  2024 and the history's address-poisoning check never saw recent activity.
+  They are newest first now.
+- **Time windows came back empty.** `build_timeline` and `check_activity`
+  fetched the address's oldest transactions and then filtered them by time, so
+  a one-day window on a busy wallet returned nothing and the Cetus
+  12:36–12:39 window returned 3 of its 6 transactions. The window is now in the
+  query, and a timeline says when its per-address budget cut the walk short.
+- **`trace_funds` reported false bridge exits.** Every Pyth price update calls
+  Wormhole's `vaa::parse_and_verify`, so a plain NAVI deposit read as "Value
+  left Sui via Wormhole". Exits routed through a wrapper, such as Mayan's
+  `bridge_with_fee`, were missed because no event types were checked.
+- **`resolve_bridge_transfer` named the bridge contract as the destination.**
+  54.4M of the Cetus attacker's 61.3M USDC went through Mayan, and the tool
+  named Mayan's settlement contract instead of the attacker's Ethereum address
+  `0x89012a55…`. The recipient is now decoded from the Sui transaction into
+  `beneficiaries` for Wormhole Token Bridge, the Token Bridge Relayer, NTT,
+  Mayan, CCTP and the native bridge, and the contract is
+  `redeemed_via_contract`.
+- **Backward traces followed the wrong money.** They took the oldest of the
+  last five transactions, including the address's own outflows, and reported
+  cycles that did not exist. They now follow whoever paid the coin in, list the
+  other payers as `unfollowed_sources`, and stop at hubs.
+- **Forward traces stopped silently or wandered.** An exploit transaction that
+  credits only the attacker ended the trace at hop 1 with no reason, as did a
+  protocol deposit and value sent to an object. A trace also followed the
+  recipient's next transaction whatever it moved. Traces now follow the
+  tracked coin, follow the actor through self-credits and swaps, follow value
+  out of objects (`Receiving<T>`, object address balances), name the protocol
+  a deposit went into, and always set `stop_reason`. `coin_type` accepts
+  `0x2::sui::SUI`, and small USDC flows are no longer shown as gas.
+- **A wallet labelled malicious ended a trace.** With the attackers now
+  labelled, both exploit traces stopped at the attacker. A malicious label
+  marks the wallet being followed; exchanges, bridges, mixers and burn
+  addresses still end a trace.
+- **A transaction the sender did not sign was attributed to the sender.** The
+  Cetus recovery moved 24M SUI out of an attacker address under a 31-of-64
+  multisig's signature. `get_transaction` now reports
+  `signer_is_sender: false` and `authorized_by`, `identify_address` no longer
+  says such an address never sent a transaction, `analyze_multisig` sees the
+  multisig signatures, and a trace stops at the hop.
+- **`analyze_multisig` never finished on an ordinary wallet.** It paged the
+  whole history looking for multisig signatures. It now stops at the
+  address's own single-key signature.
+- **Funding walks went past exchanges.** `find_funding_source` walked through
+  a funder that pays hundreds of addresses and called its 2023 ancestors a
+  narrow, meaningful origin. It now stops at a funder over the
+  50-recipient limit `build_wallet_edges` uses. `find_funding_sources` no
+  longer counts a chain twice when it runs through another subject, and a dead
+  end keeps its `dust_skipped` list and reports who sponsored the address's
+  gas.
+- **Holder rankings missed address balances.** On XAGM a ranking marked
+  `complete_ranking: true` left out the #2 holder, whose 13.74% of supply sits
+  in its address balance, and USAD, held entirely in one, reported no holders.
+  Both walks now run, and a ranking is complete only when both finish.
+- **Address-balance writes were counted as changed objects** in
+  `get_transaction`, and objects minted to someone else were reported as
+  nothing changing hands.
+- **`build_transfer` failed for a coin held only in the address balance.**
+- **A SuiNS name someone else sent was reported as the holder's alias.** A
+  third party sent the Cetus attacker a taunting name after the freeze; it is
+  now reported as received from that address.
+- **Upper-case or short addresses changed conclusions.** They turned a funding
+  trace into a dead end, a fan-out into zero counterparties and a validator
+  into a wallet.
+- **`null` meant zero.** `limit: null` returned an empty page with
+  `has_next_page: false`, and `hops: null` traced nothing.
+- **Failed reads looked like empty wallets.** `get_wallet_overview` and
+  `identify_address` now report a failed read as unknown or as an error,
+  never as zero.
+- **One rate limit lost a whole investigation.** GraphQL requests retry 429,
+  5xx and dropped connections with backoff, time out after 30s and run at most
+  8 at a time per network. Errors are one line.
+- **`diff_package_upgrade` showed no changes.** The sample was the top of each
+  module; on Nemo v9 to v10 it held no changed line. It is now unified hunks
+  with the changed lines first.
+- **`analyze_package` judged the UpgradeCap against the wrong publisher**, and
+  so said a cap that had left the deployer was still held by it.
+- **Party objects were reported as shared**, dropping the one address that can
+  use them.
+- **`query_events` returned nothing for an event type written with an upgraded
+  package ID.**
+- **`get_transactions` labelled every failure `MOVE_ABORT`.**
+- **Coins were named by their struct name**, so ten Wormhole assets all read
+  `COIN`.
+- **A gas sponsor's storage rebate counted as a payment** in fan-out
+  measurements and co-funding counts.
+- **`identify_address` called a wrapped or deleted object's id a wallet.**
+- `save_finding` and `manage_labels` stored malformed addresses; hints named
+  tools that do not exist; `enable_tools`' description was cut off past 2,048
+  characters.
+
+### Changed
+- `trace_funds` reports `stop_reason` on every trace, replacing
+  `stopped_at_sink`.
+- The pagination argument of `get_transaction_history`, `query_transactions`
+  and `query_events` is `cursor` (was `after`), and pages run newest first.
+- `resolve_bridge_transfer` moves the redeeming contract from
+  `destination.account` to `destination.redeemed_via_contract`.
+- `analyze_package` and `get_package` return a per-module summary by default;
+  `detail: 'full'` or `modules: [...]` returns struct shapes and signatures.
+  `analyze_package` on `0x2` went from 272k to 34k characters.
+- `find_funding_sources` returns the origin, first funder and first hop per
+  result; `include_chains: true` returns every hop. `max_hops` defaults to 5,
+  as in `find_funding_source`.
+- `aggregate_events`' `window` is `{from, to, after_checkpoint,
+  before_checkpoint}`.
+- `build_transfer` no longer returns `coins_used`; the SDK picks the coins.
+- Numeric limits are in the schemas, so an out-of-range value is rejected
+  instead of clamped.
+- Every price names its source, confidence and sample time, and marks a sample
+  more than an hour from the requested time as `stale`. Pyth is asked only
+  about verified coins, since its feeds match by symbol.
+- The injected `network` argument has a one-line description, and
+  `list_findings`, `export_case` and `delete_finding` no longer take it.
+  `enable_tools` sends one `tools/list_changed` per call and accepts profile
+  names in any case.
+- `check_coin_restrictions` notes that a freeze by validators, such as the
+  Cetus freeze, is node configuration and appears in no deny list.
+
+### Migration
+- Cached fan-out measurements are discarded on first use and measured again,
+  because the recipient count no longer includes gas sponsors.
+- Existing stores gain the `evidence_tier` and `digests` columns on open.
+  Earlier findings keep an unstated tier.
+
 ## 1.18.0 (2026-09-21)
 
 ### Added

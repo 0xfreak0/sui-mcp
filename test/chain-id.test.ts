@@ -44,6 +44,15 @@ describe("normalizeAddressForChain", () => {
     expect(() => normalizeAddressForChain(ETHEREUM, "0xdeadbeef")).toThrow(/20-byte/);
   });
 
+  it("rejects a Sui address that is not hex instead of padding it", () => {
+    // normalizeSuiAddress alone turns "0xzz" into 0x000…0zz, which a case
+    // report then listed and manage_labels marked as a sink.
+    for (const bad of ["0xzz", "hello", "0x", `0x${"a".repeat(65)}`]) {
+      expect(() => normalizeAddressForChain(SUI_MAINNET, bad), bad).toThrow(/not a Sui address/);
+    }
+    expect(() => parseAccountId("sui:mainnet:0xzz", SUI_MAINNET)).toThrow(/not a Sui address/);
+  });
+
   it("preserves Solana base58 case", () => {
     const addr = "So11111111111111111111111111111111111111112";
     expect(normalizeAddressForChain(SOLANA_MAINNET, addr)).toBe(addr);

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { registerCollection } from "../discovery-nft.js";
 import { clampPageSize } from "../utils/pagination.js";
@@ -429,8 +429,11 @@ export function registerNftTools(server: McpServer) {
     "list_nfts",
     "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. May slightly overshoot `limit` because GraphQL pages are 50-at-a-time and we don't break mid-page. Use list_nft_collections for a cheaper count-only summary.",
     {
-      address: z.string().describe("Owner wallet address (0x...)"),
+      address: addressArg().describe("Owner wallet address (0x...)"),
       limit: numArg()
+        .int()
+        .min(1)
+        .max(1000)
         .optional()
         .describe("Target page size (default 50, max 1000). Result may slightly exceed this at GraphQL page boundaries."),
       cursor: z
@@ -499,7 +502,7 @@ export function registerNftTools(server: McpServer) {
     "list_nft_collections",
     "Get a lightweight summary of NFT collections owned by a wallet. Walks all kiosks plus direct-owned objects and returns deduplicated collection types with counts. Backed by GraphQL.",
     {
-      address: z.string().describe("Owner wallet address (0x...)"),
+      address: addressArg().describe("Owner wallet address (0x...)"),
     },
     async ({ address }) => {
       const kioskIds = await discoverKiosks(address);

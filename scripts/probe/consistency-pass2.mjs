@@ -149,7 +149,9 @@ await runWithNetwork("mainnet", async () => {
   const POISON_REAL = "0xd649a4d5b492c0e6b715c0b7cbe2f13386d905a423c7464e3364322f57127127";
   const POISON_FAKE = "0xd642ef27e58a3a69b92284da03a3a5c2e60500e96a765029f08df81ac75d7127";
 
-  const hist = await call("get_transaction_history", { address: POISON_VICTIM, limit: 50 });
+  // The case is in the victim's first 50 transactions. History pages newest
+  // first now, so the pinned page has to be asked for by order.
+  const hist = await call("get_transaction_history", { address: POISON_VICTIM, limit: 50, order: "oldest" });
   const flagged = hist.address_poisoning?.pairs ?? [];
   ck("the pinned lookalike pair is reported", flagged.length === 1, `pairs=${flagged.length}`);
   ck("the grinding address is named as the suspect", flagged[0]?.suspect === POISON_FAKE,

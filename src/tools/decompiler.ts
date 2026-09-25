@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { boolArg } from "./args.js";
+import { boolArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { DECOMPILER_PATH, suivisionPackageUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
@@ -125,7 +125,7 @@ export function registerDecompilerTools(server: McpServer) {
     "decompile_module",
     "(Developer) Decompile Move module(s) from a Sui package into readable source code. Requires external move-decompiler binary. If module_name is omitted, lists available modules. Set all_modules=true to decompile the entire package.",
     {
-      package_id: z.string().describe("Package ID (0x...)"),
+      package_id: addressArg().describe("Package ID (0x...)"),
       module_name: z
         .string()
         .optional()

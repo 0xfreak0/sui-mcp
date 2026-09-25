@@ -1,7 +1,8 @@
 /**
  * Tool profiles — ship a small default surface, expand on demand.
  *
- * The full tool manifest is ~13.8k tokens, and MCP sends it on *every* request.
+ * The full tool manifest is ~29k tokens (117k characters; `core` alone is ~7k),
+ * and MCP sends it on *every* request.
  * That is context spent before any work happens, and a large flat tool list also
  * degrades selection accuracy: the failure mode is not "too many entries" so
  * much as several plausible-looking tools for one intent.
@@ -68,10 +69,17 @@ export const PROFILES = {
     "resolve_protocol_packages",
     "sample_control_addresses",
     "trace_funds",
+    // Every branch of the funds, and whether two addresses are connected at all.
+    "trace_flow_graph",
+    "find_flow_path",
     "resolve_bridge_transfer",
     "find_funding_source",
     "find_funding_sources",
     "get_address_fanout",
+    // Exchange deposit addresses are the subpoena target, and screening is the
+    // first question asked of any address that turns up in a case.
+    "classify_deposit_address",
+    "screen_address",
     "build_wallet_edges",
     // Multisig work is investigation work: whether a treasury is really run by
     // seven people or two, and whether known wallets share a committee that
@@ -94,11 +102,19 @@ export const PROFILES = {
     "disassemble_module",
     "build_timeline",
     "trace_object_history",
+    "get_upgrade_history",
     "manage_labels",
     "query_events",
     "check_activity",
     "get_top_holders",
     "compare_oracle_price",
+    // What an exploit took, per transaction and across an incident, in USD at
+    // the time: the question every incident report opens with.
+    "analyze_attack_tx",
+    "summarize_incident_losses",
+    // Per-asset totals, every funder, the biggest payees and every bridge exit
+    // for one address in one call, instead of paging its history by hand.
+    "summarize_address_flows",
     "aggregate_events",
     "save_finding",
     "list_findings",
@@ -146,14 +162,17 @@ export type ProfileName = keyof typeof PROFILES;
 
 export const PROFILE_NAMES = Object.keys(PROFILES) as ProfileName[];
 
-/** One-line summaries, used in the `enable_tools` description. */
+/**
+ * Short labels, used in the `enable_tools` description and the server
+ * instructions. The tool names beside them carry the detail; a long summary
+ * here is paid on every request and pushes the description past the 2,048
+ * characters Claude Code shows.
+ */
 export const PROFILE_SUMMARIES: Record<ProfileName, string> = {
-  core: "Everyday lookups — wallets, balances, transactions, tokens, NFTs, DeFi positions",
-  forensics:
-    "Incident investigation — fund tracing, batch funding attribution, address fan-out, live wallet-edge clustering, package analysis, multi-address timelines, object provenance, address labels, cross-chain bridge resolution, oracle-vs-market deviation, and recording findings into an exportable case report",
-  developer:
-    "Move package analysis — modules, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry",
-  market: "Market data — DeepBook order book and fills, pool stats, token search, validators",
+  core: "wallets, balances, transactions, tokens, NFTs, DeFi",
+  forensics: "incident investigation: tracing, attribution, clustering, packages, labels, case findings",
+  developer: "Move packages, bytecode, upgrades, PTBs, unsigned transactions, MVR",
+  market: "DeepBook, pools, token search, validators",
 };
 
 export const DEFAULT_PROFILES: ProfileName[] = ["core"];

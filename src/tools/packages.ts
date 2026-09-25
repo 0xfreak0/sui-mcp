@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { suivisionPackageUrl } from "../config.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
+import { selectModules, summarizeModule } from "../utils/package-summary.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function formatVisibility(v?: GrpcTypes.FunctionDescriptor_Visibility): string {
@@ -95,11 +97,19 @@ export function formatDatatypeFields(
 export function registerPackageTools(server: McpServer) {
   server.tool(
     "get_package",
-    "(Developer) Get a Sui Move package by its ID. Returns modules with structs (abilities + ordered fields in BCS declaration order) and functions categorized by visibility (entry, public, friend, private).",
+    "(Developer) Get a Sui Move package by its ID. By default returns a per-module summary: function and struct counts, entry and public function names. Pass `modules: ['pool']` for those modules' structs (abilities + ordered fields in BCS declaration order) and function signatures by visibility (entry, public, friend, private), or `detail: 'full'` for every module.",
     {
-      package_id: z.string().describe("Package ID (0x...)"),
+      package_id: addressArg().describe("Package ID (0x...)"),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): per-module counts and entry/public names. 'full': every module's structs and signatures."),
+      modules: z
+        .array(z.string())
+        .optional()
+        .describe("Module names to return in full, e.g. ['pool']. Others are left out."),
     },
-    async ({ package_id }) => {
+    async ({ package_id, detail, modules: wantedModules }) => {
       const { response: res } = await sui.movePackageService.getPackage({
         packageId: package_id,
       });
@@ -111,7 +121,11 @@ export function registerPackageTools(server: McpServer) {
       let totalFriendFns = 0;
       let totalStructs = 0;
 
-      const modules = pkg?.modules.map((m: GrpcTypes.Module) => {
+      const allModules = pkg?.modules ?? [];
+      const picked = selectModules(allModules, wantedModules);
+      const expanded = wantedModules?.length ? picked.selected : detail === "full" ? allModules : [];
+
+      const modules = expanded.map((m: GrpcTypes.Module) => {
         const entryFunctions: string[] = [];
         const publicFunctions: string[] = [];
         const friendFunctions: string[] = [];
@@ -156,7 +170,22 @@ export function registerPackageTools(server: McpServer) {
           friend_functions: friendFunctions,
           private_function_count: privateFunctions.length,
         };
-      }) ?? [];
+      });
+
+      // Totals cover every module, whichever ones are expanded.
+      if (expanded !== allModules) {
+        for (const m of allModules) {
+          if (expanded.includes(m)) continue;
+          totalStructs += m.datatypes.length;
+          for (const f of m.functions) {
+            const vis = formatVisibility(f.visibility);
+            if (f.isEntry) totalEntryFns++;
+            else if (vis === "public") totalPublicFns++;
+            else if (vis === "public(friend)") totalFriendFns++;
+            else totalPrivateFns++;
+          }
+        }
+      }
 
       return {
         content: [
@@ -169,17 +198,37 @@ export function registerPackageTools(server: McpServer) {
                 version: pkg?.version?.toString(),
                 suivision_url: suivisionPackageUrl(package_id),
                 summary: {
-                  module_count: modules.length,
+                  module_count: allModules.length,
                   total_entry_functions: totalEntryFns,
                   total_public_functions: totalPublicFns,
                   total_friend_functions: totalFriendFns,
                   total_private_functions: totalPrivateFns,
                   total_structs: totalStructs,
                 },
-                modules,
+                ...(wantedModules?.length
+                  ? {
+                      module_names: allModules.map((m) => m.name),
+                      modules,
+                      ...(picked.missing.length ? { modules_not_found: picked.missing } : {}),
+                    }
+                  : detail === "full"
+                    ? { modules }
+                    : {
+                        modules: allModules.map((m) =>
+                          summarizeModule({
+                            name: m.name ?? "",
+                            functions: m.functions.map((f) => ({
+                              name: f.name ?? "",
+                              visibility: formatVisibility(f.visibility),
+                              isEntry: !!f.isEntry,
+                            })),
+                            structs: m.datatypes.map((dt) => ({ name: dt.name ?? "" })),
+                          }),
+                        ),
+                        note: "Per-module summary. Pass modules: [name, …] for those modules' structs and signatures, or detail: 'full' for every module.",
+                      }),
               },
-              null,
-              2
+              // Compact: indentation adds a quarter to a package listing.
             ),
           },
         ],
@@ -191,7 +240,7 @@ export function registerPackageTools(server: McpServer) {
     "get_move_function",
     "(Developer) Get a specific Move function signature from a Sui package. Returns parameters, type parameters, return type, and visibility.",
     {
-      package_id: z.string().describe("Package ID (0x...)"),
+      package_id: addressArg().describe("Package ID (0x...)"),
       module_name: z.string().describe("Module name"),
       function_name: z.string().describe("Function name"),
     },

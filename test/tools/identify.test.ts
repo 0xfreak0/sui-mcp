@@ -15,7 +15,9 @@ vi.mock("../../src/clients/graphql.js", () => ({
   gqlQuery: mockGqlQuery,
 }));
 
+// Loaded after the mocks above: both import the grpc/graphql clients.
 const { registerIdentifyTools } = await import("../../src/tools/identify.js");
+const { registeredTools, unknownToolsIn } = await import("../helpers/tool-names.js");
 
 const tools = new Map<string, Function>();
 const mockServer = {
@@ -160,6 +162,82 @@ describe("identify_address", () => {
     expect(data.object_type).toContain("Pool");
   });
 
+  /**
+   * The jupnet bridge Bank 0x44cf…4b4b holds ~118k USDC and ~764 SUI in its
+   * own address balance and none of it among its fields. Identified as a
+   * plain shared object, it pointed at get_object, which showed no funds.
+   */
+  it("lists funds a shared object holds in its own address balance", async () => {
+    const BANK = "0x44cf357eda762cf0cd86547f7bfcaa51a4b55de615c57903ab461f38ffed4b4b";
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: BANK,
+          objectType: "0x58978a0c0678f010ff0ced45da75bf76f2cc33b96508c9a616dc547651f78341::liquidity_pool::Bank",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 896326318n },
+          version: 1019907195n,
+        },
+      },
+    });
+    mockSui.listBalances.mockResolvedValue({
+      balances: [
+        {
+          coinType: "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+          balance: "763614393142",
+          coinBalance: "0",
+          addressBalance: "763614393142",
+        },
+        {
+          coinType: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+          balance: "118304380703",
+          coinBalance: "0",
+          addressBalance: "118304380703",
+        },
+      ],
+      hasNextPage: false,
+      cursor: null,
+    });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: BANK })).content[0].text);
+
+    expect(mockSui.listBalances).toHaveBeenCalledWith(expect.objectContaining({ owner: BANK }));
+    expect(data.type).toBe("shared_object");
+    expect(data.address_balances).toEqual([
+      {
+        coin_type: "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        balance: "763614393142",
+        formatted: "763.614393142 SUI",
+      },
+      {
+        coin_type: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+        balance: "118304380703",
+        formatted: "118304.380703 USDC",
+      },
+    ]);
+    expect(data.address_balances_note).toMatch(/withdraw_funds_from_object/);
+    expect(data.hint).toMatch(/not among those fields/);
+  });
+
+  /** An absent `address_balances` reads as "holds nothing", so a failed lookup is said. */
+  it("says when an object's address balances could not be read", async () => {
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: "0xshared",
+          objectType: "0xdex::pool::Pool",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 1n },
+          version: 100n,
+        },
+      },
+    });
+    mockSui.listBalances.mockRejectedValue(grpcError("UNAVAILABLE"));
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xshared" })).content[0].text);
+
+    expect(data.address_balances).toBeUndefined();
+    expect(data.address_balances_error).toMatch(/Could not read/);
+  });
+
   it("identifies a wallet address", async () => {
     // No object found at this address
     mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
@@ -198,6 +276,65 @@ describe("identify_address", () => {
     expect(data.token_count).toBe(2); // only non-zero
   });
 
+  it("reports a SuiNS name another address sent the wallet as received, not as its own", async () => {
+    // The Cetus attacker: 0x407fb974 sent it registration 0xb00a20b5 in
+    // 2uE2WRav after validators froze the wallet. Node shape as mainnet returns it.
+    const HOLDER = "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06";
+    const SENDER = "0x407fb97400abc8f37defc658ab9c9f53a8953a1a446cd820561382fb3728ca20";
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockSui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "50000000" } });
+    mockSui.nameService.reverseLookupName.mockResolvedValue({ response: {} });
+    mockSui.listBalances.mockResolvedValue({ balances: [] });
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (String(q).includes("validatorSet")) {
+        return {
+          epoch: { validatorSet: { activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } },
+        };
+      }
+      if (String(q).includes("multiGetAddresses")) {
+        return {
+          multiGetAddresses: [
+            {
+              address: HOLDER,
+              objects: {
+                nodes: [
+                  {
+                    address: "0xb00a20b5e2fd72a27e9dc07e0e9e448f17c30ade559edb65432615e001069f6d",
+                    contents: {
+                      json: {
+                        domain_name: "give-the-funds-back-you-maniac-yngmi.sui",
+                        expiration_timestamp_ms: "1779832301904",
+                      },
+                    },
+                    previousTransaction: {
+                      digest: "2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw",
+                      sender: { address: SENDER },
+                      effects: { timestamp: "2025-05-27T04:07:50.218Z" },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      }
+      if (String(q).includes("multiGetObjects")) return { multiGetObjects: [null] };
+      return {};
+    });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: HOLDER })).content[0].text);
+    expect(data.names_held).toEqual([
+      expect.objectContaining({
+        name: "give-the-funds-back-you-maniac-yngmi.sui",
+        provenance: "received_from_third_party",
+        received_from: SENDER,
+        last_tx: "2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw",
+      }),
+    ]);
+    expect(data.names_note).toContain(SENDER);
+    expect(data.names_note).not.toMatch(/known by/);
+  });
+
   it("identifies a validator", async () => {
     // Not an object
     mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
@@ -231,6 +368,11 @@ describe("identify_address", () => {
     expect(data.type).toBe("validator");
     expect(data.name).toBe("Big Validator");
     expect(data.staking_pool_sui_balance).toBe("9000000000000");
+    // Raw MIST reads as nine trillion SUI; the unit travels with it.
+    expect(data.staking_pool_sui_balance_formatted).toBe("9000 SUI");
+    // The hint used to name get_validator_detail, which does not exist.
+    const names = new Set(registeredTools().map((t) => t.name));
+    expect(unknownToolsIn(data.hint, names)).toEqual([]);
   });
 });
 
@@ -246,5 +388,49 @@ describe("identify_address error handling", () => {
     const res = await handler({ address: "0xsomething" });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/not evidence the address is a wallet/i);
+  });
+
+  it("reports a failed balance, name or token read as unknown, not zero", async () => {
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockGqlQuery.mockResolvedValue({
+      epoch: {
+        validatorSet: {
+          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        },
+      },
+    });
+    mockSui.getBalance.mockRejectedValue(grpcError("UNAVAILABLE"));
+    mockSui.nameService.reverseLookupName.mockRejectedValue(grpcError("DEADLINE_EXCEEDED"));
+    mockSui.listBalances.mockRejectedValue(grpcError("UNAVAILABLE"));
+
+    const res = await tools.get("identify_address")!({ address: "0xwallet" });
+    const data = JSON.parse(res.content[0].text);
+    expect(data.type).toBe("wallet");
+    expect(data.sui_balance).toBeNull();
+    expect(data.sui_balance_unavailable).toMatch(/unknown, not zero/);
+    expect(data.sui_name).toBeNull();
+    expect(data.sui_name_unavailable).toMatch(/DEADLINE_EXCEEDED/);
+    expect(data.token_count).toBeNull();
+    expect(data.token_count_unavailable).toBeDefined();
+  });
+
+  it("does not flag a name lookup that found no name", async () => {
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockGqlQuery.mockResolvedValue({
+      epoch: {
+        validatorSet: {
+          activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        },
+      },
+    });
+    mockSui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "0" } });
+    mockSui.nameService.reverseLookupName.mockRejectedValue(notFoundError("no name record"));
+    mockSui.listBalances.mockResolvedValue({ balances: [] });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xwallet" })).content[0].text);
+    expect(data.sui_name).toBeNull();
+    expect(data.sui_name_unavailable).toBeUndefined();
+    expect(data.sui_balance).toBe("0");
+    expect(data.sui_balance_unavailable).toBeUndefined();
   });
 });

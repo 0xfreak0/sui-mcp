@@ -42,6 +42,23 @@ export function planModuleBatch<T>(modules: T[]): { selected: T[]; skipped: numb
   return { selected, skipped: modules.length - selected.length };
 }
 
+/**
+ * No decompiler binary at SUI_DECOMPILER_PATH or on PATH. Its own class so a
+ * whole-package run stops at the first module instead of returning this
+ * message as the "source" of every module. The wording avoids "not found",
+ * which the error cleaner reads as an object missing on this network.
+ */
+export class MissingDecompiler extends Error {
+  constructor() {
+    super(
+      "No move-decompiler binary is installed. Build it from the repo " +
+        "(https://github.com/0xfreak0/sui-mcp — `npm run build:decompiler`) " +
+        "and set SUI_DECOMPILER_PATH to the resulting binary. " +
+        "For bytecode-level output with no binary, use disassemble_module.",
+    );
+  }
+}
+
 function runDecompiler(bytecodeFile: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -60,14 +77,7 @@ function runDecompiler(bytecodeFile: string): Promise<string> {
             // build script that produces it lives in the git repo and is not in
             // the published `files` list, so an npx/npm install has no local
             // copy to point at — hence the repo URL rather than a relative path.
-            reject(
-              new Error(
-                "move-decompiler binary not found. Build it from the repo " +
-                  "(https://github.com/0xfreak0/sui-mcp — `npm run build:decompiler`) " +
-                  "and set SUI_DECOMPILER_PATH to the resulting binary. " +
-                  "For bytecode-level output with no binary, use disassemble_module."
-              )
-            );
+            reject(new MissingDecompiler());
           } else {
             reject(new Error(msg));
           }
@@ -200,10 +210,17 @@ export function registerDecompilerTools(server: McpServer) {
           }
 
           try {
-            const source = await decompileModule(mod, dir);
+            let source: string;
+      try {
+        source = await decompileModule(mod, dir);
+      } catch (err) {
+        if (err instanceof MissingDecompiler) return errorResult(err.message);
+        throw err;
+      }
             totalBytes += source.length;
             results.push({ module: mod.name!, source });
           } catch (err) {
+            if (err instanceof MissingDecompiler) return errorResult(err.message);
             results.push({
               module: mod.name!,
               source: `// Error decompiling: ${err instanceof Error ? err.message : String(err)}`,
@@ -261,7 +278,13 @@ export function registerDecompilerTools(server: McpServer) {
         return errorResult("Module has no bytecode");
       }
 
-      const source = await decompileModule(mod, dir);
+      let source: string;
+      try {
+        source = await decompileModule(mod, dir);
+      } catch (err) {
+        if (err instanceof MissingDecompiler) return errorResult(err.message);
+        throw err;
+      }
 
       return {
         content: [

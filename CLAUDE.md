@@ -61,6 +61,13 @@ Pick by the *shape of the read*, not by preference:
 If both transports could serve a read, prefer gRPC — GraphQL's 50-item page cap
 turns anything list-shaped into a pagination loop.
 
+GraphQL `package(address:)` answers with the **lineage's latest version**,
+whichever version's address you pass: Nemo v1 (`0x2b71…`) and v5 (`0xef9c…`)
+both come back as v12. For one version's bytes read
+`object(address:) { asMovePackage }` (`fetchModuleDisassembly`,
+`fetchModuleNames`) or `package { packageAt(version:) }` (`diff_package_upgrade`).
+gRPC reads by object ID and is exact.
+
 ### Archive fallback
 
 `archive` exists on **mainnet and testnet**; devnet has none, so `getClients()`

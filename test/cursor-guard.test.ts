@@ -21,11 +21,13 @@ beforeEach(() => mockGqlQuery.mockReset());
 describe("a page claimed with no cursor does not restart the walk", () => {
   it("stops instead of hanging forever", async () => {
     mockGqlQuery.mockResolvedValue({
-      package: {
-        modules: {
-          nodes: [{ name: "a" }, { name: "b" }],
-          // The shape that used to loop: another page, no cursor to reach it.
-          pageInfo: { hasNextPage: true, endCursor: null },
+      object: {
+        asMovePackage: {
+          modules: {
+            nodes: [{ name: "a" }, { name: "b" }],
+            // The shape that used to loop: another page, no cursor to reach it.
+            pageInfo: { hasNextPage: true, endCursor: null },
+          },
         },
       },
     });
@@ -40,10 +42,10 @@ describe("a page claimed with no cursor does not restart the walk", () => {
   it("still pages normally when a cursor is handed back", async () => {
     mockGqlQuery
       .mockResolvedValueOnce({
-        package: { modules: { nodes: [{ name: "a" }], pageInfo: { hasNextPage: true, endCursor: "c1" } } },
+        object: { asMovePackage: { modules: { nodes: [{ name: "a" }], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
       })
       .mockResolvedValueOnce({
-        package: { modules: { nodes: [{ name: "b" }], pageInfo: { hasNextPage: false, endCursor: null } } },
+        object: { asMovePackage: { modules: { nodes: [{ name: "b" }], pageInfo: { hasNextPage: false, endCursor: null } } } },
       });
 
     expect(await fetchModuleNames("0xpkg")).toEqual(["a", "b"]);
@@ -52,7 +54,7 @@ describe("a page claimed with no cursor does not restart the walk", () => {
 
   it("returns a single complete page without asking for another", async () => {
     mockGqlQuery.mockResolvedValue({
-      package: { modules: { nodes: [{ name: "only" }], pageInfo: { hasNextPage: false, endCursor: null } } },
+      object: { asMovePackage: { modules: { nodes: [{ name: "only" }], pageInfo: { hasNextPage: false, endCursor: null } } } },
     });
     expect(await fetchModuleNames("0xpkg")).toEqual(["only"]);
     expect(mockGqlQuery).toHaveBeenCalledTimes(1);

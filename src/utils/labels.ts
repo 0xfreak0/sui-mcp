@@ -292,7 +292,11 @@ export function getLabel(address: string): AddressLabel | null {
   );
 }
 
-/** True if the address is a known fund sink (exchange, bridge, mixer, malicious, burn). */
+/**
+ * True if the address carries a sink category (exchange, bridge, mixer, malicious,
+ * burn). Tracing does not stop at `malicious`: that label marks the wallet being
+ * followed. watch_addresses still reports reaching one.
+ */
 export function isSink(address: string): boolean {
   const label = getLabel(address);
   return label ? isSinkCategory(label.category) : false;

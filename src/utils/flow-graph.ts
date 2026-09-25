@@ -413,7 +413,7 @@ export type StopCode =
 
 /** What each code means, stated once in the output. */
 export const STOP_MEANING: Record<StopCode, string> = {
-  sink: "Reached an address with a sink label (an exchange, mixer, malicious wallet or burn address).",
+  sink: "Reached an address with a sink label (an exchange, mixer or burn address).",
   bridge_exit: "Left Sui through a bridge. Each exit names the far-side beneficiary where the transaction states one.",
   hub: "Reached an address with 100+ counterparties in its last 200 transactions. It pools other parties' money, so its next moves are not a continuation of these funds.",
   unspent: "Still held: the address has not moved this coin since receiving it.",

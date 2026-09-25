@@ -392,7 +392,7 @@ function traceCsv(direction: "forward" | "backward", followed: FollowedHop[], ho
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "(Advanced — multi-hop) Trace fund flow from a transaction. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers, malicious wallets — see manage_labels), at bridge exits, and backward at high-fanout hubs, and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
+    "(Advanced — multi-hop) Trace fund flow from a transaction. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers, burn addresses — see manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and backward at high-fanout hubs, and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z
@@ -735,10 +735,14 @@ export function registerTraceTools(server: McpServer) {
         }
         visitedAddresses.add(nextAddress);
 
-        // Stop at known sinks: once funds reach an exchange, bridge, mixer,
-        // malicious wallet, or burn address, further hops are noise.
-        if (isSink(nextAddress)) {
-          const label = getLabel(nextAddress);
+        // Stop at known sinks: once funds reach an exchange, bridge, mixer or
+        // burn address, further hops are noise. A malicious label is not a
+        // stop: it marks the attacker whose money the trace is following, and
+        // since the shipped labels name exploiters, stopping there ended every
+        // exploit trace at hop 1. trace_flow_graph applies the same rule.
+        const sinkLabel = getLabel(nextAddress);
+        if (isSink(nextAddress) && sinkLabel?.category !== "malicious") {
+          const label = sinkLabel;
           terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
           // A bridge is the one sink that is not terminal, and a labeled one
           // may carry no curated Move-call marker at all — a relayer forward,

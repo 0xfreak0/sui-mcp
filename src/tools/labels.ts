@@ -72,7 +72,7 @@ export function registerLabelTools(server: McpServer) {
         .enum(CATEGORIES)
         .optional()
         .describe(
-          "Label category (required for 'add'). Sink categories (cex, bridge, mixer, malicious, burn) terminate fund tracing.",
+          "Label category (required for 'add'). Sink categories (cex, bridge, mixer, burn) terminate fund tracing. A malicious label is shown and alerted on but does not stop a trace: it marks the wallet being followed.",
         ),
       confidence: z
         .enum(["high", "medium", "low"])

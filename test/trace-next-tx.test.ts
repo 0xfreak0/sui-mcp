@@ -20,6 +20,7 @@ const mockFanout = vi.fn();
 vi.mock("../src/utils/fanout.js", () => ({ measureFanout: mockFanout }));
 
 const { registerTraceTools } = await import("../src/tools/trace.js");
+const { addSessionLabel, removeSessionLabel } = await import("../src/utils/labels.js");
 
 /**
  * findNextForward / findPriorInflow are not exported, so this drives them
@@ -309,5 +310,23 @@ describe("trace_funds — how a hop ends", () => {
     route([small], () => []);
     const res = await traceFunds({ digest: START, direction: "forward", hops: 1 });
     expect(res.content[0].text).toMatch(/\+0\.5 USDC/);
+  });
+
+  it("follows value into a wallet labelled malicious, and stops at an exchange", async () => {
+    // The shipped labels name exploiters, and the attacker is the wallet whose
+    // money is being followed: stopping there ended every exploit trace at hop 1.
+    route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
+    addSessionLabel(RECIPIENT, { label: "Exploiter", category: "malicious" }, false);
+    try {
+      const followed = await run({ digest: START, direction: "forward", hops: 2 });
+      expect(followed.hops.map((h: { digest: string }) => h.digest)).toEqual([START, "0xnext"]);
+
+      addSessionLabel(RECIPIENT, { label: "Exchange", category: "cex" }, false);
+      const stopped = await run({ digest: START, direction: "forward", hops: 2 });
+      expect(stopped.hops).toHaveLength(1);
+      expect(stopped.stop_reason).toMatch(/Exchange \(cex\) — a known sink/);
+    } finally {
+      removeSessionLabel(RECIPIENT);
+    }
   });
 });

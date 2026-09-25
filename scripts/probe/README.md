@@ -1,6 +1,6 @@
 # Live checks
 
-Six scripts, run together by `npm run verify:live` from the repo root. Build
+Seven scripts, run together by `npm run verify:live` from the repo root. Build
 first — they drive the built tools, not the source.
 
 ```bash
@@ -15,6 +15,7 @@ npm run build && npm run verify:live && npm test
 | `full-case.mjs` | Cross-tool consistency — two tools must not disagree about one fact. Committees, publishers, coin verification, deny-list directions. |
 | `gap-pass.mjs` | Paths the other sweeps do not reach: a coin that really is regulated, a capped history. |
 | `consistency-pass2.mjs` | Each feature since 1.13.0 against an INDEPENDENT source of the same fact — registry decimals vs on-chain metadata, gRPC vs GraphQL abort detail, our sponsor count vs a direct scan. |
+| `incident-pass.mjs` | The 1.19 investigation tools replayed on the Cetus and Nemo exploits through the built server over stdio: attack net vs the raw balance change, a reconstructed balance vs the sum of earlier changes, CCTP exits and beneficiaries, upgrade authority at the exploit, per-version disassembly, the case diagram. Both incidents are history, so the pinned facts cannot drift. |
 
 ## When to run them
 
@@ -43,7 +44,7 @@ They need the network and mainnet's current state, so they would be flaky on a
 schedule nobody chose. A flaky required check teaches people to ignore failures,
 which costs more than the check is worth.
 
-## Why there are only six
+## Why there are only seven
 
 There were seventy. The rest were one-off measurements — symbol-collision
 counts, deny-list base rates, upgrade-cap destinations — and each produced a

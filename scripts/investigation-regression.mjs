@@ -55,7 +55,14 @@ if (!existsSync(casesPath)) {
 
 const { registerAllTools } = await import(join(root, "dist/tools/index.js"));
 const tools = new Map();
-registerAllTools({ tool: (name, _d, _s, handler) => tools.set(name, handler), server: {} });
+// Tools register through registerTool, and registerAllTools hooks the protocol
+// server's request handler to explain calls to disabled tools, so the stand-in
+// needs both.
+registerAllTools({
+  tool: (name, _d, _s, handler) => tools.set(name, handler),
+  registerTool: (name, _config, handler) => tools.set(name, handler),
+  server: { setRequestHandler() {} },
+});
 
 /** Run a tool and parse its JSON payload. Never throws — a failure is a finding. */
 async function call(name, args) {

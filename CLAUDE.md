@@ -405,10 +405,37 @@ on the call's network before the handler runs, and adds `resolved_from` plus a
 note that the name is a purchasable handle. An unregistered name is an error,
 not a pass-through.
 
-`withNetworkParam` also wraps every field so `null` means unset (an optional
-field gets its default, a required one reports "Required") and a bare string
-where a list is expected becomes a one-item list. This runs as a `z.preprocess`
-on each field, so the JSON schema is the field's own.
+Every tool's arguments are parsed with `toolArgsSchema` (`args.ts`), which
+`withNetworkParam` and `enable_tools` both use. It wraps every field so `null`
+means unset (an optional field gets its default, a required one reports
+"Required"), a bare string where a list is expected becomes a one-item list,
+and a blank string, alone or in a list, is refused. Handlers read a blank as
+unset (`if (coin_type)`), as zero (`BigInt(" ")` is 0, so `epoch: " "` returned
+genesis) or as match-everything (`search_token` with `query: ""`). This runs as
+a `z.preprocess` on each field, so the JSON schema is the field's own.
+
+The object is `.strict()`: an argument name the tool does not take is refused
+with the closest valid name and the full list. A plain `z.object` strips it, so
+`disassemble_module {module: "pool"}` listed the modules as if `module_name`
+had been left out. The advertised schema already said
+`additionalProperties: false`.
+
+Other value types follow the same rule: refuse what cannot mean anything
+rather than pass it on. A coin or struct type is `coinTypeArg()` (a malformed
+type matched nothing on the chain, so `0x2::a::b::c` read as "no deny list"). A
+time or checkpoint given as text is `timePointArg()`, or `.superRefine(refinePoint)`
+on a string-or-number field; `Date.parse("-5")` is a date in 6 BC. A `u64` as
+text is `u64StringArg()`. An MVR name is `mvrNameArg()`, because the name goes
+into the registry's URL path. `numArg` refuses `"1e309"`, which `Number()` makes
+Infinity. Each keeps the JSON schema of the base type; check with a `tools/list`
+diff when adding one.
+
+The SDK validates arguments before any handler, and joins several failures
+with newlines behind `MCP error -32602`. `oneLineArgumentErrors` rewrites that
+reply as `{"error": "Invalid arguments for <tool>: <field>: <message>; ..."}`,
+600 characters at most. An argument error quotes the caller's input through
+`quoteInput`: JSON-escaped and cut at 80 characters, so a 10,000-character
+argument does not come back as a 10,000-character error.
 
 ### Tool metadata
 
@@ -451,7 +478,8 @@ rather than one per tool.
 `withNetworkParam` catches a thrown error and returns `errorResult` with one
 line from `describeError` (`src/utils/errors.ts`): percent-escapes decoded,
 `graphql-request`'s JSON dump cut, first non-empty line only, 500 characters at
-most. A not-found names the network it was looked up on and the other networks
+most, control characters escaped (tools quote the caller's input back, and an
+argument holding NUL or an ANSI escape put the raw bytes in the reply). A not-found names the network it was looked up on and the other networks
 to try. The same cleaning runs over an `isError` result a tool built itself.
 
 `gqlQuery` retries 429, 5xx and connection resets (`GRAPHQL_TRANSPORT` in

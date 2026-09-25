@@ -16,9 +16,9 @@ export function registeredTools(): RegisteredTool[] {
     server: { setRequestHandler() {} },
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: Record<string, { description?: string }> },
+      config: { description?: string; inputSchema: { shape: Record<string, { description?: string }> } },
     ) {
-      const params = Object.values(config.inputSchema ?? {})
+      const params = Object.values(config.inputSchema.shape)
         .map((s) => s?.description)
         .filter((d): d is string => typeof d === "string");
       out.push({ name, texts: [config.description ?? "", ...params] });

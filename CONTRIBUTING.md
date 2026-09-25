@@ -64,7 +64,12 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
    turns that into a hard failure over nothing. For a Sui address, object ID or
    package ID use `addressArg()` / `addressListArg()`, which return the
    canonical form and accept SuiNS names; comparing a raw argument against chain
-   data fails silently on upper-case or short input.
+   data fails silently on upper-case or short input. A coin or struct type is
+   `coinTypeArg()`, a time or checkpoint given as text is `timePointArg()` (or
+   `.superRefine(refinePoint)` on a string-or-number field), and a `u64` carried
+   as text (an epoch, a version, a raw amount) is `u64StringArg()`. Every tool
+   refuses unknown argument names and blank strings; that happens in
+   `toolArgsSchema`, so a new tool gets it without doing anything.
 5. Add the tool to a profile in `src/tools/profiles.ts`. A tool in no profile
    still exists but nobody loads it by default.
 6. Update the advertised tool counts: the heading and intro in `README.md`, the

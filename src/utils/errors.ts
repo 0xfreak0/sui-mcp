@@ -69,8 +69,26 @@ export function cleanErrorMessage(raw: string, network: SuiNetwork, notFound = f
   return msg;
 }
 
+/**
+ * The line for a gRPC status that came with no message. The gRPC-web transport
+ * turns an HTTP 429 into `RESOURCE_EXHAUSTED` with an empty message, which read
+ * as "Unknown error".
+ */
+function grpcStatusMessage(err: unknown): string | null {
+  if (!err || typeof err !== "object" || !("code" in err)) return null;
+  const code = String(err.code);
+  if (code === "RESOURCE_EXHAUSTED") {
+    return (
+      "Rate-limited by the Sui fullnode (gRPC RESOURCE_EXHAUSTED) after retrying. " +
+      "Retry shortly, or set SUI_FULLNODE_URL to a private endpoint for heavy use."
+    );
+  }
+  return `The Sui fullnode returned gRPC ${code} with no message.`;
+}
+
 /** {@link cleanErrorMessage} for a thrown value of any shape. */
 export function describeError(err: unknown, network: SuiNetwork): string {
   const raw = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
-  return cleanErrorMessage(raw ?? String(err), network, isNotFound(err));
+  const text = raw?.trim() ? raw : (grpcStatusMessage(err) ?? raw);
+  return cleanErrorMessage(text ?? String(err), network, isNotFound(err));
 }

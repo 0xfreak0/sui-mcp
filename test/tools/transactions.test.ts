@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
+import fixture from "../fixtures/address-balance-txs.json" with { type: "json" };
 
 /**
  * A real mainnet digest. get_transaction rejects a malformed one before making
@@ -312,5 +313,100 @@ describe("get_transaction reports what a transaction touched", () => {
   it("omits object_transfers when nothing changed hands", async () => {
     const j = await run(emptyTx());
     expect(j.object_transfers).toBeUndefined();
+  });
+});
+
+/**
+ * Funds that move without a coin object. The effects, inputs and gas payment
+ * are real gRPC responses captured from mainnet (test/fixtures), with the
+ * fixture's `"123n"` strings revived as the bigints the client returns.
+ */
+describe("get_transaction reports address-balance activity", () => {
+  const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+
+  type Captured = (typeof fixture)["CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay"];
+  function response(digest: keyof typeof fixture) {
+    const fx: Captured = JSON.parse(JSON.stringify(fixture[digest]), (_k, v) =>
+      typeof v === "string" && /^\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v,
+    );
+    return {
+      response: {
+        transaction: {
+          digest,
+          timestamp: { seconds: 1790000000n, nanos: 0 },
+          checkpoint: 326000000n,
+          transaction: {
+            sender: fx.sender,
+            gasPayment: fx.gasPayment,
+            kind: {
+              data: {
+                oneofKind: "programmableTransaction",
+                programmableTransaction: { inputs: fx.inputs, commands: [] },
+              },
+            },
+          },
+          effects: {
+            status: { success: true },
+            gasUsed: { computationCost: 100000n, storageCost: 0n, storageRebate: 0n, nonRefundableStorageFee: 0n },
+            epoch: 1254n,
+            changedObjects: fx.changedObjects,
+          },
+          events: { events: [] },
+          balanceChanges: fx.balanceChanges,
+        },
+      },
+    };
+  }
+
+  const run = async (digest: "CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay" | "34q8kUTe8Uoe3f6cD5wKmS7ZqgYg3uX8J7nAJEuGeGTF" | "8eHgw5hBnALFJKPstXWcPgKjeh1av1CzFAz8n85Primr") => {
+    mockSui.ledgerService.getTransaction.mockResolvedValue(response(digest));
+    const r = await tools.get("get_transaction")!({ digest, max_event_field_bytes: 0 });
+    return JSON.parse(r.content[0].text);
+  };
+
+  /**
+   * CD2e4… redeemed 1951 MIST from the sender's address balance and sent it
+   * on, paying gas from the address balance too. No object was written, yet
+   * it reported two changed objects and "none changed hands".
+   */
+  it("shows withdrawals and deposits instead of phantom object changes", async () => {
+    const j = await run("CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay");
+    expect(j.object_changes).toEqual({ changed: 0, created: 0, deleted: 0 });
+    expect(j.object_changes_note).toBeUndefined();
+    expect(j.address_balance_ops).toEqual([
+      { owner: "0xb71effa1cc4425928e0bda7c3b690a356245e705b01b5380b5d4d1a3497c1d47", coin_type: SUI, op: "deposit", amount: "1951" },
+      { owner: "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf", coin_type: SUI, op: "withdraw", amount: "101951" },
+    ]);
+    expect(j.funds_withdrawals).toEqual([{ amount: "1951", coin_type: SUI, source: "sender" }]);
+    expect(j.gas_source).toBe("address_balance");
+  });
+
+  /**
+   * 34q8k…: a 704,848 SUI gas coin was deleted and merged into its owner's
+   * address balance while balance_changes showed only the -100k payment.
+   */
+  it("flags a coin folded into its owner's address balance", async () => {
+    const j = await run("34q8kUTe8Uoe3f6cD5wKmS7ZqgYg3uX8J7nAJEuGeGTF");
+    const own = j.address_balance_ops.find(
+      (o: { owner: string }) => o.owner === "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6",
+    );
+    expect(own.converted_from_coins).toEqual(["0x6b0e59544cd4d7c161e038fa13b6fb7314f442c1f86d2b0ce55576367469c40e"]);
+    expect(own.note).toMatch(/no value moved/);
+    expect(j.gas_source).toBe("coins_and_address_balance");
+  });
+
+  /**
+   * 8eHgw5…: Cetus's multisig minted MessageFromCetus NFTs to both exploiter
+   * addresses, and the note said nothing changed hands.
+   */
+  it("lists objects minted to someone other than the sender", async () => {
+    const j = await run("8eHgw5hBnALFJKPstXWcPgKjeh1av1CzFAz8n85Primr");
+    expect(j.object_changes_note).toBeUndefined();
+    expect(j.created_for.map((m: { to: { address: string } }) => m.to.address)).toEqual([
+      "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06",
+      "0xcd8962dad278d8b50fa0f9eb0186bfa4cbdecc6d59377214c88d0286a0ac9562",
+    ]);
+    expect(j.created_for[0]).toMatchObject({ type: "message_from_cetus::MessageFromCetus", kind: "created" });
+    expect(j.gas_source).toBe("coins");
   });
 });

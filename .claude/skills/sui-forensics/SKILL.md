@@ -440,6 +440,7 @@ get the schema wrong in ways that fail silently.
 | Did funds move without a coin object? | `get_transaction` → `address_balance_ops`, `funds_withdrawals`, `gas_source` |
 | Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
 | Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
+| What did this address hold before/after the incident? | `get_balance` with `at` or `at_checkpoint` → `balance` only when `complete` is true |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — struct shapes, API, capability audit |
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |

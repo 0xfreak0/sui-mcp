@@ -341,6 +341,28 @@ That deposit carries `converted_from_coins` and a note saying so.
 list `address_balances` for an object id: funds the object holds itself, which
 are not among its fields and which only its defining module can withdraw.
 
+**What did this address hold at a past moment?** `get_balance` takes `at` (ISO
+8601) or `at_checkpoint`. GraphQL reads a balance directly only inside its
+consistent range, about the last hour (`method: consistent_read`). An older
+point is reconstructed (`method: reconstructed`): the balance at a recent
+anchor checkpoint, minus the owner's balance changes in that coin in every
+transaction after the requested checkpoint up to the anchor. Balance changes
+include address-balance deposits and withdrawals, so the result is exact when
+`complete` is true.
+
+```
+get_balance(owner: 0x01229b3c…c724, at: 2025-09-07T16:00:00Z)
+  → method: reconstructed, at_checkpoint: 187414630, complete: true,
+    balance: 78.654856875 SUI, transactions_scanned: 30,
+    anchor: { checkpoint: 326856716, balance: 93.696806819 SUI, … }
+```
+
+The scan reads at most `max_transactions` (default 1,000, max 10,000). When
+that runs out, `complete` is false, `balance` is null, and `reached_checkpoint`
+is the oldest checkpoint the scan got back to: every transaction after it was
+read. A reconstructed balance has no coin/address split, so `coin_balance` and
+`address_balance` are null and `anchor` carries the split at the anchor.
+
 **Are these really the top holders?** Only when `complete_ranking` is true.
 `get_top_holders` walks two things in object-id order, which is unrelated to
 balance: `Coin<T>` objects, and address balances (funds credited to an owner's
@@ -624,7 +646,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total |
+| `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total; now, or at a past time or checkpoint (reconstructed from balance changes outside the last hour) |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
 | `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
 | `get_token_prices` | USD prices for tokens, current (Aftermath, then DefiLlama, then Pyth) or at a past moment when `at` is set (Pyth for verified coins with a key, DefiLlama otherwise). Each price carries its source, confidence and sample time; unpriced coins are listed with the reason |

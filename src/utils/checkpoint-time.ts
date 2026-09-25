@@ -35,7 +35,7 @@ export async function latestCheckpoint(): Promise<CheckpointPoint> {
   return { seq: n.sequenceNumber, ms: Date.parse(n.timestamp) };
 }
 
-async function checkpointAt(seq: number): Promise<CheckpointPoint | null> {
+export async function checkpointAt(seq: number): Promise<CheckpointPoint | null> {
   const d = await gqlQuery<{
     checkpoint: { sequenceNumber: number; timestamp: string } | null;
   }>(AT_QUERY, { seq: Math.max(0, Math.floor(seq)) });

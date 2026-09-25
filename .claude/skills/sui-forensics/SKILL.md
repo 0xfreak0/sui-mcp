@@ -44,9 +44,14 @@ holds one for a client.
 2. **Identify before you trace.** `identify_address`. A hop that is a package or
    a shared object is not "someone the funds went to", and a trace that treats a
    DEX pool as a person is wrong from that point on.
-3. **Trace with `trace_funds`.** Read `stop_reason` and `unfollowed` *before* the
-   path: a trace follows one branch, and splitting across wallets is the ordinary
-   laundering move.
+3. **Trace with `trace_funds`.** Read `stop_reason` and `unfollowed_recipients`
+   (forward) or `unfollowed_sources` (backward) *before* the path: a trace
+   follows one branch, and splitting across wallets is the ordinary laundering
+   move. A hop with `commingled` spent more than the trace delivered to it, so
+   from there on the amounts include other funds. A hop with
+   `signer_is_sender: false` was signed by `authorized_by` acting for the
+   sender (an address alias or a protocol recovery); it is not the sender's own
+   act, and a forward trace stops there.
 4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
    several addresses at once, which also reports co-funding and its denominators
    and every payment one subject signed to another (`subject_paid_subject`).
@@ -449,7 +454,7 @@ get the schema wrong in ways that fail silently.
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | What happened between two times? | `query_transactions`, `query_events`, `build_timeline` and `aggregate_events` take ISO bounds; `get_checkpoint {timestamp}` gives the checkpoint |
-| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
+| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract` and a CCTP leg marked `settlement_intermediate` are bridge contracts, not the recipient |
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
@@ -484,7 +489,13 @@ ten round trips for the same data.
   scan of public data. Two wallets funded out-of-band and never co-appearing
   produce no edge no matter who controls them. Absence is not evidence.
 - **"The trace ended, so the money stopped."** A forward trace stops when the
-  recipient has not spent *yet*. Check `stop_reason`.
+  recipient has not spent *yet*, when the value went into a protocol (the
+  depositor holds the claim), at a bridge exit, or at a hub whose next outflow
+  is someone else's money. Check `stop_reason`, which is always set.
+- **"Funds sent to an address went to a wallet."** A `Receiving<T>` transfer
+  (a zkSend link) pays an object's id. `identify_address` reports
+  `wrapped_or_deleted_object` for such an id, and `trace_funds` follows the
+  value out of it (`reached_via: "released-from-object"`).
 - **"Nothing was found, so nothing exists."** A pruned transaction and a wrong
   digest look identical. `not_found` is "could not look", not "not there".
 - **"They share a funder, therefore an operator."** Only if that funder is
@@ -559,7 +570,7 @@ manage_labels                 → label the two exchanges already known to the c
                                 so a trace stops there instead of running into
                                 deposit-sweep noise.
 trace_funds                   → 4 hops, stop_reason "reached a labeled entity".
-                                unfollowed lists two recipients not taken —
+                                unfollowed_recipients lists two not taken —
                                 note them, they are branches, not noise.
 find_funding_source           → first funded by 0xaec…, 355 SUI.
 get_address_fanout  0xaec…    → 33 recipients, narrow. Worth pursuing.

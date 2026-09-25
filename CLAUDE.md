@@ -754,6 +754,16 @@ Three rules that follow:
 position. A gas-sponsored transaction carries `[sender, sponsor]` and position
 happens to work today, but a derivation is a fact the caller can check.
 
+**The sender's own key may not have signed.** An alias, or a protocol-level
+substitution like the vote that moved the Cetus attacker's frozen funds, signs
+in the sender's place. `assignSignerRoles` (`src/utils/multisig.ts`) labels a
+signature that derives to neither the sender nor the gas sponsor
+`acting_for_sender` and sets `signer_is_sender: false`. Every reader of "who
+sent this" has to carry that: `get_transaction` reports `authorized_by`,
+`describeAddresses` reports `foreign_authorization` instead of "never sent",
+`analyze_multisig` says the history proves nothing either way, and a forward
+trace stops at the hop.
+
 **A flag-3 signature that will not decode stays labelled `multisig`.** Legacy
 multisig (`multisig_legacy.rs`) shares the flag and the address derivation but
 not the wire format. Calling it `unknown` would downgrade a real finding to an
@@ -1080,13 +1090,34 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
-### Chain-derived destinations: Sui native bridge and CCTP
+### Chain-derived destinations: Sui native bridge, CCTP, and Wormhole payloads
 
-Two of the three resolvers need **no indexer for the destination** — the
+Sui's native bridge and CCTP need **no indexer for the destination**: the
 destination chain and recipient are in the events, so the far side is
-`chain-derived`. Wormhole cannot do this: a VAA names an emitter and a
-sequence, never a recipient, which is why its destination is
-`indexer-attested`. Prefer these when both are present in one transaction.
+`chain-derived`. A Wormhole VAA's identity names an emitter and a sequence,
+never a recipient, so its redemption is `indexer-attested`. The recipient is
+often in the message payload, though, and `src/utils/bridge/beneficiary.ts`
+decodes it into `beneficiaries`:
+
+- Token Bridge `Transfer` (payload 1): `to` + `toChain`, pinned to the Sui
+  Token Bridge emitter `ccceeb29…`.
+- `TransferWithPayload` (payload 3): `to` is the contract that consumes the
+  payload. Only the Token Bridge Relayer's inner `targetRecipient` is read, and
+  only from its known `fromAddress`.
+- NTT: `to` + `to_chain` behind the `0x9945ff10` transceiver prefix.
+- Mayan: `OrderCreated.addr_dest` (Wormhole chain id) and
+  `BridgeSubmittedWithFee.addr_dest` (CCTP domain), read only from the package
+  that emitted `InitMctpLogged` in the same transaction, because `init_order`
+  is a module name DEX order books share.
+
+**The redemption names the contract, not the recipient.** Wormholescan's
+`targetChain.to` is the Token Bridge, the NTT manager or the relayer that the
+redemption called; it is reported as `redeemed_via_contract` and never as the
+destination account. `standarizedProperties.toAddress` is used only when the
+payload could not be decoded. A CCTP burn inside a Mayan transaction mints to
+Mayan's settlement contract and carries `role: "settlement_intermediate"`.
+A decoder is pinned to the sender, never to a payload shape alone: a shape
+match on another app's payload would name a stranger as the beneficiary.
 
 Each has its own chain numbering, none of them CAIP-2:
 
@@ -1117,8 +1148,8 @@ third-party dependency for weaker information than the events already give.
 The strongest cross-chain evidence in the server, and the only case needing no
 third party for the destination: the outbound `bridge::TokenDepositedEvent`
 carries `target_chain` and `target_address` as raw bytes, so the far side is
-**chain-derived**. Wormhole cannot do this — a VAA names an emitter and a
-sequence, not a recipient — which is why its destination is indexer-attested.
+**chain-derived**, straight from the event rather than from a payload that
+has to be attributed to its sender first.
 
 `(source_chain, seq_num)` is the bridge's transfer id, quoted back by Ethereum
 on claim. Sui ↔ Ethereum only; `chain_ids` declares no other route.
@@ -1620,10 +1651,16 @@ impossible.
 1. Curated `callMarkers` / `eventMarkers` per protocol, matched by
    `module::function` *suffix and prefix* so they survive package upgrades and
    name variants (mainnet CCTP calls
-   `deposit_for_burn_with_caller_with_package_auth`, not the bare name).
-2. Any package `lookupProtocol` types as `bridge`. This is free and automatic:
-   adding a bridge to `protocols.json` gives detection immediately, and via
-   lineage roots it keeps working after that bridge upgrades.
+   `deposit_for_burn_with_caller_with_package_auth`, not the bare name). Event
+   types are compared with their type arguments stripped, on the whole
+   `::module::Name` tail: a generic event ends in its type argument.
+2. Any package `lookupProtocol` types as `bridge` **and that has no curated
+   entry**. This is free and automatic: adding a bridge to `protocols.json`
+   gives detection immediately, and via lineage roots it keeps working after
+   that bridge upgrades. A protocol with curated markers is decided by its
+   markers alone. Every Pyth price update calls Wormhole core's
+   `vaa::parse_and_verify`, and a call into the package reported a NAVI
+   deposit as value leaving Sui.
 
 **Resolution** (where did it land?) does *not* generalize — each protocol has
 its own identity scheme and its own index — so each resolver is bespoke.
@@ -1643,11 +1680,45 @@ There is deliberately **no heuristic tier**. Guessing that an unknown package
 looks bridge-shaped would manufacture exactly the unverifiable attribution this
 project refuses to ship.
 
-Detect from **Move calls, not sink labels.** A bridge burns or locks the coin
-and emits a message; it does not transfer value to a labelable recipient
-wallet, so `isSink` never fires on a real bridge exit and only one address
-label ships at all. `trace_funds` runs `detectBridges` over each hop's calls —
-data it already has, no extra query — and emits `bridge_exits`.
+Detect from **Move calls and events, not sink labels.** A bridge burns or
+locks the coin and emits a message; it does not transfer value to a labelable
+recipient wallet, so `isSink` never fires on a real bridge exit and only one
+address label ships at all. `trace_funds` runs `detectBridges` over each hop's
+calls and event types and emits `bridge_exits`. The events are not optional: a
+wrapper such as Mayan's `bridge_with_fee` puts no marker call in the PTB, and
+its CCTP burn and Wormhole message are only visible as events.
+
+### How `trace_funds` picks the next hop
+
+Pure logic in `src/utils/trace-hop.ts`, the searches in `src/tools/trace.ts`.
+Rules a change is likely to break:
+
+- **Gas is removed before any SUI comparison.** The gas payer's SUI change
+  includes gas, so without this every transaction reads as a SUI outflow.
+- **Forward follows the tracked coin.** On a plain hop only recipients of the
+  tracked coin are candidates, and the next hop is the recipient's first sent
+  transaction that spends that coin (up to 500 scanned), not its next
+  transaction of any kind.
+- **The actor is followed when nobody else received anything**: a swap
+  (`swap-follow`), an exploit, withdrawal or claim that credits only its caller
+  (`self-credit`), or the actor turning one asset into another (`conversion`).
+  None of these is a cycle.
+- **An object cannot send.** When the recipient has sent nothing since the hop,
+  the next hop is the first later transaction in which its balance of the coin
+  goes down, found through `affectedAddress` and marked
+  `reached_via: "released-from-object"`; the custody check does not apply.
+- **Backward follows who paid the coin in**, which is the owner of the largest
+  decrease, not the sender. Then the payer's most recent earlier inflow of that
+  coin, walking newest to oldest. A `last` page arrives ascending, so taking
+  its first element picks the oldest.
+- **A hub ends the trace.** A new party with 100+ counterparties in its last
+  200 transactions (`measureFanout`) pools other people's money, so its earlier
+  inflows (backward) and its next outflow (forward) are not these funds.
+- **A transaction its sender did not sign ends a forward trace.** The signer
+  acted for the sender (an alias or a protocol substitution), and following on
+  would attribute its actions to the sender.
+- **`stop_reason` is always set**, with the same name `find_funding_source`
+  uses. A trace that just ends reads as "the money stopped here".
 
 ### Shipped labels, screening and scam lists
 

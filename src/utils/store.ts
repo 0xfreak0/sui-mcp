@@ -126,7 +126,7 @@ export const FUNDING_METHOD_VERSION = 1;
  * `fetchTx` changes. Same reasoning as FUNDING_METHOD_VERSION, which exists
  * because the answer depends on the dust floors that produced it.
  */
-export const TX_METHOD_VERSION = 2;
+export const TX_METHOD_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (

@@ -377,7 +377,7 @@ describe("describeAddresses — authentication", () => {
         : reply(new Array(n).fill(null));
     });
     await describeAddresses(Array.from({ length: 50 }, (_, i) => `0x${i}`), { authentication: true });
-    // 50 addresses in authentication batches of 20.
+    // Three authentication batches of 20, counted apart from the other lookups.
     expect(mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("sentAddress"))).toHaveLength(3);
   });
 
@@ -390,6 +390,49 @@ describe("describeAddresses — authentication", () => {
     const out = await describeAddresses([ms.address], { authentication: true });
     expect(out.get(ms.address)!.kind).toBe("wallet");
     expect(out.get(ms.address)!.authentication).toBeUndefined();
+    // A failed read is not "never sent".
+    expect(out.get(ms.address)!.authentication_unavailable).toBe(true);
+  });
+
+  it("records who signed when the address's sent transactions carry none of its own signatures", async () => {
+    // B2eGLFo… was sent as a Cetus attacker address and signed by a multisig
+    // acting for it. Dropping that transaction reported "never sent".
+    const sender = fixtures.ed25519.address;
+    mockGqlQuery.mockImplementation(
+      withAuth(reply([null]), heldReply([[]]), {
+        a0: { nodes: [{ digest: "B2eGLFo", gasInput: { gasSponsor: { address: sender } }, signatures: ms.signatures.map((signatureBytes) => ({ signatureBytes })) }] },
+      }),
+    );
+    const id = (await describeAddresses([sender], { authentication: true })).get(sender)!;
+    expect(id.authentication).toBeUndefined();
+    expect(id.foreign_authorization).toEqual({ digest: "B2eGLFo", authorized_by: [ms.address], transactions_examined: 1 });
+    expect(identityNote(id)).toMatch(/none of the 1 examined carries its own signature/);
+  });
+
+  it("calls an id that transactions recorded as an object a former object, not a wallet", async () => {
+    // 0x17d0… is a zkSend bag's UID: no live object, never signed.
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("affectedObject")) return { a0: { nodes: [{ digest: "2N1WX" }] } };
+      if (String(q).includes("sentAddress")) return { a0: { nodes: [] } };
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? heldReply([[]]) : reply([null]);
+    });
+    const id = (await describeAddresses(["0x17d0"], { authentication: true })).get("0x17d0")!;
+    expect(id.kind).toBe("wrapped_or_deleted_object");
+    expect(id.object_seen_in).toBe("2N1WX");
+  });
+
+  it("classifies kinds in chunks under the payload cap", async () => {
+    // multiGetObjects with 62 keys is 5,222 bytes, over the service's 5,000.
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      const n = (v as { keys: unknown[] }).keys.length;
+      return String(q).includes("multiGetAddresses") ? heldReply(new Array(n).fill([])) : reply(new Array(n).fill(null));
+    });
+    await describeAddresses(Array.from({ length: 120 }, (_, i) => `0x${i}`));
+    const kindCalls = mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("multiGetObjects"));
+    expect(kindCalls.every(([, v]) => (v as { keys: unknown[] }).keys.length <= 40)).toBe(true);
+    expect(kindCalls.reduce((n, [, v]) => n + (v as { keys: unknown[] }).keys.length, 0)).toBe(120);
   });
 });
 

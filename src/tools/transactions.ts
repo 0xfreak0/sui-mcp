@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { describeSignatures } from "../utils/multisig.js";
+import { assignSignerRoles } from "../utils/multisig.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
 import { boolArg, numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
@@ -278,15 +278,18 @@ export function registerTransactionTools(server: McpServer) {
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
-      // covers both transports.
-      const authorization = describeSignatures(
+      // covers both transports. Roles are assigned by derivation: a signature
+      // that derives to neither the sender nor the gas sponsor authorized in
+      // the sender's place (an address alias or a protocol-level substitution).
+      const signers = assignSignerRoles(
+        sender,
+        transaction?.gasPayment?.owner,
         (tx?.signatures ?? [])
           .map((s) => (s.bcs?.value ? Buffer.from(s.bcs.value).toString("base64") : ""))
           .filter(Boolean),
-      ).map((sig, i) => ({
-        // Sender first, then the gas sponsor when one paid. Stated positionally
-        // AND resolved by derivation, so a reader can check it either way.
-        role: sig.address && sig.address === sender ? "sender" : i === 0 ? "sender" : "gas_sponsor",
+      );
+      const authorization = signers.signatures.map((sig) => ({
+        role: sig.role,
         scheme: sig.scheme,
         ...(sig.address ? { address: sig.address } : {}),
         ...(sig.multisig
@@ -464,6 +467,14 @@ export function registerTransactionTools(server: McpServer) {
                     }
                   : {}),
                 ...(authorization.length ? { authorization } : {}),
+                ...(signers.signer_is_sender === false
+                  ? {
+                      signer_is_sender: false,
+                      authorized_by: signers.authorized_by,
+                      signer_note:
+                        "The sender's own key did not sign this transaction. It was authorized by the address(es) in authorized_by, acting for the sender through an address alias or a protocol-level substitution, so it is not evidence of what the sender's owner did.",
+                    }
+                  : {}),
                 ...(authorization.some((a) => a.multisig)
                   ? {
                       authorization_note:

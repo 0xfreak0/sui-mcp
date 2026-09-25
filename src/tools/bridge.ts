@@ -6,6 +6,12 @@ import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { detectBridges } from "../utils/bridge/detect.js";
 import {
+  decodeWormholePayload,
+  mayanBeneficiaries,
+  type Beneficiary,
+} from "../utils/bridge/beneficiary.js";
+import { fetchEventJson } from "../utils/event-json.js";
+import {
   CCTP_DEPOSIT_EVENT_SUFFIX,
   CCTP_MESSAGE_EVENT_SUFFIX,
   parseDepositForBurn,
@@ -39,13 +45,19 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  * Events carry their decoded fields only over GraphQL — the gRPC `Event` has
  * no parsed JSON — so this one point lookup goes against GraphQL despite the
  * usual "point lookup by key uses gRPC" rule.
+ *
+ * The events connection pages at 20 by default. A bridge event past the first
+ * page is read by `fetchEventJson`, which walks the rest.
  */
 const TX_EVENTS_QUERY = `
   query($digest: String!) {
     transaction(digest: $digest) {
       digest
       effects {
-        events { nodes { contents { type { repr } json } } }
+        events(first: 50) {
+          pageInfo { hasNextPage }
+          nodes { contents { type { repr } json } }
+        }
       }
     }
   }
@@ -54,12 +66,17 @@ const TX_EVENTS_QUERY = `
 interface TxEventsResponse {
   transaction?: {
     digest?: string;
-    effects?: { events?: { nodes?: SuiEventNode[] } };
+    effects?: { events?: { pageInfo?: { hasNextPage?: boolean }; nodes?: SuiEventNode[] } };
   } | null;
 }
 
 /**
- * Render the destination half of an operation.
+ * Render the redemption half of an operation.
+ *
+ * `targetChain.to` is the contract the redemption transaction called: the
+ * Token Bridge, an NTT manager, a relayer. It is reported as
+ * `redeemed_via_contract` and never as the destination account, because the
+ * funds went on from it to the beneficiary.
  *
  * `qualify` is false off mainnet. Wormhole reuses its chain numbers across
  * environments, so on testnet chain 2 means Sepolia, not Ethereum mainnet —
@@ -78,37 +95,65 @@ function renderDestination(op: WormholescanOperation, qualify: boolean) {
   }
 
   const wormholeChain = dest.wormholeChain ?? op.transfer?.toChain ?? null;
-  const rawAddress = dest.to ?? op.transfer?.toAddress ?? null;
-  const account =
-    qualify && wormholeChain !== null && rawAddress
-      ? toForeignAccount(wormholeChain, rawAddress)
-      : null;
+  const contractAccount =
+    qualify && wormholeChain !== null && dest.to ? toForeignAccount(wormholeChain, dest.to) : null;
 
   return {
     status: dest.status ?? "unknown",
     chain: qualify && wormholeChain !== null ? caip2ForWormholeChain(wormholeChain) : null,
     chain_label: wormholeChain === null ? null : wormholeChainLabel(wormholeChain),
     wormhole_chain_id: wormholeChain,
-    // The CAIP-10 form drops straight into save_finding and manage_labels, so
-    // the far side of the hop can be labeled and recorded without hand-editing.
-    account,
-    address: rawAddress,
-    ...(account === null && rawAddress
+    ...(dest.to
       ? {
-          address_note: qualify
-            ? "Reported unqualified: this server has no address rule for that chain, so filing it under a chain id would be a guess."
-            : "Reported unqualified: Wormhole reuses its chain numbers across environments, so a CAIP-2 id derived off mainnet would name the wrong chain.",
+          redeemed_via_contract: {
+            address: dest.to,
+            account: contractAccount,
+            ...(contractAccount === null ? { address_note: unqualifiedNote(qualify) } : {}),
+          },
         }
       : {}),
+    ...(dest.from ? { redeemer: dest.from } : {}),
     transaction: dest.txHash,
     timestamp: dest.timestamp,
   };
 }
 
+/**
+ * Wormholescan's own reading of the recipient, used only when the payload
+ * could not be decoded on the Sui side.
+ */
+function indexerBeneficiary(op: WormholescanOperation | undefined, qualify: boolean) {
+  const t = op?.transfer;
+  if (!t?.toAddress || t.toChain === null) return null;
+  const account = qualify ? toForeignAccount(t.toChain, t.toAddress) : null;
+  return {
+    evidence: "indexer-attested" as const,
+    source: "wormholescan-standardized-properties",
+    chain: qualify ? caip2ForWormholeChain(t.toChain) : null,
+    chain_label: wormholeChainLabel(t.toChain),
+    wormhole_chain_id: t.toChain,
+    address: t.toAddress,
+    account,
+    ...(account === null ? { address_note: unqualifiedNote(qualify) } : {}),
+  };
+}
+
+function unqualifiedNote(qualify: boolean): string {
+  return qualify
+    ? "Reported unqualified: this server has no address rule for that chain, so filing it under a chain id would be a guess."
+    : "Reported unqualified: Wormhole reuses its chain numbers across environments, so a CAIP-2 id derived off mainnet would name the wrong chain.";
+}
+
+/** Case-insensitive for hex, exact for base58. */
+function sameForeignAddress(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.startsWith("0x") ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 export function registerBridgeTools(server: McpServer) {
   server.tool(
     "resolve_bridge_transfer",
-    "(Incident investigation) Follow funds across a bridge. Given a Sui transaction that emitted a Wormhole message, return the VAA identity read from chain data — (emitter chain, emitter address, sequence) — and, where Wormholescan has indexed a redemption, the destination chain, address and transaction. This is what lets a trace continue past a bridge instead of stopping there: the VAA identity is a shared identifier quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: the VAA identity is chain-derived, the destination is asserted by Wormholescan's index and should be confirmed on the destination chain before being relied on.",
+    "(Incident investigation) Follow funds across a bridge. Given a Sui transaction that emitted a Wormhole message, return the VAA identity read from chain data — (emitter chain, emitter address, sequence) — and, where Wormholescan has indexed a redemption, the destination chain and transaction. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan, Circle CCTP and Sui's native bridge; the contract a redemption called is reported separately as `redeemed_via_contract`. This is what lets a trace continue past a bridge instead of stopping there: the VAA identity is a shared identifier quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: chain-derived values come from Sui, and the redemption is asserted by Wormholescan's index and should be confirmed on the destination chain before being relied on.",
     {
       digest: z.string().describe("Sui transaction digest (Base58) to inspect for a bridge exit."),
       include_destination: boolArg()
@@ -138,7 +183,14 @@ export function registerBridgeTools(server: McpServer) {
       // derived from one is only meaningful on mainnet.
       const qualify = network === "mainnet";
 
-      const events = data.transaction.effects?.events?.nodes ?? [];
+      const firstPage = data.transaction.effects?.events;
+      let events: SuiEventNode[] = firstPage?.nodes ?? [];
+      let eventsIncomplete = false;
+      if (firstPage?.pageInfo?.hasNextPage) {
+        const all = await fetchEventJson(digest);
+        if (all) events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
+        else eventsIncomplete = true;
+      }
       const messages = extractWormholeMessages(events);
       // Shared detector, so this tool and trace_funds agree on what counts as
       // a bridge exit rather than drifting apart.
@@ -196,6 +248,44 @@ export function registerBridgeTools(server: McpServer) {
         .map((e) => parseClaimEvent(e.contents?.json, qualify))
         .filter((cl): cl is NonNullable<typeof cl> => cl !== null);
 
+      // Who each transfer pays on the far side. Mayan settles over CCTP and
+      // Wormhole into its own contracts, so its order event names the
+      // beneficiary and a CCTP leg of the same transaction that mints to a
+      // different address is settlement, not the destination.
+      const mayan = mayanBeneficiaries(events, qualify);
+      const settlesForMayan = (address: string | null) =>
+        mayan.length > 0 && !mayan.some((b) => sameForeignAddress(b.address, address));
+      const decodedMessages = messages.map((m) => decodeWormholePayload(m, qualify));
+      const beneficiaries: Beneficiary[] = [
+        ...mayan,
+        ...decodedMessages.flatMap((d) => (d?.beneficiary ? [d.beneficiary] : [])),
+        ...cctpTransfers
+          .filter((t) => !settlesForMayan(t.destinationAddress))
+          .map((t): Beneficiary => ({
+            evidence: "chain-derived",
+            protocol: "Circle CCTP",
+            source: "cctp-mint-recipient",
+            chain: t.destinationAccount ? t.destinationAccount.split(":").slice(0, 2).join(":") : null,
+            chain_label: t.destinationChainLabel,
+            cctp_domain: t.destinationDomain,
+            address: t.destinationAddress,
+            address_raw: t.mintRecipientRaw ?? "",
+            account: t.destinationAccount,
+            ...(t.amount ? { amount: t.amount } : {}),
+          })),
+        ...nativeTransfers.map((t): Beneficiary => ({
+          evidence: "chain-derived",
+          protocol: "Sui Bridge",
+          source: "sui-native-bridge",
+          chain: t.targetAccount ? t.targetAccount.split(":").slice(0, 2).join(":") : null,
+          chain_label: t.targetChainLabel,
+          address: t.targetAddress,
+          address_raw: t.targetAddress ?? "",
+          account: t.targetAccount,
+          ...(t.amount ? { amount: t.amount } : {}),
+        })),
+      ];
+
       const bridgeSections = {
         ...(cctpTransfers.length
           ? {
@@ -215,7 +305,14 @@ export function registerBridgeTools(server: McpServer) {
                 depositor: t.depositor,
                 amount: t.amount,
                 burn_token: t.burnToken,
-                note: "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
+                ...(settlesForMayan(t.destinationAddress)
+                  ? {
+                      role: "settlement_intermediate" as const,
+                      note: "This burn mints to Mayan's settlement contract, which pays the order on the destination chain. The recipient is the Mayan beneficiary in `beneficiaries`, not this address.",
+                    }
+                  : {
+                      note: "Destination read from the burn event, not from an indexer. Confirm the mint on the destination chain against this transfer id to establish it was completed.",
+                    }),
               })),
             }
           : {}),
@@ -259,6 +356,8 @@ export function registerBridgeTools(server: McpServer) {
           digest,
           network: getNetwork(),
           source_chain: caip2ForSuiNetwork(getNetwork()),
+          ...(eventsIncomplete ? { events_incomplete: EVENTS_INCOMPLETE } : {}),
+          ...(beneficiaries.length ? { beneficiaries, next_step: BENEFICIARY_NEXT_STEP } : {}),
           wormhole_messages: [],
           ...bridgeSections,
           ...(nativeTransfers.length || cctpTransfers.length
@@ -319,60 +418,94 @@ export function registerBridgeTools(server: McpServer) {
         }
       }
 
+      // Wormholescan's recipient only for a message the Sui side could not
+      // decode. When both exist and disagree, the chain-derived one is kept
+      // and the indexer's value is reported beside it.
+      const perMessage = messages.map((m, i) => {
+        const op = byVaa.get(m.vaaId);
+        const decoded = decodedMessages[i];
+        const indexer = indexerBeneficiary(op, qualify);
+        const chainDerived = decoded?.beneficiary ?? null;
+        return { m, op, decoded, indexer, chainDerived };
+      });
+      const allBeneficiaries = [
+        ...beneficiaries,
+        ...perMessage.flatMap(({ m, chainDerived, indexer }) =>
+          !chainDerived && indexer ? [{ ...indexer, protocol: "Wormhole", vaa_id: m.vaaId }] : [],
+        ),
+      ];
+
       return ok({
         digest,
         network: getNetwork(),
         source_chain: caip2ForSuiNetwork(getNetwork()),
         evidence_tiers: EVIDENCE_TIER_MEANING,
+        ...(eventsIncomplete ? { events_incomplete: EVENTS_INCOMPLETE } : {}),
+        ...(allBeneficiaries.length ? { beneficiaries: allBeneficiaries } : {}),
         ...bridgeSections,
-        wormhole_messages: messages.map((m) => {
-          const op = byVaa.get(m.vaaId);
-          return {
-            vaa_id: m.vaaId,
-            evidence: "chain-derived" as const,
-            emitter_chain: WORMHOLE_CHAIN_SUI,
-            emitter_address: m.emitter,
-            sequence: m.sequence,
-            nonce: m.nonce,
-            consistency_level: m.consistencyLevel,
-            emitted_by: m.eventType,
-            destination:
-              include_destination === false
-                ? { status: "not_requested" }
-                : !indexed
-                  ? {
-                      status: "no_index_for_network",
-                      meaning: `Wormholescan does not index ${network}, so the redemption side cannot be resolved there. The VAA identity above is still chain-derived and valid.`,
-                    }
-                  : destinationError
-                    ? { status: "lookup_failed", error: destinationError }
-                    : op
-                      ? { evidence: "indexer-attested" as const, ...renderDestination(op, qualify) }
-                      : {
-                          status: "not_indexed",
-                          meaning:
-                            "Wormholescan has no operation for this transaction or its VAA id. The VAA identity above is still chain-derived and valid — the transfer may be too recent to have been indexed, or still in flight.",
-                        },
-            ...(op?.transfer
-              ? {
-                  transfer: {
-                    evidence: "indexer-attested" as const,
-                    amount: op.transfer.amount,
-                    token_address: op.transfer.tokenAddress,
-                    token_chain: op.transfer.tokenChain,
-                  },
-                }
-              : {}),
-            ...(op?.appIds.length ? { protocols: op.appIds } : {}),
-          };
-        }),
+        wormhole_messages: perMessage.map(({ m, op, decoded, indexer, chainDerived }) => ({
+          vaa_id: m.vaaId,
+          evidence: "chain-derived" as const,
+          emitter_chain: WORMHOLE_CHAIN_SUI,
+          emitter_address: m.emitter,
+          sequence: m.sequence,
+          nonce: m.nonce,
+          consistency_level: m.consistencyLevel,
+          emitted_by: m.eventType,
+          ...(decoded
+            ? { payload: { evidence: "chain-derived" as const, kind: decoded.kind, to_chain: decoded.to_chain, to_raw: decoded.to_raw } }
+            : {}),
+          beneficiary: chainDerived
+            ? {
+                ...chainDerived,
+                ...(indexer && !sameForeignAddress(indexer.address, chainDerived.address)
+                  ? { indexer_reported_address: indexer.address }
+                  : {}),
+              }
+            : indexer ?? null,
+          destination:
+            include_destination === false
+              ? { status: "not_requested" }
+              : !indexed
+                ? {
+                    status: "no_index_for_network",
+                    meaning: `Wormholescan does not index ${network}, so the redemption side cannot be resolved there. The VAA identity above is still chain-derived and valid.`,
+                  }
+                : destinationError
+                  ? { status: "lookup_failed", error: destinationError }
+                  : op
+                    ? { evidence: "indexer-attested" as const, ...renderDestination(op, qualify) }
+                    : {
+                        status: "not_indexed",
+                        meaning:
+                          "Wormholescan has no operation for this transaction or its VAA id. The VAA identity above is still chain-derived and valid — the transfer may be too recent to have been indexed, or still in flight.",
+                      },
+          ...(op?.transfer
+            ? {
+                transfer: {
+                  evidence: "indexer-attested" as const,
+                  amount: op.transfer.amount,
+                  token_address: op.transfer.tokenAddress,
+                  token_chain: op.transfer.tokenChain,
+                },
+              }
+            : {}),
+          ...(op?.appIds.length ? { protocols: op.appIds } : {}),
+        })),
         ...(otherBridges.length ? { other_bridge_activity: otherBridges } : {}),
-        next_step:
-          "Record the destination account with save_finding (it is already CAIP-10), and label it with manage_labels if you can attribute it. Confirm the destination transaction on that chain before treating it as established.",
+        next_step: allBeneficiaries.length
+          ? BENEFICIARY_NEXT_STEP
+          : "No recipient could be read for this transfer. The VAA identity is still chain-derived: look it up on the destination chain to find where it was redeemed.",
       });
     },
   );
 }
+
+const BENEFICIARY_NEXT_STEP =
+  "Record the beneficiary account with save_finding (`beneficiaries[].account` is already CAIP-10), and label it with manage_labels if you can attribute it. A `redeemed_via_contract` or a CCTP leg marked `settlement_intermediate` is the bridge's own contract, not the recipient. Confirm the destination transaction on that chain before treating it as established.";
+
+const EVENTS_INCOMPLETE =
+  "This transaction has more events than could be read, so a bridge event may be missing from this result.";
 
 const ok = (payload: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],

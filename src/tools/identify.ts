@@ -317,8 +317,12 @@ export function registerIdentifyTools(server: McpServer) {
         // answer the same question from the other side: since
         // `0x2::address_alias`, a committee being unable to rotate no longer
         // means the committee is the only way to move the funds.
+        // A failed lookup must not render as "never sent a transaction".
         describeAddresses([address], { expandMembers: true, aliases: true }).catch(
-          () => new Map<string, AddressIdentity>(),
+          () =>
+            new Map<string, AddressIdentity>([
+              [address, { address, kind: "wallet", authentication_unavailable: true, aliases_unavailable: true }],
+            ]),
         ),
       ]);
 
@@ -333,6 +337,27 @@ export function registerIdentifyTools(server: McpServer) {
       const aliases = identities.get(address)?.aliases;
       const identity = identities.get(address);
       const namesNote = identity ? heldNamesNote(identity) : undefined;
+
+      // No live object and no signature, yet a transaction recorded this id as
+      // an object: the UID of something wrapped or deleted, such as a zkSend
+      // bag. Calling it a wallet sends the reader looking for an owner's key.
+      if (identity?.kind === "wrapped_or_deleted_object") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              address,
+              type: "wrapped_or_deleted_object",
+              object_seen_in: identity.object_seen_in,
+              sui_balance: suiBalance,
+              token_count: nonZeroTokens,
+              meaning:
+                "No live object is at this id and nothing has ever signed for it, but a transaction recorded it as an object id. It is the id of an object that was wrapped inside another object or deleted. Value sent to it is held by that object and leaves only through the module that owns it, in a transaction someone else sends.",
+              hint: `Use get_transaction on ${identity.object_seen_in} to see which object this was, and trace_funds forward to follow value out of it.`,
+            }, null, 2),
+          }],
+        };
+      }
 
       return {
         content: [{
@@ -371,9 +396,15 @@ export function registerIdentifyTools(server: McpServer) {
             ...(auth
               ? {}
               : {
-                  authentication_caveat:
-                    "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
+                  // Only one of three readings is "never sent": the lookup can
+                  // fail, and a sent transaction can be signed by someone else.
+                  authentication_caveat: identity?.authentication_unavailable
+                    ? "The lookup that reads this address's signatures failed, so how it authenticates, and whether it has sent anything, is unknown. Retry rather than reading this as a never-used address."
+                    : identity?.foreign_authorization
+                      ? `This address has sent transactions, but none of the ${identity.foreign_authorization.transactions_examined} examined carries its own signature: ${identity.foreign_authorization.digest} was authorized by ${identity.foreign_authorization.authorized_by.join(", ")}, acting for it through an address alias or a protocol-level substitution. How the address itself authenticates is unknown.`
+                      : "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
                 }),
+            ...(identity?.foreign_authorization ? { foreign_authorization: identity.foreign_authorization } : {}),
             ...(committee ? { committee_members: committee } : {}),
             // Absent means no AddressAliases object exists. Most wallets have
             // never enabled the feature, so the field is omitted rather than

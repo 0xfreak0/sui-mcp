@@ -17,6 +17,7 @@ import {
   enumerateCommittees,
   publicKeyFromSignatures,
   readAuthentication,
+  assignSignerRoles,
   MAX_COMMITTEE_CANDIDATES,
 } from "../utils/multisig.js";
 import { summarizeSigners, signerHistoryNote, type SignerObservation } from "../utils/signer-history.js";
@@ -40,7 +41,7 @@ const AFFECTED_PAGE = `query ($a: SuiAddress!, $first: Int!, $after: String) {
 const SENT_PAGE = `query ($a: SuiAddress!, $first: Int!, $after: String) {
   transactions(filter: { sentAddress: $a }, first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
-    nodes { digest effects { timestamp } signatures { signatureBytes } }
+    nodes { digest effects { timestamp } gasInput { gasSponsor { address } } signatures { signatureBytes } }
   }
 }`;
 
@@ -50,6 +51,7 @@ interface SentPageResult {
     nodes: {
       digest: string;
       effects?: { timestamp?: string | null } | null;
+      gasInput?: { gasSponsor?: { address?: string } | null } | null;
       signatures: { signatureBytes: string }[];
     }[];
   };
@@ -75,27 +77,47 @@ export function registerMultisigTools(server: McpServer) {
       const observations: SignerObservation[] = [];
       let committee = null;
       let after: string | null = null;
-      let nonMultisig = 0;
+      let scanned = 0;
+      let complete = false;
+      // The address's own signature in a scheme other than multisig. One is
+      // proof: an address hashes exactly one authenticator, so it cannot also
+      // be a multisig, and reading further only burns requests.
+      let ownScheme: { scheme: string; digest: string } | null = null;
+      // Sent transactions signed by someone acting for the address.
+      const foreign: Array<{ digest: string; authorized_by: string[] }> = [];
 
       try {
-        while (observations.length < limit) {
+        // Bounded by transactions SCANNED, not by multisig observations: a
+        // non-multisig sender never adds an observation, and a loop waiting
+        // for one paged through the address's entire history.
+        scan: while (scanned < limit) {
           const r: SentPageResult = await gqlQuery<SentPageResult>(SENT_PAGE, {
             a: address,
-            first: Math.min(PAGE, limit - observations.length),
+            first: Math.min(PAGE, limit - scanned),
             after,
           });
           const conn = r.transactions;
-          if (!conn?.nodes?.length) break;
+          if (!conn?.nodes?.length) {
+            complete = true;
+            break;
+          }
 
           for (const tx of conn.nodes) {
+            scanned++;
             const sigs = tx.signatures.map((s) => s.signatureBytes);
             const auth = readAuthentication(address, sigs);
-            if (!auth?.multisig) {
-              // A sender's signature that is not this address's multisig means
-              // the address is not a multisig at all; counted so the caller is
-              // told rather than shown an empty history.
-              nonMultisig++;
+            if (!auth) {
+              // Sent in this address's name but not signed by it: an address
+              // alias or a protocol-level substitution acting for it.
+              const signers = assignSignerRoles(address, tx.gasInput?.gasSponsor?.address, sigs);
+              if (signers.signer_is_sender === false) {
+                foreign.push({ digest: tx.digest, authorized_by: signers.authorized_by });
+              }
               continue;
+            }
+            if (!auth.multisig) {
+              ownScheme = { scheme: auth.scheme, digest: tx.digest };
+              break scan;
             }
             // Every transaction restates the same committee — it is part of the
             // address — so the first one is as good as any, and disagreement
@@ -109,7 +131,10 @@ export function registerMultisigTools(server: McpServer) {
               ...(tx.effects?.timestamp ? { timestamp: tx.effects.timestamp } : {}),
             });
           }
-          if (!conn.pageInfo.hasNextPage) break;
+          if (!conn.pageInfo.hasNextPage) {
+            complete = true;
+            break;
+          }
           after = conn.pageInfo.endCursor;
           // Restarting the walk would count the same transactions again and
           // skew every signer-set frequency in the result.
@@ -123,10 +148,13 @@ export function registerMultisigTools(server: McpServer) {
       }
 
       if (!committee) {
+        const signers = [...new Set(foreign.flatMap((f) => f.authorized_by))];
         return errorResult(
-          nonMultisig > 0
-            ? `${address} has sent ${nonMultisig} transaction(s) but none is signed by a multisig, so it is not a multisig wallet. Use identify_address to see how it does authenticate.`
-            : `${address} has never sent a transaction, so there are no signatures to read. A multisig that has only ever RECEIVED is indistinguishable from any other unused address — this is not evidence it is not one.`,
+          ownScheme
+            ? `${address} is not a multisig wallet: it signed ${ownScheme.digest} with its own ${ownScheme.scheme} key, and an address hashes exactly one authenticator. Use identify_address to see how it authenticates.`
+            : foreign.length > 0
+              ? `${address} has sent ${foreign.length} transaction(s) in the ${scanned} examined, and none carries its own signature: they were authorized by ${signers.join(", ")}, acting for it through an address alias or a protocol-level substitution (first: ${foreign[0].digest}). How the address itself authenticates is unknown from these, so this is not evidence either way about whether it is a multisig. Run analyze_multisig on the signer to read that committee.`
+              : `${address} has never sent a transaction, so there are no signatures to read. A multisig that has only ever RECEIVED is indistinguishable from any other unused address — this is not evidence it is not one.`,
         );
       }
 
@@ -172,7 +200,17 @@ export function registerMultisigTools(server: McpServer) {
                 transactions_examined: history.transactions_examined,
                 // The count is what a dormancy claim rests on. Said next to the
                 // claim, not only in the metadata.
-                history_complete: history.transactions_examined < limit,
+                history_complete: complete,
+                ...(foreign.length
+                  ? {
+                      not_self_signed: {
+                        count: foreign.length,
+                        digests: foreign.map((f) => f.digest),
+                        authorized_by: [...new Set(foreign.flatMap((f) => f.authorized_by))],
+                        note: "These transactions were sent in this wallet's name but authorized by another address (an address alias or a protocol-level substitution). They are excluded from the signer statistics.",
+                      },
+                    }
+                  : {}),
                 members: history.members.map((m) => {
                   const id = m.address ? identities.get(m.address) : undefined;
                   return {

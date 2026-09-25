@@ -5,7 +5,30 @@ import { describeAddresses, identityNote } from "../utils/identity.js";
 import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { getLabel, isSink, labelProvenance, type LabelProvenance } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
-import { chooseNextHop } from "../utils/trace-hop.js";
+import {
+  chooseNextHop,
+  coinKey,
+  firstSpend,
+  inflowsNewestFirst,
+  nonGasAmount,
+  payerOf,
+  sameCoin,
+  type CandidateTx,
+  type GasCharge,
+  type HopBasis,
+  type UnfollowedRecipient,
+} from "../utils/trace-hop.js";
+import { assignSignerRoles } from "../utils/multisig.js";
+import { measureFanout } from "../utils/fanout.js";
+import { fetchEventJson } from "../utils/event-json.js";
+import {
+  BALANCE_CHANGES_SELECTION,
+  COMMANDS_SELECTION,
+  completeTxConnections,
+  readAllBalanceChanges,
+  readAllCommands,
+  type GqlConnection,
+} from "../utils/tx-connections.js";
 import {
   custodyChanges,
   objectCounterparties,
@@ -55,15 +78,29 @@ interface HopResult {
   timestamp: string | null;
   checkpoint: string | null;
   protocols: string[];
-  /** How the next hop was chosen: direct, swap-follow, or pool-fallback. */
-  basis?: string;
-  /** Recipients on this hop that the trace did not follow. */
-  unfollowed_recipients?: Array<{
-    address: string;
-    amount: string;
-    coin_type: string;
-    usd_value: number | null;
-  }>;
+  /** How the next hop was chosen. See `HopBasis`. */
+  basis?: HopBasis;
+  /** Forward: recipients on this hop that the trace did not follow. */
+  unfollowed_recipients?: UnfollowedRecipient[];
+  /**
+   * Backward: other parties that paid the tracked coin in on this hop, and
+   * earlier inflows to the followed source that were not followed.
+   */
+  unfollowed_sources?: UnfollowedRecipient[];
+  /**
+   * Set when this hop was not sent by the address the trace was following:
+   * the value was held by an object (a `Receiving<T>` transfer, an object's
+   * address balance) and this transaction took it out.
+   */
+  reached_via?: "released-from-object";
+  /**
+   * False when the sender's own key did not sign: another address authorized
+   * it through an address alias or a protocol-level substitution.
+   */
+  signer_is_sender?: false;
+  authorized_by?: string[];
+  /** The holder spent more of the tracked coin than the trace delivered to it. */
+  commingled?: { received: string; spent: string; coin_type: string; note: string };
   actions: string[];
   token_flow: { coin: string; amount: string; raw_type: string }[];
   /**
@@ -74,6 +111,11 @@ interface HopResult {
   object_transfers?: ObjectMovement[];
   /** Set when more object changes existed than the page returned. */
   object_changes_truncated?: string;
+  /** More balance changes or commands existed than could be read. */
+  balance_changes_truncated?: true;
+  commands_truncated?: true;
+  /** More events existed than could be read, so bridge detection may be incomplete. */
+  events_incomplete?: true;
   /**
    * Set when the transport that answered this hop cannot report object
    * changes at all — the archive path. "No objects moved" and "could not
@@ -85,22 +127,34 @@ interface HopResult {
   note?: string;
 }
 
+// Kept compact: the service rejects a query document over 5,000 bytes.
+const OWNER_SELECTION = `owner {
+                __typename
+                ... on AddressOwner { address { address } }
+                ... on ObjectOwner { address { address } }
+                ... on ConsensusAddressOwner { address { address } }
+              }`;
+
+/**
+ * One hop. Signatures and the gas payer say who authorized the transaction
+ * and whose SUI change carries gas. Event types feed bridge detection: a
+ * bridge reached through a wrapper package has no marker call in the PTB, and
+ * its event is the only signal present.
+ */
 const TX_QUERY = `
   query($digest: String!) {
     transaction(digest: $digest) {
       digest
       sender { address }
+      gasInput { gasSponsor { address } }
+      signatures { signatureBytes }
       effects {
         status
         timestamp
         checkpoint { sequenceNumber }
-        balanceChanges {
-          nodes {
-            coinType { repr }
-            amount
-            owner { address }
-          }
-        }
+        gasEffects { gasSummary { computationCost storageCost storageRebate } }
+        ${BALANCE_CHANGES_SELECTION}
+        events(first: 50) { pageInfo { hasNextPage } nodes { contents { type { repr } } } }
         objectChanges(first: 50) {
           pageInfo { hasNextPage endCursor }
           nodes {
@@ -109,62 +163,41 @@ const TX_QUERY = `
             idDeleted
             inputState {
               asMoveObject { contents { type { repr } } }
-              owner {
-                __typename
-                ... on AddressOwner { address { address } }
-                ... on ObjectOwner { address { address } }
-                ... on ConsensusAddressOwner { address { address } }
-              }
+              ${OWNER_SELECTION}
             }
             outputState {
               asMoveObject { contents { type { repr } } }
-              owner {
-                __typename
-                ... on AddressOwner { address { address } }
-                ... on ObjectOwner { address { address } }
-                ... on ConsensusAddressOwner { address { address } }
-              }
+              ${OWNER_SELECTION}
             }
           }
         }
       }
-      kind {
-        ... on ProgrammableTransaction {
-          commands {
-            nodes {
-              ... on MoveCallCommand {
-                __typename
-                function {
-                  name
-                  module {
-                    name
-                    package { address }
-                  }
-                }
-              }
-              ... on TransferObjectsCommand { __typename }
-              ... on SplitCoinsCommand { __typename }
-              ... on MergeCoinsCommand { __typename }
-              ... on PublishCommand { __typename }
-              ... on UpgradeCommand { __typename }
-            }
-          }
-        }
-      }
+      kind { ... on ProgrammableTransaction { ${COMMANDS_SELECTION} } }
     }
   }
 `;
+
+interface GqlGasSummary {
+  computationCost?: number | string | bigint | null;
+  storageCost?: number | string | bigint | null;
+  storageRebate?: number | string | bigint | null;
+}
 
 interface GqlTxResult {
   transaction: {
     digest: string;
     sender?: { address: string };
+    gasInput?: { gasSponsor?: { address?: string } | null } | null;
+    signatures?: Array<{ signatureBytes?: string }> | null;
     effects?: {
       status: string;
       timestamp?: string;
       checkpoint?: { sequenceNumber: number };
-      balanceChanges?: {
-        nodes: GqlBalanceChangeNode[];
+      gasEffects?: { gasSummary?: GqlGasSummary | null } | null;
+      balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
+      events?: {
+        pageInfo?: { hasNextPage?: boolean };
+        nodes: Array<{ contents?: { type?: { repr?: string } } | null }>;
       };
       objectChanges?: {
         pageInfo?: { hasNextPage?: boolean; endCursor?: string };
@@ -172,11 +205,15 @@ interface GqlTxResult {
       };
     };
     kind?: {
-      commands?: {
-        nodes: GqlCommandNode[];
-      };
+      commands?: GqlConnection<GqlCommandNode>;
     };
   } | null;
+}
+
+/** Net gas charged to the payer, computation + storage − rebate, as a decimal string. */
+function netGas(s: GqlGasSummary | null | undefined): string | null {
+  if (!s || s.computationCost == null || s.storageCost == null || s.storageRebate == null) return null;
+  return (BigInt(s.computationCost) + BigInt(s.storageCost) - BigInt(s.storageRebate)).toString();
 }
 
 /**
@@ -195,6 +232,16 @@ interface FetchedTx {
   commands: ReturnType<typeof adaptCommands>;
   /** Move calls reduced for bridge detection. */
   callSites: Array<{ packageId: string; module: string; function: string }>;
+  /** Event types, for bridge detection through wrapper packages. */
+  eventTypes: string[];
+  eventsIncomplete?: boolean;
+  /** Who paid gas and the net charge, as a decimal string (the cache is JSON). */
+  gasPayer: string | null;
+  netGas: string | null;
+  /** Serialized user signatures, base64, for signer-versus-sender checks. */
+  signatures: string[];
+  balanceChangesTruncated?: boolean;
+  commandsTruncated?: boolean;
   /**
    * Non-coin objects that moved. Both transports can report these — the
    * archive's gRPC `changedObjects` carries type and both owners — so this is
@@ -346,10 +393,23 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
     (tx.kind?.commands?.nodes?.length ?? 0) === 0;
 
   if (tx && !hollow) {
-    const bcNodes = tx.effects?.balanceChanges?.nodes ?? [];
-    const commands = adaptCommands(tx.kind?.commands?.nodes ?? []);
-    // Costs a request only for the ~1 transaction in 400 that exceeds a page.
-    const objectChanges = await readAllObjectChanges(digest, tx.effects?.objectChanges);
+    // Each costs a request only when its first page claimed more.
+    const [bc, cmd, objectChanges] = await Promise.all([
+      readAllBalanceChanges(digest, tx.effects?.balanceChanges),
+      readAllCommands(digest, tx.kind?.commands),
+      readAllObjectChanges(digest, tx.effects?.objectChanges),
+    ]);
+    const bcNodes = bc.nodes;
+    const commands = adaptCommands(cmd.nodes);
+    let eventTypes = (tx.effects?.events?.nodes ?? [])
+      .map((e) => e?.contents?.type?.repr)
+      .filter((t): t is string => typeof t === "string");
+    let eventsIncomplete = false;
+    if (tx.effects?.events?.pageInfo?.hasNextPage) {
+      const all = await fetchEventJson(digest);
+      if (all) eventTypes = all.map((e) => e.type).filter((t): t is string => typeof t === "string");
+      else eventsIncomplete = true;
+    }
     const fetched: FetchedTx = {
       sender: tx.sender?.address ?? null,
       balanceChanges: bcNodes.map((n) => ({
@@ -360,6 +420,15 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
       grpcBalanceChanges: adaptBalanceChanges(bcNodes),
       commands,
       callSites: callSitesOf(commands),
+      eventTypes,
+      ...(eventsIncomplete ? { eventsIncomplete } : {}),
+      gasPayer: tx.gasInput?.gasSponsor?.address ?? tx.sender?.address ?? null,
+      netGas: netGas(tx.effects?.gasEffects?.gasSummary),
+      signatures: (tx.signatures ?? [])
+        .map((s) => s.signatureBytes)
+        .filter((s): s is string => typeof s === "string" && s.length > 0),
+      ...(bc.truncated ? { balanceChangesTruncated: true } : {}),
+      ...(cmd.truncated ? { commandsTruncated: true } : {}),
       objectMovements: readObjectMovements(objectChanges.nodes, protocolForPackage),
       objectChangesTruncated: objectChanges.truncated,
       timestamp: tx.effects?.timestamp ?? null,
@@ -384,7 +453,10 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
       (client) => client.ledgerService.getTransaction({
         digest,
         readMask: {
-          paths: ["digest", "transaction", "effects", "balance_changes", "timestamp", "checkpoint"],
+          paths: [
+            "digest", "transaction", "effects", "balance_changes", "timestamp", "checkpoint",
+            "events", "signatures",
+          ],
         },
       }),
       (r) => !r.transaction,
@@ -420,6 +492,14 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
     grpcBalanceChanges: grpcBc as ReturnType<typeof adaptBalanceChanges>,
     commands: commands as ReturnType<typeof adaptCommands>,
     callSites: callSitesOf(commands as ReturnType<typeof adaptCommands>),
+    eventTypes: (g.events?.events ?? [])
+      .map((e) => e.eventType)
+      .filter((t): t is string => typeof t === "string"),
+    gasPayer: g.transaction?.gasPayment?.owner ?? g.transaction?.sender ?? null,
+    netGas: netGas(g.effects?.gasUsed),
+    signatures: (g.signatures ?? [])
+      .map((s) => (s.bcs?.value ? Buffer.from(s.bcs.value).toString("base64") : ""))
+      .filter(Boolean),
     // The archive DOES report object changes. An earlier version claimed it
     // could not and disclaimed object flow on every archive hop; verified
     // false against mainnet, where a digest the fullnode has pruned comes back
@@ -442,84 +522,336 @@ async function fetchTx(digest: string): Promise<FetchedTx | null> {
   return archived;
 }
 
-interface TxQueryPage {
+/**
+ * Candidate transactions for the next or previous hop, with what hop
+ * selection needs: who sent it, who paid gas, and every balance change.
+ */
+const CANDIDATE_NODE = `digest sender { address } gasInput { gasSponsor { address } }
+      effects { gasEffects { gasSummary { computationCost storageCost storageRebate } } ${BALANCE_CHANGES_SELECTION} }`;
+
+const SENT_AFTER = `query($address: SuiAddress!, $first: Int!, $after: String, $afterCheckpoint: Int) {
+  transactions(filter: { sentAddress: $address, afterCheckpoint: $afterCheckpoint }, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ${CANDIDATE_NODE} }
+  }
+}`;
+
+const AFFECTED_AFTER = `query($address: SuiAddress!, $first: Int!, $after: String, $afterCheckpoint: Int) {
+  transactions(filter: { affectedAddress: $address, afterCheckpoint: $afterCheckpoint }, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ${CANDIDATE_NODE} }
+  }
+}`;
+
+const AFFECTED_BEFORE = `query($address: SuiAddress!, $last: Int!, $before: String, $beforeCheckpoint: Int) {
+  transactions(filter: { affectedAddress: $address, beforeCheckpoint: $beforeCheckpoint }, last: $last, before: $before) {
+    pageInfo { hasPreviousPage startCursor }
+    nodes { ${CANDIDATE_NODE} }
+  }
+}`;
+
+/**
+ * Candidates per page, and pages per search.
+ *
+ * The sent-transaction search reaches 500 transactions because an attacker
+ * keeps working before moving the proceeds: the Cetus exploiter sent 385
+ * transactions (the rest of the drain) before its first haSUI outflow. Each
+ * page is one request of about 0.2s. The object and backward searches read
+ * inflows, which a busy address has many more of, so they stop sooner.
+ */
+const CANDIDATE_PAGE = 50;
+const SENT_PAGES = 10;
+const AFFECTED_PAGES = 4;
+
+interface CandidateNode {
+  digest: string;
+  sender?: { address?: string } | null;
+  gasInput?: { gasSponsor?: { address?: string } | null } | null;
+  effects?: {
+    gasEffects?: { gasSummary?: GqlGasSummary | null } | null;
+    balanceChanges?: GqlConnection<GqlBalanceChangeNode> | null;
+  } | null;
+}
+
+interface CandidatePage {
   transactions: {
-    nodes: Array<{
+    nodes: CandidateNode[];
+    pageInfo: {
+      hasNextPage?: boolean;
+      endCursor?: string | null;
+      hasPreviousPage?: boolean;
+      startCursor?: string | null;
+    };
+  };
+}
+
+/** One page of candidates, in the ascending order GraphQL returns. */
+async function candidatePage(
+  query: string,
+  variables: Record<string, unknown>,
+  paging: "forward" | "backward",
+): Promise<{ txs: CandidateTx[]; cursor: string | null; more: boolean }> {
+  const data = await gqlQuery<CandidatePage>(query, variables);
+  const conn = data.transactions;
+  const nodes = conn?.nodes ?? [];
+  const completed = await completeTxConnections(
+    nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+  );
+  const txs = nodes.map((n, i): CandidateTx => {
+    const sender = n.sender?.address ?? null;
+    const net = netGas(n.effects?.gasEffects?.gasSummary);
+    return {
+      digest: n.digest,
+      sender,
+      gas: { payer: n.gasInput?.gasSponsor?.address ?? sender, net: net === null ? null : BigInt(net) },
+      changes: completed[i].balanceChanges.map((b) => ({
+        address: b.owner?.address ?? "",
+        coin_type: b.coinType?.repr ?? "",
+        amount: b.amount ?? "0",
+      })),
+    };
+  });
+  const forward = paging === "forward";
+  return {
+    txs,
+    cursor: (forward ? conn?.pageInfo?.endCursor : conn?.pageInfo?.startCursor) ?? null,
+    more: (forward ? conn?.pageInfo?.hasNextPage : conn?.pageInfo?.hasPreviousPage) === true,
+  };
+}
+
+type ForwardStep =
+  | { digest: string; via: "sent" | "released-from-object"; spent: bigint }
+  | { digest: null; reason: string };
+
+/**
+ * The next transaction that moves the tracked coin out of `address`.
+ *
+ * Forward tracing filters on **sentAddress**, not `affectedAddress`. "The next
+ * transaction affecting R" includes someone paying R, and following that
+ * attributed a third party's transaction to the subject. Within R's own
+ * transactions, the first one that SPENDS the tracked coin (gas removed) is
+ * the continuation; the first one of any kind is not, and following it
+ * reported an unrelated token transfer as the traced SUI.
+ *
+ * An object cannot send. When R has sent nothing since the hop, the funds may
+ * be held by an object (a `Receiving<T>` transfer to an object's id, an
+ * object's address balance), and the transaction that takes them out is sent
+ * by someone else. That case is found through `affectedAddress`, as the first
+ * later transaction in which R's balance of the coin goes down.
+ *
+ * `afterCheckpoint` is **exclusive** — verified against mainnet: passing a
+ * transaction's own checkpoint excludes it, passing `cp - 1` includes it.
+ * Same-checkpoint forwarding is what a script does, so the window starts at
+ * `cp - 1` and the current digest and anything before it in the page are
+ * dropped.
+ */
+async function findNextForward(
+  address: string,
+  atCheckpoint: number | undefined,
+  coin: string | null,
+  visited: ReadonlySet<string>,
+  current: string,
+): Promise<ForwardStep> {
+  const afterCheckpoint = atCheckpoint === undefined ? undefined : atCheckpoint - 1;
+  const coinName = coin ? displayCoin(coin).symbol : "the funds";
+
+  let sent = 0;
+  let after: string | null = null;
+  let exhausted = false;
+  for (let page = 0; page < SENT_PAGES; page++) {
+    const { txs, cursor, more } = await candidatePage(SENT_AFTER, {
+      address,
+      first: CANDIDATE_PAGE,
+      after,
+      afterCheckpoint,
+    }, "forward");
+    sent += txs.filter((t) => t.digest !== current).length;
+    const hit = firstSpend(txs, address, coin, visited, current);
+    if (hit) return { digest: hit.tx.digest, via: "sent", spent: hit.spent };
+    if (!more || !cursor) {
+      exhausted = true;
+      break;
+    }
+    after = cursor;
+  }
+  if (sent > 0) {
+    return {
+      digest: null,
+      reason: exhausted
+        ? `${address} has sent ${sent} transaction(s) since receiving the funds and none of them moved ${coinName}, so it has not spent them yet.`
+        : `${address} sent ${sent} transactions after receiving the funds and none of them moved ${coinName}. The search stopped at that limit, so the funds may have moved in a later transaction: restart from ${address}'s later activity.`,
+    };
+  }
+
+  let seen = 0;
+  after = null;
+  exhausted = false;
+  for (let page = 0; page < AFFECTED_PAGES; page++) {
+    const { txs, cursor, more } = await candidatePage(AFFECTED_AFTER, {
+      address,
+      first: CANDIDATE_PAGE,
+      after,
+      afterCheckpoint,
+    }, "forward");
+    seen += txs.filter((t) => t.digest !== current).length;
+    const hit = firstSpend(txs, address, coin, visited, current);
+    if (hit) return { digest: hit.tx.digest, via: "released-from-object", spent: hit.spent };
+    if (!more || !cursor) {
+      exhausted = true;
+      break;
+    }
+    after = cursor;
+  }
+  return {
+    digest: null,
+    reason: exhausted
+      ? `${address} has not sent a transaction since receiving the funds, and ${seen === 0 ? "no later transaction has touched it" : `none of the ${seen} later transaction(s) touching it took ${coinName} out`}. The funds are still there: a wallet that has not spent yet, or an object still holding them.`
+      : `${address} has not sent a transaction since receiving the funds, and none of the first ${seen} later transactions touching it took ${coinName} out. The search stopped at that limit, so the funds may have left later.`,
+  };
+}
+
+type BackwardStep =
+  | {
       digest: string;
-      effects?: {
-        checkpoint?: { sequenceNumber: number };
-        timestamp?: string;
-      };
-    }>;
-    pageInfo: { hasNextPage: boolean; endCursor?: string };
+      received: bigint;
+      /** Earlier inflows needed to cover the outflow, not followed. */
+      others: UnfollowedRecipient[];
+      /** The inflows found cover less than the outflow being explained. */
+      shortfall: boolean;
+    }
+  | { digest: null; reason: string };
+
+/**
+ * The most recent inflow of the tracked coin to `address` before the hop.
+ *
+ * Walks `affectedAddress` newest to oldest and takes the first transaction in
+ * which `address` gained the coin (gas removed). When that inflow is smaller
+ * than what `address` paid out, older inflows are collected until they cover
+ * it, and reported as unfollowed sources: the outflow was funded by several
+ * of them, and the trace follows only the latest.
+ */
+async function findPriorInflow(
+  address: string,
+  atCheckpoint: number | undefined,
+  coin: string | null,
+  visited: ReadonlySet<string>,
+  current: string,
+  need: bigint,
+): Promise<BackwardStep> {
+  const beforeCheckpoint = atCheckpoint === undefined ? undefined : atCheckpoint + 1;
+  const coinName = coin ? displayCoin(coin).symbol : "value";
+  const found: Array<{ tx: CandidateTx; received: bigint }> = [];
+  let covered = 0n;
+  let before: string | null = null;
+  let scanned = 0;
+  let exhausted = false;
+
+  for (let page = 0; page < AFFECTED_PAGES && covered < need; page++) {
+    const { txs, cursor, more } = await candidatePage(AFFECTED_BEFORE, {
+      address,
+      last: CANDIDATE_PAGE,
+      before,
+      beforeCheckpoint,
+    }, "backward");
+    scanned += txs.length;
+    for (const inflow of inflowsNewestFirst(txs, address, coin, visited, page === 0 ? current : undefined)) {
+      found.push(inflow);
+      covered += inflow.received;
+      if (covered >= need) break;
+    }
+    if (!more || !cursor) {
+      exhausted = true;
+      break;
+    }
+    before = cursor;
+  }
+
+  if (found.length === 0) {
+    return {
+      digest: null,
+      reason: exhausted
+        ? `No earlier transaction paid ${coinName} into ${address}. Where it got these funds is not visible as an inflow: a mint, a withdrawal from a protocol it sent itself, or a transfer older than the history this server can read.`
+        : `None of the ${scanned} transactions before this one that touch ${address} paid ${coinName} into it. The search stopped at that limit; the funding is older.`,
+    };
+  }
+  const [followed, ...rest] = found;
+  return {
+    digest: followed.tx.digest,
+    received: followed.received,
+    others: rest.map((r) => ({
+      address: payerOf(r.tx, address, coin) ?? "",
+      amount: r.received.toString(),
+      coin_type: coin ?? "",
+      usd_value: null,
+      digest: r.tx.digest,
+    })),
+    shortfall: covered < need,
   };
 }
 
 /**
- * The next transaction to follow from `address`.
+ * Transactions sampled to decide whether a backward source is a hub.
  *
- * Forward tracing filters on **sentAddress**, not `affectedAddress`. The
- * distinction is the whole correctness of a forward hop: "the next transaction
- * affecting R" is any transaction that touched R, including someone paying R.
- * Following that attributed a third party's transaction to the subject, and —
- * after the custody check was added — made a perfectly intact trace stop with
- * `custody_break` because R had merely *received* something before spending.
- * What a forward trace wants is the next transaction R itself **sent**.
- *
- * Backward keeps `affectedAddress`, because the transaction that funded an
- * address is by definition one someone else sent.
- *
- * `afterCheckpoint` is **exclusive** — verified against mainnet: passing a
- * transaction's own checkpoint excludes it, passing `cp - 1` includes it. The
- * previous code passed `cp`, so anything the recipient did *in the same
- * checkpoint* was skipped. That is not an edge case: same-checkpoint
- * forwarding is what a script does, which is exactly the adversarial pattern a
- * trace is chasing. We ask from `cp - 1` and drop the current digest
- * explicitly.
+ * A hub's earlier inflows are other parties' deposits: walking past an
+ * exchange-scale wallet named mainnet-launch-era strangers as the source of a
+ * 2025 payment. `measureFanout` classifies at 100 distinct counterparties, and
+ * 200 recent transactions is four requests.
  */
-async function findNextTx(
-  address: string,
-  atCheckpoint: number | undefined,
-  direction: "forward" | "backward",
-  excludeDigest: string,
-): Promise<string | null> {
-  const isForward = direction === "forward";
+const HUB_SCAN_TRANSACTIONS = 200;
 
-  const query = isForward
-    ? `query($address: SuiAddress!, $first: Int, $afterCheckpoint: Int) {
-        transactions(
-          filter: { sentAddress: $address, afterCheckpoint: $afterCheckpoint }
-          first: $first
-        ) {
-          nodes { digest }
-        }
-      }`
-    : `query($address: SuiAddress!, $last: Int, $beforeCheckpoint: Int) {
-        transactions(
-          filter: { affectedAddress: $address, beforeCheckpoint: $beforeCheckpoint }
-          last: $last
-        ) {
-          nodes { digest }
-        }
-      }`;
+/** Calls that put value into a protocol object and leave the caller a claim. */
+const DEPOSIT_CALL = /^(entry_|public_|request_add_)?(deposit|supply|stake|lock|add_liquidity|lend|provide|mint|open_position|place_order)/;
 
-  const variables: Record<string, unknown> = { address };
-  if (isForward) {
-    variables.first = 5;
-    // Inclusive of the current checkpoint; the current digest is filtered below.
-    variables.afterCheckpoint = atCheckpoint === undefined ? undefined : atCheckpoint - 1;
-  } else {
-    variables.last = 5;
-    variables.beforeCheckpoint = atCheckpoint === undefined ? undefined : atCheckpoint + 1;
+/** A package's protocol name, or a short `0x…::module` when nothing names it. */
+function callTarget(c: { packageId: string; module: string }): string {
+  return lookupProtocolDisplay(c.packageId)?.name ?? `${c.packageId.slice(0, 10)}…::${c.module}`;
+}
+
+/**
+ * Why a forward hop has nothing to follow.
+ *
+ * A deposit into a protocol produces no recipient balance change: the pool
+ * holds a `Balance<T>` inside a shared object. Naming the protocol and the
+ * depositor turns "the trace ended" into "the funds are in NAVI and this
+ * wallet holds the claim", which is where an investigator goes next.
+ */
+function forwardDeadEnd(
+  tx: FetchedTx,
+  holder: string | null,
+  coin: string | null,
+  consumed: boolean,
+  note: string | undefined,
+): string {
+  if (!holder) return note ?? "No sender on this transaction, so there is no actor whose outflow could be followed.";
+  const coinName = coin ? displayCoin(coin).symbol : "value";
+  if (!consumed) {
+    return `Nothing but gas left ${holder} on this hop and nobody else received anything, so there is no outflow to follow.`;
   }
+  const into = tx.callSites.filter((c) => DEPOSIT_CALL.test(c.function));
+  if (into.length > 0) {
+    const protocols = [...new Set(into.map(callTarget))].join(", ");
+    const calls = [...new Set(into.map((c) => `${c.module}::${c.function}`))].join(", ");
+    return (
+      `The ${coinName} went into ${protocols} (${calls}) and no address received it. It is held in the protocol's ` +
+      `objects, and ${holder} holds the claim on it (a receipt, share or position). Follow ${holder}'s later withdrawal to continue.`
+    );
+  }
+  const called = [...new Set(tx.callSites.map(callTarget))];
+  return (
+    `The ${coinName} left ${holder} and no address received it: it was burned, or locked in an object` +
+    `${called.length ? ` by ${called.join(", ")}` : ""}. The balance changes do not say where it went; check the hop's object_transfers and events.`
+  );
+}
 
-  const data = await gqlQuery<TxQueryPage>(query, variables);
-  const nodes = data.transactions.nodes ?? [];
-  // Take the first that is not the hop we are standing on. Asking for five
-  // rather than one is what makes the same-checkpoint case work: the current
-  // transaction is usually first in that window.
-  const next = nodes.find((n) => n.digest !== excludeDigest);
-  return next?.digest ?? null;
+/** Why a backward hop has no earlier party to follow. */
+function backwardDeadEnd(tx: FetchedTx, recipient: string | null, coin: string | null): string {
+  const coinName = coin ? displayCoin(coin).symbol : "value";
+  const called = [...new Set(tx.callSites.map(callTarget))];
+  return (
+    `No address paid the ${coinName} in on this hop${recipient ? ` to ${recipient}` : ""}: it came out of ` +
+    `${called.length ? called.join(", ") : "no identifiable call"} (a withdrawal, claim, mint, unstake, or an exploit of a pool). ` +
+    "A protocol's shared objects hold many parties' funds, so there is no single earlier source to follow."
+  );
 }
 
 function shortCoinType(coinType: string): string {
@@ -559,6 +891,18 @@ function formatAmount(amount: string, coinType: string): string {
 
 function addrLabel(addr: string, nameMap: Map<string, string>): string {
   return nameMap.get(addr) ?? `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+/**
+ * At least 0.001 of a whole unit of the coin, on the coin's own scale.
+ *
+ * A raw threshold of 1e6 hid every USDC flow under 1 USDC as "gas only",
+ * because USDC has 6 decimals where SUI has 9.
+ */
+function isSignificant(amount: string, coinType: string): boolean {
+  const v = BigInt(amount);
+  const abs = v < 0n ? -v : v;
+  return abs * 1000n >= 10n ** BigInt(coinScale(coinType).decimals);
 }
 
 function formatTimeSpan(ms: number): string {
@@ -620,8 +964,7 @@ function buildSummary(
     const significant: typeof hop.balance_changes = [];
     const gasOnly: typeof hop.balance_changes = [];
     for (const bc of hop.balance_changes) {
-      const abs = BigInt(bc.amount) < 0n ? -BigInt(bc.amount) : BigInt(bc.amount);
-      if (abs > 1_000_000n) {
+      if (isSignificant(bc.amount, bc.coin_type)) {
         significant.push(bc);
       } else {
         gasOnly.push(bc);
@@ -664,6 +1007,12 @@ function buildSummary(
 
     if (hop.object_changes_truncated) lines.push(`  ⚠ ${hop.object_changes_truncated}`);
     if (hop.object_flow_unavailable) lines.push(`  (${hop.object_flow_unavailable})`);
+    if (hop.balance_changes_truncated) lines.push("  ⚠ More balance changes exist than could be read; the flows above are incomplete.");
+    if (hop.signer_is_sender === false) {
+      lines.push(`  ⚠ Not signed by the sender: authorized by ${hop.authorized_by?.join(", ")}.`);
+    }
+    if (hop.commingled) lines.push(`  ⚠ ${hop.commingled.note}`);
+    if (hop.note) lines.push(`Note:   ${hop.note}`);
 
     lines.push("");
   }
@@ -673,8 +1022,7 @@ function buildSummary(
   const allCoinsTraced = new Set<string>();
   for (const hop of hops) {
     for (const bc of hop.balance_changes) {
-      const abs = BigInt(bc.amount) < 0n ? -BigInt(bc.amount) : BigInt(bc.amount);
-      if (abs > 1_000_000n) allCoinsTraced.add(shortCoinType(bc.coin_type));
+      if (isSignificant(bc.amount, bc.coin_type)) allCoinsTraced.add(shortCoinType(bc.coin_type));
     }
   }
   if (allCoinsTraced.size > 0) {
@@ -690,7 +1038,7 @@ function buildSummary(
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "(Advanced — multi-hop) Trace fund flow from a transaction. Follow money forward to recipients or backward to the sender's funding source. Swap-aware (follows value across DEX swaps instead of losing it in the pool), stops at known sinks (exchanges, bridges, mixers, malicious wallets — see manage_labels), and values each hop in USD at block time via Pyth. Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
+    "(Advanced — multi-hop) Trace fund flow from a transaction. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers, malicious wallets — see manage_labels), at bridge exits, and backward at high-fanout hubs, and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z
@@ -705,29 +1053,43 @@ export function registerTraceTools(server: McpServer) {
       coin_type: z
         .string()
         .optional()
-        .describe("Restrict the DISPLAYED balance changes to this coin type (e.g. 0x2::sui::SUI). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown."),
+        .describe("Start by following this coin type, and restrict the DISPLAYED balance changes to it (e.g. 0x2::sui::SUI; the short and padded forms match). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown and the first hop picks the largest flow."),
     },
     async ({ digest, direction, hops, coin_type }) => {
       const maxHops = Math.min(hops ?? 3, 10);
+      // Compared and echoed in canonical form. GraphQL reports the padded type,
+      // so `0x2::sui::SUI` compared as a raw string matched nothing and every
+      // hop rendered empty.
+      const coinFilter = coin_type ? coinKey(coin_type) : null;
       const traceHops: HopResult[] = [];
       /** Full movement lists per hop — internal, never serialised. */
       const movementsByHop = new Map<number, ObjectMovement[]>();
       let currentDigest: string | null = digest;
-      // Set when a hop's next address is a known fund sink (exchange, bridge,
-      // mixer, malicious wallet, burn) — following further would add noise.
+      // Why the trace ended. Every exit from the loop sets it: a trace that
+      // just ends reads as "the money stopped here", which is the wrong
+      // conclusion for most of the ways a trace can end.
       let terminationReason: string | null = null;
       // Bridge exits seen anywhere in the trace, keyed by digest.
       //
-      // Detected from the hop's Move calls rather than from a sink label. A
-      // bridge does not transfer value to an identifiable wallet — it burns or
-      // locks the coin and emits a message — so there is usually no recipient
-      // address to label, and `isSink` never fires. The call is the signal
-      // that is actually present.
+      // Detected from the hop's Move calls and events rather than from a sink
+      // label. A bridge does not transfer value to an identifiable wallet — it
+      // burns or locks the coin and emits a message — so there is usually no
+      // recipient address to label, and `isSink` never fires.
       const bridgeExits: Array<{ digest: string; hits: BridgeHit[] }> = [];
       // Who the next hop's transaction must have been sent by, for the chain to
       // still be about the same funds. Null on the first hop, which has no
-      // predecessor to disagree with.
+      // predecessor to disagree with, and on a hop that released funds from an
+      // object, which someone else necessarily sent.
       let expectedSender: string | null = null;
+      // Forward: whose funds the current hop moves. The sender, except on a
+      // hop that took value out of an object.
+      let holder: string | null = null;
+      let reachedVia: HopResult["reached_via"];
+      // Backward: the address whose inflow the current hop explains.
+      let recipient: string | null = null;
+      // Forward: what the followed address received on the previous hop, so a
+      // larger outflow can be flagged as mixed with other funds.
+      let delivered: { address: string; coin: string; amount: bigint } | null = null;
       // Hops the fullnode had pruned. Worth reporting: it tells a reader the
       // trace reached back past the fullnode's retention, which is usually the
       // interesting part of an old case.
@@ -740,9 +1102,11 @@ export function registerTraceTools(server: McpServer) {
       // the trace fills maxHops with a two-wallet loop and presents it as a
       // ten-hop chain.
       const visitedAddresses = new Set<string>();
+      // Digests already read, so a same-checkpoint window cannot hand one back.
+      const visitedDigests = new Set<string>();
       let custodyBreak: Record<string, unknown> | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
-      let trackedCoin: string | null = coin_type ?? null;
+      let trackedCoin: string | null = coinFilter;
 
       // A pool/protocol address is a pass-through, not a real destination —
       // funds routed through a DEX belong to the actor, not the pool.
@@ -786,19 +1150,20 @@ export function registerTraceTools(server: McpServer) {
         }
         if (tx.source === "archive") archiveHops++;
         if (tx.source === "cache") cacheHops++;
+        visitedDigests.add(currentDigest);
 
         const sender = tx.sender;
         const allChanges = tx.balanceChanges;
         // What we DISPLAY for the hop. Filter only by the caller's explicit
         // coin_type (a constant), NOT the mutable `trackedCoin`: when the trace
         // auto-switches assets across a swap, the hop's real flows must still be
-        // shown — filtering by the switched coin would render swap-follow hops
-        // empty (the bug this fixes). Next-hop selection still sees allChanges.
-        const displayChanges = coin_type
-          ? allChanges.filter((c) => c.coin_type === coin_type)
+        // shown. Next-hop selection still sees allChanges.
+        const displayChanges = coinFilter
+          ? allChanges.filter((c) => sameCoin(c.coin_type, coinFilter))
           : allChanges;
 
         const checkpointNum = tx.checkpoint ?? undefined;
+        const gas: GasCharge = { payer: tx.gasPayer ?? null, net: tx.netGas == null ? null : BigInt(tx.netGas) };
 
         // Decode protocol actions
         const commands = tx.commands;
@@ -808,17 +1173,18 @@ export function registerTraceTools(server: McpServer) {
         await prefetchProtocolNames(collectPackageIds(commands));
         const decoded = decodeTransaction(commands, grpcBc, sender ?? undefined);
 
-        // Detect a bridge exit from this hop's Move calls. Runs after the
-        // prefetch so the registry tier can see lineage-resolved packages —
-        // an upgraded bridge still identifies.
-        const hits = detectBridges(tx.callSites);
+        // Detect a bridge exit from this hop's Move calls and events. Runs
+        // after the prefetch so the registry tier can see lineage-resolved
+        // packages — an upgraded bridge still identifies. Events catch a
+        // bridge reached through a wrapper package, whose own call carries no
+        // marker.
+        const hits = detectBridges(tx.callSites, tx.eventTypes ?? []);
         if (hits.length) bridgeExits.push({ digest: currentDigest, hits });
 
-        // Chain of custody. findNextTx asks for the next transaction *affecting*
-        // the address we followed, which for a shared contract is some other
-        // user's transaction. Without this check the trace keeps walking and
-        // attributes a stranger's flows to the subject — confidently, and with
-        // no visible seam.
+        // Chain of custody. The next transaction was found among those the
+        // followed address SENT, so a different sender means the search
+        // returned something it should not have, and the trace would
+        // attribute a stranger's flows to the subject.
         // Forward only. Backward tracing deliberately walks to the transaction
         // that FUNDED the address, which by definition someone else sent — so
         // requiring the sender to match would fire on every backward hop.
@@ -839,6 +1205,9 @@ export function registerTraceTools(server: McpServer) {
           break;
         }
 
+        // `?? []`: a row cached by an earlier build lacks the field.
+        const signers = assignSignerRoles(sender, tx.gasPayer, tx.signatures ?? []);
+
         const hopResult: HopResult = {
           hop: hop + 1,
           digest: currentDigest,
@@ -849,7 +1218,35 @@ export function registerTraceTools(server: McpServer) {
           protocols: decoded.protocols,
           actions: decoded.actions,
           token_flow: decoded.token_flow,
+          ...(reachedVia ? { reached_via: reachedVia } : {}),
+          ...(signers.signer_is_sender === false
+            ? { signer_is_sender: false as const, authorized_by: signers.authorized_by }
+            : {}),
+          ...(tx.balanceChangesTruncated ? { balance_changes_truncated: true as const } : {}),
+          ...(tx.commandsTruncated ? { commands_truncated: true as const } : {}),
+          ...(tx.eventsIncomplete ? { events_incomplete: true as const } : {}),
         };
+
+        // Spending more than the trace delivered means other funds are mixed
+        // in, so amounts from here on are not all the traced funds.
+        if (direction === "forward" && delivered && holder === delivered.address) {
+          const spent = -allChanges
+            .filter((c) => c.address === holder && sameCoin(c.coin_type, delivered!.coin))
+            .reduce((sum, c) => sum + nonGasAmount(c, gas), 0n);
+          // More than 1% over, so a gas rebate or rounding dust is not flagged.
+          if (spent * 100n > delivered.amount * 101n) {
+            hopResult.commingled = {
+              received: delivered.amount.toString(),
+              spent: spent.toString(),
+              coin_type: delivered.coin,
+              note:
+                // formatAmount signs its output; these are magnitudes.
+                `${holder} spent ${formatAmount(spent.toString(), delivered.coin).slice(1)} here, more than the ` +
+                `${formatAmount(delivered.amount.toString(), delivered.coin).slice(1)} the previous hop delivered, so funds it ` +
+                "already held or received elsewhere are mixed in. Amounts from here on are not all the traced funds.",
+            };
+          }
+        }
 
         // Object flow. Both live transports report it, so `undefined` now means
         // exactly one thing: a row cached before this field existed. Saying
@@ -879,11 +1276,8 @@ export function registerTraceTools(server: McpServer) {
         traceHops.push(hopResult);
 
         // A bridge exit ends the on-chain trace. The coin was burned or locked,
-        // so there is no recipient to follow — chooseNextHop would fall back to
-        // the sender and findNextTx would return whatever that address did
-        // next, which is unrelated activity presented as a continuation of the
-        // same funds. The value's next move is on another chain, and
-        // resolve_bridge_transfer is how it is followed.
+        // so there is no recipient to follow, and the value's next move is on
+        // another chain: resolve_bridge_transfer is how it is followed.
         // Forward only. A bridge exit means value left the chain going forward;
         // a backward trace is asking where the money in this transaction came
         // FROM, which the exit says nothing about. Terminating there cut a
@@ -898,6 +1292,17 @@ export function registerTraceTools(server: McpServer) {
             `Value left Sui via ${protocols}. Stopping: the coin was burned or locked, so nothing ` +
             "on this chain continues it. Run resolve_bridge_transfer on this transaction to pick " +
             "the transfer up on the destination chain.";
+          break;
+        }
+
+        // Forward only: what happens after a transaction signed by someone
+        // else is that party's decision. Following on would attribute a
+        // protocol recovery or an alias's actions to the address it acted for.
+        if (direction === "forward" && signers.signer_is_sender === false) {
+          terminationReason =
+            `Hop ${hop + 1} was sent as ${sender} but signed by ${signers.authorized_by.join(", ")}, acting for it ` +
+            "through an address alias or a protocol-level substitution. Its movements are not the sender's own, " +
+            "so the trace stops rather than attributing them to the sender. Follow the signer separately if its actions belong to the case.";
           break;
         }
 
@@ -922,6 +1327,7 @@ export function registerTraceTools(server: McpServer) {
         };
 
         // Swap-aware, pool-skipping next-hop selection.
+        const actor: string | null = direction === "forward" ? (holder ?? sender) : (recipient ?? sender);
         const decision = chooseNextHop({
           sender,
           changes: allChanges,
@@ -930,26 +1336,36 @@ export function registerTraceTools(server: McpServer) {
           trackedCoin,
           isPassThrough,
           valueUsd,
+          gas,
+          ...(direction === "forward" ? { holder: holder ?? sender } : { recipient }),
         });
+        const coinBefore = trackedCoin;
         trackedCoin = decision.nextCoinType;
         if (decision.note) hopResult.note = decision.note;
         hopResult.basis = decision.basis;
         // Branches the trace set aside. Reported per hop so "the money went
         // here" is never read off a split that had five other recipients.
-        if (decision.unfollowed.length) hopResult.unfollowed_recipients = decision.unfollowed;
+        if (decision.unfollowed.length) {
+          if (direction === "forward") hopResult.unfollowed_recipients = decision.unfollowed;
+          else hopResult.unfollowed_sources = decision.unfollowed;
+        }
         const nextAddress = decision.nextAddress;
-        if (nextAddress && visitedAddresses.has(nextAddress)) {
+        if (!nextAddress) {
+          terminationReason =
+            direction === "forward"
+              ? forwardDeadEnd(tx, actor, coinBefore, decision.consumed === true, decision.note)
+              : backwardDeadEnd(tx, actor, coinBefore);
+          break;
+        }
+        // Following the same actor across a swap or a self-credit is not a
+        // cycle; value coming back to an earlier party is.
+        if (nextAddress !== actor && visitedAddresses.has(nextAddress)) {
           terminationReason =
             `Cycle detected — value returned to ${nextAddress}, an address already in this trace. ` +
             "Stopping rather than reporting the same wallets again as further hops.";
           break;
         }
-        if (nextAddress) visitedAddresses.add(nextAddress);
-        // Only meaningful forward: the address we hand on must be the one that
-        // sends the next transaction for the chain to still concern these funds.
-        expectedSender = direction === "forward" ? nextAddress : null;
-
-        if (!nextAddress) break;
+        visitedAddresses.add(nextAddress);
 
         // Stop at known sinks: once funds reach an exchange, bridge, mixer,
         // malicious wallet, or burn address, further hops are noise.
@@ -981,12 +1397,78 @@ export function registerTraceTools(server: McpServer) {
           break;
         }
 
-        currentDigest = await findNextTx(
-          nextAddress,
-          checkpointNum,
-          direction,
-          currentDigest,
-        );
+        if (hop === maxHops - 1) {
+          terminationReason =
+            `Reached the hop limit (${maxHops}) while following ${nextAddress}. The funds may have moved ` +
+            `further: raise hops, or trace again from ${direction === "forward" ? "that address's next transaction" : "this hop"}.`;
+          break;
+        }
+
+        // A hub pools many parties' money. Backward, its earlier inflows are
+        // strangers' deposits, so walking past it names one of them as the
+        // source. Forward, its next outflow is someone's withdrawal: an
+        // exchange hot wallet's next SUI payment is not the traced SUI. Not
+        // asked when the trace keeps following the same actor, who is the
+        // subject rather than a new party.
+        if (direction === "backward" || nextAddress !== actor) {
+          const fanout = await measureFanout(nextAddress, HUB_SCAN_TRANSACTIONS).catch(() => null);
+          if (fanout && fanout.classification !== "narrow") {
+            terminationReason =
+              `${nextAddress} is a ${fanout.classification}: ${fanout.counterparty_count}${fanout.truncated ? "+" : ""} ` +
+              `counterparties in its last ${fanout.scanned_transactions} transactions. ` +
+              (direction === "backward"
+                ? "Its earlier inflows are other parties' money, so the transaction before this one does not say where these funds came from. "
+                : "Funds it receives are pooled with other parties' money, so its next outflow is not a continuation of these funds. ") +
+              "Stopping here: attribute this address (manage_labels, get_address_fanout) rather than walking past it.";
+            break;
+          }
+        }
+
+        // How much of the tracked coin the chosen address moved on this hop.
+        const movedHere: bigint = trackedCoin
+          ? allChanges
+              .filter((c) => c.address === nextAddress && sameCoin(c.coin_type, trackedCoin!))
+              .reduce((sum, c) => sum + nonGasAmount(c, gas), 0n)
+          : 0n;
+
+        if (direction === "forward") {
+          delivered = trackedCoin && movedHere > 0n ? { address: nextAddress, coin: trackedCoin, amount: movedHere } : null;
+          const step = await findNextForward(nextAddress, checkpointNum, trackedCoin, visitedDigests, currentDigest);
+          if (step.digest === null) {
+            terminationReason = step.reason;
+            break;
+          }
+          holder = nextAddress;
+          reachedVia = step.via === "released-from-object" ? step.via : undefined;
+          // Only meaningful for a transaction the followed address sent. An
+          // object's funds leave in a transaction someone else sends.
+          expectedSender = step.via === "sent" ? nextAddress : null;
+          currentDigest = step.digest;
+        } else {
+          const need = movedHere < 0n ? -movedHere : 1n;
+          const step = await findPriorInflow(nextAddress, checkpointNum, trackedCoin, visitedDigests, currentDigest, need);
+          if (step.digest === null) {
+            terminationReason = step.reason;
+            break;
+          }
+          if (step.others.length) {
+            hopResult.unfollowed_sources = [...(hopResult.unfollowed_sources ?? []), ...step.others];
+          }
+          if (step.shortfall || step.others.length) {
+            const coin = trackedCoin ? displayCoin(trackedCoin).symbol : "value";
+            const cover = step.shortfall
+              ? "The inflows found before it do not cover the whole outflow either, so part of it came from further back."
+              : "The older inflows that make up the rest are listed in unfollowed_sources.";
+            hopResult.note = [
+              hopResult.note,
+              `${nextAddress}'s latest ${coin} inflow before this hop is smaller than what it paid out here. ${cover}`,
+            ]
+              .filter(Boolean)
+              .join(" ");
+          }
+          recipient = nextAddress;
+          currentDigest = step.digest;
+        }
       }
 
       // Collect all unique addresses from hops
@@ -1002,6 +1484,8 @@ export function registerTraceTools(server: McpServer) {
         // lookalike comparison — while the prose truncates their address,
         // which is precisely the attack address_poisoning exists to catch.
         for (const a of objectCounterparties(movementsByHop.get(hop.hop) ?? [])) allAddresses.add(a);
+        for (const s of hop.unfollowed_sources ?? []) if (s.address) allAddresses.add(s.address);
+        for (const a of hop.authorized_by ?? []) allAddresses.add(a);
       }
 
       // Name, label and WHAT EACH ADDRESS IS, in two batched calls. A hop that
@@ -1059,7 +1543,9 @@ export function registerTraceTools(server: McpServer) {
           // human summary — "Binance deposit" beats "0x1234…abcd".
           if (!name) nameMap.set(addr, known.label);
         }
-        if (label.name || label.protocol || label.label) {
+        // The kind alone is worth a label: an unnamed object read as a wallet
+        // is the misreading this field exists to prevent.
+        if (label.name || label.protocol || label.label || label.kind) {
           addressLabels[addr] = label;
         }
       }
@@ -1159,7 +1645,7 @@ export function registerTraceTools(server: McpServer) {
         }
         parts.push(usd.join("\n"));
       }
-      if (terminationReason) parts.push(`⚠ ${terminationReason}`);
+      if (terminationReason) parts.push(`⚠ Stopped: ${terminationReason}`);
       if (custodyBreak) {
         parts.push(
           `⚠ Chain of custody broke at hop ${custodyBreak.at_hop}: expected a transaction from ` +
@@ -1202,6 +1688,7 @@ export function registerTraceTools(server: McpServer) {
           appearances.push({ address: bc.address, amount });
         }
         for (const r of hop.unfollowed_recipients ?? []) appearances.push({ address: r.address });
+        for (const r of hop.unfollowed_sources ?? []) appearances.push({ address: r.address });
         for (const a of objectCounterparties(movementsByHop.get(hop.hop) ?? [])) {
           appearances.push({ address: a });
         }
@@ -1264,9 +1751,11 @@ export function registerTraceTools(server: McpServer) {
       const fullData = {
         starting_digest: digest,
         direction,
-        coin_type: coin_type ?? "all",
+        coin_type: coinFilter ?? "all",
         hop_count: enrichedHops.length,
-        stopped_at_sink: terminationReason,
+        // Same field name as find_funding_source. Always set: a sink, a bridge
+        // exit, a dead end, a hub, a cycle, the hop limit or a read failure.
+        stop_reason: terminationReason,
         ...(archiveHops ? { hops_served_by_archive: archiveHops } : {}),
         ...(cacheHops ? { hops_from_cache: cacheHops } : {}),
         ...(custodyBreak ? { custody_break: custodyBreak } : {}),

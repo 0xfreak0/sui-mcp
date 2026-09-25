@@ -23,6 +23,7 @@ import { getLabel, labelProvenance, type LabelProvenance } from "./labels.js";
 import { batchResolveNames } from "./names.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import {
+  assignSignerRoles,
   authenticationNote as describeAuthentication,
   readAuthentication,
   type Authentication,
@@ -139,12 +140,26 @@ interface MultiGetResult {
 }
 
 /**
+ * Addresses per kind lookup. The service caps a request at 5,000 bytes
+ * including variables, and each key costs about 81 bytes: measured on mainnet,
+ * 58 keys (4,898 bytes) were accepted and 62 (5,222 bytes) rejected with
+ * "Query payload too large". A rejected chunk classifies as nothing, and the
+ * caller's default then reads every address in it as a wallet.
+ */
+const KINDS_BATCH_SIZE = 40;
+
+/**
  * `wallet` is the *absence* of an object at that address, which is what an
  * ordinary account looks like on Sui. It is therefore a default, not a
  * positive finding — an address nobody has ever transacted with classifies the
  * same way.
+ *
+ * `wrapped_or_deleted_object` is an address with no live object and no
+ * signature that some transaction nevertheless recorded as an OBJECT id: the
+ * UID of an object that was wrapped inside another or deleted, such as a
+ * zkSend link's bag. Value sent to it moves only through the owning module.
  */
-export type AddressKind = "wallet" | "package" | "object";
+export type AddressKind = "wallet" | "package" | "object" | "wrapped_or_deleted_object";
 
 /**
  * How a held registration reached the address, read from the transaction that
@@ -216,6 +231,24 @@ export interface AddressIdentity {
    * fresh personal wallet. `authentication_note` says so in words.
    */
   authentication?: Authentication;
+  /** The authentication lookup failed. Not the same as the address never having sent. */
+  authentication_unavailable?: boolean;
+  /**
+   * The address has sent transactions, but none of those examined carries its
+   * own signature: another address authorized them in its place, through an
+   * address alias or a protocol-level substitution. How the address itself
+   * authenticates is then unknown, and "never sent" would be false.
+   */
+  foreign_authorization?: {
+    authorized_by: string[];
+    digest: string;
+    transactions_examined: number;
+  };
+  /**
+   * For `wrapped_or_deleted_object`: a transaction that recorded this id as
+   * an object, which is the evidence for the kind.
+   */
+  object_seen_in?: string;
   /**
    * Who may authorize for this wallet, via `0x2::address_alias`.
    *
@@ -269,8 +302,8 @@ export interface AddressIdentity {
 /** Classify addresses by what lives at them. Batched; never throws. */
 async function fetchKinds(addresses: string[]): Promise<Map<string, { kind: AddressKind; type?: string }>> {
   const out = new Map<string, { kind: AddressKind; type?: string }>();
-  for (let i = 0; i < addresses.length; i += CHUNK) {
-    const chunk = addresses.slice(i, i + CHUNK);
+  for (let i = 0; i < addresses.length; i += KINDS_BATCH_SIZE) {
+    const chunk = addresses.slice(i, i + KINDS_BATCH_SIZE);
     try {
       const r = await gqlQuery<MultiGetResult>(MULTI_GET, {
         keys: chunk.map((address) => ({ address })),
@@ -422,21 +455,39 @@ async function fetchAliases(
   return { found: out, failed };
 }
 
+/** Sent transactions read per address when looking for its own signature. */
+const AUTH_SAMPLE = 5;
+
+interface AuthenticationLookup {
+  found: Map<string, Authentication>;
+  /** Addresses whose sent transactions carry none of their own signatures. */
+  foreign: Map<string, NonNullable<AddressIdentity["foreign_authorization"]>>;
+  /** Addresses whose lookup failed, so nothing may be concluded about them. */
+  failed: Set<string>;
+}
+
 /**
  * How each address authenticates. Batched with aliases; never throws.
  *
- * One sent transaction is enough and the oldest is as good as the newest,
+ * One of its own signatures is enough and the oldest is as good as the newest,
  * because an address commits to its authenticator in its own hash and can never
  * rotate it. That is also why nothing here is cached with a TTL: the answer is
  * fixed for the life of the address. Note this is a fact about DERIVATION, not
  * about who may spend — see `fetchAliases`.
  *
- * An address with no sent transaction is simply absent from the result. It has
- * signed nothing, so there is nothing to read, and saying "single-key wallet"
- * would be a guess dressed as a finding.
+ * A sent transaction does not always carry the sender's own signature: an
+ * address alias, or a protocol-level substitution like the one that moved the
+ * Cetus attacker's frozen funds, authorizes in its place. Such a transaction
+ * says who acted, and dropping it reported an address that had sent as "never
+ * sent". Up to `AUTH_SAMPLE` transactions are read; when none is self-signed
+ * the address lands in `foreign` with the signers that did authorize.
+ *
+ * An address with no sent transaction is absent from all three results. It
+ * has signed nothing, so there is nothing to read, and saying "single-key
+ * wallet" would be a guess dressed as a finding.
  */
-async function fetchAuthentication(addresses: string[]): Promise<Map<string, Authentication>> {
-  const out = new Map<string, Authentication>();
+async function fetchAuthentication(addresses: string[]): Promise<AuthenticationLookup> {
+  const out: AuthenticationLookup = { found: new Map(), foreign: new Map(), failed: new Set() };
   // One unparseable address answers the WHOLE aliased batch with data: null,
   // not a null for its own alias. The catch below treats that as "no
   // authentication found" for all 20, so a single bad address in a seed list
@@ -465,7 +516,7 @@ async function fetchAuthentication(addresses: string[]): Promise<Map<string, Aut
       chunk
         .map(
           (_, j) =>
-            `  a${j}: transactions(filter: { sentAddress: $a${j} }, first: 1) { nodes { signatures { signatureBytes } } }`,
+            `  a${j}: transactions(filter: { sentAddress: $a${j} }, first: ${AUTH_SAMPLE}) { nodes { digest gasInput { gasSponsor { address } } signatures { signatureBytes } } }`,
         )
         .join("\n") +
       "\n}";
@@ -473,19 +524,81 @@ async function fetchAuthentication(addresses: string[]): Promise<Map<string, Aut
     // is inlined. That is only safe because the chunk was validated above.
     const inlined = chunk.reduce((q, a, j) => q.replace(`$a${j}`, JSON.stringify(a.query)), query);
     try {
-      const r = await gqlQuery<Record<string, { nodes: { signatures: { signatureBytes: string }[] }[] }>>(
-        inlined,
-      );
+      const r = await gqlQuery<
+        Record<
+          string,
+          {
+            nodes: Array<{
+              digest: string;
+              gasInput?: { gasSponsor?: { address?: string } | null } | null;
+              signatures: { signatureBytes: string }[];
+            }>;
+          }
+        >
+      >(inlined);
       chunk.forEach((a, j) => {
-        const sigs = r[`a${j}`]?.nodes?.[0]?.signatures?.map((s) => s.signatureBytes);
-        if (!sigs?.length) return;
-        // Derived against the canonical form — an address IS the hash of its
-        // authenticator, so the re-derivation only matches the padded value.
-        const auth = readAuthentication(a.query, sigs);
-        if (auth) out.set(a.original, auth);
+        const nodes = r[`a${j}`]?.nodes ?? [];
+        let firstForeign: { digest: string; authorized_by: string[] } | null = null;
+        for (const n of nodes) {
+          const sigs = n.signatures?.map((s) => s.signatureBytes) ?? [];
+          if (!sigs.length) continue;
+          // Derived against the canonical form — an address IS the hash of its
+          // authenticator, so the re-derivation only matches the padded value.
+          const auth = readAuthentication(a.query, sigs);
+          if (auth) {
+            out.found.set(a.original, auth);
+            return;
+          }
+          const signers = assignSignerRoles(a.query, n.gasInput?.gasSponsor?.address, sigs);
+          if (!firstForeign && signers.signer_is_sender === false) {
+            firstForeign = { digest: n.digest, authorized_by: signers.authorized_by };
+          }
+        }
+        if (firstForeign) {
+          out.foreign.set(a.original, { ...firstForeign, transactions_examined: nodes.length });
+        }
       });
     } catch {
-      // Enrichment only. A trace the chain already answered must not fail here.
+      // Enrichment only. A trace the chain already answered must not fail
+      // here, but "could not read" is recorded so no caller says "never sent".
+      for (const a of chunk) out.failed.add(a.original);
+    }
+  }
+  return out;
+}
+
+/**
+ * Which of `addresses` were ever recorded as an OBJECT id. Batched; never
+ * throws.
+ *
+ * An address with no live object and no signature reads as a wallet by
+ * default. When a transaction's object changes name it, it is the UID of an
+ * object that has since been wrapped or deleted (a zkSend bag, a consumed
+ * receipt), and value sent to it is released only by that object's module.
+ * `affectedObject` never matches an account address, since an object id is
+ * derived from a transaction digest and an account address from a key.
+ */
+async function fetchFormerObjects(addresses: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const usable = addresses
+    .map((original) => ({ original, query: normalizeSuiAddress(original) }))
+    .filter((a) => isValidSuiAddress(a.query));
+  for (let i = 0; i < usable.length; i += AUTH_BATCH_SIZE) {
+    const chunk = usable.slice(i, i + AUTH_BATCH_SIZE);
+    const query =
+      "query {\n" +
+      chunk
+        .map((a, j) => `  a${j}: transactions(filter: { affectedObject: ${JSON.stringify(a.query)} }, first: 1) { nodes { digest } }`)
+        .join("\n") +
+      "\n}";
+    try {
+      const r = await gqlQuery<Record<string, { nodes: Array<{ digest: string }> }>>(query);
+      chunk.forEach((a, j) => {
+        const digest = r[`a${j}`]?.nodes?.[0]?.digest;
+        if (digest) out.set(a.original, digest);
+      });
+    } catch {
+      // Enrichment only; the address keeps its default kind.
     }
   }
   return out;
@@ -537,11 +650,12 @@ export async function describeAddresses(
   if (unique.length === 0) return out;
 
   const wantAuth = options.authentication || options.expandMembers;
+  const noAuth: AuthenticationLookup = { found: new Map(), foreign: new Map(), failed: new Set() };
   const [names, kinds, held, auth, aliases] = await Promise.all([
     batchResolveNames(unique).catch(() => new Map<string, string>()),
     fetchKinds(unique),
     fetchHeldNames(unique),
-    wantAuth ? fetchAuthentication(unique) : new Map<string, Authentication>(),
+    wantAuth ? fetchAuthentication(unique) : noAuth,
     options.aliases
       ? fetchAliases(unique)
       : { found: new Map<string, AliasSet>(), failed: new Set<string>() },
@@ -552,14 +666,30 @@ export async function describeAddresses(
   const packages = unique.filter((a) => kinds.get(a)?.kind === "package");
   if (packages.length > 0) await prefetchProtocolNames(packages).catch(() => {});
 
+  // An address with no live object that has never signed may be an object id
+  // rather than an account. Only asked when authentication was read, since
+  // "never signed" is what narrows the candidates.
+  const unsigned = wantAuth
+    ? unique.filter(
+        (a) =>
+          kinds.get(a)?.kind === "wallet" &&
+          !auth.found.has(a) &&
+          !auth.foreign.has(a) &&
+          !auth.failed.has(a),
+      )
+    : [];
+  const formerObjects = unsigned.length > 0 ? await fetchFormerObjects(unsigned) : new Map<string, string>();
+
   for (const address of unique) {
     const k = kinds.get(address);
     const label = getLabel(address);
     const protocol = k?.kind === "package" ? lookupProtocolDisplay(address)?.name : undefined;
+    const seenAsObject = formerObjects.get(address);
     out.set(address, {
       address,
-      kind: k?.kind ?? "wallet",
+      kind: seenAsObject ? "wrapped_or_deleted_object" : (k?.kind ?? "wallet"),
       ...(k?.type ? { object_type: k.type } : {}),
+      ...(seenAsObject ? { object_seen_in: seenAsObject } : {}),
       ...(names.get(address) ? { name: names.get(address) } : {}),
       ...(label
         ? {
@@ -569,7 +699,9 @@ export async function describeAddresses(
           }
         : {}),
       ...(protocol ? { protocol } : {}),
-      ...(auth.get(address) ? { authentication: auth.get(address) } : {}),
+      ...(auth.found.get(address) ? { authentication: auth.found.get(address) } : {}),
+      ...(auth.foreign.get(address) ? { foreign_authorization: auth.foreign.get(address) } : {}),
+      ...(auth.failed.has(address) ? { authentication_unavailable: true } : {}),
       ...(aliases.found.get(address) ? { aliases: aliases.found.get(address) } : {}),
       ...(aliases.failed.has(address) ? { aliases_unavailable: true } : {}),
       ...(held.get(address)?.length ? { names_held: held.get(address) } : {}),
@@ -687,6 +819,13 @@ export function identityNote(id: AddressIdentity): string | undefined {
   }
   if (id.kind === "object") {
     return `This is an OBJECT${id.object_type ? ` (${id.object_type.split("::").slice(-2).join("::")})` : ""}, not a wallet — it may be a shared pool or vault that many parties touch.`;
+  }
+  if (id.kind === "wrapped_or_deleted_object") {
+    return `This is the id of an OBJECT that is no longer live at top level (wrapped inside another object, or deleted), recorded in ${id.object_seen_in}. It is not a wallet: nothing signs for it, and value sent to it moves only through the module that owns the object.`;
+  }
+  if (!id.authentication && id.foreign_authorization) {
+    const f = id.foreign_authorization;
+    return `This address has sent transactions, but none of the ${f.transactions_examined} examined carries its own signature: ${f.digest} was authorized by ${f.authorized_by.join(", ")} acting for it (an address alias or a protocol-level substitution).`;
   }
   // Said after the kind checks because those describe what is AT the address,
   // and this describes who can spend from it. A multisig is still a wallet;

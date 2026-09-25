@@ -19,13 +19,8 @@
  * see {@link EvidenceTier}.
  */
 
-import {
-  chainDisplayName,
-  formatAccountId,
-  normalizeAddressForChain,
-  isKnownChainId,
-  type ChainId,
-} from "../chain-id.js";
+import { chainDisplayName, type ChainId } from "../chain-id.js";
+import { foreignAccountId } from "./foreign-address.js";
 
 /**
  * How firmly a cross-chain link is established. This distinction is the whole
@@ -208,11 +203,5 @@ export function extractWormholeMessages(events: SuiEventNode[]): WormholeMessage
  * guessed chain is worse than one stored unqualified — it reads as verified.
  */
 export function toForeignAccount(wormholeChain: number, address: string): string | null {
-  const chain = caip2ForWormholeChain(wormholeChain);
-  if (!chain || !isKnownChainId(chain)) return null;
-  try {
-    return formatAccountId({ chain, address: normalizeAddressForChain(chain, address) });
-  } catch {
-    return null;
-  }
+  return foreignAccountId(caip2ForWormholeChain(wormholeChain), address);
 }

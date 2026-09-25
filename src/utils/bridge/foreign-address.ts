@@ -32,6 +32,16 @@ export function unpadForeignAddress(bytes: Uint8Array, chain: ChainId): string |
 }
 
 /**
+ * Decode an address a bridge wrote at its native length rather than padded:
+ * Axelar and Celer carry an EVM recipient as 20 bytes. 32 bytes go through
+ * the padded rule, so either form decodes; any other length is refused.
+ */
+export function decodeRawForeignAddress(bytes: Uint8Array, chain: ChainId): string | null {
+  if (bytes.length === 20 && namespaceOf(chain) === "eip155") return `0x${Buffer.from(bytes).toString("hex")}`;
+  return unpadForeignAddress(bytes, chain);
+}
+
+/**
  * CAIP-10 for a decoded recipient, or null when the chain is unmapped or the
  * address does not validate for it. An address stored under a guessed chain
  * reads as verified, so the caller reports the raw value instead.

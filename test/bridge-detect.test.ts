@@ -43,12 +43,12 @@ describe("detectBridges", () => {
   });
 
   it("returns no resolvable hit when only detect-only bridges are present", () => {
-    // The caller must not be told to run a resolver that cannot help. Mayan is
-    // the detect-only case: it routes over bridges rather than being one.
+    // The caller must not be told to run a resolver that cannot help. Meson
+    // is the detect-only case: its destination is not in Sui data at all.
     const hits = detectBridges([
-      { packageId: "0xc6c1c127", module: "calculate_mctp_fee", function: "calculate_mctp_fee" },
+      { packageId: "0xf0509f8b", module: "MesonSwap", function: "postSwapFromInitiator" },
     ]);
-    expect(hits[0].protocol).toBe("Mayan MCTP");
+    expect(hits[0].protocol).toBe("Meson");
     expect(resolvableHit(hits)).toBeNull();
   });
 
@@ -156,7 +156,8 @@ describe("Mayan MCTP", () => {
       "Mayan MCTP",
       "Wormhole",
     ]);
-    expect(hits.find((h) => h.protocol === "Mayan MCTP")?.resolution).toBe("detect-only");
+    // resolve_bridge_transfer reads the beneficiary from the order event.
+    expect(hits.find((h) => h.protocol === "Mayan MCTP")?.resolution).toBe("identifier");
   });
 
   it("does not fire on a DEX order book", () => {

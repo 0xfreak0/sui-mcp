@@ -1168,14 +1168,16 @@ Notes for extending it:
   gRPC".
 - CEX remains a true sink. A deposit on Sui and a withdrawal elsewhere cannot
   be linked from chain data; that is a subpoena, not a query.
-### Chain-derived destinations: Sui native bridge, CCTP, and Wormhole payloads
+### Chain-derived destinations
 
-Sui's native bridge and CCTP need **no indexer for the destination**: the
-destination chain and recipient are in the events, so the far side is
-`chain-derived`. A Wormhole VAA's identity names an emitter and a sequence,
-never a recipient, so its redemption is `indexer-attested`. The recipient is
-often in the message payload, though, and `src/utils/bridge/beneficiary.ts`
-decodes it into `beneficiaries`:
+Sui's native bridge, CCTP, Axelar ITS, Allbridge Core and Celer cBridge need
+**no indexer for the destination**: the destination chain and recipient are in
+their events, so the far side is `chain-derived`. A Wormhole VAA's identity
+names an emitter and a sequence, never a recipient, so its redemption is
+`indexer-attested`; the same holds for LayerZero delivery. The recipient is
+often in the message payload, though. `src/utils/bridge/exits.ts`
+(`readBridgeEvents`) collects every decoder into `beneficiaries`, and
+`resolve_bridge_transfer` and `screen_address` both read it:
 
 - Token Bridge `Transfer` (payload 1): `to` + `toChain`, pinned to the Sui
   Token Bridge emitter `ccceeb29…`.
@@ -1186,7 +1188,28 @@ decodes it into `beneficiaries`:
 - Mayan: `OrderCreated.addr_dest` (Wormhole chain id) and
   `BridgeSubmittedWithFee.addr_dest` (CCTP domain), read only from the package
   that emitted `InitMctpLogged` in the same transaction, because `init_order`
-  is a module name DEX order books share.
+  is a module name DEX order books share. Mayan Swift's `OrderCreated` is read
+  from Swift's own package `0x974af8e7…`, and its `hash` is the transfer id.
+- LayerZero V2: `messaging_channel::PacketSentEvent.encoded_packet` is the V1
+  packet, `version(1) ‖ nonce(8) ‖ srcEid(4) ‖ sender(32) ‖ dstEid(4) ‖
+  receiver(32) ‖ guid(32) ‖ message`. `receiver` is the destination OApp and
+  is reported as `destination_oapp`. For an OFT the message opens with
+  `sendTo(32) ‖ amountSD(u64)`; it is read only when an `oft::OFTSentEvent`
+  with the same GUID was emitted by the packet's `sender` package. A longer
+  message carries a compose call, and `sendTo` may then be a contract.
+- Axelar ITS: `events::InterchainTransfer<T>` carries `destination_chain`
+  (Axelar's chain name, compared case-insensitively) and
+  `destination_address` at its native length, 20 bytes for EVM.
+  `source_address` is the ITS channel, not the sender.
+- Allbridge Core: `events::TokensSentEvent` carries `destination_chain_id` and
+  `recipient_wallet_address`. The live route burns through CCTP with the same
+  nonce; the burn's mint recipient is where USDC lands (a token account on
+  Solana), so the CCTP leg is marked `carries: "Allbridge Core"` and the
+  wallet is the beneficiary.
+- Celer cBridge: `peg_bridge::BurnEvent` carries `to_chain` (an EIP-155 id as
+  a decimal string) and a 20-byte `to_addr`; `burn_id` is the transfer id.
+  Celer numbers non-EVM chains in the same space (Sui is 12370001), so
+  `eip155:N` is claimed only for a chain `chain-id.ts` knows.
 
 **The redemption names the contract, not the recipient.** Wormholescan's
 `targetChain.to` is the Token Bridge, the NTT manager or the relayer that the
@@ -1197,16 +1220,39 @@ Mayan's settlement contract and carries `role: "settlement_intermediate"`.
 A decoder is pinned to the sender, never to a payload shape alone: a shape
 match on another app's payload would name a stranger as the beneficiary.
 
-Each has its own chain numbering, none of them CAIP-2:
+Each has its own chain numbering:
 
 | Protocol | Identity | Numbering | Verified |
 |---|---|---|---|
 | Sui native (`0xb`) | `(source_chain, seq_num)` | 0 = Sui, 10 = Ethereum | tx `4xLuY6N6…` |
 | Circle CCTP | `(source_domain, nonce)` | Circle domains; 8 = Sui, 3 = Arbitrum | tx `4rDEyqGe…` |
 | Wormhole | `(emitterChain, emitter, sequence)` | Wormhole chain ids; 21 = Sui | tx `7g4nQFx…` |
+| LayerZero V2 | `guid` | endpoint ids; 30378 = Sui, 30101 = Ethereum | tx `4rH8bqFB…` |
+| Axelar ITS | Sui digest (Axelarscan) | Axelar chain names, e.g. `Ethereum` | tx `6YaLkwRs…` |
+| Allbridge Core | `nonce` (shared with the CCTP burn) | Allbridge ids; 4 = Solana, 6 = Arbitrum | tx `AyApNXU7…` |
+| Celer cBridge | `burn_id` | EIP-155 ids | tx `AkW2h1WQ…` |
+| Mayan Swift | order `hash` | Wormhole chain ids | tx `3aVcL3mh…` |
 
-All three numberings are **reused across environments**, so a CAIP-2 claim
-derived from any of them is withheld off mainnet (`qualify`).
+Wormhole's, Circle's and the native bridge's numberings are **reused across
+environments**, so a CAIP-2 claim derived from them is withheld off mainnet
+(`qualify`). LayerZero endpoint ids are distinct per environment (mainnet
+30xxx, testnet 40xxx), and the Axelar, Allbridge, Celer and Swift decoders are
+pinned to mainnet packages, so none of them can name a mainnet chain for a
+testnet transfer.
+
+LayerZero Scan (`scan.layerzero-api.com/v1/messages/tx/{digest}`) supplies
+`delivery`, `indexer-attested`, matched back to the packet by GUID. It is
+mainnet-only and, like Wormholescan, never costs the chain-derived half when it
+fails. Meson is detect-only: its package defines no events and the recipient
+is not in the Sui transaction.
+
+Transfers **arriving** on Sui are reported under `*_inbound`, never as exits.
+A Wormhole Token Bridge redemption emits `complete_transfer::TransferRedeemed`
+with the origin VAA triple. An NTT redemption emits no event at all, so its VAA
+is read from the transaction's pure input (the bytes passed to
+`vaa::parse_and_verify`), and only when the payload opens with NTT's
+transceiver prefix and names Sui as `to_chain`. Pyth price updates verify VAAs
+too, and are not transfers.
 
 CCTP specifics: `DepositForBurn` carries `destination_domain` and a 32-byte
 `mint_recipient`; the paired `send_message::MessageSent` carries the raw
@@ -1729,9 +1775,17 @@ impossible.
 1. Curated `callMarkers` / `eventMarkers` per protocol, matched by
    `module::function` *suffix and prefix* so they survive package upgrades and
    name variants (mainnet CCTP calls
-   `deposit_for_burn_with_caller_with_package_auth`, not the bare name). Event
-   types are compared with their type arguments stripped, on the whole
-   `::module::Name` tail: a generic event ends in its type argument.
+   `deposit_for_burn_with_caller_with_package_auth`, not the bare name). A
+   call whose prefix would catch a sibling goes in `exactCallMarkers`:
+   LayerZero's `endpoint_v2::send` shares a prefix with `send_compose`, which
+   is not an exit. Event types are compared with their type arguments
+   stripped, on the whole `::module::Name` tail: a generic event ends in its
+   type argument. An event marker written `0xpkg::module::Name` also pins the
+   package (`matchesEvent` in `event-type.ts`). Pinning is safe for events,
+   because an event is typed at the package that defined it and an upgrade
+   does not change that; it is not safe for calls, which name the version
+   called. Generic names (`events::TokensSentEvent`, `peg_bridge::BurnEvent`,
+   `init_order::OrderCreated`) are only ever matched pinned.
 2. Any package `lookupProtocol` types as `bridge` **and that has no curated
    entry**. This is free and automatic: adding a bridge to `protocols.json`
    gives detection immediately, and via lineage roots it keeps working after
@@ -1743,16 +1797,21 @@ impossible.
 **Resolution** (where did it land?) does *not* generalize — each protocol has
 its own identity scheme and its own index — so each resolver is bespoke.
 `BridgeProtocol.resolution` records which a protocol has: `identifier` means
-followable, `detect-only` means we can name it and no more. Never point a
-caller at a resolver that cannot help them; `resolvableHit()` is the guard.
+`resolve_bridge_transfer` reads its destination or its cross-chain identity,
+`detect-only` means we can name it and no more (Meson). Never point a caller
+at a resolver that cannot help them; `resolvableHit()` is the guard.
 
 Markers must be **distinctive**, not merely present. A generic name like
 `init_order` collides with DEX order books, which emit some of the
-highest-frequency events on mainnet — the Mayan markers carry `mctp` instead.
-Sample before adding — `node scripts/find-unknown-packages.mjs` ranks by call
-count, but note that bridge traffic is low-frequency relative to DEX and oracle
-activity, so volume sampling will *not* surface bridges. Probe candidate event
-types by name instead.
+highest-frequency events on mainnet: the Mayan MCTP markers carry `mctp`, and
+Mayan Swift's events are pinned to its package. Sample before adding.
+`node scripts/find-unknown-packages.mjs` ranks by call count, but bridge
+traffic is low-frequency relative to DEX and oracle activity, so volume
+sampling will *not* surface bridges. Probe candidate event types by name
+instead.
+
+A redemption of a transfer arriving on Sui is never an exit. Detection has no
+marker for one; `resolve_bridge_transfer` reports it under `*_inbound`.
 
 There is deliberately **no heuristic tier**. Guessing that an unknown package
 looks bridge-shaped would manufacture exactly the unverifiable attribution this
@@ -1818,10 +1877,12 @@ Rules a change is likely to break:
 - **Screening reads `sent` windows for outgoing value and bridge exits.** An
   exploiter's wallet collects airdrop spam afterwards; the Cetus attacker's
   last 100 affected transactions contain no exit, its last 100 sent ones
-  contain 100+. Bridge exposure counts curated call markers only, never the
-  registry tier, which fires on price-VAA verification.
+  contain 100+. Bridge exposure counts curated call and event markers, never
+  the registry tier, which fires on price-VAA verification. Event markers
+  matter because a wrapper such as Mayan's `bridge_with_fee` has no marker call.
 - **OFAC lists zero Sui addresses** (SDN data as of 2026-09-23). Sanctions hits
-  can only come from chain-derived CCTP and Sui Bridge destinations.
+  can only come from the chain-derived `beneficiaries` of a bridge exit, read
+  once per exit transaction and attributed to the protocol that names them.
 - **The Sui wallet blocklist is `flagged_by`, tier third-party**, never a label
   or a sink, and mainnet-only (package-keyed). Package ids are stored as
   16-hex prefixes to keep the file near 2 MB; domains are not synced.

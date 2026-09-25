@@ -21,7 +21,7 @@
  * a stranger as the beneficiary, which is worse than naming nobody.
  */
 
-import type { ChainId } from "../chain-id.js";
+import { canonicalSuiAddress, type ChainId } from "../chain-id.js";
 import { caip2ForCctpDomain, cctpDomainLabel } from "./cctp.js";
 import { foreignAccountId, unpadForeignAddress } from "./foreign-address.js";
 import {
@@ -52,9 +52,9 @@ const TOKEN_BRIDGE_RELAYER_SENDERS: Record<string, true> = {
 };
 
 /** `WH_TRANSCEIVER_PAYLOAD_PREFIX`, which opens every NTT Wormhole message. */
-const NTT_TRANSCEIVER_PREFIX = 0x9945ff10;
+export const NTT_TRANSCEIVER_PREFIX = 0x9945ff10;
 /** `NTT` prefix of a `NativeTokenTransfer` inside the manager message. */
-const NTT_TRANSFER_PREFIX = 0x994e5454;
+export const NTT_TRANSFER_PREFIX = 0x994e5454;
 
 export type BeneficiarySource =
   | "token-bridge-transfer"
@@ -63,7 +63,11 @@ export type BeneficiarySource =
   | "mayan-order"
   | "mayan-mctp"
   | "cctp-mint-recipient"
-  | "sui-native-bridge";
+  | "sui-native-bridge"
+  | "layerzero-oft-send-to"
+  | "axelar-its-destination"
+  | "allbridge-recipient-wallet"
+  | "celer-burn-recipient";
 
 /** A far-side recipient read from the Sui transaction. Always chain-derived. */
 export interface Beneficiary {
@@ -75,6 +79,14 @@ export interface Beneficiary {
   chain_label: string;
   wormhole_chain_id?: number;
   cctp_domain?: number;
+  layerzero_eid?: number;
+  /** Axelar's own chain name, e.g. `Ethereum`, `solana`. */
+  axelar_chain?: string;
+  allbridge_chain_id?: number;
+  /** Celer names EVM chains by their EIP-155 id. */
+  celer_chain_id?: number;
+  /** The bridge's own id for the transfer, as the destination chain quotes it. */
+  transfer_id?: string;
   /** In the destination chain's own format, when the padding decodes. */
   address: string | null;
   /** The 32-byte value exactly as the chain holds it. */
@@ -87,6 +99,8 @@ export interface Beneficiary {
   vaa_id?: string;
   /** The contract the payload was addressed to, when the recipient is behind it. */
   via_contract?: string;
+  /** Anything a reader must know before treating `account` as the end recipient. */
+  note?: string;
 }
 
 /** What a Wormhole message says about the transfer, when this module can read it. */
@@ -224,6 +238,15 @@ export function decodeWormholePayload(msg: WormholeMessage, qualify: boolean): D
 
 const MAYAN_MARKER_EVENT = "::init_order::InitMctpLogged";
 
+/**
+ * Mayan Swift's original package, which types its events. Swift shares the
+ * `init_order` module name with MCTP and with DEX order books, so its events
+ * are recognised by this package and nothing else. Verified on 3aVcL3mh…
+ * (2025-05-05), an `OrderCreated` to Solana; the SDK's `SUI_SWIFT_STATE`
+ * lives here.
+ */
+export const MAYAN_SWIFT_PACKAGE = "0x974af8e76ab7655b142ac344ce550cfdf9a288f2d2b0e3deff46983c4d255954";
+
 /** `pkg::module::Name` without type arguments, split into package and tail. */
 function splitType(t: string): { pkg: string; tail: string } {
   const bare = t.split("<")[0];
@@ -231,7 +254,8 @@ function splitType(t: string): { pkg: string; tail: string } {
   return { pkg: bare.slice(0, i), tail: bare.slice(i) };
 }
 
-function raw32(v: unknown): Buffer | null {
+/** A 32-byte value written as hex, with or without `0x`. */
+export function raw32(v: unknown): Buffer | null {
   if (typeof v !== "string") return null;
   const h = v.replace(/^0x/, "");
   return /^[0-9a-fA-F]{64}$/.test(h) ? Buffer.from(h, "hex") : null;
@@ -239,13 +263,14 @@ function raw32(v: unknown): Buffer | null {
 
 /**
  * Mayan's destination, from the package that emitted `InitMctpLogged` in the
- * same transaction.
+ * same transaction, or from Mayan Swift's own package.
  *
  * `init_order` is a generic module name that DEX order books also use, so an
  * `OrderCreated` is only read when Mayan's own marker event came from the same
- * package. `OrderCreated.chain_dest` is a Wormhole chain id (2 with CCTP
- * domain 0 on 6jMEFeap…); `BridgeSubmittedWithFee.dest_domain` is a CCTP
- * domain (6, Base, on 777Emr4V…).
+ * package, or when the package is Swift's. `OrderCreated.chain_dest` is a
+ * Wormhole chain id (2 with CCTP domain 0 on 6jMEFeap…, 1 on the Swift order
+ * 3aVcL3mh…); `BridgeSubmittedWithFee.dest_domain` is a CCTP domain (6, Base,
+ * on 777Emr4V…).
  */
 export function mayanBeneficiaries(events: SuiEventNode[], qualify: boolean): Beneficiary[] {
   const mayanPackages = new Set<string>();
@@ -253,7 +278,7 @@ export function mayanBeneficiaries(events: SuiEventNode[], qualify: boolean): Be
     const t = e?.contents?.type?.repr;
     if (typeof t !== "string") continue;
     const { pkg, tail } = splitType(t);
-    if (tail === MAYAN_MARKER_EVENT) mayanPackages.add(pkg);
+    if (tail === MAYAN_MARKER_EVENT || canonicalSuiAddress(pkg) === MAYAN_SWIFT_PACKAGE) mayanPackages.add(pkg);
   }
   if (mayanPackages.size === 0) return [];
 
@@ -268,9 +293,11 @@ export function mayanBeneficiaries(events: SuiEventNode[], qualify: boolean): Be
     if (!dest) continue;
 
     if (tail === "::init_order::OrderCreated" && typeof f.chain_dest === "number") {
+      const swift = canonicalSuiAddress(pkg) === MAYAN_SWIFT_PACKAGE;
       out.push(
-        wormholeBeneficiary("Mayan", "mayan-order", f.chain_dest, dest, qualify, {
+        wormholeBeneficiary(swift ? "Mayan Swift" : "Mayan MCTP", "mayan-order", f.chain_dest, dest, qualify, {
           ...(typeof f.amount_in === "string" ? { amount: f.amount_in, amount_note: "amount_in, in the source coin's units." } : {}),
+          ...(swift && typeof f.hash === "string" ? { transfer_id: f.hash } : {}),
         }),
       );
     } else if (tail === "::bridge_with_fee::BridgeSubmittedWithFee" && typeof f.dest_domain === "number") {
@@ -279,7 +306,7 @@ export function mayanBeneficiaries(events: SuiEventNode[], qualify: boolean): Be
       const address = decodeChain ? unpadForeignAddress(dest, decodeChain) : null;
       out.push({
         evidence: "chain-derived",
-        protocol: "Mayan",
+        protocol: "Mayan MCTP",
         source: "mayan-mctp",
         chain,
         chain_label: cctpDomainLabel(f.dest_domain),

@@ -496,7 +496,8 @@ get the schema wrong in ways that fail silently.
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | What happened between two times? | `query_transactions`, `query_events`, `build_timeline` and `aggregate_events` take ISO bounds; `get_checkpoint {timestamp}` gives the checkpoint |
-| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract` and a CCTP leg marked `settlement_intermediate` are bridge contracts, not the recipient |
+| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract`, a LayerZero `destination_oapp`, a CCTP leg marked `settlement_intermediate` and a CCTP leg that `carries` an Allbridge transfer are bridge contracts or intermediate accounts, not the recipient |
+| Where did money arriving on Sui come from? | `resolve_bridge_transfer` on the redeeming transaction → `sui_native_bridge_inbound` / `wormhole_inbound`: origin chain and transfer id (VAA id) |
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | Who else profited in this window, and by how much? | `aggregate_events` with `module` and `group_pnl` — each sender's own balance changes in USD, multi-leg PTBs marked |

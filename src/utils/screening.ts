@@ -2,13 +2,8 @@ import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { detectBridges, type CallSite } from "./bridge/detect.js";
-import {
-  CCTP_DEPOSIT_EVENT_SUFFIX,
-  CCTP_MESSAGE_EVENT_SUFFIX,
-  parseDepositForBurn,
-  parseMessageHeader,
-} from "./bridge/cctp.js";
-import { DEPOSIT_EVENT_SUFFIXES, parseDepositEvent } from "./bridge/sui-native.js";
+import { readBridgeEvents } from "./bridge/exits.js";
+import { fetchEventJson } from "./event-json.js";
 import { disclosedLabelSources, getLabel, labelProvenance, type LabelCategory } from "./labels.js";
 import { sanctions } from "./sanctions.js";
 import { pricesForRanking } from "./price-providers.js";
@@ -48,6 +43,10 @@ export interface ScreenTx {
   gasSponsor: string | null;
   changes: ScreenChange[];
   calls: CallSite[];
+  /** Event types, read for `sent` windows only: bridge exits need them, inflows do not. */
+  eventTypes: string[];
+  /** The events could not all be read, so an exit marked only by an event may be missed. */
+  eventsIncomplete?: boolean;
 }
 
 /** Value moved between the subject and one counterparty, in one direction. */
@@ -114,15 +113,18 @@ export function timeConsistent(dir: Direction, legs: Leg[], previous: Leg[] | nu
   });
 }
 
-/** Bridge exits `address` itself sent, from curated call markers only. */
+/** Bridge exits `address` itself sent, from curated call and event markers only. */
 export function bridgeExitsOf(address: string, txs: ScreenTx[]) {
   const out: Array<{ tx: ScreenTx; protocol: string; resolution: string }> = [];
   for (const tx of txs) {
     if (tx.sender !== address) continue;
     // Markers only. The registry tier fires on any call into a bridge-typed
     // package, which includes a lending protocol verifying a Wormhole price
-    // VAA; a screen that called that bridge exposure would be wrong.
-    for (const hit of detectBridges(tx.calls).filter((h) => h.matched === "call")) {
+    // VAA; a screen that called that bridge exposure would be wrong. Event
+    // markers count: they are exit events (a Wormhole message, a CCTP burn),
+    // and a wrapper such as Mayan's bridge_with_fee puts no marker call in
+    // the PTB, so its exit is visible only as events.
+    for (const hit of detectBridges(tx.calls, tx.eventTypes).filter((h) => h.matched === "call" || h.matched === "event")) {
       out.push({ tx, protocol: hit.protocol, resolution: hit.resolution });
     }
   }
@@ -165,7 +167,7 @@ export function hitsFor(account: string): Hit[] {
 // Network
 // ---------------------------------------------------------------------------
 
-const WINDOW_QUERY = `query ($filter: TransactionFilter!, $last: Int!, $before: String) {
+const WINDOW_QUERY = `query ($filter: TransactionFilter!, $last: Int!, $before: String, $events: Boolean!) {
   transactions(filter: $filter, last: $last, before: $before) {
     nodes {
       digest
@@ -174,6 +176,7 @@ const WINDOW_QUERY = `query ($filter: TransactionFilter!, $last: Int!, $before: 
       effects {
         timestamp
         balanceChanges(first: 50) { nodes { amount owner { address } coinType { repr } } }
+        events(first: 50) @include(if: $events) { pageInfo { hasNextPage } nodes { contents { type { repr } } } }
       }
       kind {
         ... on ProgrammableTransaction {
@@ -196,6 +199,7 @@ interface WindowResult {
       effects?: {
         timestamp?: string | null;
         balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string } | null; coinType?: { repr: string } }> };
+        events?: { pageInfo?: { hasNextPage?: boolean }; nodes: Array<{ contents?: { type?: { repr?: string } } | null }> };
       } | null;
       kind?: {
         commands?: { nodes: Array<{ function?: { name: string; module: { name: string; package: { address: string } } } }> };
@@ -232,8 +236,9 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
       filter,
       last: Math.min(50, limit - txs.length),
       before,
+      events: kind === "sent",
     });
-    const page = res.transactions.nodes.map((n) => ({
+    const page = res.transactions.nodes.map((n): ScreenTx & { moreEvents: boolean } => ({
       digest: n.digest,
       timestamp: n.effects?.timestamp ?? null,
       sender: n.sender?.address ?? null,
@@ -244,8 +249,20 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
       calls: (n.kind?.commands?.nodes ?? [])
         .filter((c) => c.function)
         .map((c) => ({ packageId: c.function!.module.package.address, module: c.function!.module.name, function: c.function!.name })),
+      eventTypes: (n.effects?.events?.nodes ?? [])
+        .map((e) => e.contents?.type?.repr)
+        .filter((t): t is string => typeof t === "string"),
+      moreEvents: n.effects?.events?.pageInfo?.hasNextPage === true,
     }));
-    txs.unshift(...page);
+    // A page of events is not all of them: complete the rare transaction
+    // with more, since an exit event past row 50 would otherwise be missed.
+    for (const tx of page) {
+      if (!tx.moreEvents) continue;
+      const all = await fetchEventJson(tx.digest);
+      if (all) tx.eventTypes = all.map((e) => e.type).filter((t): t is string => typeof t === "string");
+      else tx.eventsIncomplete = true;
+    }
+    txs.unshift(...page.map(({ moreEvents: _, ...tx }): ScreenTx => tx));
     more = res.transactions.pageInfo.hasPreviousPage;
     const cursor = res.transactions.pageInfo.startCursor;
     if (!cursor) break;
@@ -255,36 +272,39 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
 }
 
 const EVENTS_QUERY = `query ($digest: String!) {
-  transaction(digest: $digest) { effects { events(first: 50) { nodes { contents { type { repr } json } } } } }
+  transaction(digest: $digest) { effects { events(first: 50) { pageInfo { hasNextPage } nodes { contents { type { repr } json } } } } }
 }`;
 
 interface EventsResult {
-  transaction?: { effects?: { events?: { nodes?: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }> } } } | null;
+  transaction?: {
+    effects?: {
+      events?: {
+        pageInfo?: { hasNextPage?: boolean };
+        nodes?: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }>;
+      };
+    };
+  } | null;
 }
 
 /**
- * Chain-derived destinations of a CCTP or Sui-bridge exit: both put the
- * destination chain and recipient in their own events, so no indexer is asked.
+ * Chain-derived beneficiaries of a bridge exit, the same ones
+ * resolve_bridge_transfer reports. No indexer is asked, so a Wormhole
+ * transfer whose payload this server cannot attribute yields none.
  */
 async function bridgeDestinations(digest: string): Promise<Array<{ protocol: string; account: string | null; chain_label: string; raw: string | null }>> {
   const res = await gqlQuery<EventsResult>(EVENTS_QUERY, { digest });
-  const events = res.transaction?.effects?.events?.nodes ?? [];
-  const typed = events.map((e) => ({ type: e.contents?.type?.repr ?? "", json: e.contents?.json }));
-  const out: Array<{ protocol: string; account: string | null; chain_label: string; raw: string | null }> = [];
-  const qualify = getNetwork() === "mainnet";
-  const header = typed.find((e) => e.type.endsWith(CCTP_MESSAGE_EVENT_SUFFIX));
-  const headerJson = header?.json as { message?: string } | undefined;
-  const parsedHeader = headerJson?.message ? parseMessageHeader(headerJson.message) : null;
-  for (const e of typed) {
-    if (e.type.endsWith(CCTP_DEPOSIT_EVENT_SUFFIX)) {
-      const t = parseDepositForBurn(e.json, parsedHeader, qualify);
-      if (t) out.push({ protocol: "Circle CCTP", account: t.destinationAccount, chain_label: t.destinationChainLabel, raw: t.destinationAddress });
-    } else if (DEPOSIT_EVENT_SUFFIXES.some((s) => e.type.endsWith(s))) {
-      const t = parseDepositEvent(e.json);
-      if (t) out.push({ protocol: "Sui Bridge", account: qualify ? t.targetAccount : null, chain_label: t.targetChainLabel, raw: t.targetAddress });
-    }
+  const page = res.transaction?.effects?.events;
+  let events = page?.nodes ?? [];
+  if (page?.pageInfo?.hasNextPage) {
+    const all = await fetchEventJson(digest);
+    if (all) events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
   }
-  return out;
+  return readBridgeEvents(events, getNetwork() === "mainnet").beneficiaries.map((b) => ({
+    protocol: b.protocol,
+    account: b.account,
+    chain_label: b.chain_label,
+    raw: b.address ?? b.address_raw,
+  }));
 }
 
 export interface ScreenOptions {
@@ -411,8 +431,11 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
 
   // Bridge exits, grouped per protocol and path so sixty CCTP burns read as
   // one exposure with sixty digests. Destinations are read from chain events
-  // for CCTP and the Sui Bridge, up to maxBridgeLookups transactions.
-  let lookups = 0;
+  // for every protocol that writes one on Sui, up to maxBridgeLookups
+  // transactions. One transaction can exit through several protocols (Mayan
+  // over CCTP), so its events are read once and each beneficiary goes to the
+  // protocol that names it.
+  const destinationsOf = new Map<string, Promise<Awaited<ReturnType<typeof bridgeDestinations>> | null>>();
   const groups = new Map<string, {
     entry: Exposure;
     digests: string[];
@@ -433,7 +456,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
           hops: e.hops,
           path: e.path,
           legs: e.legs.map(summarizeLegs),
-          evidence: "bridge call marker in a transaction the address sent",
+          evidence: "bridge call or event marker in a transaction the address sent",
         },
         digests: [],
         sent: new Map(),
@@ -448,14 +471,14 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
       if (c.owner === e.tx.sender && c.amount < 0n) g.sent.set(c.coinType, (g.sent.get(c.coinType) ?? 0n) - c.amount);
     }
 
-    const canResolve = e.protocol === "Circle CCTP" || e.protocol === "Sui Bridge";
-    if (!canResolve) {
-      if (e.resolution === "identifier") g.entry.next_step = "Run resolve_bridge_transfer on these digests for the destination.";
-      continue;
+    if (e.resolution === "identifier") g.entry.next_step = "Run resolve_bridge_transfer on these digests for the destination.";
+    if (!destinationsOf.has(e.tx.digest)) {
+      if (destinationsOf.size >= options.maxBridgeLookups) continue;
+      destinationsOf.set(e.tx.digest, bridgeDestinations(e.tx.digest).catch(() => null));
     }
-    if (lookups >= options.maxBridgeLookups) continue;
-    lookups++;
-    const dests = await bridgeDestinations(e.tx.digest).catch(() => null);
+    const dests = (await destinationsOf.get(e.tx.digest))?.filter(
+      (d) => d.protocol === e.protocol || d.protocol.startsWith(`${e.protocol} `),
+    );
     for (const d of dests ?? []) {
       g.destinations.set(d.account ?? d.raw ?? d.chain_label, { ...d, tier: "chain-derived" });
       if (!d.account) continue;
@@ -499,7 +522,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     windows: windowReport,
     unexpanded_counterparties: unexpanded,
     bridge_exits_seen: exits.length,
-    bridge_exits_with_destination_read: lookups,
+    bridge_exits_with_destination_read: destinationsOf.size,
   };
 }
 
@@ -512,7 +535,7 @@ export function screeningCoverage() {
       ...cov,
       sui_note:
         cov.sui_addresses_listed === 0
-          ? `OFAC's SDN list (data as of ${cov.data_as_of}) contains no Sui addresses, so no Sui account can match it directly. Sanctions exposure can only appear on the far side of a bridge, as an EVM or Solana account read from a CCTP or Sui Bridge exit.`
+          ? `OFAC's SDN list (data as of ${cov.data_as_of}) contains no Sui addresses, so no Sui account can match it directly. Sanctions exposure can only appear on the far side of a bridge, as an EVM or Solana beneficiary read from the exit's own events (resolve_bridge_transfer's beneficiaries).`
           : `OFAC's SDN list (data as of ${cov.data_as_of}) lists ${cov.sui_addresses_listed} Sui address(es).`,
     },
   };

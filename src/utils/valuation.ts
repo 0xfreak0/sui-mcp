@@ -1,6 +1,6 @@
 import { buildPythFeedMap } from "../discovery.js";
-import { verifiedCoin, vouchFor } from "./coin-registry.js";
-import { pythApiKey } from "./price-providers.js";
+import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
+import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 
 /**
@@ -39,10 +39,12 @@ export interface CoinScale {
   decimals: number;
   /**
    * `registry` means a curated list vouches for this exact coin type and
-   * supplied its decimals. `assumed` means nothing does, and the amount was
-   * scaled by a guess — which the caller must pass on rather than absorb.
+   * supplied its decimals. `price_provider` means the service that priced the
+   * coin reported the decimals its price is per, so amount and price agree.
+   * `assumed` means nothing does, and the amount was scaled by a guess, which
+   * the caller must pass on rather than absorb.
    */
-  source: "registry" | "assumed";
+  source: "registry" | "price_provider" | "assumed";
 }
 
 /**
@@ -68,6 +70,20 @@ export function coinScale(coinType: string): CoinScale {
 /** Decimals only, for callers that have already handled the scale's provenance. */
 export function decimalsForCoinType(coinType: string): number {
   return coinScale(coinType).decimals;
+}
+
+/**
+ * The scale to value an amount at, given the price that will multiply it.
+ *
+ * A price is per whole token at the provider's own decimals, so when the
+ * curated registry does not know the coin, the provider's decimals are the
+ * ones that make amount × price correct. Registry decimals still win: they
+ * were reviewed, and the provider's were read from whatever the minter wrote.
+ */
+export function pricingScale(coinType: string, point?: { decimals?: number } | null): CoinScale {
+  const scale = coinScale(coinType);
+  if (scale.source === "registry" || point?.decimals === undefined) return scale;
+  return { decimals: point.decimals, source: "price_provider" };
 }
 
 export interface CoinDisplay {
@@ -143,47 +159,144 @@ export function formatUsd(value: number): string {
   return `$${(value / 1_000_000_000).toFixed(1)}B`;
 }
 
-/**
- * Resolve USD prices for a set of coin types at a point in time (or latest if
- * `unixTs` is omitted), via Pyth historical oracle data. Returns a map of coin
- * type → USD price; coins without a Pyth feed are simply absent. Never throws —
- * pricing is best-effort enrichment, not a hard dependency of tracing.
- */
-/** A USD price and the Pyth publish time it was actually sampled at. */
+/** A USD price and the time of the sample it came from. */
 export interface PricePoint {
   /** USD unit price. */
   price: number;
-  /** Unix seconds of the Pyth update this price came from. */
+  /** Unix seconds of the sample this price came from. */
   publishTime: number;
+  source: "pyth" | "defillama";
+  /** DefiLlama's 0-1 agreement score, or Pyth's USD confidence interval. */
+  confidence?: number;
+  /** Decimals the price is per, when the provider reports them. */
+  decimals?: number;
 }
 
-export async function priceUsdAtTime(
+/** A coin that has no price, and why. A missing price is never a zero. */
+export interface UnpricedCoin {
+  coin_type: string;
+  /** `request_failed` says nothing about the coin; the others are answers. */
+  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price";
+  reason: string;
+}
+
+export interface HistoricalPrices {
+  points: Map<string, PricePoint>;
+  unpriced: UnpricedCoin[];
+}
+
+export type HistoricalSource = "pyth" | "defillama";
+
+/**
+ * Why each coin without a price has none. Pure, so the wording a report rests
+ * on is tested rather than assumed.
+ *
+ * The three DefiLlama outcomes are different findings: a failed request says
+ * nothing about the coin, a coin type with type parameters cannot be asked
+ * about, and an answered request with no entry means DefiLlama had no price
+ * near that second.
+ */
+export function explainUnpriced(
   coinTypes: string[],
-  unixTs?: number,
-): Promise<Map<string, PricePoint>> {
-  const out = new Map<string, PricePoint>();
-  const uniq = [...new Set(coinTypes)];
-  if (uniq.length === 0) return out;
-  try {
-    // Historical pricing is Pyth-only and Pyth now needs a key. Without one,
-    // skip straight out instead of walking the feed map to make a request that
-    // will be refused.
-    if (!pythApiKey()) return out;
-    const { feedIds, reverseMap } = await buildPythFeedMap(uniq);
-    if (feedIds.length === 0) return out;
-    const prices = await fetchPythPrices(feedIds, unixTs);
-    if (!prices) return out;
-    for (const [feedId, entry] of prices) {
-      const point: PricePoint = { price: parsePythPrice(entry), publishTime: entry.price.publish_time };
-      for (const ct of reverseMap.get(feedId) ?? []) out.set(ct, point);
+  points: Map<string, PricePoint>,
+  ctx: { sources: ReadonlyArray<HistoricalSource>; pythKey: boolean; llama: DefiLlamaResult | null },
+): UnpricedCoin[] {
+  const out: UnpricedCoin[] = [];
+  for (const coinType of new Set(coinTypes)) {
+    if (points.has(coinType)) continue;
+    const verified = isVerifiedCoin(coinType);
+    const pythNote = !ctx.sources.includes("pyth")
+      ? ""
+      : !verified
+        ? " Pyth is never asked about it: its feeds are matched by symbol, and this coin is not on the verified list, so a Pyth price would be the price of whatever real coin shares its symbol."
+        : !ctx.pythKey
+          ? " Pyth was not asked: no PYTH_API_KEY is set."
+          : " Pyth returned no price for it.";
+    let code: UnpricedCoin["code"];
+    let reason: string;
+    if (!ctx.sources.includes("defillama") || !ctx.llama) {
+      code = "no_oracle_price";
+      reason = `No oracle price.${pythNote}`;
+    } else if (ctx.llama.unanswered.has(coinType)) {
+      code = "request_failed";
+      reason = `The DefiLlama request failed, which says nothing about whether the coin had a price.${pythNote}`;
+    } else if (ctx.llama.unsupported.has(coinType)) {
+      code = "type_parameters";
+      reason = `DefiLlama cannot be asked about this coin type: it has type parameters or is not a well-formed coin type.${pythNote}`;
+    } else {
+      code = "not_listed";
+      reason = `DefiLlama has no price for this exact coin type near that time.${pythNote}`;
     }
-  } catch {
-    // Best-effort: pricing failures must not break a trace.
+    out.push({ coin_type: coinType, code, reason: reason.trim() });
   }
   return out;
 }
 
-// Beyond this gap between a price's Pyth publish time and the block time, the
-// nearest available price is too stale to trust as the transaction-time value
-// (illiquid feed, or a gap in Pyth history). We still report it, but flag it.
+/**
+ * USD prices for a set of coin types at a point in time (or now if `unixTs`
+ * is omitted). Never throws: pricing is enrichment, not a hard dependency.
+ *
+ * Pyth is preferred when PYTH_API_KEY is set, and only for coins the curated
+ * registry verifies: Pyth feeds are matched by symbol, so an impostor would get
+ * the real coin's price. Everything else goes to DefiLlama, which needs no key
+ * and keys on the full coin type, so it prices each coin as itself or not at
+ * all.
+ *
+ * `sources` narrows the providers. `compare_oracle_price` asks for Pyth alone,
+ * since comparing a market against a market aggregate is not an oracle check.
+ */
+export async function priceUsdAtTime(
+  coinTypes: string[],
+  unixTs?: number,
+  opts: { sources?: ReadonlyArray<HistoricalSource> } = {},
+): Promise<HistoricalPrices> {
+  const sources = opts.sources ?? ["pyth", "defillama"];
+  const points = new Map<string, PricePoint>();
+  const uniq = [...new Set(coinTypes)];
+  if (uniq.length === 0) return { points, unpriced: [] };
+  const pythKey = pythApiKey() !== null;
+
+  if (sources.includes("pyth") && pythKey) {
+    try {
+      const verified = uniq.filter((ct) => isVerifiedCoin(ct));
+      const { feedIds, reverseMap } = await buildPythFeedMap(verified);
+      const prices = feedIds.length > 0 ? await fetchPythPrices(feedIds, unixTs) : null;
+      for (const [feedId, entry] of prices ?? []) {
+        const point: PricePoint = {
+          price: parsePythPrice(entry),
+          publishTime: entry.price.publish_time,
+          source: "pyth",
+          confidence: Number(entry.price.conf) * 10 ** entry.price.expo,
+        };
+        for (const ct of reverseMap.get(feedId) ?? []) points.set(ct, point);
+      }
+    } catch {
+      // Best-effort: whatever Pyth could not answer falls through to DefiLlama.
+    }
+  }
+
+  let llama: DefiLlamaResult | null = null;
+  if (sources.includes("defillama")) {
+    const rest = uniq.filter((ct) => !points.has(ct));
+    if (rest.length > 0) {
+      llama = await fetchDefiLlama(rest, unixTs);
+      for (const [ct, q] of llama.quotes) {
+        points.set(ct, {
+          price: q.price,
+          publishTime: q.at ?? unixTs ?? Math.floor(Date.now() / 1000),
+          source: "defillama",
+          ...(q.confidence !== undefined ? { confidence: q.confidence } : {}),
+          ...(q.decimals !== undefined ? { decimals: q.decimals } : {}),
+        });
+      }
+    }
+  }
+
+  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama }) };
+}
+
+// Beyond this gap between a price's sample time and the block time, the
+// nearest available price is too far away to trust as the transaction-time
+// value (illiquid coin, or a gap in the provider's history). It is still
+// reported, and flagged.
 export const PRICE_STALE_THRESHOLD_SEC = 3600;

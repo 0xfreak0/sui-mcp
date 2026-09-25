@@ -8,6 +8,8 @@ vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
 // Only the GraphQL query shape is under test here.
 vi.mock("../src/utils/price-providers.js", () => ({
   pricesForRanking: async () => new Map(),
+  pythApiKey: () => null,
+  fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),
 }));
 vi.mock("../src/utils/names.js", () => ({
   batchResolveNames: async () => new Map(),

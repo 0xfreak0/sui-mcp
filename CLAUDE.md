@@ -1402,6 +1402,29 @@ wallet, so `isSink` never fires on a real bridge exit and only one address
 label ships at all. `trace_funds` runs `detectBridges` over each hop's calls —
 data it already has, no extra query — and emits `bridge_exits`.
 
+### Historical prices
+
+`priceUsdAtTime` (`src/utils/valuation.ts`) is the one historical path, and
+`trace_funds` and `get_token_prices` with `at` both use it. Four rules:
+
+- **DefiLlama is the keyless source, and its key is the PADDED coin type.**
+  `sui:0x2::sui::SUI` resolves, but a stripped leading zero does not:
+  `sui:0x6864a6f9…::cetus::CETUS` returns nothing where `sui:0x06864a6f9…`
+  returns CETUS. A replay that stripped zeros lost CETUS and priced 96 of 195
+  Cetus-exploit coins; padded, it prices 103. `defiLlamaKey` pads; do not build
+  the key anywhere else.
+- **Pyth is asked about VERIFIED coins only.** Its feeds are found by symbol,
+  so an impostor ending `::sui::SUI` would get SUI's price. DefiLlama keys on
+  the full type and prices a coin as itself or not at all.
+- **`compare_oracle_price` stays Pyth-only** (`sources: ["pyth"]`). Comparing
+  DeepBook against a market aggregate is not an oracle check.
+- **An unpriced coin carries a code.** `request_failed` says nothing about the
+  coin and must not be reported the way `not_listed` is.
+
+DefiLlama returns the sample it used, which can be hours from the second asked
+for: 50 of 103 Cetus-exploit prices at 10:30 UTC were more than an hour away.
+Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
+
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)

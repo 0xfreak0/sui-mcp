@@ -27,6 +27,7 @@ import {
   formatUsd,
   PRICE_STALE_THRESHOLD_SEC,
   priceUsdAtTime,
+  pricingScale,
   usdValue,
   type PricePoint,
 } from "../utils/valuation.js";
@@ -904,8 +905,8 @@ export function registerTraceTools(server: McpServer) {
         //
         // Current prices, deliberately. Ranking needs *relative* value, and
         // which of five recipients got the most does not become more correct
-        // with block-time precision — while historical pricing is Pyth-only
-        // and Pyth now bills for it. Coins with no quote fall back to raw
+        // with block-time precision, while a historical lookup per hop costs
+        // a request per ranking decision. Coins with no quote fall back to raw
         // magnitude, which is at least consistent within one coin.
         const hopCoins = [...new Set(allChanges.map((c) => c.coin_type))];
         const decisionPrices = await pricesForRanking(hopCoins).catch(
@@ -1057,16 +1058,21 @@ export function registerTraceTools(server: McpServer) {
         }
       }
 
-      // Value each hop's flows in USD at that hop's block time (Pyth historical
-      // oracle). Best-effort: coins without a Pyth feed get a null usd_value,
-      // and pricing failures never break the trace.
+      // Value each hop's flows in USD at that hop's block time: Pyth for
+      // verified coins when a key is set, DefiLlama otherwise. Best-effort:
+      // a coin with no price gets a null usd_value and is listed in
+      // `usd.unpriced` with the reason, and pricing failures never break the
+      // trace.
       const hopPrices: Array<Map<string, PricePoint>> = [];
       const hopUnix: Array<number | null> = [];
+      const unpricedCoins = new Map<string, string>();
       for (const hop of traceHops) {
         const coinTypes = hop.balance_changes.map((bc) => bc.coin_type);
         const unixTs = hop.timestamp ? Math.floor(new Date(hop.timestamp).getTime() / 1000) : null;
         hopUnix.push(unixTs);
-        hopPrices.push(await priceUsdAtTime(coinTypes, unixTs ?? undefined));
+        const priced = await priceUsdAtTime(coinTypes, unixTs ?? undefined);
+        hopPrices.push(priced.points);
+        for (const u of priced.unpriced) if (!unpricedCoins.has(u.coin_type)) unpricedCoins.set(u.coin_type, u.reason);
       }
 
       let anyStalePrice = false;
@@ -1079,7 +1085,7 @@ export function registerTraceTools(server: McpServer) {
         const balance_changes = hop.balance_changes.map((bc) => {
           const pp = prices.get(bc.coin_type) ?? null;
           const price = pp?.price ?? null;
-          const usd = usdValue(bc.amount, decimalsForCoinType(bc.coin_type), price);
+          const usd = usdValue(bc.amount, pricingScale(bc.coin_type, pp).decimals, price);
           if (price != null && BigInt(bc.amount) > 0n) inflows.push({ address: bc.address, usd });
           // How far is the price we used from the actual block time?
           const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
@@ -1098,9 +1104,11 @@ export function registerTraceTools(server: McpServer) {
             name: nameMap.get(bc.address) ?? null,
             protocol: lookupProtocolDisplay(bc.address)?.name ?? null,
             usd_value: price != null ? Number(usd.toFixed(2)) : null,
-            // Unit price actually used and the exact Pyth sample time — makes the
-            // valuation auditable (it's the transaction-second price, not a daily avg).
+            // Unit price actually used, where it came from and when it was
+            // sampled, so the valuation is auditable.
             price_usd: price != null ? Number(price.toFixed(price < 1 ? 6 : 4)) : null,
+            price_source: pp?.source ?? null,
+            ...(pp?.confidence !== undefined ? { price_confidence: pp.confidence } : {}),
             priced_at: pp ? new Date(pp.publishTime * 1000).toISOString() : null,
             price_age_sec: ageSec,
             price_stale: stale || undefined,
@@ -1124,7 +1132,10 @@ export function registerTraceTools(server: McpServer) {
       const baseSummary = buildSummary(traceHops, direction, nameMap);
       const parts = [baseSummary];
       if (peakUsd > 0) {
-        const usd = ["Value (USD, at transaction time — Pyth):"];
+        const usedSources = [
+          ...new Set(enrichedHops.flatMap((h) => h.balance_changes.map((bc) => bc.price_source)).filter(Boolean)),
+        ];
+        const usd = [`Value (USD, at transaction time — ${usedSources.join(" + ")}):`];
         if (originUsd > 0) usd.push(`  Origin (hop 1): ${formatUsd(originUsd)}`);
         usd.push(`  Largest single-hop flow: ${formatUsd(peakUsd)}`);
         // Show the unit prices and their exact sample times, so it's visible
@@ -1138,7 +1149,7 @@ export function registerTraceTools(server: McpServer) {
         }
         usd.push("  (Later hops are largely the same funds moving; values are not summed.)");
         if (anyStalePrice) {
-          usd.push("  ⚠ Some prices are >1h from block time (illiquid feed / Pyth gap) — treat as approximate.");
+          usd.push("  ⚠ Some prices are >1h from block time (illiquid coin or a gap in the provider's history), so treat them as approximate.");
         }
         parts.push(usd.join("\n"));
       }
@@ -1274,7 +1285,10 @@ export function registerTraceTools(server: McpServer) {
         usd: {
           origin: originUsd > 0 ? Number(originUsd.toFixed(2)) : null,
           peak_hop: peakUsd > 0 ? Number(peakUsd.toFixed(2)) : null,
-          note: "Per-hop USD at transaction time (Pyth, per-second); not summed across hops (same funds moving). See each balance change's price_usd / priced_at / price_age_sec.",
+          note: "Per-hop USD at each hop's block time, from Pyth for verified coins when PYTH_API_KEY is set and DefiLlama otherwise; not summed across hops (same funds moving). Each balance change carries price_usd, price_source, priced_at and price_age_sec.",
+          ...(unpricedCoins.size
+            ? { unpriced: [...unpricedCoins].map(([coin_type, reason]) => ({ coin_type, reason })) }
+            : {}),
         },
         ...(poisoning ? { address_poisoning: poisoning } : {}),
         // The hop already carries these records in `object_transfers`; the

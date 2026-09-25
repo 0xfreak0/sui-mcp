@@ -21,7 +21,11 @@ vi.mock("../src/utils/identity.js", () => ({
   identityNote: () => null,
 }));
 vi.mock("../src/utils/labels.js", () => ({ getLabel: () => null, isSink: () => false }));
-vi.mock("../src/utils/price-providers.js", () => ({ pricesForRanking: async () => new Map() }));
+vi.mock("../src/utils/price-providers.js", () => ({
+  pricesForRanking: async () => new Map(),
+  pythApiKey: () => null,
+  fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),
+}));
 const mockCache = vi.fn(() => null as unknown);
 vi.mock("../src/utils/store.js", () => ({
   getCachedTransaction: () => mockCache(),

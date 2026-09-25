@@ -6,6 +6,7 @@ import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { clampPageSize } from "../utils/pagination.js";
 import { protoValueToJson } from "../utils/proto.js";
 import { formatOwner } from "../utils/formatting.js";
+import { objectAddressBalanceFields } from "../utils/address-balance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -68,7 +69,7 @@ function extractDisplay(content: unknown): Record<string, string | null> | null 
 export function registerObjectTools(server: McpServer) {
   server.tool(
     "get_object",
-    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs.",
+    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs. For the latest version it also lists `address_balances`: funds the object holds in its own address balance, which are not among its fields and which only its defining module can withdraw.",
     {
       object_id: z.string().describe("The object ID (0x...)"),
       version: z.string().optional().describe("Specific version to fetch"),
@@ -94,6 +95,9 @@ export function registerObjectTools(server: McpServer) {
       );
       const obj = res.object;
       const content = protoValueToJson(obj?.json);
+      // Funds held in the object's own address balance are current state, so
+      // they are read only for the latest version, alongside the Display.
+      const heldRequest = !version && obj?.objectId ? objectAddressBalanceFields(obj.objectId) : null;
       // The struct's own fields first, because they cost nothing. Only when
       // they carry nothing is the rendered Display worth a second request.
       let display: Record<string, string | null> | null = extractDisplay(content);
@@ -107,6 +111,7 @@ export function registerObjectTools(server: McpServer) {
           displaySource = "display_standard";
         }
       }
+      const held = heldRequest ? await heldRequest : {};
 
       const result: Record<string, unknown> = {
         object_id: obj?.objectId,
@@ -118,6 +123,7 @@ export function registerObjectTools(server: McpServer) {
         storage_rebate: obj?.storageRebate?.toString(),
         content,
         balance: obj?.balance?.toString(),
+        ...held,
       };
 
       if (display) {

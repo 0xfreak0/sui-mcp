@@ -9,6 +9,7 @@ import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from 
 import { notePackageRoot } from "../protocols/package-roots.js";
 import { describeAddresses, heldNamesNote, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
+import { objectAddressBalanceFields } from "../utils/address-balance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
@@ -217,6 +218,12 @@ export function registerIdentifyTools(server: McpServer) {
       if (obj && objectType && !objectType.startsWith("0x2::coin::Coin")) {
         const owner = formatOwner(obj.owner);
         const isShared = owner?.startsWith("shared");
+        // Funds an object holds in its own address balance are not among its
+        // fields, so neither this answer nor get_object's content would show
+        // them without asking. A bridge vault holding ~118k USDC this way read
+        // as an ordinary shared object.
+        const held = await objectAddressBalanceFields(address);
+        const holdsFunds = Array.isArray(held.address_balances) && held.address_balances.length > 0;
 
         return {
           content: [{
@@ -227,9 +234,14 @@ export function registerIdentifyTools(server: McpServer) {
               object_type: objectType,
               owner,
               version: obj.version?.toString(),
-              hint: isShared
-                ? "This is a shared object (e.g. a pool, registry, or protocol state). Use get_object for full content."
-                : "This is an owned object. Use get_object for full content.",
+              ...held,
+              hint:
+                (isShared
+                  ? "This is a shared object (e.g. a pool, registry, or protocol state). Use get_object for its fields."
+                  : "This is an owned object. Use get_object for its fields.") +
+                (holdsFunds
+                  ? " The funds under address_balances are held by the object itself and are not among those fields."
+                  : ""),
             }, null, 2),
           }],
         };

@@ -160,6 +160,82 @@ describe("identify_address", () => {
     expect(data.object_type).toContain("Pool");
   });
 
+  /**
+   * The jupnet bridge Bank 0x44cf…4b4b holds ~118k USDC and ~764 SUI in its
+   * own address balance and none of it among its fields. Identified as a
+   * plain shared object, it pointed at get_object, which showed no funds.
+   */
+  it("lists funds a shared object holds in its own address balance", async () => {
+    const BANK = "0x44cf357eda762cf0cd86547f7bfcaa51a4b55de615c57903ab461f38ffed4b4b";
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: BANK,
+          objectType: "0x58978a0c0678f010ff0ced45da75bf76f2cc33b96508c9a616dc547651f78341::liquidity_pool::Bank",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 896326318n },
+          version: 1019907195n,
+        },
+      },
+    });
+    mockSui.listBalances.mockResolvedValue({
+      balances: [
+        {
+          coinType: "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+          balance: "763614393142",
+          coinBalance: "0",
+          addressBalance: "763614393142",
+        },
+        {
+          coinType: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+          balance: "118304380703",
+          coinBalance: "0",
+          addressBalance: "118304380703",
+        },
+      ],
+      hasNextPage: false,
+      cursor: null,
+    });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: BANK })).content[0].text);
+
+    expect(mockSui.listBalances).toHaveBeenCalledWith(expect.objectContaining({ owner: BANK }));
+    expect(data.type).toBe("shared_object");
+    expect(data.address_balances).toEqual([
+      {
+        coin_type: "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        balance: "763614393142",
+        formatted: "763.614393142 SUI",
+      },
+      {
+        coin_type: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+        balance: "118304380703",
+        formatted: "118304.380703 USDC",
+      },
+    ]);
+    expect(data.address_balances_note).toMatch(/withdraw_funds_from_object/);
+    expect(data.hint).toMatch(/not among those fields/);
+  });
+
+  /** An absent `address_balances` reads as "holds nothing", so a failed lookup is said. */
+  it("says when an object's address balances could not be read", async () => {
+    mockSui.ledgerService.getObject.mockResolvedValue({
+      response: {
+        object: {
+          objectId: "0xshared",
+          objectType: "0xdex::pool::Pool",
+          owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 1n },
+          version: 100n,
+        },
+      },
+    });
+    mockSui.listBalances.mockRejectedValue(grpcError("UNAVAILABLE"));
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xshared" })).content[0].text);
+
+    expect(data.address_balances).toBeUndefined();
+    expect(data.address_balances_error).toMatch(/Could not read/);
+  });
+
   it("identifies a wallet address", async () => {
     // No object found at this address
     mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());

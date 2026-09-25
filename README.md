@@ -773,7 +773,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 |---|---|
 | `get_package` | Move package modules. By default a per-module summary (function and struct counts, entry and public function names); `modules: ['pool']` returns those modules' structs (with ordered fields) and function signatures, `detail: 'full'` every module's |
 | `get_move_function` | Specific Move function signature and parameters |
-| `get_package_dependency_graph` | Package dependency analysis with recursive traversal |
+| `get_package_dependency_graph` | A package's dependencies from its linkage table, each with the version linked, read recursively to depth 3 |
 | `analyze_package` | Summarize a package's API + heuristic risk scan + capability audit (no binary; accepts 0x id or MVR name). The overview is a per-module summary and caps of one type are listed once with every holder; `modules: ['pool']` adds those modules' struct shapes and signatures, `detail: 'full'` returns everything |
 | `disassemble_module` | Disassemble Move bytecode via GraphQL (no binary; accepts 0x id or MVR name) |
 | `decompile_module` | Decompile Move bytecode to source (requires decompiler binary) |

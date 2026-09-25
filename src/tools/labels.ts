@@ -10,6 +10,7 @@ import {
 } from "../utils/labels.js";
 import { currentSuiAccount } from "../utils/chain-id.js";
 import { storeStatus } from "../utils/store.js";
+import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const CATEGORIES = [
@@ -46,11 +47,14 @@ export function registerLabelTools(server: McpServer) {
     "manage_labels",
     "Manage the address-label registry used for incident investigation and fund tracing. " +
       "Labels attribute addresses (exchanges, bridges, mixers, malicious wallets, protocols, etc.) " +
-      "so traces are readable and stop at known sinks. Precedence: session (added here) > local " +
-      "override file (SUI_LABELS_FILE) > shipped static set. 'add'/'remove' affect only the current " +
-      "session (in-memory, not persisted). Actions: 'list' all labels, 'lookup' one address, 'add' " +
-      "or 'remove' a session label. Labels are chain-qualified: a label added while querying one " +
-      "chain does not apply on another.",
+      "so traces are readable and stop at known sinks. Actions: 'list' all labels, 'lookup' one " +
+      "address, 'add' or 'remove' one label, 'import' a batch, and 'export' every label in the " +
+      "shape 'import' accepts, to move a set between machines. Labels added or imported here are " +
+      "saved to the local store when SUI_STORE_PATH is set and last only for the session " +
+      "otherwise; 'remove' deletes the stored copy too. Only those labels can be removed: the " +
+      "override file (SUI_LABELS_FILE) and the shipped set are read-only here. Precedence: labels " +
+      "added here > override file > shipped set. Labels are chain-qualified: a label added while " +
+      "querying one chain does not apply on another.",
     {
       action: z
         .enum(["list", "lookup", "add", "remove", "import", "export"])
@@ -112,7 +116,7 @@ export function registerLabelTools(server: McpServer) {
 
         case "add": {
           if (!address || !label || !category) {
-            return jsonResult({ error: "'address', 'label', and 'category' are required for add." });
+            return errorResult("'address', 'label', and 'category' are required for add.");
           }
           let stored;
           try {
@@ -123,7 +127,7 @@ export function registerLabelTools(server: McpServer) {
               notes,
             });
           } catch (err) {
-            return jsonResult({ error: (err as Error).message });
+            return errorResult((err as Error).message);
           }
           return jsonResult({
             added: { address, account: safeAccount(address), ...stored },
@@ -138,7 +142,7 @@ export function registerLabelTools(server: McpServer) {
 
         case "import": {
           if (!bulk?.length) {
-            return jsonResult({ error: "'labels' array is required for import." });
+            return errorResult("'labels' array is required for import.");
           }
           const { imported, skipped, persisted } = importLabels(bulk);
           return jsonResult({
@@ -182,7 +186,7 @@ export function registerLabelTools(server: McpServer) {
         }
 
         case "remove": {
-          if (!address) return jsonResult({ error: "'address' is required for remove." });
+          if (!address) return errorResult("'address' is required for remove.");
           const { removed, persisted_removal } = removeSessionLabel(address);
           const stillStored = storeStatus().enabled && !persisted_removal && removed;
           return jsonResult({

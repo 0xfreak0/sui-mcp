@@ -9,6 +9,7 @@ import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from 
 import { notePackageRoot } from "../protocols/package-roots.js";
 import { describeAddresses, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
+import { formatCoinAmount } from "../utils/coin-amount.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
@@ -246,8 +247,9 @@ export function registerIdentifyTools(server: McpServer) {
               type: "validator",
               name: validator.name,
               staking_pool_sui_balance: validator.staking_pool_sui_balance,
+              staking_pool_sui_balance_formatted: formatCoinAmount(validator.staking_pool_sui_balance, "0x2::sui::SUI"),
               commission_rate_bps: validator.commission_rate_bps,
-              hint: "Use get_validator_detail for full info, or get_staking_summary for delegation positions.",
+              hint: `Use get_validators {"address": "${address}"} for full detail (credentials, staking stats, network addresses), or get_staking_summary for delegation positions.`,
             }, null, 2),
           }],
         };

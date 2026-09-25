@@ -15,7 +15,9 @@ vi.mock("../../src/clients/graphql.js", () => ({
   gqlQuery: mockGqlQuery,
 }));
 
+// Loaded after the mocks above: both import the grpc/graphql clients.
 const { registerIdentifyTools } = await import("../../src/tools/identify.js");
+const { registeredTools, unknownToolsIn } = await import("../helpers/tool-names.js");
 
 const tools = new Map<string, Function>();
 const mockServer = {
@@ -231,6 +233,11 @@ describe("identify_address", () => {
     expect(data.type).toBe("validator");
     expect(data.name).toBe("Big Validator");
     expect(data.staking_pool_sui_balance).toBe("9000000000000");
+    // Raw MIST reads as nine trillion SUI; the unit travels with it.
+    expect(data.staking_pool_sui_balance_formatted).toBe("9000 SUI");
+    // The hint used to name get_validator_detail, which does not exist.
+    const names = new Set(registeredTools().map((t) => t.name));
+    expect(unknownToolsIn(data.hint, names)).toEqual([]);
   });
 });
 

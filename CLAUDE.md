@@ -1691,7 +1691,7 @@ its CCTP burn and Wormhole message are only visible as events.
 ### How `trace_funds` picks the next hop
 
 Pure logic in `src/utils/trace-hop.ts`; the transaction read and the searches
-in `src/utils/trace-read.ts`.
+in `src/utils/trace-read.ts`, which `trace_flow_graph` shares.
 Rules a change is likely to break:
 
 - **Gas is removed before any SUI comparison.** The gas payer's SUI change
@@ -1720,6 +1720,55 @@ Rules a change is likely to break:
   would attribute its actions to the sender.
 - **`stop_reason` is always set**, with the same name `find_funding_source`
   uses. A trace that just ends reads as "the money stopped here".
+
+### Flow graphs: `trace_flow_graph` and `find_flow_path`
+
+Pure split and accounting rules in `src/utils/flow-graph.ts`, the BFS in
+`src/utils/flow-engine.ts`, renderers in `src/utils/flow-export.ts`. Rules a
+change is likely to break:
+
+- **Shares are first in, first out, and that is a convention.** A node's traced
+  amount goes to the transactions that moved it in order until it is used up;
+  each transaction's share goes to the parties it paid in proportion to the
+  amounts. An edge carries `amount` (what moved) and `traced` (the traced part):
+  a wallet that received 400 and paid 1,000 passes on 400. Never follow the
+  full 1,000 as if it were these funds.
+- **On a bridge exit the unpaid remainder is the exit.** Every Nemo CCTP burn
+  pays its relayer a SUI gas drop, and without `bridgeExit` the USDC read as
+  converted into the relayer's SUI and the graph walked off into a relayer
+  wallet instead of reaching the exit.
+- **Swap proceeds follow the traced input's part of the input.** A swap that
+  spent 0.1 SUI and 18,000 USDT for 18,000 USDC did not turn the SUI into
+  18,000 USDC. `splitSpend` scales the gain by the traced coin's value share of
+  everything the holder put in.
+- **A malicious label does not stop the graph**, and neither the start address
+  nor the same actor continuing is checked against sinks, protocols or hubs. The
+  shipped disclosed labels name both exploiters, so stopping there ended every
+  graph at hop 1. Exchanges, bridges, mixers and burn addresses still end it.
+- **Level by level.** Every inflow found at one depth reaches a node before it
+  is expanded. A node reached again later is expanded again from the new
+  arrival, skipping transactions already allocated to it, unless the value came
+  back to an address on its own path, which is a `cycle`.
+- **`budget` is never an ending.** Depth, node, move and read limits are
+  reported as `budget` with `coverage.truncated`; `below_threshold` is the
+  pruned share, not where the money went.
+- **A graph from one transaction follows that transaction's coins.** From the
+  Cetus exploit `DVMG3B2…` (SUI and haSUI) the value goes to the second wallet
+  `0xcd8962…` and the validator-signed recovery (`signer_not_sender`), with no
+  bridge exit: the attacker bridged USDC drained in other transactions. Start
+  from the attacker's address after the exploit time to see every exit.
+- **Beneficiaries are read per exit from the transaction's events**, GraphQL
+  first and the archive's gRPC events for a transaction GraphQL answers without
+  them, through `readBridgeEvents` (the same reading `resolve_bridge_transfer`
+  uses). Exits are grouped by protocol and beneficiary account.
+- **`find_flow_path` joins in time order.** A forward node meets a backward node
+  at the same address only when the forward side arrived no later than the
+  backward side paid on toward the target. A foreign-chain target is reached
+  forward only, through an exit whose beneficiary matches.
+- **Mermaid ids are `n0`, `n1`, …, never the caller's ids**, and labels go
+  through `mermaidText`, which escapes `#` before the entities it inserts.
+  `test/flow-export.test.ts` checks the output line by line against the
+  flowchart forms the renderer emits.
 
 ### Shipped labels, screening and scam lists
 

@@ -21,6 +21,7 @@ import { registerMonitorTools } from "./monitor.js";
 import { registerHolderTools } from "./holders.js";
 import { registerDecodeTools } from "./decode.js";
 import { registerTraceTools } from "./trace.js";
+import { registerFlowGraphTools } from "./flow-graph.js";
 import { registerWatchTools } from "./watch.js";
 import { registerNftSalesTools } from "./nft-sales.js";
 import { registerPoolTools } from "./pools.js";
@@ -89,6 +90,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerHolderTools(server);
   registerDecodeTools(server);
   registerTraceTools(server);
+  registerFlowGraphTools(server);
   registerPoolTools(server);
   registerDeepBookTools(server);
   registerAggregateTools(server);

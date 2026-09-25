@@ -217,6 +217,41 @@ Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2` and
 address is reported under `renounced_capabilities` instead, since those rights
 have been given up rather than transferred.
 
+**Where did all of it go?** `trace_funds` follows one branch. `trace_flow_graph`
+follows every branch and says what share of the traced value ended where. From
+the Nemo exploit transaction:
+
+```
+trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
+  → 144,835.8 SUI credited to the attacker, swapped to 492,236.5 USDC in 3
+    transactions, then burned through Circle CCTP in 3 more
+    terminals: bridge_exit 99.9% ($492.1K) → beneficiary eip155:1:0x135477aa…
+               below_threshold 0.07%
+```
+
+A node's traced amount is spent first in, first out: an address that pays out
+more than it received from these funds is treated as paying these funds first,
+and its payment carries only the traced part (`traced_amount`) onward. That is
+a convention, not something the chain records. Terminals are grouped by reason
+(`bridge_exit`, `sink`, `hub`, `unspent`, `consumed`, `signer_not_sender`,
+`budget`), and `coverage.truncated` says whether a limit cut the graph short.
+A labelled attacker is followed rather than treated as a sink.
+
+`find_flow_path(from, to)` asks whether any path connects two addresses. It
+searches forward from `from` and backward from `to` and joins them where the
+money arrived before it moved on. `to` may also be an account on another chain,
+which a path reaches through a bridge exit that pays it:
+
+```
+find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
+               window_start: "2025-05-22T10:30:00Z")
+  → 5 one-hop paths: Mayan MCTP (55 txs, 54.4M USDC), CCTP (7 txs),
+    Wormhole, Sui Bridge
+```
+
+`trace_flow_graph` and `find_flow_path` take `format: "mermaid"` (a fenced
+diagram that renders in a markdown viewer), `"graph_json"` or `"csv"`.
+
 **What has happened since I last looked?** `watch_addresses` records a set of
 addresses and where it last looked; `poll_watch` returns only what is new:
 
@@ -716,6 +751,8 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | Tool | Description |
 |---|---|
 | `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing (forward or backward) that follows the tracked coin, follows value out of objects, and stops at labeled sinks, bridge exits and hubs, always with a `stop_reason` |
+| `trace_flow_graph` | Follows every branch of the funds from a transaction, or from an address after a time, forward or backward, and allocates the traced value across recipients in proportion to what each received (first in, first out when funds are mixed). Returns nodes, edges with amounts, USD and digests, `terminals` grouped by reason with the share of the value that ended there (bridge exits with the far-side beneficiary, sinks, hubs, unspent, deposits), and `coverage`. `format: mermaid\|graph_json\|csv` |
+| `find_flow_path` | Whether value moved from one address to another within `max_hops` (at most 6): searches forward from one end and backward from the other and returns each path with its digests and amounts. The target may be an EVM or Solana account a bridge exit paid. A missing path is reported with what was explored |
 | `analyze_attack_tx` | Break down one exploit transaction: each address's net per coin and in USD at block time, flash-loan and flash-swap legs paired borrow to repay, every swap's pool price before and after, what each pool lost by its own events, oracle calls inside the PTB, anomaly flags, and the attacker's profit. Reads PTBs of any size in full over gRPC |
 | `summarize_incident_losses` | Total an attacker's take across many transactions (a digest list, or a sender and window), grouped by the pool each one drained, in USD at the time of the attack. Coins with no price are listed with amounts, and the total is marked a lower bound when any are |
 | `resolve_bridge_transfer` | Follow funds across a bridge, in either direction. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction for Wormhole Token Bridge, the Token Bridge Relayer, NTT, Mayan, CCTP and the native bridge; the contract a redemption called is `redeemed_via_contract`. Resolves **Wormhole** (VAA identity `(emitter chain, emitter address, sequence)`), **Sui's native bridge** and **Circle CCTP** — the latter two carry the destination chain and recipient in their own events, so their far side needs no indexer at all. Detects **Mayan MCTP** and any package the registry types as a bridge. Inbound claims resolve to their origin chain and transfer id rather than being mistaken for exits. Every result is tiered: `chain-derived` trusts nobody, `indexer-attested` is a lead to confirm |

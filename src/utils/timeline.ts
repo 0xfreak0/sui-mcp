@@ -4,6 +4,8 @@
  * dedupe / windowing is unit-testable without the chain.
  */
 
+import type { AddressFlow, DecodedTransaction } from "../protocols/decoder.js";
+
 export interface TimelineEntry {
   digest: string;
   checkpoint: number | null;
@@ -12,9 +14,15 @@ export interface TimelineEntry {
   status: string;
   protocols: string[];
   actions: string[];
-  token_flow: { coin: string; amount: string; raw_type: string }[];
+  /** The SENDER's balance changes, whichever tracked address the row is for. */
+  token_flow: DecodedTransaction["token_flow"];
   /** Tracked addresses involved in this tx. */
   involved: string[];
+  /**
+   * Each involved address's own net balance changes, keyed by address. Empty
+   * for an address that took no balance change.
+   */
+  subject_flow: Record<string, AddressFlow[]>;
 }
 
 /**
@@ -34,7 +42,7 @@ export function inWindow(timestamp: string | null, fromMs?: number, toMs?: numbe
 /**
  * Merge, de-dupe, window, and order timeline entries.
  * - A tx that touches several tracked addresses appears once, with `involved`
- *   unioned across every occurrence.
+ *   and `subject_flow` unioned across every occurrence.
  * - Filtered to [fromMs, toMs] when those bounds are given (by timestamp).
  * - Sorted by checkpoint ascending (entries missing a checkpoint sort last),
  *   tie-broken by digest for determinism.
@@ -50,8 +58,9 @@ export function mergeTimelineEntries(
     const existing = byDigest.get(e.digest);
     if (existing) {
       existing.involved = [...new Set([...existing.involved, ...e.involved])];
+      existing.subject_flow = { ...e.subject_flow, ...existing.subject_flow };
     } else {
-      byDigest.set(e.digest, { ...e, involved: [...new Set(e.involved)] });
+      byDigest.set(e.digest, { ...e, involved: [...new Set(e.involved)], subject_flow: { ...e.subject_flow } });
     }
   }
 

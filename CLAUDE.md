@@ -209,8 +209,23 @@ Two things it adds that the flows were missing:
   aliases vanish from an investigation. The `SuinsRegistration` object outlives
   expiry, so held registrations are read directly and expired ones are flagged
   rather than dropped. Measured on one wallet: reverse lookup gave 1 name, the
-  registrations gave 10, six of them expired. An expired name is still
-  attribution — the address was known by it at the time of the activity.
+  registrations gave 10, six of them expired.
+
+Holding a registration is not attribution by itself: the NFT is transferable,
+and anyone can send one to any address. Each held name carries a `provenance`
+read from the registration's `previousTransaction`, fetched in the same
+held-names request, so it costs no extra call. An owned object can only be
+written by a transaction its owner sent, so a sender other than the holder means
+that transaction delivered it and the holder has not touched it since
+(`received_from_third_party`, with `received_from`). A name the holder sent the
+last write for, or that is its current reverse record (only the address itself
+can set that), is its own: the address was known by it. A missing
+`previousTransaction` is `unknown`, and must stay unknown rather than defaulting
+either way. `classifyHeldNames` is the one place this split is made; the notes
+in `identityNote`, `find_funding_sources` and `identify_address` all read it.
+Do not reintroduce "was known by" wording for a received name: the Cetus
+attacker holds a taunt name `0x407fb974` sent it after validators froze the
+wallet.
 
 The registration type is matched at **module** level. A Move type keeps the
 package that defined it, so this does not drift on upgrade — the opposite of the
@@ -267,6 +282,28 @@ pool of gas coins.
   id read as a wallet. Verified on a TradePort sale where both parties were
   kiosks. `trace.ts` renders the same movement as `kiosk/object 0x…` and the
   two tools must not disagree about who a party is.
+- **Accumulator writes are not objects.** Effects list every address-balance
+  deposit or withdrawal as a `ChangedObject` with `outputState:
+  ACCUMULATOR_WRITE` and an `accumulatorWrite`; GraphQL `objectChanges` omits
+  them. Counted as objects, `CD2e4GVC…` (redeem 1951 MIST from the sender's
+  address balance, `send_funds` it on, gas from the address balance) reported
+  `changed: 2` and "none changed hands" while touching no object.
+  `summarizeObjectChanges` skips them; `address_balance_ops`,
+  `funds_withdrawals` (from the transaction's inputs) and `gas_source` (an
+  empty `gasPayment.objects`, or a reference whose digest ends in twenty 0xAC
+  bytes, is the address balance) report them instead. All three ride the
+  response already fetched.
+- **A deleted coin can be a self-sweep.** `34q8kUTe…` deleted a 704,848 SUI gas
+  coin and MERGEd it into the same owner's address balance while
+  `balance_changes` showed only the -100k payment. A coin deleted from owner X
+  plus a deposit of the same type to X is flagged on that deposit
+  (`converted_from_coins`), so a large deleted coin does not read as spent.
+- **A creation for someone else is not "none changed hands".** `custodyChanges`
+  leaves creations out, so Cetus's multisig minting NFTs to both exploiter
+  addresses (`8eHgw5hB…`) read as nothing moving. `createdFor` reports objects
+  created for an address, object or consensus owner other than the sender as
+  `created_for`, and the "none changed hands" note is withheld when there are
+  any.
 
 ## Completeness beats payload size
 
@@ -501,11 +538,52 @@ someone in a report. Three rules, in `src/utils/funding.ts`:
   coins named the gas sponsor: -0.036 SUI is raw -36000000 against a real
   sender's -11 USDC at raw -11085939, and SUI has three more decimals.
 
-Skipped inflows are reported as `dust_skipped`, never dropped silently. Inflow
-ranking is by USD where a price exists, for the same decimals reason.
+Skipped inflows are reported as `dust_skipped`, never dropped silently, and that
+includes the case where nothing qualified: `pickFundingTx` returns
+`{ funding: null, dustSkipped, sponsors }`, never a bare null. A bare null
+dropped the skipped list exactly when it was the only evidence. `sponsors` are
+the parties that paid gas for transactions the address sent, reported as
+`sponsored_by` at a dead end: gas can be paid from an address balance, so a
+relay wallet can run on zero SUI of its own with ~1,900-MIST inflows, and its
+operator then appears as sponsor and nowhere else. Inflow ranking is by USD
+where a price exists, for the same decimals reason.
 
 Scam NFTs need no handling here — they move no coin, so they never appear as an
 inflow. This is about coin dust only.
+
+### Where a funding walk stops
+
+Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
+
+- **A service-scale funder ends the walk.** Each hop's funder goes through
+  `probeRecipients` with `DEFAULT_POPULARITY_LIMIT`, the probe and the limit
+  `build_wallet_edges` uses to discard an intermediary, so the two tools cannot
+  disagree about whether an address is a service. More than 50 recipients stops
+  the walk: that funder's own first funding says who funded the exchange, not
+  who funded the subject. On the Nemo attacker the walk went four hops past a
+  261-recipient funder and called a 2023 wallet a narrow origin. Probes are
+  cached per call and share one `Budget`; a funder the budget did not reach is
+  `unmeasured`, and narrow off an incomplete probe is `provisional`.
+- **A hub origin is not re-measured with `measureFanout`.** Its 300-transaction
+  bidirectional window can classify a 60-recipient distributor as `narrow`,
+  which restores the reading the stop exists to prevent. For shared funders the
+  probe's verdict overrides the interpretation, not the measured numbers.
+- **A chain counts toward `shared_funders` only up to the first funder that is
+  itself a subject.** Past that point it is the other subject's ancestry,
+  already counted under its own result. Counting it again made one chain read
+  as two addresses sharing a narrow funder. The link is in
+  `subject_funded_subject`.
+- **`subject_paid_subject` asks each ordered pair.** `sentAddress` and
+  `affectedAddress` combine in one filter, so the answer does not depend on how
+  far back either history runs, and ten pairs fit in one aliased document
+  (`src/utils/subject-payments.ts`). Addresses are validated with
+  `normalizeWatchAddress` before batching. Pairs grow with the square of the
+  batch, so above 20 subjects only each subject's earliest transactions are
+  checked, and `subject_payment_scope` says so. It adds no clustering weight.
+
+`measureFanout` follows the same asymmetry: `hub` is proven by what was seen,
+while `narrow` or `distributor` off a truncated scan carries
+`classification_provisional` and loses the "meaningful" reading.
 
 ### What may be cached in a trace
 
@@ -1080,7 +1158,24 @@ is why the percentage is dropped rather than annotated.
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.
 
-Three ways a walk stops, and only one of them is completion:
+**A coin is held in two places, and both are walked.** Besides `Coin<T>`
+objects, an owner can hold `T` in its address balance: a dynamic field of the
+accumulator root `0xacc` of type
+`0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<T>>,0x2::accumulator::U128>`,
+one per (owner, coin type), owner in `json.name.address`, amount in
+`json.value.value`. No coin object shows it. A coin-only walk ranked XAGM
+complete without its #2 holder (0xd70a55ed…, 13.74% of supply, all in the
+address balance), and USAD has no `Coin<T>` at all: its whole supply is one
+address balance. So the scan runs a second walk over that field type and
+merges it per holder, keeping `coin_balance` and `address_balance` beside the
+total. Each walk gets its own `max_scan` budget and its own truncation flag
+(`coin_walk_truncated`, `address_balance_walk_truncated`); `complete_ranking`
+needs both to reach the end. The owner of an address balance can be an object
+(a bridge `liquidity_pool::Bank`, a DeepBook `BalanceManager`), so each ranked
+holder carries `owner_kind` from `describeAddresses`.
+
+Three ways a walk stops, and only one of them is completion. Both walks follow
+the same rules:
 
 - `hasNextPage: false` — the end. `complete_ranking: true`.
 - **A null `endCursor` while `hasNextPage` is true — TRUNCATION.** The
@@ -1096,10 +1191,11 @@ own caveat. Folding it into the flag made the flag permanently false for a
 collection with one unreadable owner, while a ranked list sat beside it saying
 otherwise, and no value of `max_scan` could ever clear it.
 
-**A walk that found nothing has not ranked anything.** Zero objects reads the
-same as a mistyped type, a type that lives on another network, or a coin
-scanned as a collection. Reporting `complete_ranking: true, unique_holders: 0`
-states the opposite of what is known, and it was then cached for 24 hours.
+**A walk that found nothing has not ranked anything.** No coin objects and no
+address balances reads the same as a mistyped type, a type that lives on
+another network, or a coin scanned as a collection. Reporting
+`complete_ranking: true, unique_holders: 0` states the opposite of what is
+known, and it was then cached for 24 hours.
 
 **Clamp tool numbers at BOTH ends.** `max_scan ?? DEFAULT` keeps a provided `0`,
 which left the walk condition false from the start: no request made, empty
@@ -1109,6 +1205,10 @@ result, reported as a complete ranking. A negative `limit` reached
 **A probe that could not run returns null, not the guess it was correcting.**
 `looksLikeCoin` returning `false` on a transient error reinstated exactly the
 misclassification it exists to prevent, and labelled the empty result complete.
+The probe counts a type as a coin when any of four objects exists: a
+`Coin<T>`, an address-balance field for `T`, `CoinMetadata<T>`, or a registry
+`Currency<T>`. Probing for `Coin<T>` alone sent an address-balance-only coin to
+the NFT walk.
 
 Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
@@ -1412,10 +1512,12 @@ would put a genuine pair in two buckets and report nothing.
 
 ### Object flow: what moves that is not a coin
 
-A balance change is derived from `Coin<T>`, so **anything that is not a coin
-moves without producing one.** `trace_funds` reads `objectChanges` for that
-reason; do not remove it on the grounds that balance changes already cover
-value.
+A balance change nets each owner's `Coin<T>` objects and address balance per
+coin type, so **anything that is not a coin moves without producing one.**
+`trace_funds` reads `objectChanges` for that reason; do not remove it on the
+grounds that balance changes already cover value. Address-balance deposits and
+withdrawals do appear in balance changes, and a coin folded into its owner's
+address balance is deleted without any balance change at all.
 
 Measured on mainnet, sampling the transaction that last touched each object:
 `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 produced no
@@ -1651,6 +1753,11 @@ Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
   `diff_package_upgrade` reads each version's `linkage` and reports relinked
   dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no
   behaviour.
+- **`token_flow` is the sender's balance change.** `decodeTransaction` builds it
+  from the sender alone, so on a row listed for another address an inflow reads
+  as the sender's outflow. A row about an address carries that address's own
+  side from `addressFlow` (`subject_flow` in history, keyed per involved address
+  in a timeline). Keep the `token_flow` name; consumers read it.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

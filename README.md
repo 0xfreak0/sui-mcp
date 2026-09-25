@@ -193,9 +193,10 @@ ones it holds. A freeze by validators is node configuration, not chain state,
 and does not appear here.
 
 **What moved that was not a coin?** `trace_funds` reports `object_flow`, and
-`get_transaction` reports `object_changes` and `object_transfers` for one
-transaction. Sui is object-based, so a balance change only covers `Coin<T>`. An
-NFT, a Kiosk or a capability changes hands without producing one:
+`get_transaction` reports `object_changes`, `object_transfers` and
+`created_for` for one transaction. A balance change nets each owner's coins and
+address balance per coin type, so an NFT, a Kiosk or a capability changes hands
+without producing one:
 
 ```
 --- Hop 1 (2025-01-10 10:25:31 UTC) ---
@@ -302,18 +303,46 @@ get_transaction(796Fr642E4W3XfvNcUWknTsDywd4RouMaCbqL5Ziptk)
 ```
 
 Both parties there are Kiosk objects rather than wallets. `changed` counts every
-effect, including the coin or balance that paid, so it is a weaker signal than
-`object_transfers`.
+object effect, including the coin that paid, so it is a weaker signal than
+`object_transfers`. `created_for` lists objects minted to an owner other than
+the sender, which is a delivery even though nothing held them before.
+
+**Did funds move without a coin object?** An address balance holds funds
+credited to an address or an object id with no `Coin<T>` behind them.
+`get_transaction` lists each deposit and withdrawal, the withdrawals the
+transaction requested, and whether gas came from coins or the address balance:
+
+```
+get_transaction(CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay)
+  → object_changes: { changed: 0, created: 0, deleted: 0 }
+    address_balance_ops: [
+      { owner: 0xb71e…1d47, op: deposit,  amount: 1951 },
+      { owner: 0x7c8e…bdbf, op: withdraw, amount: 101951 } ]
+    funds_withdrawals: [ { amount: 1951, coin_type: …::sui::SUI, source: sender } ]
+    gas_source: address_balance
+```
+
+A coin folded into its owner's address balance is deleted while no value moves.
+That deposit carries `converted_from_coins` and a note saying so.
+`get_balance` and `get_wallet_overview` report `coin_balance` and
+`address_balance` beside each total, and `identify_address` and `get_object`
+list `address_balances` for an object id: funds the object holds itself, which
+are not among its fields and which only its defining module can withdraw.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
-`get_top_holders` walks coin objects in object-id order, which is unrelated to
-balance. A scan that stops early returns the largest holder it happened to see.
-On SUI the reported top holder goes from 66 SUI at `max_scan` 200 to 3,454 at
-800, with no overlap in the top five. A truncated scan therefore returns
-`sampled_holders`, without a rank or a percentage of supply, along with a
-caveat. Raise `max_scan` until `truncated` is false to get a real ranking; that
-is only practical for coins with few enough objects to enumerate.
-`analyze_token` reports the same distinction.
+`get_top_holders` walks two things in object-id order, which is unrelated to
+balance: `Coin<T>` objects, and address balances (funds credited to an owner's
+address rather than held as a coin object). A scan that stops early returns
+the largest holder it happened to see. On SUI the reported top holder goes from
+66 SUI at `max_scan` 200 to 3,454 at 800, with no overlap in the top five. A
+truncated scan therefore returns `sampled_holders`, without a rank or a
+percentage of supply, along with a caveat naming which walk stopped. Raise
+`max_scan` (applied to each walk) until `truncated` is false to get a real
+ranking; that is only practical for coins with few enough objects to
+enumerate. Each holder carries `coin_balance` and `address_balance` beside the
+total, and `owner_kind`, because an address balance can belong to an object
+such as a bridge's liquidity bank. `analyze_token` reports the same
+distinction.
 
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`
@@ -559,9 +588,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object |
-| `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, and the five most recent transactions, newest first |
-| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. Newest first by default (`order: "oldest"` starts at the first transaction); each page reports its order and the oldest and newest timestamps shown |
+| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object. For an object, `address_balances` lists funds held in the object's own address balance. For a wallet, `names_held` lists every SuiNS registration it holds and whether it registered or used each one or was sent it by another address |
+| `get_wallet_overview` | Comprehensive wallet overview: balances (each split into `coin_balance` and `address_balance`), SuiNS name, staking, kiosks, and the five most recent transactions, newest first |
+| `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. Newest first by default (`order: "oldest"` starts at the first transaction); each page reports its order and the oldest and newest timestamps shown. `subject_flow` is the wallet's own signed balance change per coin with formatted amounts; `token_flow` is the sender's |
 | `analyze_token` | Full token analysis: metadata, price, 24h change, supply, top holders |
 
 ### Chain & Network
@@ -575,7 +604,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `get_object` | Object by ID with type, owner, JSON content, and display metadata |
+| `get_object` | Object by ID with type, owner, JSON content, and display metadata; `address_balances` lists funds held in the object's own address balance, which are not among its fields |
 | `list_owned_objects` | List objects owned by an address with optional type filter |
 | `list_dynamic_fields` | Dynamic fields of an object (tables, kiosk contents, etc.) |
 
@@ -583,7 +612,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `get_balance` | Balance of a coin type for an address (defaults to SUI) |
+| `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
 | `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
 | `get_token_prices` | USD prices for tokens, current (Aftermath, then DefiLlama, then Pyth) or at a past moment when `at` is set (Pyth for verified coins with a key, DefiLlama otherwise). Each price carries its source, confidence and sample time; unpriced coins are listed with the reason |
@@ -593,7 +622,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `get_transactions` | Reads up to 50 transactions in ONE call given their digests — sender, timing, balance changes, Move calls, and events with decoded fields. Ten digests go from ten round trips to one. Malformed digests are rejected before the request, because the server refuses a whole batch over one bad key |
-| `get_transaction` | Transaction by digest with protocol-decoded actions |
+| `get_transaction` | Transaction by digest with protocol-decoded actions, address-balance deposits and withdrawals, and where gas came from |
 | `query_transactions` | Filter transactions by sender, address, object, or function, bounded by checkpoints or ISO times. Newest first by default. A `function` filter matches one package version; `all_versions: true` reads the whole lineage as one list |
 | `query_events` | Filter events by type, sender, module, and a checkpoint or ISO time range. Newest first by default. An event type written with an upgraded package ID is rewritten to the package that defined the struct |
 
@@ -671,7 +700,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `build_transfer` | Build an unsigned transfer of SUI or any coin (auto coin selection); returns BCS for `simulate_transaction` |
+| `build_transfer` | Build an unsigned transfer of SUI or any coin, drawing on coin objects and the address balance; returns BCS for `simulate_transaction` |
 | `build_staking` | Build an unsigned stake/unstake transaction (`action: stake\|unstake`) |
 | `simulate_transaction` | Dry-run a transaction to preview effects and gas cost |
 
@@ -679,7 +708,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 
 | Tool | Description |
 |---|---|
-| `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes |
+| `decode_ptb` | Decode a Programmable Transaction Block from BCS bytes, including `FundsWithdrawal` amounts and the gas source |
 | `check_activity` | One-shot check for new activity on an address (since a checkpoint, time or cursor) or an object (since a version) |
 
 ### Incident Investigation
@@ -690,8 +719,8 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `analyze_attack_tx` | Break down one exploit transaction: each address's net per coin and in USD at block time, flash-loan and flash-swap legs paired borrow to repay, every swap's pool price before and after, what each pool lost by its own events, oracle calls inside the PTB, anomaly flags, and the attacker's profit. Reads PTBs of any size in full over gRPC |
 | `summarize_incident_losses` | Total an attacker's take across many transactions (a digest list, or a sender and window), grouped by the pool each one drained, in USD at the time of the attack. Coins with no price are listed with amounts, and the total is marked a lower bound when any are |
 | `resolve_bridge_transfer` | Follow funds across a bridge, in either direction. Resolves **Wormhole** (VAA identity `(emitter chain, emitter address, sequence)`), **Sui's native bridge** and **Circle CCTP** — the latter two carry the destination chain and recipient in their own events, so their far side needs no indexer at all. Detects **Mayan MCTP** and any package the registry types as a bridge. Inbound claims resolve to their origin chain and transfer id rather than being mistaken for exits. Every result is tiered: `chain-derived` trusts nobody, `indexer-attested` is a lead to confirm |
-| `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
-| `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape, addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, and sub-minute funding bursts |
+| `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges and at any funder that paid more than 50 distinct addresses, the same limit `build_wallet_edges` uses. A dead end lists the dust it skipped and who sponsored the address's gas (`sponsored_by`) |
+| `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape (a chain counts only up to the first funder that is itself a subject), addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, every payment one subject signed to another (`subject_paid_subject`), and sub-minute funding bursts |
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
 | `resolve_protocol_packages` | Find which of a protocol's package versions are actually emitting now — the bundled registry is a decode map full of historical IDs, and querying one returns nothing |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
@@ -706,7 +735,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each |
 | `delete_finding` | Retract a finding that turned out to be wrong |
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
-| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue |
+| `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue. `subject_flow` gives each involved address's own signed balance change, keyed by address; `token_flow` is the sender's |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |
 | `diff_package_upgrade` | Diff two package versions to detect malicious upgrades / backdoors |

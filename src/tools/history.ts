@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
 import { batchResolveNames } from "../utils/names.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
@@ -154,14 +154,14 @@ export function registerHistoryTools(server: McpServer) {
 
         ledger.observe(appearances);
 
-        return { node, sender, decoded, counterpartyAddrs };
+        return { node, sender, decoded, counterpartyAddrs, balanceChanges: balanceChangeNodes };
       });
 
       // Batch-resolve SuiNS names for all counterparty addresses
       const nameMap = await batchResolveNames([...allCounterpartyAddresses]);
 
       // Second pass: build output with counterparties
-      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs }) => ({
+      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs, balanceChanges }) => ({
         digest: node.digest,
         timestamp: node.effects?.timestamp ?? null,
         sender: sender ?? null,
@@ -171,6 +171,9 @@ export function registerHistoryTools(server: McpServer) {
         protocols: decoded.protocols,
         actions: decoded.actions,
         token_flow: decoded.token_flow,
+        // token_flow is the sender's. This is the queried address's own side,
+        // which is what a row in its history is about.
+        subject_flow: addressFlow(adaptBalanceChanges(balanceChanges), address),
         counterparties: counterpartyAddrs.map((addr) => ({
           address: addr,
           name: nameMap.get(addr) ?? null,

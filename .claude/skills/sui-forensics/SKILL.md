@@ -48,7 +48,10 @@ holds one for a client.
    path: a trace follows one branch, and splitting across wallets is the ordinary
    laundering move.
 4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
-   several addresses at once, which also reports co-funding and its denominators.
+   several addresses at once, which also reports co-funding and its denominators
+   and every payment one subject signed to another (`subject_paid_subject`).
+   The walk stops at a funder that paid more than 50 distinct addresses: that is
+   an exchange or service, and its own ancestry says nothing about the subject.
    Then measure the funder with `get_address_fanout` before believing anything.
 5. **Cluster only once you have a reason to.** `build_wallet_edges` answers
    "is this a new party or the same one", not "who is this".
@@ -127,9 +130,9 @@ LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
 
 ## A holder scan is not a ranking unless it finished
 
-`get_top_holders` and `analyze_token` walk coin objects in **object-id order**,
-which has nothing to do with balance. A scan that hits its budget returns the
-largest holder it happened to see.
+`get_top_holders` and `analyze_token` walk `Coin<T>` objects and address
+balances in **object-id order**, which has nothing to do with balance. A scan
+that hits its budget returns the largest holder it happened to see.
 
 Measured on SUI: the reported top holder was 66 SUI at `max_scan` 200, 522 at
 400, 3,454 at 800 and 25,000 at 5,000. **Zero of the top five at 200 survived
@@ -143,13 +146,17 @@ and never converges.
   reachable for coins and collections small enough to enumerate.
 - **Never compare two truncated scans.** Different budgets sample different
   objects, so a difference between them says nothing about the chain.
+- **A holder's balance includes its address balance.** `coin_balance` and
+  `address_balance` give the split. A holder with `count: 0` holds no coin
+  objects at all, and `owner_kind: "object"` means the holder is an object
+  (a bridge bank, a DeepBook balance manager), not a person's wallet.
 
-## A balance change only sees coins
+## What a balance change does not show
 
-Sui is object-based. A balance change is derived from `Coin<T>`, so everything
-else (an NFT, a Kiosk, an admin capability) changes hands invisibly to fund
-tracing. Measured: of 90 sampled capability objects, 74 had a last transfer with
-no non-gas balance change at all.
+A balance change nets each owner's coins and address balance per coin type.
+Everything that is not a coin (an NFT, a Kiosk, an admin capability) changes
+hands invisibly to fund tracing. Measured: of 90 sampled capability objects, 74
+had a last transfer with no non-gas balance change at all.
 
 `trace_funds` reports `object_flow` for this. What it changes about method:
 
@@ -174,6 +181,34 @@ no non-gas balance change at all.
 - **`appeared` means the previous holder is not recorded**, which is normal
   before roughly March 2024. It is not evidence of an unwrap, and not evidence
   of a transfer. The chain did not say.
+- **A mint to someone else is a delivery.** `get_transaction` lists objects
+  created for an owner other than the sender under `created_for`. A publisher
+  minting NFTs straight to two wallets produces no transfer and no balance
+  change.
+
+Funds also move without any coin object. An address balance holds funds
+credited to an address (or an object id) with no `Coin<T>` behind them:
+
+- **A wallet with no coin objects can still hold funds.** `get_balance` and
+  `get_wallet_overview` give `coin_balance` and `address_balance` beside the
+  total. A holder with `coin_balance: "0"` shows nothing in
+  `list_owned_objects`.
+- **Read address-balance activity from the transaction.** `get_transaction`
+  lists every deposit and withdrawal under `address_balance_ops`, the
+  withdrawals the transaction requested under `funds_withdrawals` (from the
+  `sender` or the gas `sponsor`), and `gas_source`. Accumulator writes are not
+  objects and are not counted in `object_changes`.
+- **A deleted coin is not necessarily spent.** A coin folded into its owner's
+  address balance is deleted while its value stays with the owner. That
+  deposit carries `converted_from_coins`; `balance_changes` say what the owner
+  actually gained or lost.
+- **An object can hold funds.** `identify_address` and `get_object` list
+  `address_balances` for an object id. Those funds are not among the object's
+  fields, and only its defining module can withdraw them.
+- **Pre-sign triage reads the withdrawal.** `decode_ptb` shows a
+  `FundsWithdrawal` input's `amount`, `coin_type` and `withdraw_from`. A PTB
+  that withdraws the whole address balance and calls `send_funds` to a
+  stranger moves everything without touching a coin.
 
 ## An address's rendering is not its identity
 
@@ -396,7 +431,10 @@ get the schema wrong in ways that fail silently.
 | Is this wallet automated? | `build_timeline` with `activity_hours` |
 | Where does this trace stop, and why? | `manage_labels` — sinks are yours to set |
 | What did this transaction do, with event values? | `get_transaction` |
-| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers` |
+| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers`, `created_for` |
+| Did funds move without a coin object? | `get_transaction` → `address_balance_ops`, `funds_withdrawals`, `gas_source` |
+| Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
+| Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — struct shapes, API, capability audit |
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
@@ -416,7 +454,7 @@ get the schema wrong in ways that fail silently.
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
 | Where did this object come from? | `trace_object_history` |
-| Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true |
+| Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |
 | Has anything moved since I looked? | `watch_addresses` then `poll_watch` |
 | What is this address doing over time? | `build_timeline` |
 | Write it down / hand it over | `save_finding`, `list_findings`, `export_case` |
@@ -462,16 +500,29 @@ ten round trips for the same data.
   `automation_indicated` stays false for exactly that reason.
 - **Naming a real person or company** from chain data plus a matching username.
   Handles are not unique and squatting is routine.
-- **An expired SuiNS name is still attribution, not the reverse.** Reverse lookup
-  goes silent once a name lapses, so `names_held` carries former aliases. The
-  address was known by that name at the time of the activity. Do not read the
+- **An expired SuiNS name the address registered is still attribution; a name
+  it was sent is not.** Reverse lookup goes silent once a name lapses, so
+  `names_held` carries former aliases. Each entry has a `provenance`:
+  `registered_or_used` means the holder sent the last transaction that wrote
+  the registration, so the name is its own. `received_from_third_party` means
+  another address (`received_from`, in `last_tx`) delivered it and the holder
+  has not transacted with it since. Anyone can send a name NFT to any address,
+  so treat a received name as a message from the sender, never as the holder's
+  alias. `unknown` means the transaction could not be read. Do not read the
   current name as the only one.
 
 ## Traps in the data itself
 
 - **Dust is not funding.** A 1-MIST spam send is not who funded a wallet, and an
   inflow in a coin nobody prices is spam at any size. Skipped inflows appear as
-  `dust_skipped`; read them rather than assuming nothing was filtered.
+  `dust_skipped`; read them rather than assuming nothing was filtered. A wallet
+  that pays gas from an address balance can run with no qualifying inflow at
+  all; its operator then appears in `sponsored_by`, the parties that paid gas
+  for transactions it sent.
+- **A narrow reading off a truncated scan is provisional.** `classification_provisional`
+  on a fan-out, and `provisional` on a funder's popularity, mean the scan
+  stopped before the end of the address's history. The count is a lower bound,
+  and "narrow" may only mean "not far enough".
 - **The gas sponsor is not the sender.** Gas folds into the payer's net SUI, so a
   raw comparison across coins picks the sponsor over the real funder.
 - **Obfuscated packages are named by their events.** A transaction calling
@@ -492,6 +543,11 @@ ten round trips for the same data.
   means `per_address` ended that address's walk inside the window. Past its
   `reached_checkpoint` the timeline is missing that address's activity; rerun
   with its `continue_with` bound or a higher `per_address`.
+- **`token_flow` is the sender's.** On a `get_transaction_history` or
+  `build_timeline` row it is the balance change of whoever sent the
+  transaction, so a transfer the subject received shows the sender's outflow.
+  The subject's own side is `subject_flow`: signed, formatted, with
+  `coin_verified`, and keyed by address in a timeline.
 
 ## A worked case
 

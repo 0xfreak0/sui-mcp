@@ -3,7 +3,7 @@ import { boolArg, numArg, addressArg, addressListArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
-import { describeAddresses, identityNote } from "../utils/identity.js";
+import { classifyHeldNames, describeAddresses, identityNote } from "../utils/identity.js";
 import { describeLabel, getLabel } from "../utils/labels.js";
 import { classifyDepositAddress } from "../utils/deposit.js";
 import {
@@ -13,11 +13,20 @@ import {
   toHumanAmount,
   usdValue,
 } from "../utils/valuation.js";
-import { pickFundingTx, type FundingTx } from "../utils/funding.js";
+import { pickFundingTx, type FundingAssessment, type FundingTx, type GasSponsor } from "../utils/funding.js";
 import { pricesForRanking } from "../utils/price-providers.js";
-import { measureFanout } from "../utils/fanout.js";
+import { measureFanout, type FanoutResult } from "../utils/fanout.js";
 import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
 import { detectFundingBursts, detectSubjectLinks } from "../utils/funding-signals.js";
+import { Budget, DEFAULT_POPULARITY_LIMIT, probeRecipients } from "../utils/edge-probe.js";
+import {
+  BALANCE_CHANGES_SELECTION,
+  completeTxConnections,
+  readAllBalanceChanges,
+  type GqlConnection,
+} from "../utils/tx-connections.js";
+import type { GqlBalanceChangeNode } from "../utils/gql-adapters.js";
+import { findSubjectPayments, MAX_PAIRWISE_SUBJECTS, paymentInTx, type SubjectPayment } from "../utils/subject-payments.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -29,22 +38,23 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  */
 const TX_RECIPIENTS_QUERY = `query ($digest: String!) {
   transactionEffects(digest: $digest) {
-    balanceChanges { nodes { amount owner { address } } }
+    ${BALANCE_CHANGES_SELECTION}
   }
 }`;
 
 interface TxRecipientsResult {
-  transactionEffects: {
-    balanceChanges: { nodes: Array<{ amount?: string; owner?: { address: string } }> };
-  } | null;
+  transactionEffects: { balanceChanges: GqlConnection<GqlBalanceChangeNode> | null } | null;
 }
 
 /** Null when the transaction could not be read — never a default that reads as measured. */
 async function countTxRecipients(digest: string): Promise<number | null> {
   try {
     const r = await gqlQuery<TxRecipientsResult>(TX_RECIPIENTS_QUERY, { digest });
-    const nodes = r.transactionEffects?.balanceChanges?.nodes;
-    if (!nodes) return null;
+    if (!r.transactionEffects?.balanceChanges) return null;
+    const { nodes, truncated } = await readAllBalanceChanges(digest, r.transactionEffects.balanceChanges);
+    // A partial list gives a lower bound, and a lower bound on the payout size
+    // makes a batch read as bespoke. Unmeasured is the honest answer.
+    if (truncated) return null;
     const recipients = new Set<string>();
     for (const n of nodes) {
       // Positive only: the payer's own negative change is not a recipient.
@@ -56,15 +66,19 @@ async function countTxRecipients(digest: string): Promise<number | null> {
   }
 }
 
+/** Transactions read per address when looking for its first funding. */
+const EARLIEST_TXS = 12;
+
 const FUNDING_QUERY = `query ($addr: SuiAddress!, $first: Int!) {
   transactions(filter: { affectedAddress: $addr }, first: $first) {
     nodes {
       digest
       sender { address }
+      gasInput { gasSponsor { address } }
       effects {
         timestamp
         checkpoint { sequenceNumber }
-        balanceChanges { nodes { coinType { repr } amount owner { address } } }
+        ${BALANCE_CHANGES_SELECTION}
       }
     }
   }
@@ -75,27 +89,37 @@ interface FundingQueryResult {
     nodes: Array<{
       digest: string;
       sender: { address: string } | null;
+      gasInput?: { gasSponsor?: { address: string } | null } | null;
       effects: {
         timestamp: string | null;
         checkpoint: { sequenceNumber: number } | null;
-        balanceChanges: { nodes: Array<{ coinType?: { repr: string }; amount?: string; owner?: { address: string } }> };
+        balanceChanges: GqlConnection<GqlBalanceChangeNode> | null;
       } | null;
     }>;
   };
 }
 
-/** Fetch an address's earliest transactions (oldest first) as FundingTx records. */
-async function fetchEarliestTxs(address: string, first = 12): Promise<FundingTx[]> {
-  const data = await gqlQuery<FundingQueryResult>(FUNDING_QUERY, { addr: address, first });
-  return data.transactions.nodes.map((n) => ({
+/**
+ * An address's earliest transactions (oldest first) as FundingTx records,
+ * with the digests whose balance changes could not all be read.
+ */
+async function fetchEarliestTxs(address: string): Promise<{ txs: FundingTx[]; incomplete: string[] }> {
+  const data = await gqlQuery<FundingQueryResult>(FUNDING_QUERY, { addr: address, first: EARLIEST_TXS });
+  const nodes = data.transactions.nodes;
+  const completed = await completeTxConnections(
+    nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+  );
+  const txs = nodes.map((n, i) => ({
     digest: n.digest,
     sender: n.sender?.address ?? null,
+    gasSponsor: n.gasInput?.gasSponsor?.address ?? null,
     timestamp: n.effects?.timestamp ?? null,
     checkpoint: n.effects?.checkpoint?.sequenceNumber?.toString() ?? null,
-    changes: (n.effects?.balanceChanges.nodes ?? [])
+    changes: completed[i].balanceChanges
       .filter((c) => c.owner?.address && c.amount && c.coinType?.repr)
       .map((c) => ({ address: c.owner!.address, amount: c.amount!, coinType: c.coinType!.repr })),
   }));
+  return { txs, incomplete: nodes.filter((_, i) => completed[i].balanceChangesTruncated).map((n) => n.digest) };
 }
 
 /**
@@ -115,6 +139,25 @@ function formatAmount(rawAmount: string, coinType: string): string {
   return `${human} ${symbol}${verified === false ? " (unverified)" : ""}`;
 }
 
+/**
+ * How widely a funder pays out, by the same probe and the same limit
+ * `build_wallet_edges` uses to discard an intermediary, so the two tools
+ * cannot disagree about whether an address is a service.
+ */
+interface FunderPopularity {
+  /** Paid more than `limit` distinct addresses in the outgoing transactions scanned. */
+  popular: boolean;
+  /** Distinct recipients seen before the scan stopped. A lower bound. */
+  observed_recipients: number;
+  limit: number;
+  /** The scan reached the end of the address's outgoing transactions. */
+  scan_complete: boolean;
+  /** Narrow off an incomplete scan: not measured far enough to rule out a service. */
+  provisional?: true;
+  /** The per-call query budget ran out before this funder was probed. */
+  unmeasured?: true;
+}
+
 interface ChainStep {
   hop: number;
   address: string;
@@ -122,67 +165,144 @@ interface ChainStep {
   funding_tx: string;
   timestamp: string | null;
   amount: string;
+  funder_popularity?: FunderPopularity;
+}
+
+/** One address's earliest transactions and what they say about its funding. */
+interface FundingStep {
+  assessment: FundingAssessment;
+  txs: FundingTx[];
+  /** Digests whose balance changes could not all be read. */
+  incomplete: string[];
 }
 
 /**
- * One hop of the walk, memoized.
+ * Per-call state shared by every walk in one tool call.
  *
  * Funding chains converge hard — in a ten-wallet sample, eight reached the same
  * three ancestors — so without a shared cache a batch re-derives the same tail
  * once per input address. The cache is per-call rather than process-wide: chain
  * state is cheap to rebuild and a long-lived cache would go stale against a
- * chain that keeps moving.
+ * chain that keeps moving. Popularity is cached the same way: a funder shared
+ * by forty subjects is probed once.
  */
-type FundingMemo = Map<string, ReturnType<typeof pickFundingTx>>;
+interface WalkContext {
+  steps: Map<string, Promise<FundingStep>>;
+  popularity: Map<string, Promise<FunderPopularity>>;
+  /** Ceiling on popularity-probe requests for the whole call. */
+  budget: Budget;
+}
 
-async function fundingStep(address: string, memo: FundingMemo) {
-  if (!memo.has(address)) {
-    const txs = await fetchEarliestTxs(address);
-    // Price the coins these candidate inflows are denominated in, so dust and
-    // unpriced scam tokens can be told from real funding. Best-effort: with no
-    // prices the SUI floor still applies and non-SUI inflows are accepted
-    // rather than discarded on a missing dependency.
-    const coinTypes = [...new Set(txs.flatMap((t) => t.changes.map((c) => c.coinType)))];
-    const prices = await pricesForRanking(coinTypes).catch(
-      () => new Map<string, { price: number }>(),
-    );
-    const valueUsd = (coinType: string, raw: bigint) => {
-      const price = prices.get(coinType)?.price;
-      if (price == null) return null;
-      return usdValue(raw, decimalsForCoinType(coinType), price);
-    };
-    memo.set(address, pickFundingTx(txs, address, { valueUsd }));
+/**
+ * Popularity-probe requests per call. A probe costs one to six requests and
+ * stops as soon as the limit is exceeded, so a hub is usually one.
+ */
+const SINGLE_POPULARITY_BUDGET = 60;
+const BATCH_POPULARITY_BUDGET = 400;
+
+async function loadFundingStep(address: string): Promise<FundingStep> {
+  const { txs, incomplete } = await fetchEarliestTxs(address);
+  // Price the coins these candidate inflows are denominated in, so dust and
+  // unpriced scam tokens can be told from real funding. Best-effort: with no
+  // prices the SUI floor still applies and non-SUI inflows are accepted
+  // rather than discarded on a missing dependency.
+  const coinTypes = [...new Set(txs.flatMap((t) => t.changes.map((c) => c.coinType)))];
+  const prices = await pricesForRanking(coinTypes).catch(
+    () => new Map<string, { price: number }>(),
+  );
+  const valueUsd = (coinType: string, raw: bigint) => {
+    const price = prices.get(coinType)?.price;
+    if (price == null) return null;
+    return usdValue(raw, decimalsForCoinType(coinType), price);
+  };
+  return { assessment: pickFundingTx(txs, address, { valueUsd }), txs, incomplete };
+}
+
+function fundingStep(address: string, ctx: WalkContext): Promise<FundingStep> {
+  let step = ctx.steps.get(address);
+  if (!step) {
+    step = loadFundingStep(address);
+    ctx.steps.set(address, step);
   }
-  return memo.get(address)!;
+  return step;
+}
+
+async function probePopularity(address: string, budget: Budget): Promise<FunderPopularity> {
+  const before = budget.used;
+  const p = await probeRecipients(address, DEFAULT_POPULARITY_LIMIT, budget);
+  const base = { observed_recipients: p.observed, limit: DEFAULT_POPULARITY_LIMIT };
+  if (budget.used === before) return { popular: false, ...base, scan_complete: false, unmeasured: true };
+  if (p.popular) return { popular: true, ...base, scan_complete: true };
+  return { popular: false, ...base, scan_complete: p.complete, ...(p.complete ? {} : { provisional: true as const }) };
+}
+
+function funderPopularity(address: string, ctx: WalkContext): Promise<FunderPopularity> {
+  let p = ctx.popularity.get(address);
+  if (!p) {
+    p = probePopularity(address, ctx.budget);
+    ctx.popularity.set(address, p);
+  }
+  return p;
+}
+
+interface Walk {
+  chain: ChainStep[];
+  origin: string;
+  stopReason: string;
+  dustSkipped: Array<Record<string, unknown>>;
+  /** Gas sponsors of the address where the walk found no qualifying funding. */
+  sponsoredBy: Array<GasSponsor & { address: string }>;
+  /** The walk stopped because the last funder is a service-scale distributor. */
+  stoppedAtHub: boolean;
+  /** Funding transactions whose balance changes could not all be read. */
+  incompleteReads: string[];
 }
 
 /** Walk one address back through funding hops. Shared by both funding tools. */
-async function walkFunding(address: string, maxHops: number, memo: FundingMemo) {
+async function walkFunding(address: string, maxHops: number, ctx: WalkContext): Promise<Walk> {
   const chain: ChainStep[] = [];
   // Inflows rejected as dust along the way. Reported rather than dropped: an
   // investigator needs to see that a 1-MIST send was skipped, both to trust
   // the answer and to lower the floor deliberately if the case calls for it.
   const dustSkipped: Array<Record<string, unknown>> = [];
+  const sponsoredBy: Walk["sponsoredBy"] = [];
+  const incompleteReads: string[] = [];
   const visited = new Set<string>([address]);
   let current = address;
   let origin = address;
-  let stopReason = "reached a dead end (no earlier funding found)";
+  let stopReason = "";
+  let stoppedAtHub = false;
 
   for (let i = 0; i < maxHops; i++) {
-    const funding = await fundingStep(current, memo);
-    if (!funding) break;
-    for (const d of funding.dustSkipped ?? []) {
+    const { assessment, txs, incomplete } = await fundingStep(current, ctx);
+    for (const d of assessment.dustSkipped) {
       dustSkipped.push({ address: current, ...d, amount: formatAmount(d.amount, d.coinType) });
     }
+    const funding = assessment.funding;
+    // Only the transactions up to the pick could have changed it.
+    const pickedAt = funding ? txs.findIndex((t) => t.digest === funding.digest) : txs.length - 1;
+    incompleteReads.push(...incomplete.filter((d) => txs.findIndex((t) => t.digest === d) <= pickedAt));
+    if (!funding) {
+      stopReason =
+        txs.length < EARLIEST_TXS
+          ? "reached a dead end (no qualifying inflow in its whole history)"
+          : `reached a dead end (no qualifying inflow in its earliest ${EARLIEST_TXS} transactions)`;
+      if (assessment.sponsors.length) {
+        sponsoredBy.push(...assessment.sponsors.map((s) => ({ address: current, ...s })));
+        stopReason += "; its gas was paid by a sponsor, see sponsored_by";
+      }
+      break;
+    }
 
-    chain.push({
+    const step: ChainStep = {
       hop: i + 1,
       address: current,
       funded_by: funding.funder,
       funding_tx: funding.digest,
       timestamp: funding.timestamp,
       amount: formatAmount(funding.amount, funding.coinType),
-    });
+    };
+    chain.push(step);
 
     const funder = funding.funder;
     origin = funder;
@@ -191,12 +311,54 @@ async function walkFunding(address: string, maxHops: number, memo: FundingMemo) 
     if (getLabel(funder)) { stopReason = `reached a labeled entity (${describeLabel(getLabel(funder)!)})`; break; }
     if (visited.has(funder)) { stopReason = "reached an already-seen wallet (cycle)"; break; }
     visited.add(funder);
+
+    // Measured before walking further, because a service-scale funder ends
+    // attribution: its own first funding says who funded the exchange, not
+    // who funded the subject.
+    const pop = await funderPopularity(funder, ctx);
+    step.funder_popularity = pop;
+    if (pop.popular) {
+      stopReason =
+        `reached a high-fanout distributor (paid more than ${pop.limit} distinct addresses), likely an exchange ` +
+        "or service; ancestry beyond it carries no attribution";
+      stoppedAtHub = true;
+      break;
+    }
     current = funder;
 
     if (i === maxHops - 1) stopReason = `hit max_hops (${maxHops})`;
   }
 
-  return { chain, origin, stopReason, dustSkipped };
+  return { chain, origin, stopReason, dustSkipped, sponsoredBy, stoppedAtHub, incompleteReads };
+}
+
+/**
+ * Fan-out as reported beside a shared funder.
+ *
+ * When the popularity probe found more than `limit` recipients, the
+ * bidirectional count over a short window can still classify the address
+ * `narrow`, and "narrow, worth investigating" is the reading that makes an
+ * exchange look like a common origin. The probe's verdict takes precedence in
+ * the interpretation; the measured numbers are kept.
+ */
+function fanoutView(f: FanoutResult, pop: FunderPopularity | undefined) {
+  return {
+    recipient_count: f.recipient_count,
+    sender_count: f.sender_count,
+    counterparty_count: f.counterparty_count,
+    coin_type_count: f.coin_type_count,
+    out_in_ratio: f.out_in_ratio,
+    flow_shape: f.flow_shape,
+    scanned_transactions: f.scanned_transactions,
+    truncated: f.truncated,
+    classification: f.classification,
+    ...(f.classification_provisional ? { classification_provisional: true } : {}),
+    interpretation: pop?.popular
+      ? `Paid more than ${pop.limit} distinct addresses in its recent outgoing transactions, the limit build_wallet_edges ` +
+        "uses to discard an intermediary as an exchange or service. Shared funding through it is weak on its own: compare " +
+        "the rate against a control group, and read flow_shape, since a disperser paid by few can still be one operator's payout wallet."
+      : f.interpretation,
+  };
 }
 
 export function registerFundingTools(server: McpServer) {
@@ -280,7 +442,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_sources",
-    "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly; and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.",
+    "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Each walk stops at a funder that paid more than 50 distinct addresses, like find_funding_source, and a chain is counted toward shared funders only up to the first funder that is itself a subject. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly, plus every later payment one subject signed to another (subject_paid_subject, checked pair by pair for up to 20 subjects); and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.",
     {
       addresses: addressListArg()
         .min(1)
@@ -304,8 +466,12 @@ export function registerFundingTools(server: McpServer) {
     },
     async ({ addresses, max_hops, depth, measure_fanout }) => {
       try {
-        const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 3, 12);
-        const memo: FundingMemo = new Map();
+        const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 5, 12);
+        const ctx: WalkContext = {
+          steps: new Map(),
+          popularity: new Map(),
+          budget: new Budget(BATCH_POPULARITY_BUDGET),
+        };
         const results: Array<{
           address: string;
           origin: string;
@@ -318,7 +484,11 @@ export function registerFundingTools(server: McpServer) {
         // Sequential on purpose: the memo only pays off if earlier walks have
         // finished populating it before later ones start.
         for (const addr of addresses) {
-          const { chain, origin, stopReason, dustSkipped } = await walkFunding(addr, maxHops, memo);
+          const { chain, origin, stopReason, dustSkipped, sponsoredBy, incompleteReads } = await walkFunding(
+            addr,
+            maxHops,
+            ctx,
+          );
           results.push({
             address: addr,
             origin,
@@ -326,12 +496,22 @@ export function registerFundingTools(server: McpServer) {
             stop_reason: stopReason,
             first_funder: chain[0]?.funded_by ?? null,
             ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
+            ...(sponsoredBy.length ? { sponsored_by: sponsoredBy } : {}),
+            ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
             chain,
           });
         }
 
         // Shared funders are the whole point of batching: they're what a
         // per-address call can't see.
+        //
+        // A chain is counted only up to the first funder that is itself a
+        // subject. Everything past it is that subject's own ancestry, already
+        // counted under its own result, and counting it again turns one chain
+        // into "shared funding" of two addresses. The link itself is reported
+        // in subject_funded_subject. Walks also stop at a service-scale funder,
+        // so nothing reached through a hub is counted either.
+        const subjectSet = new Set(addresses);
         const byFunder = new Map<string, string[]>();
         for (const r of results) {
           for (const step of r.chain) {
@@ -339,6 +519,7 @@ export function registerFundingTools(server: McpServer) {
             const list = byFunder.get(step.funded_by) ?? [];
             if (!list.includes(r.address)) list.push(r.address);
             byFunder.set(step.funded_by, list);
+            if (step.funded_by !== r.address && subjectSet.has(step.funded_by)) break;
           }
         }
         const shared = [...byFunder.entries()]
@@ -348,7 +529,7 @@ export function registerFundingTools(server: McpServer) {
         // Fan-out only for shared funders, and with a smaller budget than the
         // standalone tool: this runs once per shared funder inside a batch that
         // may already have made a hundred queries.
-        const fanouts: Record<string, Awaited<ReturnType<typeof measureFanout>>> = {};
+        const fanouts: Record<string, FanoutResult> = {};
         if (measure_fanout !== false) {
           for (const [funder] of shared.slice(0, 10)) {
             try {
@@ -358,6 +539,11 @@ export function registerFundingTools(server: McpServer) {
               // discard a batch of completed traces.
             }
           }
+        }
+        const popularityOf: Record<string, FunderPopularity> = {};
+        for (const [funder] of shared) {
+          const p = ctx.popularity.get(funder);
+          if (p) popularityOf[funder] = await p;
         }
 
         // Same funder is weak; same *transaction* is not. One PTB paying
@@ -380,7 +566,6 @@ export function registerFundingTools(server: McpServer) {
         // exactly the two addresses under investigation, and that sorts last.
         // So the truncation dropped the strongest evidence and kept the
         // weakest, silently.
-        const subjectSet = new Set(addresses);
         const RECIPIENT_LOOKUP_CAP = 10;
         const assessed = [];
         for (const g of coFunded.slice(0, RECIPIENT_LOOKUP_CAP)) {
@@ -413,6 +598,46 @@ export function registerFundingTools(server: McpServer) {
         // eye, since the funder sits rows away in the input list.
         const subjectLinks = detectSubjectLinks(allSteps, addresses);
 
+        // Every payment between subjects, not only first fundings. A later
+        // payment is as chain-derived as a first one, and the walk never sees
+        // it: it reads one inflow per address.
+        const subjectPayments: SubjectPayment[] = [];
+        let paymentScope: Record<string, unknown> | null = null;
+        if (addresses.length > 1 && addresses.length <= MAX_PAIRWISE_SUBJECTS) {
+          try {
+            const scan = await findSubjectPayments(addresses);
+            subjectPayments.push(...scan.payments);
+            paymentScope = {
+              method: "every ordered pair of subjects",
+              pairs_checked: scan.pairs_checked,
+              ...(scan.incomplete_pairs.length ? { incomplete_pairs: scan.incomplete_pairs } : {}),
+              ...(scan.invalid.length ? { invalid_addresses: scan.invalid } : {}),
+            };
+          } catch (err) {
+            // Context beside the walks, not the answer: a failure here must
+            // not discard a batch of completed traces, and must not read as
+            // "no payments".
+            paymentScope = {
+              method: "every ordered pair of subjects",
+              error: `Not checked: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+        } else if (addresses.length > MAX_PAIRWISE_SUBJECTS) {
+          for (const payee of addresses) {
+            const { txs } = await fundingStep(payee, ctx);
+            for (const tx of txs) {
+              if (!tx.sender || tx.sender === payee || !subjectSet.has(tx.sender)) continue;
+              const payment = paymentInTx(tx.sender, payee, tx.digest, tx.timestamp, tx.changes);
+              if (payment) subjectPayments.push(payment);
+            }
+          }
+          paymentScope = {
+            method: `each subject's earliest ${EARLIEST_TXS} transactions`,
+            note: `More than ${MAX_PAIRWISE_SUBJECTS} subjects, so pairs were not queried one by one and later payments are not covered. Split the batch to check every pair.`,
+          };
+        }
+        const firstFundingKeys = new Set(subjectLinks.map((l) => `${l.funder}>${l.funded}>${l.funding_tx}`));
+
         // Timing survives where co-funding does not. A wide payout says little,
         // but addresses funded seconds apart did not get there independently —
         // people do not coordinate to the second, scripts do.
@@ -429,13 +654,45 @@ export function registerFundingTools(server: McpServer) {
         // them".
         // Addresses carrying names they no longer resolve to. Surfaced for the
         // whole batch, since a lapsed alias is the attribution most easily lost.
-        const formerNames = [...batchIds.values()]
-          .filter((v) => (v.names_held ?? []).some((n) => n.expired))
-          .map((v) => ({
-            address: v.address,
-            ...(v.name ? { current_name: v.name } : {}),
-            expired_names: v.names_held!.filter((n) => n.expired).map((n) => n.name),
-          }));
+        // A name another address sent and the holder never touched is listed
+        // apart: holding a transferable NFT says nothing about who the holder is.
+        const formerNames: Array<{
+          address: string;
+          current_name?: string;
+          expired_names: string[];
+          expired_names_provenance_unread?: string[];
+        }> = [];
+        const receivedNames: Array<{
+          address: string;
+          name: string;
+          expired: boolean;
+          received_from?: string;
+          received_in?: string;
+          received_at?: string;
+        }> = [];
+        for (const v of batchIds.values()) {
+          const held = classifyHeldNames(v);
+          if (held.expired_own.length || held.expired_unread.length) {
+            formerNames.push({
+              address: v.address,
+              ...(v.name ? { current_name: v.name } : {}),
+              expired_names: held.expired_own.map((n) => n.name),
+              ...(held.expired_unread.length
+                ? { expired_names_provenance_unread: held.expired_unread.map((n) => n.name) }
+                : {}),
+            });
+          }
+          for (const n of held.received) {
+            receivedNames.push({
+              address: v.address,
+              name: n.name,
+              expired: n.expired,
+              ...(n.received_from ? { received_from: n.received_from } : {}),
+              ...(n.last_tx ? { received_in: n.last_tx } : {}),
+              ...(n.last_tx_at ? { received_at: n.last_tx_at } : {}),
+            });
+          }
+        }
         const nonWalletOrigins = [...batchIds.values()]
           .filter((v) => v.kind !== "wallet")
           .map((v) => ({
@@ -457,7 +714,14 @@ export function registerFundingTools(server: McpServer) {
                     ? {
                         expired_suins_names: formerNames,
                         expired_names_note:
-                          "These addresses hold SuiNS registrations that have EXPIRED. Reverse lookup no longer returns them, so they will not appear as names anywhere else — but the address was known by them at the time of the activity under investigation, and older records may refer to it that way.",
+                          "These addresses hold SuiNS registrations that have EXPIRED and that they registered or used themselves: each one's last transaction was sent by the holder. Reverse lookup no longer returns these names, so they will not appear anywhere else, and older records may refer to the address by them. Names under expired_names_provenance_unread had no readable last transaction, so whether the address registered them or was sent them is unknown.",
+                      }
+                    : {}),
+                  ...(receivedNames.length
+                    ? {
+                        received_suins_names: receivedNames,
+                        received_names_note:
+                          "These registrations were sent to the address by another address (received_from, in received_in), and the holder has not transacted with them since. Anyone can send a SuiNS name to any address, so a received name is not attribution.",
                       }
                     : {}),
                   ...(nonWalletOrigins.length
@@ -503,6 +767,28 @@ export function registerFundingTools(server: McpServer) {
                           "control to interpret — there is no base rate for money moving straight from one subject to another.",
                       }
                     : {}),
+                  ...(paymentScope
+                    ? {
+                        ...(subjectPayments.length
+                          ? {
+                              subject_paid_subject: subjectPayments.map((p) => ({
+                                payer: p.payer,
+                                payee: p.payee,
+                                digest: p.digest,
+                                timestamp: p.timestamp,
+                                received: p.received.map((r) => formatAmount(r.amount, r.coinType)),
+                                ...(firstFundingKeys.has(`${p.payer}>${p.payee}>${p.digest}`) ? { first_funding: true } : {}),
+                                ...(p.balance_changes_incomplete ? { balance_changes_incomplete: true } : {}),
+                              })),
+                              subject_payment_note:
+                                "Transactions one address under investigation signed that credited another, with the payee's net " +
+                                "gain per coin. Every payment is listed, not only first fundings, which carry first_funding. Each " +
+                                "digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
+                            }
+                          : {}),
+                        subject_payment_scope: paymentScope,
+                      }
+                    : {}),
                   ...(bursts.length
                     ? {
                         funding_bursts: bursts,
@@ -521,29 +807,13 @@ export function registerFundingTools(server: McpServer) {
                     ...(getLabel(funder) ? { label: getLabel(funder)!.label } : {}),
                     funded_count: addrs.length,
                     funded: addrs,
-                    ...(fanouts[funder]
-                      ? {
-                          // Shape, not just size. This is the tool that decides
-                          // whether shared funding means anything, and count
-                          // alone cannot: a custodial exchange and a sybil
-                          // funder can have near-identical counterparty counts
-                          // while one runs balanced and the other pays many and
-                          // is paid by few. Surfacing only the count here left
-                          // the caller to guess exactly where it matters most.
-                          fanout: {
-                            recipient_count: fanouts[funder].recipient_count,
-                            sender_count: fanouts[funder].sender_count,
-                            counterparty_count: fanouts[funder].counterparty_count,
-                            coin_type_count: fanouts[funder].coin_type_count,
-                            out_in_ratio: fanouts[funder].out_in_ratio,
-                            flow_shape: fanouts[funder].flow_shape,
-                            scanned_transactions: fanouts[funder].scanned_transactions,
-                            truncated: fanouts[funder].truncated,
-                            classification: fanouts[funder].classification,
-                            interpretation: fanouts[funder].interpretation,
-                          },
-                        }
-                      : {}),
+                    ...(popularityOf[funder] ? { funder_popularity: popularityOf[funder] } : {}),
+                    // Shape, not just size. This is the tool that decides
+                    // whether shared funding means anything, and count alone
+                    // cannot: a custodial exchange and a sybil funder can have
+                    // near-identical counterparty counts while one runs
+                    // balanced and the other pays many and is paid by few.
+                    ...(fanouts[funder] ? { fanout: fanoutView(fanouts[funder], popularityOf[funder]) } : {}),
                   })),
                   results,
                 },
@@ -561,7 +831,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_source",
-    "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a wallet it has already seen, or a dead end. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
+    "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a funder that paid more than 50 distinct addresses (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. At a dead end, inflows skipped as dust are listed in dust_skipped, and parties that paid the address's gas are listed in sponsored_by, since a wallet paying gas from an address balance can run with no SUI inflow at all. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),
@@ -574,13 +844,22 @@ export function registerFundingTools(server: McpServer) {
     async ({ address, max_hops, measure_fanout }) => {
       try {
         const maxHops = Math.min(max_hops ?? 5, 12);
-        const { chain, origin, stopReason, dustSkipped } = await walkFunding(address, maxHops, new Map());
+        const ctx: WalkContext = {
+          steps: new Map(),
+          popularity: new Map(),
+          budget: new Budget(SINGLE_POPULARITY_BUDGET),
+        };
+        const { chain, origin, stopReason, dustSkipped, sponsoredBy, stoppedAtHub, incompleteReads } =
+          await walkFunding(address, maxHops, ctx);
+        const originPopularity = chain.at(-1)?.funder_popularity;
 
         // Fan-out on the origin, because the origin is what gets over-read.
         // A chain ending at an address with 29,000 recipients has not found a
-        // link; it has found an exchange.
-        let originFanout: Awaited<ReturnType<typeof measureFanout>> | null = null;
-        if (measure_fanout !== false && origin !== address) {
+        // link; it has found an exchange. A walk that stopped at a hub has
+        // already measured that, and a bidirectional count over a short window
+        // could call the same address narrow.
+        let originFanout: FanoutResult | null = null;
+        if (measure_fanout !== false && origin !== address && !stoppedAtHub) {
           try {
             originFanout = await measureFanout(origin, 300);
           } catch {
@@ -606,9 +885,9 @@ export function registerFundingTools(server: McpServer) {
             ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
             ...(id?.object_type ? { object_type: id.object_type } : {}),
             ...(id?.protocol ? { protocol: id.protocol } : {}),
-            // Former aliases, expired included. Reverse lookup drops these the
-            // moment a name lapses, which is exactly when an investigation
-            // still needs them.
+            // Every held name, expired included, with its provenance. Reverse
+            // lookup drops a name the moment it lapses, which is exactly when
+            // an investigation still needs it.
             ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
             ...(note ? { note } : {}),
           };
@@ -641,12 +920,24 @@ export function registerFundingTools(server: McpServer) {
                   hops: chain.length,
                   stop_reason: stopReason,
                   ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
+                  ...(sponsoredBy.length
+                    ? {
+                        sponsored_by: sponsoredBy,
+                        sponsored_by_note:
+                          "No inflow qualified as funding, but another party paid gas for transactions this address sent. " +
+                          "Gas can be paid from an address balance, so a wallet can operate with no SUI of its own; the " +
+                          "sponsor is then the closest thing to a funder the chain records.",
+                      }
+                    : {}),
+                  ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
+                  ...(stoppedAtHub && originPopularity ? { origin_popularity: originPopularity } : {}),
                   ...(originFanout
                     ? {
                         origin_fanout: {
                           recipient_count: originFanout.recipient_count,
                           truncated: originFanout.truncated,
                           classification: originFanout.classification,
+                          ...(originFanout.classification_provisional ? { classification_provisional: true } : {}),
                           interpretation: originFanout.interpretation,
                         },
                       }

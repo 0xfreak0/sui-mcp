@@ -1,12 +1,14 @@
 /**
  * What moved that was not a coin.
  *
- * A balance change is derived from `Coin<T>`, so on an object-based chain
- * everything else — an NFT, a Kiosk item, a DeFi position, an admin
- * capability — changes hands without producing one. Measured on mainnet,
- * sampling the transaction that last touched each object: `package::UpgradeCap`
- * 30 of 30 and `package::Publisher` 30 of 30 produced no non-gas balance
- * change; `coin::TreasuryCap` 14 of 30.
+ * A balance change nets coins and address balances per owner and coin type,
+ * so on an object-based chain everything else — an NFT, a Kiosk item, a DeFi
+ * position, an admin capability — changes hands without producing one.
+ * Measured on mainnet, sampling the transaction that last touched each object:
+ * `package::UpgradeCap` 30 of 30 and `package::Publisher` 30 of 30 produced no
+ * non-gas balance change; `coin::TreasuryCap` 14 of 30. A balance change can
+ * also hide a movement of coins: a coin folded into its owner's address
+ * balance is deleted while the owner's balance does not change.
  *
  * Reading it costs nothing extra: `objectChanges` rides the same
  * `transaction(digest:)` query the trace already makes, and the archive's gRPC
@@ -386,6 +388,15 @@ export interface GrpcChangedObject {
   idOperation?: number;
   inputOwner?: GrpcOwner | null;
   outputOwner?: GrpcOwner | null;
+  /** `sui.rpc.v2.ChangedObject.OutputObjectState` */
+  outputState?: number;
+  /** Present when `outputState` is ACCUMULATOR_WRITE: an address-balance write. */
+  accumulatorWrite?: {
+    address?: string;
+    accumulatorType?: string;
+    operation?: number;
+    value?: bigint;
+  } | null;
 }
 
 /** Owner kind numbers, from `sui.rpc.v2.Owner.OwnerKind`. */
@@ -412,6 +423,8 @@ const INPUT_EXISTS = 2;
 /** `sui.rpc.v2.ChangedObject.IdOperation` */
 const ID_CREATED = 2;
 const ID_DELETED = 3;
+/** `sui.rpc.v2.ChangedObject.OutputObjectState.ACCUMULATOR_WRITE` */
+const OUTPUT_ACCUMULATOR_WRITE = 4;
 
 /** Counts of what a transaction's effects touched. */
 export interface ObjectChangeSummary {
@@ -433,12 +446,18 @@ export interface ObjectChangeSummary {
  * balance accumulator rather than a coin object, and such a transaction has no
  * `effects.gasObject` for the split to exclude, so `non_gas_changed` collapsed
  * to `changed`. See CLAUDE.md for the measurement and its era.
+ *
+ * **Address-balance writes are not objects.** Effects list each deposit to or
+ * withdrawal from an address balance as a changed entry with `outputState:
+ * ACCUMULATOR_WRITE`, and GraphQL `objectChanges` omits them. Counting them made
+ * a transaction that touched no object report `changed: 2`.
  */
 export function summarizeObjectChanges(changes: GrpcChangedObject[]): ObjectChangeSummary {
+  const objects = changes.filter((c) => c.outputState !== OUTPUT_ACCUMULATOR_WRITE);
   return {
-    changed: changes.length,
-    created: changes.filter((c) => c.idOperation === ID_CREATED).length,
-    deleted: changes.filter((c) => c.idOperation === ID_DELETED).length,
+    changed: objects.length,
+    created: objects.filter((c) => c.idOperation === ID_CREATED).length,
+    deleted: objects.filter((c) => c.idOperation === ID_DELETED).length,
   };
 }
 
@@ -542,6 +561,26 @@ export function custodyChanges(movements: ObjectMovement[]): ObjectMovement[] {
     // them. A destination that is a party is still worth reporting.
     if (m.kind === "appeared") return isPartyOwner(m.to);
     return m.kind === "unwrapped" || m.kind === "wrapped";
+  });
+}
+
+/**
+ * Objects created in the transaction and handed to a party other than the
+ * sender: an address, an object or a consensus owner.
+ *
+ * `custodyChanges` leaves creations out because nothing held them before, but
+ * a mint delivered to someone else is a delivery. Cetus's multisig minted
+ * `MessageFromCetus` NFTs straight to both exploiter addresses
+ * (8eHgw5hBnALFJKPstXWcPgKjeh1av1CzFAz8n85Primr), which read as "none changed
+ * hands" without this. Coins and dynamic fields are already out of `movements`;
+ * a burn address is nobody.
+ */
+export function createdFor(movements: ObjectMovement[], sender: string | null | undefined): ObjectMovement[] {
+  const from = sender?.toLowerCase();
+  return movements.filter((m) => {
+    if (m.kind !== "created" || !isPartyOwner(m.to) || !m.to?.address) return false;
+    if (m.to.kind !== "object" && isUnspendableAddress(m.to.address)) return false;
+    return m.to.address.toLowerCase() !== from;
   });
 }
 

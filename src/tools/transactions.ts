@@ -12,7 +12,14 @@ import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
 import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
-import { custodyChanges, readGrpcObjectChanges, summarizeObjectChanges } from "../utils/object-flow.js";
+import {
+  createdFor,
+  custodyChanges,
+  readGrpcObjectChanges,
+  summarizeObjectChanges,
+  type ObjectMovement,
+} from "../utils/object-flow.js";
+import { gasSource, readAddressBalanceOps, readFundsWithdrawals } from "../utils/address-balance.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { COMMANDS_SELECTION, completeTxConnections, type GqlConnection } from "../utils/tx-connections.js";
@@ -124,10 +131,34 @@ async function readVersionPages(
   return pages;
 }
 
+/** One object movement as `get_transaction` reports it. */
+function movementOut(m: ObjectMovement) {
+  return {
+    object_id: m.object_id,
+    type: m.type_short ?? m.type,
+    kind: m.kind,
+    // The owner KIND travels with the address. A kiosk-held NFT is owned by
+    // the Kiosk object, so reporting a bare address made a kiosk id read as a
+    // wallet — verified on a TradePort sale where BOTH parties were kiosks.
+    // `trace.ts` renders the same movement as "kiosk/object 0x…" and the two
+    // tools must not disagree about who a party is.
+    from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
+    to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
+    category: m.category,
+    ...(m.high_consequence ? { high_consequence: true } : {}),
+    ...(m.renounced ? { renounced: true } : {}),
+    ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
+    ...(m.protocol ? { protocol: m.protocol } : {}),
+    // The note states what a capability actually grants. `high_consequence:
+    // true` alone says a finding exists without saying what it is, and
+    // `trace.ts` carries the full movement for exactly this reason.
+    ...(m.note ? { note: m.note } : {}),
+  };
+}
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case.",
+    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. Funds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -229,7 +260,21 @@ export function registerTransactionTools(server: McpServer) {
       const changedObjects = effects?.changedObjects ?? [];
       const objectMovements = readGrpcObjectChanges(changedObjects, protocolForObjectType);
       const custody = custodyChanges(objectMovements);
+      const deliveredOnCreation = createdFor(objectMovements, sender);
       const objectSummary = summarizeObjectChanges(changedObjects);
+      // Address balances hold funds without a coin object, so what they did is
+      // read from the accumulator writes and the transaction's inputs. Both
+      // ride the response already fetched.
+      const addressBalanceOps = readAddressBalanceOps(changedObjects);
+      const ptbInputs =
+        kind?.data.oneofKind === "programmableTransaction"
+          ? kind.data.programmableTransaction.inputs ?? []
+          : [];
+      const fundsWithdrawals = readFundsWithdrawals(ptbInputs);
+      const gas =
+        kind?.data.oneofKind === "programmableTransaction" && transaction?.gasPayment
+          ? gasSource(transaction.gasPayment.objects ?? [])
+          : null;
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
@@ -384,48 +429,38 @@ export function registerTransactionTools(server: McpServer) {
                   : {}),
                 token_flow: decoded.token_flow,
                 // Reported always, because "no coin moved" is only an absence
-                // of value when nothing else moved either. A balance change is
-                // derived from Coin<T>, so an NFT, a capability or a DeFi
-                // position changes hands without producing one.
+                // of value when nothing else moved either. A balance change
+                // nets coins and address balances, so an NFT, a capability or
+                // a DeFi position changes hands without producing one.
                 object_changes: objectSummary,
                 // The two counts describe different universes and a reader
                 // comparing them would otherwise be misled. `changed` counts
-                // every effect, including the coin that paid and any dynamic
-                // field the transaction walked; `object_transfers` keeps only
-                // what changed hands. Measured over 818 changed objects on
-                // mainnet, coins and dynamic fields were 48% of `changed`.
-                ...(objectSummary.changed > 0 && custody.length === 0
+                // every object effect, including the coin that paid and any
+                // dynamic field the transaction walked; `object_transfers`
+                // keeps only what changed hands. Measured over 818 changed
+                // objects on mainnet, coins and dynamic fields were 48% of
+                // `changed`. Address-balance writes are not objects and are
+                // not counted.
+                ...(objectSummary.changed > 0 && custody.length === 0 && deliveredOnCreation.length === 0
                   ? {
                       object_changes_note:
-                        "Objects were written but none changed hands. `changed` counts every effect, including the coin or balance that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
+                        "Objects were written but none changed hands. `changed` counts every object effect, including the coin that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
                     }
                   : {}),
-                ...(custody.length
+                ...(custody.length ? { object_transfers: custody.map(movementOut) } : {}),
+                ...(deliveredOnCreation.length
                   ? {
-                      object_transfers: custody.map((m) => ({
-                        object_id: m.object_id,
-                        type: m.type_short ?? m.type,
-                        kind: m.kind,
-                        // The owner KIND travels with the address. A
-                        // kiosk-held NFT is owned by the Kiosk object, so
-                        // reporting a bare address made a kiosk id read as a
-                        // wallet — verified on a TradePort sale where BOTH
-                        // parties were kiosks. `trace.ts` renders the same
-                        // movement as "kiosk/object 0x…" and the two tools must
-                        // not disagree about who a party is.
-                        from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
-                        to: m.to ? { kind: m.to.kind, address: m.to.address } : null,
-                        category: m.category,
-                        ...(m.high_consequence ? { high_consequence: true } : {}),
-                        ...(m.renounced ? { renounced: true } : {}),
-                        ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
-                        ...(m.protocol ? { protocol: m.protocol } : {}),
-                        // The note states what a capability actually grants.
-                        // `high_consequence: true` alone says a finding exists
-                        // without saying what it is, and `trace.ts` carries the
-                        // full movement for exactly this reason.
-                        ...(m.note ? { note: m.note } : {}),
-                      })),
+                      created_for: deliveredOnCreation.map(movementOut),
+                      created_for_note:
+                        "These objects were created in this transaction and handed to an owner other than the sender. A mint delivered to someone else moves no coin, so it produces no balance change.",
+                    }
+                  : {}),
+                ...(addressBalanceOps.length ? { address_balance_ops: addressBalanceOps } : {}),
+                ...(fundsWithdrawals.length
+                  ? {
+                      funds_withdrawals: fundsWithdrawals,
+                      funds_withdrawals_note:
+                        "Each entry is an input authorising a withdrawal from the sender's or the gas sponsor's address balance, up to `amount`. What was actually withdrawn is in address_balance_ops and balance_changes.",
                     }
                   : {}),
                 ...(authorization.length ? { authorization } : {}),
@@ -436,6 +471,7 @@ export function registerTransactionTools(server: McpServer) {
                     }
                   : {}),
                 gas: formatGas(effects?.gasUsed),
+                ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
                 epoch: bigintToString(effects?.epoch),
                 checkpoint: bigintToString(tx?.checkpoint),
                 event_count: events.length,

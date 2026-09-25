@@ -8,6 +8,7 @@ import { sui } from "../clients/grpc.js";
 import { batchResolveNames } from "../utils/names.js";
 import { errorResult } from "../utils/errors.js";
 import { resolveCollectionType, knownSlugs } from "../discovery-nft.js";
+import { describeAddresses, type AddressKind } from "../utils/identity.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const GQL_PAGE_SIZE = 50;
@@ -75,6 +76,18 @@ interface CoinObjectsPage {
       owner?: { address?: { address: string } };
       asMoveObject?: {
         contents?: { json?: { balance?: string } };
+      };
+    }>;
+    pageInfo: { hasNextPage: boolean; endCursor?: string };
+  };
+}
+
+/** One page of address-balance entries: dynamic fields of the accumulator root. */
+interface AddressBalancePage {
+  objects: {
+    nodes: Array<{
+      asMoveObject?: {
+        contents?: { json?: { name?: { address?: string }; value?: { value?: string } } };
       };
     }>;
     pageInfo: { hasNextPage: boolean; endCursor?: string };
@@ -223,32 +236,58 @@ const NFT_OBJECTS_QUERY = `
   }
 `;
 
+/** `0x2::coin::Coin<T>`, in the short or padded framework spelling. */
+const COIN_WRAPPER = /^0x0*2::coin::Coin<(.+)>$/;
+
 /**
- * Does even one `Coin<T>` exist for this type?
+ * The type of one owner's address balance of `T`.
+ *
+ * Address balances live as dynamic fields of the accumulator root (`0xacc`),
+ * one per (owner, coin type), with the owner in `name.address` and the amount
+ * in `value.value`. The owner is whatever address was credited, which can be an
+ * object as well as a wallet. The service normalises the spelling of `T`
+ * inside the filter, so a short or padded package address both match.
+ */
+function addressBalanceFieldType(coinType: string): string {
+  return `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${coinType}>>,0x2::accumulator::U128>`;
+}
+
+/**
+ * Is this type a coin?
  *
  * Used only to settle an auto-detected mode. A coin type and an NFT type have
  * the same `0xpkg::module::Struct` shape, so nothing in the string separates
  * `0xabc::suipump::SUIPUMP` from a collection — and guessing wrong scanned a
  * real memecoin as NFTs and reported `unique_holders: 0`, which reads as "this
  * has no holders" rather than "this was looked up as the wrong kind of thing".
- * Coins are held as `0x2::coin::Coin<T>`, never as bare `T`, so one object of
- * the wrapped type is proof.
+ *
+ * Any one of four objects is proof: a `Coin<T>`, an address-balance entry for
+ * `T`, its `CoinMetadata<T>`, or its registry `Currency<T>`. The coin object
+ * alone is not enough, because a coin can be held entirely in address balances
+ * with no `Coin<T>` in existence (USAD on mainnet: the whole supply sits in one
+ * owner's address balance), and probing only for coin objects scanned it as an
+ * NFT collection with no holders. All four ask in one request.
  */
 const COIN_PROBE_QUERY = `
-  query($type: String!) {
-    objects(filter: { type: $type }, first: 1) {
-      nodes { address }
-    }
+  query($coin: String!, $addressBalance: String!, $metadata: String!, $currency: String!) {
+    coin: objects(filter: { type: $coin }, first: 1) { nodes { address } }
+    addressBalance: objects(filter: { type: $addressBalance }, first: 1) { nodes { address } }
+    metadata: objects(filter: { type: $metadata }, first: 1) { nodes { address } }
+    currency: objects(filter: { type: $currency }, first: 1) { nodes { address } }
   }
 `;
 
+type ProbeHits = Record<"coin" | "addressBalance" | "metadata" | "currency", { nodes?: unknown[] } | null>;
+
 async function looksLikeCoin(type: string): Promise<boolean | null> {
   try {
-    const data = await gqlQuery<{ objects: { nodes: Array<{ address: string }> } }>(
-      COIN_PROBE_QUERY,
-      { type: `0x2::coin::Coin<${type}>` },
-    );
-    return (data.objects.nodes?.length ?? 0) > 0;
+    const data = await gqlQuery<ProbeHits>(COIN_PROBE_QUERY, {
+      coin: `0x2::coin::Coin<${type}>`,
+      addressBalance: addressBalanceFieldType(type),
+      metadata: `0x2::coin::CoinMetadata<${type}>`,
+      currency: `0x2::coin_registry::Currency<${type}>`,
+    });
+    return Object.values(data).some((hit) => (hit?.nodes?.length ?? 0) > 0);
   } catch {
     // Null, not false. Returning false reinstated the very guess this probe
     // exists to correct, so one transient GraphQL error produced the original
@@ -277,6 +316,19 @@ const COIN_OBJECTS_QUERY = `
   }
 `;
 
+const ADDRESS_BALANCE_QUERY = `
+  query($type: String!, $first: Int, $after: String) {
+    objects(filter: { type: $type }, first: $first, after: $after) {
+      nodes {
+        asMoveObject {
+          contents { json }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
 // ---------------------------------------------------------------------------
 // Shared helper: scan token top holders
 // ---------------------------------------------------------------------------
@@ -284,22 +336,54 @@ const COIN_OBJECTS_QUERY = `
 export interface TokenHolder {
   rank: number;
   address: string;
+  /** Coin objects plus address balance, in base units. */
   balance: string;
+  /** Held in `Coin<T>` objects. */
+  coin_balance: string;
+  /** Held in the owner's address balance, which no coin object shows. */
+  address_balance: string;
+  /** How many `Coin<T>` objects the holder owns. An address balance is not one. */
   count: number;
+  /**
+   * What lives at the holder's address. An address balance can be credited to
+   * an object, such as a bridge's liquidity bank, so the largest holder of a
+   * coin is not necessarily anyone's wallet.
+   */
+  owner_kind: AddressKind;
+  /** Move type of the holder, when it is an object. */
+  object_type?: string;
+  name?: string;
 }
 
 export interface TokenHolderResult {
   holders: TokenHolder[];
+  /** `coin_objects_scanned + address_balances_scanned`. */
   total_scanned: number;
+  coin_objects_scanned: number;
+  address_balances_scanned: number;
   unique_holders: number;
+  /** Either walk stopped before the end. */
   truncated: boolean;
+  coin_walk_truncated: boolean;
+  address_balance_walk_truncated: boolean;
   /**
-   * Coin objects counted in `total_scanned` whose owner or balance could not be
-   * read, so they are attributed to nobody. Absent when there were none.
+   * Coin objects or address-balance entries counted in `total_scanned` whose
+   * owner or amount could not be read, so they are attributed to nobody.
+   * Absent when there were none.
    */
   unresolved_owners?: number;
 }
 
+
+/** Which walk of a token scan stopped early, and how far it got, in words. */
+export function stoppedWalks(scan: TokenHolderResult): string {
+  return [
+    ...(scan.coin_walk_truncated ? [`the coin-object walk after ${scan.coin_objects_scanned} objects`] : []),
+    ...(scan.address_balance_walk_truncated
+      ? [`the address-balance walk after ${scan.address_balances_scanned} entries`]
+      : []),
+  ].join(" and ");
+}
 
 /**
  * A truncated holder scan is a SAMPLE, and must not be presented as a ranking.
@@ -323,99 +407,151 @@ export interface TokenHolderResult {
  * `find_shared_multisig`: refusing beats truncating, because a partial search
  * cannot support the claim the caller is asking for.
  */
-function samplingCaveat(scanned: number, unique: number): string {
+function samplingCaveat(scan: TokenHolderResult): string {
   return (
-    `INCOMPLETE: this scan stopped after ${scanned} coin objects (${unique} distinct holders) and did not reach the end. ` +
-    `Objects are walked in object-id order, which has nothing to do with balance, so these are the largest holders WITHIN THE SAMPLE and not the largest holders of this coin. ` +
+    `INCOMPLETE: ${stoppedWalks(scan)} stopped before the end (${scan.unique_holders} distinct holders seen). ` +
+    `Both are walked in object-id order, which has nothing to do with balance, so these are the largest holders WITHIN THE SAMPLE and not the largest holders of this coin. ` +
     `Scanning further keeps finding bigger ones: on SUI the reported top holder went from 66 to 3,454 SUI between max_scan 200 and 800, with no overlap in the top five. ` +
-    `Raise max_scan until "truncated" is false to get a real ranking — which is only feasible for coins with few enough objects to enumerate.`
+    `Raise max_scan until "truncated" is false to get a real ranking, which is only feasible for coins with few enough objects to enumerate.`
   );
 }
 
+/**
+ * Walk one `objects(filter: { type })` connection up to `maxScan` nodes.
+ *
+ * Three ways it stops, and only one is completion:
+ *
+ * - `hasNextPage: false`, the end.
+ * - A null `endCursor` beside `hasNextPage: true`. Without the guard the next
+ *   request starts from page one and the SAME nodes are counted again, adding
+ *   their balances twice to the same holders (missed by the sweep in #101). It
+ *   is a truncated stop: the connection said there is more and would not say
+ *   where, and breaking without the flag published a known-incomplete scan as
+ *   a complete ranking.
+ * - The `maxScan` budget.
+ */
+async function walkObjects<N>(
+  query: string,
+  type: string,
+  maxScan: number,
+  visit: (node: N) => void,
+): Promise<{ scanned: number; truncated: boolean }> {
+  let cursor: string | undefined;
+  let scanned = 0;
+  while (scanned < maxScan) {
+    const data = await gqlQuery<{
+      objects: { nodes: N[]; pageInfo: { hasNextPage: boolean; endCursor?: string | null } };
+    }>(query, { type, first: Math.min(GQL_PAGE_SIZE, maxScan - scanned), after: cursor });
+
+    for (const node of data.objects.nodes) visit(node);
+    scanned += data.objects.nodes.length;
+
+    if (!data.objects.pageInfo.hasNextPage) return { scanned, truncated: false };
+    cursor = data.objects.pageInfo.endCursor ?? undefined;
+    if (!cursor) break;
+    if (scanned >= maxScan) break;
+    await sleep(PAGE_DELAY_MS);
+  }
+  return { scanned, truncated: true };
+}
+
+/**
+ * Rank a coin's holders by what they hold in `Coin<T>` objects AND in address
+ * balances.
+ *
+ * An address balance is not an object the coin walk can see: it is a dynamic
+ * field of the accumulator root, one per (owner, coin type). Walking coins alone
+ * published `complete_ranking: true` for XAGM while leaving out its #2 holder,
+ * 0xd70a55ed…, whose 5,494,449,074,000 base units (13.74% of supply) are all
+ * in its address balance. So both walks run, each with its own `maxScan`
+ * budget, and the ranking is complete only when both reached the end.
+ */
 export async function scanTokenTopHolders(
   coinType: string,
   topN: number,
   maxScan: number,
 ): Promise<TokenHolderResult> {
-  const fullType = coinType.startsWith("0x2::coin::Coin<")
-    ? coinType
-    : `0x2::coin::Coin<${coinType}>`;
+  const inner = COIN_WRAPPER.exec(coinType)?.[1] ?? coinType;
 
-  const holderBalances = new Map<string, bigint>();
+  const coinBalances = new Map<string, bigint>();
+  const addressBalances = new Map<string, bigint>();
   const holderCounts = new Map<string, number>();
   // Coin objects whose owner or balance this query could not read. The NFT
   // walk counts these; dropping them here meant a holder could vanish from a
   // "complete ranking" whose percentages are computed against the real total
   // supply, with nothing saying a holder was missing.
   let unresolved = 0;
-  let cursor: string | undefined;
-  let totalScanned = 0;
-  let truncated = false;
 
-  while (totalScanned < maxScan) {
-    const remaining = maxScan - totalScanned;
-    const first = Math.min(GQL_PAGE_SIZE, remaining);
-
-    const data = await gqlQuery<CoinObjectsPage>(COIN_OBJECTS_QUERY, {
-      type: fullType,
-      first,
-      after: cursor ?? undefined,
-    });
-
-    for (const node of data.objects.nodes) {
+  const coins = await walkObjects<CoinObjectsPage["objects"]["nodes"][number]>(
+    COIN_OBJECTS_QUERY,
+    `0x2::coin::Coin<${inner}>`,
+    maxScan,
+    (node) => {
       const addr = node.owner?.address?.address;
       const balanceStr = node.asMoveObject?.contents?.json?.balance;
-      if (addr && balanceStr) {
-        const bal = BigInt(balanceStr);
-        holderBalances.set(addr, (holderBalances.get(addr) ?? 0n) + bal);
-        holderCounts.set(addr, (holderCounts.get(addr) ?? 0) + 1);
-      } else {
+      if (!addr || !balanceStr) {
         unresolved++;
+        return;
       }
-    }
+      const holder = normalizeSuiAddress(addr);
+      coinBalances.set(holder, (coinBalances.get(holder) ?? 0n) + BigInt(balanceStr));
+      holderCounts.set(holder, (holderCounts.get(holder) ?? 0) + 1);
+    },
+  );
 
-    totalScanned += data.objects.nodes.length;
+  const balances = await walkObjects<AddressBalancePage["objects"]["nodes"][number]>(
+    ADDRESS_BALANCE_QUERY,
+    addressBalanceFieldType(inner),
+    maxScan,
+    (node) => {
+      const json = node.asMoveObject?.contents?.json;
+      const addr = json?.name?.address;
+      const value = json?.value?.value;
+      if (!addr || !value) {
+        unresolved++;
+        return;
+      }
+      const holder = normalizeSuiAddress(addr);
+      addressBalances.set(holder, (addressBalances.get(holder) ?? 0n) + BigInt(value));
+    },
+  );
 
-    if (!data.objects.pageInfo.hasNextPage) break;
-    cursor = data.objects.pageInfo.endCursor ?? undefined;
-    // A connection can claim another page and hand back a null cursor.
-    // Without this the next request starts from page one and the SAME coin
-    // objects are counted again, adding their balances twice to the same
-    // holders. Missed by the sweep in #101 that guarded every other walk.
-    //
-    // It is a TRUNCATED stop, not a complete one: hasNextPage was true, so the
-    // connection said there is more and then would not say where. Breaking
-    // without setting the flag published a known-incomplete scan as a complete
-    // ranking, with ranks and percentages of supply restored.
-    if (!cursor) {
-      truncated = true;
-      break;
-    }
-
-    if (totalScanned >= maxScan) {
-      truncated = true;
-      break;
-    }
-
-    await sleep(PAGE_DELAY_MS);
+  const totals = new Map<string, bigint>(coinBalances);
+  for (const [holder, amount] of addressBalances) {
+    totals.set(holder, (totals.get(holder) ?? 0n) + amount);
   }
 
-  const sorted = [...holderBalances.entries()]
+  const sorted = [...totals.entries()]
     .sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0))
     .slice(0, topN);
 
-  const holders = sorted.map(([address, balance], i) => ({
-    rank: i + 1,
-    address,
-    balance: balance.toString(),
-    count: holderCounts.get(address) ?? 0,
-  }));
+  // Enrichment of the top N only. describeAddresses never throws.
+  const identities = await describeAddresses(sorted.map(([address]) => address));
+
+  const holders = sorted.map(([address, balance], i): TokenHolder => {
+    const id = identities.get(address);
+    return {
+      rank: i + 1,
+      address,
+      balance: balance.toString(),
+      coin_balance: (coinBalances.get(address) ?? 0n).toString(),
+      address_balance: (addressBalances.get(address) ?? 0n).toString(),
+      count: holderCounts.get(address) ?? 0,
+      owner_kind: id?.kind ?? "wallet",
+      ...(id?.object_type ? { object_type: id.object_type } : {}),
+      ...(id?.name ? { name: id.name } : {}),
+    };
+  });
 
   return {
     holders,
-    total_scanned: totalScanned,
-    unique_holders: holderBalances.size,
-    truncated,
+    total_scanned: coins.scanned + balances.scanned,
+    coin_objects_scanned: coins.scanned,
+    address_balances_scanned: balances.scanned,
+    unique_holders: totals.size,
+    truncated: coins.truncated || balances.truncated,
+    coin_walk_truncated: coins.truncated,
+    address_balance_walk_truncated: balances.truncated,
     ...(unresolved ? { unresolved_owners: unresolved } : {}),
   };
 }
@@ -427,7 +563,7 @@ export async function scanTokenTopHolders(
 export function registerHolderTools(server: McpServer) {
   server.tool(
     "get_top_holders",
-    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. Results cached 24h.",
+    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin<T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. Results cached 24h.",
     {
       type: z
         .string()
@@ -444,7 +580,7 @@ export function registerHolderTools(server: McpServer) {
       mode: z
         .enum(["nft", "token"])
         .optional()
-        .describe("'nft' ranks by count, 'token' ranks by balance. Auto-detected from type if omitted (Coin<...> = token, otherwise nft)."),
+        .describe("'nft' ranks by count, 'token' ranks by balance. Auto-detected if omitted: a type the chain knows as a coin (a Coin<T> object, an address balance, coin metadata or a registry entry) is scanned as a token, anything else as an NFT collection."),
       limit: numArg()
         .int()
         .min(1)
@@ -456,7 +592,7 @@ export function registerHolderTools(server: McpServer) {
         .min(1)
         .max(50000)
         .optional()
-        .describe("Max objects to scan (default 5000, max 50000)"),
+        .describe("Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address-balance entries separately, each up to this bound."),
     },
     async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
       let resolvedType = rawType;
@@ -493,8 +629,8 @@ export function registerHolderTools(server: McpServer) {
       );
 
       // Auto-detect mode. The string test catches the common shapes for free;
-      // anything else is settled by asking the chain whether a Coin of this
-      // type exists, because an arbitrary memecoin type looks exactly like a
+      // anything else is settled by asking the chain whether it knows this type
+      // as a coin, because an arbitrary memecoin type looks exactly like a
       // collection type and defaulting to NFT scanned it as one and reported no
       // holders. An explicit `mode` is always obeyed and never probed.
       const namedLikeCoin =
@@ -543,12 +679,14 @@ export function registerHolderTools(server: McpServer) {
                     mode: "token",
                     type: resolvedType,
                     total_scanned: 0,
+                    coin_objects_scanned: 0,
+                    address_balances_scanned: 0,
                     unique_holders: 0,
                     truncated: false,
                     complete_ranking: false,
                     cached: false,
                     caveat:
-                      `No 0x2::coin::Coin<${resolvedType}> objects were found. That reads the same as a mistyped coin type, a coin that exists on another network, or an NFT collection type scanned as a coin — it is not evidence that the coin has no holders.`,
+                      `No Coin<${resolvedType}> objects and no address balances of it were found. That reads the same as a mistyped coin type, a coin that exists on another network, or an NFT collection type scanned as a coin. It is not evidence that the coin has no holders.`,
                   },
                   null,
                   2,
@@ -558,25 +696,28 @@ export function registerHolderTools(server: McpServer) {
           };
         }
 
-        // Fetch total supply and resolve names in parallel
-        const [supplyResult, nameMap] = await Promise.all([
-          sui.stateService
-            .getCoinInfo({ coinType: resolvedType })
-            .then(({ response }) => response.treasury?.totalSupply?.toString() ?? null)
-            .catch(() => null),
-          batchResolveNames(scan.holders.map((h) => h.address)),
-        ]);
+        const supplyResult = await sui.stateService
+          .getCoinInfo({ coinType: resolvedType })
+          .then(({ response }) => response.treasury?.totalSupply?.toString() ?? null)
+          .catch(() => null);
 
         const totalSupply = supplyResult ? BigInt(supplyResult) : null;
 
         const enrichedHolders = scan.holders.map((h) => ({
           ...h,
-          name: nameMap.get(h.address) ?? null,
+          name: h.name ?? null,
           percentage:
             totalSupply && totalSupply > 0n
               ? `${(Number(BigInt(h.balance)) / Number(totalSupply) * 100).toFixed(4)}%`
               : null,
         }));
+
+        const scanned = {
+          total_scanned: scan.total_scanned,
+          coin_objects_scanned: scan.coin_objects_scanned,
+          address_balances_scanned: scan.address_balances_scanned,
+          unique_holders: scan.unique_holders,
+        };
 
         // A complete scan is a ranking. A truncated one is a sample, and the
         // shape says so: no rank, no percentage of supply (a sampled balance
@@ -586,12 +727,13 @@ export function registerHolderTools(server: McpServer) {
               mode: "token",
               type: resolvedType,
               total_supply: supplyResult,
-              total_scanned: scan.total_scanned,
-              unique_holders: scan.unique_holders,
+              ...scanned,
               truncated: true,
+              coin_walk_truncated: scan.coin_walk_truncated,
+              address_balance_walk_truncated: scan.address_balance_walk_truncated,
               complete_ranking: false,
               cached: false,
-              caveat: samplingCaveat(scan.total_scanned, scan.unique_holders),
+              caveat: samplingCaveat(scan),
               ...(scan.unresolved_owners ? { unresolved_owners: scan.unresolved_owners } : {}),
               sampled_holders: enrichedHolders.map(({ rank: _rank, percentage: _pct, ...rest }) => rest),
             }
@@ -599,8 +741,7 @@ export function registerHolderTools(server: McpServer) {
               mode: "token",
               type: resolvedType,
               total_supply: supplyResult,
-              total_scanned: scan.total_scanned,
-              unique_holders: scan.unique_holders,
+              ...scanned,
               truncated: false,
               complete_ranking: true,
               cached: false,
@@ -608,7 +749,7 @@ export function registerHolderTools(server: McpServer) {
                 ? {
                     unresolved_owners: scan.unresolved_owners,
                     caveat:
-                      `${scan.unresolved_owners} of ${scan.total_scanned} coin objects have an owner or balance this tool could not read. They are attributed to nobody, so the percentages below are shares of total supply that do not account for them.`,
+                      `${scan.unresolved_owners} of ${scan.total_scanned} coin objects and address-balance entries have an owner or amount this tool could not read. They are attributed to nobody, so the percentages below are shares of total supply that do not account for them.`,
                   }
                 : {}),
               top_holders: enrichedHolders,

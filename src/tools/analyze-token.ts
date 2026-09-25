@@ -10,7 +10,8 @@ import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders, stoppedWalks } from "./holders.js";
 import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
 
-import { errorResult } from "../utils/errors.js";
+import { describeError, errorResult, isNotFound } from "../utils/errors.js";
+import { getNetwork } from "../config.js";
 import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin } from "../utils/guardians.js";
@@ -121,11 +122,12 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       }
 
       // Fetch metadata, price, holders and the on-chain registry in parallel
+      let coinInfoError: unknown = null;
       const [metaResult, priceResult, holderResult, registry] = await Promise.all([
         sui.stateService
           .getCoinInfo({ coinType })
           .then(({ response }) => response)
-          .catch(() => null),
+          .catch((err: unknown) => ((coinInfoError = err), null)),
 
         fetchAftermathPrices([coinType]),
 
@@ -135,6 +137,19 @@ export function registerAnalyzeTokenTools(server: McpServer) {
 
         fetchRegistryCurrency(coinType),
       ]);
+
+      // A type that does not parse, or that no metadata, registry entry or
+      // holder knows, is not a coin. Analysed anyway, it came back with
+      // decimals assumed and a deny-list verdict about a coin that does not exist.
+      if (coinInfoError) {
+        const code = typeof coinInfoError === "object" && "code" in coinInfoError ? coinInfoError.code : null;
+        if (code === "INVALID_ARGUMENT") return errorResult(describeError(coinInfoError, getNetwork()));
+        if (isNotFound(coinInfoError) && !registry && (holderResult?.holders.length ?? 0) === 0) {
+          return errorResult(
+            `No coin of type ${coinType} exists on ${getNetwork()}: it has no CoinMetadata and no coin registry entry${holderResult ? ", and no holders" : ""}.`,
+          );
+        }
+      }
 
       const meta = metaResult?.metadata;
       const treasury = metaResult?.treasury;

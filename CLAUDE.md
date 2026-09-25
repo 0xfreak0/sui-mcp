@@ -1402,6 +1402,32 @@ wallet, so `isSink` never fires on a real bridge exit and only one address
 label ships at all. `trace_funds` runs `detectBridges` over each hop's calls —
 data it already has, no extra query — and emits `bridge_exits`.
 
+### Shipped labels, screening and scam lists
+
+- **Shipped labels are first-party disclosures only**, generated into
+  `src/data/disclosed-labels.json` by `npm run sync:disclosed-labels`: exchange
+  proof-of-reserves lists (`proof-of-reserves-listed`), bridge deployment docs
+  (`official-docs`), attackers named in the victim's own incident report
+  (`victim-postmortem`). Every entry carries entity, evidence, source_url and
+  retrieved_at, and the script drops any address not found in its document.
+  Keys are `sui:mainnet:` or `eip155:1:`. OKX signs each address, but the
+  scheme has not been reproduced, so OKX rows claim a listing, nothing more.
+- **Every surface that shows a label shows its provenance** (`labelProvenance`).
+- **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
+  the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
+  change. Deposit detection and screening skip it; `measureFanout` still counts
+  it as a recipient, which is why the fan-out deposit check gates on `<= 2`.
+- **Screening reads `sent` windows for outgoing value and bridge exits.** An
+  exploiter's wallet collects airdrop spam afterwards; the Cetus attacker's
+  last 100 affected transactions contain no exit, its last 100 sent ones
+  contain 100+. Bridge exposure counts curated call markers only, never the
+  registry tier, which fires on price-VAA verification.
+- **OFAC lists zero Sui addresses** (SDN data as of 2026-09-23). Sanctions hits
+  can only come from chain-derived CCTP and Sui Bridge destinations.
+- **The Sui wallet blocklist is `flagged_by`, tier third-party**, never a label
+  or a sink, and mainnet-only (package-keyed). Package ids are stored as
+  16-hex prefixes to keep the file near 2 MB; domains are not synced.
+
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)

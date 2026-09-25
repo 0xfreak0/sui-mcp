@@ -4,7 +4,8 @@ import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
-import { getLabel } from "../utils/labels.js";
+import { describeLabel, getLabel } from "../utils/labels.js";
+import { classifyDepositAddress } from "../utils/deposit.js";
 import {
   coinScale,
   decimalsForCoinType,
@@ -187,7 +188,7 @@ async function walkFunding(address: string, maxHops: number, memo: FundingMemo) 
     origin = funder;
 
     if (funder === "unknown") { stopReason = "funder could not be determined"; break; }
-    if (getLabel(funder)) { stopReason = `reached a labeled entity (${getLabel(funder)!.label})`; break; }
+    if (getLabel(funder)) { stopReason = `reached a labeled entity (${describeLabel(getLabel(funder)!)})`; break; }
     if (visited.has(funder)) { stopReason = "reached an already-seen wallet (cycle)"; break; }
     visited.add(funder);
     current = funder;
@@ -233,6 +234,16 @@ export function registerFundingTools(server: McpServer) {
               }
             : null;
 
+        // A narrow address that pays one or two destinations is the shape of
+        // an exchange deposit address being swept (a sponsor's storage rebate
+        // counts as a second recipient in the fan-out). One more request reads
+        // the sweeps; the sponsor and destination are not measured here, so
+        // only a labelled exchange destination can make it `likely`.
+        const deposit =
+          !existing && result.classification === "narrow" && result.recipient_count <= 2 && result.sender_count >= 1
+            ? await classifyDepositAddress(address, { measureSponsor: false, measureDestination: false }).catch(() => null)
+            : null;
+
         return {
           content: [
             {
@@ -242,6 +253,18 @@ export function registerFundingTools(server: McpServer) {
                   ...result,
                   ...(existing ? { existing_label: existing } : {}),
                   ...(suggestion ?? {}),
+                  ...(deposit
+                    ? {
+                        deposit_address: {
+                          verdict: deposit.verdict,
+                          tier: deposit.tier,
+                          hot_wallet: deposit.hot_wallet,
+                          exchange: deposit.exchange,
+                          reasons: deposit.reasons,
+                          next_step: "classify_deposit_address measures the sweep sponsor and destination and lists sweeps and deposits.",
+                        },
+                      }
+                    : {}),
                 },
                 null,
                 2,
@@ -579,6 +602,7 @@ export function registerFundingTools(server: McpServer) {
             address: a,
             ...(id?.name ? { name: id.name } : {}),
             ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+            ...(id?.label_provenance ? { label_provenance: id.label_provenance } : {}),
             ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
             ...(id?.object_type ? { object_type: id.object_type } : {}),
             ...(id?.protocol ? { protocol: id.protocol } : {}),

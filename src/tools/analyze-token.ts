@@ -9,6 +9,7 @@ import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { scanTokenTopHolders, stoppedWalks } from "./holders.js";
 import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
+import { fetchDefiLlamaChange24h } from "../utils/price-providers.js";
 
 import { errorResult } from "../utils/errors.js";
 import { resolveSymbolDetailed } from "../discovery.js";
@@ -121,13 +122,15 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       }
 
       // Fetch metadata, price, holders and the on-chain registry in parallel
-      const [metaResult, priceResult, holderResult, registry] = await Promise.all([
+      const [metaResult, priceResult, change24hByCoin, holderResult, registry] = await Promise.all([
         sui.stateService
           .getCoinInfo({ coinType })
           .then(({ response }) => response)
           .catch(() => null),
 
         fetchAftermathPrices([coinType]),
+
+        fetchDefiLlamaChange24h([coinType]),
 
         wantHolders
           ? scanTokenTopHolders(coinType, 5, 2000).catch(() => null)
@@ -167,7 +170,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
 
       const priceEntry = priceResult?.[coinType];
       const priceUsd = priceEntry && priceEntry.price >= 0 ? priceEntry.price : null;
-      const change24h = priceEntry && priceEntry.price >= 0 ? priceEntry.priceChange24HoursPercentage : null;
+      const change24h = change24hByCoin.get(coinType) ?? null;
 
       // Compute market cap if we have price and supply
       let marketCapUsd: number | null = null;

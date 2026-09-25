@@ -1966,6 +1966,10 @@ change is likely to break:
   a `1d` candle compares a day's price move. Without `PYTH_API_KEY` nothing is
   compared: `oracle_unavailable` says so and `flagged_count` is null, because
   zero flagged candles reads as agreement.
+- **The 24h change comes from DefiLlama's `/percentage`**
+  (`fetchDefiLlamaChange24h`). Aftermath's `priceChange24HoursPercentage` is
+  0.0 for every coin (SUI read 0 on a day it rose 17%), so `get_token_prices`
+  and `analyze_token` never use it. A coin DefiLlama does not list gets null.
 - **An unpriced coin carries a code.** `request_failed` says nothing about the
   coin and must not be reported the way `not_listed` is.
 

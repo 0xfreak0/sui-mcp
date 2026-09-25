@@ -555,7 +555,7 @@ Address arguments accept any case, a short form (`0x2`), the hex without `0x`, o
 
 ### Price sources
 
-Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
+Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. The 24h change in `get_token_prices` and `analyze_token` is DefiLlama's, and null for a coin it does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
 
 ```
 get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")

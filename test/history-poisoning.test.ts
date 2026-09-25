@@ -53,8 +53,12 @@ const node = (digest: string, sender: string, changes: [string, string][]) => ({
   kind: { commands: { nodes: [] } },
 });
 
+/** A page as `last:` returns it: ascending, with both directions' page info. */
 const page = (nodes: unknown[]) => ({
-  transactions: { nodes, pageInfo: { hasNextPage: false, endCursor: null } },
+  transactions: {
+    nodes,
+    pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+  },
 });
 
 beforeEach(() => mockGqlQuery.mockReset());
@@ -107,7 +111,8 @@ describe("get_transaction_history — address poisoning", () => {
       t.counterparties.map((c) => c.address),
     );
     expect(all).not.toContain(FAKE);
-    expect(all).toEqual([VICTIM, VICTIM, REAL]);
+    // Rows are newest first, so the page's last transaction leads.
+    expect(all).toEqual([REAL, VICTIM, VICTIM]);
   });
 
   /**

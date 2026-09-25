@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createMockClient } from "../helpers/mock-grpc.js";
+import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
+import { checkpointChain } from "../helpers/service-shapes.js";
 
 const mockSui = createMockClient();
 const mockArchive = createMockClient();
+const mockGqlQuery = createMockGraphql();
 
 vi.mock("../../src/clients/grpc.js", () => ({
   sui: mockSui,
   archive: mockArchive,
+}));
+
+vi.mock("../../src/clients/graphql.js", () => ({
+  gqlQuery: mockGqlQuery,
 }));
 
 // Must import after mock setup
@@ -154,5 +160,39 @@ describe("get_checkpoint", () => {
 
     expect(data.digest).toBe("TargetDigest");
     expect(data.sequence_number).toBe("500");
+  });
+
+  it("returns the checkpoint nearest a timestamp, with the ones either side", async () => {
+    // Checkpoint `seq` is stamped at T0 + 250ms·seq.
+    const T0 = Date.parse("2025-05-22T00:00:00Z");
+    const chain = checkpointChain(1_000_000, (seq) => T0 + seq * 250);
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => chain(q, v));
+    mockSui.ledgerService.getCheckpoint.mockImplementation(async (req: { checkpointId: { sequenceNumber: bigint } }) => ({
+      response: {
+        checkpoint: {
+          sequenceNumber: req.checkpointId.sequenceNumber,
+          digest: "D",
+          summary: { epoch: 770n, timestamp: { seconds: 0n, nanos: 0 }, totalNetworkTransactions: 1n },
+        },
+      },
+    }));
+
+    const handler = tools.get("get_checkpoint")!;
+    // 200ms past checkpoint 400,000: 400,001 is 50ms away, 400,000 is 200ms away.
+    const result = await handler({ timestamp: new Date(T0 + 400_000 * 250 + 200).toISOString() });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.sequence_number).toBe("400001");
+    expect(data.resolved_from_timestamp).toMatchObject({
+      offset_ms: 50,
+      last_before: { sequence_number: "400000" },
+      first_at_or_after: { sequence_number: "400001" },
+    });
+  });
+
+  it("rejects a timestamp it cannot parse", async () => {
+    const handler = tools.get("get_checkpoint")!;
+    const result = await handler({ timestamp: "noon" });
+    expect(result.isError).toBe(true);
   });
 });

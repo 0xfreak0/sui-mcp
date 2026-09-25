@@ -1,12 +1,19 @@
 /**
- * Everything a transaction's events say about value leaving Sui through a
- * bridge, read from chain data alone.
+ * Everything a transaction's events say about value crossing a bridge, read
+ * from chain data alone.
  *
  * `resolve_bridge_transfer` and any tool that summarises exits share this, so
  * they agree on who a transfer pays rather than drifting apart. No indexer is
- * consulted here; the Wormhole redemption lookup stays in the tool.
+ * consulted here; the Wormholescan and LayerZero Scan lookups stay in the
+ * tool.
+ *
+ * The LayerZero, Axelar, Allbridge and Celer decoders are pinned to mainnet
+ * packages, so they are silent on any other network rather than claiming a
+ * mainnet chain for a testnet transfer.
  */
 
+import { allbridgeTransfers, type AllbridgeTransfer } from "./allbridge.js";
+import { axelarTransfers, type AxelarTransfer } from "./axelar.js";
 import {
   decodeWormholePayload,
   mayanBeneficiaries,
@@ -28,6 +35,9 @@ import {
   type NativeBridgeClaim,
   type NativeBridgeTransfer,
 } from "./sui-native.js";
+import { celerBurns, type CelerBurn } from "./celer.js";
+import { layerZeroTransfers, type LayerZeroTransfer } from "./layerzero.js";
+import { tokenBridgeRedemptions, type WormholeInbound } from "./wormhole-inbound.js";
 import { extractWormholeMessages, type SuiEventNode, type WormholeMessage } from "./wormhole.js";
 
 export interface BridgeEventReading {
@@ -41,6 +51,14 @@ export interface BridgeEventReading {
   mayan: Beneficiary[];
   /** True for a CCTP recipient that is Mayan's settlement contract, not the beneficiary. */
   settlesForMayan: (address: string | null) => boolean;
+  layerZero: LayerZeroTransfer[];
+  axelar: AxelarTransfer[];
+  allbridge: AllbridgeTransfer[];
+  /** True for a CCTP burn that carries an Allbridge transfer (same nonce): its beneficiary is Allbridge's wallet. */
+  carriesAllbridge: (cctpNonce: string | null) => boolean;
+  celer: CelerBurn[];
+  /** Token Bridge redemptions: value ARRIVING on Sui. NTT redemptions need the inputs; see `nttRedemptions`. */
+  wormholeInbound: WormholeInbound[];
   /** Every far-side recipient read from chain data. */
   beneficiaries: Beneficiary[];
 }
@@ -110,11 +128,24 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
   const settlesForMayan = (address: string | null) =>
     mayan.length > 0 && !mayan.some((b) => sameForeignAddress(b.address, address));
   const decodedMessages = messages.map((m) => decodeWormholePayload(m, qualify));
+  const layerZero = layerZeroTransfers(events);
+  const axelar = axelarTransfers(events);
+  const allbridge = allbridgeTransfers(events);
+  const celer = celerBurns(events);
+  // Allbridge's live route burns through CCTP with its own nonce. The burn's
+  // mint recipient is where USDC lands (on Solana, the wallet's token
+  // account); Allbridge's event names the wallet, so that is the beneficiary.
+  const allbridgeNonces = new Set(allbridge.filter((a) => a.route === "cctp").map((a) => a.nonce));
+  const carriesAllbridge = (cctpNonce: string | null) => cctpNonce !== null && allbridgeNonces.has(cctpNonce);
   const beneficiaries: Beneficiary[] = [
     ...mayan,
     ...decodedMessages.flatMap((d) => (d?.beneficiary ? [d.beneficiary] : [])),
+    ...layerZero.flatMap((l) => (l.beneficiary ? [l.beneficiary] : [])),
+    ...axelar.map((a) => a.beneficiary),
+    ...allbridge.map((a) => a.beneficiary),
+    ...celer.map((c) => c.beneficiary),
     ...cctpTransfers
-      .filter((t) => !settlesForMayan(t.destinationAddress))
+      .filter((t) => !settlesForMayan(t.destinationAddress) && !carriesAllbridge(t.nonce))
       .map((t): Beneficiary => ({
         evidence: "chain-derived",
         protocol: "Circle CCTP",
@@ -148,6 +179,12 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
     decodedMessages,
     mayan,
     settlesForMayan,
+    layerZero,
+    axelar,
+    allbridge,
+    carriesAllbridge,
+    celer,
+    wormholeInbound: tokenBridgeRedemptions(events, qualify),
     beneficiaries,
   };
 }

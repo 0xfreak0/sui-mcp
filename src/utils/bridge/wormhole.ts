@@ -41,7 +41,7 @@ export type EvidenceTier = "chain-derived" | "indexer-attested" | "heuristic";
 export const EVIDENCE_TIER_MEANING: Record<EvidenceTier, string> = {
   "chain-derived": "Read from chain data. No third party is trusted for this.",
   "indexer-attested":
-    "Asserted by Wormholescan's index, not verified on-chain by this server. Confirm on the destination chain before relying on it as evidence.",
+    "Asserted by a bridge indexer (Wormholescan, LayerZero Scan), not verified on-chain by this server. Confirm on the destination chain before relying on it as evidence.",
   heuristic:
     "Inferred from amount/time/asset similarity. A lead to check, never a finding on its own.",
 };

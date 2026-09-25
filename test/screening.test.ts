@@ -16,6 +16,7 @@ const tx = (over: Partial<ScreenTx>): ScreenTx => ({
   gasSponsor: A,
   changes: [],
   calls: [],
+  eventTypes: [],
   ...over,
 });
 
@@ -90,6 +91,20 @@ describe("bridgeExitsOf", () => {
   it("reports every curated bridge a sent transaction used", () => {
     const exits = bridgeExitsOf(A, [tx({ digest: "GQAArGh6UR", calls: mayanCctp })]);
     expect(exits.map((e) => e.protocol).sort()).toEqual(["Circle CCTP", "Mayan MCTP"]);
+  });
+
+  it("reports an exit visible only in events, as a wrapper's is", () => {
+    // Mayan's bridge_with_fee (777Emr4V…) puts no marker call in the PTB; its
+    // CCTP burn and Wormhole message are events.
+    const exits = bridgeExitsOf(A, [
+      tx({
+        eventTypes: [
+          "0x2aa6c5d56376c371f88a6cc42e852824994993cb9bab8d3e6450cbe3cb32b94e::deposit_for_burn::DepositForBurn",
+          "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage",
+        ],
+      }),
+    ]);
+    expect(exits.map((e) => e.protocol).sort()).toEqual(["Circle CCTP", "Wormhole"]);
   });
 
   it("ignores transactions the address did not send", () => {

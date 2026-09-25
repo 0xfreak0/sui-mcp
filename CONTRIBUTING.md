@@ -170,7 +170,10 @@ modules and structs, then sample real events to confirm the field names and see
 what a live payload actually contains. Every entry currently in the registry was
 added only after a real transaction was captured, and the payloads are the test
 fixtures. `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` are built
-from transactions named in their comments.
+from transactions named in their comments; `test/fixtures/bridge-transactions.json`
+holds `resolve_bridge_transfer`'s own GraphQL response for one real
+transaction per newer bridge, keyed by digest. Capture a new one with the query
+in `src/tools/bridge.ts` and add it there.
 
 Two things that sampling catches and guessing does not:
 
@@ -180,16 +183,28 @@ Two things that sampling catches and guessing does not:
   have collided with DEX order books, which emit some of the highest-frequency
   events on mainnet. The markers carry `mctp` instead. Prefer a distinctive
   module or event name over a generic one, and add a test asserting the
-  lookalike does *not* match.
+  lookalike does *not* match. When the only exit event has a generic name
+  (`events::TokensSentEvent`), pin it to its package with a
+  `0xpkg::module::Name` marker; events keep the defining package's id across
+  upgrades. When a call marker's prefix would catch a sibling function, list
+  it in `exactCallMarkers`.
+
+To resolve a new bridge, write its decoder in `src/utils/bridge/<name>.ts`,
+pinned to the emitting package, and add it to `readBridgeEvents` in
+`src/utils/bridge/exits.ts`. Its beneficiary then reaches
+`resolve_bridge_transfer`, `screen_address` and any other caller of
+`readBridgeEvents` together. Give it a section in the tool and add its name to
+`SECTIONED` in `src/tools/bridge.ts`.
 
 Note that volume sampling will **not** surface bridges. A survey of 1200 recent
 mainnet events turned up 180 `order::OrderCanceled` and not one bridge event —
 bridge traffic is rare next to DEX and oracle activity. Probe candidate event
 types by name instead.
 
-Set `resolution` honestly. `identifier` means a shared id is quoted on both
-chains and the hop can be followed; `detect-only` means the exit is recognised
-and no more. Never point a caller at a resolver that cannot help them —
+Set `resolution` honestly. `identifier` means `resolve_bridge_transfer` reads
+the destination or an id quoted on both chains, so the hop can be followed;
+`detect-only` means the exit is recognised and no more (Meson, whose recipient
+is not in Sui data). Never point a caller at a resolver that cannot help them —
 `resolvableHit()` is the guard.
 
 ```bash

@@ -1,14 +1,15 @@
-import { z } from "zod";
-import { errorResult, isNotFound } from "../utils/errors.js";
+import { addressArg } from "./args.js";
+import { describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { fetchActiveValidators, findValidatorByAddress } from "../utils/validators.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
-import { suivisionPackageUrl } from "../config.js";
+import { getNetwork, suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
 import { describeAddresses, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
+import { formatCoinAmount } from "../utils/coin-amount.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
@@ -111,7 +112,7 @@ export function registerIdentifyTools(server: McpServer) {
     "identify_address",
     "(Recommended first step) Identify what a Sui address is: wallet, package, validator, or object. Returns a type classification with contextual summary (e.g. balance + SuiNS for wallets, module list for packages, stake info for validators). Use this before deciding which other tools to call.",
     {
-      address: z.string().describe("Sui address or object ID (0x...)"),
+      address: addressArg().describe("Sui address or object ID (0x...)"),
     },
     async ({ address }) => {
       // Try to get object at this address first.
@@ -255,12 +256,16 @@ export function registerIdentifyTools(server: McpServer) {
 
       // CASE 4: Treat as a wallet address — fetch summary data in parallel
       const [balanceRes, nameRes, ownedRes, identities] = await Promise.all([
-        sui.getBalance({ owner: address }).catch(() => null),
+        // Each read reports its own failure: a failed balance read is not a
+        // zero balance, and a failed name lookup is not the absence of a name.
+        sui.getBalance({ owner: address }).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
         sui.nameService
           .reverseLookupName({ address })
           .then(({ response }) => response.record?.name ?? null)
-          .catch(() => null),
-        sui.listBalances({ owner: address, limit: 10, cursor: null }).catch(() => null),
+          .catch((err: unknown) => (isNotFound(err) ? null : { failed: describeError(err, getNetwork()) })),
+        sui.listBalances({ owner: address, limit: 10, cursor: null }).catch((err: unknown) => ({
+          failed: describeError(err, getNetwork()),
+        })),
         // Who can spend from it, and — if that is a committee — who those
         // members are. This is the tool that answers "what is this address",
         // so a multisig going unmentioned here is the omission that matters
@@ -276,8 +281,12 @@ export function registerIdentifyTools(server: McpServer) {
         ),
       ]);
 
-      const suiBalance = balanceRes?.balance?.balance ?? "0";
-      const nonZeroTokens = ownedRes?.balances?.filter((b) => b.balance !== "0").length ?? 0;
+      const balanceFailed = "failed" in balanceRes ? balanceRes.failed : null;
+      const suiBalance = "failed" in balanceRes ? null : (balanceRes.balance?.balance ?? "0");
+      const nameFailed = nameRes !== null && typeof nameRes === "object" ? nameRes.failed : null;
+      const suiName = typeof nameRes === "string" ? nameRes : null;
+      const tokensFailed = "failed" in ownedRes ? ownedRes.failed : null;
+      const nonZeroTokens = "failed" in ownedRes ? null : (ownedRes.balances?.filter((b) => b.balance !== "0").length ?? 0);
       const auth = identities.get(address)?.authentication;
       const committee = identities.get(address)?.committee_members;
       const aliases = identities.get(address)?.aliases;
@@ -288,18 +297,28 @@ export function registerIdentifyTools(server: McpServer) {
           text: JSON.stringify({
             address,
             type: "wallet",
-            sui_name: nameRes,
+            sui_name: suiName,
+            ...(nameFailed
+              ? { sui_name_unavailable: `The SuiNS reverse lookup failed (${nameFailed}), so whether this address has a name is unknown.` }
+              : {}),
             // Stated at the point of use, not just in the tool description: a
             // name is the strongest pull toward off-chain identity this server
             // emits, and it is the least verified thing in the response.
-            ...(nameRes
+            ...(suiName
               ? {
                   sui_name_caveat:
                     "Self-chosen, purchasable handle — not identity and not verified. Anyone may register a name resembling an exchange, project or person. Corroborate before treating it as attribution.",
                 }
               : {}),
             sui_balance: suiBalance,
+            sui_balance_formatted: formatCoinAmount(suiBalance, "0x2::sui::SUI"),
+            ...(balanceFailed
+              ? { sui_balance_unavailable: `The SUI balance read failed (${balanceFailed}), so the balance is unknown, not zero.` }
+              : {}),
             token_count: nonZeroTokens,
+            ...(tokensFailed
+              ? { token_count_unavailable: `The balance list read failed (${tokensFailed}), so how many tokens this address holds is unknown.` }
+              : {}),
             // Absent means this address has never SENT a transaction, so it
             // has produced no signature to read. That is not the same as an
             // ordinary single-key wallet, and the caveat says so rather than

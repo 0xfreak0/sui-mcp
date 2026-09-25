@@ -198,7 +198,12 @@ export function registerTransactionTools(server: McpServer) {
           event_type: e.eventType,
           sender: e.sender,
         };
-        if (!parsedUsable) return base;
+        if (!parsedUsable) {
+          // A zero budget skips the lookup entirely, and every event counts
+          // as omitted: the reader asked for no fields, not for no disclosure.
+          if (fieldBudget === 0) fieldsOmitted++;
+          return base;
+        }
         const json = parsed![i].json;
         const size = JSON.stringify(json ?? null).length;
         if (spent + size > fieldBudget) {
@@ -340,8 +345,9 @@ export function registerTransactionTools(server: McpServer) {
                 ...(fieldsOmitted
                   ? {
                       event_fields_omitted: fieldsOmitted,
-                      event_fields_budget_note:
-                        `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
+                      event_fields_budget_note: fieldBudget === 0
+                        ? `Decoded fields for all ${fieldsOmitted} event(s) were skipped because you set max_event_field_bytes=0. Their types and senders are still listed. Remove the cap to see them; this response is NOT the complete event data.`
+                        : `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
                     }
                   : {}),
                 ...(rawEvents.length > 0 && fieldBudget > 0 && !parsedUsable

@@ -1,8 +1,9 @@
-import { z } from "zod";
 import { coinScale, displayCoin } from "../utils/valuation.js";
-import { boolArg } from "./args.js";
+import { boolArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { getNetwork } from "../config.js";
+import { describeError, errorResult } from "../utils/errors.js";
 import { fetchAftermathPrices } from "./prices.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -15,7 +16,7 @@ export function registerWorkflowTools(server: McpServer) {
     "get_wallet_overview",
     "(Recommended first tool for wallets) Get a comprehensive overview of a Sui wallet: all token balances, SuiNS name, staked SUI count, kiosk/NFT count, and recent transactions. Set include_prices=true for USD values and total portfolio value. Start here before drilling into specific tools.",
     {
-      address: z.string().describe("Wallet address (0x...)"),
+      address: addressArg().describe("Wallet address (0x...)"),
       include_prices: boolArg()
         .optional()
         .describe("Include USD prices and portfolio value (default: false)"),
@@ -68,26 +69,31 @@ export function registerWorkflowTools(server: McpServer) {
               }
             }`,
             { address, first: 50, txFirst: 5 }
-          ).catch(() => ({
-            address: null,
-            transactions: { nodes: [] as Array<{ digest: string; sender?: { address: string }; effects?: { status: string; timestamp?: string } }> },
-          })),
+          // A failed read is an error, never an empty wallet: `holdings: []`
+          // and no transactions is exactly what a real unused address returns.
+          ).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
 
           sui.listOwnedObjects({
             owner: address,
             type: "0x3::staking_pool::StakedSui",
             limit: 50,
             cursor: null,
-          }),
+          }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
 
           sui.listOwnedObjects({
             owner: address,
             type: "0x2::kiosk::KioskOwnerCap",
             limit: 50,
             cursor: null,
-          }).catch(() => ({ objects: [] })),
+          }).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
         ]);
 
+      if (gqlResult instanceof Error) {
+        return errorResult(
+          `Could not read the balances, name and recent transactions of ${address}: ${describeError(gqlResult, getNetwork())}. ` +
+            "This is not evidence the wallet is empty.",
+        );
+      }
       const addrData = gqlResult.address;
       const nameResult = addrData?.defaultNameRecord?.domain ?? null;
       const rawBalances = (addrData?.balances.nodes ?? [])
@@ -186,10 +192,17 @@ export function registerWorkflowTools(server: McpServer) {
         sui_name: nameResult,
         holdings,
         holdings_truncated: hasNextPage,
-        staked_sui_count: objectsResult.objects.length,
-        kiosk_count: kioskResult.objects.length,
+        staked_sui_count: objectsResult instanceof Error ? null : objectsResult.objects.length,
+        kiosk_count: kioskResult instanceof Error ? null : kioskResult.objects.length,
         recent_transactions: recentTransactions,
       };
+      // A failed read is reported as unknown, not as zero.
+      if (objectsResult instanceof Error) {
+        result.staked_sui_unavailable = `The StakedSui read failed (${describeError(objectsResult, getNetwork())}), so how much is staked is unknown. Try get_staking_summary.`;
+      }
+      if (kioskResult instanceof Error) {
+        result.kiosk_unavailable = `The kiosk read failed (${describeError(kioskResult, getNetwork())}), so whether this wallet owns kiosks is unknown.`;
+      }
 
       if (include_prices) {
         // A holding with no price contributes 0, so the total silently covers

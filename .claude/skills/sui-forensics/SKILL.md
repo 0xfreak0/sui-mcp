@@ -365,7 +365,17 @@ get the schema wrong in ways that fail silently.
 
 If a tool seems missing, call `enable_tools`. It is probably disabled rather
 than absent. It takes `profile: "developer"` or `profiles: ["forensics",
-"developer"]`.
+"developer"]`. Calling a disabled tool returns the profile to enable.
+
+Address arguments take any case, a short form or a SuiNS name. A name is
+resolved at call time and reported as `resolved_from`; it points wherever its
+owner set it today, so cite the address, not the name.
+
+A field set to `null` with a `*_unavailable` note beside it (`sui_balance`,
+`sui_name`, `token_count`, `staked_sui_count`, `kiosk_count`) means the read
+failed. It is
+unknown, not zero, and not evidence of an empty or unused wallet. Retry before
+drawing anything from it.
 
 **Cost, roughly.** Clustering one seed is ~50 queries and rises with
 `expand_budget`. A fan-out measurement is up to 20. Batch digests through

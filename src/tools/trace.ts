@@ -3,7 +3,7 @@ import { numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import { lookupProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
-import { getLabel, isSink } from "../utils/labels.js";
+import { getLabel, isSink, labelProvenance, type LabelProvenance } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import { chooseNextHop } from "../utils/trace-hop.js";
 import {
@@ -1022,6 +1022,7 @@ export function registerTraceTools(server: McpServer) {
           category?: string;
           confidence?: string;
           source?: string;
+          provenance?: LabelProvenance;
           is_sink?: boolean;
           kind?: string;
           object_type?: string;
@@ -1050,6 +1051,8 @@ export function registerTraceTools(server: McpServer) {
           label.category = known.category;
           label.confidence = known.confidence;
           label.source = known.source;
+          const provenance = labelProvenance(known);
+          if (provenance) label.provenance = provenance;
           label.is_sink = isSink(addr);
           // Prefer explicit attribution over the short-hex fallback in the
           // human summary — "Binance deposit" beats "0x1234…abcd".

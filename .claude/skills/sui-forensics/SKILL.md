@@ -358,6 +358,8 @@ get the schema wrong in ways that fail silently.
 | Where did the money go / come from? | `trace_funds`, `find_funding_source` |
 | Several addresses at once? | `find_funding_sources` — shares work, reports co-funding |
 | Is this funder an exchange? | `get_address_fanout` |
+| Is this an exchange deposit address, and whose? | `classify_deposit_address` |
+| Is this address exposed to an exploiter, exchange, bridge or sanctioned account? | `screen_address` |
 | Do these wallets share an operator? | `build_wallet_edges` |
 | Who really runs this multisig treasury? | `analyze_multisig` — live vs dormant keys across its history |
 | Which keys signed THIS transaction? | `get_transaction` → `authorization.signed_by` |

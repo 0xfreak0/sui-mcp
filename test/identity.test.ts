@@ -8,8 +8,20 @@ vi.mock("../src/utils/names.js", () => ({
   batchResolveNames: async (a: string[]) =>
     new Map(a.filter((x) => x === "0xnamed").map((x) => [x, "someone.sui"])),
 }));
-vi.mock("../src/utils/labels.js", () => ({
-  getLabel: (a: string) => (a === "0xcex" ? { label: "An Exchange", category: "cex" } : null),
+vi.mock("../src/utils/labels.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getLabel: (a: string) =>
+    a === "0xcex"
+      ? {
+          label: "An Exchange",
+          category: "cex",
+          source: "disclosed",
+          entity: "An Exchange",
+          evidence: "proof-of-reserves-listed",
+          source_url: "https://example.com/por.csv",
+          retrieved_at: "2026-09-25",
+        }
+      : null,
   isSink: () => false,
 }));
 vi.mock("../src/protocols/registry.js", () => ({
@@ -71,6 +83,14 @@ describe("describeAddresses", () => {
     expect(out.get("0xnamed")!.name).toBe("someone.sui");
     expect(out.get("0xcex")!.label).toBe("An Exchange");
     expect(out.get("0xcex")!.label_category).toBe("cex");
+    // A label is only as good as its source, so the source travels with it.
+    expect(out.get("0xcex")!.label_provenance).toEqual({
+      entity: "An Exchange",
+      evidence: "proof-of-reserves-listed",
+      source_url: "https://example.com/por.csv",
+      retrieved_at: "2026-09-25",
+    });
+    expect(out.get("0xnamed")!.label_provenance).toBeUndefined();
   });
 
   it("stays at two batched requests however many addresses", async () => {

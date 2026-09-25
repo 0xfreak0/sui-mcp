@@ -11,6 +11,30 @@ import { describeAddresses, type AddressIdentity, type AliasSet } from "../utils
 import { resolvePublisher } from "../utils/publisher.js";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getLabel, isSinkCategory, labelProvenance } from "../utils/labels.js";
+import { guardiansFlagsForObjectType, guardiansFlagsForPackage, type GuardiansFlag } from "../utils/guardians.js";
+
+/**
+ * The address's label with its provenance, spread into every case's result.
+ * The recommended first step is where an investigator learns that an address
+ * is a Binance reserve wallet or a named exploiter, and on what evidence.
+ */
+function labelFields(address: string) {
+  const found = getLabel(address);
+  if (!found) return {};
+  return {
+    label: {
+      label: found.label,
+      category: found.category,
+      source: found.source,
+      is_sink: isSinkCategory(found.category),
+      ...labelProvenance(found),
+      ...(found.notes ? { notes: found.notes } : {}),
+    },
+  };
+}
+
+const flaggedFields = (flags: GuardiansFlag[]) => (flags.length > 0 ? { flagged_by: flags } : {});
 
 const LATEST_VERSION_QUERY = `query ($addr: SuiAddress!) {
   packageVersions(address: $addr, last: 1) { nodes { address version } }
@@ -197,6 +221,8 @@ export function registerIdentifyTools(server: McpServer) {
             text: JSON.stringify({
               address,
               type: "package",
+              ...labelFields(address),
+              ...flaggedFields(guardiansFlagsForPackage(address)),
               protocol,
               lineage,
               publisher,
@@ -226,6 +252,8 @@ export function registerIdentifyTools(server: McpServer) {
               address,
               type: isShared ? "shared_object" : "object",
               object_type: objectType,
+              ...labelFields(address),
+              ...flaggedFields(guardiansFlagsForObjectType(objectType)),
               owner,
               version: obj.version?.toString(),
               hint: isShared
@@ -298,6 +326,7 @@ export function registerIdentifyTools(server: McpServer) {
           text: JSON.stringify({
             address,
             type: "wallet",
+            ...labelFields(address),
             sui_name: suiName,
             ...(nameFailed
               ? { sui_name_unavailable: `The SuiNS reverse lookup failed (${nameFailed}), so whether this address has a name is unknown.` }

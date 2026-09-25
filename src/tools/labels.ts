@@ -102,7 +102,7 @@ export function registerLabelTools(server: McpServer) {
         }
 
         case "lookup": {
-          if (!address) return jsonResult({ error: "'address' is required for lookup." });
+          if (!address) return errorResult("'address' is required for lookup.");
           const found = getLabel(address);
           return jsonResult({
             address,

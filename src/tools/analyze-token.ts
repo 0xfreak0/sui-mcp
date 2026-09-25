@@ -13,6 +13,7 @@ import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
 import { errorResult } from "../utils/errors.js";
 import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
+import { guardiansFlagsForCoin } from "../utils/guardians.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** Where a coin's decimals came from, strongest evidence first. */
@@ -199,6 +200,10 @@ export function registerAnalyzeTokenTools(server: McpServer) {
                   : " It was reached by scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin."),
             }
           : { verified_by: vouchFor(coinType) }),
+        // A third-party scam list, stated beside the curated answer rather
+        // than folded into it: it is evidence about the coin, weaker than the
+        // curated list and never attribution of anyone who holds it.
+        ...(guardiansFlagsForCoin(coinType).length > 0 ? { flagged_by: guardiansFlagsForCoin(coinType) } : {}),
         symbol,
         name,
         decimals,

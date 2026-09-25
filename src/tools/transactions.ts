@@ -78,8 +78,13 @@ interface QueriedTx {
   };
 }
 
-/** Aliased connections per request. The service refuses more than 21 per document. */
-const VERSION_ALIASES_PER_REQUEST = 20;
+/**
+ * Aliased version connections per request. The service refuses a document of
+ * more than 300 query nodes, and each alias repeats the fragment: about 26
+ * nodes each, 38 with commands selected. Measured on mainnet: 10 aliases pass
+ * and 12 fail without commands; 5 pass and 8 fail with them.
+ */
+const versionAliasesPerRequest = (includeFunctions: boolean) => (includeFunctions ? 5 : 10);
 
 function queriedTxFragment(includeFunctions: boolean): string {
   // Commands are only selected on request: they multiply response size on a
@@ -103,8 +108,9 @@ async function readVersionPages(
   const rest = fn.split("::").slice(1);
   const pages: Array<VersionPage<QueriedTx> | null> = streams.map(() => null);
   const active = streams.map((s, i) => ({ s, i })).filter(({ s }) => !s.done);
-  for (let start = 0; start < active.length; start += VERSION_ALIASES_PER_REQUEST) {
-    const chunk = active.slice(start, start + VERSION_ALIASES_PER_REQUEST);
+  const perRequest = versionAliasesPerRequest(includeFunctions);
+  for (let start = 0; start < active.length; start += perRequest) {
+    const chunk = active.slice(start, start + perRequest);
     const decls = chunk.map((_, k) => `$f${k}: TransactionFilter, $c${k}: String`).join(", ");
     const paging = order === "newest" ? (k: number) => `last: $n, before: $c${k}` : (k: number) => `first: $n, after: $c${k}`;
     const fields = chunk

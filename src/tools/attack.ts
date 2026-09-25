@@ -1,13 +1,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { numArg } from "./args.js";
+import { numArg, refinePoint } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
 import { prefetchProtocolNames, lookupProtocolDisplay } from "../protocols/registry.js";
 import { packageOfEventType } from "../utils/event-json.js";
 import { flagPtbAnomalies, type FormattedCommand } from "../utils/ptb-anomalies.js";
 import { getLabel } from "../utils/labels.js";
-import { toCheckpoint } from "../utils/checkpoint-time.js";
+import { resolveWindow } from "../utils/checkpoint-time.js";
 import {
   displayCoin,
   formatUsd,
@@ -309,10 +309,12 @@ export function registerAttackTools(server: McpServer) {
         .describe("Read every transaction this address sent inside the window instead of a digest list."),
       start: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Window start with `sender`: a checkpoint number or ISO 8601 time. Inclusive."),
       end: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Window end with `sender`: a checkpoint number or ISO 8601 time. Inclusive."),
       max_transactions: numArg()
@@ -327,6 +329,7 @@ export function registerAttackTools(server: McpServer) {
         .describe("Address whose gains to total. Defaults to `sender`, or to each transaction's sender."),
       price_at: z
         .union([numArg(), z.string()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Price every coin at this moment (Unix seconds or ISO 8601). Defaults to the first successful transaction's time, before prices reacted."),
       max_groups: numArg()
@@ -339,6 +342,9 @@ export function registerAttackTools(server: McpServer) {
       try {
         if (!digests && !sender) return errorResult("Give `digests`, or `sender` with an optional window.");
         if (digests && sender) return errorResult("Give `digests` or `sender`, not both.");
+        if (digests && (start !== undefined || end !== undefined)) {
+          return errorResult("`start` and `end` bound the `sender` window. With `digests`, every listed transaction is read, so drop them.");
+        }
         const senderId = sender ? canonicalId(sender) : null;
         if (sender && !senderId) return errorResult(`'${sender}' is not a Sui address.`);
         const attackerId = attacker ? canonicalId(attacker) : senderId;
@@ -355,20 +361,25 @@ export function registerAttackTools(server: McpServer) {
           invalid = uniq.filter((d) => !isDigest(d));
           list = uniq.filter((d) => isDigest(d));
         } else {
-          const from = await toCheckpoint(start);
-          const to = await toCheckpoint(end);
-          // The filter's bounds are exclusive; the tool's are inclusive.
+          // Times resolve to the checkpoints either side of the moment, so the
+          // window holds exactly the checkpoints stamped inside it. A checkpoint
+          // number is inclusive, and the filter's bounds are exclusive.
+          const w = await resolveWindow(start, end);
+          const afterCp =
+            w.after?.checkpoint == null ? null : w.after.resolved_from === "checkpoint" ? Math.max(0, w.after.checkpoint - 1) : w.after.checkpoint;
+          const beforeCp =
+            w.before?.checkpoint == null ? null : w.before.resolved_from === "checkpoint" ? w.before.checkpoint + 1 : w.before.checkpoint;
           const r = await digestsSentBy(
             senderId!,
             {
-              ...(from ? { afterCheckpoint: Math.max(0, from.checkpoint - 1) } : {}),
-              ...(to ? { beforeCheckpoint: to.checkpoint + 1 } : {}),
+              ...(afterCp !== null ? { afterCheckpoint: afterCp } : {}),
+              ...(beforeCp !== null ? { beforeCheckpoint: beforeCp } : {}),
             },
             max_transactions ?? 500,
           );
           list = r.digests;
           truncated = r.truncated;
-          window = { start: from, end: to };
+          window = { from: start ?? null, to: end ?? null, after_checkpoint: afterCp, before_checkpoint: beforeCp };
         }
         if (list.length === 0) return errorResult("No transactions to read.");
 

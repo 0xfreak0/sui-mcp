@@ -45,6 +45,24 @@ const SENT_PAGE = `query ($a: SuiAddress!, $first: Int!, $after: String) {
   }
 }`;
 
+/**
+ * The address's sent transactions, newest page first: which keys sign NOW is
+ * the question, and `first` would read the wallet as it was when it was new.
+ */
+const SENT_NEWEST_PAGE = `query ($a: SuiAddress!, $last: Int!, $before: String) {
+  transactions(filter: { sentAddress: $a }, last: $last, before: $before) {
+    pageInfo { hasPreviousPage startCursor }
+    nodes { digest effects { timestamp } gasInput { gasSponsor { address } } signatures { signatureBytes } }
+  }
+}`;
+
+interface SentNewestPageResult {
+  transactions: {
+    pageInfo: { hasPreviousPage: boolean; startCursor: string | null };
+    nodes: SentPageResult["transactions"]["nodes"];
+  };
+}
+
 interface SentPageResult {
   transactions: {
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -69,14 +87,14 @@ export function registerMultisigTools(server: McpServer) {
         .max(500)
         .optional()
         .describe(
-          "Transactions to examine (default 200). More is strictly better here — a key looks dormant until the one transaction it signed comes into view.",
+          "Sent transactions to examine, newest first (default 200). More is strictly better here — a key looks dormant until the one transaction it signed comes into view.",
         ),
     },
     async ({ address, max_transactions }) => {
       const limit = max_transactions ?? 200;
       const observations: SignerObservation[] = [];
       let committee = null;
-      let after: string | null = null;
+      let before: string | null = null;
       let scanned = 0;
       let complete = false;
       // The address's own signature in a scheme other than multisig. One is
@@ -91,10 +109,10 @@ export function registerMultisigTools(server: McpServer) {
         // non-multisig sender never adds an observation, and a loop waiting
         // for one paged through the address's entire history.
         scan: while (scanned < limit) {
-          const r: SentPageResult = await gqlQuery<SentPageResult>(SENT_PAGE, {
+          const r: SentNewestPageResult = await gqlQuery<SentNewestPageResult>(SENT_NEWEST_PAGE, {
             a: address,
-            first: Math.min(PAGE, limit - scanned),
-            after,
+            last: Math.min(PAGE, limit - scanned),
+            before,
           });
           const conn = r.transactions;
           if (!conn?.nodes?.length) {
@@ -102,7 +120,8 @@ export function registerMultisigTools(server: McpServer) {
             break;
           }
 
-          for (const tx of conn.nodes) {
+          // A `last` page arrives oldest-first.
+          for (const tx of [...conn.nodes].reverse()) {
             scanned++;
             const sigs = tx.signatures.map((s) => s.signatureBytes);
             const auth = readAuthentication(address, sigs);
@@ -131,14 +150,14 @@ export function registerMultisigTools(server: McpServer) {
               ...(tx.effects?.timestamp ? { timestamp: tx.effects.timestamp } : {}),
             });
           }
-          if (!conn.pageInfo.hasNextPage) {
+          if (!conn.pageInfo.hasPreviousPage) {
             complete = true;
             break;
           }
-          after = conn.pageInfo.endCursor;
+          before = conn.pageInfo.startCursor;
           // Restarting the walk would count the same transactions again and
           // skew every signer-set frequency in the result.
-          if (!after) break;
+          if (!before) break;
         }
       } catch (err) {
         return errorResult(

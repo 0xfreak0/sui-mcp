@@ -2,9 +2,9 @@ import { z } from "zod";
 import { type SuiNetwork, DEFAULT_NETWORK, isSuiNetwork, runWithNetwork } from "../config.js";
 import { sui } from "../clients/grpc.js";
 import { cleanErrorMessage, describeError, errorResult, isNotFound } from "../utils/errors.js";
-import { isAddressSchema, isSuinsName } from "./args.js";
+import { isAddressSchema, isSuinsName, toolArgsSchema } from "./args.js";
 import { toolPolicy, withStructuredContent } from "./tool-meta.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -27,39 +27,6 @@ function isZodRawShape(value: unknown): value is z.ZodRawShape {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   return Object.values(value as Record<string, unknown>).every(
     (v) => !!v && typeof (v as { safeParse?: unknown }).safeParse === "function",
-  );
-}
-
-/** Does this field, under its optional/default/describe wrappers, take an array? */
-function takesArray(schema: z.ZodTypeAny): boolean {
-  let node: z.ZodTypeAny | undefined = schema;
-  while (node) {
-    const def = node._def as { typeName?: string; innerType?: z.ZodTypeAny; schema?: z.ZodTypeAny };
-    if (def.typeName === z.ZodFirstPartyTypeKind.ZodArray) return true;
-    node = def.innerType ?? def.schema;
-  }
-  return false;
-}
-
-/**
- * Accept the argument shapes a model sends for "unset" and "one of these".
- *
- * `null` means the caller is leaving the argument out: an optional field falls
- * back to its default and a required one reports "Required". Without this,
- * `limit: null` reached a number coercion as 0 and returned an empty page with
- * `has_next_page: false`, which reads as "this address never sent anything".
- *
- * A bare string where the field takes a list becomes a one-item list, so
- * `digests: "abc"` works the same as `digests: ["abc"]`.
- *
- * Both run as a preprocess on the field, so the generated JSON schema is the
- * field's own.
- */
-function lenientField(schema: z.ZodTypeAny): z.ZodTypeAny {
-  const array = takesArray(schema);
-  return z.preprocess(
-    (v) => (v === null ? undefined : array && typeof v === "string" ? [v] : v),
-    schema,
   );
 }
 
@@ -157,6 +124,15 @@ function reportResolved(result: ToolResult, resolved: ResolvedName[]): ToolResul
 }
 
 /**
+ * Escape control characters left in an error message. Tools quote the
+ * caller's input back (`Module 'abc…' not found`), and an argument holding
+ * NUL or an ANSI escape put those raw bytes into the reply.
+ */
+function escapeControl(message: string): string {
+  return message.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/**
  * Clean the message of an error a tool returned itself. Tools pass the raw
  * `err.message` into `errorResult`, so the same encoding and dumps reach the
  * reader by that route too.
@@ -167,7 +143,7 @@ function cleanReturnedError(result: ToolResult, network: SuiNetwork): ToolResult
   try {
     const parsed = JSON.parse(first.text) as { error?: unknown };
     if (!parsed || typeof parsed !== "object" || typeof parsed.error !== "string") return result;
-    const error = cleanErrorMessage(parsed.error, network);
+    const error = escapeControl(cleanErrorMessage(parsed.error, network));
     if (error === parsed.error) return result;
     return {
       ...result,
@@ -178,11 +154,65 @@ function cleanReturnedError(result: ToolResult, network: SuiNetwork): ToolResult
   }
 }
 
+/** The SDK's text for arguments that failed the tool's schema, issues one per line. */
+const SDK_INVALID_ARGS = /^MCP error -32602: Input validation error: Invalid arguments for tool (\S+): /;
+
+/** Longest argument error returned; the unknown-argument message lists every valid name. */
+const MAX_ARGUMENT_ERROR_CHARS = 600;
+
+/**
+ * Rewrite the SDK's argument-validation failure as this server's error shape:
+ * `{"error": "..."}` on one line, each issue as `field: message`. The SDK
+ * joins issues with newlines and prefixes a JSON-RPC code, so a call with two
+ * bad arguments came back as several lines of `MCP error -32602: ...`.
+ * Any other result passes through unchanged.
+ */
+export function oneLineArgumentError(result: ToolResult): ToolResult {
+  const first = result?.content?.[0];
+  if (!result?.isError || first?.type !== "text" || !first.text) return result;
+  const match = SDK_INVALID_ARGS.exec(first.text);
+  if (!match) return result;
+  const issues = first.text
+    .slice(match[0].length)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const at = / at ([\w.[\]]+)$/.exec(line);
+      return at ? `${at[1]}: ${line.slice(0, at.index)}` : line;
+    });
+  let message = escapeControl(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
+  if (message.length > MAX_ARGUMENT_ERROR_CHARS) message = `${message.slice(0, MAX_ARGUMENT_ERROR_CHARS)}…`;
+  return errorResult(message);
+}
+
+/**
+ * Pass every `tools/call` result through {@link oneLineArgumentError}.
+ *
+ * Argument validation runs in the SDK before any handler, so the handler
+ * wrapper in {@link withNetworkParam} never sees it. This wraps the SDK's
+ * `tools/call` handler as the SDK installs it, the same way
+ * `explainDisabledTools` does, so it must run before the first tool registers.
+ */
+export function oneLineArgumentErrors(server: McpServer): void {
+  type Handler = (request: unknown, extra: unknown) => unknown;
+  const inner = server.server;
+  const setRequestHandler = inner.setRequestHandler.bind(inner) as (schema: unknown, handler: Handler) => void;
+  inner.setRequestHandler = ((schema: unknown, handler: Handler) => {
+    if (schema !== CallToolRequestSchema) return setRequestHandler(schema, handler);
+    return setRequestHandler(schema, async (request, extra) =>
+      oneLineArgumentError((await handler(request, extra)) as ToolResult),
+    );
+  }) as typeof inner.setRequestHandler;
+}
+
 /**
  * Wrap an McpServer so every `server.tool(...)` registration transparently:
  *   1. gains an optional `network` argument in its input schema, unless the
  *      tool never reads the chain (`network: false` in `tool-meta.ts`),
- *   2. treats `null` arguments as absent and a bare string as a one-item list,
+ *   2. parses its arguments with {@link toolArgsSchema}: `null` is absent, a
+ *      bare string fills a list, and a blank string or an unknown argument
+ *      name is refused,
  *   3. resolves SuiNS names in address arguments (see `addressArg`) on the
  *      call's network, and reports them back as `resolved_from`,
  *   4. runs its handler inside {@link runWithNetwork}, so the shared `sui` /
@@ -250,22 +280,19 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
         const cleaned = reportResolved(cleanReturnedError(result, network), resolved);
         return policy.structured ? withStructuredContent(cleaned) : cleaned;
       } catch (err) {
-        return errorResult(describeError(err, network));
+        return errorResult(escapeControl(describeError(err, network)));
       }
     });
   };
 
-  const inputSchema: z.ZodRawShape = Object.fromEntries(
-    Object.entries(shape).map(([k, v]) => [k, lenientField(v)]),
-  );
-  if (policy.network) inputSchema.network = lenientField(networkParam);
+  const inputSchema: z.ZodRawShape = policy.network ? { ...shape, network: networkParam } : shape;
 
   return server.registerTool(
     name,
     {
       title: policy.title,
       ...(description !== undefined ? { description } : {}),
-      inputSchema,
+      inputSchema: toolArgsSchema(inputSchema),
       annotations: { ...policy.annotations, ...ownAnnotations },
       ...(policy.meta ? { _meta: policy.meta } : {}),
     },

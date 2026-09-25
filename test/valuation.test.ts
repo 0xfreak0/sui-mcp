@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   decimalsForCoinType,
-  dominantInflowUsd,
+  dominantFlowUsd,
   formatUsd,
   symbolOf,
   toHumanAmount,
@@ -41,14 +41,14 @@ describe("usdValue", () => {
   });
 });
 
-describe("dominantInflowUsd", () => {
+describe("dominantFlowUsd", () => {
   const atk = "0xattacker";
   const pool = "0xpool";
 
   it("sums multiple coins credited to the same recipient (drain origin)", () => {
     // Attacker receives SUI ($24.16M) + HASUI ($44.23M) in one tx.
     expect(
-      dominantInflowUsd([
+      dominantFlowUsd([
         { address: atk, usd: 24155583.53 },
         { address: atk, usd: 44228001.15 },
       ]),
@@ -57,16 +57,30 @@ describe("dominantInflowUsd", () => {
 
   it("does NOT double-count a swap's input+output legs (different addresses)", () => {
     // Actor receives $100 output; pool receives $100 input — max, not sum.
-    expect(dominantInflowUsd([{ address: atk, usd: 100 }, { address: pool, usd: 100 }])).toBe(100);
+    expect(dominantFlowUsd([{ address: atk, usd: 100 }, { address: pool, usd: 100 }])).toBe(100);
+    // The actor's own debit and credit are the same value, not twice it.
+    expect(dominantFlowUsd([{ address: atk, usd: -100 }, { address: atk, usd: 99.5 }])).toBe(100);
   });
 
-  it("values a plain transfer by the recipient's gain", () => {
-    expect(dominantInflowUsd([{ address: "0xrecipient", usd: 50 }])).toBe(50);
+  it("values a plain transfer by what moved, not sender plus recipient", () => {
+    expect(dominantFlowUsd([{ address: "0xsender", usd: -50.01 }, { address: "0xrecipient", usd: 50 }])).toBe(50.01);
   });
 
-  it("ignores non-positive inflows and returns 0 when there are none", () => {
-    expect(dominantInflowUsd([])).toBe(0);
-    expect(dominantInflowUsd([{ address: atk, usd: 0 }])).toBe(0);
+  it("values a bridge burn by what the sender sent, not by the fee its collector got", () => {
+    // Nemo's CCTP exit 9ZzZ6C8m…: the attacker sent 100,000 USDC, 99,990 was
+    // burned (no recipient on Sui) and a fee collector received 10 USDC.
+    expect(
+      dominantFlowUsd([
+        { address: atk, usd: -99993.4 },
+        { address: atk, usd: -1.21 },
+        { address: "0xfee", usd: 10 },
+      ]),
+    ).toBeCloseTo(99994.61, 2);
+  });
+
+  it("returns 0 when nothing priced moved", () => {
+    expect(dominantFlowUsd([])).toBe(0);
+    expect(dominantFlowUsd([{ address: atk, usd: 0 }])).toBe(0);
   });
 });
 

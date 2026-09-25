@@ -144,57 +144,27 @@ describe("get_validators (detail via address)", () => {
   });
 });
 
+/** A StakedSui as the SDK's listOwnedObjects returns it with `include: { json: true }`. */
+function stakedSui(id: string, pool: string, principal: string, epoch: string) {
+  return {
+    objectId: id,
+    version: "988732962",
+    digest: "AvQg6ywqWwqGo471qka7wvcMLWzwcwsiaaUiw6n9XbtP",
+    owner: { $kind: "AddressOwner", AddressOwner: "0xwallet" },
+    type: "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui",
+    json: { id, pool_id: pool, principal, stake_activation_epoch: epoch },
+  };
+}
+
 describe("get_staking_summary", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns staking positions with totals", async () => {
     mockSui.listOwnedObjects.mockResolvedValue({
-      objects: [
-        { objectId: "0xstake1" },
-        { objectId: "0xstake2" },
-      ],
+      objects: [stakedSui("0xstake1", "0xpool1", "1000000000", "100"), stakedSui("0xstake2", "0xpool2", "2000000000", "200")],
       hasNextPage: false,
+      cursor: null,
     });
-
-    mockSui.ledgerService.getObject
-      .mockResolvedValueOnce({
-        response: {
-          object: {
-            objectId: "0xstake1",
-            json: {
-              kind: {
-                oneofKind: "structValue",
-                structValue: {
-                  fields: {
-                    pool_id: { kind: { oneofKind: "stringValue", stringValue: "0xpool1" } },
-                    principal: { kind: { oneofKind: "stringValue", stringValue: "1000000000" } },
-                    stake_activation_epoch: { kind: { oneofKind: "stringValue", stringValue: "100" } },
-                  },
-                },
-              },
-            },
-          },
-        },
-      })
-      .mockResolvedValueOnce({
-        response: {
-          object: {
-            objectId: "0xstake2",
-            json: {
-              kind: {
-                oneofKind: "structValue",
-                structValue: {
-                  fields: {
-                    pool_id: { kind: { oneofKind: "stringValue", stringValue: "0xpool2" } },
-                    principal: { kind: { oneofKind: "stringValue", stringValue: "2000000000" } },
-                    stake_activation_epoch: { kind: { oneofKind: "stringValue", stringValue: "200" } },
-                  },
-                },
-              },
-            },
-          },
-        },
-      });
 
     const handler = tools.get("get_staking_summary")!;
     const result = await handler({ address: "0xwallet" });
@@ -207,10 +177,48 @@ describe("get_staking_summary", () => {
     expect(data.positions[1].pool_id).toBe("0xpool2");
   });
 
+  it("sums every page, not the first", async () => {
+    // A wallet with 139 positions reported the principal of its first 50 as
+    // its total stake.
+    mockSui.listOwnedObjects
+      .mockResolvedValueOnce({
+        objects: [stakedSui("0xs1", "0xp", "1000000000", "1"), stakedSui("0xs2", "0xp", "2000000000", "1")],
+        hasNextPage: true,
+        cursor: "c1",
+      })
+      .mockResolvedValueOnce({
+        objects: [stakedSui("0xs3", "0xp", "4000000000", "1")],
+        hasNextPage: false,
+        cursor: null,
+      });
+
+    const data = JSON.parse((await tools.get("get_staking_summary")!({ address: "0xwallet" })).content[0].text);
+
+    expect(mockSui.listOwnedObjects.mock.calls[1][0].cursor).toBe("c1");
+    expect(data.position_count).toBe(3);
+    expect(data.total_staked_mist).toBe("7000000000");
+    expect(data.truncated).toBe(false);
+  });
+
+  it("gives no total when the walk could not reach the end", async () => {
+    mockSui.listOwnedObjects.mockResolvedValueOnce({
+      objects: [stakedSui("0xs1", "0xp", "1000000000", "1")],
+      hasNextPage: true,
+      cursor: null,
+    });
+
+    const data = JSON.parse((await tools.get("get_staking_summary")!({ address: "0xwallet" })).content[0].text);
+
+    expect(data.truncated).toBe(true);
+    expect(data.total_staked_mist).toBeNull();
+    expect(data.total_unavailable).toBeTruthy();
+  });
+
   it("handles wallet with no stakes", async () => {
     mockSui.listOwnedObjects.mockResolvedValue({
       objects: [],
       hasNextPage: false,
+      cursor: null,
     });
 
     const handler = tools.get("get_staking_summary")!;

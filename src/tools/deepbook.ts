@@ -11,6 +11,7 @@ import {
 import { round, summarizeBook } from "../utils/orderbook.js";
 import { buildDeviationReport, type Candle } from "../utils/oracle-deviation.js";
 import { priceUsdAtTime } from "../utils/valuation.js";
+import { pythApiKey } from "../utils/price-providers.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const ok = (payload: unknown) => ({
@@ -97,8 +98,8 @@ export function registerDeepBookTools(server: McpServer) {
     {
       pool_name: z.string().describe("Pool name such as 'SUI_USDC'."),
       limit: numArg().int().min(1).max(200).optional().describe("Max trades (default 50)."),
-      start_time: numArg().int().optional().describe("Window start, Unix seconds."),
-      end_time: numArg().int().optional().describe("Window end, Unix seconds."),
+      start_time: numArg().int().min(0).optional().describe("Window start, Unix seconds."),
+      end_time: numArg().int().min(0).optional().describe("Window end, Unix seconds."),
       balance_manager_id: addressArg()
         .optional()
         .describe("Only trades where this balance manager was maker or taker."),
@@ -169,6 +170,7 @@ export function registerDeepBookTools(server: McpServer) {
       limit: numArg().int().min(1).max(100).optional().describe("Candles to compare (default 24)."),
       end_time: numArg()
         .int()
+        .min(0)
         .optional()
         .describe("End of window, Unix seconds. Defaults to now."),
       threshold_pct: numArg()
@@ -198,18 +200,25 @@ export function registerDeepBookTools(server: McpServer) {
           });
         }
 
+        // The market price is each candle's close, so the oracle is read at
+        // the same moment: the candle's end, or the window's end for a candle
+        // still open then. Read at the open, a 1d candle compared a day's move.
         // One Pyth query per candle: Hermes is a point-in-time API, so there is
         // no bulk form. Sequential rather than parallel to stay polite to a
         // public endpoint; the candle count is bounded at 100. Pyth alone: a
         // market aggregate such as DefiLlama is not the oracle a lending
         // protocol liquidates on, so it cannot stand in for one here.
         const oracle = new Map<number, { price: number; publishTime: number }>();
-        for (const [openMs] of candles) {
-          const { points } = await priceUsdAtTime([pool.base_asset_id], Math.floor(openMs / 1000), {
-            sources: ["pyth"],
-          });
-          const p = points.get(pool.base_asset_id);
-          if (p) oracle.set(openMs, { price: p.price, publishTime: p.publishTime });
+        const hasKey = pythApiKey() !== null;
+        if (hasKey) {
+          for (const [openMs] of candles) {
+            const closeSec = Math.min(openMs / 1000 + INTERVAL_SECONDS[iv], end);
+            const { points } = await priceUsdAtTime([pool.base_asset_id], Math.floor(closeSec), {
+              sources: ["pyth"],
+            });
+            const p = points.get(pool.base_asset_id);
+            if (p) oracle.set(openMs, { price: p.price, publishTime: p.publishTime });
+          }
         }
 
         const report = buildDeviationReport(
@@ -217,6 +226,13 @@ export function registerDeepBookTools(server: McpServer) {
           (ms) => oracle.get(ms) ?? null,
           threshold_pct ?? 1,
         );
+        // With no oracle price at all there is nothing compared, and a count of
+        // zero flagged candles would read as agreement.
+        const oracleUnavailable = !hasKey
+          ? "No PYTH_API_KEY is set. Pyth's Hermes endpoint needs one for price values, so only the DeepBook side is shown and nothing was compared."
+          : oracle.size === 0
+            ? "Pyth returned no price for any candle in this window, so nothing was compared."
+            : null;
 
         return ok({
           pool_name: pool.pool_name,
@@ -232,7 +248,8 @@ export function registerDeepBookTools(server: McpServer) {
           max_abs_deviation_pct: report.max_abs_deviation_pct,
           max_deviation_at: report.max_deviation_at,
           volume_weighted_mean_deviation_pct: report.mean_deviation_pct,
-          flagged_count: report.flagged.length,
+          flagged_count: oracleUnavailable ? null : report.flagged.length,
+          ...(oracleUnavailable ? { oracle_unavailable: oracleUnavailable } : {}),
           threshold_pct: threshold_pct ?? 1,
           // Points where the oracle had no price are kept with nulls rather
           // than dropped: a gap in oracle coverage during an incident is

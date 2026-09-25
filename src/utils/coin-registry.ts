@@ -300,3 +300,23 @@ export async function resolveSymbolWithLive(symbol: string): Promise<SymbolResol
   }
   return stat;
 }
+
+/**
+ * Curated coins whose symbol or name contains `query`, exact symbol matches
+ * first. `via` says which list vouches for each: the reviewed file
+ * (`verified`) or the live list (`live`). Empty off mainnet.
+ */
+export async function searchVerifiedCoins(
+  query: string,
+): Promise<Array<RegistryCoin & { via: "verified" | "live" }>> {
+  if (!registryApplies()) return [];
+  await refreshLiveCoins();
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const hits = (coins: Iterable<RegistryCoin>, via: "verified" | "live") =>
+    [...coins]
+      .filter((c) => c.symbol.toLowerCase().includes(q) || c.name.toLowerCase().includes(q))
+      .map((c) => ({ ...c, via }));
+  const all = [...hits(byType.values(), "verified"), ...hits(liveOnly.values(), "live")];
+  return all.sort((a, b) => Number(a.symbol.toLowerCase() !== q) - Number(b.symbol.toLowerCase() !== q));
+}

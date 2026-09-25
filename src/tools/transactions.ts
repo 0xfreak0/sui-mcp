@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { assignSignerRoles } from "../utils/multisig.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
-import { boolArg, numArg, addressArg } from "./args.js";
+import { boolArg, numArg, addressArg, refinePoint } from "./args.js";
 import { sui } from "../clients/grpc.js";
-import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
+import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso, foldRepeats } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
@@ -78,8 +78,13 @@ interface QueriedTx {
   };
 }
 
-/** Aliased connections per request. The service refuses more than 21 per document. */
-const VERSION_ALIASES_PER_REQUEST = 20;
+/**
+ * Aliased version connections per request. The service refuses a document of
+ * more than 300 query nodes, and each alias repeats the fragment: about 26
+ * nodes each, 38 with commands selected. Measured on mainnet: 10 aliases pass
+ * and 12 fail without commands; 5 pass and 8 fail with them.
+ */
+const versionAliasesPerRequest = (includeFunctions: boolean) => (includeFunctions ? 5 : 10);
 
 function queriedTxFragment(includeFunctions: boolean): string {
   // Commands are only selected on request: they multiply response size on a
@@ -103,8 +108,9 @@ async function readVersionPages(
   const rest = fn.split("::").slice(1);
   const pages: Array<VersionPage<QueriedTx> | null> = streams.map(() => null);
   const active = streams.map((s, i) => ({ s, i })).filter(({ s }) => !s.done);
-  for (let start = 0; start < active.length; start += VERSION_ALIASES_PER_REQUEST) {
-    const chunk = active.slice(start, start + VERSION_ALIASES_PER_REQUEST);
+  const perRequest = versionAliasesPerRequest(includeFunctions);
+  for (let start = 0; start < active.length; start += perRequest) {
+    const chunk = active.slice(start, start + perRequest);
     const decls = chunk.map((_, k) => `$f${k}: TransactionFilter, $c${k}: String`).join(", ");
     const paging = order === "newest" ? (k: number) => `last: $n, before: $c${k}` : (k: number) => `first: $n, after: $c${k}`;
     const fields = chunk
@@ -525,6 +531,13 @@ export function registerTransactionTools(server: McpServer) {
     async ({ digests }) => {
       try {
         const { found, not_found, invalid, packages } = await fetchTransactions(digests);
+        // With no well-formed digest there is nothing to report but the
+        // refusal, and a success with zero transactions reads as a lookup.
+        if (invalid.length > 0 && found.length === 0 && not_found.length === 0) {
+          return errorResult(
+            `None of the digests is Base58: ${invalid.slice(0, 5).map((d) => JSON.stringify(d.slice(0, 60))).join(", ")}.`,
+          );
+        }
 
         // One prefetch for the whole batch, then synchronous lookups. Protocols
         // come from the Move call targets AND the event types, since a
@@ -597,10 +610,12 @@ export function registerTransactionTools(server: McpServer) {
         .describe("Filter by Move function (e.g. 0x2::coin::transfer or 0x2::pay). Mutually exclusive with affected_address and affected_object."),
       after_checkpoint: z
         .union([z.string(), z.number()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Only transactions after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes transactions at that time"),
       before_checkpoint: z
         .union([z.string(), z.number()])
+        .superRefine(refinePoint)
         .optional()
         .describe("Only transactions before this point: a checkpoint number, or an ISO 8601 time, which includes transactions at that time"),
       order: z
@@ -747,7 +762,7 @@ export function registerTransactionTools(server: McpServer) {
             gas_sponsored: sponsor !== null && sponsor !== n.sender?.address,
             ...(include_functions
               ? {
-                  move_calls: calls,
+                  move_calls: foldRepeats(calls),
                   ...(commands?.[i].commandsTruncated ? { move_calls_truncated: true } : {}),
                   // How much of this PTB belongs to the filtered package, so
                   // over-attribution is visible instead of assumed.

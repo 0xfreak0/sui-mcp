@@ -65,7 +65,7 @@ identify_address(0x045dadba…)
     committee_members: 7, each with name/label/kind
 ```
 
-**See which keys are actually used.** The committee is fixed by the address, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's history.
+**See which keys are actually used.** The committee is fixed by the address, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's most recent sent transactions, newest first, up to `max_transactions`.
 
 ```
 analyze_multisig(0x045dadba…, max_transactions: 200)
@@ -283,7 +283,7 @@ transaction, which you read separately with `get_transaction`:
 | `value_in` / `value_out` | coin moved, with per-coin nets |
 | `capability_moved` | mint, upgrade, freeze or publish rights changed hands |
 | `object_moved` | an NFT, kiosk item or DeFi position changed hands |
-| `sink_reached` | a counterparty carries a sink label |
+| `sink_reached` | a counterparty carries a sink label (exchange, bridge, mixer, burn) or a `malicious` one |
 | `lookalike_appeared` | a new counterparty renders like a watched address |
 | `appeared` | something happened that moved no coin and no named object |
 
@@ -410,8 +410,10 @@ truncated scan therefore returns `sampled_holders`, without a rank or a
 percentage of supply, along with a caveat naming which walk stopped. Raise
 `max_scan` (applied to each walk) until `truncated` is false to get a real
 ranking; that is only practical for coins with few enough objects to
-enumerate. Each holder carries `coin_balance` and `address_balance` beside the
-total, and `owner_kind`, because an address balance can belong to an object
+enumerate. In a sample, each holder's `balance` is read directly for that
+address, since the walk saw only some of its coins, and `balance_in_sample` is
+the walk's own sum. Each holder carries `coin_balance` and `address_balance`
+beside the total, and `owner_kind`, because an address balance can belong to an object
 such as a bridge's liquidity bank. `analyze_token` reports the same
 distinction.
 
@@ -555,7 +557,7 @@ Address arguments accept any case, a short form (`0x2`), the hex without `0x`, o
 
 ### Price sources
 
-Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
+Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. The 24h change in `get_token_prices` and `analyze_token` is DefiLlama's, and null for a coin it does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
 
 ```
 get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
@@ -571,7 +573,7 @@ Two paid sources are opt-in and engage only when their key is set, so nobody is 
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
+| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
 | `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
 
 A missing price and a price of zero mean different things, and no tool reports one as the other.
@@ -637,7 +639,7 @@ Then add its absolute path to your client config:
 
 If you already cloned this repo, `npm run build:decompiler` does the same clone and build and copies the result to `bin/move-decompiler`.
 
-Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and the other 56 tools are unaffected.
+Without `SUI_DECOMPILER_PATH` the server falls back to looking for `move-decompiler` on `PATH`. Prefer the absolute path: desktop clients often launch servers with a minimal environment that doesn't include your shell's `PATH`, so a binary you can run in a terminal may still be invisible to the server. If it's found in neither place, `decompile_module` returns an error explaining how to fix it, and every other tool is unaffected.
 
 ## Running from source
 
@@ -697,7 +699,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 |---|---|
 | `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total; now, or at a past time or checkpoint (reconstructed from balance changes outside the last hour) |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
-| `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
+| `search_token` | Search tokens by name or symbol. Verified coins come first and every result says whether a curated list vouches for its exact type; the rest come from a bounded scan of on-chain metadata, which says when it stopped early |
 | `get_token_prices` | USD prices for tokens, current (Aftermath, then DefiLlama, then Pyth) or at a past moment when `at` is set (Pyth for verified coins with a key, DefiLlama otherwise). Each price carries its source, confidence and sample time; unpriced coins are listed with the reason |
 
 ### Transactions & Events
@@ -714,7 +716,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `get_defi_positions` | DeFi positions across Suilend, Cetus, NAVI, Scallop, Bluefin, Bucket |
-| `find_pools` | Discover liquidity pools by token pair (Cetus, DeepBook, Turbos) |
+| `find_pools` | Every liquidity pool for a token pair on Cetus, DeepBook (v3 and v2) and Turbos (every fee tier), with each pool's own token order; a search that failed is reported, never read as no pools |
 | `get_pool_stats` | Pool reserves, fees, and prices for a given pool object ID (AMMs; see below for DeepBook) |
 
 ### DeepBook
@@ -740,13 +742,13 @@ DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread 
 | Tool | Description |
 |---|---|
 | `get_validators` | List validators (stake, commission, voting power), or full detail for one when `address` is set |
-| `get_staking_summary` | Wallet's staking positions and pools |
+| `get_staking_summary` | Every StakedSui position a wallet owns and their total principal; the total is null when the positions could not all be read |
 
 ### Names
 
 | Tool | Description |
 |---|---|
-| `resolve_name` | SuiNS name resolution (forward and reverse) |
+| `resolve_name` | SuiNS name resolution (forward and reverse). An unregistered, expired or targetless name resolves to null with a `name_note` saying which; a failed lookup is an error, never a null |
 
 ### Move Registry (MVR)
 
@@ -773,7 +775,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 |---|---|
 | `get_package` | Move package modules. By default a per-module summary (function and struct counts, entry and public function names); `modules: ['pool']` returns those modules' structs (with ordered fields) and function signatures, `detail: 'full'` every module's |
 | `get_move_function` | Specific Move function signature and parameters |
-| `get_package_dependency_graph` | Package dependency analysis with recursive traversal |
+| `get_package_dependency_graph` | A package's dependencies from its linkage table, each with the version linked, read recursively to depth 3 |
 | `analyze_package` | Summarize a package's API + heuristic risk scan + capability audit (no binary; accepts 0x id or MVR name). The overview is a per-module summary and caps of one type are listed once with every holder; `modules: ['pool']` adds those modules' struct shapes and signatures, `detail: 'full'` returns everything |
 | `disassemble_module` | Disassemble Move bytecode via GraphQL (no binary; accepts 0x id or MVR name) |
 | `decompile_module` | Decompile Move bytecode to source (requires decompiler binary) |

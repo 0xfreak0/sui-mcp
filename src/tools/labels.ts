@@ -95,6 +95,15 @@ export function registerLabelTools(server: McpServer) {
         ),
     },
     async ({ action, address, label, category, confidence, notes, labels: bulk }) => {
+      // A malformed reference used to be looked up as it was and answered
+      // "no label", which reads as an address that was checked and is clean.
+      if (address !== undefined && (action === "lookup" || action === "add" || action === "remove")) {
+        try {
+          currentSuiAccount(address);
+        } catch (err) {
+          return errorResult((err as Error).message);
+        }
+      }
       switch (action) {
         case "list": {
           const labels = allLabels();

@@ -22,6 +22,7 @@ import {
   type BothWaysPageInfo,
 } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { foldRepeats } from "../utils/formatting.js";
 
 interface GqlTransactionNode {
   digest: string;
@@ -169,7 +170,7 @@ export function registerHistoryTools(server: McpServer) {
           ? "success"
           : (node.effects?.status?.toLowerCase() ?? "unknown"),
         protocols: decoded.protocols,
-        actions: decoded.actions,
+        actions: foldRepeats(decoded.actions),
         token_flow: decoded.token_flow,
         // token_flow is the sender's. This is the queried address's own side,
         // which is what a row in its history is about.

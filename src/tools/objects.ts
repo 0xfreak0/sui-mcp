@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, u64StringArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
@@ -73,7 +73,7 @@ export function registerObjectTools(server: McpServer) {
     "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs. For the latest version it also lists `address_balances`: funds the object holds in its own address balance, which are not among its fields and which only its defining module can withdraw.",
     {
       object_id: addressArg().describe("The object ID (0x...)"),
-      version: z.string().optional().describe("Specific version to fetch"),
+      version: u64StringArg().optional().describe("Specific version to fetch"),
     },
     async ({ object_id, version }) => {
       const readMask = {

@@ -7,10 +7,12 @@ import {
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
-import { scanTokenTopHolders, stoppedWalks } from "./holders.js";
+import { sampledHolders, scanTokenTopHolders, stoppedWalks } from "./holders.js";
 import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
+import { fetchDefiLlamaChange24h } from "../utils/price-providers.js";
 
-import { errorResult } from "../utils/errors.js";
+import { describeError, errorResult, isNotFound } from "../utils/errors.js";
+import { getNetwork } from "../config.js";
 import { resolveSymbolDetailed } from "../discovery.js";
 import { vouchFor } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin } from "../utils/guardians.js";
@@ -121,13 +123,16 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       }
 
       // Fetch metadata, price, holders and the on-chain registry in parallel
-      const [metaResult, priceResult, holderResult, registry] = await Promise.all([
+      let coinInfoError: unknown = null;
+      const [metaResult, priceResult, change24hByCoin, holderResult, registry] = await Promise.all([
         sui.stateService
           .getCoinInfo({ coinType })
           .then(({ response }) => response)
-          .catch(() => null),
+          .catch((err: unknown) => ((coinInfoError = err), null)),
 
         fetchAftermathPrices([coinType]),
+
+        fetchDefiLlamaChange24h([coinType]),
 
         wantHolders
           ? scanTokenTopHolders(coinType, 5, 2000).catch(() => null)
@@ -135,6 +140,19 @@ export function registerAnalyzeTokenTools(server: McpServer) {
 
         fetchRegistryCurrency(coinType),
       ]);
+
+      // A type that does not parse, or that no metadata, registry entry or
+      // holder knows, is not a coin. Analysed anyway, it came back with
+      // decimals assumed and a deny-list verdict about a coin that does not exist.
+      if (coinInfoError) {
+        const code = typeof coinInfoError === "object" && "code" in coinInfoError ? coinInfoError.code : null;
+        if (code === "INVALID_ARGUMENT") return errorResult(describeError(coinInfoError, getNetwork()));
+        if (isNotFound(coinInfoError) && !registry && (holderResult?.holders.length ?? 0) === 0) {
+          return errorResult(
+            `No coin of type ${coinType} exists on ${getNetwork()}: it has no CoinMetadata and no coin registry entry${holderResult ? ", and no holders" : ""}.`,
+          );
+        }
+      }
 
       const meta = metaResult?.metadata;
       const treasury = metaResult?.treasury;
@@ -167,7 +185,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
 
       const priceEntry = priceResult?.[coinType];
       const priceUsd = priceEntry && priceEntry.price >= 0 ? priceEntry.price : null;
-      const change24h = priceEntry && priceEntry.price >= 0 ? priceEntry.priceChange24HoursPercentage : null;
+      const change24h = change24hByCoin.get(coinType) ?? null;
 
       // Compute market cap if we have price and supply
       let marketCapUsd: number | null = null;
@@ -298,9 +316,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           result.holder_scan_note =
             `No Coin<${coinType}> objects and no address balances of it were found, so there is no holder scan to report. That reads the same as a mistyped coin type or one that exists on another network. It is not evidence that the coin has no holders.`;
         } else if (holderResult.truncated) {
-          result.sampled_holders = holderResult.holders.map(
-            ({ rank: _rank, ...rest }) => rest,
-          );
+          result.sampled_holders = await sampledHolders(holderResult.holders, coinType);
           result.holder_scan_note =
             `INCOMPLETE: ${stoppedWalks(holderResult)} stopped before the end. Both walk in object-id order, which is unrelated to balance. ` +
             `These are the largest holders within that sample, not the largest holders of the coin, and they do not support a claim about supply concentration.`;

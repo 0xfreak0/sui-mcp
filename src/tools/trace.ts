@@ -41,7 +41,7 @@ import {
   coinScale,
   decimalsForCoinType,
   displayCoin,
-  dominantInflowUsd,
+  dominantFlowUsd,
   formatUsd,
   PRICE_STALE_THRESHOLD_SEC,
   priceUsdAtTime,
@@ -945,12 +945,12 @@ export function registerTraceTools(server: McpServer) {
       const enrichedHops = traceHops.map((hop, i) => {
         const prices = hopPrices[i];
         const blockUnix = hopUnix[i];
-        const inflows: Array<{ address: string; usd: number }> = [];
+        const flows: Array<{ address: string; usd: number }> = [];
         const balance_changes = hop.balance_changes.map((bc) => {
           const pp = prices.get(bc.coin_type) ?? null;
           const price = pp?.price ?? null;
           const usd = usdValue(bc.amount, pricingScale(bc.coin_type, pp).decimals, price);
-          if (price != null && BigInt(bc.amount) > 0n) inflows.push({ address: bc.address, usd });
+          if (price != null) flows.push({ address: bc.address, usd: BigInt(bc.amount) < 0n ? -usd : usd });
           // How far is the price we used from the actual block time?
           const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
           const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
@@ -978,7 +978,7 @@ export function registerTraceTools(server: McpServer) {
             price_stale: stale || undefined,
           };
         });
-        const hopUsd = dominantInflowUsd(inflows);
+        const hopUsd = dominantFlowUsd(flows);
         return {
           ...hop,
           sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,

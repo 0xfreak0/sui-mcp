@@ -555,7 +555,7 @@ Address arguments accept any case, a short form (`0x2`), the hex without `0x`, o
 
 ### Price sources
 
-Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
+Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. The 24h change in `get_token_prices` and `analyze_token` is DefiLlama's, and null for a coin it does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
 
 ```
 get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
@@ -571,7 +571,7 @@ Two paid sources are opt-in and engage only when their key is set, so nobody is 
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
+| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
 | `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
 
 A missing price and a price of zero mean different things, and no tool reports one as the other.

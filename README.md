@@ -697,7 +697,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 |---|---|
 | `get_balance` | Balance of a coin type for an address or object (defaults to SUI), with `coin_balance` and `address_balance` beside the total; now, or at a past time or checkpoint (reconstructed from balance changes outside the last hour) |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
-| `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
+| `search_token` | Search tokens by name or symbol. Verified coins come first and every result says whether a curated list vouches for its exact type; the rest come from a bounded scan of on-chain metadata, which says when it stopped early |
 | `get_token_prices` | USD prices for tokens, current (Aftermath, then DefiLlama, then Pyth) or at a past moment when `at` is set (Pyth for verified coins with a key, DefiLlama otherwise). Each price carries its source, confidence and sample time; unpriced coins are listed with the reason |
 
 ### Transactions & Events

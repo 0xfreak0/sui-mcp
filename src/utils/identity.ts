@@ -19,7 +19,7 @@
 
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
-import { getLabel } from "./labels.js";
+import { getLabel, labelProvenance, type LabelProvenance } from "./labels.js";
 import { batchResolveNames } from "./names.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import {
@@ -151,6 +151,8 @@ export interface AddressIdentity {
   name?: string;
   label?: string;
   label_category?: string;
+  /** Where the label comes from: entity, evidence kind, source_url, retrieved_at. */
+  label_provenance?: LabelProvenance;
   /** Protocol name, when the address is a package the registry knows. */
   protocol?: string;
   /**
@@ -494,7 +496,13 @@ export async function describeAddresses(
       kind: k?.kind ?? "wallet",
       ...(k?.type ? { object_type: k.type } : {}),
       ...(names.get(address) ? { name: names.get(address) } : {}),
-      ...(label ? { label: label.label, label_category: label.category } : {}),
+      ...(label
+        ? {
+            label: label.label,
+            label_category: label.category,
+            ...(labelProvenance(label) ? { label_provenance: labelProvenance(label) } : {}),
+          }
+        : {}),
       ...(protocol ? { protocol } : {}),
       ...(auth.get(address) ? { authentication: auth.get(address) } : {}),
       ...(aliases.found.get(address) ? { aliases: aliases.found.get(address) } : {}),

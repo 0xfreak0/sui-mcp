@@ -1,3 +1,4 @@
+import { guardiansFlagsForPackage } from "../utils/guardians.js";
 import { z } from "zod";
 import { resolvePublisher } from "../utils/publisher.js";
 import { boolArg } from "./args.js";
@@ -240,6 +241,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
 
         const modules = pkg.modules.map(normalizeModule);
         const findings = analyzePackageModules(modules);
+        const flaggedBy = guardiansFlagsForPackage(pkg.storageId ?? packageId);
 
         const overview = {
           package_id: pkg.storageId ?? packageId,
@@ -296,6 +298,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
                   finding_count: findings.length,
                   findings,
                   ...(capabilities ? { capabilities } : {}),
+                  ...(flaggedBy.length ? { flagged_by: flaggedBy } : {}),
                   overview,
                   ...(disassembly ? { disassembly } : {}),
                 },

@@ -10,6 +10,7 @@ import {
 } from "../utils/labels.js";
 import { currentSuiAccount } from "../utils/chain-id.js";
 import { storeStatus } from "../utils/store.js";
+import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const CATEGORIES = [
@@ -98,7 +99,7 @@ export function registerLabelTools(server: McpServer) {
         }
 
         case "lookup": {
-          if (!address) return jsonResult({ error: "'address' is required for lookup." });
+          if (!address) return errorResult("'address' is required for lookup.");
           const found = getLabel(address);
           return jsonResult({
             address,

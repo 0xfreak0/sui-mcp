@@ -740,7 +740,7 @@ DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread 
 | Tool | Description |
 |---|---|
 | `get_validators` | List validators (stake, commission, voting power), or full detail for one when `address` is set |
-| `get_staking_summary` | Wallet's staking positions and pools |
+| `get_staking_summary` | Every StakedSui position a wallet owns and their total principal; the total is null when the positions could not all be read |
 
 ### Names
 

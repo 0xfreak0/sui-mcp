@@ -1960,7 +1960,12 @@ change is likely to break:
   so an impostor ending `::sui::SUI` would get SUI's price. DefiLlama keys on
   the full type and prices a coin as itself or not at all.
 - **`compare_oracle_price` stays Pyth-only** (`sources: ["pyth"]`). Comparing
-  DeepBook against a market aggregate is not an oracle check.
+  DeepBook against a market aggregate is not an oracle check. The market
+  price is a candle's close, so the oracle is read at the candle's end (or the
+  window's end for a candle still open), never at its open: read at the open,
+  a `1d` candle compares a day's price move. Without `PYTH_API_KEY` nothing is
+  compared: `oracle_unavailable` says so and `flagged_count` is null, because
+  zero flagged candles reads as agreement.
 - **An unpriced coin carries a code.** `request_failed` says nothing about the
   coin and must not be reported the way `not_listed` is.
 

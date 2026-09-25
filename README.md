@@ -571,7 +571,7 @@ Two paid sources are opt-in and engage only when their key is set, so nobody is 
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
+| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
 | `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
 
 A missing price and a price of zero mean different things, and no tool reports one as the other.

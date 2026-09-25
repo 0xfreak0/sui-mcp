@@ -1418,6 +1418,23 @@ data it already has, no extra query — and emits `bridge_exits`.
   gap, since a transaction whose calls are unreadable and whose events name a
   known protocol is what a router or wrapper looks like.
 - SDK `BalanceChange` has `address` (not `owner`)
+- **A party object is owned, not shared.** GraphQL's `ConsensusAddressOwner`
+  (gRPC `CONSENSUS_ADDRESS`) has exactly one owner; select its
+  `address { address }` wherever an owner union is read, and report it as
+  `consensus` with that address. Mapping it to `shared` drops the one address
+  that can use the object.
+- **GraphQL's `ExecutionError` has no kind.** `abortCode` is set for Move aborts
+  only; every other failure is named from `message` by
+  `failureKindFromGraphql` (`src/utils/formatting.ts`), which returns
+  `unknown` for a message it does not recognise rather than `MOVE_ABORT`.
+- **An UpgradeCap is compared against the lineage root's publisher.** The caps
+  `auditPackageCapabilities` finds were minted by version 1's publish; a later
+  version's sender is whoever held the cap then. `analyze_package` reports
+  both as `root_publisher` and `version_publisher`.
+- **A package upgrade can change behaviour through its linkage alone.**
+  `diff_package_upgrade` reads each version's `linkage` and reports relinked
+  dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no
+  behaviour.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

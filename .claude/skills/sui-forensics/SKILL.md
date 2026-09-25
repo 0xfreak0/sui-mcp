@@ -52,8 +52,9 @@ holds one for a client.
    Then measure the funder with `get_address_fanout` before believing anything.
 5. **Cluster only once you have a reason to.** `build_wallet_edges` answers
    "is this a new party or the same one", not "who is this".
-6. **Record with `save_finding`**, one claim per finding, with its digests.
-   `export_case` when the case outlives the session.
+6. **Record with `save_finding`**, one claim per finding, with its `digests`
+   and its `evidence_tier` (default `heuristic`). `export_case` groups the
+   report by tier when the case outlives the session.
 
 ## The control question
 
@@ -208,9 +209,15 @@ across 75 random active wallets and 265 pages of history.
 
 ## Packages: who deployed it, and who can change it
 
-- **`publisher`** is the sender of the transaction that created the package —
-  the address a trace can follow. It attributes the lineage ROOT, so for an
-  upgraded package this is the original deployer, not whoever last upgraded.
+- **`publisher`** (`identify_address`) and **`root_publisher`**
+  (`analyze_package`) are the sender of the transaction that created the
+  lineage ROOT: the original deployer, the address a trace can follow.
+  `analyze_package` also reports **`version_publisher`**, the sender of the
+  upgrade that created the version you passed. That is who pushed that code,
+  which is the question to ask of an exploited version. The UpgradeCap's
+  holder is judged against the root publisher.
+- **A party-held cap is held, not shared.** Owner `consensus` is a party
+  object: one address owns it and only that address can use it.
 - **`holder_status` on the UpgradeCap** answers whether the code can still
   change. `burned` means the cap went somewhere unspendable and upgrade rights
   are renounced. **That is a REDUCTION in risk**, and 27 of every 30 caps that
@@ -219,11 +226,19 @@ across 75 random active wallets and 265 pages of history.
   move caps to treasuries and multisigs deliberately. Identify the holder.
 - **`unresolved` is not `publisher`.** Publish transactions are frequently
   pruned. A failed lookup is "could not check", never "still with the deployer".
+- **Diff the upgrade, and its dependencies.** `diff_package_upgrade` returns
+  each changed module as unified hunks, the functions that were added,
+  removed or made more reachable (`visibility_changes` with `widened: true`),
+  and `linkage_changes`. An upgrade can change behaviour by relinking a
+  dependency while its own modules barely change; each relinked dependency
+  carries the `diff_package_upgrade` call that shows what changed inside it.
 
 ## Why a transaction failed
 
 `get_transaction` returns `failure` with the abort code, and the package,
-module and function that raised it. Two readings to get right:
+module and function that raised it. `get_transactions` names the same kinds
+(`MOVE_ABORT` only when there is an abort code; `INSUFFICIENT_GAS` and the
+rest from the node's message). Two readings to get right:
 
 - **An abort code is meaningless across packages.** Every package numbers its
   own aborts from zero, so `3` only means something beside the module that
@@ -244,6 +259,12 @@ issuer's own decision, recorded on chain and reversible by whoever holds the
 DenyCap. Somebody with authority over an asset concluded something about this
 address. Note it, and attribute it to the issuer rather than to the
 chain.
+
+A freeze by validators, who refuse an address's transactions through their
+node configuration, is off chain and in no deny list, so a clean result here
+does not rule it out. What shows on chain is indirect: the address stops
+sending, and any later movement of its funds is in transactions its owner did
+not sign.
 
 - **A frozen address usually holds NONE of the coin that froze it.** Freezing
   and holding are anti-correlated, so an empty balance is not evidence.
@@ -346,7 +367,8 @@ get the schema wrong in ways that fail silently.
 | Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers` |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — struct shapes, API, capability audit |
-| Who deployed this package? | `analyze_package` or `identify_address` → `publisher` |
+| Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
+| What did an upgrade change? | `diff_package_upgrade` → hunks, `visibility_changes`, `linkage_changes` |
 | Can the code still be changed, and by whom? | `analyze_package` → the UpgradeCap's `holder_status` |
 | Why did this transaction fail? | `get_transaction` → `failure` (abort code, module, function) |
 | Has an issuer frozen this address? | `check_coin_restrictions` |

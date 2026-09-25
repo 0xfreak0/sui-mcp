@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -44,7 +44,7 @@ export function registerEventTools(server: McpServer) {
         .string()
         .optional()
         .describe("Filter by event type (e.g. 0x2::coin::CoinBalanceChange)"),
-      sender: z.string().optional().describe("Filter by transaction sender"),
+      sender: addressArg().optional().describe("Filter by transaction sender"),
       module: z
         .string()
         .optional()

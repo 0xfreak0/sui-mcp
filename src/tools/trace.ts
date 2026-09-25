@@ -696,6 +696,9 @@ export function registerTraceTools(server: McpServer) {
         .enum(["forward", "backward"])
         .describe("Direction to trace: 'forward' follows recipients, 'backward' follows sender"),
       hops: numArg()
+        .int()
+        .min(1)
+        .max(10)
         .optional()
         .describe("Max hops to follow (default 3, max 10)"),
       coin_type: z

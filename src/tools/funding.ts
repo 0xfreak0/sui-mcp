@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressArg, addressListArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
@@ -203,7 +203,7 @@ export function registerFundingTools(server: McpServer) {
     "get_address_fanout",
     "(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape — shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.",
     {
-      address: z.string().describe("Address to measure (0x...)"),
+      address: addressArg().describe("Address to measure (0x...)"),
       max_transactions: numArg()
         .int()
         .min(50)
@@ -259,16 +259,16 @@ export function registerFundingTools(server: McpServer) {
     "find_funding_sources",
     "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly; and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.",
     {
-      addresses: z
-        .array(z.string())
+      addresses: addressListArg()
         .min(1)
         .max(100)
         .describe("Addresses to attribute (1-100)."),
       max_hops: numArg()
         .int()
         .positive()
+        .max(12)
         .optional()
-        .describe("Max hops per address (default 3, max 12)."),
+        .describe("Max hops per address (default 5, max 12)."),
       depth: z
         .enum(["first_hop", "full"])
         .optional()
@@ -540,8 +540,8 @@ export function registerFundingTools(server: McpServer) {
     "find_funding_source",
     "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a wallet it has already seen, or a dead end. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
     {
-      address: z.string().describe("Address to attribute (0x...)"),
-      max_hops: numArg().int().positive().optional().describe("Max funding hops to walk back (default 5, max 12)"),
+      address: addressArg().describe("Address to attribute (0x...)"),
+      max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),
       measure_fanout: boolArg()
         .optional()
         .describe(

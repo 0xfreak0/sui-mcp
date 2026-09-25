@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import {
   fetchActiveValidators,
   findValidatorByAddress,
@@ -16,11 +16,13 @@ export function registerStakingTools(server: McpServer) {
     "get_validators",
     "List current Sui validators (stake, commission, voting power), or — when `address` is given — return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.",
     {
-      address: z
-        .string()
+      address: addressArg()
         .optional()
         .describe("If set, return details for this one validator instead of the full list (0x...)"),
       limit: numArg()
+        .int()
+        .min(1)
+        .max(150)
         .optional()
         .describe("Max validators to return when listing (default 50, max 150)"),
       sort_by: z
@@ -140,7 +142,7 @@ export function registerStakingTools(server: McpServer) {
     "get_staking_summary",
     "Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance — a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.",
     {
-      address: z.string().describe("Wallet address (0x...)"),
+      address: addressArg().describe("Wallet address (0x...)"),
     },
     async ({ address }) => {
       const ownedRes = await sui.listOwnedObjects({

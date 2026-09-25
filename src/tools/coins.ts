@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerCoinTools(server: McpServer) {
@@ -9,16 +10,21 @@ export function registerCoinTools(server: McpServer) {
     "get_balance",
     "Get the liquid balance of one coin type for a Sui address (defaults to SUI), optionally at a historical checkpoint. This counts spendable coins ONLY: staked SUI and value locked in DeFi positions do not appear here, so a wallet that looks nearly empty may not be — pair it with get_staking_summary and get_defi_positions before concluding anything about what an address holds. For every coin at once, use get_wallet_overview.",
     {
-      owner: z.string().describe("Owner address (0x...)"),
+      owner: addressArg().optional().describe("Owner address (0x...). Required; `address` is accepted in its place."),
+      address: addressArg().optional().describe("Alias for `owner`."),
       coin_type: z
         .string()
         .optional()
         .describe("Coin type (default: 0x2::sui::SUI)"),
       at_checkpoint: numArg()
+        .int()
+        .nonnegative()
         .optional()
         .describe("Query balance at a specific checkpoint (for historical balances)"),
     },
-    async ({ owner, coin_type, at_checkpoint }) => {
+    async ({ owner: ownerArg, address, coin_type, at_checkpoint }) => {
+      const owner = ownerArg ?? address;
+      if (!owner) return errorResult("Pass the wallet to read as `owner` (or `address`).");
       if (at_checkpoint != null) {
         const coinType = coin_type ?? "0x2::sui::SUI";
         const data = await gqlQuery<{

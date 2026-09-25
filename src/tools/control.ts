@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressListArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
@@ -47,8 +47,7 @@ export function registerControlTools(server: McpServer) {
         .describe(
           "Control group size (default 25). Match it to the cohort — an unequal comparison is hard to read.",
         ),
-      exclude: z
-        .array(z.string())
+      exclude: addressListArg()
         .optional()
         .describe(
           "The cohort under test. Excluded from the draw; leaving them in contaminates the comparison.",

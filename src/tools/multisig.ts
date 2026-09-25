@@ -8,10 +8,9 @@
  * classification stays cheap.
  */
 
-import { z } from "zod";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
-import { numArg } from "./args.js";
+import { numArg, addressArg, addressListArg } from "./args.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import {
   describeSignatures,
@@ -61,7 +60,7 @@ export function registerMultisigTools(server: McpServer) {
     "analyze_multisig",
     "(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction — this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.",
     {
-      address: z.string().describe("The multisig wallet's address (0x...)"),
+      address: addressArg().describe("The multisig wallet's address (0x...)"),
       max_transactions: numArg()
         .int()
         .min(1)
@@ -210,8 +209,7 @@ export function registerMultisigTools(server: McpServer) {
     "find_shared_multisig",
     "(Multisig investigation) Given several addresses you already suspect are related, find any multisig wallet they jointly control — even one that never appeared in your trace. Works by deriving every committee those keys could form and checking which of those addresses exist on chain, so a hit is proof (the address IS the hash of its committee), not a guess. Use it when a trace links wallets and you want to know whether they also share a treasury. Each address must have SENT a transaction, since that is where its public key becomes visible.",
     {
-      addresses: z
-        .array(z.string())
+      addresses: addressListArg()
         .min(2)
         .max(5)
         .describe(

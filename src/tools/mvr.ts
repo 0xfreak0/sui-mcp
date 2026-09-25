@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressListArg } from "./args.js";
 import { moveRegistryUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
 import { mvrFetch } from "../utils/mvr-client.js";
@@ -62,8 +62,7 @@ export function registerMvrTools(server: McpServer) {
     "mvr_reverse_resolve",
     "Reverse-lookup MVR names from one or more package addresses. Useful for enriching raw addresses (e.g. from get_package or transaction decoders) with their canonical '@org/app' name. Returns null for addresses with no registered name.",
     {
-      package_ids: z
-        .array(z.string())
+      package_ids: addressListArg()
         .min(1)
         .describe("One or more package addresses (0x...)."),
     },

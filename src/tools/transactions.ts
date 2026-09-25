@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { describeSignatures } from "../utils/multisig.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
-import { boolArg, numArg } from "./args.js";
+import { boolArg, numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { formatStatus, describeFailure, formatGas, bigintToString, timestampToIso } from "../utils/formatting.js";
 import { errorResult } from "../utils/errors.js";
@@ -434,13 +434,11 @@ export function registerTransactionTools(server: McpServer) {
     "query_transactions",
     "Query raw Sui transactions with specific filters (sender, affected address/object, function, checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). For human-readable wallet activity, prefer get_transaction_history instead.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes — a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
     {
-      sender: z.string().optional().describe("Filter by sender address"),
-      affected_address: z
-        .string()
+      sender: addressArg().optional().describe("Filter by sender address"),
+      affected_address: addressArg()
         .optional()
         .describe("Filter by affected address (sender, sponsor, or recipient). Mutually exclusive with affected_object and function."),
-      affected_object: z
-        .string()
+      affected_object: addressArg()
         .optional()
         .describe("Filter by affected object ID. Mutually exclusive with affected_address and function."),
       function: z

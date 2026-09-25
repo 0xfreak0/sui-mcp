@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { formatOwner } from "../utils/formatting.js";
@@ -11,12 +11,10 @@ export function registerMonitorTools(server: McpServer) {
     "check_activity",
     "(Monitoring/polling) Check whether new activity has occurred on a Sui address or object since a known checkpoint, timestamp, or version. Not for viewing transaction history — use get_transaction_history for that. This tool is for detecting changes since a previous check.",
     {
-      address: z
-        .string()
+      address: addressArg()
         .optional()
         .describe("Sui address to check for new transactions. Provide either address or object_id."),
-      object_id: z
-        .string()
+      object_id: addressArg()
         .optional()
         .describe("Object ID to check for version changes. Provide either address or object_id."),
       since_checkpoint: numArg()

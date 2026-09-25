@@ -61,7 +61,10 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
 4. Use Zod schemas for input validation. For numbers and booleans use `numArg()`
    and `boolArg()` from `src/tools/args.ts`, not bare `z.number()` / `z.boolean()` —
    a model composing JSON will sometimes quote a value, and strict validation
-   turns that into a hard failure over nothing.
+   turns that into a hard failure over nothing. For a Sui address, object ID or
+   package ID use `addressArg()` / `addressListArg()`, which return the
+   canonical form and accept SuiNS names; comparing a raw argument against chain
+   data fails silently on upper-case or short input.
 5. Add the tool to a profile in `src/tools/profiles.ts`. A tool in no profile
    still exists but nobody loads it by default.
 6. Update the advertised tool counts: the heading and intro in `README.md`, the

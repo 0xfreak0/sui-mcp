@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg } from "./args.js";
+import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import {
@@ -56,7 +56,7 @@ export function registerAggregateTools(server: McpServer) {
         .describe(
           "Filter by the EMITTING package/module — the one whose function ran. Usually what you want when you know a protocol's package ID. Accepts 0x... or 0x...::module.",
         ),
-      sender: z.string().optional().describe("Only events sent by this address."),
+      sender: addressArg().optional().describe("Only events sent by this address."),
       from: z
         .string()
         .optional()
@@ -76,6 +76,7 @@ export function registerAggregateTools(server: McpServer) {
           "Dotted path into the event JSON to sum, e.g. 'deposit_value'. Omit to get counts plus field suggestions.",
         ),
       value_scale: numArg()
+        .positive()
         .optional()
         .describe("Divisor for the summed value, e.g. 100 when a protocol reports USD cents."),
       top: numArg().int().min(1).max(200).optional().describe("Groups to return (default 20)."),

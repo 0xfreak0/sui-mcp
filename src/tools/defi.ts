@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { protoValueToJson } from "../utils/proto.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -232,7 +232,7 @@ export function registerDefiTools(server: McpServer) {
     "get_defi_positions",
     "Find DeFi positions owned by a Sui wallet across major protocols: Suilend, Cetus LP, NAVI, Scallop, Bluefin, Bucket, and staked SUI. Returns extracted position summaries (deposits, borrows, liquidity, fees) instead of raw on-chain data.",
     {
-      address: z.string().describe("Wallet address (0x...)"),
+      address: addressArg().describe("Wallet address (0x...)"),
     },
     async ({ address }) => {
       const protocols: ProtocolName[] = [

@@ -119,15 +119,15 @@ describe("probeSponsored", () => {
     mockGqlQuery.mockImplementation(async () =>
       page(
         [
-          payment("0xd1", "0xs1", "0xz", "0xP"), // 0xP sponsored 0xs1
-          payment("0xd2", "0xP", "0xz"), // 0xP's own self-paid transaction
-          payment("0xd3", "0xs2", "0xz", "0xP"),
+          payment("0xd1", "0x51", "0xee", "0xP"), // 0xP sponsored 0x51
+          payment("0xd2", "0xP", "0xee"), // 0xP's own self-paid transaction
+          payment("0xd3", "0x52", "0xee", "0xP"),
         ],
         false,
       ),
     );
     const r = await probeSponsored("0xP", 50, new Budget(100));
-    expect([...r.members.keys()].sort()).toEqual(["0xs1", "0xs2"]);
+    expect([...r.members.keys()].sort()).toEqual(["0x51", "0x52"]);
     // Self-payment must not make an address its own sponsor.
     expect(r.members.has("0xP")).toBe(false);
   });
@@ -159,7 +159,7 @@ function router(handlers: {
 describe("buildWalletEdges", () => {
   const A = "0xaaa";
   const B = "0xbbb";
-  const NARROW = "0xnarrow";
+  const NARROW = "0x4a4";
 
   it("links two seeds that share a narrow first funder", async () => {
     mockGqlQuery.mockImplementation(
@@ -187,7 +187,7 @@ describe("buildWalletEdges", () => {
   it("discards a popular funder instead of linking everyone it paid", async () => {
     // The failure this prevents: one exchange collapsing the whole chain into
     // a single 'cluster'.
-    const CEX = "0xcex";
+    const CEX = "0xcec";
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) =>
@@ -227,7 +227,7 @@ describe("buildWalletEdges", () => {
         recent: () =>
           page([
             {
-              digest: "0xmass",
+              digest: "0x4a55",
               sender: { address: A },
               gasInput: { gasSponsor: { address: A } },
               effects: { balanceChanges: { nodes: [...many, { owner: { address: B }, amount: ONE_SUI }] } },
@@ -245,8 +245,8 @@ describe("buildWalletEdges", () => {
     // paid twenty — an unrelated wallet lands in a batch by being on a list.
     // Measured on mainnet: one seed's cluster went from 17 members to 6 once
     // batch-funded pairs stopped scoring the same as separately-funded ones.
-    const F = "0xfunder";
-    const SHARED = "0xsharedtx";
+    const F = "0xf00d";
+    const SHARED = "0x54a4ed";
     const wide = { transactionEffects: { balanceChanges: { nodes:
       Array.from({ length: 20 }, (_, i) => ({ owner: { address: `0xr${i}` }, amount: ONE_SUI })) } } };
     mockGqlQuery.mockImplementation(
@@ -267,8 +267,8 @@ describe("buildWalletEdges", () => {
   });
 
   it("scores a bespoke two-way payout ABOVE a plain shared funder", async () => {
-    const F = "0xfunder";
-    const SHARED = "0xsharedtx";
+    const F = "0xf00d";
+    const SHARED = "0x54a4ed";
     const narrow = { transactionEffects: { balanceChanges: { nodes: [
       { owner: { address: A }, amount: ONE_SUI }, { owner: { address: B }, amount: ONE_SUI }] } } };
     mockGqlQuery.mockImplementation(
@@ -290,7 +290,7 @@ describe("buildWalletEdges", () => {
     // Two transactions from one funder means each address was funded
     // deliberately. That is the ordinary cofunded case, not a payout list, so
     // no recipient-count lookup should even be spent on it.
-    const F = "0xfunder";
+    const F = "0xf00d";
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) =>
@@ -331,7 +331,7 @@ describe("buildWalletEdges", () => {
   it("keeps a POPULAR funder out, however many it funded", async () => {
     // The whole control. An exchange first-funds everybody, so a funding edge
     // from one would put every withdrawal it ever made in the same cluster.
-    const CEX = "0xcex";
+    const CEX = "0xcec";
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) => (addr === A ? page([payment("0xfa", CEX, A)]) : page([])),
@@ -353,12 +353,12 @@ describe("buildWalletEdges", () => {
     // transactions ago shows the outbound half and nothing else. The return leg
     // is asked of the counterparty instead, and probeRecipients already returns
     // it while measuring whether that counterparty is a service.
-    const OTHER = "0xother";
+    const OTHER = "0x07e";
     mockGqlQuery.mockImplementation(
       router({
-        recent: (addr) => (addr === A ? page([payment("0xout", A, OTHER)]) : page([])),
+        recent: (addr) => (addr === A ? page([payment("0x0a7", A, OTHER)]) : page([])),
         // The probe of OTHER shows it paid A back.
-        sent: (addr) => (addr === OTHER ? page([payment("0xback", OTHER, A)]) : page([])),
+        sent: (addr) => (addr === OTHER ? page([payment("0xbac", OTHER, A)]) : page([])),
       }),
     );
 
@@ -367,16 +367,16 @@ describe("buildWalletEdges", () => {
     expect(rec).toBeDefined();
     expect([rec!.wallet_a, rec!.wallet_b]).toContain(OTHER);
     expect(rec!.weight).toBe(1);
-    expect(rec!.signals[0].digests).toContain("0xback");
+    expect(rec!.signals[0].digests).toContain("0xbac");
   });
 
   it("does NOT link a one-directional payment", async () => {
     // Everyone pays an exchange. Paying someone who never pays you back is the
     // commonest relationship on chain and carries almost no information.
-    const OTHER = "0xother";
+    const OTHER = "0x07e";
     mockGqlQuery.mockImplementation(
       router({
-        recent: (addr) => (addr === A ? page([payment("0xout", A, OTHER)]) : page([])),
+        recent: (addr) => (addr === A ? page([payment("0x0a7", A, OTHER)]) : page([])),
         sent: () => page([]), // OTHER paid nobody back
       }),
     );
@@ -387,14 +387,14 @@ describe("buildWalletEdges", () => {
   it("refuses reciprocal flow through a service", async () => {
     // A deposit to an exchange followed by a withdrawal from it is reciprocal
     // and means nothing.
-    const CEX = "0xcex";
+    const CEX = "0xcec";
     mockGqlQuery.mockImplementation(
       router({
-        recent: (addr) => (addr === A ? page([payment("0xout", A, CEX)]) : page([])),
+        recent: (addr) => (addr === A ? page([payment("0x0a7", A, CEX)]) : page([])),
         sent: (addr) =>
           addr === CEX
             ? page(
-                [payment("0xback", CEX, A), ...Array.from({ length: 20 }, (_, i) => payment(`0xd${i}`, CEX, `0xr${i}`))],
+                [payment("0xbac", CEX, A), ...Array.from({ length: 20 }, (_, i) => payment(`0xd${i}`, CEX, `0xr${i}`))],
                 true,
               )
             : page([]),
@@ -418,7 +418,7 @@ describe("buildWalletEdges", () => {
           addr === A
             ? page([
                 {
-                  digest: "0xdirect",
+                  digest: "0xd14e",
                   sender: { address: A },
                   gasInput: { gasSponsor: { address: A } },
                   effects: {
@@ -447,13 +447,13 @@ describe("buildWalletEdges", () => {
           addr === A
             ? page([
                 {
-                  digest: "0xboth",
-                  sender: { address: "0xthirdparty" },
-                  gasInput: { gasSponsor: { address: "0xthirdparty" } },
+                  digest: "0xb07",
+                  sender: { address: "0x3d" },
+                  gasInput: { gasSponsor: { address: "0x3d" } },
                   effects: {
                     balanceChanges: {
                       nodes: [
-                        { owner: { address: "0xthirdparty" }, amount: `-${ONE_SUI}` },
+                        { owner: { address: "0x3d" }, amount: `-${ONE_SUI}` },
                         { owner: { address: A }, amount: ONE_SUI },
                         { owner: { address: B }, amount: ONE_SUI },
                       ],
@@ -477,23 +477,23 @@ describe("buildWalletEdges", () => {
   });
 
   it("verifies a sibling candidate's own first funder before admitting it", async () => {
-    // The narrow funder also paid 0xstranger, but that was a payment, not the
+    // The narrow funder also paid 0x57a, but that was a payment, not the
     // inflow that created it. Being paid is not being funded.
-    const SIB = "0xsibling";
-    const STRANGER = "0xstranger";
+    const SIB = "0x51b";
+    const STRANGER = "0x57a";
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) => {
           if (addr === A || addr === SIB) return page([payment("0xf" + addr, NARROW, addr)]);
-          if (addr === STRANGER) return page([payment("0xfs", "0xelsewhere", STRANGER)]);
+          if (addr === STRANGER) return page([payment("0xf5", "0xe15e", STRANGER)]);
           return page([]);
         },
         sent: (addr) =>
           addr === NARROW
             ? page([
                 payment("0xfa", NARROW, A),
-                payment("0xfsib", NARROW, SIB),
-                payment("0xfst", NARROW, STRANGER),
+                payment("0xf51b", NARROW, SIB),
+                payment("0xf57", NARROW, STRANGER),
               ])
             : page([]),
       }),

@@ -446,9 +446,15 @@ export function registerHolderTools(server: McpServer) {
         .optional()
         .describe("'nft' ranks by count, 'token' ranks by balance. Auto-detected from type if omitted (Coin<...> = token, otherwise nft)."),
       limit: numArg()
+        .int()
+        .min(1)
+        .max(100)
         .optional()
         .describe("Top N holders to return (default 20, max 100)"),
       max_scan: numArg()
+        .int()
+        .min(1)
+        .max(50000)
         .optional()
         .describe("Max objects to scan (default 5000, max 50000)"),
     },

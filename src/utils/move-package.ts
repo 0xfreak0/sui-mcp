@@ -48,39 +48,56 @@ export async function resolvePackageId(ref: string): Promise<string> {
   return normalizeSuiAddress(body.package_id);
 }
 
+/**
+ * The package stored at exactly this address.
+ *
+ * `package(address:)` resolves any version's address to the LATEST version of
+ * the lineage: Nemo v1 (`0x2b71…`) and v5 (`0xef9c…`) both came back as v12
+ * (`0x4fb3…`), so disassembling v1 showed `redeem_pt`, which v5 added. An
+ * object read is not linkage-resolved: the object at a package's address is
+ * that version and no other. Packages are immutable, so it has one version.
+ */
+interface ExactPackage<T> {
+  object: { asMovePackage: T | null } | null;
+}
+
+function exactPackage<T>(data: ExactPackage<T>, packageId: string): T {
+  if (!data.object) throw new Error(`Package not found: ${packageId}`);
+  if (!data.object.asMovePackage) throw new Error(`${packageId} is an object, not a package`);
+  return data.object.asMovePackage;
+}
+
 interface ModulesPage {
-  package: {
-    address: string;
-    modules: {
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      nodes: { name: string }[];
-    };
-  } | null;
+  modules: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: { name: string }[];
+  };
 }
 
 const MODULE_NAMES_QUERY = `query ($p: SuiAddress!, $after: String) {
-  package(address: $p) {
-    address
-    modules(first: 50, after: $after) {
-      pageInfo { hasNextPage endCursor }
-      nodes { name }
+  object(address: $p) {
+    asMovePackage {
+      modules(first: 50, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { name }
+      }
     }
   }
 }`;
 
-/** List every module name in a package (paginates the 50-per-page GraphQL cap). */
+/** List every module name in exactly this package version (paginates the 50-per-page GraphQL cap). */
 export async function fetchModuleNames(packageId: string): Promise<string[]> {
   const names: string[] = [];
   let after: string | null = null;
   for (;;) {
-    const data: ModulesPage = await gqlQuery<ModulesPage>(MODULE_NAMES_QUERY, {
+    const data = await gqlQuery<ExactPackage<ModulesPage>>(MODULE_NAMES_QUERY, {
       p: packageId,
       after,
     });
-    if (!data.package) throw new Error(`Package not found: ${packageId}`);
-    for (const n of data.package.modules.nodes) names.push(n.name);
-    if (!data.package.modules.pageInfo.hasNextPage) break;
-    after = data.package.modules.pageInfo.endCursor;
+    const pkg: ModulesPage = exactPackage(data, packageId);
+    for (const n of pkg.modules.nodes) names.push(n.name);
+    if (!pkg.modules.pageInfo.hasNextPage) break;
+    after = pkg.modules.pageInfo.endCursor;
     // A connection claiming another page but handing back no cursor would send
     // `after` to null, which restarts the walk from page one — forever, since
     // this loop has no page bound. Same guard as `event-json.ts`.
@@ -90,38 +107,39 @@ export async function fetchModuleNames(packageId: string): Promise<string[]> {
 }
 
 interface DisassemblyResult {
-  package: {
-    module: { name: string; disassembly: string | null } | null;
-  } | null;
+  module: { name: string; disassembly: string | null } | null;
 }
 
 const DISASSEMBLY_QUERY = `query ($p: SuiAddress!, $m: String!) {
-  package(address: $p) {
-    module(name: $m) {
-      name
-      disassembly
+  object(address: $p) {
+    asMovePackage {
+      module(name: $m) {
+        name
+        disassembly
+      }
     }
   }
 }`;
 
 /**
  * Fetch the GraphQL-provided disassembly (Move bytecode assembly) for one
- * module. This is the zero-infra alternative to the external move-decompiler
- * binary: lower-level than decompiled source, but always available.
+ * module of exactly this package version. This is the zero-infra alternative
+ * to the external move-decompiler binary: lower-level than decompiled source,
+ * but always available.
  */
 export async function fetchModuleDisassembly(
   packageId: string,
   moduleName: string,
 ): Promise<string> {
-  const data = await gqlQuery<DisassemblyResult>(DISASSEMBLY_QUERY, {
+  const data = await gqlQuery<ExactPackage<DisassemblyResult>>(DISASSEMBLY_QUERY, {
     p: packageId,
     m: moduleName,
   });
-  if (!data.package) throw new Error(`Package not found: ${packageId}`);
-  if (!data.package.module) {
+  const pkg = exactPackage(data, packageId);
+  if (!pkg.module) {
     throw new Error(`Module '${moduleName}' not found in package ${packageId}`);
   }
-  return data.package.module.disassembly ?? "";
+  return pkg.module.disassembly ?? "";
 }
 
 interface PackageVersionResult {

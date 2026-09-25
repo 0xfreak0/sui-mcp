@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`disassemble_module` showed the latest version's bytecode for every
+  version.** GraphQL's `package(address:)` resolves any version's address to
+  the newest version in its lineage, so disassembling Nemo v1 showed
+  `redeem_pt`, which v5 added. Module lists and disassembly now read the
+  package stored at exactly the address given, and so does `analyze_package`
+  with `include_disassembly`. `get_move_function`, `get_package` and
+  `analyze_package`'s summary read over gRPC and were already exact.
+- **`export_case`'s diagram left out value taken from protocols.** A transfer
+  was drawn only when an address paid it, and the Nemo markets that paid the
+  attacker are shared objects, so the exploit had no arrow at all. Value a
+  case address received that no address paid is now drawn from a node for the
+  protocols the transaction called, and value it paid that no address
+  received is drawn into one, so a swap shows both legs.
+
 ## 1.19.0 (2026-09-25)
 
 Two public incidents were replayed end to end through the server: the Cetus

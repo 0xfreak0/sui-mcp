@@ -71,7 +71,12 @@ beforeEach(() => {
   mockGqlQuery.mockReset();
   mockDescribe.mockReset();
   mockGqlQuery.mockImplementation(async (q: string) =>
-    String(q).includes("transactions(") ? fundingPage : { transactions: { nodes: [] } },
+    // The funder's popularity probe reads its outgoing transactions: none here.
+    String(q).includes("sentAddress")
+      ? { transactions: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } } }
+      : String(q).includes("transactions(")
+        ? fundingPage
+        : { transactions: { nodes: [] } },
   );
   mockDescribe.mockImplementation(async (addrs: string[] = []) => new Map(addrs.map((a) => [a, identity(a)])));
 });

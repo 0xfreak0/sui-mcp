@@ -47,7 +47,7 @@ import { assessCoFunding } from "./co-funding.js";
  * mainnet sample bears that out: in one 60-checkpoint window the single service
  * sponsor sat at 22 distinct senders while every other sponsor sat at 1 or 2.
  */
-const DEFAULT_POPULARITY_LIMIT = 50;
+export const DEFAULT_POPULARITY_LIMIT = 50;
 
 /**
  * Distinct parties in one transaction past which co-appearance means nothing.
@@ -227,7 +227,7 @@ export async function firstFunderOf(
     const txs: FundingTx[] = data.transactions.nodes.map(toFundingTx);
     // Reuses the dust and gas-sponsor rules rather than re-deriving them: a
     // 1-MIST spam send must not become a cluster edge either.
-    const picked = pickFundingTx(txs, address);
+    const picked = pickFundingTx(txs, address).funding;
     if (!picked || picked.funder === "unknown") return null;
     saveFirstFunder(account, currentSuiAccount(picked.funder), picked.digest);
     return { funder: picked.funder, digest: picked.digest };

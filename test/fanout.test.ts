@@ -270,3 +270,64 @@ describe("cache depth", () => {
     expect(r.scanned_transactions).toBe(2000);
   });
 });
+
+describe("a classification off a truncated scan is provisional", () => {
+  // The scan reads the most recent window. An address whose recent window is
+  // quiet can have paid thousands before it, so "narrow" off a scan that
+  // stopped at its budget is a lower bound. Reported as "meaningful and worth
+  // investigating", it made a distributor's early wallet read as a real origin.
+  it("marks narrow provisional and drops the 'meaningful' reading when the scan hit its budget", async () => {
+    gqlQuery
+      .mockResolvedValueOnce(page([sendTo("0xb1")], true, "c1"))
+      .mockResolvedValueOnce(page([sendTo("0xb2")], true, "c2"));
+    const r = await measureFanout(ADDR, 2);
+    expect(r.classification).toBe("narrow");
+    expect(r.classification_provisional).toBe(true);
+    expect(r.interpretation).not.toContain("meaningful and worth investigating");
+  });
+
+  it("leaves a scan that reached the end of the history unqualified", async () => {
+    gqlQuery.mockResolvedValueOnce(page([sendTo("0xb1")], false));
+    const r = await measureFanout(ADDR, 1000);
+    expect(r.classification).toBe("narrow");
+    expect(r.classification_provisional).toBeUndefined();
+  });
+
+  it("never qualifies hub, which is proven by what was seen", async () => {
+    getCachedFanout.mockReturnValue({
+      address: ADDR,
+      recipient_count: 1200,
+      sender_count: 10,
+      counterparty_count: 1210,
+      coin_type_count: 3,
+      out_in_ratio: 120,
+      flow_shape: "disperser",
+      scanned_transactions: 1000,
+      truncated: 1,
+      measured_at: Date.now(),
+      age_ms: 1000,
+    } as never);
+    const r = await measureFanout(ADDR, 1000);
+    expect(r.classification).toBe("hub");
+    expect(r.classification_provisional).toBeUndefined();
+  });
+
+  it("qualifies a truncated reading served from the cache the same way", async () => {
+    getCachedFanout.mockReturnValue({
+      address: ADDR,
+      recipient_count: 37,
+      sender_count: 4,
+      counterparty_count: 41,
+      coin_type_count: 3,
+      out_in_ratio: 9.25,
+      flow_shape: "disperser",
+      scanned_transactions: 1000,
+      truncated: 1,
+      measured_at: Date.now(),
+      age_ms: 1000,
+    } as never);
+    const r = await measureFanout(ADDR, 300);
+    expect(r.cached).toBe(true);
+    expect(r.classification_provisional).toBe(true);
+  });
+});

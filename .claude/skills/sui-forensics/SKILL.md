@@ -48,7 +48,10 @@ holds one for a client.
    path: a trace follows one branch, and splitting across wallets is the ordinary
    laundering move.
 4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
-   several addresses at once, which also reports co-funding and its denominators.
+   several addresses at once, which also reports co-funding and its denominators
+   and every payment one subject signed to another (`subject_paid_subject`).
+   The walk stops at a funder that paid more than 50 distinct addresses: that is
+   an exchange or service, and its own ancestry says nothing about the subject.
    Then measure the funder with `get_address_fanout` before believing anything.
 5. **Cluster only once you have a reason to.** `build_wallet_edges` answers
    "is this a new party or the same one", not "who is this".
@@ -403,7 +406,14 @@ ten round trips for the same data.
 
 - **Dust is not funding.** A 1-MIST spam send is not who funded a wallet, and an
   inflow in a coin nobody prices is spam at any size. Skipped inflows appear as
-  `dust_skipped`; read them rather than assuming nothing was filtered.
+  `dust_skipped`; read them rather than assuming nothing was filtered. A wallet
+  that pays gas from an address balance can run with no qualifying inflow at
+  all; its operator then appears in `sponsored_by`, the parties that paid gas
+  for transactions it sent.
+- **A narrow reading off a truncated scan is provisional.** `classification_provisional`
+  on a fan-out, and `provisional` on a funder's popularity, mean the scan
+  stopped before the end of the address's history. The count is a lower bound,
+  and "narrow" may only mean "not far enough".
 - **The gas sponsor is not the sender.** Gas folds into the payer's net SUI, so a
   raw comparison across coins picks the sponsor over the real funder.
 - **Obfuscated packages are named by their events.** A transaction calling

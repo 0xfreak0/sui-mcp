@@ -101,6 +101,12 @@ export interface FanoutResult {
   classification: "hub" | "distributor" | "narrow";
   interpretation: string;
   /**
+   * The classification rests on a scan that hit its budget, so the count is
+   * a lower bound. Never set for `hub`, which is proven by what was seen. See
+   * {@link reportedClassification}.
+   */
+  classification_provisional?: boolean;
+  /**
    * Distinct addresses this one paid gas FOR, over the sample.
    *
    * A separate question from value fan-out, and not answerable from it: a
@@ -252,6 +258,32 @@ export function classifyFanout(counterparties: number): {
 }
 
 /**
+ * The classification as it may be reported, given how the scan ended.
+ *
+ * Same asymmetry as {@link sponsorIsProvisional}. `hub` is proven by the
+ * counterparties seen. `narrow` and `distributor` off a truncated scan are
+ * lower bounds, because the scan reads the most recent window and a quiet
+ * recent window says nothing about what the address did before. Reporting
+ * "narrow, worth investigating" off such a scan is the reading that names an
+ * exchange's early wallet as a meaningful origin.
+ */
+export function reportedClassification(
+  counterparties: number,
+  truncated: boolean,
+): Pick<FanoutResult, "classification" | "interpretation" | "classification_provisional"> {
+  const { classification, interpretation } = classifyFanout(counterparties);
+  if (!truncated || classification === "hub") return { classification, interpretation };
+  return {
+    classification,
+    classification_provisional: true,
+    interpretation:
+      classification === "narrow"
+        ? "Narrow within the window scanned, but the scan reached its budget before the end of this address's history, so the count is a lower bound. Raise max_transactions before reading shared funding through it as meaningful."
+        : `${interpretation} The scan reached its budget before the end of this address's history, so the count is a lower bound and the address may be hub-scale.`,
+  };
+}
+
+/**
  * Count distinct counterparties of `address`, walking backwards from its most
  * recent activity and scanning at most `maxTransactions`.
  *
@@ -284,7 +316,6 @@ export async function measureFanout(
     const deepEnough =
       cached && (cached.truncated === 0 || cached.scanned_transactions >= maxTransactions);
     if (cached && deepEnough) {
-      const { classification, interpretation } = classifyFanout(cached.counterparty_count);
       return {
         address,
         recipient_count: cached.recipient_count,
@@ -320,8 +351,7 @@ export async function measureFanout(
           : {}),
         scanned_transactions: cached.scanned_transactions,
         truncated: cached.truncated === 1,
-        classification,
-        interpretation,
+        ...reportedClassification(cached.counterparty_count, cached.truncated === 1),
         cached: true,
         measured_ago_ms: cached.age_ms,
       };
@@ -383,7 +413,6 @@ export async function measureFanout(
   const ratio = senders.size > 0 ? recipients.size / senders.size : null;
   const flowShape: FanoutResult["flow_shape"] =
     ratio === null ? "unknown" : ratio >= 3 ? "disperser" : ratio <= 0.33 ? "collector" : "balanced";
-  const { classification, interpretation } = classifyFanout(counterparties.size);
   const sponsorShape = classifySponsor(sponsored.size);
   // Persist every field the measurement produced. Storing only the total used
   // to make a cache hit report -1 for the in/out split and "unknown" for flow
@@ -421,7 +450,6 @@ export async function measureFanout(
     ...(sponsorIsProvisional(sponsorShape, hasNext) ? { sponsor_shape_provisional: true } : {}),
     scanned_transactions: scanned,
     truncated: hasNext,
-    classification,
-    interpretation,
+    ...reportedClassification(counterparties.size, hasNext),
   };
 }

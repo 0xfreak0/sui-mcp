@@ -360,11 +360,52 @@ someone in a report. Three rules, in `src/utils/funding.ts`:
   coins named the gas sponsor: -0.036 SUI is raw -36000000 against a real
   sender's -11 USDC at raw -11085939, and SUI has three more decimals.
 
-Skipped inflows are reported as `dust_skipped`, never dropped silently. Inflow
-ranking is by USD where a price exists, for the same decimals reason.
+Skipped inflows are reported as `dust_skipped`, never dropped silently, and that
+includes the case where nothing qualified: `pickFundingTx` returns
+`{ funding: null, dustSkipped, sponsors }`, never a bare null. A bare null
+dropped the skipped list exactly when it was the only evidence. `sponsors` are
+the parties that paid gas for transactions the address sent, reported as
+`sponsored_by` at a dead end: gas can be paid from an address balance, so a
+relay wallet can run on zero SUI of its own with ~1,900-MIST inflows, and its
+operator then appears as sponsor and nowhere else. Inflow ranking is by USD
+where a price exists, for the same decimals reason.
 
 Scam NFTs need no handling here — they move no coin, so they never appear as an
 inflow. This is about coin dust only.
+
+### Where a funding walk stops
+
+Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
+
+- **A service-scale funder ends the walk.** Each hop's funder goes through
+  `probeRecipients` with `DEFAULT_POPULARITY_LIMIT`, the probe and the limit
+  `build_wallet_edges` uses to discard an intermediary, so the two tools cannot
+  disagree about whether an address is a service. More than 50 recipients stops
+  the walk: that funder's own first funding says who funded the exchange, not
+  who funded the subject. On the Nemo attacker the walk went four hops past a
+  261-recipient funder and called a 2023 wallet a narrow origin. Probes are
+  cached per call and share one `Budget`; a funder the budget did not reach is
+  `unmeasured`, and narrow off an incomplete probe is `provisional`.
+- **A hub origin is not re-measured with `measureFanout`.** Its 300-transaction
+  bidirectional window can classify a 60-recipient distributor as `narrow`,
+  which restores the reading the stop exists to prevent. For shared funders the
+  probe's verdict overrides the interpretation, not the measured numbers.
+- **A chain counts toward `shared_funders` only up to the first funder that is
+  itself a subject.** Past that point it is the other subject's ancestry,
+  already counted under its own result. Counting it again made one chain read
+  as two addresses sharing a narrow funder. The link is in
+  `subject_funded_subject`.
+- **`subject_paid_subject` asks each ordered pair.** `sentAddress` and
+  `affectedAddress` combine in one filter, so the answer does not depend on how
+  far back either history runs, and ten pairs fit in one aliased document
+  (`src/utils/subject-payments.ts`). Addresses are validated with
+  `normalizeWatchAddress` before batching. Pairs grow with the square of the
+  batch, so above 20 subjects only each subject's earliest transactions are
+  checked, and `subject_payment_scope` says so. It adds no clustering weight.
+
+`measureFanout` follows the same asymmetry: `hub` is proven by what was seen,
+while `narrow` or `distributor` off a truncated scan carries
+`classification_provisional` and loses the "meaningful" reading.
 
 ### What may be cached in a trace
 

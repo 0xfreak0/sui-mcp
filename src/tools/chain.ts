@@ -3,7 +3,8 @@ import { sui } from "../clients/grpc.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { bigintToString, timestampToIso } from "../utils/formatting.js";
 import { checkpointBracket, type CheckpointBracket } from "../utils/checkpoint-time.js";
-import { errorResult } from "../utils/errors.js";
+import { describeError, errorResult } from "../utils/errors.js";
+import { getNetwork } from "../config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerChainTools(server: McpServer) {
@@ -57,8 +58,15 @@ export function registerChainTools(server: McpServer) {
         };
       }
 
-      // Default: current chain info
-      const { response: res } = await sui.ledgerService.getServiceInfo({});
+      // Default: current chain info. The service info carries no gas price,
+      // so the current epoch is read beside it.
+      const [{ response: res }, gasPrice] = await Promise.all([
+        sui.ledgerService.getServiceInfo({}),
+        sui.ledgerService
+          .getEpoch({ readMask: { paths: ["reference_gas_price"] } })
+          .then(({ response }) => ({ value: bigintToString(response.epoch?.referenceGasPrice) }))
+          .catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
+      ]);
       return {
         content: [
           {
@@ -70,6 +78,8 @@ export function registerChainTools(server: McpServer) {
                 epoch: bigintToString(res.epoch),
                 checkpoint_height: bigintToString(res.checkpointHeight),
                 timestamp: timestampToIso(res.timestamp),
+                reference_gas_price: "value" in gasPrice ? gasPrice.value : null,
+                ...("failed" in gasPrice ? { reference_gas_price_unavailable: gasPrice.failed } : {}),
                 lowest_available_checkpoint: bigintToString(
                   res.lowestAvailableCheckpoint
                 ),

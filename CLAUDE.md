@@ -1493,6 +1493,14 @@ data it already has, no extra query — and emits `bridge_exits`.
   `diff_package_upgrade` reads each version's `linkage` and reports relinked
   dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no
   behaviour.
+- **Upgrade history joins on the UpgradeCap's versions.** Every upgrade takes
+  the cap by `&mut`, so each upgrade is also a cap version, and top-level
+  `objectVersions(address:)` lists them oldest first even after the cap is
+  destroyed or wrapped (`object(address:)` is then null; the last
+  `affectedObject` transaction's gRPC `idOperation` tells the two apart). The
+  holder at an upgrade is the cap's INPUT owner, and `get_upgrade_history`'s
+  usual holder is measured in time held, not versions, so an eleven-minute
+  loan that shipped one version does not become the norm.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

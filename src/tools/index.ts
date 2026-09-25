@@ -39,6 +39,7 @@ import { registerPackageAuditTools } from "./package-audit.js";
 import { registerFundingTools } from "./funding.js";
 import { registerTimelineTools } from "./timeline.js";
 import { registerObjectHistoryTools } from "./object-history.js";
+import { registerUpgradeHistoryTools } from "./upgrade-history.js";
 import { registerClusterTools } from "./cluster.js";
 import { registerMultisigTools } from "./multisig.js";
 import { registerRestrictionTools } from "./restrictions.js";
@@ -103,6 +104,7 @@ export function registerAllTools(rawServer: McpServer) {
   registerFundingTools(server);
   registerTimelineTools(server);
   registerObjectHistoryTools(server);
+  registerUpgradeHistoryTools(server);
   registerClusterTools(server);
   registerMultisigTools(server);
   registerRestrictionTools(server);

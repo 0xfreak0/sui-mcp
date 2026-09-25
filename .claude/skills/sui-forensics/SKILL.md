@@ -370,6 +370,7 @@ get the schema wrong in ways that fail silently.
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
 | What did an upgrade change? | `diff_package_upgrade` → hunks, `visibility_changes`, `linkage_changes` |
 | Can the code still be changed, and by whom? | `analyze_package` → the UpgradeCap's `holder_status` |
+| Who pushed each version, with one key or a multisig, and who held the UpgradeCap at time T? | `get_upgrade_history` → per-version `signer`, `cap_holder`, `flags`; `as_of` for a moment |
 | Why did this transaction fail? | `get_transaction` → `failure` (abort code, module, function) |
 | Has an issuer frozen this address? | `check_coin_restrictions` |
 | Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |

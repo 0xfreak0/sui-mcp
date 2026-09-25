@@ -17,6 +17,8 @@ import {
   fetchPackageLatestVersion,
 } from "../utils/move-package.js";
 import { auditPackageCapabilities } from "../utils/capabilities.js";
+import { computeOwnerChanges } from "../utils/object-history.js";
+import { fetchCapHistory } from "./upgrade-history.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // ---------------------------------------------------------------------------
@@ -218,7 +220,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. It also returns every module's struct shapes with full field names and types under `overview.modules`, so use it rather than hand-writing GraphQL for those — the GraphQL `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
+    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. `upgrade_cap` counts the UpgradeCap's owner changes and names the latest; get_upgrade_history has the per-version join of publishers, signing schemes and cap holders. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. It also returns every module's struct shapes with full field names and types under `overview.modules`, so use it rather than hand-writing GraphQL for those — the GraphQL `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
     {
       package_id: z
         .string()
@@ -277,6 +279,37 @@ export function registerAnalyzePackageTools(server: McpServer) {
             ? undefined
             : await auditPackageCapabilities(packageId, rootPublisher.publisher);
 
+        // Current custody says nothing about how the cap got there. Its
+        // owner-change count and the latest change are one query; the full
+        // per-version join is get_upgrade_history's job.
+        const capId = capabilities?.capabilities.find((c) => c.kind === "upgrade")?.object_id;
+        let upgradeCap: Record<string, unknown> | null = null;
+        let upgradeCapUnavailable: string | undefined;
+        if (capId) {
+          try {
+            const h = await fetchCapHistory(capId);
+            const changes = computeOwnerChanges(
+              h.versions.map((c) => ({
+                version: String(c.object_version),
+                tx: c.tx,
+                timestamp: c.timestamp,
+                checkpoint: c.checkpoint === null ? null : String(c.checkpoint),
+                owner: c.owner,
+              })),
+            );
+            const last = changes[changes.length - 1];
+            upgradeCap = {
+              object_id: capId,
+              owner_change_count: changes.length,
+              last_owner_change: last ? { from: last.from, to: last.to, tx: last.tx, timestamp: last.timestamp } : null,
+              history_complete: h.complete && !!rootPublisher.publish_tx && h.versions[0]?.tx === rootPublisher.publish_tx,
+              see: { tool: "get_upgrade_history", args: { package: rootId } },
+            };
+          } catch (err) {
+            upgradeCapUnavailable = `The UpgradeCap's history could not be read (${err instanceof Error ? err.message : String(err)}). Its owner-change count is unknown, not zero.`;
+          }
+        }
+
         let disassembly: { module: string; disassembly: string }[] | undefined;
         if (include_disassembly) {
           disassembly = await Promise.all(
@@ -313,6 +346,8 @@ export function registerAnalyzePackageTools(server: McpServer) {
                   finding_count: findings.length,
                   findings,
                   ...(capabilities ? { capabilities } : {}),
+                  ...(capId ? { upgrade_cap: upgradeCap } : {}),
+                  ...(upgradeCapUnavailable ? { upgrade_cap_unavailable: upgradeCapUnavailable } : {}),
                   overview,
                   ...(disassembly ? { disassembly } : {}),
                 },

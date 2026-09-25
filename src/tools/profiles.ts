@@ -94,6 +94,7 @@ export const PROFILES = {
     "disassemble_module",
     "build_timeline",
     "trace_object_history",
+    "get_upgrade_history",
     "manage_labels",
     "query_events",
     "check_activity",

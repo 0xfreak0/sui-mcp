@@ -5,6 +5,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerAllTools } from "./tools/index.js";
 import { registerAllResources } from "./resources.js";
+import { registerAllPrompts } from "./prompts.js";
+import { serverInstructions } from "./tools/toolset.js";
 
 const require = createRequire(import.meta.url);
 
@@ -15,13 +17,11 @@ const require = createRequire(import.meta.url);
 // (git clone and npm install) because dist/ sits directly under the root.
 const { version } = require("../package.json") as { version: string };
 
-const server = new McpServer({
-  name: "sui-mcp",
-  version,
-});
+const server = new McpServer({ name: "sui-mcp", version }, { instructions: serverInstructions() });
 
 registerAllTools(server);
 registerAllResources(server);
+registerAllPrompts(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

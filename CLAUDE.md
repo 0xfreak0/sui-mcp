@@ -23,7 +23,8 @@ src/
 ├── utils/                # Shared helpers (formatting, SuiNS, etc.)
 ├── discovery.ts          # Token discovery (static + Aftermath fallback)
 ├── discovery-nft.ts      # NFT collection discovery
-└── resources.ts          # MCP resources
+├── prompts.ts            # MCP prompts (task + forensics skill sections)
+└── resources.ts          # MCP resources (chain reads, sui://case/{name})
 ```
 
 Per-call network selection. `SUI_NETWORK` sets only the *default* (mainnet if
@@ -32,9 +33,11 @@ unset); every tool also takes an optional `network` arg ("mainnet" | "testnet"
 testnet value to mainnet).
 
 - `src/tools/with-network.ts` wraps `server.tool` once: it injects the `network`
-  arg into every tool's schema and runs each handler inside
-  `runWithNetwork(network)` (an `AsyncLocalStorage` context in `config.ts`).
-  Individual tool files are untouched.
+  arg into every chain tool's schema, runs each handler inside
+  `runWithNetwork(network)` (an `AsyncLocalStorage` context in `config.ts`), and
+  registers the tool through `registerTool` with the metadata from
+  `src/tools/tool-meta.ts` (see Tool metadata below). Individual tool files are
+  untouched.
 - `sui` / `archive` (grpc) and `gqlQuery` (graphql) are **proxies** over
   per-network client caches (`getClients`, `getGraphqlClient`). They re-resolve
   against `getNetwork()` on every access, so the same imported reference targets
@@ -341,6 +344,22 @@ for the outlier is the right trade. Bounding the payload is the caller's
 decision, and when they make it the response says plainly that it is not the
 complete event data.
 
+Tools whose complete result is the point declare
+`_meta['anthropic/maxResultSizeChars']` (500k, Claude Code's ceiling) in
+`tool-meta.ts`. Claude Code otherwise writes a result over ~50k characters to a
+file and shows the model a 2 KB preview, which is a default cap by another
+route.
+
+A default view is different from a cap when nothing is dropped from the answer,
+only moved behind an argument that the response names. `analyze_package` and
+`get_package` return a per-module summary (counts, entry and public function
+names) and compact JSON, because the full listing of `0x2` is 272k characters;
+`modules: [...]` or `detail: 'full'` returns struct shapes and signatures.
+`analyze_package` folds caps of one type and ownership into one entry that still
+lists every object and holder. `find_funding_sources` keeps each result's origin,
+first funder and first hop, and `include_chains` returns every hop; shared
+funders, co-funding and payments are computed from the full chains either way.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from
@@ -383,6 +402,42 @@ not a pass-through.
 field gets its default, a required one reports "Required") and a bare string
 where a list is expected becomes a one-item list. This runs as a `z.preprocess`
 on each field, so the JSON schema is the field's own.
+
+### Tool metadata
+
+`src/tools/tool-meta.ts` holds every tool's MCP metadata, applied by
+`withNetworkParam` at registration, so a new tool is covered without touching
+its file. The default is a chain read: a title derived from the name,
+`readOnlyHint: true`, `openWorldHint: true`, and the `network` argument. The
+`OVERRIDES` table lists the exceptions.
+
+- **A tool that writes a record is not read-only.** `save_finding`,
+  `delete_finding`, `manage_labels`, `watch_addresses` and `poll_watch` (it
+  advances each watch's cursor) have `readOnlyHint: false`, and the ones that
+  can delete have `destructiveHint: true`. A client auto-approves a read-only
+  tool, so a writer marked read-only writes without the user being asked. Cache
+  writes (`saveTransaction`, `saveFanout`, `saveFirstFunder`,
+  `saveKioskOwners`) do not count: a cached answer is the same answer.
+  `test/tool-annotations.test.ts` calls each writer against a temporary store
+  and fails when a tool that changed a row is marked read-only, or when a tool
+  marked as writing is not exercised there.
+- **`network: false` only for tools that never touch the chain and never
+  qualify a bare address.** `list_findings`, `export_case` and `delete_finding`
+  qualify. `save_finding`, `manage_labels` and `watch_addresses` do not: a bare
+  address they are given is recorded against the call's network. The injected
+  description is one line because it repeats in every schema; it was 23% of the
+  whole tool list at three sentences.
+- **`structured: true`** adds the first JSON-object text item as
+  `structuredContent`. It is opt-in because the payload then travels twice.
+  `trace_funds` puts its prose summary in the first item and its JSON in the
+  second, and the JSON is what becomes structured content.
+
+`enable_tools` is registered on the raw server and reads the same table. Its
+description lists every tool of each profile that is still off and must stay
+under 2,048 characters, where Claude Code cuts descriptions; past that, the
+longest lists turn into counts. Toggling tools goes through
+`batchToolListChanged`, which sends one `tools/list_changed` for the whole call
+rather than one per tool.
 
 ### Errors a tool returns
 

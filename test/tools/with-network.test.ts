@@ -15,20 +15,24 @@ interface Registered {
   name: string;
   description: string;
   schema: Record<string, unknown>;
+  annotations?: unknown;
   handler: (args: unknown, extra?: unknown) => unknown;
 }
 
-// Minimal fake server that records what `server.tool(...)` was called with.
+// Minimal fake server that records what the wrapper registers.
 function fakeServer() {
   const registered: Registered[] = [];
   const server = {
-    tool(...args: unknown[]) {
-      const handler = args[args.length - 1] as Registered["handler"];
-      const head = args.slice(0, -1);
+    registerTool(
+      name: string,
+      config: { description?: string; inputSchema?: Record<string, unknown>; annotations?: unknown },
+      handler: Registered["handler"],
+    ) {
       registered.push({
-        name: head[0] as string,
-        description: (typeof head[1] === "string" ? head[1] : "") as string,
-        schema: (head.find((a) => a && typeof a === "object") ?? {}) as Record<string, unknown>,
+        name,
+        description: config.description ?? "",
+        schema: config.inputSchema ?? {},
+        annotations: config.annotations,
         handler,
       });
     },

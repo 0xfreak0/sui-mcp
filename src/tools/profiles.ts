@@ -1,7 +1,8 @@
 /**
  * Tool profiles — ship a small default surface, expand on demand.
  *
- * The full tool manifest is ~13.8k tokens, and MCP sends it on *every* request.
+ * The full tool manifest is ~26k tokens (103k characters; `core` alone is ~6k),
+ * and MCP sends it on *every* request.
  * That is context spent before any work happens, and a large flat tool list also
  * degrades selection accuracy: the failure mode is not "too many entries" so
  * much as several plausible-looking tools for one intent.
@@ -155,14 +156,17 @@ export type ProfileName = keyof typeof PROFILES;
 
 export const PROFILE_NAMES = Object.keys(PROFILES) as ProfileName[];
 
-/** One-line summaries, used in the `enable_tools` description. */
+/**
+ * Short labels, used in the `enable_tools` description and the server
+ * instructions. The tool names beside them carry the detail; a long summary
+ * here is paid on every request and pushes the description past the 2,048
+ * characters Claude Code shows.
+ */
 export const PROFILE_SUMMARIES: Record<ProfileName, string> = {
-  core: "Everyday lookups — wallets, balances, transactions, tokens, NFTs, DeFi positions",
-  forensics:
-    "Incident investigation — fund tracing, batch funding attribution, address fan-out, live wallet-edge clustering, package analysis, multi-address timelines, object provenance, address labels, cross-chain bridge resolution, oracle-vs-market deviation, and recording findings into an exportable case report",
-  developer:
-    "Move package analysis — modules, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry",
-  market: "Market data — DeepBook order book and fills, pool stats, token search, validators",
+  core: "wallets, balances, transactions, tokens, NFTs, DeFi",
+  forensics: "incident investigation: tracing, attribution, clustering, packages, labels, case findings",
+  developer: "Move packages, bytecode, upgrades, PTBs, unsigned transactions, MVR",
+  market: "DeepBook, pools, token search, validators",
 };
 
 export const DEFAULT_PROFILES: ProfileName[] = ["core"];

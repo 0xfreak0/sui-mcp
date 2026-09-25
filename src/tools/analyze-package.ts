@@ -20,6 +20,7 @@ import {
 import { auditPackageCapabilities } from "../utils/capabilities.js";
 import { computeOwnerChanges } from "../utils/object-history.js";
 import { fetchCapHistory } from "./upgrade-history.js";
+import { groupCapabilities, selectModules, summarizeModule } from "../utils/package-summary.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // ---------------------------------------------------------------------------
@@ -221,7 +222,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. `upgrade_cap` counts the UpgradeCap's owner changes and names the latest; get_upgrade_history has the per-version join of publishers, signing schemes and cap holders. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. It also returns every module's struct shapes with full field names and types under `overview.modules`, so use it rather than hand-writing GraphQL for those — the GraphQL `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
+    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. `upgrade_cap` counts the UpgradeCap's owner changes and names the latest; get_upgrade_history has the per-version join of publishers, signing schemes and cap holders. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. `overview.modules` is a per-module summary by default: function and struct counts, entry and public function names. Pass `modules: ['pool']` for those modules' struct shapes (full field names and types) and signatures, or `detail: 'full'` for every module; use that rather than hand-writing GraphQL, whose `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
     {
       package_id: z
         .string()
@@ -232,8 +233,18 @@ export function registerAnalyzePackageTools(server: McpServer) {
       audit_capabilities: boolArg()
         .optional()
         .describe("Audit who holds the package's UpgradeCap/TreasuryCap/admin caps (default: true)"),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe(
+          "'summary' (default): per-module counts and entry/public names, and caps of one type folded with every holder listed. 'full': every module's signatures and struct shapes, and every cap separately.",
+        ),
+      modules: z
+        .array(z.string())
+        .optional()
+        .describe("Module names to return in full (signatures, struct shapes), e.g. ['pool']. Others are left out."),
     },
-    async ({ package_id, include_disassembly, audit_capabilities }) => {
+    async ({ package_id, include_disassembly, audit_capabilities, detail, modules: wantedModules }) => {
       try {
         const packageId = await resolvePackageId(package_id);
         const { response: res } = await sui.movePackageService.getPackage({
@@ -246,19 +257,33 @@ export function registerAnalyzePackageTools(server: McpServer) {
         const findings = analyzePackageModules(modules);
         const flaggedBy = guardiansFlagsForPackage(pkg.storageId ?? packageId);
 
+        const full = detail === "full";
+        const fullModule = (m: AnalyzedModule) => ({
+          name: m.name,
+          public_api: publicApi(m),
+          struct_count: m.structs.length,
+          structs: m.structs.map((s) => ({
+            name: s.name,
+            abilities: s.abilities,
+            fields: s.fields,
+          })),
+        });
+        const picked = selectModules(modules, wantedModules);
         const overview = {
           package_id: pkg.storageId ?? packageId,
           module_count: modules.length,
-          modules: modules.map((m) => ({
-            name: m.name,
-            public_api: publicApi(m),
-            struct_count: m.structs.length,
-            structs: m.structs.map((s) => ({
-              name: s.name,
-              abilities: s.abilities,
-              fields: s.fields,
-            })),
-          })),
+          ...(wantedModules?.length
+            ? {
+                module_names: modules.map((m) => m.name),
+                modules: picked.selected.map(fullModule),
+                ...(picked.missing.length ? { modules_not_found: picked.missing } : {}),
+              }
+            : full
+              ? { modules: modules.map(fullModule) }
+              : {
+                  modules: modules.map(summarizeModule),
+                  note: "Per-module summary. Pass modules: [name, …] for those modules' signatures and struct shapes, or detail: 'full' for every module.",
+                }),
         };
 
         // Two publishers, answering different questions. The lineage ROOT's
@@ -347,15 +372,21 @@ export function registerAnalyzePackageTools(server: McpServer) {
                   version_publisher: versionPublisher ?? rootPublisher,
                   finding_count: findings.length,
                   findings,
-                  ...(capabilities ? { capabilities } : {}),
+                  ...(capabilities
+                    ? {
+                        capabilities: full
+                          ? capabilities
+                          : { ...capabilities, capabilities: groupCapabilities(capabilities.capabilities) },
+                      }
+                    : {}),
                   ...(flaggedBy.length ? { flagged_by: flaggedBy } : {}),
                   ...(capId ? { upgrade_cap: upgradeCap } : {}),
                   ...(upgradeCapUnavailable ? { upgrade_cap_unavailable: upgradeCapUnavailable } : {}),
                   overview,
                   ...(disassembly ? { disassembly } : {}),
                 },
-                null,
-                2,
+                // Compact: indentation adds a quarter to a result that is
+                // already the largest this server returns.
               ),
             },
           ],

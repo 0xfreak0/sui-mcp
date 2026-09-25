@@ -27,9 +27,9 @@ const indexSrc = readFileSync(join(root, "src/index.ts"), "utf8");
 function registeredToolNames(): string[] {
   const names: string[] = [];
   const fake = {
-    tool(...args: unknown[]) {
-      names.push(args[0] as string);
-      return { enabled: true, enable() {}, disable() {} };
+    registerTool(name: string) {
+      names.push(name);
+      return { enabled: true, enable() {}, disable() {}, update() {} };
     },
     server: { setRequestHandler() {} },
   } as unknown as McpServer;

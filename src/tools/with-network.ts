@@ -3,21 +3,19 @@ import { type SuiNetwork, DEFAULT_NETWORK, isSuiNetwork, runWithNetwork } from "
 import { sui } from "../clients/grpc.js";
 import { cleanErrorMessage, describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { isAddressSchema, isSuinsName } from "./args.js";
+import { toolPolicy, withStructuredContent } from "./tool-meta.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
- * The `network` argument injected into every tool. Optional so existing callers
- * (and the LLM) can omit it and get {@link DEFAULT_NETWORK}; explicit per-call
- * so testnet and mainnet queries can coexist in one session.
+ * The `network` argument injected into every tool that reads the chain.
+ * Optional so callers can omit it and get {@link DEFAULT_NETWORK}; explicit
+ * per call so testnet and mainnet queries can coexist in one session. The
+ * description is repeated in every tool's schema, so it stays one line.
  */
-const networkParam = z
-  .enum(["mainnet", "testnet", "devnet"])
-  .optional()
-  .describe(
-    "Which Sui network to run this call against: 'mainnet' (default), 'testnet', or " +
-      "'devnet'. Set this per-call — different tool calls in the same session can target " +
-      "different networks (e.g. to compare a value on testnet against mainnet).",
-  );
+export const NETWORK_DESCRIPTION = "Network: 'mainnet' (default) | 'testnet' | 'devnet'";
+
+const networkParam = z.enum(["mainnet", "testnet", "devnet"]).optional().describe(NETWORK_DESCRIPTION);
 
 /**
  * Does `value` look like a Zod raw shape (the schema arg to `server.tool`)?
@@ -182,18 +180,21 @@ function cleanReturnedError(result: ToolResult, network: SuiNetwork): ToolResult
 
 /**
  * Wrap an McpServer so every `server.tool(...)` registration transparently:
- *   1. gains an optional `network` argument in its input schema,
+ *   1. gains an optional `network` argument in its input schema, unless the
+ *      tool never reads the chain (`network: false` in `tool-meta.ts`),
  *   2. treats `null` arguments as absent and a bare string as a one-item list,
  *   3. resolves SuiNS names in address arguments (see `addressArg`) on the
  *      call's network, and reports them back as `resolved_from`,
  *   4. runs its handler inside {@link runWithNetwork}, so the shared `sui` /
- *      `archive` / `gqlQuery` clients resolve to that call's network, and
+ *      `archive` / `gqlQuery` clients resolve to that call's network,
  *   5. turns a thrown error into a one-line `errorResult`, rather than the
- *      SDK's raw `err.message`.
+ *      SDK's raw `err.message`, and
+ *   6. registers with its title, annotations, `_meta` and, where opted in,
+ *      `structuredContent`, from {@link toolPolicy}.
  *
- * This keeps per-call network selection in ONE place instead of threading a
- * parameter through all ~40 tools. Handlers are untouched: they ignore the
- * extra `network` key and read clients as before.
+ * This keeps per-call network selection and tool metadata in ONE place
+ * instead of threading them through every tool. Handlers are untouched: they
+ * ignore the extra `network` key and read clients as before.
  */
 export function withNetworkParam(server: McpServer): McpServer {
   return new Proxy(server, {
@@ -209,21 +210,30 @@ export function withNetworkParam(server: McpServer): McpServer {
 
 function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
   const handler = args[args.length - 1];
-  const tool = server.tool.bind(server) as (...a: unknown[]) => unknown;
+  const name = args[0];
 
-  // Defensive: if the last arg isn't the handler, we don't understand this
-  // call shape — register it untouched rather than corrupt it.
-  if (typeof handler !== "function") {
-    return tool(...args);
+  // Defensive: if the call is not `tool(name, …, handler)`, we don't
+  // understand its shape — register it untouched rather than corrupt it.
+  if (typeof handler !== "function" || typeof name !== "string") {
+    return (server.tool.bind(server) as (...a: unknown[]) => unknown)(...args);
   }
 
-  const head = args.slice(0, -1);
+  const head = args.slice(1, -1);
+  const description = typeof head[0] === "string" ? head[0] : undefined;
   const schemaIdx = head.findIndex(isZodRawShape);
   const shape = schemaIdx >= 0 ? (head[schemaIdx] as z.ZodRawShape) : {};
+  // Annotations a tool file passes itself win over the table.
+  const ownAnnotations = head.find(
+    (a, i) => i !== schemaIdx && !!a && typeof a === "object" && !Array.isArray(a),
+  ) as ToolAnnotations | undefined;
   const addressFields = Object.keys(shape).filter((k) => isAddressSchema(shape[k]) !== null);
+  const policy = toolPolicy(name);
 
   const wrappedHandler = (toolArgs: unknown, extra: unknown) => {
-    const requested = (toolArgs as { network?: unknown })?.network;
+    const requested =
+      policy.network && toolArgs && typeof toolArgs === "object" && "network" in toolArgs
+        ? toolArgs.network
+        : undefined;
     const network: SuiNetwork = isSuiNetwork(requested) ? requested : DEFAULT_NETWORK;
     return runWithNetwork(network, async () => {
       try {
@@ -236,24 +246,29 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
             network,
           ));
         }
-        const result = (await handler(callArgs, extra)) as ToolResult;
-        return reportResolved(cleanReturnedError(result, network), resolved);
+        const result = (await (handler as (a: unknown, e: unknown) => unknown)(callArgs, extra)) as ToolResult;
+        const cleaned = reportResolved(cleanReturnedError(result, network), resolved);
+        return policy.structured ? withStructuredContent(cleaned) : cleaned;
       } catch (err) {
         return errorResult(describeError(err, network));
       }
     });
   };
 
-  const lenientShape = (fields: z.ZodRawShape): z.ZodRawShape =>
-    Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, lenientField(v)]));
+  const inputSchema: z.ZodRawShape = Object.fromEntries(
+    Object.entries(shape).map(([k, v]) => [k, lenientField(v)]),
+  );
+  if (policy.network) inputSchema.network = lenientField(networkParam);
 
-  if (schemaIdx >= 0) {
-    const merged = { ...lenientShape(shape), network: lenientField(networkParam) };
-    const newHead = [...head];
-    newHead[schemaIdx] = merged;
-    return tool(...newHead, wrappedHandler);
-  }
-
-  // Paramless tool (no schema arg): add one so `network` is still accepted.
-  return tool(...head, { network: lenientField(networkParam) }, wrappedHandler);
+  return server.registerTool(
+    name,
+    {
+      title: policy.title,
+      ...(description !== undefined ? { description } : {}),
+      inputSchema,
+      annotations: { ...policy.annotations, ...ownAnnotations },
+      ...(policy.meta ? { _meta: policy.meta } : {}),
+    },
+    wrappedHandler as Parameters<McpServer["registerTool"]>[2],
+  );
 }

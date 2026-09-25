@@ -72,7 +72,12 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
    `package.json` and `server.json`. `test/packaging.test.ts` checks these
    against `PROFILES` and will fail the build if they drift.
 7. Add a row for the tool in the README's tool table, in its matching section.
-8. Add tests in `test/` for any non-trivial logic.
+8. If the tool writes a record to the store, or never reads the chain, add it
+   to `OVERRIDES` in `src/tools/tool-meta.ts`. Every other tool registers as a
+   read-only chain read with a `network` argument and a title derived from its
+   name. `test/tool-annotations.test.ts` fails when a tool that writes is
+   marked read-only.
+9. Add tests in `test/` for any non-trivial logic.
 
 ## Guidelines
 

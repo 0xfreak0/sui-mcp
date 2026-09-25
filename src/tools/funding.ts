@@ -463,8 +463,13 @@ export function registerFundingTools(server: McpServer) {
       measure_fanout: boolArg()
         .optional()
         .describe("Measure fan-out for funders shared by 2+ addresses (default true)."),
+      include_chains: boolArg()
+        .optional()
+        .describe(
+          "Return every hop of each address's funding chain under results[].chain (default false: each result keeps its origin, first funder and first hop).",
+        ),
     },
-    async ({ addresses, max_hops, depth, measure_fanout }) => {
+    async ({ addresses, max_hops, depth, measure_fanout, include_chains }) => {
       try {
         const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 5, 12);
         const ctx: WalkContext = {
@@ -478,6 +483,7 @@ export function registerFundingTools(server: McpServer) {
           hops: number;
           stop_reason: string;
           first_funder: string | null;
+          first_hop: ChainStep | null;
           chain: ChainStep[];
         }> = [];
 
@@ -495,6 +501,7 @@ export function registerFundingTools(server: McpServer) {
             hops: chain.length,
             stop_reason: stopReason,
             first_funder: chain[0]?.funded_by ?? null,
+            first_hop: chain[0] ?? null,
             ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
             ...(sponsoredBy.length ? { sponsored_by: sponsoredBy } : {}),
             ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
@@ -815,7 +822,16 @@ export function registerFundingTools(server: McpServer) {
                     // balanced and the other pays many and is paid by few.
                     ...(fanouts[funder] ? { fanout: fanoutView(fanouts[funder], popularityOf[funder]) } : {}),
                   })),
-                  results,
+                  // Shared funders, co-funding and payments above are
+                  // computed from every hop; only the per-address listing is
+                  // shortened.
+                  results: results.map(({ chain, first_hop, ...r }) => (include_chains ? { ...r, chain } : { ...r, first_hop })),
+                  ...(include_chains
+                    ? {}
+                    : {
+                        chains_note:
+                          "Each result lists its origin, first funder and first hop. Pass include_chains: true for every hop of each chain.",
+                      }),
                 },
                 null,
                 2,

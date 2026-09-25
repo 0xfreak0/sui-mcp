@@ -18,21 +18,24 @@ import { registerAllTools } from "../src/tools/index.js";
 /** Registers like the SDK does, returning a handle that records enable/disable. */
 function fakeServer() {
   const handles = new Map<string, { enabled: boolean }>();
+  const register = (name: string) => {
+    const h = {
+      enabled: true,
+      enable() {
+        h.enabled = true;
+      },
+      disable() {
+        h.enabled = false;
+      },
+      update() {},
+    };
+    handles.set(name, h);
+    return h;
+  };
   const server = {
-    tool(...args: unknown[]) {
-      const name = args[0] as string;
-      const h = {
-        enabled: true,
-        enable() {
-          h.enabled = true;
-        },
-        disable() {
-          h.enabled = false;
-        },
-      };
-      handles.set(name, h);
-      return h;
-    },
+    // collectToolHandles sees `tool`; withNetworkParam and enable_tools call `registerTool`.
+    tool: (...args: unknown[]) => register(args[0] as string),
+    registerTool: register,
     server: { setRequestHandler() {} },
   } as unknown as McpServer;
   return { server, handles };
@@ -42,9 +45,9 @@ function fakeServer() {
 function registeredToolNames(): string[] {
   const names: string[] = [];
   const fake = {
-    tool(...args: unknown[]) {
-      names.push(args[0] as string);
-      return { enabled: true, enable() {}, disable() {} };
+    registerTool(name: string) {
+      names.push(name);
+      return { enabled: true, enable() {}, disable() {}, update() {} };
     },
     server: { setRequestHandler() {} },
   } as unknown as McpServer;

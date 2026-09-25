@@ -1,6 +1,8 @@
 import { gqlQuery } from "../clients/graphql.js";
 import { getCachedFanout, saveFanout } from "./store.js";
 import { currentSuiAccount } from "./chain-id.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections, type GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 
 /**
  * How many distinct addresses an address transacts with, in both directions.
@@ -36,14 +38,13 @@ import { currentSuiAccount } from "./chain-id.js";
 const COUNTERPARTY_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
   transactions(filter: { affectedAddress: $addr }, last: $last, before: $before) {
     nodes {
+      digest
       # Sponsorship rides along on the scan this query already does. A relayer
       # pays gas for strangers and may move no value at all, so it is invisible
       # in balance changes — the signal that would otherwise be missed entirely.
       sender { address }
       gasInput { gasSponsor { address } }
-      effects {
-        balanceChanges { nodes { amount owner { address } coinType { repr } } }
-      }
+      effects { ${BALANCE_CHANGES_SELECTION} }
     }
     pageInfo { hasPreviousPage startCursor }
   }
@@ -52,17 +53,10 @@ const COUNTERPARTY_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: Str
 interface CounterpartyPage {
   transactions: {
     nodes: Array<{
+      digest: string;
       sender?: { address?: string } | null;
       gasInput?: { gasSponsor?: { address?: string } | null } | null;
-      effects: {
-        balanceChanges: {
-          nodes: Array<{
-            amount?: string;
-            owner?: { address: string };
-            coinType?: { repr: string };
-          }>;
-        };
-      } | null;
+      effects: { balanceChanges: GqlConnection<GqlBalanceChangeNode> } | null;
     }>;
     pageInfo: { hasPreviousPage: boolean; startCursor?: string };
   };
@@ -345,7 +339,12 @@ export async function measureFanout(
       before: cursor,
     });
 
-    for (const node of page.transactions.nodes) {
+    // An airdrop's balance changes run past one page of 50; the subject's own
+    // row can sort anywhere in the list.
+    const completed = await completeTxConnections(
+      page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+    );
+    for (const [i, node] of page.transactions.nodes.entries()) {
       scanned++;
 
       // Paying your own gas is not sponsorship, so the sender must differ.
@@ -356,7 +355,7 @@ export async function measureFanout(
         sponsoredTxs++;
       }
 
-      const changes = node.effects?.balanceChanges.nodes ?? [];
+      const changes = completed[i].balanceChanges;
       // Whether this transaction moved value in or out decides which side each
       // counterparty belongs to, so read the subject's own change first.
       const own = changes.find((c) => c.owner?.address === address);

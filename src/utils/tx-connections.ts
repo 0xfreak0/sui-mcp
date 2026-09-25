@@ -32,6 +32,8 @@ export interface CompletedConnection<T> {
   nodes: T[];
   /** More rows exist than were read: a continuation read failed or hit the page cap. */
   truncated: boolean;
+  /** Continuation requests spent, for callers that meter their queries. */
+  reads: number;
 }
 
 // Kept compact: the service rejects a query document over 5,000 bytes, and
@@ -87,7 +89,9 @@ async function drain<T, R>(
   let more = first?.pageInfo?.hasNextPage === true;
   let cursor = more ? first?.pageInfo?.endCursor : undefined;
   let pages = 1;
+  let reads = 0;
   while (more && cursor && pages < MAX_PAGES) {
+    reads++;
     const next = await gqlQuery<R>(query, { digest, after: cursor }).catch(() => null);
     const conn = next ? pick(next) : null;
     if (!conn) break;
@@ -96,7 +100,7 @@ async function drain<T, R>(
     more = conn.pageInfo?.hasNextPage === true;
     cursor = conn.pageInfo?.endCursor;
   }
-  return { nodes, truncated: more };
+  return { nodes, truncated: more, reads };
 }
 
 /** Every balance change of one transaction, starting from the page already read. */
@@ -126,6 +130,8 @@ export interface CompletedTx {
   commands: GqlCommandNode[];
   balanceChangesTruncated: boolean;
   commandsTruncated: boolean;
+  /** Continuation requests spent on this transaction. */
+  reads: number;
 }
 
 /**
@@ -139,6 +145,7 @@ export async function completeTxConnections(txs: TxConnections[]): Promise<Compl
     commands: t.commands?.nodes ?? [],
     balanceChangesTruncated: false,
     commandsTruncated: false,
+    reads: 0,
   }));
   const pending = txs
     .map((t, i) => ({ t, i }))
@@ -158,6 +165,7 @@ export async function completeTxConnections(txs: TxConnections[]): Promise<Compl
         commands: cmd.nodes,
         balanceChangesTruncated: bc.truncated,
         commandsTruncated: cmd.truncated,
+        reads: bc.reads + cmd.reads,
       };
     }
   };

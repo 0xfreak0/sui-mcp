@@ -239,6 +239,8 @@ export function registerWatchTools(server: McpServer) {
             ...t,
             balance_changes: d?.balance_changes ?? [],
             object_movements: d?.object_movements ?? [],
+            balance_changes_truncated: d?.balance_changes_truncated,
+            object_changes_truncated: d?.object_changes_truncated,
           };
         });
         if (txs.length === 0) continue;

@@ -10,6 +10,7 @@ const { getCachedFanout, saveFanout } = vi.hoisted(() => ({
 vi.mock("../src/utils/store.js", () => ({ getCachedFanout, saveFanout }));
 
 const { measureFanout } = await import("../src/utils/fanout.js");
+const { pagedTxConnection } = await import("./helpers/service-shapes.js");
 
 const ADDR = "0xaaa";
 
@@ -83,6 +84,29 @@ describe("classifyFanout", () => {
 });
 
 describe("measureFanout", () => {
+  it("attributes an airdrop's recipients when the subject's own row sorts past the first page", async () => {
+    // The subject pays 60 addresses; its debit is row 61, on the second page.
+    const changes = [
+      ...Array.from({ length: 60 }, (_, i) => ({
+        amount: "100",
+        owner: { address: `0x${i.toString(16).padStart(64, "0")}` },
+        coinType: { repr: "0x2::sui::SUI" },
+      })),
+      { amount: "-6000", owner: { address: ADDR }, coinType: { repr: "0x2::sui::SUI" } },
+    ];
+    const conn = pagedTxConnection("airdrop", changes, "balanceChanges");
+    gqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+      conn.respond(q, v) ?? {
+        transactions: {
+          nodes: [{ digest: "airdrop", effects: { balanceChanges: conn.first } }],
+          pageInfo: { hasPreviousPage: false, startCursor: "c" },
+        },
+      },
+    );
+    const r = await measureFanout(ADDR, 50);
+    expect(r.recipient_count).toBe(60);
+  });
+
   it("counts distinct counterparties, not transactions", async () => {
     gqlQuery.mockResolvedValueOnce(page([sendTo("0xbbb"), sendTo("0xbbb"), sendTo("0xccc")]));
     const r = await measureFanout(ADDR, 50);

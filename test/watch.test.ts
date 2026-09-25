@@ -209,6 +209,18 @@ describe("summarizePoll — a saturated poll is not a complete one", () => {
   });
 });
 
+describe("evaluate — a transaction read in part", () => {
+  it("marks the hit when its object changes ran past the page read", () => {
+    const { hits } = evaluate(entry(), [{ ...tx(101, [[W, "5"], [OTHER, "-5"]]), object_changes_truncated: true }]);
+    expect(hits[0]!.incomplete).toEqual(["object_changes"]);
+  });
+
+  it("leaves a fully read transaction unmarked", () => {
+    const { hits } = evaluate(entry(), [tx(101, [[W, "5"], [OTHER, "-5"]])]);
+    expect(hits[0]!.incomplete).toBeUndefined();
+  });
+});
+
 describe("evaluate — objects, not just coins", () => {
   const P2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
   const addrOwner = (a: string) => ({ __typename: "AddressOwner", address: { address: a } });

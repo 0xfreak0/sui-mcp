@@ -18,6 +18,8 @@
 import { gqlQuery } from "../clients/graphql.js";
 import { readObjectMovements, type GqlObjectChange } from "./object-flow.js";
 import { planBatches, type DeltaTx, type WatchEntry } from "./watch.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections, type GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 
 /** Digest + checkpoint only. Anything richer breaks the 300-node limit at 20. */
 const DELTA_SELECTION = "nodes{digest effects{timestamp checkpoint{sequenceNumber}}}";
@@ -92,17 +94,11 @@ export async function fetchDeltas(
   return { deltas, requests, saturated };
 }
 
-interface BalanceNode {
-  amount?: string;
-  owner?: { address?: string };
-  coinType?: { repr?: string };
-}
-
 const OWNER_FRAGMENT =
   "owner{__typename ... on AddressOwner{address{address}} ... on ObjectOwner{address{address}} ... on ConsensusAddressOwner{address{address}}}";
 
 const DETAIL_SELECTION =
-  "effects{balanceChanges{nodes{amount owner{address} coinType{repr}}}" +
+  `effects{${BALANCE_CHANGES_SELECTION} ` +
   `objectChanges(first:50){pageInfo{hasNextPage} nodes{address idCreated idDeleted ` +
   `inputState{asMoveObject{contents{type{repr}}} ${OWNER_FRAGMENT}} ` +
   `outputState{asMoveObject{contents{type{repr}}} ${OWNER_FRAGMENT}}}}}`;
@@ -126,6 +122,10 @@ const DETAIL_BATCH = 5;
 export interface DeltaDetail {
   balance_changes: NonNullable<DeltaTx["balance_changes"]>;
   object_movements: DeltaTx["object_movements"];
+  /** A follow-up read failed, so `balance_changes` is partial. */
+  balance_changes_truncated?: boolean;
+  /** More than one page of object changes; `object_movements` covers the first 50. */
+  object_changes_truncated?: boolean;
 }
 
 export async function fetchDeltaDetail(
@@ -150,21 +150,29 @@ export async function fetchDeltaDetail(
         string,
         {
           effects?: {
-            balanceChanges?: { nodes: BalanceNode[] };
-            objectChanges?: { nodes: GqlObjectChange[] };
+            balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
+            objectChanges?: { pageInfo?: { hasNextPage?: boolean }; nodes: GqlObjectChange[] };
           };
         } | null
       >
     >(query, {});
+    // A payout past 50 recipients is completed by digest; the watched
+    // address's own row can sort anywhere in the list.
+    const completed = await completeTxConnections(
+      batch.map((d, i) => ({ digest: d, balanceChanges: data[`t${i}`]?.effects?.balanceChanges })),
+    );
     batch.forEach((d, i) => {
       const fx = data[`t${i}`]?.effects;
+      requests += completed[i].reads;
       detail.set(d, {
-        balance_changes: (fx?.balanceChanges?.nodes ?? []).map((n) => ({
+        balance_changes: completed[i].balanceChanges.map((n) => ({
           address: n.owner?.address ?? "",
           amount: n.amount ?? "0",
           coin_type: n.coinType?.repr ?? "",
         })),
         object_movements: readObjectMovements(fx?.objectChanges?.nodes ?? []),
+        ...(completed[i].balanceChangesTruncated ? { balance_changes_truncated: true } : {}),
+        ...(fx?.objectChanges?.pageInfo?.hasNextPage ? { object_changes_truncated: true } : {}),
       });
     });
   }

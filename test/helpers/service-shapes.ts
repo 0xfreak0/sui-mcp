@@ -70,6 +70,54 @@ export function gqlPages<T>(all: T[], pageSize = GQL_MAX_PAGE_SIZE) {
   return pages.length ? pages : [gqlPage<T>([])];
 }
 
+/**
+ * A transaction's nested connection (balance changes, commands) as the service
+ * pages it: the first page arrives inside the transaction, and the rest are
+ * served to a follow-up query by digest and cursor.
+ *
+ * `respond` answers the follow-up query the way the service does, keyed on the
+ * `after` cursor, and returns undefined for anything else so a test can chain
+ * routers. `requests` counts the follow-ups actually made.
+ */
+export function pagedTxConnection<T>(digest: string, all: T[], kind: "balanceChanges" | "commands") {
+  const pages = gqlPages(all);
+  const state = { requests: 0 };
+  return {
+    first: pages[0],
+    state,
+    respond(query: string, vars: Record<string, unknown> | undefined): unknown {
+      if (vars?.digest !== digest || typeof vars.after !== "string") return undefined;
+      const isBalance = query.includes("transactionEffects(digest");
+      if ((kind === "balanceChanges") !== isBalance) return undefined;
+      const k = pages.findIndex((p, i) => i > 0 && pages[i - 1].pageInfo.endCursor === vars.after);
+      if (k === -1) return undefined;
+      state.requests++;
+      return kind === "balanceChanges"
+        ? { transactionEffects: { balanceChanges: pages[k] } }
+        : { transaction: { kind: { commands: pages[k] } } };
+    },
+  };
+}
+
+/**
+ * A chain of checkpoints for time-to-checkpoint lookups: `msAt(seq)` gives the
+ * timestamp of checkpoint `seq`, which must not decrease. Answers the two
+ * queries `checkpoint-time.ts` sends, and undefined for anything else.
+ */
+export function checkpointChain(latest: number, msAt: (seq: number) => number) {
+  const iso = (seq: number) => new Date(msAt(seq)).toISOString();
+  return (query: string, vars: Record<string, unknown> | undefined): unknown => {
+    if (query.includes("checkpoints(last: 1)")) {
+      return { checkpoints: { nodes: [{ sequenceNumber: latest, timestamp: iso(latest) }] } };
+    }
+    if (query.includes("checkpoint(sequenceNumber: $seq)")) {
+      const seq = Number(vars?.seq);
+      return { checkpoint: seq >= 0 && seq <= latest ? { sequenceNumber: seq, timestamp: iso(seq) } : null };
+    }
+    return undefined;
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * gRPC status errors
  * ------------------------------------------------------------------ */

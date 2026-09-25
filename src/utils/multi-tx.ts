@@ -38,6 +38,8 @@ import { packageOfEventType } from "./event-json.js";
 import { withArchiveFallback } from "./archive-fallback.js";
 import { formatStatus, describeFailure, bigintToString, timestampToIso, type FailureDetail } from "./formatting.js";
 import { isDigest } from "./digest.js";
+import { BALANCE_CHANGES_SELECTION, COMMANDS_SELECTION, completeTxConnections, type GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode, GqlCommandNode } from "./gql-adapters.js";
 
 /**
  * The null address, which is what a system transaction's sender is.
@@ -62,14 +64,7 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
     kind {
       __typename
       ... on ProgrammableTransaction {
-        commands(first: 30) {
-          nodes {
-            __typename
-            ... on MoveCallCommand {
-              function { name module { name package { address } } }
-            }
-          }
-        }
+        ${COMMANDS_SELECTION}
       }
       # A distinct type from ProgrammableTransaction, and easy to miss: it
       # carries real Move calls (framework settlement, randomness) that a
@@ -77,14 +72,7 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
       # this tool report no protocols where get_transaction reported "Sui
       # Framework", on 7 of 24 cross-checked digests.
       ... on ProgrammableSystemTransaction {
-        commands(first: 30) {
-          nodes {
-            __typename
-            ... on MoveCallCommand {
-              function { name module { name package { address } } }
-            }
-          }
-        }
+        ${COMMANDS_SELECTION}
       }
     }
     effects {
@@ -106,7 +94,7 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
       timestamp
       epoch { epochId }
       checkpoint { sequenceNumber }
-      balanceChanges { nodes { amount owner { address } coinType { repr } } }
+      ${BALANCE_CHANGES_SELECTION}
       events(first: $events) {
         pageInfo { hasNextPage }
         nodes { contents { type { repr } json } }
@@ -120,12 +108,7 @@ interface RawTx {
   sender?: { address?: string } | null;
   kind?: {
     __typename?: string;
-    commands?: {
-      nodes: Array<{
-        __typename?: string;
-        function?: { name?: string; module?: { name?: string; package?: { address?: string } } } | null;
-      }>;
-    };
+    commands?: GqlConnection<GqlCommandNode>;
   } | null;
   effects?: {
     status?: string;
@@ -133,7 +116,7 @@ interface RawTx {
     timestamp?: string | null;
     epoch?: { epochId?: number } | null;
     checkpoint?: { sequenceNumber?: number } | null;
-    balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string }; coinType?: { repr?: string } }> };
+    balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
     events?: {
       pageInfo?: { hasNextPage?: boolean };
       nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }>;
@@ -206,6 +189,10 @@ export interface BatchedTx {
   is_system?: boolean;
   /** True when this came from the archive rather than the fullnode. */
   from_archive?: boolean;
+  /** True when a follow-up read for balance changes failed, so the list is partial. */
+  balance_changes_truncated?: boolean;
+  /** True when a follow-up read for commands failed, so `move_calls` is partial. */
+  move_calls_truncated?: boolean;
   /** True when the transaction has more events than the batch fetched. */
   events_truncated?: boolean;
   events_note?: string;
@@ -337,6 +324,16 @@ export async function fetchTransactions(
     r = { multiGetTransactions: keys.map(() => null) };
   }
 
+  // Balance changes and commands arrive 50 to a page; a transaction with more
+  // is completed by digest before it is reported.
+  const completed = await completeTxConnections(
+    r.multiGetTransactions.map((tx, i) => ({
+      digest: tx?.digest ?? keys[i],
+      balanceChanges: tx?.effects?.balanceChanges,
+      commands: tx?.kind?.commands,
+    })),
+  );
+
   // Positional: entry i answers key i, and a null means nothing was found for
   // that digest rather than a dropped result.
   r.multiGetTransactions.forEach((tx, i) => {
@@ -358,7 +355,7 @@ export async function fetchTransactions(
       return;
     }
     const calls: string[] = [];
-    for (const c of tx.kind?.commands?.nodes ?? []) {
+    for (const c of completed[i].commands) {
       const f = c.function;
       const pkg = f?.module?.package?.address;
       if (!pkg) continue;
@@ -386,7 +383,7 @@ export async function fetchTransactions(
       checkpoint: e?.checkpoint?.sequenceNumber != null ? String(e.checkpoint.sequenceNumber) : null,
       kind: tx.kind?.__typename ?? null,
       move_calls: calls,
-      balance_changes: (e?.balanceChanges?.nodes ?? [])
+      balance_changes: completed[i].balanceChanges
         .filter((b) => b.owner?.address && b.amount)
         .map((b) => ({
           address: b.owner!.address!,
@@ -396,6 +393,8 @@ export async function fetchTransactions(
       event_count: events.length,
       events,
       ...(isSystem ? { is_system: true } : {}),
+      ...(completed[i].balanceChangesTruncated ? { balance_changes_truncated: true } : {}),
+      ...(completed[i].commandsTruncated ? { move_calls_truncated: true } : {}),
       ...(truncated
         ? {
             events_truncated: true,

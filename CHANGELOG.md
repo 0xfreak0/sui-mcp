@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.20.0 (2026-09-25)
 
 Every tool now has a live check against real mainnet data. Before this release
 24 of the 76 tools had one. `verify:live` replays the Cetus and Nemo exploits

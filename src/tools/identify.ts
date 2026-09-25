@@ -7,7 +7,7 @@ import { suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
-import { describeAddresses, type AddressIdentity, type AliasSet } from "../utils/identity.js";
+import { describeAddresses, heldNamesNote, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -281,6 +281,8 @@ export function registerIdentifyTools(server: McpServer) {
       const auth = identities.get(address)?.authentication;
       const committee = identities.get(address)?.committee_members;
       const aliases = identities.get(address)?.aliases;
+      const identity = identities.get(address);
+      const namesNote = identity ? heldNamesNote(identity) : undefined;
 
       return {
         content: [{
@@ -338,6 +340,11 @@ export function registerIdentifyTools(server: McpServer) {
                     "The alias set could not be read, so whether this wallet has authorized anyone else is unknown rather than settled.",
                 }
               : {}),
+            // Every registration it holds, with how each one arrived. A name
+            // another address sent is reported so it is not read as the
+            // holder's own.
+            ...(identity?.names_held?.length ? { names_held: identity.names_held } : {}),
+            ...(namesNote ? { names_note: namesNote } : {}),
             hint: auth?.scheme === "multisig"
               ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliasHint(aliases)}`
               : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",

@@ -198,6 +198,65 @@ describe("identify_address", () => {
     expect(data.token_count).toBe(2); // only non-zero
   });
 
+  it("reports a SuiNS name another address sent the wallet as received, not as its own", async () => {
+    // The Cetus attacker: 0x407fb974 sent it registration 0xb00a20b5 in
+    // 2uE2WRav after validators froze the wallet. Node shape as mainnet returns it.
+    const HOLDER = "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06";
+    const SENDER = "0x407fb97400abc8f37defc658ab9c9f53a8953a1a446cd820561382fb3728ca20";
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockSui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "50000000" } });
+    mockSui.nameService.reverseLookupName.mockResolvedValue({ response: {} });
+    mockSui.listBalances.mockResolvedValue({ balances: [] });
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (String(q).includes("validatorSet")) {
+        return {
+          epoch: { validatorSet: { activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } },
+        };
+      }
+      if (String(q).includes("multiGetAddresses")) {
+        return {
+          multiGetAddresses: [
+            {
+              address: HOLDER,
+              objects: {
+                nodes: [
+                  {
+                    address: "0xb00a20b5e2fd72a27e9dc07e0e9e448f17c30ade559edb65432615e001069f6d",
+                    contents: {
+                      json: {
+                        domain_name: "give-the-funds-back-you-maniac-yngmi.sui",
+                        expiration_timestamp_ms: "1779832301904",
+                      },
+                    },
+                    previousTransaction: {
+                      digest: "2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw",
+                      sender: { address: SENDER },
+                      effects: { timestamp: "2025-05-27T04:07:50.218Z" },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      }
+      if (String(q).includes("multiGetObjects")) return { multiGetObjects: [null] };
+      return {};
+    });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: HOLDER })).content[0].text);
+    expect(data.names_held).toEqual([
+      expect.objectContaining({
+        name: "give-the-funds-back-you-maniac-yngmi.sui",
+        provenance: "received_from_third_party",
+        received_from: SENDER,
+        last_tx: "2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw",
+      }),
+    ]);
+    expect(data.names_note).toContain(SENDER);
+    expect(data.names_note).not.toMatch(/known by/);
+  });
+
   it("identifies a validator", async () => {
     // Not an object
     mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());

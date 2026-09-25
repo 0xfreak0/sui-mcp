@@ -124,8 +124,23 @@ Two things it adds that the flows were missing:
   aliases vanish from an investigation. The `SuinsRegistration` object outlives
   expiry, so held registrations are read directly and expired ones are flagged
   rather than dropped. Measured on one wallet: reverse lookup gave 1 name, the
-  registrations gave 10, six of them expired. An expired name is still
-  attribution — the address was known by it at the time of the activity.
+  registrations gave 10, six of them expired.
+
+Holding a registration is not attribution by itself: the NFT is transferable,
+and anyone can send one to any address. Each held name carries a `provenance`
+read from the registration's `previousTransaction`, fetched in the same
+held-names request, so it costs no extra call. An owned object can only be
+written by a transaction its owner sent, so a sender other than the holder means
+that transaction delivered it and the holder has not touched it since
+(`received_from_third_party`, with `received_from`). A name the holder sent the
+last write for, or that is its current reverse record (only the address itself
+can set that), is its own: the address was known by it. A missing
+`previousTransaction` is `unknown`, and must stay unknown rather than defaulting
+either way. `classifyHeldNames` is the one place this split is made; the notes
+in `identityNote`, `find_funding_sources` and `identify_address` all read it.
+Do not reintroduce "was known by" wording for a received name: the Cetus
+attacker holds a taunt name `0x407fb974` sent it after validators froze the
+wallet.
 
 The registration type is matched at **module** level. A Move type keeps the
 package that defined it, so this does not drift on upgrade — the opposite of the

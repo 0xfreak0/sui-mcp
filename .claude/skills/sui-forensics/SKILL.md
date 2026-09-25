@@ -401,9 +401,15 @@ ten round trips for the same data.
   `automation_indicated` stays false for exactly that reason.
 - **Naming a real person or company** from chain data plus a matching username.
   Handles are not unique and squatting is routine.
-- **An expired SuiNS name is still attribution, not the reverse.** Reverse lookup
-  goes silent once a name lapses, so `names_held` carries former aliases. The
-  address was known by that name at the time of the activity. Do not read the
+- **An expired SuiNS name the address registered is still attribution; a name
+  it was sent is not.** Reverse lookup goes silent once a name lapses, so
+  `names_held` carries former aliases. Each entry has a `provenance`:
+  `registered_or_used` means the holder sent the last transaction that wrote
+  the registration, so the name is its own. `received_from_third_party` means
+  another address (`received_from`, in `last_tx`) delivered it and the holder
+  has not transacted with it since. Anyone can send a name NFT to any address,
+  so treat a received name as a message from the sender, never as the holder's
+  alias. `unknown` means the transaction could not be read. Do not read the
   current name as the only one.
 
 ## Traps in the data itself

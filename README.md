@@ -547,7 +547,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
 | Tool | Description |
 |---|---|
-| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object |
+| `identify_address` | Identify what a Sui address is: wallet, package, validator, or object. For a wallet, `names_held` lists every SuiNS registration it holds and whether it registered or used each one or was sent it by another address |
 | `get_wallet_overview` | Comprehensive wallet overview: balances, SuiNS name, staking, kiosks, recent txs |
 | `get_transaction_history` | Decoded activity feed with protocol names and human-readable actions. `subject_flow` is the wallet's own signed balance change per coin with formatted amounts; `token_flow` is the sender's |
 | `analyze_token` | Full token analysis: metadata, price, 24h change, supply, top holders |

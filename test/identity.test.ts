@@ -17,16 +17,32 @@ vi.mock("../src/protocols/registry.js", () => ({
   lookupProtocolDisplay: (p: string) => (p === "0xpkg" ? { name: "DeepBook", type: "dex" } : null),
 }));
 
-const { describeAddresses, identityNote } = await import("../src/utils/identity.js");
+const { classifyHeldNames, describeAddresses, identityNote } = await import("../src/utils/identity.js");
 const { readAuthentication } = await import("../src/utils/multisig.js");
 
 /** multiGetObjects answers positionally: null means nothing lives there. */
 const reply = (entries: Array<unknown>) => ({ multiGetObjects: entries });
 
 const YEAR_MS = 365 * 24 * 3600 * 1000;
-const heldReply = (per: Array<Array<{ domain_name: string; expiration_timestamp_ms: number }>>) => ({
+/**
+ * A registration node as the service returns it. `previousTransaction` is
+ * optional because the service can return it as null.
+ */
+type HeldNode = {
+  domain_name: string;
+  expiration_timestamp_ms: number | string;
+  address?: string;
+  previousTransaction?: { digest: string; sender: { address: string }; effects: { timestamp: string } } | null;
+};
+const heldReply = (per: Array<Array<HeldNode>>) => ({
   multiGetAddresses: per.map((names) => ({
-    objects: { nodes: names.map((json) => ({ contents: { json } })) },
+    objects: {
+      nodes: names.map(({ address, previousTransaction, ...json }) => ({
+        ...(address ? { address } : {}),
+        contents: { json },
+        previousTransaction: previousTransaction ?? null,
+      })),
+    },
   })),
 });
 
@@ -92,8 +108,18 @@ describe("describeAddresses", () => {
         : reply(new Array(n).fill(null));
     });
     await describeAddresses(Array.from({ length: 120 }, (_, i) => `0x${i}`));
-    // 50 + 50 + 20, for each of the two queries.
-    expect(mockGqlQuery).toHaveBeenCalledTimes(6);
+    const keysPerCall = (name: string) =>
+      mockGqlQuery.mock.calls
+        .filter(([q]) => String(q).includes(name))
+        .map(([, v]) => (v as { keys: unknown[] }).keys.length);
+    // Every address asked about exactly once, by each lookup.
+    for (const keys of [keysPerCall("multiGetAddresses"), keysPerCall("multiGetObjects")]) {
+      expect(keys.reduce((a, b) => a + b, 0)).toBe(120);
+    }
+    // The service counts variables toward its 5,000-byte cap, at about 80
+    // bytes per full-length address. Measured live: 44 held-names keys were
+    // rejected at 5,127 bytes and 40 were accepted.
+    expect(Math.max(...keysPerCall("multiGetAddresses"))).toBeLessThanOrEqual(40);
   });
 
   it("leaves a chunk unclassified rather than guessing when the call fails", async () => {
@@ -125,8 +151,7 @@ describe("historical SuiNS names", () => {
     // The gap this closes: reverse lookup answers only "what is the current
     // default name" and returns nothing once a name lapses, so a wallet's
     // former aliases vanish from an investigation. The registration object
-    // outlives expiry, and the address was known by that name at the time of
-    // the activity being investigated.
+    // outlives expiry.
     mockGqlQuery.mockImplementation(
       route(
         reply([null]),
@@ -166,6 +191,94 @@ describe("historical SuiNS names", () => {
     mockGqlQuery.mockImplementation(route(reply([null]), heldReply([[]])));
     const out = await describeAddresses(["0xa"]);
     expect(out.get("0xa")!.names_held).toBeUndefined();
+  });
+});
+
+describe("where a held SuiNS registration came from", () => {
+  // The Cetus attacker: 0x407fb974 sent it the taunt name in 2uE2WRav after
+  // validators froze the wallet, and the wallet never touched it. Values are
+  // the ones mainnet returned for registration 0xb00a20b5.
+  const HOLDER = "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06";
+  const SENDER = "0x407fb97400abc8f37defc658ab9c9f53a8953a1a446cd820561382fb3728ca20";
+  const taunt: HeldNode = {
+    address: "0xb00a20b5e2fd72a27e9dc07e0e9e448f17c30ade559edb65432615e001069f6d",
+    domain_name: "give-the-funds-back-you-maniac-yngmi.sui",
+    expiration_timestamp_ms: "1779832301904",
+    previousTransaction: {
+      digest: "2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw",
+      sender: { address: SENDER },
+      effects: { timestamp: "2025-05-27T04:07:50.218Z" },
+    },
+  };
+  const own: HeldNode = {
+    domain_name: "mine.sui",
+    expiration_timestamp_ms: Date.now() - YEAR_MS,
+    previousTransaction: { digest: "DgOwn", sender: { address: HOLDER }, effects: { timestamp: "2024-01-01T00:00:00Z" } },
+  };
+
+  it("tells a name the holder registered from one another address sent it", async () => {
+    mockGqlQuery.mockImplementation(route(reply([null]), heldReply([[taunt, own]])));
+    const held = (await describeAddresses([HOLDER])).get(HOLDER)!.names_held!;
+    expect(held.find((h) => h.name === "mine.sui")).toMatchObject({
+      provenance: "registered_or_used",
+      last_tx: "DgOwn",
+    });
+    expect(held.find((h) => h.name === "mine.sui")!.received_from).toBeUndefined();
+    expect(held.find((h) => h.name === taunt.domain_name)).toMatchObject({
+      provenance: "received_from_third_party",
+      registration_id: taunt.address,
+      received_from: SENDER,
+      last_tx: "2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw",
+      last_tx_at: "2025-05-27T04:07:50.218Z",
+    });
+  });
+
+  it("matches the holder in any address form the caller used", async () => {
+    // The chain reports the padded address; a caller may drop the leading zero.
+    const short = "0x1229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
+    const padded = "0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
+    mockGqlQuery.mockImplementation(
+      route(reply([null]), heldReply([[{ ...own, previousTransaction: { ...own.previousTransaction!, sender: { address: padded } } }]])),
+    );
+    const held = (await describeAddresses([short])).get(short)!.names_held!;
+    expect(held[0].provenance).toBe("registered_or_used");
+  });
+
+  it("says unknown rather than guessing when the writing transaction is missing", async () => {
+    mockGqlQuery.mockImplementation(route(reply([null]), heldReply([[{ ...taunt, previousTransaction: null }]])));
+    const id = (await describeAddresses([HOLDER])).get(HOLDER)!;
+    expect(id.names_held![0].provenance).toBe("unknown");
+    expect(id.names_held![0].received_from).toBeUndefined();
+    const note = identityNote(id)!;
+    expect(note).toContain("could not be read");
+    expect(note).not.toContain("registered or used itself");
+  });
+
+  it("does not call a received name one the address was known by", async () => {
+    mockGqlQuery.mockImplementation(route(reply([null]), heldReply([[taunt]])));
+    const note = identityNote((await describeAddresses([HOLDER])).get(HOLDER)!)!;
+    expect(note).not.toMatch(/known by/);
+    expect(note).toContain(`from ${SENDER} in 2uE2WRavBRGLDwdvqNVmacytHdExqEmeoqdu4DgZzSCw`);
+    expect(note).toContain("not attribution");
+  });
+
+  it("keeps a lapsed name the holder used as its own", async () => {
+    mockGqlQuery.mockImplementation(route(reply([null]), heldReply([[own]])));
+    const note = identityNote((await describeAddresses([HOLDER])).get(HOLDER)!)!;
+    expect(note).toContain("EXPIRED registration(s) it registered or used itself: mine.sui");
+    expect(note).not.toContain("not attribution");
+  });
+
+  it("treats a received name set as the current reverse record as the holder's own", () => {
+    // Only the address itself can point its reverse record at a name.
+    const id = {
+      address: HOLDER,
+      kind: "wallet" as const,
+      name: "gift.sui",
+      names_held: [{ name: "gift.sui", expired: false, provenance: "received_from_third_party" as const, received_from: SENDER }],
+    };
+    expect(classifyHeldNames(id).received).toEqual([]);
+    expect(identityNote(id)).toBeUndefined();
   });
 });
 
@@ -244,8 +357,8 @@ describe("describeAddresses — authentication", () => {
         : reply(new Array(n).fill(null));
     });
     await describeAddresses(Array.from({ length: 50 }, (_, i) => `0x${i}`), { authentication: true });
-    // 1 classification + 1 held-names (50 fits both) + 3 auth batches of 20.
-    expect(mockGqlQuery).toHaveBeenCalledTimes(5);
+    // 50 addresses in authentication batches of 20.
+    expect(mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("sentAddress"))).toHaveLength(3);
   });
 
   it("survives the authentication query failing", async () => {

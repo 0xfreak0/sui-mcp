@@ -75,11 +75,32 @@ const SUINS_REGISTRATION =
 /** Registrations read per address. Far beyond any observed holder. */
 const NAMES_PER_ADDRESS = 25;
 
+/**
+ * Addresses per held-names request. NOT `CHUNK`.
+ *
+ * The service's 5,000-byte cap counts the variables as well as the query text,
+ * and each full-length address key costs about 80 bytes. Measured with this
+ * query: 40 addresses accepted, 44 rejected at 5,127 bytes, and 50 rejected at
+ * 5,694. The catch below would turn that rejection into "holds no names" for
+ * the whole chunk, so this stays well under the line.
+ */
+const HELD_NAMES_BATCH_SIZE = 35;
+
+/**
+ * `previousTransaction` is the transaction that last wrote the registration,
+ * read in the same request as the names. An owned object can only be written
+ * by a transaction its owner sent, so a sender other than the holder means that
+ * transaction delivered it and the holder has not transacted with it since.
+ */
 const HELD_NAMES_QUERY = `query ($keys: [AddressKey!]!, $type: String!, $first: Int!) {
   multiGetAddresses(keys: $keys) {
     address
     objects(first: $first, filter: { type: $type }) {
-      nodes { contents { json } }
+      nodes {
+        address
+        contents { json }
+        previousTransaction { digest sender { address } effects { timestamp } }
+      }
     }
   }
 }`;
@@ -87,7 +108,17 @@ const HELD_NAMES_QUERY = `query ($keys: [AddressKey!]!, $type: String!, $first: 
 interface HeldNamesResult {
   multiGetAddresses: Array<{
     address?: string;
-    objects?: { nodes: Array<{ contents?: { json?: unknown } }> };
+    objects?: {
+      nodes: Array<{
+        address?: string;
+        contents?: { json?: unknown };
+        previousTransaction?: {
+          digest?: string;
+          sender?: { address?: string } | null;
+          effects?: { timestamp?: string | null } | null;
+        } | null;
+      }>;
+    };
   } | null>;
 }
 
@@ -115,11 +146,32 @@ interface MultiGetResult {
  */
 export type AddressKind = "wallet" | "package" | "object";
 
+/**
+ * How a held registration reached the address, read from the transaction that
+ * last wrote it.
+ *
+ * - `registered_or_used`: the holder sent that transaction, so it registered,
+ *   bought, renewed or otherwise used the name itself.
+ * - `received_from_third_party`: another address sent it, which means that
+ *   transaction delivered the NFT and the holder has not transacted with it
+ *   since. Anyone can send a name to any address.
+ * - `unknown`: the transaction could not be read.
+ */
+export type NameProvenance = "registered_or_used" | "received_from_third_party" | "unknown";
+
 /** A SuiNS name an address holds the registration for, live or expired. */
 export interface HeldName {
   name: string;
   expired: boolean;
   expires_at?: string;
+  /** Object id of the `SuinsRegistration` NFT. */
+  registration_id?: string;
+  provenance: NameProvenance;
+  /** The transaction that last wrote the registration. */
+  last_tx?: string;
+  last_tx_at?: string;
+  /** Sender of `last_tx`, when that is not the holder. */
+  received_from?: string;
 }
 
 /**
@@ -200,11 +252,14 @@ export interface AddressIdentity {
   /**
    * Every SuiNS registration this address holds, including expired ones.
    *
-   * Reverse lookup answers a narrower question — what is the current *default*
-   * name — and returns nothing once a name lapses. The registration object
-   * outlives expiry, so this is where a wallet's historical aliases survive.
-   * An expired name is still attribution: the address was known by it at the
-   * time of the activity under investigation, which is exactly when it matters.
+   * Reverse lookup answers a narrower question, the current default name, and
+   * returns nothing once a name lapses. The registration object outlives
+   * expiry, so this is where a wallet's historical aliases survive.
+   *
+   * Holding the NFT is not by itself attribution: it is transferable, and
+   * anyone can send one to any address. `provenance` says whether the holder
+   * registered or used the name, or only received it; only the first is a name
+   * the address was known by.
    */
   names_held?: HeldName[];
 }
@@ -242,8 +297,8 @@ async function fetchKinds(addresses: string[]): Promise<Map<string, { kind: Addr
 async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName[]>> {
   const out = new Map<string, HeldName[]>();
   const now = Date.now();
-  for (let i = 0; i < addresses.length; i += CHUNK) {
-    const chunk = addresses.slice(i, i + CHUNK);
+  for (let i = 0; i < addresses.length; i += HELD_NAMES_BATCH_SIZE) {
+    const chunk = addresses.slice(i, i + HELD_NAMES_BATCH_SIZE);
     try {
       const r = await gqlQuery<HeldNamesResult>(HELD_NAMES_QUERY, {
         keys: chunk.map((address) => ({ address })),
@@ -259,10 +314,20 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
             | undefined;
           if (!json?.domain_name) continue;
           const exp = Number(json.expiration_timestamp_ms ?? 0);
+          const prev = n.previousTransaction;
+          const sender = prev?.sender?.address;
+          const self = sender !== undefined && normalizeSuiAddress(sender) === normalizeSuiAddress(chunk[j]);
           held.push({
             name: json.domain_name,
             expired: exp > 0 && exp < now,
             ...(exp > 0 ? { expires_at: new Date(exp).toISOString() } : {}),
+            ...(n.address ? { registration_id: n.address } : {}),
+            // Without the writing transaction there is nothing to tell a name
+            // the holder chose from one it was sent, so neither is assumed.
+            provenance: !prev?.digest || !sender ? "unknown" : self ? "registered_or_used" : "received_from_third_party",
+            ...(prev?.digest ? { last_tx: prev.digest } : {}),
+            ...(prev?.effects?.timestamp ? { last_tx_at: prev.effects.timestamp } : {}),
+            ...(sender && !self ? { received_from: sender } : {}),
           });
         }
         if (held.length > 0) out.set(chunk[j], held);
@@ -546,6 +611,57 @@ async function expandCommitteeMembers(identities: Map<string, AddressIdentity>):
 }
 
 /**
+ * Held names sorted by what they say about the holder.
+ *
+ * A name is the holder's own when it sent the transaction that last wrote the
+ * registration, or when the name is its current reverse record: only the
+ * address itself can set that. Everything else it was sent by another address
+ * and has not touched since, which is not attribution.
+ */
+export function classifyHeldNames(id: AddressIdentity): {
+  /** Expired names the holder registered or used. */
+  expired_own: HeldName[];
+  /** Expired names whose writing transaction could not be read. */
+  expired_unread: HeldName[];
+  /** Names, live or expired, delivered by another address and unused since. */
+  received: HeldName[];
+} {
+  const held = id.names_held ?? [];
+  const own = (h: HeldName) => h.provenance === "registered_or_used" || h.name === id.name;
+  return {
+    expired_own: held.filter((h) => h.expired && own(h)),
+    expired_unread: held.filter((h) => h.expired && !own(h) && h.provenance === "unknown"),
+    received: held.filter((h) => !own(h) && h.provenance === "received_from_third_party"),
+  };
+}
+
+/** What the held registrations say about the holder, or nothing to say. */
+export function heldNamesNote(id: AddressIdentity): string | undefined {
+  const { expired_own, expired_unread, received } = classifyHeldNames(id);
+  const parts: string[] = [];
+  if (expired_own.length > 0 && !id.name) {
+    const one = expired_own.length === 1;
+    parts.push(
+      `No current SuiNS name, but this address holds ${expired_own.length} EXPIRED registration(s) it registered or used itself: ${expired_own.map((h) => h.name).join(", ")}. Reverse lookup no longer returns ${one ? "it" : "them"}, so older records may refer to the address by ${one ? "that name" : "those names"}.`,
+    );
+  }
+  if (expired_unread.length > 0) {
+    parts.push(
+      `This address holds ${expired_unread.length} EXPIRED registration(s) whose last transaction could not be read: ${expired_unread.map((h) => h.name).join(", ")}. Whether it registered them or was sent them is unknown.`,
+    );
+  }
+  if (received.length > 0) {
+    const list = received
+      .map((h) => `${h.name}${h.expired ? " (expired)" : ""} from ${h.received_from}${h.last_tx ? ` in ${h.last_tx}` : ""}`)
+      .join("; ");
+    parts.push(
+      `This address holds ${received.length} SuiNS registration(s) sent to it by another address, and it has not transacted with ${received.length === 1 ? "that registration" : "those registrations"} since: ${list}. Anyone can send a name to any address, so ${received.length === 1 ? "this name is" : "these names are"} not attribution.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+/**
  * A one-line reading for a reader scanning a chain of hops.
  *
  * Anything that is not a plain wallet is called out, because that is the case
@@ -553,12 +669,11 @@ async function expandCommitteeMembers(identities: Map<string, AddressIdentity>):
  */
 export function identityNote(id: AddressIdentity): string | undefined {
   // Said before the kind, because a lapsed alias is the finding a reader is
-  // most likely to be missing entirely — reverse lookup simply stops
-  // mentioning it.
-  const expired = (id.names_held ?? []).filter((n) => n.expired).map((n) => n.name);
-  if (expired.length > 0 && !id.name) {
-    return `No current SuiNS name, but this address holds ${expired.length} EXPIRED registration(s): ${expired.join(", ")}. It was known by ${expired.length === 1 ? "that name" : "those names"} previously, which is how it may appear in older records.`;
-  }
+  // most likely to be missing entirely: reverse lookup simply stops
+  // mentioning it. A received name is said here too, since it is the name a
+  // reader is most likely to mistake for the holder's own.
+  const names = heldNamesNote(id);
+  if (names) return names;
   if (id.kind === "package") {
     return `This is a PACKAGE${id.protocol ? ` (${id.protocol})` : ""}, not a wallet — value associated with it is protocol activity, not a person holding funds.`;
   }

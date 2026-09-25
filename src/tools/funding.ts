@@ -3,7 +3,7 @@ import { boolArg, numArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { batchResolveNames } from "../utils/names.js";
-import { describeAddresses, identityNote } from "../utils/identity.js";
+import { classifyHeldNames, describeAddresses, identityNote } from "../utils/identity.js";
 import { getLabel } from "../utils/labels.js";
 import {
   coinScale,
@@ -631,13 +631,45 @@ export function registerFundingTools(server: McpServer) {
         // them".
         // Addresses carrying names they no longer resolve to. Surfaced for the
         // whole batch, since a lapsed alias is the attribution most easily lost.
-        const formerNames = [...batchIds.values()]
-          .filter((v) => (v.names_held ?? []).some((n) => n.expired))
-          .map((v) => ({
-            address: v.address,
-            ...(v.name ? { current_name: v.name } : {}),
-            expired_names: v.names_held!.filter((n) => n.expired).map((n) => n.name),
-          }));
+        // A name another address sent and the holder never touched is listed
+        // apart: holding a transferable NFT says nothing about who the holder is.
+        const formerNames: Array<{
+          address: string;
+          current_name?: string;
+          expired_names: string[];
+          expired_names_provenance_unread?: string[];
+        }> = [];
+        const receivedNames: Array<{
+          address: string;
+          name: string;
+          expired: boolean;
+          received_from?: string;
+          received_in?: string;
+          received_at?: string;
+        }> = [];
+        for (const v of batchIds.values()) {
+          const held = classifyHeldNames(v);
+          if (held.expired_own.length || held.expired_unread.length) {
+            formerNames.push({
+              address: v.address,
+              ...(v.name ? { current_name: v.name } : {}),
+              expired_names: held.expired_own.map((n) => n.name),
+              ...(held.expired_unread.length
+                ? { expired_names_provenance_unread: held.expired_unread.map((n) => n.name) }
+                : {}),
+            });
+          }
+          for (const n of held.received) {
+            receivedNames.push({
+              address: v.address,
+              name: n.name,
+              expired: n.expired,
+              ...(n.received_from ? { received_from: n.received_from } : {}),
+              ...(n.last_tx ? { received_in: n.last_tx } : {}),
+              ...(n.last_tx_at ? { received_at: n.last_tx_at } : {}),
+            });
+          }
+        }
         const nonWalletOrigins = [...batchIds.values()]
           .filter((v) => v.kind !== "wallet")
           .map((v) => ({
@@ -659,7 +691,14 @@ export function registerFundingTools(server: McpServer) {
                     ? {
                         expired_suins_names: formerNames,
                         expired_names_note:
-                          "These addresses hold SuiNS registrations that have EXPIRED. Reverse lookup no longer returns them, so they will not appear as names anywhere else — but the address was known by them at the time of the activity under investigation, and older records may refer to it that way.",
+                          "These addresses hold SuiNS registrations that have EXPIRED and that they registered or used themselves: each one's last transaction was sent by the holder. Reverse lookup no longer returns these names, so they will not appear anywhere else, and older records may refer to the address by them. Names under expired_names_provenance_unread had no readable last transaction, so whether the address registered them or was sent them is unknown.",
+                      }
+                    : {}),
+                  ...(receivedNames.length
+                    ? {
+                        received_suins_names: receivedNames,
+                        received_names_note:
+                          "These registrations were sent to the address by another address (received_from, in received_in), and the holder has not transacted with them since. Anyone can send a SuiNS name to any address, so a received name is not attribution.",
                       }
                     : {}),
                   ...(nonWalletOrigins.length
@@ -822,9 +861,9 @@ export function registerFundingTools(server: McpServer) {
             ...(id && id.kind !== "wallet" ? { kind: id.kind } : {}),
             ...(id?.object_type ? { object_type: id.object_type } : {}),
             ...(id?.protocol ? { protocol: id.protocol } : {}),
-            // Former aliases, expired included. Reverse lookup drops these the
-            // moment a name lapses, which is exactly when an investigation
-            // still needs them.
+            // Every held name, expired included, with its provenance. Reverse
+            // lookup drops a name the moment it lapses, which is exactly when
+            // an investigation still needs it.
             ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
             ...(note ? { note } : {}),
           };

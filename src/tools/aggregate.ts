@@ -7,7 +7,8 @@ import {
   suggestValueFields,
   type AggregatableEvent,
 } from "../utils/aggregate.js";
-import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
+import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
+import { resolveEventTypeFilter, versionScopeNote } from "../utils/package-versions.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const PAGE_QUERY = `query ($filter: EventFilter, $first: Int, $after: String) {
@@ -48,7 +49,7 @@ export function registerAggregateTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Filter by the event STRUCT's type — the package that DEFINES the event, which is often not the package you called. Accepts 0x..., 0x...::module, or 0x...::module::EventName.",
+          "Filter by the event STRUCT's type: the package that DEFINES the event, which is often not the package you called. Accepts 0x..., 0x...::module, or 0x...::module::EventName. Any version's ID of the defining package works: the filter is rewritten to the version that defined the type, and `event_type_resolution` reports it.",
         ),
       module: z
         .string()
@@ -112,17 +113,19 @@ export function registerAggregateTools(server: McpServer) {
           );
         }
 
-        // One latest-checkpoint probe shared by both bounds.
-        const latest = await latestCheckpoint();
-        const fromCp = await toCheckpoint(from, latest);
-        const toCp = await toCheckpoint(to, latest);
+        // Both edges resolved to the checkpoints stamped inside the window.
+        const window = await resolveWindow(from, to);
+        // An event carries the package version that DEFINED its struct; a type
+        // written with an upgraded ID would silently match nothing.
+        const typeFilter = event_type ? await resolveEventTypeFilter(event_type) : null;
+        const moduleScope = module ? await versionScopeNote(module, "module") : null;
 
         const filter: Record<string, unknown> = {};
-        if (event_type) filter.type = event_type;
+        if (typeFilter) filter.type = typeFilter.filter;
         if (module) filter.module = module;
         if (sender) filter.sender = sender;
-        if (fromCp) filter.afterCheckpoint = fromCp.checkpoint;
-        if (toCp) filter.beforeCheckpoint = toCp.checkpoint;
+        if (window.after?.checkpoint != null) filter.afterCheckpoint = window.after.checkpoint;
+        if (window.before?.checkpoint != null) filter.beforeCheckpoint = window.before.checkpoint;
 
         const budget = max_events ?? DEFAULT_MAX_EVENTS;
         const events: AggregatableEvent[] = [];
@@ -189,14 +192,9 @@ export function registerAggregateTools(server: McpServer) {
                     ...(module ? { module } : {}),
                     ...(sender ? { sender } : {}),
                   },
-                  window: {
-                    from: fromCp
-                      ? { checkpoint: fromCp.checkpoint, ...(fromCp.actual_time ? { resolved_time: fromCp.actual_time } : {}) }
-                      : null,
-                    to: toCp
-                      ? { checkpoint: toCp.checkpoint, ...(toCp.actual_time ? { resolved_time: toCp.actual_time } : {}) }
-                      : null,
-                  },
+                  window: describeWindow(from, to, window),
+                  ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
+                  ...(moduleScope ? { module_scope: moduleScope } : {}),
                   group_by: group_by ?? "sender",
                   events_scanned: events.length,
                   pages_fetched: pages,

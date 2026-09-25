@@ -1829,6 +1829,14 @@ Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
   as the sender's outflow. A row about an address carries that address's own
   side from `addressFlow` (`subject_flow` in history, keyed per involved address
   in a timeline). Keep the `token_flow` name; consumers read it.
+- **Upgrade history joins on the UpgradeCap's versions.** Every upgrade takes
+  the cap by `&mut`, so each upgrade is also a cap version, and top-level
+  `objectVersions(address:)` lists them oldest first even after the cap is
+  destroyed or wrapped (`object(address:)` is then null; the last
+  `affectedObject` transaction's gRPC `idOperation` tells the two apart). The
+  holder at an upgrade is the cap's INPUT owner, and `get_upgrade_history`'s
+  usual holder is measured in time held, not versions, so an eleven-minute
+  loan that shipped one version does not become the norm.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

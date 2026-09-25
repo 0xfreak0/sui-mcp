@@ -186,6 +186,18 @@ passed. The UpgradeCap carries `holder_status`, judged against the root:
 `burned` means upgrade rights were renounced, which *reduces* risk, and is what
 27 of every 30 departing caps did.
 
+`analyze_package` also reports `upgrade_cap`, the cap's owner-change count and
+latest change. `get_upgrade_history` joins every version to its publisher, the
+publisher's signing scheme and the cap holder at that moment, and `as_of`
+answers who held upgrade authority at a given time:
+
+```
+get_upgrade_history { package: "0x0f286ad0…", as_of: "2025-09-07T16:03Z" }
+→ flags: cap_round_trip (v10, 11 minutes away from the 3-of-4 multisig),
+         single_key_upgrade (v10, v11)
+  as_of: holder 0xf55cc609… (ed25519) since 2025-08-10, newest_version 10
+```
+
 **Has an issuer frozen this address?** `check_coin_restrictions` reads the
 on-chain deny list in both directions. A frozen address usually holds none of
 the coin that froze it, so it checks every configured coin type rather than the
@@ -737,6 +749,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
 | `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue. `subject_flow` gives each involved address's own signed balance change, keyed by address; `token_flow` is the sender's |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
+| `get_upgrade_history` | Upgrade governance across a package lineage: per version the publish tx, sender, signing scheme (single key or multisig with threshold and signers) and UpgradeCap holder. Flags cap round trips around an upgrade, single-key upgrades of a multisig-held cap, policy changes and a destroyed or wrapped cap. `as_of` answers who held upgrade authority at a moment and which version was newest |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |
 | `diff_package_upgrade` | Diff two package versions to detect malicious upgrades / backdoors |
 

@@ -14,6 +14,7 @@ import {
 import {
   resolvePackageId,
   fetchModuleDisassembly,
+  fetchPackageLatestVersion,
 } from "../utils/move-package.js";
 import { auditPackageCapabilities } from "../utils/capabilities.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -217,7 +218,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. It also returns every module's struct shapes with full field names and types under `overview.modules`, so use it rather than hand-writing GraphQL for those — the GraphQL `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
+    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. It also returns every module's struct shapes with full field names and types under `overview.modules`, so use it rather than hand-writing GraphQL for those — the GraphQL `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
     {
       package_id: z
         .string()
@@ -256,16 +257,25 @@ export function registerAnalyzePackageTools(server: McpServer) {
           })),
         };
 
-        // Who deployed it. This is the field that turns an unknown package back
-        // into an address a trace can follow — and the only thing an
-        // UpgradeCap's current holder can meaningfully be compared against.
-        const publisher = await resolvePublisher(packageId);
+        // Two publishers, answering different questions. The lineage ROOT's
+        // publisher deployed the package and received its UpgradeCap, so the
+        // cap's holder is judged against that address. This version's
+        // publisher is whoever held the cap when this code was pushed, which
+        // is the answer to "who shipped this version". They differ whenever
+        // the cap moved between deploy and upgrade.
+        const versionId = pkg.storageId ?? packageId;
+        const rootId = pkg.originalId ?? versionId;
+        const [rootPublisher, versionPublisher, latestVersion] = await Promise.all([
+          resolvePublisher(rootId),
+          rootId === versionId ? null : resolvePublisher(versionId),
+          fetchPackageLatestVersion(versionId).catch(() => null),
+        ]);
 
         // Capability audit (default on). Best-effort — never breaks the analysis.
         const capabilities =
           audit_capabilities === false
             ? undefined
-            : await auditPackageCapabilities(packageId, publisher.publisher);
+            : await auditPackageCapabilities(packageId, rootPublisher.publisher);
 
         let disassembly: { module: string; disassembly: string }[] | undefined;
         if (include_disassembly) {
@@ -292,7 +302,14 @@ export function registerAnalyzePackageTools(server: McpServer) {
                   disclaimer:
                     "Heuristic surface scan to guide review — NOT a security audit. Absence of findings does not imply safety.",
                   suivision_url: suivisionPackageUrl(packageId),
-                  publisher,
+                  lineage: {
+                    root_package_id: rootId,
+                    version: pkg.version !== undefined ? Number(pkg.version) : null,
+                    latest_version: latestVersion,
+                  },
+                  root_publisher: rootPublisher,
+                  // Absent a later version, the root's publisher shipped this code.
+                  version_publisher: versionPublisher ?? rootPublisher,
                   finding_count: findings.length,
                   findings,
                   ...(capabilities ? { capabilities } : {}),

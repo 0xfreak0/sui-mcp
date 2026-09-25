@@ -4,7 +4,8 @@ import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { lookupProtocol, prefetchProtocolNames } from "../protocols/registry.js";
-import { errorResult } from "../utils/errors.js";
+import { describeError, errorResult } from "../utils/errors.js";
+import { getNetwork } from "../config.js";
 import { resolveTokenType } from "../discovery.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -224,53 +225,9 @@ export function registerPoolTools(server: McpServer) {
     }
   );
 
-  // ---------------------------------------------------------------------------
-  // find_pools: discover liquidity pools by token pair
-  // ---------------------------------------------------------------------------
-
-  const POOL_QUERY = `
-    query($type: String!) {
-      objects(filter: { type: $type }, first: 10) {
-        nodes {
-          address
-          asMoveObject {
-            contents { type { repr } }
-          }
-        }
-      }
-    }
-  `;
-
-  interface PoolQueryResult {
-    objects: {
-      nodes: Array<{
-        address: string;
-        asMoveObject?: {
-          contents?: { type?: { repr?: string } };
-        };
-      }>;
-    };
-  }
-
-  // Supported DEX pool type templates: package_id::module::PoolType<A, B>
-  const DEX_POOL_TYPES: Record<string, { package: string; type: string }> = {
-    cetus: {
-      package: "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb",
-      type: "pool::Pool",
-    },
-    deepbook: {
-      package: "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05",
-      type: "clob_v2::Pool",
-    },
-    turbos: {
-      package: "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1",
-      type: "pool::Pool",
-    },
-  };
-
   server.tool(
     "find_pools",
-    "Find DeFi liquidity pools by token pair. Searches Cetus, DeepBook, and Turbos for pools matching the given tokens. Use get_pool_stats on a returned pool_id for detailed stats.",
+    "Find DeFi liquidity pools by token pair. Searches every Cetus pool, DeepBook v3 and v2 pool, and Turbos pool (across every fee tier in Turbos's pool config) for the pair, in either order. token_a and token_b on each pool are the pool's own order, read from its type. Use get_pool_stats on a returned pool_id for detailed stats.",
     {
       token_a: z.string().describe("First token: symbol (e.g. 'SUI') or full coin type"),
       token_b: z.string().describe("Second token: symbol (e.g. 'USDC') or full coin type"),
@@ -288,48 +245,57 @@ export function registerPoolTools(server: McpServer) {
       if (!typeA) return errorResult(`Could not resolve token: ${token_a}. Provide the full coin type (0x...::module::TYPE).`);
       if (!typeB) return errorResult(`Could not resolve token: ${token_b}. Provide the full coin type (0x...::module::TYPE).`);
 
-      // Determine which protocols to search
-      const protocols = protocolFilter
-        ? { [protocolFilter.toLowerCase()]: DEX_POOL_TYPES[protocolFilter.toLowerCase()] }
-        : DEX_POOL_TYPES;
+      const wanted = protocolFilter?.toLowerCase();
+      if (wanted && !POOL_PROTOCOLS.includes(wanted as PoolProtocol)) {
+        return errorResult(`Unsupported protocol: ${protocolFilter}. Supported: ${POOL_PROTOCOLS.join(", ")}.`);
+      }
+      const protocols = wanted ? [wanted as PoolProtocol] : [...POOL_PROTOCOLS];
 
-      if (protocolFilter && !DEX_POOL_TYPES[protocolFilter.toLowerCase()]) {
-        return errorResult(`Unsupported protocol: ${protocolFilter}. Supported: cetus, deepbook, turbos.`);
+      const failures: Array<{ protocol: string; error: string }> = [];
+      const searches: Array<{ protocol: PoolProtocol; type: string }> = [];
+      for (const protocol of protocols) {
+        let templates: string[];
+        try {
+          templates = await poolTemplates(protocol);
+        } catch (err) {
+          failures.push({ protocol, error: describeError(err, getNetwork()) });
+          continue;
+        }
+        for (const t of templates) {
+          searches.push({ protocol, type: t.replace("{A}", typeA).replace("{B}", typeB) });
+          searches.push({ protocol, type: t.replace("{A}", typeB).replace("{B}", typeA) });
+        }
       }
 
-      // Build all type queries: for each protocol, try both token orderings
-      const queries: Array<{ protocol: string; poolType: string }> = [];
-      for (const [name, dex] of Object.entries(protocols)) {
-        if (!dex) continue;
-        queries.push({
-          protocol: name,
-          poolType: `${dex.package}::${dex.type}<${typeA}, ${typeB}>`,
-        });
-        queries.push({
-          protocol: name,
-          poolType: `${dex.package}::${dex.type}<${typeB}, ${typeA}>`,
-        });
-      }
-
-      // Execute all queries in parallel
-      const results = await Promise.all(
-        queries.map(async ({ protocol: proto, poolType }) => {
+      const found = await Promise.all(
+        searches.map(async ({ protocol, type }) => {
           try {
-            const data = await gqlQuery<PoolQueryResult>(POOL_QUERY, { type: poolType });
-            return data.objects.nodes.map((n) => ({
-              pool_id: n.address,
-              protocol: proto,
-              object_type: n.asMoveObject?.contents?.type?.repr ?? poolType,
-              token_a: typeA,
-              token_b: typeB,
-            }));
-          } catch {
+            return await allObjectsOfType(type);
+          } catch (err) {
+            failures.push({ protocol, error: describeError(err, getNetwork()) });
             return [];
           }
-        })
+        }),
       );
+      if (searches.length === 0 || failures.length === searches.length) {
+        return errorResult(`Could not search for pools: ${failures.map((f) => `${f.protocol}: ${f.error}`).join("; ")}`);
+      }
 
-      const pools = results.flat();
+      const pools = found.flatMap((nodes, i) =>
+        nodes.map((n) => {
+          const objectType = n.asMoveObject?.contents?.type?.repr ?? searches[i].type;
+          const [poolA, poolB] = extractTypeParams(objectType);
+          return {
+            pool_id: n.address,
+            protocol: searches[i].protocol,
+            object_type: objectType,
+            // The pool's own order. Reserves and prices from get_pool_stats
+            // are keyed a/b in this order, whichever way round the query was.
+            token_a: poolA ?? null,
+            token_b: poolB ?? null,
+          };
+        }),
+      );
 
       return {
         content: [
@@ -340,6 +306,13 @@ export function registerPoolTools(server: McpServer) {
                 query: { token_a: typeA, token_b: typeB, protocol: protocolFilter ?? "all" },
                 pools,
                 total: pools.length,
+                ...(failures.length
+                  ? {
+                      incomplete: true,
+                      failed_searches: failures,
+                      incomplete_note: "Some pool types could not be read, so pools of those protocols may be missing from this list.",
+                    }
+                  : {}),
                 hint: pools.length > 0
                   ? "Use get_pool_stats with a pool_id for detailed reserves, fees, and prices."
                   : "No pools found. Try different token pairs or check that the coin types are correct.",
@@ -352,4 +325,69 @@ export function registerPoolTools(server: McpServer) {
       };
     }
   );
+}
+
+const POOL_PROTOCOLS = ["cetus", "deepbook", "turbos"] as const;
+type PoolProtocol = (typeof POOL_PROTOCOLS)[number];
+
+/**
+ * Turbos's PoolConfig. Its `fee_map` lists every fee tier a pool can be
+ * created with, and a Turbos pool's type is `Pool<A, B, FeeTier>`: a filter
+ * on `Pool<A, B>` matches none of them.
+ */
+const TURBOS_POOL_CONFIG = "0xc294552b2765353bcafa7c359cd28fd6bc237662e5db8f09877558d81669170c";
+const TURBOS_POOL = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool";
+
+/** Pool type templates per protocol, `{A}` and `{B}` standing for the coin types. */
+async function poolTemplates(protocol: PoolProtocol): Promise<string[]> {
+  switch (protocol) {
+    case "cetus":
+      return ["0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool<{A}, {B}>"];
+    case "deepbook":
+      return [
+        // v3, where DeepBook trades today, and the retired v2 order books.
+        "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool<{A}, {B}>",
+        "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05::clob_v2::Pool<{A}, {B}>",
+      ];
+    case "turbos": {
+      const data = await gqlQuery<{
+        object: { asMoveObject?: { contents?: { json?: { fee_map?: { contents?: Array<{ key: string }> } } } } } | null;
+      }>(`query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { json } } } }`, { id: TURBOS_POOL_CONFIG });
+      const tiers = data.object?.asMoveObject?.contents?.json?.fee_map?.contents?.map((e) => e.key) ?? [];
+      if (tiers.length === 0) throw new Error("Turbos's pool config listed no fee tiers");
+      return tiers.map((fee) => `${TURBOS_POOL}<{A}, {B}, ${fee.startsWith("0x") ? fee : `0x${fee}`}>`);
+    }
+  }
+}
+
+/** Pages a type filter holds, at 50 objects each, before it is reported as failed rather than cut short. */
+const MAX_POOL_PAGES = 20;
+
+interface PoolNode {
+  address: string;
+  asMoveObject?: { contents?: { type?: { repr?: string } } };
+}
+
+/** Every object of one exact type, paged to the end. */
+async function allObjectsOfType(type: string): Promise<PoolNode[]> {
+  const out: PoolNode[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < MAX_POOL_PAGES; page++) {
+    const data: {
+      objects: { nodes: PoolNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+    } = await gqlQuery(
+      `query($type: String!, $after: String) {
+        objects(filter: { type: $type }, first: 50, after: $after) {
+          nodes { address asMoveObject { contents { type { repr } } } }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`,
+      { type, after },
+    );
+    out.push(...data.objects.nodes);
+    if (!data.objects.pageInfo.hasNextPage) return out;
+    after = data.objects.pageInfo.endCursor;
+    if (!after) break;
+  }
+  throw new Error(`more than ${out.length} objects of ${type}; the list was not read to the end`);
 }

@@ -714,7 +714,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | Tool | Description |
 |---|---|
 | `get_defi_positions` | DeFi positions across Suilend, Cetus, NAVI, Scallop, Bluefin, Bucket |
-| `find_pools` | Discover liquidity pools by token pair (Cetus, DeepBook, Turbos) |
+| `find_pools` | Every liquidity pool for a token pair on Cetus, DeepBook (v3 and v2) and Turbos (every fee tier), with each pool's own token order; a search that failed is reported, never read as no pools |
 | `get_pool_stats` | Pool reserves, fees, and prices for a given pool object ID (AMMs; see below for DeepBook) |
 
 ### DeepBook

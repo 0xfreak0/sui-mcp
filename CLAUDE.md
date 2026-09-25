@@ -17,7 +17,7 @@ src/
 ├── index.ts              # MCP server entry point (stdio transport)
 ├── config.ts             # Network endpoints, constants
 ├── clients/              # gRPC + GraphQL client setup
-├── tools/                # One file per tool category (68 tools total)
+├── tools/                # One file per tool category (76 tools total)
 ├── protocols/            # Protocol registry for tx decoding
 ├── data/                 # Static JSON data (token registry, etc.)
 ├── utils/                # Shared helpers (formatting, SuiNS, etc.)

@@ -1,7 +1,7 @@
 {
   "name": "sui-analytics-mcp",
   "version": "1.18.0",
-  "description": "Read-only Sui analytics: 68 tools, protocol-aware tx decoding, no API keys or wallet.",
+  "description": "Read-only Sui analytics: 76 tools, protocol-aware tx decoding, no API keys or wallet.",
   "mcpName": "io.github.0xfreak0/sui-mcp",
   "type": "module",
   "bin": {

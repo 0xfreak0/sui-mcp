@@ -1,7 +1,7 @@
 /**
  * Tool profiles — ship a small default surface, expand on demand.
  *
- * The full tool manifest is ~26k tokens (103k characters; `core` alone is ~6k),
+ * The full tool manifest is ~29k tokens (117k characters; `core` alone is ~7k),
  * and MCP sends it on *every* request.
  * That is context spent before any work happens, and a large flat tool list also
  * degrades selection accuracy: the failure mode is not "too many entries" so

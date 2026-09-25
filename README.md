@@ -4,7 +4,7 @@
 
 Read-only MCP server for **investigating activity on Sui**. Trace where funds went, attribute wallets to their funding sources, rank addresses by protocol flow, work out who can actually sign for a multisig treasury, and tell a coordinated cluster from a crowd, then reconstruct it all on a timeline.
 
-68 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
+76 tools. It also covers the ordinary things: wallet overviews, DeFi positions, NFTs, prices and Move package analysis.
 
 ## Install
 
@@ -477,7 +477,7 @@ task and the order of tool calls, followed by the skill sections that govern it:
 
 ## Tool profiles
 
-All 68 tools loaded at once cost about 26k tokens of context on every request (103k characters of tool list; `core` alone is about 6k tokens and `core,forensics` about 21k), and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 17 and keeps the rest one call away.
+All 76 tools loaded at once cost about 29k tokens of context on every request (117k characters of tool list; `core` alone is about 7k tokens and `core,forensics` about 24k), and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 18 and keeps the rest one call away.
 
 When you ask for something outside the current set, such as "trace where these funds went", the model calls `enable_tools` and the tracing tools appear immediately, with no restart. You never have to pick a profile. `enable_tools` names every tool that is still off, and the server's `instructions` name the profiles and the main investigation tools, so a client that shows them to the model knows what to ask for. Profile names are case-insensitive.
 
@@ -490,10 +490,10 @@ To start with more, set `SUI_TOOLS`:
 | Profile | Tools | Contents |
 |---|---|---|
 | `core` *(default)* | 18 | Wallets, balances, transactions (single and batched), tokens, NFTs, DeFi positions, staking, pools, names |
-| `forensics` | 30 | Fund tracing, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation, live address watching, NFT marketplace sales |
+| `forensics` | 38 | Fund tracing and flow graphs, path finding between addresses, address flow summaries, exploit and incident-loss analysis, exposure screening, exchange deposit-address detection, upgrade history, funding-source attribution, cross-chain bridge resolution, wallet-edge clustering, package analysis, control-group sampling, timelines, object provenance, labels, events, oracle-vs-market deviation, live address watching, NFT marketplace sales |
 | `developer` | 18 | Move packages, disassembly, decompilation, upgrade diffing, dependency graphs, PTB decoding, unsigned transaction building, Move Registry |
 | `market` | 6 | DeepBook order book and fills, pool stats, token search, validators |
-| `all` | 59 | Everything |
+| `all` | 76 | Everything |
 
 Runtime switching relies on `notifications/tools/list_changed`, sent once per `enable_tools` call. Claude Code and Claude Desktop honour it; some clients cache the tool list and will only see the change after a restart. `SUI_TOOLS` always works, so set it explicitly if your client doesn't refresh.
 
@@ -602,7 +602,7 @@ Each recorded case is also a resource, `sui://case/{name}`, holding the Markdown
 
 ## Move decompiler (optional)
 
-64 of the 68 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
+72 of the 76 tools need nothing beyond the install above. Only `decompile_module` requires an external binary, and there are lighter options to try first:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.
@@ -665,7 +665,7 @@ Then point your client at the build output instead of npx:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 
-## Tools (68)
+## Tools (76)
 
 ### Recommended Starting Points
 

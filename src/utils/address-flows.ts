@@ -27,6 +27,7 @@ import { CLAIM_EVENT_SUFFIX } from "./bridge/sui-native.js";
 import type { SuiEventNode } from "./bridge/wormhole.js";
 import { isSponsorGasChange } from "./sponsor-gas.js";
 import { coinKey, withoutGas } from "./trace-hop.js";
+import { displayCoin, pricingScale, toHumanAmount, type HistoricalPrices } from "./valuation.js";
 
 export interface FlowChange {
   owner: string;
@@ -337,3 +338,41 @@ export function groupExits(exits: ExitRecord[]): BridgeTotal[] {
   }
   return [...byBridge.values()];
 }
+
+/** Prices and scales for rendering amounts, all from one historical lookup. */
+export function coinValuer(prices: HistoricalPrices) {
+  const scale = (coin: string) => pricingScale(coin, prices.points.get(coin)).decimals;
+  const human = (coin: string, raw: bigint) => (raw < 0n ? -1 : 1) * toHumanAmount(raw, scale(coin));
+  const usd = (coin: string, raw: bigint): number | null => {
+    const p = prices.points.get(coin);
+    return p ? human(coin, raw) * p.price : null;
+  };
+  const amounts = (m: Map<string, bigint>) =>
+    [...m]
+      .map(([coin, raw]) => {
+        const v = usd(coin, raw);
+        return {
+          symbol: displayCoin(coin).symbol,
+          coin_type: coin,
+          amount: human(coin, raw),
+          ...(v !== null ? { usd: roundUsd(v) } : {}),
+        };
+      })
+      .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1));
+  const totalUsd = (m: Map<string, bigint>) => {
+    let sum = 0;
+    let priced = false;
+    for (const [coin, raw] of m) {
+      const v = usd(coin, raw);
+      if (v !== null) {
+        sum += v;
+        priced = true;
+      }
+    }
+    return priced ? sum : null;
+  };
+  return { human, usd, amounts, totalUsd };
+}
+
+/** USD to the cent, for display. */
+export const roundUsd = (v: number) => Math.round(v * 100) / 100;

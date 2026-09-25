@@ -735,7 +735,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `list_findings` | List findings in a case, or every case with its count |
 | `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each |
 | `delete_finding` | Retract a finding that turned out to be wrong |
-| `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
+| `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call. `group_pnl` ranks the senders of the matched transactions by their own balance changes per coin and in USD, and marks PTBs that also called other protocols |
 | `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline. ISO `from`/`to` are resolved to the checkpoints stamped inside the window; `coverage` reports per address whether `per_address` cut the walk short and where to continue. `subject_flow` gives each involved address's own signed balance change, keyed by address; `token_flow` is the sender's |
 | `trace_object_history` | Object provenance: version history + ownership transitions (who created/held an object when) |
 | `manage_labels` | Address-label registry (exchanges, bridges, mixers, malicious wallets) used by the tracing tools |

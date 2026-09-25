@@ -12,16 +12,11 @@ import { readBridgeEvents } from "../utils/bridge/exits.js";
 import { EVIDENCE_TIER_MEANING, type SuiEventNode } from "../utils/bridge/wormhole.js";
 import { describeAddresses, identityNote, type AddressIdentity } from "../utils/identity.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
-import {
-  displayCoin,
-  priceUsdAtTime,
-  pricingScale,
-  toHumanAmount,
-  PRICE_STALE_THRESHOLD_SEC,
-  type HistoricalPrices,
-} from "../utils/valuation.js";
+import { displayCoin, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
 import { coinKey } from "../utils/trace-hop.js";
 import {
+  coinValuer,
+  roundUsd as round,
   entryCandidates,
   exitCandidates,
   groupExits,
@@ -143,42 +138,6 @@ function toFlowTx(n: ScanNode, balanceChanges: GqlBalanceChangeNode[], commands:
   };
 }
 
-/** Prices and scales for rendering amounts, all from one historical lookup. */
-function makeValuer(prices: HistoricalPrices) {
-  const scale = (coin: string) => pricingScale(coin, prices.points.get(coin)).decimals;
-  const human = (coin: string, raw: bigint) => (raw < 0n ? -1 : 1) * toHumanAmount(raw, scale(coin));
-  const usd = (coin: string, raw: bigint): number | null => {
-    const p = prices.points.get(coin);
-    return p ? human(coin, raw) * p.price : null;
-  };
-  const amounts = (m: Map<string, bigint>) =>
-    [...m]
-      .map(([coin, raw]) => {
-        const v = usd(coin, raw);
-        return {
-          symbol: displayCoin(coin).symbol,
-          coin_type: coin,
-          amount: human(coin, raw),
-          ...(v !== null ? { usd: round(v) } : {}),
-        };
-      })
-      .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1));
-  const totalUsd = (m: Map<string, bigint>) => {
-    let sum = 0;
-    let priced = false;
-    for (const [coin, raw] of m) {
-      const v = usd(coin, raw);
-      if (v !== null) {
-        sum += v;
-        priced = true;
-      }
-    }
-    return priced ? sum : null;
-  };
-  return { human, usd, amounts, totalUsd };
-}
-
-const round = (v: number) => Math.round(v * 100) / 100;
 
 function digestList(digests: string[]) {
   return {
@@ -300,7 +259,7 @@ export function registerFlowTools(server: McpServer) {
         const sui = coinKey("0x2::sui::SUI");
         coinSet.add(sui);
         const prices = await priceUsdAtTime([...coinSet], atSec ?? undefined);
-        const v = makeValuer(prices);
+        const v = coinValuer(prices);
 
         const rank = (m: Map<string, Counterparty>) =>
           [...m.values()]

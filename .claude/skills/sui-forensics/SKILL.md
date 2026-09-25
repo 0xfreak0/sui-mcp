@@ -438,6 +438,23 @@ summarize_address_flows(0x01229b3c…, from: "2025-09-07T00:00:00Z", to: "2025-0
 - **Check `coverage.complete`.** A scan the budget stopped covers only
   `coverage.oldest` onwards; `continue_with` is the next call.
 
+`aggregate_events` with `group_pnl` asks who else profited from the
+manipulated state:
+
+```
+aggregate_events(module: "0x0f286ad0…::market", from: "2025-09-07T15:30:00Z", to: "2025-09-07T17:00:00Z", group_pnl: true)
+  pnl.senders: 0x01229b3c… $2.41M (the exploit, 8 txs)
+               0x62781b5e… $49.6K: +37,690.99 USDC, +11,450.43 USDT, +2,769.79 HAEDAL (5 txs, multi-leg)
+               0x69255804… $23.4K: +6,868.64 SUI
+```
+
+- **Filter by `module` at the version that was called.** `event_type` matches
+  one event struct, so a `SwapEvent` window misses the `claim_reward`
+  transactions that paid out.
+- **P&L is the sender's whole balance change in those transactions**, gas
+  included. `multi_leg_transactions` and `other_packages` say when a PTB also
+  went through another protocol, where the profit may have been made.
+
 ## Which tool answers what
 
 Reaching for raw GraphQL is almost always a sign you missed a tool. Two of the
@@ -480,6 +497,7 @@ get the schema wrong in ways that fail silently.
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract` and a CCTP leg marked `settlement_intermediate` are bridge contracts, not the recipient |
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
+| Who else profited in this window, and by how much? | `aggregate_events` with `module` and `group_pnl` — each sender's own balance changes in USD, multi-leg PTBs marked |
 | How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, every inflow source, top recipients, gas sponsors, bridge exits grouped by destination |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
 | Where did this object come from? | `trace_object_history` |

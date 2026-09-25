@@ -1817,6 +1817,12 @@ summary, and event types. Rules a change is likely to break:
   window put the Nemo attacker's prices at 12:57, three hours before the
   exploit.
 
+`aggregate_events` `group_pnl` (`src/utils/participant-pnl.ts`) reads the
+distinct transactions behind the matched events over gRPC with archive
+fallback (`readAttackTransactions`), so no nested connection is a page. A
+transaction is multi-leg when it calls a package outside the filter's whole
+lineage (`fetchPackageVersions`); 0x1, 0x2 and 0x3 never count as a leg.
+
 ## Key Patterns
 
 - `@protobuf-ts` oneof uses `oneofKind` (not `case`)

@@ -103,6 +103,10 @@ export const PROFILES = {
     "check_activity",
     "get_top_holders",
     "compare_oracle_price",
+    // What an exploit took, per transaction and across an incident, in USD at
+    // the time: the question every incident report opens with.
+    "analyze_attack_tx",
+    "summarize_incident_losses",
     "aggregate_events",
     "save_finding",
     "list_findings",

@@ -405,7 +405,7 @@ Supply-chain scanners report which capabilities a package uses but not why. The 
 
 | Capability | Where it's used |
 |---|---|
-| Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts). |
+| Network | Public Sui RPC and GraphQL, plus Pyth, Aftermath, DefiLlama and the Move Registry for prices and name resolution. Hosts are listed in [`src/config.ts`](src/config.ts) and [`src/utils/price-providers.ts`](src/utils/price-providers.ts). |
 | Filesystem | Temp files for `decompile_module`, and reading `SUI_LABELS_FILE` if you set it. |
 | Subprocess | One call, in [`src/tools/decompiler.ts`](src/tools/decompiler.ts), to the decompiler binary you build and configure yourself. It uses `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
 | Environment | The `SUI_`-prefixed variables in [`.env.example`](.env.example), plus two optional price-provider keys (`PYTH_API_KEY`, `CMC_API_KEY`). Nothing else is read. |
@@ -426,12 +426,12 @@ npm audit signatures
 
 - **Per-call network** — every tool takes an optional `network` arg (`mainnet` / `testnet` / `devnet`); query multiple networks in one session (e.g. compare a testnet value to mainnet). `SUI_NETWORK` sets only the default.
 - **Protocol-aware** — decodes transactions from Cetus, Suilend, NAVI, Scallop, Bluefin, DeepBook, and more into human-readable actions
-- **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, PTB anomaly triage, oracle-vs-market deviation
+- **Incident investigation** — labeled fund tracing, batch funding attribution with fan-out controls, multi-address timelines, object provenance, exploit-transaction breakdown and incident loss totals in USD at block time, PTB anomaly triage, oracle-vs-market deviation
 - **Multisig** — a Sui address is the hash of its authenticator, so the committee is read off the address itself. Names every member, says which keys are live and which have never signed, and shows who signed a given transaction. Also handles zkLogin and passkey wallets
 - **Move package analysis** — disassembly, heuristic risk scan, capability audit, publisher attribution, upgrade-cap holder status, and upgrade diffing, none of which need an external binary
 - **Asset verification** — a curated coin registry, so a trace says whether the asset it followed is the real one rather than an imitator wearing its symbol
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
-- **Price aggregation** — Aftermath Finance, Pyth oracles, and CoinGecko in a single unified interface
+- **Price aggregation** — Aftermath, DefiLlama, Pyth and CoinMarketCap behind one interface, current or at a past block time, with no key required
 - **Kiosk-aware** — resolves NFT ownership through Sui's kiosk system to actual wallet addresses
 - **Move Registry (MVR)** — resolves names like `@deepbook/core` to package addresses, and back
 
@@ -445,16 +445,26 @@ Address arguments accept any case, a short form (`0x2`), the hex without `0x`, o
 
 ### Price sources
 
-Current USD prices come from **Aftermath**, which is free and needs no key. That is the default path, and it covers everything except historical pricing.
+Current USD prices come from **Aftermath**, then **DefiLlama** for anything Aftermath does not list. Prices at a past moment (`get_token_prices` with `at`, per-hop USD in `trace_funds`, `analyze_attack_tx`, `summarize_incident_losses`) come from **DefiLlama**, or from Pyth for verified coins when `PYTH_API_KEY` is set. Neither Aftermath nor DefiLlama needs a key.
+
+```
+get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
+  → price_usd 4.16, source "defillama", confidence 0.99,
+    price_time 2025-05-22T10:30:01Z, price_offset_sec 1
+```
+
+Every price names its source, the provider's confidence, and the time of the sample it came from; one more than an hour from the moment asked for is marked `stale`. Every coin that could not be priced is listed under `unpriced` with the reason, and a failed request is reported differently from a coin the provider does not list.
+
+DefiLlama and Aftermath key on the full coin type, so an impostor coin that copies a real coin's symbol is priced as itself or not at all. Pyth feeds are matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
 Two paid sources are opt-in and engage only when their key is set, so nobody is billed by accident and nothing degrades if you set neither:
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Historical prices (`get_token_prices` with `at`), oracle-vs-market comparison. Pyth's Hermes endpoint began requiring authentication for price *values*; feed discovery is still open. |
+| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Pyth's Hermes endpoint requires authentication for price *values*; feed discovery is still open. |
 | `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
 
-Without a key, tools that need a paid source say so explicitly rather than returning a null price. A missing price and a price of zero mean different things.
+A missing price and a price of zero mean different things, and no tool reports one as the other.
 
 ### Optional local store
 
@@ -576,7 +586,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and release workflow.
 | `get_balance` | Balance of a coin type for an address (defaults to SUI) |
 | `get_coin_info` | Token metadata: name, symbol, decimals, description, supply |
 | `search_token` | Search tokens by name/symbol, with Aftermath Finance fallback |
-| `get_token_prices` | USD prices for tokens — current (Aftermath + Pyth), or historical via Pyth when `at` is set |
+| `get_token_prices` | USD prices for tokens, current (Aftermath, then DefiLlama, then Pyth) or at a past moment when `at` is set (Pyth for verified coins with a key, DefiLlama otherwise). Each price carries its source, confidence and sample time; unpriced coins are listed with the reason |
 
 ### Transactions & Events
 
@@ -677,6 +687,8 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | Tool | Description |
 |---|---|
 | `trace_funds` | Swap-aware, USD-valued multi-hop fund tracing that stops at labeled sinks (forward or backward) |
+| `analyze_attack_tx` | Break down one exploit transaction: each address's net per coin and in USD at block time, flash-loan and flash-swap legs paired borrow to repay, every swap's pool price before and after, what each pool lost by its own events, oracle calls inside the PTB, anomaly flags, and the attacker's profit. Reads PTBs of any size in full over gRPC |
+| `summarize_incident_losses` | Total an attacker's take across many transactions (a digest list, or a sender and window), grouped by the pool each one drained, in USD at the time of the attack. Coins with no price are listed with amounts, and the total is marked a lower bound when any are |
 | `resolve_bridge_transfer` | Follow funds across a bridge, in either direction. Resolves **Wormhole** (VAA identity `(emitter chain, emitter address, sequence)`), **Sui's native bridge** and **Circle CCTP** — the latter two carry the destination chain and recipient in their own events, so their far side needs no indexer at all. Detects **Mayan MCTP** and any package the registry types as a bridge. Inbound claims resolve to their origin chain and transfer id rather than being mistaken for exits. Every result is tiered: `chain-derived` trusts nobody, `indexer-attested` is a lead to confirm |
 | `find_funding_source` | Walk an address back to its funding source(s) for attribution; stops at labeled exchanges/bridges |
 | `find_funding_sources` | Same, for up to 100 addresses in one call — shares work across converging chains, reports shared funders with flow shape, addresses paid by one transaction (weighed against that transaction's full recipient count), subjects that funded each other, and sub-minute funding bursts |

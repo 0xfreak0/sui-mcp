@@ -129,9 +129,9 @@ LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
 
 ## A holder scan is not a ranking unless it finished
 
-`get_top_holders` and `analyze_token` walk coin objects in **object-id order**,
-which has nothing to do with balance. A scan that hits its budget returns the
-largest holder it happened to see.
+`get_top_holders` and `analyze_token` walk `Coin<T>` objects and address
+balances in **object-id order**, which has nothing to do with balance. A scan
+that hits its budget returns the largest holder it happened to see.
 
 Measured on SUI: the reported top holder was 66 SUI at `max_scan` 200, 522 at
 400, 3,454 at 800 and 25,000 at 5,000. **Zero of the top five at 200 survived
@@ -145,6 +145,10 @@ and never converges.
   reachable for coins and collections small enough to enumerate.
 - **Never compare two truncated scans.** Different budgets sample different
   objects, so a difference between them says nothing about the chain.
+- **A holder's balance includes its address balance.** `coin_balance` and
+  `address_balance` give the split. A holder with `count: 0` holds no coin
+  objects at all, and `owner_kind: "object"` means the holder is an object
+  (a bridge bank, a DeepBook balance manager), not a person's wallet.
 
 ## A balance change only sees coins
 
@@ -361,7 +365,7 @@ get the schema wrong in ways that fail silently.
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` |
 | Where did this object come from? | `trace_object_history` |
-| Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true |
+| Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |
 | Has anything moved since I looked? | `watch_addresses` then `poll_watch` |
 | What is this address doing over time? | `build_timeline` |
 | Write it down / hand it over | `save_finding`, `list_findings`, `export_case` |

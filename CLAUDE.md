@@ -976,7 +976,24 @@ is why the percentage is dropped rather than annotated.
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.
 
-Three ways a walk stops, and only one of them is completion:
+**A coin is held in two places, and both are walked.** Besides `Coin<T>`
+objects, an owner can hold `T` in its address balance: a dynamic field of the
+accumulator root `0xacc` of type
+`0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<T>>,0x2::accumulator::U128>`,
+one per (owner, coin type), owner in `json.name.address`, amount in
+`json.value.value`. No coin object shows it. A coin-only walk ranked XAGM
+complete without its #2 holder (0xd70a55ed…, 13.74% of supply, all in the
+address balance), and USAD has no `Coin<T>` at all: its whole supply is one
+address balance. So the scan runs a second walk over that field type and
+merges it per holder, keeping `coin_balance` and `address_balance` beside the
+total. Each walk gets its own `max_scan` budget and its own truncation flag
+(`coin_walk_truncated`, `address_balance_walk_truncated`); `complete_ranking`
+needs both to reach the end. The owner of an address balance can be an object
+(a bridge `liquidity_pool::Bank`, a DeepBook `BalanceManager`), so each ranked
+holder carries `owner_kind` from `describeAddresses`.
+
+Three ways a walk stops, and only one of them is completion. Both walks follow
+the same rules:
 
 - `hasNextPage: false` — the end. `complete_ranking: true`.
 - **A null `endCursor` while `hasNextPage` is true — TRUNCATION.** The
@@ -992,10 +1009,11 @@ own caveat. Folding it into the flag made the flag permanently false for a
 collection with one unreadable owner, while a ranked list sat beside it saying
 otherwise, and no value of `max_scan` could ever clear it.
 
-**A walk that found nothing has not ranked anything.** Zero objects reads the
-same as a mistyped type, a type that lives on another network, or a coin
-scanned as a collection. Reporting `complete_ranking: true, unique_holders: 0`
-states the opposite of what is known, and it was then cached for 24 hours.
+**A walk that found nothing has not ranked anything.** No coin objects and no
+address balances reads the same as a mistyped type, a type that lives on
+another network, or a coin scanned as a collection. Reporting
+`complete_ranking: true, unique_holders: 0` states the opposite of what is
+known, and it was then cached for 24 hours.
 
 **Clamp tool numbers at BOTH ends.** `max_scan ?? DEFAULT` keeps a provided `0`,
 which left the walk condition false from the start: no request made, empty
@@ -1005,6 +1023,10 @@ result, reported as a complete ranking. A negative `limit` reached
 **A probe that could not run returns null, not the guess it was correcting.**
 `looksLikeCoin` returning `false` on a transient error reinstated exactly the
 misclassification it exists to prevent, and labelled the empty result complete.
+The probe counts a type as a coin when any of four objects exists: a
+`Coin<T>`, an address-balance field for `T`, `CoinMetadata<T>`, or a registry
+`Currency<T>`. Probing for `Coin<T>` alone sent an address-balance-only coin to
+the NFT walk.
 
 Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the

@@ -303,14 +303,19 @@ effect, including the coin or balance that paid, so it is a weaker signal than
 `object_transfers`.
 
 **Are these really the top holders?** Only when `complete_ranking` is true.
-`get_top_holders` walks coin objects in object-id order, which is unrelated to
-balance. A scan that stops early returns the largest holder it happened to see.
-On SUI the reported top holder goes from 66 SUI at `max_scan` 200 to 3,454 at
-800, with no overlap in the top five. A truncated scan therefore returns
-`sampled_holders`, without a rank or a percentage of supply, along with a
-caveat. Raise `max_scan` until `truncated` is false to get a real ranking; that
-is only practical for coins with few enough objects to enumerate.
-`analyze_token` reports the same distinction.
+`get_top_holders` walks two things in object-id order, which is unrelated to
+balance: `Coin<T>` objects, and address balances (funds credited to an owner's
+address rather than held as a coin object). A scan that stops early returns
+the largest holder it happened to see. On SUI the reported top holder goes from
+66 SUI at `max_scan` 200 to 3,454 at 800, with no overlap in the top five. A
+truncated scan therefore returns `sampled_holders`, without a rank or a
+percentage of supply, along with a caveat naming which walk stopped. Raise
+`max_scan` (applied to each walk) until `truncated` is false to get a real
+ranking; that is only practical for coins with few enough objects to
+enumerate. Each holder carries `coin_balance` and `address_balance` beside the
+total, and `owner_kind`, because an address balance can belong to an object
+such as a bridge's liquidity bank. `analyze_token` reports the same
+distinction.
 
 **Is this address the one it looks like?** `get_transaction_history` and
 `trace_funds` compare every address they touch and report `address_poisoning`

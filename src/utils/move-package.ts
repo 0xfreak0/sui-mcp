@@ -1,6 +1,7 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS, getMvrUrl } from "../config.js";
+import type { LinkageEntry } from "./package-diff.js";
 
 /**
  * A "package reference" accepted by the developer tools can be either a raw
@@ -147,12 +148,20 @@ function assertVersion(version: number): void {
 }
 
 interface PackageAtResult {
-  package: { packageAt: { address: string; version: number } | null } | null;
+  package: {
+    packageAt: {
+      address: string;
+      version: number;
+      linkage: LinkageEntry[] | null;
+    } | null;
+  } | null;
 }
 
 /**
- * Resolve the on-chain address of a specific version in a package's upgrade
- * history. On Sui each upgrade publishes a new package object at a new address.
+ * Resolve a specific version in a package's upgrade history: its on-chain
+ * address and its linkage table (which version of each dependency it runs
+ * against). On Sui each upgrade publishes a new package object at a new
+ * address.
  *
  * NOTE: this address is for *reporting* only. Do NOT fetch module bytecode via
  * `package(address: <this>)` — that query linkage-resolves to the LATEST
@@ -163,22 +172,21 @@ interface PackageAtResult {
  * `version` is a caller-validated integer, interpolated into the query to avoid
  * guessing the GraphQL scalar type for the `version` argument.
  */
-export async function resolveVersionAddress(
+export async function fetchPackageVersion(
   address: string,
   version: number,
-): Promise<{ address: string; version: number }> {
+): Promise<{ address: string; version: number; linkage: LinkageEntry[] }> {
   assertVersion(version);
   const query = `query ($p: SuiAddress!) {
     package(address: $p) {
-      packageAt(version: ${version}) { address version }
+      packageAt(version: ${version}) { address version linkage { originalId upgradedId version } }
     }
   }`;
   const data = await gqlQuery<PackageAtResult>(query, { p: address });
   if (!data.package) throw new Error(`Package not found: ${address}`);
-  if (!data.package.packageAt) {
-    throw new Error(`Version ${version} not found in the upgrade history of ${address}.`);
-  }
-  return data.package.packageAt;
+  const at = data.package.packageAt;
+  if (!at) throw new Error(`Version ${version} not found in the upgrade history of ${address}.`);
+  return { address: at.address, version: at.version, linkage: at.linkage ?? [] };
 }
 
 interface ModuleNamesAtVersionResult {

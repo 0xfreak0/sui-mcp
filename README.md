@@ -283,7 +283,7 @@ transaction, which you read separately with `get_transaction`:
 | `value_in` / `value_out` | coin moved, with per-coin nets |
 | `capability_moved` | mint, upgrade, freeze or publish rights changed hands |
 | `object_moved` | an NFT, kiosk item or DeFi position changed hands |
-| `sink_reached` | a counterparty carries a sink label |
+| `sink_reached` | a counterparty carries a sink label (exchange, bridge, mixer, burn) or a `malicious` one |
 | `lookalike_appeared` | a new counterparty renders like a watched address |
 | `appeared` | something happened that moved no coin and no named object |
 

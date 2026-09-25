@@ -737,12 +737,11 @@ export function registerTraceTools(server: McpServer) {
 
         // Stop at known sinks: once funds reach an exchange, bridge, mixer or
         // burn address, further hops are noise. A malicious label is not a
-        // stop: it marks the attacker whose money the trace is following, and
+        // sink: it marks the attacker whose money the trace is following, and
         // since the shipped labels name exploiters, stopping there ended every
         // exploit trace at hop 1. trace_flow_graph applies the same rule.
-        const sinkLabel = getLabel(nextAddress);
-        if (isSink(nextAddress) && sinkLabel?.category !== "malicious") {
-          const label = sinkLabel;
+        if (isSink(nextAddress)) {
+          const label = getLabel(nextAddress);
           terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
           // A bridge is the one sink that is not terminal, and a labeled one
           // may carry no curated Move-call marker at all — a relayer forward,

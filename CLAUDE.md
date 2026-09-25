@@ -1889,6 +1889,9 @@ change is likely to break:
   nor the same actor continuing is checked against sinks, protocols or hubs. The
   shipped disclosed labels name both exploiters, so stopping there ended every
   graph at hop 1. Exchanges, bridges, mixers and burn addresses still end it.
+  `malicious` is therefore not in `SINK_CATEGORIES`: every `is_sink` a tool
+  reports must agree with what the traces do. Watches still alert on it
+  through `isWatchAlert`.
 - **Level by level.** Every inflow found at one depth reaches a node before it
   is expanded. A node reached again later is expanded again from the new
   arrival, skipping transactions already allocated to it, unless the value came

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { numArg, addressListArg } from "./args.js";
 import { getNetwork } from "../config.js";
 import { errorResult } from "../utils/errors.js";
-import { isSink } from "../utils/labels.js";
+import { isWatchAlert } from "../utils/labels.js";
 import {
   advanceWatch,
   listWatches,
@@ -249,7 +249,7 @@ export function registerWatchTools(server: McpServer) {
         if (txs.length === 0) continue;
 
         const result = evaluate(entry, txs, {
-          isSink,
+          isSink: isWatchAlert,
           saturated: saturatedSet.has(entry.address),
         });
         hits.push(...result.hits);

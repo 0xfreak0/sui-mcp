@@ -46,6 +46,7 @@ import { withNetworkParam } from "./with-network.js";
 import {
   applyProfiles,
   collectToolHandles,
+  explainDisabledTools,
   registerToolsetTool,
   startupProfiles,
   type ToolHandles,
@@ -58,6 +59,7 @@ export function registerAllTools(rawServer: McpServer) {
   //   withNetworkParam  — injects the per-call `network` arg (./with-network.ts)
   //   collectToolHandles — records each registration so profiles can toggle it
   const handles: ToolHandles = new Map();
+  explainDisabledTools(rawServer, handles);
   const server = collectToolHandles(withNetworkParam(rawServer), handles);
 
   registerChainTools(server);

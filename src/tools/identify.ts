@@ -247,8 +247,9 @@ export function registerIdentifyTools(server: McpServer) {
               type: "validator",
               name: validator.name,
               staking_pool_sui_balance: validator.staking_pool_sui_balance,
+              staking_pool_sui_balance_formatted: formatCoinAmount(validator.staking_pool_sui_balance, "0x2::sui::SUI"),
               commission_rate_bps: validator.commission_rate_bps,
-              hint: "Use get_validator_detail for full info, or get_staking_summary for delegation positions.",
+              hint: `Use get_validators {"address": "${address}"} for full detail (credentials, staking stats, network addresses), or get_staking_summary for delegation positions.`,
             }, null, 2),
           }],
         };

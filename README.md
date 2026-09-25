@@ -178,16 +178,19 @@ would misreport which asset moved.
 module and function that raised it, and a clever error's constant name where the
 author defined one.
 
-**Who deployed this, and can they still change it?** `analyze_package` and
-`identify_address` report `publisher`, the address that created the package,
-attributed to the lineage root. The UpgradeCap carries `holder_status`:
+**Who deployed this, and can they still change it?** `identify_address`
+reports `publisher`, the address that created the package, attributed to the
+lineage root. `analyze_package` reports it as `root_publisher`, beside
+`version_publisher`, the sender of the upgrade that created the version you
+passed. The UpgradeCap carries `holder_status`, judged against the root:
 `burned` means upgrade rights were renounced, which *reduces* risk, and is what
 27 of every 30 departing caps did.
 
 **Has an issuer frozen this address?** `check_coin_restrictions` reads the
 on-chain deny list in both directions. A frozen address usually holds none of
 the coin that froze it, so it checks every configured coin type rather than the
-ones it holds.
+ones it holds. A freeze by validators is node configuration, not chain state,
+and does not appear here.
 
 **What moved that was not a coin?** `trace_funds` reports `object_flow`, and
 `get_transaction` reports `object_changes` and `object_transfers` for one
@@ -652,7 +655,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `analyze_package` | Summarize a package's API + heuristic risk scan (no binary; accepts 0x id or MVR name) |
 | `disassemble_module` | Disassemble Move bytecode via GraphQL (no binary; accepts 0x id or MVR name) |
 | `decompile_module` | Decompile Move bytecode to source (requires decompiler binary) |
-| `diff_package_upgrade` | (Security) Diff two package versions to spot what an upgrade changed — malicious-upgrade / backdoor detection |
+| `diff_package_upgrade` | (Security) Diff two package versions to spot what an upgrade changed — malicious-upgrade / backdoor detection. Unified hunks, functions added/removed/made more reachable, and relinked dependencies |
 
 ### Transaction Building
 
@@ -683,10 +686,10 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first |
 | `analyze_multisig` | For a multisig wallet, which committee keys are actually live and which have never signed, across its history. The committee is fixed for the life of the address; only who signs varies |
 | `find_shared_multisig` | Given addresses you suspect are related, derive every committee they could form and find the multisig they jointly control — a hit is proof, since the address IS the hash of its committee |
-| `check_coin_restrictions` | Read a regulated coin's on-chain deny list — which addresses its issuer froze, or whether a given address is frozen for the coins it holds. Chain-derived: it is the issuer's own decision, reversible by whoever holds the DenyCap |
+| `check_coin_restrictions` | Read a regulated coin's on-chain deny list — which addresses its issuer froze, or which of every deny-listed coin type an address is frozen for. Chain-derived: it is the issuer's own decision, reversible by whoever holds the DenyCap |
 | `save_finding` | Record a conclusion against a named case, so an investigation outlives its session |
 | `list_findings` | List findings in a case, or every case with its count |
-| `export_case` | Render a case as a Markdown report, highest-confidence findings first |
+| `export_case` | Render a case as a Markdown report, grouped by evidence tier, highest-confidence findings first within each |
 | `delete_finding` | Retract a finding that turned out to be wrong |
 | `aggregate_events` | Rank wallets or event types by activity/value over a time window — "top wallets on this protocol today" in one call |
 | `build_timeline` | Merge multiple addresses' activity into one checkpoint-ordered, protocol-decoded timeline |

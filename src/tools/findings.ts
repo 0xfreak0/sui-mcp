@@ -3,8 +3,10 @@ import { boolArg, numArg } from "./args.js";
 import { currentSuiAccount } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { renderCaseReport } from "../utils/case-report.js";
+import { invalidDigestMessage, isDigest, normalizeDigest } from "../utils/digest.js";
 import {
   deleteFinding,
+  EVIDENCE_TIERS,
   listCases,
   loadFindings,
   saveFinding,
@@ -31,7 +33,7 @@ function storeRequired() {
 export function registerFindingsTools(server: McpServer) {
   server.tool(
     "save_finding",
-    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them — what you concluded, which addresses it concerns, and the evidence that supports it — then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them — what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it — then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
     {
       case_name: z
         .string()
@@ -42,6 +44,15 @@ export function registerFindingsTools(server: McpServer) {
         .enum(["high", "medium", "low"])
         .optional()
         .describe("How firmly this is established. Reports sort high confidence first."),
+      evidence_tier: z
+        .enum(EVIDENCE_TIERS)
+        .optional()
+        .describe(
+          "How the finding is known: 'chain-derived' (read from Sui itself, e.g. a transfer in a transaction), " +
+            "'indexer-attested' (a third party asserts it, e.g. a bridge indexer), or 'heuristic' (an inference " +
+            "from patterns, e.g. a shared funder). Default 'heuristic', the weakest, so an unstated tier is never " +
+            "read as a stronger one. export_case groups findings by it.",
+        ),
       addresses: z
         .array(z.string())
         .optional()
@@ -51,6 +62,10 @@ export function registerFindingsTools(server: McpServer) {
             "address on another chain, which is how a cross-chain case keeps both sides of a " +
             "bridge hop straight.",
         ),
+      digests: z
+        .array(z.string())
+        .optional()
+        .describe("Sui transaction digests the finding rests on. Each is checked to be a real digest before saving."),
       evidence: z
         .array(z.string())
         .optional()
@@ -58,7 +73,7 @@ export function registerFindingsTools(server: McpServer) {
           "What establishes it — tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted.",
         ),
     },
-    async ({ case_name, title, detail, confidence, addresses, evidence }) => {
+    async ({ case_name, title, detail, confidence, evidence_tier, addresses, digests, evidence }) => {
       const blocked = storeRequired();
       if (blocked) return blocked;
 
@@ -70,24 +85,34 @@ export function registerFindingsTools(server: McpServer) {
         qualified = (addresses ?? []).map(currentSuiAccount);
       } catch (err) {
         return errorResult(
-          `Could not record this finding: ${(err as Error).message}. ` +
+          `Could not record this finding: ${(err as Error).message.replace(/\.$/, "")}. ` +
             "Pass a bare address for the network this call targets, or a full CAIP-10 id.",
         );
       }
 
+      // A mistyped digest in a report is a citation nobody can follow.
+      const badDigest = (digests ?? []).find((d) => !isDigest(d));
+      if (badDigest !== undefined) {
+        return errorResult(`Could not record this finding: ${invalidDigestMessage(badDigest)}`);
+      }
+
+      const tier = evidence_tier ?? "heuristic";
       const id = saveFinding({
         case_name,
         title,
         detail: detail ?? null,
         confidence: confidence ?? null,
+        evidence_tier: tier,
         addresses: qualified,
         evidence: evidence ?? [],
+        digests: (digests ?? []).map(normalizeDigest),
       });
       return ok({
         saved: true,
         finding_id: id,
         case_name,
         title,
+        evidence_tier: tier,
         note: `Use export_case with case_name '${case_name}' to render the full report.`,
       });
     },
@@ -126,8 +151,10 @@ export function registerFindingsTools(server: McpServer) {
           id: f.id,
           title: f.title,
           confidence: f.confidence,
+          evidence_tier: f.evidence_tier,
           detail: f.detail,
           addresses: f.addresses,
+          digests: f.digests,
           evidence: f.evidence,
           recorded: f.created_at ? new Date(f.created_at).toISOString() : null,
         })),
@@ -137,7 +164,7 @@ export function registerFindingsTools(server: McpServer) {
 
   server.tool(
     "export_case",
-    "(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Highest-confidence findings first, with an appendix of full addresses. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.",
     {
       case_name: z.string().describe("Case to render."),
       include_appendix: boolArg()

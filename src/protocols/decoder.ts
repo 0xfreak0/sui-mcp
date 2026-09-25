@@ -1,5 +1,6 @@
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { lookupProtocolDisplay, lookupOperation } from "./registry.js";
+import { displayCoin } from "../utils/valuation.js";
 
 export interface DecodedTransaction {
   protocols: string[];
@@ -11,10 +12,14 @@ export interface DecodedTransaction {
   }[];
 }
 
+/**
+ * The name a reader sees for a coin: the curated symbol when the list vouches
+ * for this exact type, otherwise the struct name with its type arguments.
+ * Wormhole's wrapped assets are all `<package>::coin::COIN`, so the struct
+ * name alone named ten different assets `COIN`.
+ */
 function shortCoinType(coinType: string): string {
-  // "0x000...002::sui::SUI" → "SUI"
-  const parts = coinType.split("::");
-  return parts.length >= 3 ? parts[parts.length - 1] : coinType;
+  return displayCoin(coinType).symbol;
 }
 
 const ACTION_LABELS: Record<string, string> = {

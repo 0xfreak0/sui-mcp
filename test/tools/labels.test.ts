@@ -57,8 +57,11 @@ describe("manage_labels", () => {
   });
 
   it("errors when add is missing required fields", async () => {
-    const data = await call({ action: "add", address: ADDR });
-    expect(data.error).toMatch(/required/i);
+    // Flagged as an error, not a result whose body happens to say so: a
+    // client that only checks isError would otherwise read it as success.
+    const res = await manageLabels({ action: "add", address: ADDR });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).error).toMatch(/required/i);
   });
 
   it("errors when lookup has no address", async () => {

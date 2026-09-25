@@ -20,13 +20,17 @@ export function registerCoinTools(server: McpServer) {
         .int()
         .nonnegative()
         .optional()
-        .describe("Query balance at a specific checkpoint (for historical balances)"),
+        .describe(
+          "Balance as of this checkpoint. GraphQL answers this only inside its consistent range, roughly the most recent hour of checkpoints; an older checkpoint returns an error that names the available range.",
+        ),
     },
     async ({ owner: ownerArg, address, coin_type, at_checkpoint }) => {
       const owner = ownerArg ?? address;
       if (!owner) return errorResult("Pass the wallet to read as `owner` (or `address`).");
       if (at_checkpoint != null) {
         const coinType = coin_type ?? "0x2::sui::SUI";
+        const outside = await outsideBalanceRange(at_checkpoint);
+        if (outside) return errorResult(outside);
         const data = await gqlQuery<{
           address: {
             balance: { coinType: { repr: string }; totalBalance: string } | null;
@@ -115,4 +119,41 @@ export function registerCoinTools(server: McpServer) {
     }
   );
 
+}
+
+/**
+ * Why `checkpoint` cannot be answered, or null when it is inside the range
+ * GraphQL serves balance reads for.
+ *
+ * The service answers a checkpoint outside that range with "Request is outside
+ * consistent range", which names neither the range nor how far off the
+ * request was. The range is about an hour and moves with the chain, so it is
+ * read from `serviceConfig` rather than assumed.
+ */
+async function outsideBalanceRange(checkpoint: number): Promise<string | null> {
+  const data = await gqlQuery<{
+    serviceConfig: {
+      availableRange: {
+        first: { sequenceNumber: number; timestamp: string | null } | null;
+        last: { sequenceNumber: number; timestamp: string | null } | null;
+      } | null;
+    } | null;
+  }>(`query {
+    serviceConfig {
+      availableRange(type: "Address", field: "balance") {
+        first { sequenceNumber timestamp }
+        last { sequenceNumber timestamp }
+      }
+    }
+  }`).catch(() => null);
+  const range = data?.serviceConfig?.availableRange;
+  if (!range?.first || !range.last) return null;
+  const { first, last } = range;
+  if (checkpoint >= first.sequenceNumber && checkpoint <= last.sequenceNumber) return null;
+  return (
+    `Checkpoint ${checkpoint} is outside the range GraphQL answers balance reads for: checkpoints ` +
+    `${first.sequenceNumber} (${first.timestamp ?? "?"}) to ${last.sequenceNumber} (${last.timestamp ?? "?"}), ` +
+    `about the most recent hour. A balance at an older checkpoint cannot be read directly; ` +
+    `the address's balance changes since then (get_transaction_history) are the evidence for it.`
+  );
 }

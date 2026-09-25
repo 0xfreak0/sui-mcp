@@ -1,5 +1,5 @@
 import { chainDisplayName, parseAccountId, SUI_MAINNET, type ChainId } from "./chain-id.js";
-import type { Finding } from "./store.js";
+import type { EvidenceTier, Finding } from "./store.js";
 
 /**
  * Render a case's findings as Markdown.
@@ -57,6 +57,18 @@ function confidenceRank(c: string | null): number {
   return i === -1 ? CONFIDENCE_ORDER.length : i;
 }
 
+/**
+ * Report sections, strongest evidence first. A reader who cannot tell a
+ * chain-derived statement from a heuristic one treats them alike, which is how
+ * a lead becomes an accusation, so the tier is a section and not a footnote.
+ */
+const TIER_SECTIONS: Array<{ tier: EvidenceTier | null; heading: string; means: string }> = [
+  { tier: "chain-derived", heading: "Chain-derived", means: "Read from Sui itself." },
+  { tier: "indexer-attested", heading: "Indexer-attested", means: "A third party asserts it: a lead to confirm, not a finding." },
+  { tier: "heuristic", heading: "Heuristic", means: "An inference from patterns. It may be so; it is not established." },
+  { tier: null, heading: "Tier not recorded", means: "Saved before findings carried an evidence tier." },
+];
+
 export interface CaseReportOptions {
   caseName: string;
   findings: Finding[];
@@ -93,36 +105,58 @@ export function renderCaseReport(opts: CaseReportOptions): string {
   );
   lines.push("");
 
-  // Highest confidence first: a reader skimming should hit the solid claims
-  // before the speculative ones, not encounter them in the order they occurred.
-  const ordered = [...findings].sort(
-    (a, b) =>
-      confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
-      (a.created_at ?? 0) - (b.created_at ?? 0),
-  );
+  for (const section of TIER_SECTIONS) {
+    // Highest confidence first within a tier: a reader skimming should hit
+    // the solid claims before the speculative ones, not encounter them in the
+    // order they occurred.
+    const inTier = findings
+      .filter((f) => f.evidence_tier === section.tier)
+      .sort(
+        (a, b) =>
+          confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
+          (a.created_at ?? 0) - (b.created_at ?? 0),
+      );
+    if (inTier.length === 0) continue;
 
-  for (const f of ordered) {
-    lines.push(`## ${f.title}`);
+    lines.push(`## ${section.heading}`);
     lines.push("");
-    if (f.confidence) lines.push(`**Confidence:** ${f.confidence}`);
-    if (f.confidence) lines.push("");
-    if (f.detail) {
-      lines.push(f.detail);
+    lines.push(`_${section.means}_`);
+    lines.push("");
+
+    for (const f of inTier) {
+      lines.push(`### ${f.title}`);
       lines.push("");
-    }
-    if (f.addresses.length) {
-      lines.push("**Addresses**");
+      lines.push(
+        [
+          `**Evidence tier:** ${f.evidence_tier ?? "not recorded"}`,
+          ...(f.confidence ? [`**Confidence:** ${f.confidence}`] : []),
+        ].join(" · "),
+      );
       lines.push("");
-      for (const a of f.addresses) lines.push(`- ${renderAddress(a)}`);
-      lines.push("");
-    }
-    if (f.evidence.length) {
-      // Evidence is what makes a finding checkable rather than asserted —
-      // it is the difference between a report and an opinion.
-      lines.push("**Evidence**");
-      lines.push("");
-      for (const e of f.evidence) lines.push(`- ${e}`);
-      lines.push("");
+      if (f.detail) {
+        lines.push(f.detail);
+        lines.push("");
+      }
+      if (f.addresses.length) {
+        lines.push("**Addresses**");
+        lines.push("");
+        for (const a of f.addresses) lines.push(`- ${renderAddress(a)}`);
+        lines.push("");
+      }
+      if (f.digests.length) {
+        lines.push("**Transactions**");
+        lines.push("");
+        for (const d of f.digests) lines.push(`- \`${d}\``);
+        lines.push("");
+      }
+      if (f.evidence.length) {
+        // Evidence is what makes a finding checkable rather than asserted —
+        // it is the difference between a report and an opinion.
+        lines.push("**Evidence**");
+        lines.push("");
+        for (const e of f.evidence) lines.push(`- ${e}`);
+        lines.push("");
+      }
     }
   }
 

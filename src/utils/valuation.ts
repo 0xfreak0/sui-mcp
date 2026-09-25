@@ -29,10 +29,35 @@ export const DEFAULT_DECIMALS = 9;
  * This is the struct name and nothing more. It is not an identifier: 585
  * mainnet coins end `::SUI`. Use {@link displayCoin} anywhere a reader will
  * see it.
+ *
+ * Type arguments are kept, each named by its curated symbol where the list
+ * has one: `0x5ffa…::vault::MagicCoin<0xdba3…::usdc::USDC>` is
+ * `MagicCoin<USDC>`. Splitting the whole string on `::` instead named that
+ * vault share `USDC>`, the asset it wraps.
  */
 export function symbolOf(coinType: string): string {
-  const parts = coinType.split("::");
-  return parts.length >= 3 ? parts[parts.length - 1] : coinType;
+  const open = coinType.indexOf("<");
+  const base = open === -1 ? coinType : coinType.slice(0, open);
+  const parts = base.split("::");
+  const name = parts.length >= 3 ? parts[parts.length - 1] : base;
+  if (open === -1 || !coinType.endsWith(">")) return name;
+
+  // Split the arguments at top-level commas only: an argument can itself be
+  // generic and contain commas.
+  const inner = coinType.slice(open + 1, -1);
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] === "<") depth++;
+    else if (inner[i] === ">") depth--;
+    else if (inner[i] === "," && depth === 0) {
+      args.push(inner.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  args.push(inner.slice(start).trim());
+  return `${name}<${args.map((a) => verifiedCoin(a)?.symbol ?? symbolOf(a)).join(", ")}>`;
 }
 
 export interface CoinScale {

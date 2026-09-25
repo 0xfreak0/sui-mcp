@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockGqlQuery = vi.fn();
+const getTransaction = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
-vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
+vi.mock("../src/clients/grpc.js", () => {
+  const client = { ledgerService: { getTransaction } };
+  return { sui: client, archive: client };
+});
 vi.mock("../src/utils/names.js", () => ({ batchResolveNames: async () => new Map() }));
 vi.mock("../src/utils/labels.js", () => ({ getLabel: () => null, isSink: () => false }));
 
@@ -24,7 +28,30 @@ const version = (v: string, owner: string) => ({
   asMoveObject: { contents: { type: { repr: "0x2::package::UpgradeCap" } } },
 });
 
-beforeEach(() => mockGqlQuery.mockReset());
+/**
+ * The gRPC effects of the transaction that wrote a version: `idOperation` is
+ * 2 (CREATED) when that transaction created the object, 1 (NONE) when it only
+ * mutated or transferred it.
+ */
+const effectsWith = (objectId: string, idOperation: number) => ({
+  response: {
+    transaction: {
+      effects: {
+        changedObjects: [
+          { objectId: "0x0000000000000000000000000000000000000000000000000000000000000abc", idOperation: 1 },
+          { objectId, idOperation },
+        ],
+      },
+    },
+  },
+});
+
+beforeEach(() => {
+  mockGqlQuery.mockReset();
+  getTransaction.mockReset();
+  // An object that sat still: its current version's transaction mutated it.
+  getTransaction.mockResolvedValue(effectsWith("0xcap", 1));
+});
 
 describe("trace_object_history — an empty history is not an empty life", () => {
   /**
@@ -100,5 +127,62 @@ describe("trace_object_history — an empty history is not an empty life", () =>
     expect(r.owner_change_count).toBe(1);
     expect(r.owner_change_note).toBeUndefined();
     expect(r.history_unavailable).toBeUndefined();
+  });
+});
+
+describe("trace_object_history — party objects", () => {
+  // Real mainnet shape (GapResearch D4): an authority::AuthorityCap sent with
+  // a party transfer, created in 83Av9X1c… a few hours before it was traced.
+  const CAP = "0xdbf46ffe39f2525660a0235dd130961ce1250ef62252a75ca006459de167d80f";
+  const OWNER = "0xea5588c8b8cd44d4a78142fb07fb89af80a64931d0e129507bc5af41f82a647d";
+  const CREATED_IN = "83Av9X1c1LcFjHTebMBW6c1Lw3ojdUYPjoBNxtbu1ENb";
+  const partyHeld = {
+    object: {
+      version: "1018740892",
+      owner: { __typename: "ConsensusAddressOwner", address: { address: OWNER } },
+      asMoveObject: { contents: { type: { repr: "0x4e2d::authority::AuthorityCap<0x3ec7::registry::ADMIN>" } } },
+      previousTransaction: {
+        digest: CREATED_IN,
+        effects: { timestamp: "2026-09-25T13:37:14.568Z", checkpoint: { sequenceNumber: 326800000 } },
+      },
+      objectVersionsBefore: { nodes: [] },
+    },
+  };
+
+  /**
+   * Regression: ConsensusAddressOwner was read as `shared`, which drops the
+   * one address that can use the object and says anyone might.
+   */
+  it("reports the single owner of a party object, not 'shared'", async () => {
+    mockGqlQuery.mockResolvedValue(partyHeld);
+    getTransaction.mockResolvedValue(effectsWith(CAP, 2));
+    const r = await run({ object_id: CAP });
+    expect(r.current.owner).toEqual({ kind: "consensus", address: OWNER });
+  });
+
+  /**
+   * Regression: with no earlier version the tool reported `created: null` and
+   * "history is beyond retention" for an object created hours earlier. The
+   * creating transaction's effects settle which of the two it is.
+   */
+  it("fills `created` when the current version's transaction created the object", async () => {
+    mockGqlQuery.mockResolvedValue(partyHeld);
+    getTransaction.mockResolvedValue(effectsWith(CAP, 2));
+    const r = await run({ object_id: CAP });
+    expect(r.created).toEqual({
+      tx: CREATED_IN,
+      timestamp: "2026-09-25T13:37:14.568Z",
+      owner: { kind: "consensus", address: OWNER },
+    });
+    expect(r.history_truncated).toBe(false);
+    expect(r.history_unavailable).toBeUndefined();
+  });
+
+  it("keeps the retention caveat when the creating transaction cannot be read", async () => {
+    mockGqlQuery.mockResolvedValue(partyHeld);
+    getTransaction.mockRejectedValue(Object.assign(new Error("NOT_FOUND"), { code: 5 }));
+    const r = await run({ object_id: CAP });
+    expect(r.created).toBeNull();
+    expect(r.history_unavailable).toMatch(/beyond retention/i);
   });
 });

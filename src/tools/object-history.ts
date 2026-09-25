@@ -1,6 +1,10 @@
+import { z } from "zod";
+import type { GrpcTypes } from "@mysten/sui/grpc";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
+import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { batchResolveNames } from "../utils/names.js";
 import { getLabel } from "../utils/labels.js";
 import { computeOwnerChanges, ownerDesc, type OwnerDesc, type VersionEntry } from "../utils/object-history.js";
@@ -20,17 +24,23 @@ interface ObjectHistoryResult {
   }) | null;
 }
 
+const OWNER_FIELDS = `owner {
+      __typename
+      ... on AddressOwner { address { address } }
+      ... on ConsensusAddressOwner { address { address } }
+    }`;
+
 const OBJECT_HISTORY_QUERY = `query ($id: SuiAddress!, $last: Int!) {
   object(address: $id) {
     version
     digest
-    owner { __typename ... on AddressOwner { address { address } } }
+    ${OWNER_FIELDS}
     asMoveObject { contents { type { repr } } }
     previousTransaction { digest effects { timestamp checkpoint { sequenceNumber } } }
     objectVersionsBefore(last: $last) {
       nodes {
         version
-        owner { __typename ... on AddressOwner { address { address } } }
+        ${OWNER_FIELDS}
         previousTransaction { digest effects { timestamp checkpoint { sequenceNumber } } }
       }
     }
@@ -47,10 +57,39 @@ function toEntry(n: VersionNodeGql): VersionEntry {
   };
 }
 
+/** `sui.rpc.v2.ChangedObject.IdOperation.CREATED` */
+const ID_CREATED = 2;
+
+/**
+ * Did `digest` create `objectId`? True, false, or null when the transaction
+ * could not be read.
+ *
+ * Asked only when the indexer returns no earlier version. That happens both
+ * for an object whose history is beyond retention and for one created
+ * recently and never touched since, and only the creating transaction's
+ * effects tell the two apart. gRPC returns every changed object in one read,
+ * where GraphQL would page them 50 at a time.
+ */
+async function createdIn(digest: string, objectId: string): Promise<boolean | null> {
+  try {
+    const res = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
+      (client) => client.ledgerService.getTransaction({ digest, readMask: { paths: ["effects"] } }),
+      (r) => !r.transaction?.effects,
+    );
+    const want = normalizeSuiAddress(objectId);
+    const change = res.transaction?.effects?.changedObjects?.find(
+      (c) => c.objectId !== undefined && normalizeSuiAddress(c.objectId) === want,
+    );
+    return change?.idOperation === ID_CREATED;
+  } catch {
+    return null;
+  }
+}
+
 export function registerObjectHistoryTools(server: McpServer) {
   server.tool(
     "trace_object_history",
-    "(Incident investigation) Trace the provenance of a Sui object: its version history — each version, the transaction that produced it, when — and every ownership transition (transfers, sharing, freezing). Use it to see the full lifecycle of an exploited pool/vault/cap: who created it and who held it when. Note: history is capped to the most recent versions; very hot objects (e.g. system objects) are truncated.",
+    "(Incident investigation) Trace the provenance of a Sui object: its version history — each version, the transaction that produced it, when — and every ownership transition (transfers, sharing, freezing, party transfers). Use it to see the full lifecycle of an exploited pool/vault/cap: who created it and who held it when. A party object reports owner kind `consensus` with its single owner's address. Note: history is capped to the most recent versions; very hot objects (e.g. system objects) are truncated.",
     {
       object_id: addressArg().describe("Object ID (0x...)"),
       limit: numArg().int().positive().max(50).optional().describe("Max prior versions to include (default 25)"),
@@ -82,20 +121,30 @@ export function registerObjectHistoryTools(server: McpServer) {
         // burn address as its creator. Three false claims from one missing
         // page.
         const pageFull = priorNodes.length >= last;
-        const noPriorVersions = priorNodes.length === 0;
+        // No earlier version is also what a young object looks like: created
+        // by the transaction that wrote its current version and untouched
+        // since. Only that transaction's effects tell the two apart.
+        const createdByCurrent =
+          priorNodes.length === 0 && obj.previousTransaction?.digest
+            ? await createdIn(obj.previousTransaction.digest, object_id)
+            : null;
+        const noPriorVersions = priorNodes.length === 0 && createdByCurrent !== true;
         const truncated = pageFull || noPriorVersions;
 
         const ownerChanges = computeOwnerChanges(history);
 
-        // Resolve names/labels for all address owners involved.
+        // Resolve names/labels for every owner that is an address, including
+        // the single owner of a party object.
         const addrs = new Set<string>();
-        for (const e of history) if (e.owner.kind === "address") addrs.add(e.owner.address);
+        for (const e of history) {
+          if (e.owner.kind === "address" || e.owner.kind === "consensus") addrs.add(e.owner.address);
+        }
         const nameMap = await batchResolveNames([...addrs]);
         const describeOwner = (o: OwnerDesc) => {
-          if (o.kind !== "address") return { kind: o.kind };
+          if (o.kind !== "address" && o.kind !== "consensus") return { kind: o.kind };
           const label = getLabel(o.address);
           return {
-            kind: "address" as const,
+            kind: o.kind,
             address: o.address,
             ...(nameMap.get(o.address) ? { name: nameMap.get(o.address) } : {}),
             ...(label ? { label: label.label, category: label.category } : {}),
@@ -104,7 +153,8 @@ export function registerObjectHistoryTools(server: McpServer) {
 
         // Only claim a creation when the walk actually reached the beginning.
         // With one version and nothing before it, "created here" and "this is
-        // as far back as the indexer goes" are indistinguishable.
+        // as far back as the indexer goes" are indistinguishable unless the
+        // creating transaction was checked.
         const creation = truncated ? null : history[0];
         const current = history[history.length - 1];
 

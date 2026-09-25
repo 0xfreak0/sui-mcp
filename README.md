@@ -65,7 +65,7 @@ identify_address(0x045dadba…)
     committee_members: 7, each with name/label/kind
 ```
 
-**See which keys are actually used.** The committee is fixed by the address, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's history.
+**See which keys are actually used.** The committee is fixed by the address, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's most recent sent transactions, newest first, up to `max_transactions`.
 
 ```
 analyze_multisig(0x045dadba…, max_transactions: 200)
@@ -410,8 +410,10 @@ truncated scan therefore returns `sampled_holders`, without a rank or a
 percentage of supply, along with a caveat naming which walk stopped. Raise
 `max_scan` (applied to each walk) until `truncated` is false to get a real
 ranking; that is only practical for coins with few enough objects to
-enumerate. Each holder carries `coin_balance` and `address_balance` beside the
-total, and `owner_kind`, because an address balance can belong to an object
+enumerate. In a sample, each holder's `balance` is read directly for that
+address, since the walk saw only some of its coins, and `balance_in_sample` is
+the walk's own sum. Each holder carries `coin_balance` and `address_balance`
+beside the total, and `owner_kind`, because an address balance can belong to an object
 such as a bridge's liquidity bank. `analyze_token` reports the same
 distinction.
 

@@ -7,7 +7,7 @@ import {
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
-import { scanTokenTopHolders, stoppedWalks } from "./holders.js";
+import { sampledHolders, scanTokenTopHolders, stoppedWalks } from "./holders.js";
 import { fetchRegistryCurrency } from "../utils/onchain-coin-registry.js";
 import { fetchDefiLlamaChange24h } from "../utils/price-providers.js";
 
@@ -301,9 +301,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           result.holder_scan_note =
             `No Coin<${coinType}> objects and no address balances of it were found, so there is no holder scan to report. That reads the same as a mistyped coin type or one that exists on another network. It is not evidence that the coin has no holders.`;
         } else if (holderResult.truncated) {
-          result.sampled_holders = holderResult.holders.map(
-            ({ rank: _rank, ...rest }) => rest,
-          );
+          result.sampled_holders = await sampledHolders(holderResult.holders, coinType);
           result.holder_scan_note =
             `INCOMPLETE: ${stoppedWalks(holderResult)} stopped before the end. Both walk in object-id order, which is unrelated to balance. ` +
             `These are the largest holders within that sample, not the largest holders of the coin, and they do not support a claim about supply concentration.`;

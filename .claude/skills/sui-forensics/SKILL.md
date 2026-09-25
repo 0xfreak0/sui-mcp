@@ -162,7 +162,9 @@ and never converges.
 
 - **Check `complete_ranking` before writing any concentration claim.** False
   means the result is `sampled_holders`, carries no rank and no percentage of
-  supply, and cannot support "the top 10 hold X%".
+  supply, and cannot support "the top 10 hold X%". Each sampled holder's
+  `balance` is read directly for that address; `balance_in_sample` and `count`
+  are only what the walk saw.
 - **A complete scan is a real ranking** and may be used as one. That is only
   reachable for coins and collections small enough to enumerate.
 - **Never compare two truncated scans.** Different budgets sample different

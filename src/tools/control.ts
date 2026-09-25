@@ -2,7 +2,7 @@ import { z } from "zod";
 import { numArg, addressListArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
-import { latestCheckpoint, toCheckpoint } from "../utils/checkpoint-time.js";
+import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { sampleControl } from "../utils/control-sample.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -78,15 +78,15 @@ export function registerControlTools(server: McpServer) {
           );
         }
 
-        const latest = await latestCheckpoint();
-        const fromCp = await toCheckpoint(from, latest);
-        const toCp = await toCheckpoint(to, latest);
+        // Exact edges, as aggregate_events resolves them, so a control drawn
+        // over the cohort's window holds the same checkpoints.
+        const window = await resolveWindow(from, to);
 
         const filter: Record<string, unknown> = {};
         if (event_type) filter.type = event_type;
         if (module) filter.module = module;
-        if (fromCp) filter.afterCheckpoint = fromCp.checkpoint;
-        if (toCp) filter.beforeCheckpoint = toCp.checkpoint;
+        if (window.after?.checkpoint != null) filter.afterCheckpoint = window.after.checkpoint;
+        if (window.before?.checkpoint != null) filter.beforeCheckpoint = window.before.checkpoint;
 
         const budget = max_events ?? DEFAULT_SCAN;
         const senders: string[] = [];
@@ -107,7 +107,6 @@ export function registerControlTools(server: McpServer) {
           hasNext = page.events.pageInfo.hasNextPage;
           cursor = page.events.pageInfo.endCursor;
           if (!cursor) break;
-          if (!cursor) break;
         }
 
         const result = sampleControl(senders, size ?? 25, { exclude, seed });
@@ -119,7 +118,7 @@ export function registerControlTools(server: McpServer) {
               text: JSON.stringify(
                 {
                   filter: { module, event_type },
-                  window: { from: fromCp, to: toCp },
+                  window: describeWindow(from, to, window),
                   events_scanned: scanned,
                   // A truncated scan still gives a valid control — it is a
                   // sample either way — but it is drawn from whichever slice of

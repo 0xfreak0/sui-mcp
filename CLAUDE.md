@@ -367,6 +367,12 @@ lists every object and holder. `find_funding_sources` keeps each result's origin
 first funder and first hop, and `include_chains` returns every hop; shared
 funders, co-funding and payments are computed from the full chains either way.
 
+A list row folds repeats: `get_transaction_history` and `build_timeline`
+actions and `query_transactions` `move_calls` go through `foldRepeats`, each
+distinct entry once with ` ×N`. The Nemo exploit's 214-command PTBs made a
+30-minute `build_timeline` 195k characters. `get_transaction` keeps every
+action in order, so the sequence is one call away.
+
 ## Tool arguments
 
 Numeric and boolean tool args use `numArg()` / `boolArg()` from
@@ -861,9 +867,11 @@ a mainnet 4-of-7: 8 transactions, 3 distinct signer sets, and 2 of 7 keys had
 never signed. So `signed_source_tx` is named for the transaction it came from,
 `get_transaction` reports `authorization` for a specific transaction, and
 `analyze_multisig` (`src/utils/signer-history.ts`, pure) answers the
-wallet-level question. Every dormancy claim is stated against the transaction
-count it rests on — "never signed" over 8 and over 200 are different claims —
-and under two transactions it refuses to read a pattern at all.
+wallet-level question. It reads the most recent sent transactions, newest
+first, since which keys sign now is the question. Every dormancy claim is
+stated against the transaction count it rests on — "never signed" over 8 and
+over 200 are different claims — and under two transactions it refuses to read
+a pattern at all.
 
 **Finding them.** Multisig is rare: 2 in 79,052 signatures sampled at random on
 mainnet, both from one wallet. Random checkpoint sampling is the wrong
@@ -1316,6 +1324,12 @@ supply, plus a caveat; only a completed scan returns `top_holders` and
 `complete_ranking: true`. `analyze_token` makes the same split. A sampled
 balance over the real total supply looks authoritative and means nothing, which
 is why the percentage is dropped rather than annotated.
+
+**A sampled holder's sum is a floor.** The walk saw only the coin objects in
+its sample, so XAGM's largest sampled holder summed to 9.1M of the 24.1M its
+address holds. `sampledHolders` reads each sampled holder's whole balance with
+`address.balance(coinType)` (20 aliases a request) and keeps the walk's sums as
+`*_in_sample`; a failed read is `null` with `balance_unavailable`.
 
 This follows `find_shared_multisig`: refusing beats truncating, because a
 partial search cannot support the claim the caller is asking for.

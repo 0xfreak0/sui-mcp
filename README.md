@@ -65,7 +65,7 @@ identify_address(0x045dadba…)
     committee_members: 7, each with name/label/kind
 ```
 
-**See which keys are actually used.** The committee is fixed by the address, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's history.
+**See which keys are actually used.** The committee is fixed by the address, but who signs varies per transaction. `analyze_multisig` reads that across the wallet's most recent sent transactions, newest first, up to `max_transactions`.
 
 ```
 analyze_multisig(0x045dadba…, max_transactions: 200)

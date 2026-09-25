@@ -861,9 +861,11 @@ a mainnet 4-of-7: 8 transactions, 3 distinct signer sets, and 2 of 7 keys had
 never signed. So `signed_source_tx` is named for the transaction it came from,
 `get_transaction` reports `authorization` for a specific transaction, and
 `analyze_multisig` (`src/utils/signer-history.ts`, pure) answers the
-wallet-level question. Every dormancy claim is stated against the transaction
-count it rests on — "never signed" over 8 and over 200 are different claims —
-and under two transactions it refuses to read a pattern at all.
+wallet-level question. It reads the most recent sent transactions, newest
+first, since which keys sign now is the question. Every dormancy claim is
+stated against the transaction count it rests on — "never signed" over 8 and
+over 200 are different claims — and under two transactions it refuses to read
+a pattern at all.
 
 **Finding them.** Multisig is rare: 2 in 79,052 signatures sampled at random on
 mainnet, both from one wallet. Random checkpoint sampling is the wrong

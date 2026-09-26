@@ -105,8 +105,8 @@ export function buildCaseGraph(findings: Finding[], txs: CaseTx[], opts: CaseGra
       }
       if (!payer) {
         // Nothing an address paid: the value came out of shared objects (a
-        // pool, a market, a vault). The Nemo exploit credited the attacker from
-        // Nemo's markets and no address paid it, so the diagram drew no arrow.
+        // pool, a market, a vault). The arrow starts at the protocol node so
+        // the credit still appears on the diagram.
         if (!sui.has(r.address)) continue;
         const src = protocolNode(tx);
         const key = `${src}>${r.address}>${r.coin_type}`;

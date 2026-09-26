@@ -133,4 +133,28 @@ describe("signerHistoryNote", () => {
     const h = summarizeSigners(committee(3, 2), [obs([0, 1]), obs([1, 2]), obs([0, 2])]);
     expect(signerHistoryNote(h, 2)).toBeUndefined();
   });
+
+  /**
+   * A 2-of-4 whose member 3 key was written by hand, with signer sets [0,1]
+   * 89 times and [1,2] once. The hand-made key can never sign, so the note
+   * reports the 2-of-3 it leaves instead of a dormant key.
+   */
+  it("states the committee a hand-made key leaves, and does not call that key cold or lost", () => {
+    const c = committee(4, 2);
+    c.members[3].unsignable = "written by hand";
+    const h = summarizeSigners(c, [...Array.from({ length: 89 }, (_, i) => obs([0, 1], undefined, `0xa${i}`)), obs([1, 2])]);
+    expect(h.unsignable_members).toEqual([3]);
+    expect(h.effective_committee).toEqual({ signable_weight: 3, threshold: 2, shape: "2-of-3", can_reach_threshold: true });
+    const n = signerHistoryNote(h, 2)!;
+    expect(n).toContain("in practice 2-of-3");
+    expect(n).not.toContain("cold key");
+  });
+
+  it("says the threshold is out of reach when too much weight sits with hand-made keys", () => {
+    const c = committee(3, 3);
+    c.members[2].unsignable = "written by hand";
+    const h = summarizeSigners(c, []);
+    expect(h.effective_committee?.can_reach_threshold).toBe(false);
+    expect(signerHistoryNote(h, 3)).toContain("fall short of the threshold");
+  });
 });

@@ -5,25 +5,20 @@ import type { SuiGrpcClient } from "@mysten/sui/grpc";
 /**
  * Run a ledger read against the fullnode, falling back to the archive node.
  *
- * Sui fullnodes prune old state. Measured against mainnet (2026-08), a pruned
- * or nonexistent object / transaction / checkpoint / epoch makes
- * `ledgerService` throw `NOT_FOUND` — it does **not** resolve with an empty
- * payload. So the throw path below is the one that actually carries pruning,
- * and it is why the archive is consulted at all.
+ * Sui fullnodes prune old state. A pruned or nonexistent object / transaction /
+ * checkpoint / epoch makes `ledgerService` throw `NOT_FOUND`; it does **not**
+ * resolve with an empty payload. So the throw path below is the one that
+ * carries pruning, and it is why the archive is consulted at all.
  *
- * `isEmpty` covers the other shape — a successful response missing the field
- * the caller needs. No probe of mainnet has been able to make it fire for any
- * of the four current call sites, so treat it as defence in depth against
- * node-implementation differences rather than as a path known to be live. It
- * exists because the call sites this helper replaced each carried their own
- * version of it; dropping it would have been a silent behaviour change.
+ * `isEmpty` covers the other shape: a successful response missing the field
+ * the caller needs. No current call site is known to reach it; it is defence in
+ * depth against node-implementation differences.
  *
  * Mainnet and testnet both have an archive. Devnet does not, so `archive` is the
  * same client as the fullnode there (see clients/grpc.ts) and both retries are
  * skipped: they would repeat an identical request against the identical node.
- * Note this gives up an incidental retry the previous inline code performed on
- * devnet, which could paper over a transient blip but also doubled latency on
- * the common NOT_FOUND path.
+ * Skipping them on devnet gives up a retry that could paper over a transient
+ * blip, and avoids doubling latency on the common NOT_FOUND path.
  */
 export async function withArchiveFallback<T>(
   // PromiseLike, not Promise: the SDK's service methods return `UnaryCall`,
@@ -53,8 +48,8 @@ export async function withArchiveFallback<T>(
     // blindly would discard partial-but-real fullnode data.
     return isEmpty(archived) ? response : archived;
   } catch {
-    // Archive is best-effort here — the fullnode already gave us a usable
-    // (if empty) response, and failing the whole call would be a regression.
+    // Archive is best-effort here: the fullnode already gave a usable (if
+    // empty) response, so an archive failure does not fail the whole call.
     return response;
   }
 }

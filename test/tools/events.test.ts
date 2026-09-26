@@ -14,6 +14,7 @@ vi.mock("../../src/clients/graphql.js", () => ({
 }));
 
 const { registerEventTools } = await import("../../src/tools/events.js");
+const { RELOCATE_EVENT_MODULE_CHECKPOINT } = await import("../../src/utils/package-versions.js");
 
 const tools = new Map<string, Function>();
 const mockServer = {
@@ -174,5 +175,182 @@ describe("query_events", () => {
     const eventsCall = mockGqlQuery.mock.calls.find(([q]) => String(q).includes("events("))!;
     expect(eventsCall[1].filter.type).toBe(`${ORIGINAL}::margin_manager::LiquidationEvent`);
     expect(data.event_type_resolution.queried).toBe(`${ORIGINAL}::margin_manager::LiquidationEvent`);
+  });
+
+  /**
+   * A framework package upgraded in place (0x2) shares one address across
+   * every version, so the requested id already equals the original and no
+   * rewrite is produced. Its `packageVersions` rows share one address with
+   * different version numbers, and count as one lineage ID.
+   */
+  it("reports no module_scope for a framework package upgraded in place", async () => {
+    const P2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
+    mockGqlQuery.mockImplementation(async (q: string) =>
+      q.includes("packageVersions")
+        ? { packageVersions: { nodes: [{ address: P2, version: 1 }], pageInfo: { hasNextPage: false, endCursor: null } } }
+        : { events: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } },
+    );
+
+    const handler = tools.get("query_events")!;
+    const result = await handler({ module: `${P2}::kiosk`, sender: "0xdrainer", limit: 50 });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.module_scope).toBeUndefined();
+    expect(result.content[0].text).not.toMatch(/version 1 only/);
+    const eventsCall = mockGqlQuery.mock.calls.find(([q]) => String(q).includes("events("))!;
+    expect(eventsCall[1].filter.module).toBe(`${P2}::kiosk`);
+  });
+
+  /**
+   * Turbos v9's `swap_router` is a pure router module with no event structs
+   * of its own. Before the relocate_event_module cutover (mainnet checkpoint
+   * 69,982,635, 2024-10-17) its events carried `transactionModule` v1,
+   * because Sui anchored a module's runtime identity to the package's
+   * original id, so over a pre-cutover window a filter written with v9's id
+   * matches nothing and is rewritten to v1.
+   */
+  it("rewrites a module filter to the package's original id for a window entirely before the cutover", async () => {
+    const V1 = `0x${"1".repeat(64)}`;
+    const V9 = `0x${"9".repeat(64)}`;
+    const CUT = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    mockGqlQuery.mockImplementation(async (q: string) =>
+      q.includes("packageVersions")
+        ? { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } }
+        : { events: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } },
+    );
+
+    const handler = tools.get("query_events")!;
+    const result = await handler({ module: `${V9}::swap_router`, after_checkpoint: CUT - 2000, before_checkpoint: CUT - 1000, limit: 50 });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.module_scope?.queried).toBe(`${V1}::swap_router`);
+    const eventsCall = mockGqlQuery.mock.calls.find(([q]) => String(q).includes("events("))!;
+    expect(eventsCall[1].filter.module).toBe(`${V1}::swap_router`);
+  });
+
+  /**
+   * From the cutover checkpoint on, `relocate_event_module` makes the
+   * opposite true: events carry the id of the version actually called, so a
+   * window that never reaches back before the cutover must query the
+   * requested id unrewritten. Rewritten to the original id, it would scan
+   * zero events.
+   */
+  it("queries the requested id unrewritten for a window entirely at or after the cutover", async () => {
+    const V1 = `0x${"1".repeat(64)}`;
+    const V9 = `0x${"9".repeat(64)}`;
+    const CUT = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    mockGqlQuery.mockImplementation(async (q: string) =>
+      q.includes("packageVersions")
+        ? { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } }
+        : {
+            events: {
+              nodes: [{ contents: { json: {} }, sender: { address: "0xseller" }, timestamp: "2025-01-01T00:00:00Z", transaction: { digest: "PostTx" } }],
+              pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+            },
+          },
+    );
+
+    const handler = tools.get("query_events")!;
+    const result = await handler({ module: `${V9}::swap_router`, after_checkpoint: CUT + 1000, before_checkpoint: CUT + 2000, limit: 50 });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["PostTx"]);
+    expect(data.module_scope?.queried).toBe(`${V9}::swap_router`);
+    expect(data.module_scope?.note).toMatch(/mainnet checkpoint 69982635/);
+    const eventsCall = mockGqlQuery.mock.calls.find(([q]) => String(q).includes("events("))!;
+    expect(eventsCall[1].filter.module).toBe(`${V9}::swap_router`);
+  });
+
+  /**
+   * A window spanning the cutover has to query both ids and merge: the
+   * original id for the slice before it, the requested id for the slice at
+   * or after it. The two are disjoint by checkpoint, so newest-first reads
+   * the requested-id slice first, then continues into the original-id slice
+   * once it is exhausted, across a page boundary via the composite cursor.
+   */
+  it("splits a window spanning the cutover into two segments and merges them, paging across the boundary", async () => {
+    const V1 = `0x${"1".repeat(64)}`;
+    const V9 = `0x${"9".repeat(64)}`;
+    const CUT = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    const postEvent = { contents: { json: {} }, sender: { address: "0xseller" }, timestamp: "2025-01-01T00:00:00Z", transaction: { digest: "PostTx" } };
+    // Raw GraphQL `last`/`before` order is ascending (oldest first);
+    // `orderedPage` reverses it for newest-first display.
+    const preEvents = [
+      { contents: { json: {} }, sender: { address: "0xb" }, timestamp: "2024-09-26T06:00:00Z", transaction: { digest: "PreTx1" } },
+      { contents: { json: {} }, sender: { address: "0xa" }, timestamp: "2024-09-26T08:00:00Z", transaction: { digest: "PreTx2" } },
+    ];
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      if (q.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } };
+      }
+      const filter = v.filter as { module: string };
+      if (filter.module === `${V9}::swap_router`) {
+        return { events: { nodes: [postEvent], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } };
+      }
+      return { events: { nodes: preEvents, pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } };
+    });
+
+    const handler = tools.get("query_events")!;
+    const result = await handler({ module: `${V9}::swap_router`, after_checkpoint: CUT - 2000, before_checkpoint: CUT + 1000, limit: 3 });
+    const data = JSON.parse(result.content[0].text);
+
+    expect(data.module_scope?.note).toMatch(/spans the cutover/);
+    expect(data.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["PostTx", "PreTx2", "PreTx1"]);
+    expect(data.has_next_page).toBe(false);
+    const eventsCalls = mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("events("));
+    expect(eventsCalls).toHaveLength(2);
+    expect(eventsCalls[0][1].filter).toMatchObject({ module: `${V9}::swap_router`, afterCheckpoint: CUT - 1, beforeCheckpoint: CUT + 1000 });
+    expect(eventsCalls[1][1].filter).toMatchObject({ module: `${V1}::swap_router`, afterCheckpoint: CUT - 2000, beforeCheckpoint: CUT });
+  });
+
+  it("resumes a spanning-window merge on the next page with a composite cursor", async () => {
+    const V1 = `0x${"1".repeat(64)}`;
+    const V9 = `0x${"9".repeat(64)}`;
+    const CUT = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    const postEvent = { contents: { json: {} }, sender: { address: "0xseller" }, timestamp: "2025-01-01T00:00:00Z", transaction: { digest: "PostTx" } };
+    const preEvent = { contents: { json: {} }, sender: { address: "0xa" }, timestamp: "2024-09-26T08:00:00Z", transaction: { digest: "PreTx" } };
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      if (q.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } };
+      }
+      const filter = v.filter as { module: string };
+      if (filter.module === `${V9}::swap_router`) {
+        return { events: { nodes: [postEvent], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } };
+      }
+      return { events: { nodes: [preEvent], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } };
+    });
+
+    const handler = tools.get("query_events")!;
+    const first = await handler({ module: `${V9}::swap_router`, after_checkpoint: CUT - 2000, before_checkpoint: CUT + 1000, limit: 1 });
+    const firstData = JSON.parse(first.content[0].text);
+    expect(firstData.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["PostTx"]);
+    expect(firstData.has_next_page).toBe(true);
+    expect(typeof firstData.next_cursor).toBe("string");
+
+    vi.clearAllMocks();
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      if (q.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } };
+      }
+      const filter = v.filter as { module: string };
+      return filter.module === `${V9}::swap_router`
+        ? { events: { nodes: [postEvent], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } }
+        : { events: { nodes: [preEvent], pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } } };
+    });
+    const second = await handler({
+      module: `${V9}::swap_router`,
+      after_checkpoint: CUT - 2000,
+      before_checkpoint: CUT + 1000,
+      limit: 1,
+      cursor: firstData.next_cursor,
+    });
+    const secondData = JSON.parse(second.content[0].text);
+    expect(secondData.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["PreTx"]);
+    expect(secondData.has_next_page).toBe(false);
+    // The resumed page must go straight to the pre-cutover (original-id)
+    // segment, never re-querying the already-exhausted requested-id one.
+    const eventsCalls = mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("events("));
+    expect(eventsCalls).toHaveLength(1);
+    expect(eventsCalls[0][1].filter.module).toBe(`${V1}::swap_router`);
   });
 });

@@ -10,13 +10,10 @@ beforeEach(() => mockGqlQuery.mockReset());
 
 /**
  * A connection that claims another page and hands back no cursor sends the
- * `after` variable to null, which asks for page one again. `event-json.ts`
- * guards this and has done since it was written; every other paginated walk in
- * the repo did not.
- *
- * The severity split by loop shape: walks bounded by a page counter or a
- * collection target terminated but re-read page one and returned duplicates,
- * while `fetchModuleNames` pages with `for(;;)` and would never return at all.
+ * `after` variable to null, which asks for page one again. Every paginated
+ * walk must stop there. Unguarded, a walk bounded by a page counter or a
+ * collection target re-reads page one and returns duplicates, while
+ * `fetchModuleNames` pages with `for(;;)` and would never return.
  */
 describe("a page claimed with no cursor does not restart the walk", () => {
   it("stops instead of hanging forever", async () => {
@@ -25,14 +22,14 @@ describe("a page claimed with no cursor does not restart the walk", () => {
         asMovePackage: {
           modules: {
             nodes: [{ name: "a" }, { name: "b" }],
-            // The shape that used to loop: another page, no cursor to reach it.
+            // Another page claimed, with no cursor to reach it.
             pageInfo: { hasNextPage: true, endCursor: null },
           },
         },
       },
     });
 
-    // Would never resolve before the guard; the assertion is that it resolves.
+    // An unguarded walk never resolves; the assertion is that it resolves.
     const names = await fetchModuleNames("0xpkg");
     expect(names).toEqual(["a", "b"]);
     // One request, not an unbounded stream of identical ones.

@@ -17,9 +17,9 @@ registerAnalyzePackageTools({
   },
 } as never);
 
-// Real Cetus CLMM lineage. v10 (the version live during the May 2025 exploit)
-// was pushed by the team multisig, which also holds the UpgradeCap now; the
-// lineage root was published by a different address in 2023.
+// Cetus CLMM lineage on mainnet. v10 was pushed by the team multisig, which
+// also holds the UpgradeCap; the lineage root was published by a different
+// address.
 const ROOT = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
 const V10 = "0xc6faf3703b0e8ba9ed06b7851134bbbe7565eb35ff823fd78432baa4cbeaa12e";
 const ROOT_PUBLISHER = "0x34df762694fb2d135a9a77ff804360489d6ddd9b13ab353397aaa29de36802cb";
@@ -95,10 +95,9 @@ describe("analyze_package — root and version publishers", () => {
   });
 
   /**
-   * Regression: the cap holder was compared against the version's publisher.
-   * The multisig that pushed v10 also holds the cap, so the audit read
-   * "still held by the address that published the package" although the cap
-   * left the 2023 deployer.
+   * The multisig that pushed v10 also holds the cap. Judged against the
+   * version's publisher, the audit would read "still held by the address that
+   * published the package" although the cap left the deployer.
    */
   it("judges the UpgradeCap holder against the root publisher", async () => {
     const r = await run();

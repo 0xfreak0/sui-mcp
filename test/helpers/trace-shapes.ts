@@ -80,3 +80,33 @@ export function candidates(hops: HopSpec[], paging: "forward" | "backward" = "fo
     },
   };
 }
+
+/**
+ * The `transactions(...)` page a search query gets from `hops`, as the
+ * service filters and pages it: the address sent the transaction
+ * (`sentAddress`) or appears in its balance changes (`affectedAddress`), the
+ * checkpoint lies strictly between the query's bounds, and pages hold 50,
+ * forward from `after` or backward from `before`.
+ */
+export function searchPage(hops: HopSpec[], query: string, vars: Record<string, unknown>) {
+  const address = String(vars.address);
+  const after = typeof vars.afterCheckpoint === "number" ? vars.afterCheckpoint : -Infinity;
+  const before = typeof vars.beforeCheckpoint === "number" ? vars.beforeCheckpoint : Infinity;
+  const list = hops.filter(
+    (h) =>
+      (query.includes("sentAddress") ? h.sender === address : h.changes.some(([a]) => a === address)) &&
+      (h.checkpoint ?? 100) > after &&
+      (h.checkpoint ?? 100) < before,
+  );
+  if (query.includes("last:")) {
+    const end = typeof vars.before === "string" ? Number(vars.before.slice(2)) : list.length;
+    const start = Math.max(0, end - 50);
+    const page = candidates(list.slice(start, end), "backward");
+    if (start > 0) page.transactions.pageInfo = { hasPreviousPage: true, startCursor: `c-${start}` };
+    return page;
+  }
+  const start = typeof vars.after === "string" ? Number(vars.after.slice(2)) : 0;
+  const page = candidates(list.slice(start, start + 50), "forward");
+  if (start + 50 < list.length) page.transactions.pageInfo = { hasNextPage: true, endCursor: `c-${start + 50}` };
+  return page;
+}

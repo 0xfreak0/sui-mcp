@@ -17,7 +17,7 @@ const NOT_A_PACKAGE = "0x0000000000000000000000000000000000000000000000000000000
  * Stand in for the aliased batch query: every `a<i>` variable is answered with
  * the root the map gives it, under the matching `p<i>` alias. An address with
  * no entry answers with an empty node list, which is what the real endpoint
- * returns for a non-package or an unknown ID (verified on mainnet).
+ * returns for a non-package or an unknown ID.
  */
 const lineages = (map: Record<string, string>) =>
   gqlQuery.mockImplementation(async (_q: string, vars: Record<string, string>) => {
@@ -42,10 +42,9 @@ describe("prefetchPackageRoots", () => {
   });
 
   it("batches within the server's per-request query limit", async () => {
-    // The GraphQL service rejects a request carrying more than 21 queries that
-    // "require dedicated access to a backing store" — measured against mainnet,
-    // which answered 21 aliases with RESOURCE_EXHAUSTED. One request per batch,
-    // each strictly under that cap.
+    // The GraphQL service answers a request carrying 21 queries that "require
+    // dedicated access to a backing store" with RESOURCE_EXHAUSTED. One request
+    // per batch, each strictly under that cap.
     expect(ROOT_BATCH_SIZE).toBeLessThan(21);
 
     lineages({});

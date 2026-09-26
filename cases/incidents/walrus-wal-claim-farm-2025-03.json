@@ -1,0 +1,712 @@
+{
+  "slug": "walrus-wal-claim-farm-2025-03",
+  "kind": "sybil-farm",
+  "title": "WAL airdrop claim farm swept to a Bybit deposit address, 27 March 2025",
+  "network": "mainnet",
+  "summary": "When Walrus opened WAL claims on 27 March 2025, 24 wallets claimed their allocations between 10:00 and 10:15 UTC and sent all 19,968 WAL to one address, which forwarded it to a Bybit reserve wallet two days later. All 24 were first funded with SUI by the same wallet within twelve minutes on 19 May 2024. No sybil list naming these wallets has been published; the claim, the sweep and the funding are read from the chain, and common control is an inference.",
+  "sources": [
+    {
+      "url": "https://walrus.xyz/blog/wal-mainnet-nft-airdrop/",
+      "publisher": "Walrus",
+      "kind": "official"
+    },
+    {
+      "url": "https://www.bybit.com/common-static/cht-static/por/Bybit_PoR_Audit_2026_Apr_22.pdf",
+      "publisher": "Bybit",
+      "kind": "exchange"
+    }
+  ],
+  "subjects": {
+    "funder": "0xb43139646d70b02e44dd5c16af587197e693b3197ebbcb60a750d03d82abfaa5",
+    "collector": "0xfbf58484139c8ace65aef5a52d3615ce0331bd4c80f4641a286d22b3fc9abd05",
+    "bybit_reserve": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
+    "binance_reserve": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
+    "claimer_a": "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+    "claimer_b": "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+    "claimer_c": "0x86427087eece4817cce92c6e9ea0bba2755208169457ba68b1bf70ba6dd315d5",
+    "ocean_hub": "0x35d3e02cd7b3cec18e67232837037731e61674357bb07f693b87ba9acd6778ff",
+    "gas_relayer": "0x39b9e5942df9a4686ebe727534077281d6adcee15a9bb74d3e052e56d78b2744",
+    "hub_9a97": "0x9a9729355b4abd688f7eb468a4e6d9389fae781b33566ab9614cce30e5e86e90",
+    "control_a": "0x9ed8295abb9a7cc4804e85c97aef099b257cd686d4987dbb246a9d705f2483c9",
+    "control_bybit_a": "0x505e55650e010acfc96d59d232bf36808d532406768590cd63cffc2caa061f02",
+    "control_bybit_b": "0xfa676b04f110ba79e8992d961a9afadb6b3c407505f9fc22ff118edf98c1050a",
+    "wal_airdrop_event": "0x98af8b8fde88f3c4bdf0fcedcf9afee7d10f66d480b74fb5a3a2e23dc7f5a564::events::NFTWithdrawal",
+    "claim_tx_a": "CNnW3M8H4vzBmCm1Piaavg8TEWkuzhHLFpXGJMPnxmGY",
+    "sweep_tx_a": "3doBwS5jmXZhtQynPaF1jy2XrcgM2HFyHC2CfNHoTzLk",
+    "forward_tx": "4vjL1u67iiGDtHN2vv1fXcV4N28GTXcL85zEfHT9rmmE",
+    "funding_tx_a": "Hc5KdsNToXab2b7m925uripuU1N2yQrzkPtX6RHB5vux",
+    "dust_tx_a": "3M3sRbc7n52u3VwJeGCjupWeTS8ot69oqPHwTeCz92Xb"
+  },
+  "checks": [
+    {
+      "id": "cohort-shared-funder",
+      "question": "Do the 24 wallets that swept their WAL claim into one address share a first funder, and which?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876",
+          "0x33831a12d1915ab7cf3ef001be1a692f641bcb520fc62301a8c085144af5bed6",
+          "0x3b559aff5ae1a792c820b7f12f13e51755ccb3005b6fc39e871692ff81938677",
+          "0x3c825ab8920017b173ee8660ee98654a12e0503fe809114532e2b61351bd6f35",
+          "0x5323d8ca69bd5fb79aa0e66e855ade83722e743443a79f973d6c2fbbeb869ec9",
+          "0x5b7ad2ac464f27a21fe9b73e4724fff6b2a6935acc7057fc4427b28b46ee21b9",
+          "0x7349e5ca20f93941d36233ba9c6389701dc27aed9eeda149b9d15cbeac3e9ce7",
+          "0x76a04ca24439656ccb423046bba4f0cdd67ba21f628057434508e302055a2750",
+          "0x78747d586099be058af2af741db21a29c6d7ae3dc74f33894cf80d30916443c6",
+          "0x86427087eece4817cce92c6e9ea0bba2755208169457ba68b1bf70ba6dd315d5",
+          "0x8f87ab650920b33e23809ffbf0024b2be803e217ae9aa01333465fda665ee4c9",
+          "0x9ac89a22dc6ef608d4da1f81dbfd8273cbe06892a27e85b489539f19aefb9db3",
+          "0x9ed495338be7b0717277f799c3e9f636197b9deeba2d8eb318665199ed87f4ae",
+          "0xa01824e21ba8681436bab9b7cccd392d374015f5633de77fa9bb478bc44a7af2",
+          "0xbdd7063aa728563167d446ba15b7d4382b38c30691faab45da6f0eba20d87352",
+          "0xbe2ab94a20c863d016ff27a8b514309e97e15c2e49ea1b49ba8929816c7564e9",
+          "0xc2cda716e17a04ec5b5ef1876c72648eb0e9edbf1b96c147de09810527d4bcfa",
+          "0xc2de996a383294877f1dbad59cb0b995058eb85b364d1eb2b879135e3d322865",
+          "0xc34033c294b4666c1d29d96d1309debd2f3774ad1878eee8f274042b36a6f674",
+          "0xc85073696bbe994a6feae3e3ce20e26ffb2225178db8ffbd8158a2579bf22d8c",
+          "0xf266f8569e056435346dd6d2fa7abfa6dfa36725e97a6f6d24961e7f2a358813"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "shared_funders[0].funder",
+          "op": "iequals",
+          "value": "{funder}"
+        },
+        {
+          "path": "shared_funders[0].funded_count",
+          "op": "gte",
+          "value": 24
+        },
+        {
+          "path": "results[*].first_funder",
+          "op": "excludes",
+          "value": "{ocean_hub}"
+        }
+      ],
+      "tier": "chain-derived",
+      "timeout_s": 300,
+      "basis": "chain: get_transaction_history of the funder lists a first SUI payment to each of the 24 wallets on 2024-05-19 (e.g. Hc5KdsNT, 0.3 SUI to claimer_a); raw GraphQL confirms Hc5KdsNT. The OCEAN transfers from ocean_hub came earlier but are unpriced dust."
+    },
+    {
+      "id": "cohort-funding-bursts",
+      "question": "Were the farm wallets funded in scripted bursts?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876",
+          "0x33831a12d1915ab7cf3ef001be1a692f641bcb520fc62301a8c085144af5bed6",
+          "0x3b559aff5ae1a792c820b7f12f13e51755ccb3005b6fc39e871692ff81938677",
+          "0x3c825ab8920017b173ee8660ee98654a12e0503fe809114532e2b61351bd6f35",
+          "0x5323d8ca69bd5fb79aa0e66e855ade83722e743443a79f973d6c2fbbeb869ec9",
+          "0x5b7ad2ac464f27a21fe9b73e4724fff6b2a6935acc7057fc4427b28b46ee21b9",
+          "0x7349e5ca20f93941d36233ba9c6389701dc27aed9eeda149b9d15cbeac3e9ce7",
+          "0x76a04ca24439656ccb423046bba4f0cdd67ba21f628057434508e302055a2750",
+          "0x78747d586099be058af2af741db21a29c6d7ae3dc74f33894cf80d30916443c6",
+          "0x86427087eece4817cce92c6e9ea0bba2755208169457ba68b1bf70ba6dd315d5",
+          "0x8f87ab650920b33e23809ffbf0024b2be803e217ae9aa01333465fda665ee4c9",
+          "0x9ac89a22dc6ef608d4da1f81dbfd8273cbe06892a27e85b489539f19aefb9db3",
+          "0x9ed495338be7b0717277f799c3e9f636197b9deeba2d8eb318665199ed87f4ae",
+          "0xa01824e21ba8681436bab9b7cccd392d374015f5633de77fa9bb478bc44a7af2",
+          "0xbdd7063aa728563167d446ba15b7d4382b38c30691faab45da6f0eba20d87352",
+          "0xbe2ab94a20c863d016ff27a8b514309e97e15c2e49ea1b49ba8929816c7564e9",
+          "0xc2cda716e17a04ec5b5ef1876c72648eb0e9edbf1b96c147de09810527d4bcfa",
+          "0xc2de996a383294877f1dbad59cb0b995058eb85b364d1eb2b879135e3d322865",
+          "0xc34033c294b4666c1d29d96d1309debd2f3774ad1878eee8f274042b36a6f674",
+          "0xc85073696bbe994a6feae3e3ce20e26ffb2225178db8ffbd8158a2579bf22d8c",
+          "0xf266f8569e056435346dd6d2fa7abfa6dfa36725e97a6f6d24961e7f2a358813"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "funding_bursts[*].funders[*]",
+          "op": "includes",
+          "value": "{funder}"
+        },
+        {
+          "path": "funding_bursts",
+          "op": "count_gte",
+          "value": 2
+        }
+      ],
+      "tier": "chain-derived",
+      "timeout_s": 300,
+      "basis": "chain: the funder paid the 24 wallets between 08:23 and 08:35 UTC on 2024-05-19, one transfer every 10 to 20 seconds."
+    },
+    {
+      "id": "shared-funder-classification-agrees",
+      "question": "Does the shared funder's fan-out classification agree with the reading printed beside it?",
+      "tool": "find_funding_sources",
+      "args": { "addresses": ["{claimer_a}", "{claimer_b}", "{claimer_c}"], "depth": "first_hop" },
+      "expect": [
+        { "path": "shared_funders[0].funder", "op": "iequals", "value": "{funder}" },
+        { "path": "shared_funders[0].funder_popularity.popular", "op": "equals", "value": true },
+        { "path": "shared_funders[0].fanout.classification", "op": "equals", "value": "distributor" },
+        { "path": "shared_funders[0].fanout.interpretation", "op": "contains", "value": "distributor" }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: the funder paid 88 distinct addresses over its 320 transactions, more than the 50 at which the funding walk stops; 47 of them paid SUI back."
+    },
+    {
+      "id": "control-no-shared-narrow-funder",
+      "question": "Do 24 random WAL claimers from the same window share a narrow funder or a funding burst?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "0x9ed8295abb9a7cc4804e85c97aef099b257cd686d4987dbb246a9d705f2483c9",
+          "0x98eb1126a05076dcc46bdb15d3eb4fe67043a58796fd5845bb7a6552c965d872",
+          "0x04a3de10b2d59bd8e58a1c7db8900f63fb70be16b96e3b7db06d843b0e43e05b",
+          "0xfde00c35efea036d2926e67a1a236d2de0c3954b4a5573b669202e674baa0102",
+          "0x6d119496f05f5e191757efed106435c14f3f842ab831d9fa54fc99d5cdfc1458",
+          "0x3f011b1f2bd3c199461c7033a0ee3825afa9673a9172e46e9babb9852daab30a",
+          "0x4565db4401b5ecb72ade98a754a46bc5767711ac93006a572e81881707232d90",
+          "0xaabc7de908223565c26c642e27aabfe77b2f4bd51761f8a8d68a2676544f1b61",
+          "0xfa676b04f110ba79e8992d961a9afadb6b3c407505f9fc22ff118edf98c1050a",
+          "0xb118d72f6c08ee5a3212400661d51c37f6d63ac82895917c741fa1911887c142",
+          "0x2f26d241bba8fe5ec293b7fc1df63e3414a1b863362fb9c6fb4c74e320fe9275",
+          "0xb90385c9c105eb736451c8e59b115dc899abb40dc4ca6167c34f72171a01ed85",
+          "0x0c92c8f51d02f6c2a1d5e77aafd2442e5b9a457479589f65ef5cc461eab72702",
+          "0xe42315ffdaf4329e6a72012af8a78e38b23df220bca58f54d36ca5117dd286b9",
+          "0x85c50e0b09d86fefd54c91cb465b4be3850b5344a25b410cbefbbbd05cd67cec",
+          "0x505e55650e010acfc96d59d232bf36808d532406768590cd63cffc2caa061f02",
+          "0x562e9516f79cc80f1303eb146cf279b6a365b1d12f9ad60729f5f944ea19240b",
+          "0xb7acbcc2b9dfa97718de299babfea3c70ed8a08cc2de42107ff0cc5b24a0e88c",
+          "0x02765151d59a583751d844e05d858cad8371a2ff652815e3d2b116746669c240",
+          "0xfa0b61266faa6f0b805afe7013edf8f5c6955e1061f33b296e4565ca60cdeb44",
+          "0x7b2783c923374bf8ee2f9de42b48afb083efdc132f322f1c5b24f8e61e996dbc",
+          "0xac2296e7abfad702116d847d3c880bf42a403849a879ee2867c70e0af2fdb6e9",
+          "0xd41f3cbf419d7c6f2fdc9cb047a90b86f7d6622751d8630595055b6c06266107",
+          "0xdd99ad5a9878cf8602ad6e00536aca4a876e26d50f79585de9a9f10238c09557"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "funding_bursts",
+          "op": "absent"
+        },
+        {
+          "path": "co_funded_in_one_transaction",
+          "op": "absent"
+        },
+        {
+          "path": "shared_funders[*].fanout.classification",
+          "op": "excludes",
+          "value": "narrow"
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: control drawn by sample_control_addresses (seed 20250327). Its only shared funders are a Bybit reserve wallet and a 713-recipient distributor; no two control wallets were funded within 60 s."
+    },
+    {
+      "id": "control-sample-reproducible",
+      "question": "Does a seeded control draw exclude the cohort and reproduce?",
+      "tool": "sample_control_addresses",
+      "args": {
+        "event_type": "{wal_airdrop_event}",
+        "size": 24,
+        "exclude": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876",
+          "0x33831a12d1915ab7cf3ef001be1a692f641bcb520fc62301a8c085144af5bed6",
+          "0x3b559aff5ae1a792c820b7f12f13e51755ccb3005b6fc39e871692ff81938677",
+          "0x3c825ab8920017b173ee8660ee98654a12e0503fe809114532e2b61351bd6f35",
+          "0x5323d8ca69bd5fb79aa0e66e855ade83722e743443a79f973d6c2fbbeb869ec9",
+          "0x5b7ad2ac464f27a21fe9b73e4724fff6b2a6935acc7057fc4427b28b46ee21b9",
+          "0x7349e5ca20f93941d36233ba9c6389701dc27aed9eeda149b9d15cbeac3e9ce7",
+          "0x76a04ca24439656ccb423046bba4f0cdd67ba21f628057434508e302055a2750",
+          "0x78747d586099be058af2af741db21a29c6d7ae3dc74f33894cf80d30916443c6",
+          "0x86427087eece4817cce92c6e9ea0bba2755208169457ba68b1bf70ba6dd315d5",
+          "0x8f87ab650920b33e23809ffbf0024b2be803e217ae9aa01333465fda665ee4c9",
+          "0x9ac89a22dc6ef608d4da1f81dbfd8273cbe06892a27e85b489539f19aefb9db3",
+          "0x9ed495338be7b0717277f799c3e9f636197b9deeba2d8eb318665199ed87f4ae",
+          "0xa01824e21ba8681436bab9b7cccd392d374015f5633de77fa9bb478bc44a7af2",
+          "0xbdd7063aa728563167d446ba15b7d4382b38c30691faab45da6f0eba20d87352",
+          "0xbe2ab94a20c863d016ff27a8b514309e97e15c2e49ea1b49ba8929816c7564e9",
+          "0xc2cda716e17a04ec5b5ef1876c72648eb0e9edbf1b96c147de09810527d4bcfa",
+          "0xc2de996a383294877f1dbad59cb0b995058eb85b364d1eb2b879135e3d322865",
+          "0xc34033c294b4666c1d29d96d1309debd2f3774ad1878eee8f274042b36a6f674",
+          "0xc85073696bbe994a6feae3e3ce20e26ffb2225178db8ffbd8158a2579bf22d8c",
+          "0xf266f8569e056435346dd6d2fa7abfa6dfa36725e97a6f6d24961e7f2a358813"
+        ],
+        "from": "2025-03-27T10:00:00Z",
+        "to": "2025-03-27T10:30:00Z",
+        "seed": 20250327
+      },
+      "expect": [
+        {
+          "path": "addresses",
+          "op": "count_gte",
+          "value": 24
+        },
+        {
+          "path": "addresses",
+          "op": "includes",
+          "value": "{control_a}"
+        },
+        {
+          "path": "addresses",
+          "op": "excludes",
+          "value": "{claimer_a}"
+        }
+      ],
+      "tier": "chain-derived",
+      "timeout_s": 300,
+      "basis": "chain: two runs with seed 20250327 returned the same 24 addresses, none of them in the cohort."
+    },
+    {
+      "id": "funder-fanout",
+      "question": "How wide is the shared funder?",
+      "tool": "get_address_fanout",
+      "args": {
+        "address": "{funder}",
+        "max_transactions": 3000
+      },
+      "expect": [
+        {
+          "path": "recipient_count",
+          "op": "gte",
+          "value": 88
+        },
+        {
+          "path": "sender_count",
+          "op": "gte",
+          "value": 53
+        },
+        {
+          "path": "truncated",
+          "op": "equals",
+          "value": false
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the funder's full history is 320 transactions (2024-05-14 to 2025-10-01); it paid 88 distinct addresses and 47 of them paid SUI back."
+    },
+    {
+      "id": "collector-shape",
+      "question": "What is the address the claims were swept into?",
+      "tool": "get_address_fanout",
+      "args": {
+        "address": "{collector}"
+      },
+      "expect": [
+        {
+          "path": "sender_count",
+          "op": "gte",
+          "value": 24
+        },
+        {
+          "path": "recipient_count",
+          "op": "lte",
+          "value": 1
+        },
+        {
+          "path": "flow_shape",
+          "op": "equals",
+          "value": "collector"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the collector received WAL from 24 wallets on 2025-03-27 and made one outgoing transfer (4vjL1u67) to the Bybit reserve wallet."
+    },
+    {
+      "id": "collector-deposit-address",
+      "question": "Is the collector an exchange deposit address, and whose?",
+      "tool": "classify_deposit_address",
+      "args": {
+        "address": "{collector}"
+      },
+      "expect": [
+        {
+          "path": "verdict",
+          "op": "equals",
+          "value": "likely"
+        },
+        {
+          "path": "exchange.entity",
+          "op": "equals",
+          "value": "Bybit"
+        },
+        {
+          "path": "hot_wallet",
+          "op": "iequals",
+          "value": "{bybit_reserve}"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "chain: 4vjL1u67 moved the collector's full 19,968 WAL to 0x60dd01bc, listed in the Bybit proof-of-reserves PDF, with gas paid by that wallet."
+    },
+    {
+      "id": "collector-inflows",
+      "question": "Who paid the collector, how much, and where did it go?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{collector}",
+        "from": "2025-03-27T00:00:00Z",
+        "to": "2025-03-30T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "inflow_sources[*].address",
+          "op": "count_gte",
+          "value": 24
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{claimer_a}"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "excludes",
+          "value": "{control_a}"
+        },
+        {
+          "path": "coins[0].in",
+          "op": "approx",
+          "value": 19968,
+          "tolerance": 0.001
+        },
+        {
+          "path": "top_recipients[0].address",
+          "op": "iequals",
+          "value": "{bybit_reserve}"
+        }
+      ],
+      "tier": "chain-derived",
+      "timeout_s": 300,
+      "basis": "chain: 24 WAL transfers into the collector sum to 19,968 WAL, and 4vjL1u67 sent 19,968 WAL to the Bybit reserve wallet (raw GraphQL balance changes)."
+    },
+    {
+      "id": "claimer-claim-and-sweep",
+      "question": "Did one farm wallet claim WAL and send it straight to the collector?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{claimer_a}",
+        "from": "2025-03-27T00:00:00Z",
+        "to": "2025-04-14T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "unattributed_inflows[*].digests[*]",
+          "op": "includes",
+          "value": "{claim_tx_a}"
+        },
+        {
+          "path": "top_recipients[0].address",
+          "op": "iequals",
+          "value": "{collector}"
+        },
+        {
+          "path": "top_recipients[0].digests",
+          "op": "includes",
+          "value": "{sweep_tx_a}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: CNnW3M8H is airdrop::withdraw crediting 590 WAL to claimer_a at 10:00:02 UTC; 3doBwS5j sends 590 WAL to the collector at 10:01:22 UTC (raw GraphQL)."
+    },
+    {
+      "id": "timeline-claim-then-sweep",
+      "question": "Does a merged timeline of ten farm wallets show the claims followed by the sweeps?",
+      "tool": "build_timeline",
+      "args": {
+        "addresses": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876",
+          "0x33831a12d1915ab7cf3ef001be1a692f641bcb520fc62301a8c085144af5bed6",
+          "0x3b559aff5ae1a792c820b7f12f13e51755ccb3005b6fc39e871692ff81938677",
+          "0x3c825ab8920017b173ee8660ee98654a12e0503fe809114532e2b61351bd6f35",
+          "0x5323d8ca69bd5fb79aa0e66e855ade83722e743443a79f973d6c2fbbeb869ec9",
+          "0x5b7ad2ac464f27a21fe9b73e4724fff6b2a6935acc7057fc4427b28b46ee21b9",
+          "0x7349e5ca20f93941d36233ba9c6389701dc27aed9eeda149b9d15cbeac3e9ce7"
+        ],
+        "from": "2025-03-27T09:59:00Z",
+        "to": "2025-03-27T10:25:00Z",
+        "limit": 100,
+        "per_address": 10
+      },
+      "expect": [
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{claim_tx_a}"
+        },
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{sweep_tx_a}"
+        },
+        {
+          "path": "timeline",
+          "op": "count_gte",
+          "value": 20
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: each of the ten wallets has one airdrop::withdraw and one WAL transfer to the collector in the window, 20 transactions."
+    },
+    {
+      "id": "activity-hours-no-false-bot",
+      "question": "Does activity_hours call low-rate farm wallets automated?",
+      "tool": "build_timeline",
+      "args": {
+        "addresses": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876",
+          "0x33831a12d1915ab7cf3ef001be1a692f641bcb520fc62301a8c085144af5bed6"
+        ],
+        "to": "2026-06-01T00:00:00Z",
+        "per_address": 300,
+        "limit": 5,
+        "activity_hours": true
+      },
+      "expect": [
+        {
+          "path": "activity_hours[*].automation_indicated",
+          "op": "excludes",
+          "value": true
+        },
+        {
+          "path": "activity_hours",
+          "op": "count_gte",
+          "value": 5
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: these wallets made 147 to 265 transactions over 540 to 610 days, 0.3 to 0.5 a day, too sparse to show a daily rhythm."
+    },
+    {
+      "id": "no-shared-multisig",
+      "question": "Do four farm wallets jointly control an equal-weight multisig?",
+      "tool": "find_shared_multisig",
+      "args": {
+        "addresses": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876"
+        ]
+      },
+      "expect": [
+        {
+          "path": "found_count",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "candidates_checked",
+          "op": "equals",
+          "value": 192
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: each wallet signs with a single ed25519 key (identify_address) and the farm moved value by plain transfers."
+    },
+    {
+      "id": "flow-path-to-exchange",
+      "question": "Is there a value path from a farm wallet to the Bybit reserve wallet after the claim?",
+      "tool": "find_flow_path",
+      "args": {
+        "from": "{claimer_a}",
+        "to": "{bybit_reserve}",
+        "window_start": "2025-03-27T09:59:00Z",
+        "window_end": "2025-03-30T00:00:00Z",
+        "max_hops": 3
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "PATH FOUND"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "{sweep_tx_a}"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "{forward_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "timeout_s": 300,
+      "basis": "chain: 3doBwS5j (claimer_a to collector, 590 WAL) then 4vjL1u67 (collector to Bybit reserve wallet, 19,968 WAL)."
+    },
+    {
+      "id": "edges-pair-hub-discarded",
+      "question": "Are a farm wallet and a control wallet that share a 1,590-recipient funder kept apart?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "{claimer_c}",
+          "{control_a}"
+        ],
+        "expand": false
+      },
+      "expect": [
+        {
+          "path": "edges[*].signals[*].via",
+          "op": "excludes",
+          "value": "{hub_9a97}"
+        },
+        {
+          "path": "clusters[*].members[*].address",
+          "op": "excludes",
+          "value": "{claimer_c}"
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: get_address_fanout on hub_9a97 counts 1,590 recipients in 1,000 transactions, a distributor whose recipients are unrelated."
+    },
+    {
+      "id": "edges-cohort-unmeasured-hubs",
+      "question": "With the 24 farm wallets as seeds, does build_wallet_edges link them only through measured, narrow intermediaries?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "0x07d047d215228bc979f568a2504b87e0ac6d64d09681bf9e868ff9cee6feef83",
+          "0x08826bca504e92b87180ef89907aed340e8e384ca59681b46c5e441ffc68442f",
+          "0x0dad38bae3c047c5a70388ce2ba30fcebdb6b669507ff91ed940f61828c24904",
+          "0x102d9805c71455dcb877cd29c1934c57db0b5afc742295ca98b454e5608ec876",
+          "0x33831a12d1915ab7cf3ef001be1a692f641bcb520fc62301a8c085144af5bed6",
+          "0x3b559aff5ae1a792c820b7f12f13e51755ccb3005b6fc39e871692ff81938677",
+          "0x3c825ab8920017b173ee8660ee98654a12e0503fe809114532e2b61351bd6f35",
+          "0x5323d8ca69bd5fb79aa0e66e855ade83722e743443a79f973d6c2fbbeb869ec9",
+          "0x5b7ad2ac464f27a21fe9b73e4724fff6b2a6935acc7057fc4427b28b46ee21b9",
+          "0x7349e5ca20f93941d36233ba9c6389701dc27aed9eeda149b9d15cbeac3e9ce7",
+          "0x76a04ca24439656ccb423046bba4f0cdd67ba21f628057434508e302055a2750",
+          "0x78747d586099be058af2af741db21a29c6d7ae3dc74f33894cf80d30916443c6",
+          "0x86427087eece4817cce92c6e9ea0bba2755208169457ba68b1bf70ba6dd315d5",
+          "0x8f87ab650920b33e23809ffbf0024b2be803e217ae9aa01333465fda665ee4c9",
+          "0x9ac89a22dc6ef608d4da1f81dbfd8273cbe06892a27e85b489539f19aefb9db3",
+          "0x9ed495338be7b0717277f799c3e9f636197b9deeba2d8eb318665199ed87f4ae",
+          "0xa01824e21ba8681436bab9b7cccd392d374015f5633de77fa9bb478bc44a7af2",
+          "0xbdd7063aa728563167d446ba15b7d4382b38c30691faab45da6f0eba20d87352",
+          "0xbe2ab94a20c863d016ff27a8b514309e97e15c2e49ea1b49ba8929816c7564e9",
+          "0xc2cda716e17a04ec5b5ef1876c72648eb0e9edbf1b96c147de09810527d4bcfa",
+          "0xc2de996a383294877f1dbad59cb0b995058eb85b364d1eb2b879135e3d322865",
+          "0xc34033c294b4666c1d29d96d1309debd2f3774ad1878eee8f274042b36a6f674",
+          "0xc85073696bbe994a6feae3e3ce20e26ffb2225178db8ffbd8158a2579bf22d8c",
+          "0xf266f8569e056435346dd6d2fa7abfa6dfa36725e97a6f6d24961e7f2a358813"
+        ],
+        "expand": false
+      },
+      "expect": [
+        {
+          "path": "used_intermediaries",
+          "op": "absent"
+        },
+        {
+          "path": "excluded_intermediaries[*].address",
+          "op": "includes",
+          "value": "{gas_relayer}"
+        },
+        {
+          "path": "excluded_intermediaries[*].address",
+          "op": "excludes",
+          "value": "{ocean_hub}"
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: get_address_fanout counts 1,009 recipients for ocean_hub and 251 sponsored addresses (relayer) for gas_relayer. build_wallet_edges's own popularity_limit defaults to 50, and even the farm's real shared funder measures 55+ recipients within the scan window this call uses, so nothing in this 24-wallet cohort is narrow enough to survive the filter: used_intermediaries is correctly empty (never populated by an unmeasured guess), ocean_hub is not a funder candidate at all any more (its dust transfer is skipped the same way find_funding_sources skips it, see edges-first-funder-skips-dust), and gas_relayer is measured and excluded rather than silently used."
+    },
+    {
+      "id": "edges-control-no-exchange-link",
+      "question": "Does build_wallet_edges link random control wallets through an exchange reserve wallet?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "0x9ed8295abb9a7cc4804e85c97aef099b257cd686d4987dbb246a9d705f2483c9",
+          "0x98eb1126a05076dcc46bdb15d3eb4fe67043a58796fd5845bb7a6552c965d872",
+          "0x04a3de10b2d59bd8e58a1c7db8900f63fb70be16b96e3b7db06d843b0e43e05b",
+          "0xfde00c35efea036d2926e67a1a236d2de0c3954b4a5573b669202e674baa0102",
+          "0x6d119496f05f5e191757efed106435c14f3f842ab831d9fa54fc99d5cdfc1458",
+          "0x3f011b1f2bd3c199461c7033a0ee3825afa9673a9172e46e9babb9852daab30a",
+          "0x4565db4401b5ecb72ade98a754a46bc5767711ac93006a572e81881707232d90",
+          "0xaabc7de908223565c26c642e27aabfe77b2f4bd51761f8a8d68a2676544f1b61",
+          "0xfa676b04f110ba79e8992d961a9afadb6b3c407505f9fc22ff118edf98c1050a",
+          "0xb118d72f6c08ee5a3212400661d51c37f6d63ac82895917c741fa1911887c142",
+          "0x2f26d241bba8fe5ec293b7fc1df63e3414a1b863362fb9c6fb4c74e320fe9275",
+          "0xb90385c9c105eb736451c8e59b115dc899abb40dc4ca6167c34f72171a01ed85",
+          "0x0c92c8f51d02f6c2a1d5e77aafd2442e5b9a457479589f65ef5cc461eab72702",
+          "0xe42315ffdaf4329e6a72012af8a78e38b23df220bca58f54d36ca5117dd286b9",
+          "0x85c50e0b09d86fefd54c91cb465b4be3850b5344a25b410cbefbbbd05cd67cec",
+          "0x505e55650e010acfc96d59d232bf36808d532406768590cd63cffc2caa061f02",
+          "0x562e9516f79cc80f1303eb146cf279b6a365b1d12f9ad60729f5f944ea19240b",
+          "0xb7acbcc2b9dfa97718de299babfea3c70ed8a08cc2de42107ff0cc5b24a0e88c",
+          "0x02765151d59a583751d844e05d858cad8371a2ff652815e3d2b116746669c240",
+          "0xfa0b61266faa6f0b805afe7013edf8f5c6955e1061f33b296e4565ca60cdeb44",
+          "0x7b2783c923374bf8ee2f9de42b48afb083efdc132f322f1c5b24f8e61e996dbc",
+          "0xac2296e7abfad702116d847d3c880bf42a403849a879ee2867c70e0af2fdb6e9",
+          "0xd41f3cbf419d7c6f2fdc9cb047a90b86f7d6622751d8630595055b6c06266107",
+          "0xdd99ad5a9878cf8602ad6e00536aca4a876e26d50f79585de9a9f10238c09557"
+        ],
+        "expand": false
+      },
+      "expect": [
+        {
+          "path": "used_intermediaries",
+          "op": "absent"
+        },
+        {
+          "path": "clusters[*].members[*].address",
+          "op": "excludes",
+          "value": "{control_bybit_a}"
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: the Bybit and Binance reserve wallets are labelled cex from their proof-of-reserves lists; control_bybit_a and control_bybit_b were each withdrawn from Bybit and have no other link. At the default query_budget the 24 first-funder lookups and seed profiles spend the budget before any intermediary is probed, so every funder, sponsor and reciprocal counterparty, the reserves included, is excluded unmeasured and none is used: used_intermediaries is correctly empty, as in edges-cohort-unmeasured-hubs. It used to list unread reciprocal counterparties with 0 observed, which is the false link that fix removed."
+    },
+    {
+      "id": "edges-first-funder-skips-dust",
+      "question": "Does build_wallet_edges take the same first funder as find_funding_sources, ignoring unpriced dust?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "{claimer_a}",
+          "{claimer_b}"
+        ],
+        "expand": false,
+        "popularity_limit": 100
+      },
+      "expect": [
+        {
+          "path": "edges[*].signals[*].via",
+          "op": "includes",
+          "value": "{funder}"
+        },
+        {
+          "path": "used_intermediaries[*].address",
+          "op": "excludes",
+          "value": "{ocean_hub}"
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: dust_tx_a (3M3sRbc7) gave claimer_a 1 unverified OCEAN; funding_tx_a (Hc5KdsNT) gave it 0.3 SUI from the funder 3 hours later; find_funding_sources lists the OCEAN transfer under dust_skipped. ocean_hub is never even a funder candidate here, so excluded_intermediaries (which only lists addresses that WERE candidates) is empty and omitted from the response; used_intermediaries is the field guaranteed present, since the real funder is narrow at this raised limit."
+    }
+  ]
+}

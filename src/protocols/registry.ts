@@ -305,16 +305,16 @@ export function isCuratedProtocol(packageId: string): boolean {
  * loop. Three tiers, cheapest first, each one narrowing what the next has to
  * ask about:
  *
- *   1. The shipped registry, in memory — a fully-known transaction makes no
+ *   1. The shipped registry, in memory. A fully-known transaction makes no
  *      network call at all.
  *   2. Upgrade lineages, batched (./package-roots.ts). This is what identifies a
  *      protocol that shipped an upgrade since the registry was last curated, and
  *      it yields a real category, not just a name.
- *   3. The Move Registry, in bulk (./mvr-names.ts), for whatever is left —
+ *   3. The Move Registry, in bulk (./mvr-names.ts), for whatever is left:
  *      display names only.
  *
  * Awaiting this is optional: skipping it, or either network step failing, just
- * means fewer packages are identified, exactly as before these tiers existed.
+ * means fewer packages are identified.
  */
 export async function prefetchProtocolNames(packageIds: Iterable<string>): Promise<void> {
   const unknown: string[] = [];

@@ -154,6 +154,79 @@ export function collectPackageIds(commands: GrpcTypes.Command[]): string[] {
   }
   return [...ids];
 }
+/**
+ * Net signed change per coin type, for the sender only. A pool's generic type
+ * order is fixed when the pool is created and does not follow which way a
+ * swap ran. Cetus's aggregator wrapper and the underlying pool call carry the
+ * same two coins in opposite `typeArguments` order for one swap, so that
+ * order alone cannot tell a reader which coin went in. The sender's own
+ * balance changes can: whichever coin it paid is negative, whichever it
+ * received is positive.
+ */
+function senderNetByCoin(
+  balanceChanges: GrpcTypes.BalanceChange[] | undefined,
+  sender: string | undefined,
+): Map<string, bigint> {
+  const net = new Map<string, bigint>();
+  if (!balanceChanges || !sender) return net;
+  for (const bc of balanceChanges) {
+    if (bc.address !== sender || !bc.coinType) continue;
+    net.set(bc.coinType, (net.get(bc.coinType) ?? 0n) + BigInt(bc.amount ?? "0"));
+  }
+  return net;
+}
+
+/** Action kinds whose own balance changes can overlap a swap's coins, so a whole-PTB net can no longer be trusted to isolate one swap's flow. */
+const NET_POLLUTING_ACTIONS = new Set(["deposit", "withdraw", "borrow", "repay", "add_liquidity", "remove_liquidity"]);
+
+/**
+ * The direction a swap function name states outright, when it does:
+ * `swap_a2b`/`swapAtoB`, Turbos `swap_a_b` and DeepBook
+ * `swap_exact_base_for_quote` swap the first type argument in, the second out
+ * (the given order already matches); `swap_b2a`/`swapBtoA`, Turbos
+ * `swap_b_a` and DeepBook `swap_exact_quote_for_base` swap the second in, the
+ * first out (the given order is reversed). Turbos's multi-hop
+ * `swap_b_a_b_c`-style functions are left out: their first type argument is
+ * already the input coin and the second a fee type. Checked before the
+ * balance-net heuristic below, since a direction the call names outright is
+ * certain.
+ */
+function directionFromFunctionName(fn: string): "a2b" | "b2a" | null {
+  const lower = fn.toLowerCase();
+  if (/a2b|atob|^swap_a_b(?:_with_|$)|base_for_quote/.test(lower)) return "a2b";
+  if (/b2a|btoa|^swap_b_a(?:_with_|$)|quote_for_base/.test(lower)) return "b2a";
+  return null;
+}
+
+/**
+ * Which way a swap's two coins actually moved for the sender.
+ *
+ * The sender's whole-PTB net is trusted first, when `netTrusted`: it comes
+ * from the actual balance changes, while a function name or typeArguments
+ * order may not encode the direction at all (an a2b flag passed as a runtime
+ * argument, one function called with its type arguments in either order).
+ * Another leg that moves one of the swap's coins nets against the swap's own
+ * flow, so `netTrusted` is false for a swap when a
+ * deposit/withdraw/borrow/repay/liquidity leg in the same PTB names either
+ * of its coins, or names no coin at all. Falls back to the function name's
+ * own a2b/b2a direction, when it has one, whenever the net is not trusted,
+ * or is trusted but inconclusive (an intermediate leg of a multi-hop route
+ * can net to zero or be absent from the sender's own changes). The given
+ * order (the call's own typeArguments) stands when neither says anything,
+ * and whenever the call carries fewer than two type arguments, since there
+ * is no pair to order.
+ */
+function swapDirection(typeArgs: string[], net: Map<string, bigint>, fn: string, netTrusted: boolean): string[] {
+  if (typeArgs.length < 2) return typeArgs;
+  const [a, b, ...rest] = typeArgs;
+  if (netTrusted) {
+    const na = net.get(a);
+    const nb = net.get(b);
+    if (na != null && nb != null && na > 0n && nb < 0n) return [b, a, ...rest];
+  }
+  if (directionFromFunctionName(fn) === "b2a") return [b, a, ...rest];
+  return typeArgs;
+}
 
 export function decodeTransaction(
   commands: GrpcTypes.Command[],
@@ -162,6 +235,24 @@ export function decodeTransaction(
 ): DecodedTransaction {
   const protocols = new Set<string>();
   const actions: string[] = [];
+  const net = senderNetByCoin(balanceChanges, sender);
+
+  // The type tokens of every deposit/withdraw/borrow/repay/liquidity leg in
+  // the PTB. Such a leg can move the coins a swap does, and then the
+  // whole-PTB net no longer isolates that swap's own flow. A leg sharing
+  // neither of a swap's coins cannot move them (a USDT withdraw beside a
+  // USDC/SUI swap), while a leg with no type arguments may move any coin.
+  // Whole type tokens are compared, so a coin nested in a leg's generic
+  // (`Pool<USDC>`) still counts.
+  const pollutingLegs: Set<string>[] = [];
+  for (const cmd of commands) {
+    const c = cmd.command;
+    if (c.oneofKind !== "moveCall") continue;
+    const op = lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "");
+    if (op && NET_POLLUTING_ACTIONS.has(op.action)) {
+      pollutingLegs.push(new Set((c.moveCall.typeArguments ?? []).flatMap((t) => t.split(/[<>,\s]+/).filter(Boolean))));
+    }
+  }
 
   for (const cmd of commands) {
     const c = cmd.command;
@@ -188,7 +279,16 @@ export function decodeTransaction(
         }
 
         if (op) {
-          actions.push(formatAction(op.action, proto?.name ?? null, typeArgs));
+          const args =
+            op.action === "swap"
+              ? swapDirection(
+                  typeArgs,
+                  net,
+                  fn,
+                  !pollutingLegs.some((coins) => coins.size === 0 || coins.has(typeArgs[0]) || coins.has(typeArgs[1])),
+                )
+              : typeArgs;
+          actions.push(formatAction(op.action, proto?.name ?? null, args));
         } else if (proto) {
           actions.push(`Call ${mod}::${fn} on ${proto.name}`);
         } else {

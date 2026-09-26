@@ -7,13 +7,13 @@
  *
  * - Token Bridge: `complete_transfer::TransferRedeemed` carries the VAA
  *   triple. Pinned to the Token Bridge package, whose events keep its type
- *   across upgrades. Verified on 84Z1YEze… (from BNB Chain).
+ *   across upgrades.
  * - NTT: redemption emits no event at all (the only NTT event in the Sui
  *   sources is a governance one), so the VAA is read from the transaction's
  *   own input, the bytes it passes to `vaa::parse_and_verify`. Only a payload
  *   opening with NTT's transceiver prefix is read, and only when its transfer
  *   names Sui as `to_chain`: Pyth price updates verify VAAs too, and are not
- *   transfers. Verified on H2qXS8fT….
+ *   transfers.
  */
 
 import { caip2ForWormholeChain, vaaId, WORMHOLE_CHAIN_SUI, wormholeChainLabel, type SuiEventNode } from "./wormhole.js";

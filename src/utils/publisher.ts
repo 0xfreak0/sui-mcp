@@ -8,7 +8,7 @@
  *
  * Two things make it less trivial than it sounds:
  *
- * - **Attribute the ROOT, not the version you were handed.** An upgrade mints
+ * - **Attribute the root, not the version you were handed.** An upgrade mints
  *   a new package ID whose creating transaction was sent by whoever held the
  *   `UpgradeCap` at the time. That is the upgrader, which may not be the
  *   original publisher and is a different claim. Callers pass the lineage root
@@ -16,8 +16,8 @@
  *   actually read so the distinction survives into the response.
  * - **Publish transactions are usually pruned.** Packages are long-lived and
  *   their creating transaction is not, so the fullnode answers `NOT_FOUND` for
- *   most of them. Verified on mainnet: a package published 2026-05-11 resolved
- *   only from the archive. `withArchiveFallback` handles it.
+ *   most of them, and only the archive has it. `withArchiveFallback` handles
+ *   it.
  */
 
 import { withArchiveFallback } from "./archive-fallback.js";

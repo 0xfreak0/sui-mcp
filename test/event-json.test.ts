@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
  * A real mainnet digest. get_transaction validates the digest before making a
- * request, so a placeholder like "0xd" is now rejected up front — these tests
- * are about event decoding, and the shape of the input has to be plausible for
- * them to exercise it.
+ * request and rejects a placeholder like "0xd" up front, so the input has to
+ * be well-formed for these tests to reach event decoding.
  */
 const TEST_DIGEST = "6rbfmByTyP4k7EREQBV9XZNhaG4RPm2ExT5bhVDfhGpu";
 
@@ -96,9 +95,9 @@ describe("packageOfEventType", () => {
 
 describe("protocols from events", () => {
   it("names a protocol its Move calls never mentioned", async () => {
-    // The failure this fixes: an obfuscated wrapper (h86261::h8b64d) in front
-    // of DeepBook reported protocols: [] while the registry, asked directly,
-    // resolves the event's own package by upgrade lineage.
+    // An obfuscated wrapper (h86261::h8b64d) in front of DeepBook names no
+    // protocol by its calls; the event's own package resolves by upgrade
+    // lineage.
     grpcResponse = txWithEvents(2);
     mockGqlQuery.mockResolvedValue(gqlEvents(2));
 
@@ -130,10 +129,8 @@ describe("parsed event fields", () => {
   });
 
   it("pages the events connection, which defaults to 20 and paginates", async () => {
-    // The bug this pins: asking without a page argument returned 20 nodes for a
-    // 59-event transaction, the length guard then correctly refused to attach
-    // anything, and the feature silently did nothing on exactly the
-    // event-heavy transactions that needed it most.
+    // Without a page argument the connection returns 20 nodes for a
+    // 70-event transaction, and the length guard then attaches nothing.
     grpcResponse = txWithEvents(70);
     mockGqlQuery
       .mockResolvedValueOnce(gqlEvents(50, true, "cursor-1", 0))

@@ -208,20 +208,55 @@ checkpoints (C, A].
 
 ## A package ID names one version
 
-A Sui upgrade mints a new package ID, and two kinds of filter bind to one
-version:
+A Sui upgrade mints a new package ID, and filters bind to one version, but
+which rule applies depends on whether the filter reaches an EVENT or a
+TRANSACTION:
 
-- **Event types carry the DEFINING package**, the version that introduced the
-  struct. DeepBook margin's `LiquidationEvent` queried at the latest ID returned
-  nothing and at the original returned the liquidations. `resolveEventTypeFilter`
-  (`src/utils/package-versions.ts`) reads `typeOrigins` and rewrites the filter;
-  a module- or package-level type spanning several defining IDs keeps one and
-  lists the rest. Type origins never change, so they are cached per network.
-- **`function` and `module` filters match calls through that exact version.**
-  Each version sees a disjoint share of the calls, so a non-empty answer is
-  still partial. `versionScopeNote` names the lineage; `all_versions` on
-  `query_transactions` reads every version as aliased connections and merges
-  them (`src/utils/version-fanout.ts`), with a cursor recording each version's
+- **An event's type carries the DEFINING package**, the version that
+  introduced the struct. DeepBook margin's `LiquidationEvent` queried at the
+  latest ID returned nothing and at the original returned the liquidations.
+  `resolveEventTypeFilter` (`src/utils/package-versions.ts`) reads
+  `typeOrigins` and rewrites an `event_type` filter; a module- or
+  package-level type spanning several defining IDs keeps one and lists the
+  rest as `event_type_resolution`.
+- **An event's emitting module carries whichever id the checkpoint's era
+  used**, not a fixed rewrite. `relocate_event_module` turned on at a
+  different checkpoint on each network, read from each epoch's protocol
+  config: mainnet 69,982,635 (2024-10-17, epoch 554, protocol 60 -> 63),
+  testnet 118,397,835 (2024-10-09, epoch 518, protocol 60 -> 62), and devnet
+  at genesis (it is wiped regularly and its genesis protocol has the flag).
+  Before it, a module's runtime linkage was anchored to the package's
+  ORIGINAL id for the life of the lineage regardless of which version was
+  called or whether the module defines any types of its own. KONG SUI's
+  sellers called Turbos v9's `swap_router`, a pure router module with no
+  event structs, and its (pre-cutover) events still carried
+  `transactionModule` v1. From the cutover on, an event carries the id of the
+  version that was actually CALLED, and a filter rewritten to the original id
+  matches nothing. `resolveModuleEventFilter`
+  (`src/utils/package-versions.ts`) reads the cutover for `getNetwork()`,
+  takes the caller's resolved window and returns one segment (original id for
+  a window entirely before the cutover, the requested id unchanged for one
+  entirely at or after it) or two, when the window holds checkpoints on both
+  sides: `query_events`, `aggregate_events` and `sample_control_addresses`
+  query each segment and merge, reporting the split as `module_scope`. Keyed
+  to mainnet's checkpoint, a testnet window between the two cutovers was
+  queried at the called version and came back empty (Supra
+  `price_data_pull_v2` v7 around checkpoint 110,000,000). From the cutover
+  on, any one id matches calls through that version only, the original id
+  included: Turbos `swap_router` queried at its original id over 2025-01-01
+  returned nothing while v9 to v12 carried the swaps. A window reaching the
+  cutover therefore always gets a `module_scope` whose `other_version_ids`
+  lists the rest of the lineage, and an original-id window spanning it stays
+  one query, since the same id serves both sides. Only a lineage with one id
+  (a single-version package, or a framework package upgraded in place such as
+  0x2) passes through without a note, and a lineage that cannot be read is
+  passed through with a note saying so.
+- **A transaction's `function` filter matches calls through that exact
+  version.** The PTB literally names the version it called, so each version
+  sees a disjoint share of the calls and a non-empty answer is still partial.
+  `versionScopeNote` names the lineage for `query_transactions`; `all_versions`
+  reads every version as aliased connections and merges them
+  (`src/utils/version-fanout.ts`), with a cursor recording each version's
   position so no call is skipped or repeated across pages.
 
 ## Address identity in investigation flows
@@ -336,7 +371,11 @@ pool of gas coins.
   addresses (`8eHgw5hB…`) read as nothing moving. `createdFor` reports objects
   created for an address, object or consensus owner other than the sender as
   `created_for`, and the "none changed hands" note is withheld when there are
-  any.
+  any. Coins are never in either list (balance changes track them), so when
+  nothing else moved but an address other than the sender gained coins, the
+  note says so and `coins_delivered_to` names them: the Volo drain
+  `7pTrudZb…` created its WBTC and XAUm for 0xd763…, not for the sender, and
+  used to read as "no object changed custody".
 
 ## Completeness beats payload size
 
@@ -491,7 +530,12 @@ to try. The same cleaning runs over an `isError` result a tool built itself.
 `gqlQuery` retries 429, 5xx and connection resets (`GRAPHQL_TRANSPORT` in
 `config.ts`: 4 attempts, jittered exponential backoff, `Retry-After` honoured up
 to 8s), gives each attempt a 30s `AbortSignal.timeout`, and allows 8 requests in
-flight per network. An exhausted 429 reports the endpoint and suggests
+flight per network. Every attempt, retries included, also takes a slot in the
+host's `RateWindow`: at most `rateLimitFor(host)` starts per 10-second sliding
+window, shared by every client of that host in the process. The default is 180
+for `*.sui.io` hosts and none for others; `SUI_RATE_LIMIT` sets it for every
+host and `0` disables it. The window covers one process only.
+An exhausted 429 reports the endpoint and suggests
 `SUI_GRAPHQL_URL`; a GraphQL error reports its first message. Callers never see
 `ClientError`.
 
@@ -592,6 +636,7 @@ npm start         # node dist/index.js
 npm run verify:live          # live mainnet checks — see below
 npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
+npm run sync:coin-symbols    # regenerate src/data/coin-symbols.json (about 13 minutes)
 ```
 
 ### Live checks
@@ -606,6 +651,11 @@ from mainnet, feeds every tool hostile input, and runs a chained investigation.
 Run it **after an `@mysten/sui` bump**, **after Mysten changes the GraphQL
 schema**, and **before a release** — then run `npm test`, because a drifted
 parse surfaces there as a fixture that no longer derives to its own address.
+
+It also replays every case in `cases/incidents/` through `case-pass.mjs`
+(format in `cases/README.md`). Every registered tool needs a live check, a
+probe call or a case check, and `test/live-coverage.test.ts` fails naming any
+tool without one. `adversarial.mjs` does not count toward that.
 
 Not in CI. It needs the network and mainnet's current state, so it would be
 flaky on a schedule nobody chose, and a flaky required check teaches people to
@@ -643,12 +693,39 @@ the payload at 5000 bytes.
 ### What counts as funding
 
 `pickFundingTx` decides which inflow made a wallet exist, and that answer names
-someone in a report. Three rules, in `src/utils/funding.ts`:
+someone in a report. Four rules, in `src/utils/funding.ts`:
 
 - **An unpriced coin is spam at any size.** Nobody funds a wallet with a token
   that has no market, and a scam token can mint any quantity. This is a signal,
   not a threshold. Only a *known* lack of price counts; with no price oracle at
-  all the inflow is accepted rather than evidence discarded.
+  all the inflow is accepted rather than evidence discarded. `fundingValuer`
+  (`src/utils/edge-probe.ts`, used by both funding tools) tells the two apart:
+  `fetchAftermath` answers an outage with an empty map rather than a throw, so
+  SUI rides in every price request, and when even SUI comes back unpriced the
+  service is down and `valueUsd` is withheld. Before that, an outage made the
+  500 USDC that created a wallet `unpriced_coin` and named a later 2 SUI sender
+  its funder. A hop judged that way is listed in `prices_unavailable_at`.
+- **Except an unpriced inflow no airdrop could send.** "No market" is also
+  what a rug's own token looks like once its pool dies. KONG's deployer
+  granted its 1B insider 1,000,000,000 KONG, 10% of supply (`7SumEF…`), a day
+  before 3 SUI; Aftermath quotes KONG at -1, so both funding tools named the 3
+  SUI and the kong `wallet-edges` check failed on every run. An unpriced
+  inflow now counts when it is at least 1% of the coin's current total
+  supply (`UNPRICED_SUPPLY_SHARE`), or 0.1% sent by the coin's publisher
+  (`UNPRICED_PUBLISHER_SHARE`): at most 100 or 1,000 wallets can hold that
+  much at once, so no mass airdrop reaches it, and a publisher's spam send of
+  0.01% apiece stays spam. The funding carries `unpriced_funding` with the
+  share and whether the publisher sent it. `assessFunding`
+  (`src/utils/edge-probe.ts`) is the one entry both tools use: it reads supply
+  (`getCoinInfo`'s `treasury.totalSupply`) and publisher (`resolvePublisher`,
+  the same read `identify_address` uses) only for coins the first pass skipped
+  as unpriced, and a coin whose supply the service does not report, OCEAN for
+  one, or that has no CoinMetadata (NOT_FOUND), stays spam. Any other error
+  on the supply or publisher read is reported apart: `coin-origin.ts` returns
+  it as `failed` and never caches it, the coin stays skipped, and the hop is
+  listed in `origin_unread_at` (`build_wallet_edges` adds a note and reports
+  `truncated`). A failed read must never be read as "no supply": one 429
+  would then put the later SUI back as the funding.
 - **Floors:** 0.01 SUI, or $0.10 for a priced non-SUI coin. Gas for a transfer
   is roughly 0.001-0.005 SUI, so a real funder sends enough for many. Both are
   parameters, so a faucet-scale case can lower them.
@@ -661,11 +738,24 @@ Skipped inflows are reported as `dust_skipped`, never dropped silently, and that
 includes the case where nothing qualified: `pickFundingTx` returns
 `{ funding: null, dustSkipped, sponsors }`, never a bare null. A bare null
 dropped the skipped list exactly when it was the only evidence. `sponsors` are
-the parties that paid gas for transactions the address sent, reported as
-`sponsored_by` at a dead end: gas can be paid from an address balance, so a
-relay wallet can run on zero SUI of its own with ~1,900-MIST inflows, and its
-operator then appears as sponsor and nowhere else. Inflow ranking is by USD
-where a price exists, for the same decimals reason.
+the parties that paid gas for transactions the address sent, computed and
+reported as `sponsored_by` whether or not this hop also found a qualifying
+inflow: gas can be paid from an address balance, so a relay wallet can run on
+zero SUI of its own with ~1,900-MIST inflows, and its operator then appears as
+sponsor and nowhere else. The two are independent facts even when funding WAS
+found — an address-poisoning lookalike's only inflow clearing the floor can be
+its own victim's stolen payment, while the address that actually created and
+runs it never sends enough and shows up only as gas sponsor. Folding sponsors
+into the dead-end branch alone hid exactly that case. `sponsored_by_note` is
+worded from the walk's `deadEnd`: "no inflow qualified" only for a sponsor of
+the hop where none did, and an independent-evidence reading for a sponsor of
+a hop that found funding. The single dead-end wording used to sit beside a
+`chain[0]` naming the victim as funder, on the lookalike it was built for.
+Inflow ranking is by USD where a price exists, for the same decimals reason.
+Every positive inflow of a transaction is judged, most valuable first, before
+the transaction is passed over, and each skipped one is listed: a sub-floor
+SUI top-up in the same PTB as a 10%-of-supply grant must not decide it, and
+the grant's `unpriced_coin` skip is what triggers the supply read.
 
 Scam NFTs need no handling here — they move no coin, so they never appear as an
 inflow. This is about coin dust only.
@@ -681,12 +771,32 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
   the walk: that funder's own first funding says who funded the exchange, not
   who funded the subject. On the Nemo attacker the walk went four hops past a
   261-recipient funder and called a 2023 wallet a narrow origin. Probes are
-  cached per call and share one `Budget`; a funder the budget did not reach is
-  `unmeasured`, and narrow off an incomplete probe is `provisional`.
+  cached per call and share one `Budget`. A funder whose probe gave no
+  verdict is `unmeasured`, with `budget` when the budget did not reach its
+  first page and `read_failed` when any of its reads failed after retries,
+  on the first page or a later one. A hub that pays one recipient per
+  transaction shows 50 recipients on its first page and is proven popular
+  only on its second, so a failure there leaves the verdict open, and
+  `build_wallet_edges` excludes such an intermediary and reports the build
+  `truncated`. Narrow off a probe that stopped at its page cap or at the
+  budget after its first page is `provisional`. **The walk fails closed on
+  `unmeasured`:** it stops and says which of the two it was, rather than
+  treating an unread popularity as narrow and walking straight through what
+  may be a hub. An earlier version only recorded `unmeasured` without
+  consuming it, so a batch call that spent its shared popularity budget on
+  earlier funders could walk an untested later one past a real hub. A later
+  one set it only when the budget counter had not moved, which missed a first
+  page that threw after taking from the budget: a 429 on the hub's probe read
+  as narrow with 0 recipients, and the walk named the hub's own funder as the
+  origin. `probePopularity` reads `Popularity.unmeasured` directly.
 - **A hub origin is not re-measured with `measureFanout`.** Its 300-transaction
   bidirectional window can classify a 60-recipient distributor as `narrow`,
   which restores the reading the stop exists to prevent. For shared funders the
-  probe's verdict overrides the interpretation, not the measured numbers.
+  probe's verdict sets both the classification and the interpretation, and
+  never the measured numbers: a funder the window calls `narrow` is reported
+  `distributor` with a `classification_basis`, and a `hub` keeps its own
+  reading. Overriding the interpretation alone printed `narrow` beside "weak
+  on its own" for the walrus claim-farm funder `0xb4313964…`.
 - **A chain counts toward `shared_funders` only up to the first funder that is
   itself a subject.** Past that point it is the other subject's ancestry,
   already counted under its own result. Counting it again made one chain read
@@ -819,6 +929,131 @@ carries a cap, and decimals was an integer every time.
 registry entry is whatever the minter wrote and an impostor can write one; the
 curated entry was reviewed.
 
+### `coinScale` resolves through one tier a caller can warm
+
+`src/utils/valuation.ts`'s `coinScale(coinType)` is the ONE resolver every
+coin-amount formatting path shares (`formatCoinAmount`, `get_transaction`'s
+`token_flow`, `find_funding_sources`, `summarize_address_flows`, `trace.ts`).
+It answers by curated registry, then by a live `CoinMetadata` read if
+`prefetchCoinScale(coinTypes)` warmed one for that type, then by the
+last-resort symbol guess (`assumed`, 9). `coinScale` itself never blocks on
+the network — only `prefetchCoinScale` does, and it skips any type the
+registry already answers, so warming a mostly-known set (SUI, USDC, …) costs
+nothing.
+
+**Before this tier existed, two paths disagreed about one coin.** KONG SUI
+(`0xb0c3e7ae…::kong::KONG`) declares 1 decimal in its `CoinMetadata`.
+`analyze_token` reads that directly and got it right; `get_transaction`,
+`find_funding_sources` and `summarize_address_flows` went through
+`coinScale`'s old registry-or-9 guess and printed the same coin's amounts
+10^8 too small (a 1,000,000,000 KONG grant read as "10 KONG"). Now every
+caller that prefetches gets the same answer `analyze_token` does, from the
+same underlying read.
+
+A caller that does not call `prefetchCoinScale` for a coin type it is about
+to format still reads the SAME process-wide cache every other caller warms,
+because `coinScale` has no way to tell who asked. So the tools that format
+amounts warm the types first, before the synchronous decode: `get_transaction`,
+`trace_funds` (per hop, beside the protocol-name prefetch), `get_balance`,
+`get_transaction_history` and `build_timeline` (per page), `screen_address`
+(per window), the two funding and flow summaries, the funding valuer that
+`build_wallet_edges` uses, `trace_flow_graph` and `find_flow_path` (in
+`FlowEngine.read`, per transaction), `analyze_attack_tx` and
+`summarize_incident_losses` (beside the price request), `aggregate_events`
+with `group_pnl`, `export_case`'s diagram, `classify_deposit_address` (and
+the deposit check in `get_address_fanout`), and the address balances
+`get_object` and `identify_address` list. `get_wallet_overview` reads each
+held coin's CoinMetadata itself and falls back to `coinScale` only where that
+read found none. Without the warm-up, an unlisted coin reads at an assumed
+scale in a cold process and at its real scale once another call has cached
+it: XAUm read "(unverified, assumed scale)" on every `trace_funds` hop and
+every `trace_flow_graph` label, and a 0.5 FISH first inflow changed which
+funder `build_wallet_edges` picked. Any new caller that formats or values an
+amount must call `prefetchCoinScale` first, and belongs in
+`test/tools/coin-scale-cold.test.ts`, which runs each such tool once in a
+cold process against a coin whose CoinMetadata the mock serves.
+
+**A caller that VALUES an amount must warm before it judges, not after.**
+The funding walk used to prefetch after `pickFundingTx` had applied the $0.10
+floor, which fixed the rendered amount and not the pick: 100 of a 6-decimal
+coin at $0.05 read as $0.005 and was skipped as dust, and whether a KONG
+grant counted as funding depended on whether some earlier call in the same
+process had happened to warm KONG. `fundingValuer` warms every coin the
+address received alongside the price request, and values through
+`pricingScale`.
+
+### A symbol scan is exact, not fuzzy, and can honestly find nothing
+
+`discovery.ts`'s `scanForSymbol` (behind `resolveSymbolDetailed`,
+`resolveTokenBySymbol`, `resolveTokenType`) matches a query against
+CoinMetadata's `symbol` field ONLY, case-insensitive. It used to fall back to
+a NAME-or-symbol SUBSTRING match when no exact hit turned up in the scanned
+window — which let `analyze_token {"query":"KONG"}` resolve to
+`0x009f33ec…::yungog::YUNGOG` (name "Yung Kong Khan", symbol YUNGOG) as a
+confident single answer, because its NAME merely contains "Kong". A
+substring fallback here is worse than no answer: the caller cannot tell a
+real match from a coincidence, and reports the coincidence as an
+identification. `searchTokens` (`search_token`'s fuzzy search) does its own
+substring filter and was never routed through this function.
+
+The scan's bound (`MAX_SCAN_PAGES`, object-ID order) means an exact match
+can still go unfound for a symbol nothing curates: measured live scanning for
+KONG's two symbol-exact coins, 30,257 CoinMetadata objects (600 pages) in 100
+continuous seconds found neither. The scan is therefore the LAST resort, below
+the symbol index. When it finds nothing, `resolveSymbolDetailed` returns
+`{status: "not_found", scan, index}`: an honest "could not identify this
+symbol" that says how far the scan got and which index missed, never a guess.
+A page read that fails ends the walk with `scan.failed` set to its error, and
+is a read failure, never a miss: `analyze_token` says the symbol could not be
+looked up, `search_token` reports `discovery_scan_failed`, and the partial
+list is not cached, so the next call reads again.
+
+### A symbol is answered from the synced index before the scan
+
+`src/data/coin-symbols.json` lists every coin on mainnet by its symbol
+(trimmed, lower-cased), with decimals and name. `npm run sync:coin-symbols`
+regenerates it by walking every `CoinMetadata` and every registry
+`Currency<T>`: 174,685 coins on 2026-09-26, 173,064 with CoinMetadata and
+1,621 with only a registry entry. The walk takes about 13 minutes, which is
+why no tool call can do it. `src/utils/coin-symbols.ts` reads the file on the
+first symbol lookup; it is mainnet only, since coin types embed package IDs.
+
+Resolution order in `resolveSymbolDetailed` and `resolveTokenBySymbol`: the
+curated list, then the index, then the live scan for a symbol the index lacks.
+
+- **One indexed coin resolves**, still `verified: false`, with
+  `symbol_resolution` naming the index date.
+- **Several is `ambiguous_symbol` with candidates.** Sharing is the normal
+  case: 142,152 coins share their symbol with another, and 30 use KONG.
+  `analyze_token` ranks candidates verified first, then by total supply in
+  whole coins, reading supply with one `getCoinInfo` per coin for up to 50.
+  Supply is an ordering, never evidence: an impostor can mint more than the
+  real asset. `resolveTokenBySymbol` answers null, the same refusal as a
+  curated ambiguity.
+- **Above 100 coins a symbol keeps only its count** (65 symbols, SUI alone
+  7,090). No list that long identifies a coin, and it would add about 3 MB.
+- **Coins published after the sync are the known limit.** Every answer drawn
+  from the index carries `synced_at` and `checkpoint`, and a symbol it lacks
+  goes to the live scan, whose not-found message names both.
+- `searchTokens` takes the index's matches when it has any, exact symbols
+  first, and runs the scan only when the index has none. A count-only symbol
+  that is or contains the query is a match too: `search()` returns it in
+  `unlisted`, and `search_token` names it in `unlisted_symbols` with its
+  count. Skipped silently, "nft receiv" ran the 15-second scan and reported
+  that the index had no such coin while 124 coins use `NFT RECEIVED`, and
+  "usd" said nothing about the 735 USDC and 1,093 USDT coins it left out.
+  Count-only symbols keep no names, so the scan's note says the index has no
+  listed coin whose name matches, never no coin.
+- `buildSymbolIndex` builds `symbols` without a prototype, so a coin whose
+  symbol is `__proto__` gets a key instead of setting the prototype.
+
+The file is about 13 MB, nearly all package IDs, which are 32 random bytes per
+coin that nothing compresses. Parsing it costs about 70 ms and 45 MB of heap,
+once per process, and a substring search over it about 20 ms.
+`SIZE_BUDGET_BYTES` in the script refuses a larger write. The row encoding is
+in `scripts/lib/coin-symbols-encode.mjs`, and `test/coin-symbols.test.ts`
+round-trips it through the decoder, so the two cannot drift apart.
+
 ### Address aliases: an address CAN delegate spending authority
 
 `0x2::address_alias` (state singleton at `0xa`) lets an address authorize up to
@@ -859,7 +1094,12 @@ Three rules that follow:
   a client, which is the same distinction `co_signer` already draws.
 - **Alias state is MUTABLE, so it cannot be cached like authentication.**
   `remove` and `replace_all` exist. The reasoning that lets a committee be
-  cached forever does not transfer.
+  cached forever does not transfer. The reverse delegate scan
+  (`scanAliasDelegators`) is cached for five minutes per network, while the
+  forward read (`fetchAliases`) is live, so the two can disagree inside that
+  window. Every answer resting on the scan (`alias_delegate_for`,
+  `signed_as_alias`, a never-sent caveat) carries `alias_scan_as_of`, stamped
+  when the scan read chain state and kept on a cache hit.
 - **The popularity filter is needed BEFORE clustering on it, not eventually.**
   Two keys already act for 22 owners each, well past `DEFAULT_CO_SIGNER_LIMIT`
   of 5. Clustering on aliases without that filter would link 22 unrelated
@@ -900,6 +1140,19 @@ first, since which keys sign now is the question. Every dormancy claim is
 stated against the transaction count it rests on — "never signed" over 8 and
 over 200 are different claims — and under two transactions it refuses to read
 a pattern at all.
+
+**A committee key can be one nobody holds.** A public key written by hand
+still parses and may even be a valid curve point, but finding the private key
+behind a chosen point is the discrete-logarithm problem. Two real committees
+carry one: the Volo vaults' admin 2-of-4 (member 3 is "maven", zeros, 0x01,
+zeros) and the 4-of-7 fixture (member 6 is "maven" and 27 zeros), which is one
+of the 4-of-7's two never-signing keys. `unsignableKeyReason`
+(`src/utils/multisig.ts`) flags a key holding a run of more than 7 identical
+bytes, which a generated key has with probability around 4e-16, and
+`readCommittee` sets `unsignable` on that member, so every committee a tool
+prints carries it. `analyze_multisig` reports `unsignable_members` and an
+`effective_committee` (Volo's 2-of-4 is 2-of-3), and its note does not call
+such a key cold or lost: it is dormant by construction.
 
 **Finding them.** Multisig is rare: 2 in 79,052 signatures sampled at random on
 mainnet, both from one wallet. Random checkpoint sampling is the wrong
@@ -954,7 +1207,7 @@ candidates, all eligible.
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
 | `funding_edge` | 1.0 | One address first-funded the other, and is a seed or passed the popularity check |
 | `reciprocal` | 1.0 | Value moved BOTH ways, counterparty passed the popularity check |
-| `sponsor` | 0.7 | Same gas payer |
+| `sponsor` | 0.7 (1.0 if also first-funded the address it sponsors) | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
 
 Pairs funded by the *same transaction* are weighted by how many that
@@ -993,14 +1246,93 @@ Four rules that are easy to get wrong:
   used as a `via` label and then discarded from its own cluster. Measured on
   one seed: 4 members resting on a single invisible intermediary, against 5
   with two independent bases.
+- **An unmeasured intermediary is excluded, never used.** When the shared
+  query budget runs out before a candidate funder, sponsor or reciprocal
+  counterparty can be probed at all — zero pages read, not even a partial one
+  — `Popularity.unmeasured` is set and `observed_counterparties: 0` goes to
+  `excluded_intermediaries` with a reason naming the budget, never to
+  `used_intermediaries`/`funderMembers`. An earlier version let a
+  budget-starved probe fall through to the "narrow" return path with zero
+  observed counterparties and used it exactly like a measured verdict, so a
+  1,009-recipient hub and a 251-sponsee relayer linked every seed that
+  happened to share them once the budget ran dry partway through a large
+  cohort. The reciprocal loop runs last, so it is the phase most likely to
+  find the budget empty, and a `reciprocal` edge meets the merge floor on its
+  own: it missed this check once and linked two seeds through a market maker
+  that pays 55 addresses. Each reciprocal counterparty is probed once per
+  build, whichever seeds traded with it, so it is never both measured and
+  unmeasured in one result.
+  A failed read gets the same treatment, and the reason says which it was:
+  `unmeasured` is `budget` or `read_failed`. A first SENT page that threw
+  after retries used to be reported as "Query budget ran out" with
+  `truncated: false`, advice that raising `query_budget` cannot follow. A
+  read failure now sets `truncated` and adds a note of its own.
+- **First funders are resolved for every seed before profiling spends the
+  budget.** The two used to interleave per seed — `firstFunderOf` then
+  `profileSeed`, one seed at a time — so whichever seed the shared budget ran
+  out on lost its funding edge, and which seed that was depended only on input
+  order and page counts. Measured on the Suisses drainer replay: the same call
+  linked different pairs of collectors between runs. `firstFunderOf` is cheap,
+  reads oldest-first history that cannot shift as the chain grows, and carries
+  the single most decisive signal (a seed's own funder). `profileSeed` is the
+  more expensive, lower-priority pass for sponsor and co-appearance signals.
+  Running every seed through the first before any seed reaches the second
+  makes the funding-edge signal depend only on the input, never on where a
+  shared budget happened to run out.
+- **`firstFunderOf` applies the same price rule `pickFundingTx` documents.**
+  It used to call `pickFundingTx` with no `valueUsd`, and `classifyInflow`'s
+  fallback for a missing price function ("accept rather than discard on a
+  missing dependency") then accepted ANY non-SUI coin regardless of actual
+  price — an unpriced 1-OCEAN game transfer became a wallet's first funding
+  while `find_funding_sources`, which does wire prices, correctly skipped the
+  same transfer as dust and found the real funder three hours later. Now
+  `firstFunderOf` prices the candidate coins through `fundingValuer`, the
+  same call `loadFundingStep` makes in `src/tools/funding.ts`, so the two
+  tools cannot attribute a wallet's origin to two different senders from
+  identical chain data. Bumped `FUNDING_METHOD_VERSION` to 2: a cached row
+  from the old rule is a different measurement wearing the same key.
+- **Only a first funder no price decided is cached.** A wallet's first
+  funding is fixed on chain, but which inflow COUNTS as funding turns on a
+  live price once a non-SUI coin is involved, and a price moves, lapses or
+  fails to load. The cache has no TTL, so a pick made during an outage (the
+  500 USDC funder skipped as unpriced, a later SUI sender named) was served
+  until the next version bump. `firstFunderOf` writes a pick only when every
+  inflow up to it was SUI, and recomputes the rest per call.
+  `FUNDING_METHOD_VERSION` 3 discards the rows written before this.
+- **A sponsor that also first-funded the address it sponsors is an operator,
+  not a public relayer.** `probeSponsored`'s popularity filter answers "does
+  this address sponsor strangers", which is a real, separate fact from
+  "did this address create the wallet it is paying gas for" — a poisoning
+  operator can be both a relayer to thousands AND the specific creator of the
+  seeds under examination. `paidBy` (any inbound transfer a seed's own
+  profile saw, unfiltered by the funding floor) and `sponsors` (who paid its
+  gas) come from the same `profileSeed` scan; when one address is in both for
+  a seed, a `sponsor` edge is added directly — at `funding_edge` weight, since
+  `paidBy` is unfiltered chain fact — and that address skips the popularity
+  probe for that seed entirely, seed-is-a-seed or not. Before this, a sponsor
+  that funded its lookalikes in amounts below the dust floor never appeared in
+  `first_funders` (correctly, it IS dust by that rule), so it fell straight
+  into the ordinary sponsor-popularity path, and a relayer sponsoring
+  thousands of OTHER addresses got the whole relationship discarded as noise —
+  the one link that mattered.
+- **`get_address_fanout` reads the same pair across its window.**
+  `measureFanout` counts the sponsored addresses the sponsor also paid
+  (`sponsored_and_paid_count`) and reports `sponsor_shape: "operator"` when
+  that is at least half of them, at any breadth. Read by breadth alone, the
+  poisoning operator `0x7c8e2ceb…` was a `relayer` whose sponsorship was
+  noise, while `build_wallet_edges` linked it to each lookalike it seeded. It
+  paid all 377 addresses it sponsored in 1,000 transactions; two public gas
+  stations sampled from mainnet traffic sponsored 945 and 115 and paid none.
+  `FANOUT_METHOD_VERSION` 6 drops the rows classified by breadth alone.
 - **Narrow and popular are not symmetric.** Popular is proven by what was seen.
   Narrow off an incomplete scan is provisional, because the probe reads recent
   activity while the fundings it filters are historical. `used_intermediaries`
   carries `scan_complete`. The same rule governs `sponsor_shape` in
-  `measureFanout`: `relayer` is proven, `private_sponsor` off a truncated scan
-  only means "not far enough" and carries `sponsor_shape_provisional`. Measured
-  on one mainnet sponsor, the distinct-payee count went 1 to 86 between a 100-
-  and an 800-transaction window, crossing the threshold.
+  `measureFanout`: `relayer` and `operator` are proven, and `private_sponsor`
+  off a truncated scan only means "not far enough" and carries
+  `sponsor_shape_provisional`. Measured on one mainnet sponsor, the
+  distinct-payee count went 1 to 86 between a 100- and an 800-transaction
+  window, crossing the threshold.
 - **Expansion links members to seeds in a star**, never member to member. Same
   components, far less output: a 50-member sponsor would otherwise emit 1,225
   edges that cannot merge on their own weight.
@@ -1011,6 +1343,11 @@ Four rules that are easy to get wrong:
   from full-weight co-signature are tagged `chain-derived` and the tier moved
   from a blanket top-level field onto each cluster. Weakest link: a component
   that needed one behavioural edge is `heuristic` however strong the rest looks.
+  The top-level `evidence_tier` summarises the clusters, and with none it is
+  `heuristic`: no link found is the null result of a behavioural search, and
+  "every cluster of none is chain-derived" used to report it as a chain fact.
+  A committee member whose key was written by hand (`unsignable`) gets no
+  co-signer edge at all: its address can spend nothing.
 - **A committee is evidence its members are SEPARATE parties.** That is what a
   4-of-7 treasury is for. So co-signer edges run member↔multisig in a star and
   never member↔member, and a member who cannot spend alone sits below the merge
@@ -1233,6 +1570,11 @@ often in the message payload, though. `src/utils/bridge/exits.ts`
   that emitted `InitMctpLogged` in the same transaction, because `init_order`
   is a module name DEX order books share. Mayan Swift's `OrderCreated` is read
   from Swift's own package `0x974af8e7…`, and its `hash` is the transfer id.
+  MCTP's `OrderCreated.amount_in` is **post-swap USDC**, not the trader's
+  source coin: MCTP always swaps to USDC on Sui before the CCTP burn, and the
+  amount equals the paired burn's exactly (verified on `62MTsGpC…`, a SUI
+  order whose `amount_in` reads as 335.76 USDC, not 0.336 SUI). Swift bridges
+  the source coin directly, so its `amount_in` genuinely is in its own units.
 - LayerZero V2: `messaging_channel::PacketSentEvent.encoded_packet` is the V1
   packet, `version(1) ‖ nonce(8) ‖ srcEid(4) ‖ sender(32) ‖ dstEid(4) ‖
   receiver(32) ‖ guid(32) ‖ message`. `receiver` is the destination OApp and
@@ -1245,10 +1587,13 @@ often in the message payload, though. `src/utils/bridge/exits.ts`
   `destination_address` at its native length, 20 bytes for EVM.
   `source_address` is the ITS channel, not the sender.
 - Allbridge Core: `events::TokensSentEvent` carries `destination_chain_id` and
-  `recipient_wallet_address`. The live route burns through CCTP with the same
+  `recipient_wallet_address`. The CCTP route burns through CCTP with the same
   nonce; the burn's mint recipient is where USDC lands (a token account on
   Solana), so the CCTP leg is marked `carries: "Allbridge Core"` and the
-  wallet is the beneficiary.
+  wallet is the beneficiary. The pool route names a `messenger`: 1 is
+  Allbridge's own, 2 is Wormhole, and a pool transfer through messenger 2
+  also emits a WormholeMessage from Allbridge's emitter `45a4ce72…`
+  (`6S9udfgK…`). That message is Allbridge's, with no recipient.
 - Celer cBridge: `peg_bridge::BurnEvent` carries `to_chain` (an EIP-155 id as
   a decimal string) and a 20-byte `to_addr`; `burn_id` is the transfer id.
   Celer numbers non-EVM chains in the same space (Sui is 12370001), so
@@ -1260,6 +1605,18 @@ redemption called; it is reported as `redeemed_via_contract` and never as the
 destination account. `standarizedProperties.toAddress` is used only when the
 payload could not be decoded. A CCTP burn inside a Mayan transaction mints to
 Mayan's settlement contract and carries `role: "settlement_intermediate"`.
+The Wormhole message of a Mayan order is Mayan's own order message, with no
+recipient and no token transfer, so Wormholescan never records a redemption
+for it: it carries `role: "settlement_message"`, and for Mayan MCTP its
+destination says `redemption_expected: false` instead of calling the
+transfer incomplete (the Typus order 62MTsGpC… arrived; the old wording
+said it might never have). An Allbridge pool transfer's Wormhole message is
+marked `settlement_message` the same way, and says `redemption_expected:
+false` too: Wormholescan recorded no redemption for any sampled message of
+Allbridge's emitter (sequences 0, 100, 300 and 492). Neither is listed in
+`summarize_address_flows`' `unresolved_vaas`. The response names the carrier
+once as `carried_by`, with `settled_over` and `also_exited`, by the same
+`exitCarrier` rule the flow tools count exits with.
 A decoder is pinned to the sender, never to a payload shape alone: a shape
 match on another app's payload would name a stranger as the beneficiary.
 
@@ -1378,7 +1735,7 @@ needs both to reach the end. The owner of an address balance can be an object
 (a bridge `liquidity_pool::Bank`, a DeepBook `BalanceManager`), so each ranked
 holder carries `owner_kind` from `describeAddresses`.
 
-Three ways a walk stops, and only one of them is completion. Both walks follow
+Four ways a walk stops, and only one of them is completion. Both walks follow
 the same rules:
 
 - `hasNextPage: false` — the end. `complete_ranking: true`.
@@ -1388,6 +1745,18 @@ the same rules:
   `truncated` alone on that path published a known-incomplete scan as a
   complete ranking, ranks and percentages restored.
 - The `max_scan` budget — truncation, already handled.
+- The 35s time budget (`SCAN_TIME_BUDGET_MS`), checked between pages —
+  truncation, marked `time_budget_reached` and not cached. Both token walks
+  run side by side under it (awaited with `Promise.allSettled`, so a
+  rejection in one does not leave the other paging in the background past
+  the point the caller already got an error). The caveat reports objects,
+  pages, elapsed time and the page rate the call observed, then derives the
+  cause from `max_scan` (`timeBudgetNote`) using `IDLE_PAGE_MS` and
+  `IDLE_KIOSK_PAGE_MS` (a kiosk-held NFT page resolves each kiosk, so it is
+  slower; the NFT caveat weights the two by the kiosk share it read). If
+  `max_scan` fits inside the budget at the expected rate, the endpoint was
+  slow and a retry may go deeper; if not, the caveat names a `max_scan` that
+  fits. Never assert one cause for both regimes.
 
 **`complete_ranking` means the walk reached the end, nothing more.** An object
 whose owner could not be read is a separate field (`unresolved_owners`) and its
@@ -1492,6 +1861,102 @@ scan. So the field is still used, because it is the only hint available without
 a query per kiosk and it is right about 60% of the time — and every holder it
 produced carries a `from_kiosk_owner_field` count beside the caveat. Do not
 drop those markers to tidy the payload.
+
+**A single kiosk's cap holder is now answerable directly**, without a scan.
+`src/utils/kiosk.ts`'s `resolveKioskCapHolder` finds the kiosk's creation
+transaction via `objectVersions(first: 1)` (the earliest retained version,
+one request regardless of how busy the kiosk later became — `kiosk::new()`
+always creates the `KioskOwnerCap` in that same transaction) and matches the
+cap whose `for` field names this kiosk, then reads that cap's own
+current owner. The cap is either a top-level output of that transaction or,
+when the same transaction wrapped it (`kiosk::new` and `personal_kiosk::new`
+in one PTB, the @mysten/kiosk `createPersonal` path, or a cap created inside
+another object), embedded as exactly `{ id, for }` in an object it wrote; the
+wrapped cap's own row has no output state. `get_object`, `identify_address`
+and `trace_object_history`
+all call it for a kiosk object — `get_object` only for the LATEST version,
+since the cap's current holder is not who controlled a past snapshot, and
+`trace_object_history` only attaches the result to its `current` field, never
+to `created`, a `history` row or an `owner_changes` endpoint even when they
+share the same container address: the cap's holder today is not who
+controlled the kiosk THEN. This does not replace the sale-derived scan
+above, which ranks MANY kiosks at once — reading each one's creation
+transaction is not practical at that scale.
+
+**The cap can be a top-level object OR wrapped inside another one.** A
+personal kiosk wraps its `KioskOwnerCap` in a `PersonalKioskCap` the wallet
+owns, so `object(address:)` on the cap returns null: the normal state, not a
+failure. `followCapWrappers` then looks for what holds it via the cap's own
+LAST TOUCH transaction (a kiosk can be made personal well after both
+existed). GraphQL renders a wrapped object INLINE as a nested struct, so a
+`PersonalKioskCap` reads `{ id, cap: { id, for } }`: the match is on that
+embedded struct (the cap's own `id` and `for`, then each wrapper's `id`
+beside other fields), never on a bare id string, a field name or the
+wrapper's type (published by a Mysten extension package, not `0x2`, so
+pinning an id would drift on upgrade).
+
+**A container is named only while it still holds the cap.** Moving a wrapped
+cap from one container to another writes both containers and never the cap,
+so the cap's last touch can name a container it has left: kiosk 0x34c6a1c8's
+cap was created inside a `battle::Battle` and later moved into a
+`PersonalKioskCap` by the transaction that deleted the Battle. Each container
+found is re-read with its contents, and its owner is `holder` only if those
+contents still embed the cap. Otherwise the walk continues from that
+container's own last touch, which holds either the next wrapping level or the
+cap's new container (the chain then restarts from it), up to
+`MAX_WRAP_STEPS`. A container that still exists without the cap and whose
+last write names no new one is reported as `cap_left` with a null holder,
+never as the controller. `holder` is the outermost wrapper's owner and
+`wrapped_in` lists the chain from the cap outwards; a chain that cannot be
+followed to a top-level object keeps the wrappers found and a null holder
+with `kiosk_cap_holder_note` saying so.
+`resolveKioskCapHolder` also never throws: up to 42+ sequential GraphQL reads
+means real surface for a 429 or a timeout, and a failure there degrades to
+`{ status: "lookup_failed", message }` rather than discarding the object
+answer the caller already has. `findEnclosingKiosk` does throw, so
+`trace_object_history` catches it and puts the error in `current.owner`'s
+`kiosk_cap_holder_note`; keep every kiosk read behind that tool's history
+inside a catch.
+
+**`trace_object_history` reaches a busy capability's distant transitions by
+checkpoint bisection, not by paging.** A capability mutated on every
+privileged call (a nonce, a rate limit) accumulates thousands of versions —
+measured on a Volo vault `OperatorCap`: 50 versions two days after creation,
+thousands more over the following months. Paging from either end, forward or
+backward, cannot reach a transition a bounded number of pages away. Owner is
+piecewise-constant between transitions, and `object(atCheckpoint:)`
+interpolates to the state as of the last write at or before the checkpoint
+asked for, so `findOwnerTransitions` (`src/utils/object-history.ts`) is a
+`git bisect`: split any checkpoint range whose two ends disagree, stop where
+they agree. Cost is O(transitions × log(range)), not O(versions) — a handful
+of real ownership changes found in well under a hundred reads regardless of
+how many mutation-only versions sit between them. `objectVersions` itself
+also switched direction, from `objectVersionsBefore(last:)` (backward from
+"now") to `objectVersions(first:)` (forward from the earliest retained
+version): forward paging reaches genesis in one page no matter how busy the
+object later became, and — unlike the point lookup `object(address:)` it
+replaced as the history source — still returns rows for an object that no
+longer exists, which is what let a deleted object's provenance stop erroring
+with "not found" at all. Bisection also takes a wall-clock `deadlineMs`
+beside its call-count budget: these are sequential GraphQL calls, and a slow
+endpoint can blow a client's own deadline well before the call count does.
+
+**Stopping where two probed ends agree is a real blind spot, not a
+guarantee.** An A -> B -> A round trip landing entirely between the two
+checkpoints bisection probes — a capability handed out and returned, a kiosk
+item taken out and placed back — reports zero transitions there,
+indistinguishable from an object that never moved: `findOwnerTransitions`
+cannot tell "nothing happened" from "happened and reversed" when both ends
+agree. `trace_object_history` therefore (1) computes exact owner changes over
+the shown `history` PAGE first, since it already holds every version and a
+round trip inside it is never missed that way, (2) bisects only from the
+page's LAST row to `current` — the actually-unknown gap, not from the page's
+first row, which would waste the search budget re-deriving a transition the
+page already shows — and (3) never reports a bisected span as complete.
+`more_versions_note` and `owner_change_note` say whether a search actually
+ran at all (some branches, like a busy+deleted object or a missing
+checkpoint on `current`, page the oldest versions only and never search)
+before ever claiming anything about the object's "full life".
 
 `holder_kind` is three-valued — `wallet`, `kiosk_declared`, `mixed` — because
 one address can hold some NFTs outright and others through a kiosk. Collapsing
@@ -1690,7 +2155,7 @@ the same as monitoring. Say so rather than implying otherwise.
 ### Address poisoning
 
 `address-lookalike.ts` reports two addresses close enough to be mistaken for
-one another. Four rules:
+one another. Five rules:
 
 - **Normalize before looking activity up.** The ledger is keyed by the strings
   the chain returned; the subject is whatever the caller typed, and the
@@ -1706,6 +2171,21 @@ one another. Four rules:
   comparable across coin types — 1 unit of an 18-decimal token outranks 5 SUI —
   which `funding.ts` already learned. What carries signal is "received
   nothing".
+- **First seen is not existed first.** When footprint and receipts tie, which
+  address appeared first in the result decides the pair only in the shape a
+  poisoner leaves: the later one first appears in a transaction that credited
+  the subject and credited it nothing, within `LIFECYCLE_MAX_GAP_MS` (10
+  minutes) of the earlier one, the earlier one first appears some other way
+  (being paid, in the payment the dust imitates), and the earlier one's first
+  appearance is not the result's oldest row. When both first appear paying
+  the subject, a real payer whose earlier payment is off the page and dust
+  imitating it look alike, and the pair stays unordered. Plain first-seen order named the real recipient
+  the impostor on the pinned pair when the victim paid the lookalike by
+  mistake and then re-paid the real address, and again when a page opened on
+  the dust after the payment it imitated. Measured gaps are 3.9 s on the
+  pinned case and 16 s on both lookalikes that targeted the KONG rug wallets.
+  Only `get_transaction_history` records timestamps and the subject, so only
+  it can reach this rule.
 - **Do not claim the addresses render identically.** At the 8+8 width this
   module itself renders, a 3+4 pair visibly differs. The true claim is that
   they match at both ends, which defeats a glance and a short truncation.
@@ -1713,6 +2193,13 @@ one another. Four rules:
 The rule is a floor of `MIN_PER_END` at each end, and the candidate bucketing
 uses the same width. Making the rule asymmetric without changing the bucketing
 would put a genuine pair in two buckets and report nothing.
+
+`LookalikeIndex` applies the same rule and the same buckets to addresses met
+one at a time, which is how `FlowEngine.connect` decides that a branch to an
+address rendering like one already reached is never pruned. It replaced a
+scan of every address seen so far, re-normalized on each call: quadratic in a
+batch payout's width and synchronous, so a 3,000-recipient airdrop start
+digest held the server for 14.6 s.
 
 ### Object flow: what moves that is not a coin
 
@@ -1808,6 +2295,14 @@ alone would be the guessing this project refuses, so `categorize` promotes to
 (`UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2`, `Publisher`). A protocol's
 own `AdminCap` is a capability with no claim about what it grants.
 
+`object_flow.capability_transfers` (`trace_funds`) is broader than
+`high_consequence`: it is every custody change whose `category` is
+`"capability"`, the same suffix-and-curated-type test `categorize` already
+uses. Filtering it down to `high_consequence` alone reported an empty list
+for a Volo `vault::OperatorCap` handover — a real capability handover, just
+not one of the five 0x2 types — while the hop's own `object_transfers`
+correctly named it `category: "capability"`.
+
 Base rate is low and the sampling lesson is the bridge one again: 0 object
 transfers between addresses in 700 consecutive mainnet transactions, because
 recent traffic is DeFi mutating shared objects. Sample where caps and NFTs
@@ -1861,6 +2356,18 @@ instead.
 
 A redemption of a transfer arriving on Sui is never an exit. Detection has no
 marker for one; `resolve_bridge_transfer` reports it under `*_inbound`.
+
+A **failed transaction is checked before any of this.** A Move abort reverts
+every effect but the gas charge, so a bridge call in the PTB's declared
+commands never ran — but `detectBridges` reads calls from the PTB's shape,
+which is present whether or not execution reached them. `resolve_bridge_transfer`
+reads GraphQL's `effects.status`; `FAILURE` short-circuits before any
+bridge section is built and reports `status`, `failure` (the same shape
+`get_transactions` names, via the now-exported `failureFromGraphql`) and a
+note that nothing crossed a bridge, rather than following the aborted call
+into "the funds did leave". Verified against the Typus second wallet's
+izg6h1Er…, which aborted with `INSUFFICIENT_COIN_BALANCE` inside a Mayan
+MCTP order and moved nothing but gas.
 
 There is deliberately **no heuristic tier**. Guessing that an unknown package
 looks bridge-shaped would manufacture exactly the unverifiable attribution this
@@ -1916,17 +2423,43 @@ change is likely to break:
 - **Shares are first in, first out, and that is a convention.** A node's traced
   amount goes to the transactions that moved it in order until it is used up;
   each transaction's share goes to the parties it paid in proportion to the
-  amounts. An edge carries `amount` (what moved) and `traced` (the traced part):
-  a wallet that received 400 and paid 1,000 passes on 400. Never follow the
-  full 1,000 as if it were these funds.
+  amounts. An edge carries `amount` (what the party gained or paid on chain,
+  summed over its digests) and `traced` (the traced part): a wallet that
+  received 400 and paid 1,000 passes on 400. Never follow the full 1,000 as if
+  it were these funds, and never let `traced` exceed `amount`.
 - **On a bridge exit the unpaid remainder is the exit.** Every Nemo CCTP burn
   pays its relayer a SUI gas drop, and without `bridgeExit` the USDC read as
   converted into the relayer's SUI and the graph walked off into a relayer
-  wallet instead of reaching the exit.
+  wallet instead of reaching the exit. Backward, a bridge marker does not
+  change the split: every marker `detectBridges` knows is outbound.
 - **Swap proceeds follow the traced input's part of the input.** A swap that
   spent 0.1 SUI and 18,000 USDT for 18,000 USDC did not turn the SUI into
-  18,000 USDC. `splitSpend` scales the gain by the traced coin's value share of
-  everything the holder put in.
+  18,000 USDC. `splitSpend` scales the proceeds by the traced coin's value
+  share of what the holder put in that no address took in the same coin. The
+  proceeds are the holder's own gains and what other addresses took out beyond
+  what the holder paid them in the same coin, so a PTB that swaps SUI into
+  USDC, adds USDC the holder held and pays it all out carries the swap on the
+  SUI leg and the held USDC on the USDC leg. A direct recipient of the traced
+  coin carries at most what the holder spent of it. `splitInflow` mirrors both
+  rules backward: a payer carries at most the recipient's inflow, and the rest
+  came from what went into the transaction that no address took, at the
+  address that paid it in. That is the payer's own swap input when the payer
+  swapped into the coin it paid, and the recipient's only when the recipient
+  sent the transaction. When one side of a conversion has a part with no
+  price and the other side is fully priced, that part is worth the difference
+  (`conversionWeights`), so an unpriced coin bought or sold for a priced one
+  keeps the swap's value. A transaction whose proceeds are worth less than a
+  tenth of what the holder put in, both at market prices
+  (`DUST_RETURN_RATIO`), is a deposit that returned change or dust, not a
+  swap: `splitSpend` converts only the part of the outflow the proceeds are
+  worth, and the rest is `consumed`. A transaction that swaps without a
+  deposit, stake, loan, lock or liquidity add is exempt: a dump into a thin
+  pool sells far below the hourly price and still converts in full.
+  `splitInflow` mirrors the rule: inputs worth
+  less than a tenth of what the conversion produced are a fee paid on a
+  withdrawal, so they explain only their own worth of the inflow and the rest
+  is `source`. A backward swap is not exempt, so an exploit that drains a pool
+  through a swap-named call still ends at the pool.
 - **A malicious label does not stop the graph**, and neither the start address
   nor the same actor continuing is checked against sinks, protocols or hubs. The
   shipped disclosed labels name both exploiters, so stopping there ended every
@@ -1936,11 +2469,55 @@ change is likely to break:
   through `isWatchAlert`.
 - **Level by level.** Every inflow found at one depth reaches a node before it
   is expanded. A node reached again later is expanded again from the new
-  arrival, skipping transactions already allocated to it, unless the value came
-  back to an address on its own path, which is a `cycle`.
+  arrival, skipping transactions already allocated to it, unless the value
+  left the address and came back along its own path, which is a `cycle`
+  (`returnsTo`). A swap-follow edge stays at the holder, so value converting
+  coins in place has not left: when the Volo attacker's SUI (swapped from
+  XAUm) became USDC after its USDC node was expanded, reading the address
+  alone as the path called 11.59% of the drain a cycle, though that USDC went
+  out through the same CCTP burns. Value another address passes back to the
+  start address of a coin-null address start is a `cycle` at any size, never
+  pruned, when the start node read every move in the window: that node
+  already counts every move of the address. A `coin_type` start counts only
+  its own coin, and a start node that stopped at its move limit missed some
+  moves, so there the returned value is expanded like any other arrival, and
+  `returnsTo` does not end it as a cycle at the start address either. A
+  search stopped by its cap before the last inflow of its oldest page has
+  not read every move (`scanPriorInflows`), and one whose last spend was the
+  last of its last page has (`scanForwardSpends`).
+- **An address-start root traces every coin a transaction moved, and counts a
+  conversion in place once.** Its scan reads every spend (or inflow) of every
+  coin at the address, so each transaction is split once per coin it paid out
+  (or took in), weighted by value. A later leg of the root that moves a coin
+  the address converted into in place (forward, a spend of the proceeds;
+  backward, an older inflow of the coin it paid in) already counts that
+  value. `RootPools` takes the transactions in scan order, lets each leg in a
+  coin draw on the in-place branches in that coin opened before it, and
+  `rootPlan` drops the part drawn. What no leg drew stays at the start address
+  in that coin with its share: `unspent` forward and `source` backward, or
+  `budget` when the scan stopped at its move limit. Following the whole
+  conversion to a coin node of the same address would give the drawn part a
+  second share, which that node can only end as a `cycle` once it finds the
+  root's claims. A transaction the root could not read is split from the
+  balance changes of its search row, so it draws and opens conversions like
+  any other, and ends as `read_failed` with the graph truncated whatever it
+  weighed. A row carries no events, so a bridge marker cannot be seen there:
+  when both sides are priced, the split converts only the part of the outflow
+  its proceeds are worth (`capToProceeds`). When the row itself lacks some
+  balance changes, every conversion still open when it drew may have been
+  moved by it, and what stays of those ends as `read_failed`, never as held.
+  A coin with no price is valued at the rate its draws carried before the leg
+  is split, so a conversion with no price on either side keeps the value of
+  the one it spent. A leg weighs the market USD of what it moved, then the
+  priced side of its own split, then the rate its draws carried, and a branch
+  back to the start address that carries no amount is never held.
 - **`budget` is never an ending.** Depth, node, move and read limits are
   reported as `budget` with `coverage.truncated`; `below_threshold` is the
-  pruned share, not where the money went.
+  pruned share, not where the money went. A start node has no amount to
+  cover, so when its search stops at its move or page limit no share is
+  uncovered and no `budget` share is recorded: it sets `coverage.truncated`
+  and states the limit in `coverage.partial` and in the summary of both flow
+  tools, which advise narrowing the window.
 - **A graph from one transaction follows that transaction's coins.** From the
   Cetus exploit `DVMG3B2…` (SUI and haSUI) the value goes to the second wallet
   `0xcd8962…` and the validator-signed recovery (`signer_not_sender`), with no
@@ -1949,7 +2526,9 @@ change is likely to break:
 - **Beneficiaries are read per exit from the transaction's events**, GraphQL
   first and the archive's gRPC events for a transaction GraphQL answers without
   them, through `readBridgeEvents` (the same reading `resolve_bridge_transfer`
-  uses). Exits are grouped by protocol and beneficiary account.
+  uses). Exits are grouped by protocol and beneficiary account, and a
+  transaction's beneficiaries join its exit once however many of its coins
+  reach it.
 - **`find_flow_path` joins in time order.** A forward node meets a backward node
   at the same address only when the forward side arrived no later than the
   backward side paid on toward the target. A foreign-chain target is reached
@@ -1976,6 +2555,15 @@ change is likely to break:
   fan-out, the recipient probes, co-funding denominators, deposit detection,
   screening and `summarize_address_flows` all skip it. Only a sponsor that is
   not the sender is gas-only; a self-paid sender's SUI change carries payments.
+- **A counterparty's side is read per coin.** `counterpartySides`
+  (`src/utils/fanout.ts`) calls an address a recipient when it gained a coin
+  the subject lost on net, and a sender when it lost a coin the subject gained.
+  Fan-out and the wallet-edge probe used the first of the subject's rows
+  GraphQL listed, whatever its coin, so a positive SUI row sorting first hid
+  the payee of an IKA transfer (4b4KuDfY…). The change moved stored fan-out
+  numbers, so `FANOUT_METHOD_VERSION` went to 5: a fan-out row is keyed on the
+  account alone and served for 7 days, and a rule change that leaves the
+  version alone keeps serving the old counts beside fresh ones.
 - **Screening reads `sent` windows for outgoing value and bridge exits.** An
   exploiter's wallet collects airdrop spam afterwards; the Cetus attacker's
   last 100 affected transactions contain no exit, its last 100 sent ones
@@ -2063,6 +2651,46 @@ summary, and event types. Rules a change is likely to break:
   (`src/utils/bridge/exits.ts`), the same function `resolve_bridge_transfer`
   uses; do not decode bridge events a second way here. Wormholescan is not
   called. A Mayan order's Wormhole leg is not an unresolved message.
+- **A bridge exit's `sent` is what left Sui, not the sender's whole outflow.**
+  `readExit` nets the subject's own change per coin (`netOfGas`) against every
+  other Sui address credited in the same coin in the same transaction
+  (`splitBridgeOutflow`): whatever another address on Sui was credited never
+  crossed the bridge, whatever it was for. `retained` (and `retained_on_sui`
+  in the tool's output) carries those fee and relayer legs separately, at the
+  transaction and bridge-group level. Verified on the Typus attacker's exits:
+  a 40 USDC-per-400k CCTP fee and a LayerZero relayer payment inflated `sent`
+  by 343 USDC and 8.34 SUI across 14 burns, and a Mayan leg's relayer fee
+  added 0.12 SUI on top of the 120.72 SUI that actually bridged. `screen_address`
+  (`bridgeSentPerCoin` in `src/utils/screening.ts`) shares the same split, so
+  the two tools do not drift apart on what "sent" means.
+- **One transaction is one exit, under the protocol that carried it.** A
+  Mayan MCTP order fires Mayan's, Wormhole's and CCTP's markers together.
+  `exitCarrier` (`src/utils/bridge/detect.ts`) picks the carrier from the
+  `settlesOver` relation on `BRIDGE_PROTOCOLS` (Mayan MCTP over Wormhole and
+  CCTP; Allbridge Core over CCTP on its CCTP route and over Wormhole on its
+  pool route, each route selected by which of its markers fired), then the
+  first hit. It reads markers only: `screen_address` groups before it reads
+  any event JSON, and a rule that also asked which protocol named the first
+  beneficiary filed a Sui Bridge deposit beside a CCTP burn under CCTP in
+  `summarize_address_flows` and under Sui Bridge in the screen. Only the
+  carrier's settlement legs are the exit's `route`; any other bridge in the
+  same transaction is `alsoExited` (`also_exited` in output), a transfer with
+  its own recipient, so a Sui Bridge deposit beside a Mayan order is never
+  called a leg that pays Mayan. `readExit`, `screen_address`'s
+  `bridgeExitsOf` and `resolve_bridge_transfer` all use it. Counting a hit
+  per protocol gave the Typus attacker 17 exits for 15 transactions, with the
+  Mayan order's SUI inside the CCTP total. Missing the pool route's Wormhole
+  leg filed 0x22101391…'s Allbridge transfers under Wormhole.
+- **Every beneficiary of an exit is a destination.** `screen_address` screens
+  all of `readBridgeEvents`' beneficiaries for each exit it reads, whatever
+  the carrier. `readBridgeEvents` already leaves out a settlement leg's
+  recipient (the CCTP mint to Mayan's contract, the burn carrying an
+  Allbridge transfer), so the carrier filter the screen used to apply only
+  dropped the recipient of a second bridge: a CCTP burn to an OFAC-listed
+  address beside an unrelated Wormhole message was never screened. The
+  screen reads its ten destinations from each bridge group in turn: in
+  arrival order, fourteen CCTP burns to one address used them all and left
+  the Mayan group with none.
 - **One price per coin, at the median transaction time.** The midpoint of the
   window put the Nemo attacker's prices at 12:57, three hours before the
   exploit.
@@ -2098,10 +2726,38 @@ lineage (`fetchPackageVersions`); 0x1, 0x2 and 0x3 never count as a leg.
   only; every other failure is named from `message` by
   `failureKindFromGraphql` (`src/utils/formatting.ts`), which returns
   `unknown` for a message it does not recognise rather than `MOVE_ABORT`.
+  GraphQL also prefixes a command-level failure's message with `Error in Nth
+  command, ` (1-based) — confirmed on mainnet: "Error in 1st command,
+  Insufficient coin balance for operation." The MESSAGE_KINDS patterns anchor
+  at `^` against sui-types' own text, which carries no such prefix, so every
+  command-level failure read `unknown` over GraphQL until the prefix was
+  stripped first; `get_transactions` reported `unknown` for a transaction
+  `get_transaction` (gRPC) named INSUFFICIENT_COIN_BALANCE for the same digest.
 - **An UpgradeCap is compared against the lineage root's publisher.** The caps
   `auditPackageCapabilities` finds were minted by version 1's publish; a later
   version's sender is whoever held the cap then. `analyze_package` reports
   both as `root_publisher` and `version_publisher`.
+- **A capability held by every user is not protocol authority.**
+  `AUTHORITY_NAME` (`src/utils/capabilities.ts`) matches any `key`-ability
+  struct ending `Cap`/`Admin`/`Operator`/`Owner`/`Manager`/`Authority`, which
+  also matches objects every user of a protocol holds — DeepBook v3's
+  `balance_manager::{BalanceManager, TradeCap, DepositCap, WithdrawCap}`,
+  0x2's `kiosk::KioskOwnerCap`, Suilend's `ObligationOwnerCap`. Checked live:
+  all four DeepBook types hit the 50-instance scan cap. A type past
+  `USER_HELD_MIN_INSTANCES` live instances, or that hits the scan cap, is
+  reported as a count in `user_held_types` instead of one `capabilities`
+  entry per holder, and its instances are never individually re-read with
+  CAP_STATE_QUERY — the scan that found them already read their owner live.
+  The threshold sits above Volo's vault `OperatorCap` (7 holders, a small
+  operations team, checked live): a type this size stays in `capabilities`,
+  one entry per holder, same as any other authority cap. A struct whose
+  instance scan fails outright (429, timeout) is named in
+  `incomplete_scans`, never silently read as having no live instances. So is
+  every candidate when the package's `typeOrigins` read fails: an object is
+  indexed under the version that DEFINED its struct (Volo's `OperatorCap`
+  is defined at v1 while the pinned check audits v10), so scanning the
+  requested id instead finds nothing. The origins are read once, before the
+  per-struct fan-out, through `fetchTypeOrigins`, which throws.
 - **A package upgrade can change behaviour through its linkage alone.**
   `diff_package_upgrade` reads each version's `linkage` and reports relinked
   dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no

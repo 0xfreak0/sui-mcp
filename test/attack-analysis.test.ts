@@ -16,7 +16,7 @@ import {
 import { fromGrpcTransaction } from "../src/utils/attack-read.js";
 
 /**
- * The Cetus exploit, DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x, as the
+ * Transaction DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x, as the
  * mainnet archive returned it over gRPC: every command and input, the first two
  * events, the pool and position objects and the balance changes.
  */
@@ -36,7 +36,7 @@ const HASUI = "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47
 const ATTACKER = "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06";
 const CETUS_EV = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::";
 
-/** The four liquidity events the exploit emitted after the swap, as decoded on mainnet. */
+/** The four liquidity events the transaction emits after the swap, as mainnet decodes them. */
 const LIQUIDITY_EVENTS: AttackEvent[] = [
   { index: 2, type: `${CETUS_EV}AddLiquidityEvent`, json: { pool: POOL, amount_a: "1", amount_b: "0", liquidity: "10365647984364446732462244378333008" } },
   { index: 3, type: `${CETUS_EV}RemoveLiquidityEvent`, json: { pool: POOL, amount_a: "10024321275017082", amount_b: "0" } },
@@ -89,7 +89,7 @@ describe("pairFlashLegs", () => {
   });
 
   it("pairs a borrow repaid later in the PTB (Nemo's borrow_pt_amount / repay_pt_amount)", () => {
-    // Object ids from the Nemo exploit, 19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9.
+    // Object ids from transaction 19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9.
     const PY = "0xc6840365f500bee8732a3a256344a11343936b864c144b7e9de5bb8c54224fbe";
     const MARKET = "0x7472959314b24ebfbd4da49cc36abb3da29f722746019c692407aaf6b47e9a08";
     const legs = pairFlashLegs(
@@ -189,6 +189,70 @@ describe("poolFlows", () => {
     expect(f.undecoded_events).toEqual([7]);
     expect(f.deltas.size).toBe(0);
   });
+
+  it("reads a vault's own USD value change directly, when its event names the vault but no coin amount", () => {
+    // Volo's operation::OperationValueUpdateChecked from transaction
+    // 7pTrudZb…: before 3459696699234926, after 1975074163896377, a
+    // $1,484,622.535338549 loss.
+    const VAULT = "0x79d30e223ca30e61b736b76bc9c55a6dc32bc3ad4f43bd7f361b653ab2ad38d3";
+    const f = poolFlows({
+      events: [
+        {
+          index: 0,
+          type: "0xcd86f77503a755c48fe6c87e1b8e9a137ec0c1bf37aac8878b6083262b27fefa::operation::OperationValueUpdateChecked",
+          json: {
+            vault_id: VAULT,
+            total_usd_value_before: "3459696699234926",
+            total_usd_value_after: "1975074163896377",
+            loss: "1484622535338549",
+          },
+        },
+      ],
+      objects: [],
+    })[0];
+    expect(f.pool).toBe(VAULT);
+    expect(f.deltas.size).toBe(0);
+    expect(f.recorded_loss_usd).toBeCloseTo(1484622.535338549, 6);
+    expect(f.events).toEqual([0]);
+  });
+
+  it("decodes a type-keyed swap with no pool id of its own, attributed to the transaction's single pool-shaped object", () => {
+    // Typus's lp_pool::SwapEvent as mainnet returns it (6KJvWtmr…): no
+    // pool/pool_id field, only the two coin types that moved.
+    const POOL_ID = "0x98110aae0ffaf294259066380a2d35aba74e42860f1e87ee9c201f471eb3ba03";
+    const SUI_TYPE = "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+    const XBTC_TYPE = "876a4b7bce8aeaef60464c11f4026903e9afacab79b9b142686158aa86560b50::xbtc::XBTC";
+    const f = poolFlows({
+      events: [
+        {
+          index: 0,
+          type: "0xe27969a70f93034de9ce16e6ad661b480324574e68d15a64b513fd90eb2423e5::lp_pool::SwapEvent",
+          json: { from_token_type: SUI_TYPE, from_amount: "1", to_token_type: XBTC_TYPE, actual_to_amount: "60000000" },
+        },
+      ],
+      objects: [{ objectId: POOL_ID, objectType: "0xe27969a70f93034de9ce16e6ad661b480324574e68d15a64b513fd90eb2423e5::lp_pool::LiquidityPool" }],
+    })[0];
+    expect(f.pool).toBe(POOL_ID);
+    expect(f.deltas.get(`0x${"0".repeat(63)}2::sui::SUI`)).toBe(1n);
+    expect(f.deltas.get(`0x${XBTC_TYPE}`)).toBe(-60000000n);
+  });
+
+  it("does not attribute a type-keyed swap when more than one pool-shaped object was touched", () => {
+    const f = poolFlows({
+      events: [
+        {
+          index: 0,
+          type: "0xe27969a70f93034de9ce16e6ad661b480324574e68d15a64b513fd90eb2423e5::lp_pool::SwapEvent",
+          json: { from_token_type: "0x2::sui::SUI", from_amount: "1", to_token_type: "0xabc::xbtc::XBTC", actual_to_amount: "1" },
+        },
+      ],
+      objects: [
+        { objectId: "0xaaa", objectType: "0xe279::lp_pool::LiquidityPool" },
+        { objectId: "0xbbb", objectType: "0xe279::other_pool::LiquidityPool" },
+      ],
+    });
+    expect(f).toEqual([]);
+  });
 });
 
 describe("oracleTouches", () => {
@@ -269,6 +333,45 @@ describe("aggregateIncident", () => {
   it("files a successful transaction that names no pool as unattributed", () => {
     const t = { ...tx("d9", POOL, "5"), events: [] };
     expect(aggregateIncident([t]).unattributed).toEqual(["d9"]);
+  });
+
+  /**
+   * `poolFlows` credits an id-less, type-keyed swap (Typus's
+   * `lp_pool::SwapEvent`) to the transaction's one pool-shaped object. With a
+   * second event naming a vault, the transaction is grouped under both the
+   * vault and that pool, so the pool's deltas stay in the grouping as they
+   * do in analyze_attack_tx.
+   */
+  it("groups a type-keyed swap under the pool its deltas are credited to, beside an event-named vault", () => {
+    const LP = "0x98110aae0ffaf294259066380a2d35aba74e42860f1e87ee9c201f471eb3ba03";
+    const VAULT = "0x79d30e223ca30e61b736b76bc9c55a6dc32bc3ad4f43bd7f361b653ab2ad38d3";
+    const XBTC = "0x876a4b7bce8aeaef60464c11f4026903e9afacab79b9b142686158aa86560b50::xbtc::XBTC";
+    const t: AttackTx = {
+      ...tx("d1", POOL, "0"),
+      events: [
+        {
+          index: 0,
+          type: "0xe27969a70f93034de9ce16e6ad661b480324574e68d15a64b513fd90eb2423e5::lp_pool::SwapEvent",
+          json: {
+            from_token_type: "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+            from_amount: "1",
+            to_token_type: XBTC.slice(2),
+            actual_to_amount: "60000000",
+          },
+        },
+        {
+          index: 1,
+          type: "0xcd86f77503a755c48fe6c87e1b8e9a137ec0c1bf37aac8878b6083262b27fefa::operation::OperationValueUpdateChecked",
+          json: { vault_id: VAULT, total_usd_value_before: "3459696699234926", total_usd_value_after: "1975074163896377" },
+        },
+      ],
+      objects: [{ objectId: LP, objectType: "0xe27969a70f93034de9ce16e6ad661b480324574e68d15a64b513fd90eb2423e5::lp_pool::LiquidityPool" }],
+    };
+    const [g] = aggregateIncident([t]).groups;
+    expect(g.pools).toEqual([LP, VAULT].sort());
+    expect(g.pool_deltas.get(XBTC)).toBe(-60000000n);
+    expect(g.pool_deltas.get(SUI)).toBe(1n);
+    expect(g.recorded_loss_usd).toBeCloseTo(1484622.535338549, 6);
   });
 });
 

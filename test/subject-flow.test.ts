@@ -52,7 +52,7 @@ const page = (nodes: unknown[]) => ({
 beforeEach(() => mockGqlQuery.mockReset());
 
 describe("get_transaction_history subject_flow", () => {
-  // FjkAurXTGnmq…: 0x1f7b27 sent the Nemo attacker 39.44771725 SUI.
+  // FjkAurXTGnmq…: 0x1f7b27 sent 0x01229b 39.44771725 SUI.
   const ATTACKER = "0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
   const SENDER = "0x1f7b27844f2c4a0262b2c481f7ab956d10ace524c5a7b06c3742cfb8701db714";
   const tx = node("FjkAurXTGnmq4uiMr1yWETvRCtYWmVpFbrD9MGSyUc3S", SENDER, [

@@ -3,12 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 /**
  * Tool-level cover for the address-poisoning wiring in `get_transaction_history`.
  *
- * One thing here is load-bearing and easy to undo: the comparison runs over
- * every address on the page, NOT over `counterparties`. A poisoning wallet
- * sends dust, so in the victim's history it is the SENDER of its transaction
- * and its balance change is negative — and counterparty extraction drops both
- * senders and negative changes, which is correct for "where did value go" and
- * would have missed every real case. Verified on mainnet.
+ * The comparison runs over every address on the page, NOT over
+ * `counterparties`. A poisoning wallet sends dust, so in the victim's history
+ * it is the SENDER of its transaction and its balance change is negative.
+ * Counterparty extraction drops both senders and negative changes, which
+ * suits "where did value go" and would hide the poisoner.
  */
 
 const mockGqlQuery = vi.fn();
@@ -143,5 +142,76 @@ describe("get_transaction_history — address poisoning", () => {
     const r = await run({ address: VICTIM });
     expect(r.address_poisoning).toBeUndefined();
     expect(r.transactions).toHaveLength(1);
+  });
+});
+
+describe("get_transaction_history — which one existed first decides only the poisoning shape", () => {
+  // Mainnet addresses: victim V, real recipient R and its lookalike L.
+  const V = "0x5e455d9536112e97a185affcb7ab5887c080f340883526487844d964babe0b93";
+  const R = "0x6b74e92cfc7890b7a4a48c933bb8da38bb2897f3962f33af20f5f7101d2d93cf";
+  const L = "0x6b745225460cf4aeebe5edb4e381474a58abf206aa34dd838eb6570edd67b3cf";
+  const OPERATOR = "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf";
+  const HOT = "0x62f36b79d7ea8ae189491854edd9318b29c75346792177b230a95f333ffa53ad";
+  const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+  const USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+
+  /** A transaction at `at`, with [owner, amount, coin] balance changes. */
+  const tx = (digest: string, sender: string, at: string, changes: [string, string, string?][]) => ({
+    digest,
+    sender: { address: sender },
+    effects: {
+      status: "SUCCESS",
+      timestamp: at,
+      balanceChanges: {
+        nodes: changes.map(([address, amount, coin]) => ({ coinType: { repr: coin ?? SUI }, amount, owner: { address } })),
+      },
+    },
+    kind: { commands: { nodes: [] } },
+  });
+
+  it("does not call the real recipient the impostor when the victim paid the lookalike first", async () => {
+    // The victim pays L by mistake, notices, then re-pays R. Both received
+    // and both appear once, so only first-seen order is left, and it would
+    // name R, first seen later in this page, the impostor.
+    mockGqlQuery.mockResolvedValue(
+      page([
+        tx("loss", V, "2026-09-09T09:30:00.000Z", [[V, "-1190000000"], [L, "1188330952"]]),
+        tx("repay", V, "2026-09-09T09:45:00.000Z", [[V, "-1190000000"], [R, "1188330952"]]),
+      ]),
+    );
+    const [pair] = (await run({ address: V })).address_poisoning.pairs;
+    expect(pair.direction_known).toBe(false);
+    expect(pair.direction_basis).toBeUndefined();
+  });
+
+  it("stays undecided when the page starts at the dust, after the payment it imitated", async () => {
+    // The trigger payment to R sits before the page. The page opens on L's
+    // dust, then the loss to L, then a later payment to R: L is first seen
+    // only because the page boundary cut off R's earlier appearance.
+    mockGqlQuery.mockResolvedValue(
+      page([
+        tx("dust", L, "2026-09-09T09:31:00.000Z", [[L, "-20", USDC], [V, "20", USDC], [OPERATOR, "-2000000"]]),
+        tx("loss", V, "2026-09-09T09:40:00.000Z", [[V, "-1190000000"], [L, "1188330952"]]),
+        tx("repay", V, "2026-09-09T09:45:00.000Z", [[V, "-1190000000"], [R, "1188330952"]]),
+      ]),
+    );
+    const [pair] = (await run({ address: V })).address_poisoning.pairs;
+    expect(pair.direction_known).toBe(false);
+  });
+
+  it("names the lookalike that first appears dusting the victim seconds after the real payment", async () => {
+    // The victim's history as mainnet returns it: the lookalike's first row
+    // is its 20-raw-USDC dust, 3.9 s after the payment to R, with the
+    // operator paying gas.
+    mockGqlQuery.mockResolvedValue(
+      page([
+        tx("DAQuKgGF", HOT, "2026-09-09T17:51:11.710Z", [[HOT, "-1189350000"], [V, "1187350000"]]),
+        tx("FGKEgbqE", V, "2026-09-09T17:54:29.969Z", [[V, "-209800000", USDC], [R, "209800000", USDC], [V, "-2000000"]]),
+        tx("FH4S9fEm", L, "2026-09-09T17:54:33.917Z", [[L, "-20", USDC], [V, "20", USDC], [OPERATOR, "-2000000"]]),
+        tx("8Z4iMqvG", V, "2026-09-09T18:18:25.063Z", [[V, "-1190330952"], [L, "1188330952"]]),
+      ]),
+    );
+    const [pair] = (await run({ address: V })).address_poisoning.pairs;
+    expect(pair).toMatchObject({ established: R, suspect: L, direction_known: true, direction_basis: "lifecycle" });
   });
 });

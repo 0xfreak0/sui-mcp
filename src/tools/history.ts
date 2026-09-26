@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { ALIAS_AUTH_SAMPLE, aliasScanAsOfClause, findAliasSignedTransactions, type AliasSignedLookup } from "../utils/identity.js";
 import { numArg, addressArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
+import { prefetchCoinScale } from "../utils/valuation.js";
 import { batchResolveNames } from "../utils/names.js";
 import { adaptCommands, adaptBalanceChanges } from "../utils/gql-adapters.js";
 import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
@@ -23,6 +25,14 @@ import {
 } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { foldRepeats } from "../utils/formatting.js";
+
+/**
+ * Counterparties listed per row. A mass payout names every recipient as a
+ * counterparty, and each listed address adds a SuiNS lookup and grows the page.
+ * The row keeps the count and points at get_transaction, which lists every
+ * balance change.
+ */
+const COUNTERPARTIES_PER_ROW = 25;
 
 interface GqlTransactionNode {
   digest: string;
@@ -61,7 +71,7 @@ const HISTORY_QUERY = `
 export function registerHistoryTools(server: McpServer) {
   server.tool(
     "get_transaction_history",
-    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet: protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI') and token flow for each transaction. Newest first by default; `order: 'oldest'` starts from the address's first transaction instead. Each page reports its `order` and the `oldest_shown`/`newest_shown` timestamps; pass `next_cursor` back as `cursor` with the same `order` to continue. Rows are decoded from each transaction's complete balance changes and commands. `address_poisoning` is checked over the page shown, so the default page covers recent activity. Each row's `subject_flow` is the queried address's own signed balance change per coin, with formatted amounts and coin_verified; `token_flow` is the transaction sender's, so on a transfer this address received it shows the sender's outflow. Prefer this over query_transactions when exploring what a wallet has been doing.",
+    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet: protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI') and token flow for each transaction. Newest first by default; `order: 'oldest'` starts from the address's first transaction instead. Each page reports its `order` and the `oldest_shown`/`newest_shown` timestamps; pass `next_cursor` back as `cursor` with the same `order` to continue. Rows are decoded from each transaction's complete balance changes and commands. `address_poisoning` is checked over the page shown, so the default page covers recent activity. Each row's `subject_flow` is the queried address's own signed balance change per coin, with formatted amounts and coin_verified; `token_flow` is the transaction sender's, so on a transfer this address received it shows the sender's outflow. `counterparties` names up to 25 addresses that received value in the row, with `counterparty_count` when there were more. Prefer this over query_transactions when exploring what a wallet has been doing. `signed_as_alias`, when present, lists transactions this address signed as an 0x2::address_alias delegate for another wallet; the page above cannot show them, because their sender is the other wallet. Which wallets name this address comes from a scan reused for up to five minutes, and `alias_scan_as_of` says when it read the chain. `signed_as_alias_unavailable` marks a scan that did not finish, including beside rows it did find.",
     {
       address: addressArg().describe("Sui wallet address (0x...)"),
       limit: numArg()
@@ -86,7 +96,22 @@ export function registerHistoryTools(server: McpServer) {
         ...orderedPageArgs(direction, limit, cursor),
       };
 
-      const data = await gqlQuery<GqlTransactionsResponse>(HISTORY_QUERY, variables);
+      const [data, aliasLookup] = await Promise.all([
+        gqlQuery<GqlTransactionsResponse>(HISTORY_QUERY, variables),
+        // `affectedAddress` never surfaces a transaction this address only
+        // signed for someone else through 0x2::address_alias: the sender in
+        // it is the owner it acted for, and an alias signer need not be a
+        // balance-change party. Read separately from the page above, and
+        // never able to say it is exhaustive; the note below states the
+        // bound. Same content on every page of the same address, so it only
+        // runs on the first page rather than re-scanning every
+        // `AddressAliases` object on each cursor page too.
+        cursor
+          ? Promise.resolve(null)
+          : findAliasSignedTransactions([address]).catch(
+              (): AliasSignedLookup => ({ matches: new Map(), delegateFor: new Map(), status: "failed" }),
+            ),
+      ]);
       const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
       // Balance changes and commands arrive 50 to a page. A transaction with
       // more is completed here, before anything is decoded from it.
@@ -101,22 +126,24 @@ export function registerHistoryTools(server: McpServer) {
       // Resolve Move Registry names for every unknown package on this page in a
       // single request, before the synchronous decode pass below. Doing it
       // per-transaction inside the map would mean one round trip per tx.
-      await prefetchProtocolNames(
-        completed.flatMap((c) => collectPackageIds(adaptCommands(c.commands))),
-      );
+      // Coin scales too: the decode formats every amount at its coin's own
+      // decimals, and a coin no curated list knows needs its CoinMetadata read.
+      await Promise.all([
+        prefetchProtocolNames(completed.flatMap((c) => collectPackageIds(adaptCommands(c.commands)))),
+        prefetchCoinScale(completed.flatMap((c) => c.balanceChanges.flatMap((b) => (b.coinType?.repr ? [b.coinType.repr] : [])))),
+      ]);
 
       // First pass: decode transactions and extract counterparty addresses
       const allCounterpartyAddresses = new Set<string>();
 
       // Every address that appears on this page, with how much of a footprint
       // it has here. Address poisoning is checked over this set rather than
-      // over `allCounterpartyAddresses`, and the difference is the whole
-      // finding: a poisoning wallet SENDS dust, so in the victim's history it
-      // is the sender of its transaction and has a negative balance change.
-      // The counterparty extraction below drops senders and negative changes,
-      // which is right for "where did value go" and would have missed every
-      // real case. Verified on mainnet: the lookalike was the sender.
-      const ledger = new ActivityLedger();
+      // over `allCounterpartyAddresses`: a poisoning wallet SENDS dust, so in
+      // the victim's history it is the sender of its transaction and has a
+      // negative balance change. The counterparty extraction below drops
+      // senders and negative changes, which suits "where did value go" and
+      // would hide the poisoner.
+      const ledger = new ActivityLedger(address);
 
       const decodedNodes = page.nodes.map((node, i) => {
         const sender = node.sender?.address;
@@ -130,39 +157,35 @@ export function registerHistoryTools(server: McpServer) {
 
         const appearances: Appearance[] = sender ? [{ address: sender }] : [];
 
-        // Extract counterparties: addresses with positive balance changes that aren't the sender
-        const counterpartyAddrs: string[] = [];
+        // Counterparties: addresses other than the sender that gained value,
+        // in the order of the balance changes.
+        const received = new Set<string>();
         for (const bc of balanceChangeNodes) {
           const addr = bc.owner?.address;
-          const amount = bc.amount;
-          if (addr) {
-            let value = 0n;
-            try {
-              value = BigInt(amount ?? 0);
-            } catch {
-              // A malformed amount costs this address its received total, never
-              // the whole call. `trace.ts` guards the same conversion.
-            }
-            appearances.push({ address: addr, amount: value });
+          if (!addr) continue;
+          let value = 0n;
+          try {
+            value = BigInt(bc.amount ?? 0);
+          } catch {
+            // A malformed amount costs this address its received total, never
+            // the whole call. `trace.ts` guards the same conversion.
           }
-          if (addr && addr !== sender && amount && BigInt(amount) > 0n) {
-            if (!counterpartyAddrs.includes(addr)) {
-              counterpartyAddrs.push(addr);
-              allCounterpartyAddresses.add(addr);
-            }
-          }
+          appearances.push({ address: addr, amount: value });
+          if (addr !== sender && value > 0n) received.add(addr);
         }
+        const counterpartyAddrs = [...received].slice(0, COUNTERPARTIES_PER_ROW);
+        counterpartyAddrs.forEach((addr) => allCounterpartyAddresses.add(addr));
 
-        ledger.observe(appearances);
+        ledger.observe(appearances, node.effects?.timestamp);
 
-        return { node, sender, decoded, counterpartyAddrs, balanceChanges: balanceChangeNodes };
+        return { node, sender, decoded, counterpartyAddrs, counterpartyCount: received.size, balanceChanges: balanceChangeNodes };
       });
 
       // Batch-resolve SuiNS names for all counterparty addresses
       const nameMap = await batchResolveNames([...allCounterpartyAddresses]);
 
       // Second pass: build output with counterparties
-      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs, balanceChanges }) => ({
+      const transactions = decodedNodes.map(({ node, sender, decoded, counterpartyAddrs, counterpartyCount, balanceChanges }) => ({
         digest: node.digest,
         timestamp: node.effects?.timestamp ?? null,
         sender: sender ?? null,
@@ -179,6 +202,12 @@ export function registerHistoryTools(server: McpServer) {
           address: addr,
           name: nameMap.get(addr) ?? null,
         })),
+        ...(counterpartyCount > counterpartyAddrs.length
+          ? {
+              counterparty_count: counterpartyCount,
+              counterparties_note: `The first ${counterpartyAddrs.length} of ${counterpartyCount} addresses that received value, in balance-change order. get_transaction on this digest lists every balance change.`,
+            }
+          : {}),
       }));
 
       // The subject leads the comparison set because it is the address a
@@ -204,6 +233,13 @@ export function registerHistoryTools(server: McpServer) {
           : [],
       );
 
+      const aliasSignedRows = [...(aliasLookup?.matches.get(address) ?? [])].sort((a, b) =>
+        (b.timestamp ?? "").localeCompare(a.timestamp ?? ""),
+      );
+      const aliasAsOf = aliasLookup?.scanReadAt !== undefined ? new Date(aliasLookup.scanReadAt).toISOString() : null;
+      const aliasAsOfClause = aliasAsOf ? ` ${aliasScanAsOfClause(aliasAsOf)}` : "";
+      const aliasScanPartial = aliasLookup !== null && aliasLookup.status !== "complete";
+
       const result = {
         address,
         order: direction,
@@ -217,6 +253,26 @@ export function registerHistoryTools(server: McpServer) {
             }
           : {}),
         ...(poisoning ? { address_poisoning: poisoning } : {}),
+        ...(aliasSignedRows.length > 0
+          ? {
+              signed_as_alias: aliasSignedRows.map((a) => ({
+                digest: a.digest,
+                owner: a.owner,
+                timestamp: a.timestamp ?? null,
+                scheme: a.authentication.scheme,
+              })),
+              signed_as_alias_note: `Not part of the page above: this address is the transaction's signer through 0x2::address_alias, not its sender, so affectedAddress does not surface these. Found by checking the most recent ${ALIAS_AUTH_SAMPLE} sent transactions of ${aliasScanPartial ? "each owner the scan reached whose alias set names this address (see signed_as_alias_unavailable)" : "every owner whose alias set names this address"}; an owner with more sent transactions than that since delegating may have an earlier alias-signed transaction beyond this list. Use get_transaction on each digest for full detail.${aliasAsOfClause}`,
+            }
+          : {}),
+        ...(aliasScanPartial
+          ? {
+              signed_as_alias_unavailable:
+                aliasSignedRows.length === 0
+                  ? `The scan for transactions this address signed as an address alias could not fully complete (a request failed, or the on-chain AddressAliases scan was capped), so the absence above is not proof it never signed one. Retry, or use identify_address for more detail.${aliasAsOfClause}`
+                  : `The scan for transactions this address signed as an address alias could not fully complete (a request failed, or the on-chain AddressAliases scan was capped), so signed_as_alias may be incomplete: an owner the scan did not reach may hold more. Retry for the full list.${aliasAsOfClause}`,
+            }
+          : {}),
+        ...(aliasAsOf && (aliasSignedRows.length > 0 || aliasScanPartial) ? { alias_scan_as_of: aliasAsOf } : {}),
         has_next_page: page.has_next_page,
         next_cursor: page.next_cursor,
       };

@@ -24,7 +24,7 @@ describe("address-balance writes are not object changes", () => {
   /**
    * CD2e4… redeemed 1951 MIST from the sender's address balance and sent it to
    * another address. Effects list two ACCUMULATOR_WRITE entries and GraphQL
-   * `objectChanges` is empty; the count used to say two objects changed.
+   * `objectChanges` is empty, so no object changed.
    */
   it("counts no objects for a transaction that only moved address balances", () => {
     expect(summarizeObjectChanges(withdrawAndSend.changedObjects)).toEqual({
@@ -137,8 +137,8 @@ describe("gas source", () => {
 
 describe("created_for", () => {
   /**
-   * 8eHgw5…: Cetus's multisig published `message_from_cetus` and minted a
-   * `MessageFromCetus` NFT to each exploiter address. The Display, UpgradeCap
+   * 8eHgw5…: a multisig published `message_from_cetus` and minted a
+   * `MessageFromCetus` NFT to each of several addresses. The Display, UpgradeCap
    * and Publisher stayed with the sender and are not deliveries.
    */
   it("lists objects minted to someone other than the sender", () => {

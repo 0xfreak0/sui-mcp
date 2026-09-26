@@ -25,9 +25,8 @@ const { addSessionLabel, removeSessionLabel } = await import("../src/utils/label
 /**
  * findNextForward / findPriorInflow are not exported, so this drives them
  * through the registered tool and asserts on the GraphQL query they issue and
- * the hop they pick. The query *is* the contract — which filter and which
- * checkpoint bound — and three bugs lived in exactly that contract while the
- * pure hop-selection function was fully tested.
+ * the hop they pick. The query *is* the contract (which filter and which
+ * checkpoint bound), and the pure hop-selection tests do not cover it.
  */
 const tools = new Map<string, Function>();
 registerTraceTools({
@@ -98,8 +97,8 @@ async function run(args: Record<string, unknown>) {
 
 describe("findNextForward", () => {
   it("filters on sentAddress, not affectedAddress", async () => {
-    // "The next transaction AFFECTING R" includes anyone paying R. Following
-    // that attributed a third party's transaction to the subject.
+    // "The next transaction affecting R" includes anyone paying R. Following
+    // that would attribute a third party's transaction to the subject.
     await run({ digest: START, direction: "forward", hops: 2 });
 
     const [query, vars] = nextTxCalls()[0];
@@ -109,8 +108,8 @@ describe("findNextForward", () => {
   });
 
   it("asks from cp-1 so a same-checkpoint spend is not skipped", async () => {
-    // afterCheckpoint is exclusive — verified against mainnet. Same-checkpoint
-    // forwarding is what a script does: the adversarial case.
+    // afterCheckpoint is exclusive. Same-checkpoint forwarding is what a
+    // script does, and it is the adversarial case.
     await run({ digest: START, direction: "forward", hops: 2 });
     expect(nextTxCalls()[0][1].afterCheckpoint).toBe(CP - 1);
   });
@@ -122,8 +121,8 @@ describe("findNextForward", () => {
   });
 
   it("follows the next transaction that moves the tracked coin, not the next one sent", async () => {
-    // A Binance hot wallet's next transaction moved 2.7M CETUS, and the trace
-    // reported it as the continuation of the SUI it had received.
+    // The recipient's next transaction moves CETUS rather than the SUI it
+    // received, so it does not continue the trace.
     const unrelated: HopSpec = {
       digest: "0xcetus",
       sender: RECIPIENT,
@@ -207,9 +206,8 @@ describe("findPriorInflow", () => {
   });
 
   it("takes the most recent inflow, not the oldest transaction in the window", async () => {
-    // The old code took the first element of an ascending `last: 5` page: the
-    // address's own outflow, whose sender is the address itself, which then
-    // reported a false cycle. FjkAur… on mainnet.
+    // The page is ascending, so its first element is the address's own older
+    // outflow, and following that would report a false cycle.
     route([hop1, ownOutflow, funding], () => [ownOutflow, funding, hop1]);
     const data = await run({ digest: START, direction: "backward", hops: 3 });
     expect(data.hops[1].digest).toBe("0xfunding");
@@ -252,8 +250,8 @@ describe("trace_funds — how a hop ends", () => {
   });
 
   it("stops, and says so, at a transaction its sender did not sign", async () => {
-    // B2eGLFo… moved 24M SUI out of a Cetus attacker address under a 31-of-64
-    // multisig's signature; the trace attributed the recovery to the attacker.
+    // The hop's signature derives to a multisig other than the sender, so its
+    // movements are not the sender's own.
     const signer = FIXTURES.ms_2of3;
     const recovery: HopSpec = { ...hop1, signatures: signer.signatures };
     route([recovery], () => []);
@@ -313,8 +311,8 @@ describe("trace_funds — how a hop ends", () => {
   });
 
   it("follows value into a wallet labelled malicious, and stops at an exchange", async () => {
-    // The shipped labels name exploiters, and the attacker is the wallet whose
-    // money is being followed: stopping there ended every exploit trace at hop 1.
+    // The bundled labels name exploiters, and the attacker is the wallet whose
+    // money is being followed, so a malicious label must not end the trace.
     route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
     addSessionLabel(RECIPIENT, { label: "Exploiter", category: "malicious" }, false);
     try {
@@ -328,5 +326,93 @@ describe("trace_funds — how a hop ends", () => {
     } finally {
       removeSessionLabel(RECIPIENT);
     }
+  });
+  it("does not use the flow-graph's 'other arrival' wording for its own same-checkpoint revisit guard", async () => {
+    // A pays B (D1), B pays it straight back to A in the same checkpoint
+    // (D2). trace_funds' own hard-skip keeps A's forward search from
+    // rediscovering D1 as "the next spend" a second time, and A has sent
+    // nothing else, so the funds are unspent. There is no graph and no
+    // other arrival for "already accounted for elsewhere" to point to.
+    const back: HopSpec = {
+      digest: "0xback",
+      sender: RECIPIENT,
+      checkpoint: CP,
+      changes: [[RECIPIENT, "-1000000000"], [ACTOR, "1000000000"]],
+    };
+    route([hop1, back], (q, vars) => {
+      if (!q.includes("sentAddress")) return [];
+      if (vars.address === RECIPIENT) return [back];
+      if (vars.address === ACTOR) return [hop1];
+      return [];
+    });
+    const data = await run({ digest: START, direction: "forward", hops: 3 });
+    expect(data.hops.map((h: { digest: string }) => h.digest)).toEqual([START, "0xback"]);
+    // hop1 is the transfer that sent the funds away before they came back:
+    // it predates the receipt and moved 1 SUI, so it is not counted as a
+    // later transaction that "moved nothing".
+    expect(data.stop_reason).toMatch(/has not sent a transaction since receiving the funds/);
+    expect(data.stop_reason).toMatch(/The funds are still there/);
+    expect(data.stop_reason).not.toMatch(/has sent 1 transaction/);
+    expect(data.stop_reason).not.toMatch(/other arrival/);
+    expect(data.stop_reason).not.toMatch(/already counted/);
+  });
+
+  it("still counts a later transaction the actor sent that moved nothing, beside the revisit guard", async () => {
+    const back: HopSpec = {
+      digest: "0xback",
+      sender: RECIPIENT,
+      checkpoint: CP,
+      changes: [[RECIPIENT, "-1000000000"], [ACTOR, "1000000000"]],
+    };
+    // A later call ACTOR sent that moved no SUI beyond its own gas.
+    const call: HopSpec = { digest: "0xcall", sender: ACTOR, checkpoint: CP + 1, netGas: 1_000_000, changes: [[ACTOR, "-1000000"]] };
+    route([hop1, back, call], (q, vars) => {
+      if (!q.includes("sentAddress")) return [];
+      if (vars.address === RECIPIENT) return [back];
+      if (vars.address === ACTOR) return [hop1, call];
+      return [];
+    });
+    const data = await run({ digest: START, direction: "forward", hops: 3 });
+    expect(data.stop_reason).toMatch(/has sent 1 transaction\(s\) since receiving the funds and none of them moved SUI/);
+  });
+});
+
+describe("trace_funds — residual (received more than the followed hop moved)", () => {
+  it("reports how much stayed at the holder when a hop moves only a slice of what it received", async () => {
+    // RECIPIENT got 1000 (hop1) but only sent 100 on (hop2, 10%): the other
+    // 900 stayed at RECIPIENT, and this trace does not follow it further.
+    const partialSpend: HopSpec = {
+      digest: "0xpartial",
+      sender: RECIPIENT,
+      checkpoint: CP,
+      changes: [
+        [RECIPIENT, "-100000000"],
+        [OTHER, "100000000"],
+      ],
+    };
+    route([hop1, partialSpend], (q) => (q.includes("sentAddress") ? [partialSpend] : []));
+    const res = await traceFunds({ digest: START, direction: "forward", hops: 2 });
+    const data = JSON.parse(res.content[1].text);
+
+    expect(data.hops[1].residual).toEqual({
+      coin_type: SUI,
+      amount: "900000000",
+      received: "1000000000",
+      moved: "100000000",
+      note: expect.stringContaining("stayed at"),
+    });
+    // In the prose summary as well as the structured payload: a residual
+    // that only shows up in JSON is a warning nobody reads before concluding
+    // "the trace stopped here" means "the money stopped here".
+    expect(res.content[0].text).toMatch(/held back/);
+    expect(res.content[0].text).toMatch(/not followed by this trace/);
+  });
+
+  it("does not flag a hop that moves everything it received", async () => {
+    // The default fixture: RECIPIENT forwards its whole 1000 (minus gas) to
+    // OTHER. Nothing should read as held back.
+    route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 2 });
+    expect(data.hops[1].residual).toBeUndefined();
   });
 });

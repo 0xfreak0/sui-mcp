@@ -114,7 +114,7 @@ Do not read a cluster as having cleared a two-signal bar; read the edges.
 | `cofunded` | Same first funder, and that funder is not a service |
 | `funding_edge` | One address sent the first funding that made the other exist |
 | `reciprocal` | Value moved **both** ways, and the counterparty is not a service |
-| `sponsor` | Same gas payer — 0.7, cannot merge alone |
+| `sponsor` | Same gas payer — 0.7, cannot merge alone. 1.0 when the sponsor also sent the address its first coin: that is an operator, not incidental gas payment, and merges alone |
 
 Three fields decide how much weight a cluster carries:
 
@@ -130,12 +130,19 @@ Three fields decide how much weight a cluster carries:
   wallet it signs for, and you may write that. It says nothing about whether
   those wallets share an owner, so do not cluster on it.
 
+An intermediary the shared query budget ran out on before it could be probed
+is reported in `excluded_intermediaries` too, distinct from one measured and
+found popular: the reason says "not measured" rather than naming a limit. It
+is never `used_intermediaries`: an unread popularity is not the same claim as
+a narrow one, and a budget-starved probe must never quietly pass as measured.
+
 ## A coin's symbol is not its identity
 
-8,008 mainnet coins share a symbol with another. 585 claim `SUI`, 100 claim
-`DEEP`. The imitators are named to be mistaken, for example "Sui v2 (migrate
-asset: suiv2.com)", and nothing cheap tells them apart: the fake USDC's supply is
-LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
+142,152 of the 174,685 coins on mainnet share their symbol with another
+(September 2026). 7,090 claim `SUI`, 1,260 claim `DEEP`. The imitators are
+named to be mistaken, for example "Sui v2 (migrate asset: suiv2.com)", and
+nothing cheap tells them apart: the fake USDC's supply is LARGER than
+Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
 
 - **`verified: false` means nothing vouches for this coin**, not that it is
   fake. It is still the coin the transaction moved. What you may not write is
@@ -144,10 +151,22 @@ LARGER than Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
   imitator reads exactly like a trace through the real asset.
 - **`assumed scale` means the amount itself may be wrong.** Decimals for an
   unverified coin are a guess; 47 of 289 imitators declare a different scale
-  from the coin they imitate, one of them by 10^9.
+  from the coin they imitate, one of them by 10^9. The tools read a coin's
+  `CoinMetadata` before formatting it, so the mark appears only for a coin
+  with none to read, or when that read failed and a rerun may succeed.
 - **An ambiguous symbol is an answer.** Several legitimate coins share `USDC` —
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
+- **A symbol nothing curates lists every coin that uses it, up to 100.** 30
+  coins use `KONG`; `analyze_token` returns them all as `candidates`, verified
+  first and then by supply, from a symbol index synced from every
+  `CoinMetadata` and coin registry entry. Above 100 coins the index keeps only
+  the count: `analyze_token` returns the count and no candidates, and
+  `search_token` names such symbols in `unlisted_symbols` (124 coins use
+  `NFT RECEIVED`) without listing their coins. The index has a date (`symbol_index.synced_at`): a coin
+  published after it is missing from the list, and is found only by a bounded
+  live scan that says how far it got. Supply orders the list and proves
+  nothing: the fake USDC out-mints Circle's.
 
 ## A holder scan is not a ranking unless it finished
 
@@ -169,6 +188,10 @@ and never converges.
   reachable for coins and collections small enough to enumerate.
 - **Never compare two truncated scans.** Different budgets sample different
   objects, so a difference between them says nothing about the chain.
+- **A time-budget stop names its cause.** With `time_budget_reached`, the
+  caveat says either that the endpoint answered slower than idle, where a
+  retry later at the same `max_scan` may go deeper, or that the requested
+  depth does not fit in 35s even idle, where it names a `max_scan` that does.
 - **A holder's balance includes its address balance.** `coin_balance` and
   `address_balance` give the split. A holder with `count: 0` holds no coin
   objects at all, and `owner_kind: "object"` means the holder is an object
@@ -199,15 +222,27 @@ had a last transfer with no non-gas balance change at all.
   protocol's own `AdminCap` is flagged as a capability with no claim about what
   it grants. Read the package with `analyze_package` before asserting one.
 - **Kiosk moves are custody changes.** A kiosk-held NFT is owned by the Kiosk
-  object, so the trade reads `object -> object`. The controlling wallet is not
-  named by the movement itself; resolve it before attributing.
+  object, so the trade reads `object -> object`. `trace_object_history`,
+  `get_object` and `identify_address` name the controlling wallet directly as
+  `kiosk_cap_holder`. The kiosk's own `owner` field is self-declared and does
+  not follow the `KioskOwnerCap` transfer, so do not read it as the holder.
+  `kiosk_cap_holder` is always TODAY's holder: `trace_object_history` attaches
+  it only to `current`, never to `created`, a `history` row or an
+  `owner_changes` endpoint, and `get_object` skips it for a specific
+  `version`. Do not read either as who controlled the kiosk at a past
+  version or transaction. A personal kiosk's cap sits inside a
+  `PersonalKioskCap`, listed in `kiosk_cap_wrapped_in`, and
+  `kiosk_cap_holder` is that wrapper's owner. The wrapper has no transfer
+  function, so a thief who wraps a stolen cap this way owns the kiosk for
+  good, as the Suisse drainer did.
 - **`appeared` means the previous holder is not recorded**, which is normal
   before roughly March 2024. It is not evidence of an unwrap, and not evidence
   of a transfer. The chain did not say.
 - **A mint to someone else is a delivery.** `get_transaction` lists objects
   created for an owner other than the sender under `created_for`. A publisher
   minting NFTs straight to two wallets produces no transfer and no balance
-  change.
+  change. Coins are never in `created_for`; a drain that pays a beneficiary
+  and moves nothing else names it in `coins_delivered_to`.
 
 Funds also move without any coin object. An address balance holds funds
 credited to an address (or an object id) with no `Coin<T>` behind them:
@@ -241,10 +276,15 @@ grinds an address matching the leading and trailing characters of one the victim
 already deals with, sends dust from it, and waits for a human to copy the wrong
 row out of their own transaction history.
 
-`get_transaction_history` and `trace_funds` report `address_poisoning` when two
-addresses they touched are close enough to be mistaken for one another.
-Measured on mainnet: zero flags
-across 75 random active wallets and 265 pages of history.
+`get_transaction_history`, `trace_funds`, `trace_flow_graph` and
+`summarize_address_flows` report `address_poisoning` when two addresses they
+touched are close enough to be mistaken for one another. Measured on mainnet:
+zero flags across 75 random active wallets and 265 pages of history.
+`trace_funds` and `trace_flow_graph` also state each pair in the summary,
+and a Mermaid or CSV export carries that summary. `trace_flow_graph` and
+`find_flow_path` never prune a branch to an address that renders like one
+already reached, however small its share, since the small amount is the
+finding; a random 3+3 collision in a wide payout is kept the same way.
 
 - **The lookalike is not a counterparty.** It *sends* dust, so it appears only
   as a transaction's sender with a negative balance change. Anything that reads
@@ -255,12 +295,19 @@ across 75 random active wallets and 265 pages of history.
 - **`direction_known: false` means the roles are not assigned.** The address
   with the larger footprint is named as established, and only when the gap is
   wide enough to carry the claim: dust repeating inside one page is the normal
-  shape of this attack, so a 3-vs-1 count is not evidence. Where nothing
-  separates them, both are reported and neither is called the fake.
+  shape of this attack, so a 3-vs-1 count is not evidence. Failing that, the
+  address that received nothing is the likelier fake. In a transaction
+  history, `direction_basis: "lifecycle"` can settle it, but only for the
+  poisoner's shape: the later address first appears paying the wallet and
+  receiving nothing, within ten minutes of the other, and the other's first row
+  is not the oldest shown. First seen is not existed first: a victim who pays
+  the lookalike by mistake and then re-pays the real address shows the
+  lookalike first. Where NEITHER signal separates them, both are reported and
+  neither is called the fake.
 - **A flag is about rendering, not intent.** It says two addresses collide in
-  a truncated view. The corroboration is the lifecycle: a poisoning wallet is
-  funded, fires dust, and sweeps its change back, often inside ten seconds.
-  Check the suspect with `get_transaction_history` before writing it up.
+  a truncated view. Further corroboration: a poisoning wallet is funded,
+  fires dust, and sweeps its change back, often inside ten seconds. Check the
+  suspect with `get_transaction_history` before writing it up.
 - **A clean result covers what was read.** One page of history is not a
   statement that the wallet was never targeted; the field is absent rather than
   empty for that reason. The default page is the most recent activity; page
@@ -354,6 +401,14 @@ with the window, and on one mainnet sponsor the count went 1 to 86 between a
 `sponsor_shape_provisional` is set, raise `max_transactions` before writing
 "narrow", and never treat shared sponsorship through a relayer as a link.
 
+**An `operator` funds the wallets it sponsors.** When a sponsor also sent a
+coin to at least half the addresses it pays gas for (`sponsored_and_paid_count`),
+`sponsor_shape` is `operator` however many it sponsors. A public relayer pays
+gas for strangers it never funded. Shared sponsorship through an operator is a
+link between its wallets, the same pair `build_wallet_edges` links as an
+operator edge: the poisoning operator `0x7c8e2ceb…` paid every one of the 377
+addresses it sponsored in its last 1,000 transactions.
+
 ## Multisig
 
 `identify_address` tells you a wallet is a multisig and names its committee
@@ -370,6 +425,11 @@ plain reading gets wrong:
   `did_not_sign` is still authorised and may have signed others, so do not
   generalise from one. Use `analyze_multisig` for the wallet-level picture:
   which keys are live, which have never signed, whether the active set shifted.
+- **Some committee keys can never sign.** A member marked `unsignable` holds a
+  public key written by hand ("maven" and zeros on Volo's admin multisig), and
+  nobody holds its private key. Read the committee as `effective_committee`
+  (Volo's 2-of-4 is 2-of-3), and do not describe that member as a cold key or
+  a backup.
 - **A wallet that has never SENT cannot be classified at all.** No signature, no
   committee. `authentication: null` with a caveat means unknown, not ordinary —
   a receive-only treasury multisig looks exactly like a fresh personal wallet.
@@ -407,7 +467,9 @@ state at `0xa`). `identify_address` reports this as `aliases`.
 - **A wallet with no `AddressAliases` object has never enabled the feature**,
   which is the common case. That is an absent field, not a denial.
 - **The set is mutable.** `remove` and `replace_all` exist, so an alias is true
-  as of the read, not forever. Quote the answer against when you took it.
+  as of the read, not forever. Quote the answer against when you took it. The
+  reverse answer (`alias_delegate_for`, `signed_as_alias`) can be up to five
+  minutes older than the call; `alias_scan_as_of` is its read time.
 - **Check it before concluding a multisig committee is the only spender.** The
   committee cannot rotate; the wallet's alias set can.
 
@@ -430,6 +492,18 @@ summarize_incident_losses(digests: <265 Cetus exploit digests>)
   $193.7M across 103 priced coins; 92 more have no price, so a lower bound
   265 pool groups, largest 0x871d8a22… $68.0M
 ```
+
+- **`attacker`/`profit.address` defaults to the sender, not always the
+  beneficiary.** When no `attacker` is given and the sender's own coins show
+  it only paid gas (a key-compromise operator, or a signer acting on
+  someone's behalf), both tools default to the largest PRICED gainer over $1
+  in the same transaction(s) instead, reported in
+  `attacker_defaulted_from_sender`. A gain in a coin with no price by any
+  other non-sender blocks the default and keeps the sender, listed in
+  `unpriced_gain_candidates`, rather than naming a small priced fee wallet.
+  The largest priced gainer's own unpriced coins do not block it; its profit
+  is then a partial figure. Pass `attacker` to name a different address once
+  you know it.
 
 - **Balance changes and pool losses are chain-derived.** A pool's loss is summed
   from its own swap and liquidity events, and an event naming the pool in a
@@ -507,7 +581,7 @@ get the schema wrong in ways that fail silently.
 | Is this wallet automated? | `build_timeline` with `activity_hours` |
 | Where does this trace stop, and why? | `manage_labels` — sinks are yours to set |
 | What did this transaction do, with event values? | `get_transaction` |
-| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers`, `created_for` |
+| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers`, `created_for`, `mutated_capabilities` (a capability that authorised the call by mutating itself, not by changing hands) |
 | Did funds move without a coin object? | `get_transaction` → `address_balance_ops`, `funds_withdrawals`, `gas_source` |
 | Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
 | Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
@@ -521,20 +595,20 @@ get the schema wrong in ways that fail silently.
 | Why did this transaction fail? | `get_transaction` → `failure` (abort code, module, function) |
 | Has an issuer frozen this address? | `check_coin_restrictions` |
 | Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |
-| Is this address the one it looks like? | `get_transaction_history` and `trace_funds` → `address_poisoning` |
+| Is this address the one it looks like? | `get_transaction_history`, `trace_funds`, `trace_flow_graph` or `summarize_address_flows` → `address_poisoning` |
 | Did something move that was not a coin? | `trace_funds` → `object_flow` |
 | Who can mint / upgrade / freeze, and did that change hands? | `trace_funds` → `object_flow.capability_transfers` |
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
-| What happened between two times? | `query_transactions`, `query_events`, `build_timeline` and `aggregate_events` take ISO bounds; `get_checkpoint {timestamp}` gives the checkpoint |
-| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract`, a LayerZero `destination_oapp`, a CCTP leg marked `settlement_intermediate` and a CCTP leg that `carries` an Allbridge transfer are bridge contracts or intermediate accounts, not the recipient |
+| What happened between two times? | All four take ISO bounds or checkpoints, under different names: `query_transactions` and `query_events` as `after_checkpoint`/`before_checkpoint` (an ISO time is accepted there), `build_timeline` and `aggregate_events` as `from`/`to`. `get_checkpoint {timestamp}` gives the checkpoint |
+| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract`, a LayerZero `destination_oapp`, a CCTP leg marked `settlement_intermediate`, a Wormhole message marked `settlement_message` (a Mayan order's own message, never redeemed, or the message of an Allbridge pool transfer sent through Allbridge's Wormhole messenger) and a CCTP leg that `carries` an Allbridge transfer are bridge contracts, messages or intermediate accounts, not the recipient. `carried_by` names the one protocol the transfer went through when others settled it (`settled_over`); `also_exited` names any other bridge the transaction used, whose recipient is a separate destination |
 | Where did money arriving on Sui come from? | `resolve_bridge_transfer` on the redeeming transaction → `sui_native_bridge_inbound` / `wormhole_inbound`: origin chain and transfer id (VAA id) |
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | Who else profited in this window, and by how much? | `aggregate_events` with `module` and `group_pnl` — each sender's own balance changes in USD, multi-leg PTBs marked |
 | How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, every inflow source, top recipients, gas sponsors, bridge exits grouped by destination |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
-| Where did this object come from? | `trace_object_history` |
+| Where did this object come from? | `trace_object_history` — reaches a deleted or wrapped object (`end`), and a distant transition on a capability mutated on every privileged call, without paging through every version |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |
 | Has anything moved since I looked? | `watch_addresses` then `poll_watch` |
 | What is this address doing over time? | `build_timeline` |
@@ -601,15 +675,29 @@ ten round trips for the same data.
 ## Traps in the data itself
 
 - **Dust is not funding.** A 1-MIST spam send is not who funded a wallet, and an
-  inflow in a coin nobody prices is spam at any size. Skipped inflows appear as
-  `dust_skipped`; read them rather than assuming nothing was filtered. A wallet
-  that pays gas from an address balance can run with no qualifying inflow at
-  all; its operator then appears in `sponsored_by`, the parties that paid gas
-  for transactions it sent.
-- **A narrow reading off a truncated scan is provisional.** `classification_provisional`
-  on a fan-out, and `provisional` on a funder's popularity, mean the scan
-  stopped before the end of the address's history. The count is a lower bound,
-  and "narrow" may only mean "not far enough".
+  inflow in a coin nobody prices is spam unless it is at least 1% of the coin's
+  supply, or 0.1% from the coin's publisher, which no airdrop can give
+  thousands of wallets (a rug deployer's grant to an insider is the case). Such
+  a hop carries `unpriced_funding`. Skipped inflows appear as
+  `dust_skipped`; read them rather than assuming nothing was filtered. A hop
+  in `prices_unavailable_at` was judged while no coin price loaded, so a
+  non-SUI inflow there passed at any value; rerun before trusting it.
+  `sponsored_by` (the parties that paid gas for transactions the address sent)
+  is reported whenever there is one, not only at a dead end: a wallet can run
+  on an address balance with no qualifying inflow of its own, and a gas
+  sponsor can be the real operator even when some OTHER inflow (an
+  address-poisoning victim's own stolen payment, say) happens to clear the
+  funding floor first.
+- **A narrow reading off a truncated scan is provisional; an unread one is
+  worse.** `classification_provisional` on a fan-out, and `provisional` on a
+  funder's popularity, mean the scan stopped before the end of the address's
+  history, and the count is a lower bound. `unmeasured` means the scan read
+  nothing: `budget` when the shared popularity budget was already spent,
+  `read_failed` when its first request failed after retries. A rerun can fix
+  the second, and a bigger budget only the first. `find_funding_source` stops
+  the walk there rather than treating silence as narrow, and
+  `build_wallet_edges` reports such an intermediary in `excluded_intermediaries`,
+  never `used_intermediaries`.
 - **The gas sponsor is not the sender.** Gas folds into the payer's net SUI, so a
   raw comparison across coins picks the sponsor over the real funder.
 - **Obfuscated packages are named by their events.** A transaction calling
@@ -619,10 +707,19 @@ ten round trips for the same data.
 - **A package ID names one version.** An event's type carries the package that
   defined its struct, which is often an older version than the one called;
   `query_events` and `aggregate_events` rewrite such a type and report
-  `event_type_resolution`. A `function` or `module` filter matches calls through
-  one version only, and each version holds its own share of a protocol's calls:
-  read `function_scope` / `module_scope`, and use `all_versions: true` on
-  `query_transactions` to read the lineage as one list.
+  `event_type_resolution`. An event's emitting `module` carries the ORIGINAL
+  id before the `relocate_event_module` cutover (mainnet checkpoint
+  69,982,635 on 2024-10-17, testnet 118,397,835 on 2024-10-09, devnet at
+  genesis) and the id of the version actually CALLED from it on; the
+  filter is queried at whichever id (or both, merged, for a window spanning
+  the cutover) your window needs; read `module_scope` for how it was split.
+  From the cutover on, any one id (the original included) matches calls
+  through that version only, so query the ids in
+  `module_scope.other_version_ids` before calling a module's result complete.
+  A transaction `function` filter matches calls through one version only, and
+  each version holds its own share of a protocol's calls: read
+  `function_scope`, and use `all_versions: true` on `query_transactions` to
+  read the lineage as one list.
 - **Lists start at the newest row.** History, `query_transactions` and
   `query_events` page back from the present unless `order: "oldest"` is set;
   every page states its `order` and the `oldest_shown` / `newest_shown` times.

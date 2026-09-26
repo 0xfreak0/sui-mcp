@@ -10,7 +10,7 @@ import {
 const REAL_SUI = "0x2::sui::SUI";
 const REAL_USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
-/** Struct name says SUI; nothing vouches for it. Real one found on mainnet. */
+/** Struct name says SUI; nothing vouches for it. A mainnet type. */
 const FAKE_SUI = "0x00a3017cc5fd396c38263ec57c8f2266507ce1a737000000000000000000000f::sui::SUI";
 
 describe("coinScale", () => {
@@ -20,10 +20,9 @@ describe("coinScale", () => {
   });
 
   /**
-   * The bug this replaces: decimals were keyed on the STRUCT NAME, so any coin
-   * whose type ends `::sui::SUI` inherited SUI's 9. Measured on mainnet, 47 of
-   * 289 impostors carrying a hardcoded symbol declare different decimals —
-   * including a fake SUI with 0, which would have reported amounts 10^9 out.
+   * Decimals are never keyed on the struct name, so a coin whose type ends
+   * `::sui::SUI` does not inherit SUI's 9. An impostor can declare any
+   * decimals, and a fake SUI with 0 would put amounts 10^9 out.
    */
   it("does not give an impostor the decimals of the coin it imitates", () => {
     const scale = coinScale(FAKE_SUI);

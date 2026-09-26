@@ -1,7 +1,7 @@
 /**
  * Sui's on-chain currency registry, `0x2::coin_registry` (state at `0xc`).
  *
- * Not to be confused with `coin-registry.ts`, which is this project's CURATED
+ * Not to be confused with `coin-registry.ts`, which is this project's curated
  * list. The two answer different questions and must not be merged:
  *
  * - The curated list answers "does anyone vouch that this is the coin you
@@ -13,25 +13,23 @@
  *
  * ## Why read it
  *
- * Decimals. `analyze_token` falls back to 9 when nothing knows the scale, and a
- * wrong scale misstates every amount derived from it by orders of magnitude. 47
- * of 289 sampled impostors declare a different scale from the coin they
- * imitate, one of them by 10^9, so the coins most likely to reach that fallback
- * are the ones it is most dangerous for. A registry entry replaces the guess
- * with a fact, and where nothing knows, the caller is told the scale was
- * assumed.
+ * It records decimals. `analyze_token` falls back to 9 when nothing knows the
+ * scale, and a wrong scale misstates every amount derived from it by orders of
+ * magnitude. Impostors often declare a different scale from the coin they
+ * imitate, so the coins most likely to reach that fallback are the ones it is
+ * most dangerous for. A registry entry replaces the guess with a fact, and
+ * where nothing knows, the caller is told the scale was assumed.
  *
  * It also states whether a coin is regulated and names the cap that can freeze
  * holders, which is the same authority `check_coin_restrictions` reads.
  *
  * ## Lookup
  *
- * A `Currency` carries the coin type as a type ARGUMENT, written
+ * A `Currency` carries the coin type as a type argument, written
  * `0x2::coin_registry::Currency<0x2::sui::SUI>`, so this is a direct filtered
- * object read with no derivation to get wrong. Verified on mainnet: SUI returns
- * decimals 9, and Circle's USDC returns decimals 6 with a `Regulated` variant
- * naming its deny cap. Sampled 400 entries: the variants are `Unknown`,
- * `Regulated` and `Unregulated`, and a `Regulated` always carries a cap.
+ * object read with no derivation to get wrong. The regulated-state variants
+ * are `Unknown`, `Regulated` and `Unregulated`, and a `Regulated` entry always
+ * carries a cap.
  */
 
 import { normalizeSuiAddress } from "@mysten/sui/utils";

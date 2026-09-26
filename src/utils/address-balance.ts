@@ -23,6 +23,7 @@ import { sui } from "../clients/grpc.js";
 import { normalizeCoinType } from "./coin-registry.js";
 import { baseType, type GrpcChangedObject } from "./object-flow.js";
 import { formatCoinAmount } from "./coin-amount.js";
+import { prefetchCoinScale } from "./valuation.js";
 
 const ADDR2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
 const BALANCE_TYPE = `${ADDR2}::balance::Balance`;
@@ -81,11 +82,7 @@ export async function objectAddressBalanceFields(objectId: string): Promise<Reco
       const res = await sui.listBalances({ owner: objectId, limit: 50, cursor });
       for (const b of res.balances) {
         if (BigInt(b.addressBalance || "0") <= 0n) continue;
-        balances.push({
-          coin_type: b.coinType,
-          balance: b.addressBalance,
-          formatted: formatCoinAmount(b.addressBalance, b.coinType),
-        });
+        balances.push({ coin_type: b.coinType, balance: b.addressBalance, formatted: null });
       }
       if (!res.hasNextPage) break;
       cursor = res.cursor;
@@ -102,6 +99,9 @@ export async function objectAddressBalanceFields(objectId: string): Promise<Reco
     };
   }
   if (balances.length === 0 && !truncated) return {};
+  // Formatted once every page is in, so each coin's decimals are warmed first.
+  await prefetchCoinScale(balances.map((b) => b.coin_type));
+  for (const b of balances) b.formatted = formatCoinAmount(b.balance, b.coin_type);
   return {
     address_balances: balances,
     ...(truncated ? { address_balances_truncated: true } : {}),

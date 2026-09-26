@@ -5,14 +5,13 @@ import { gqlQuery } from "../clients/graphql.js";
  *
  * Sui's event and transaction filters bound by checkpoint, not time, so any
  * "what happened today" question starts with a conversion the caller has to do
- * by hand — probing checkpoints until one lands near midnight. This does it in
+ * by hand, probing checkpoints until one lands near midnight. This does it in
  * a handful of queries instead.
  *
  * Interpolate-then-refine rather than plain binary search: checkpoints are
- * produced at a fairly steady rate (~4.5/sec on mainnet as of writing), so a
- * linear guess lands close and the search only has to correct for drift. A pure
- * binary search over ~300M checkpoints would cost ~28 round trips; this
- * typically costs under 10.
+ * produced at a fairly steady rate, so a linear guess lands close and the
+ * search only has to correct for drift. A pure binary search over ~300M
+ * checkpoints would cost ~28 round trips; this typically costs under 10.
  */
 
 export interface CheckpointPoint {

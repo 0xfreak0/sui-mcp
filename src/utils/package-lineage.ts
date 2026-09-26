@@ -2,20 +2,18 @@
  * Which package IDs of a protocol are worth querying.
  *
  * The trap this exists to close: `src/data/protocols.json` maps package IDs to
- * protocol names for *decoding*, so it is full of historical IDs on purpose —
+ * protocol names for *decoding*, so it is full of historical IDs on purpose:
  * recognising Cetus v1 in a 2023 transaction is the point. Used as a list of
  * query targets it is actively misleading, because a package that a protocol
  * upgraded away from years ago emits nothing today. Feeding one to
  * aggregate_events returns zero events and looks like the protocol is dead.
  *
- * The answer is plural, which is the part that surprises. A Sui package upgrade
- * mints a new ID, and an event carries the ID of the version that *defined* it,
- * so a protocol that has upgraded piecemeal emits from several versions at once.
- * Measured on mainnet, three Cetus versions were live simultaneously — v12
- * emitting RemoveLiquidityEvent, v13 ClaimRefFeeEvent, v14 SwapEvent. Resolving
- * "the current package" to a single ID would silently drop two thirds of the
- * protocol's activity, which is worse than the original trap because the result
- * looks complete.
+ * The answer is plural. A Sui package upgrade mints a new ID, and an event
+ * carries the ID of the version that *defined* it, so a protocol that has
+ * upgraded piecemeal emits from several versions at once, each version
+ * emitting the event types it defined. Resolving "the current package" to a
+ * single ID would silently drop the activity of every other live version, and
+ * the result would look complete.
  */
 
 export interface PackageVersion {

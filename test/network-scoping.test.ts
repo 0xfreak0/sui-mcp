@@ -17,10 +17,10 @@ const MAINNET_DEEPBOOK =
  * Package IDs are derived from the publish transaction, so the same string on
  * another network is a different thing or nothing at all.
  *
- * Verified against the live networks: mainnet's USDC type does not exist on
- * testnet, while a real testnet USDC lives at a different type. Consulting the
- * list regardless of network got BOTH answers wrong — it vouched for a coin
- * that was absent, and refused to vouch for the genuine one.
+ * Mainnet's USDC type does not exist on testnet, while a real testnet USDC
+ * lives at a different type. Consulting the list regardless of network would
+ * get both answers wrong: it would vouch for a coin that is absent and refuse
+ * to vouch for the genuine one.
  */
 describe("curated data is mainnet-scoped", () => {
   it("vouches for a mainnet coin on mainnet", async () => {
@@ -66,7 +66,7 @@ describe("curated data is mainnet-scoped", () => {
     });
   });
 
-  /** Pre-existing: the registry named a mainnet protocol on testnet. */
+  /** The protocol registry is mainnet-scoped too. */
   it("does not name a mainnet protocol on another network", async () => {
     await runWithNetwork("mainnet", async () => {
       expect(lookupProtocol(MAINNET_DEEPBOOK)?.name).toBeTruthy();

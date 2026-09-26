@@ -5,8 +5,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  *
  * The pure reading is tested in `object-flow.test.ts`. What only shows up here
  * is the honesty of the rendered trace: a hop that handed over a capability
- * used to print `Flows: gas only`, which is the "could not look" rendered as
- * "nothing there" that this repo keeps finding.
+ * must not print `Flows: gas only`, which would render "could not look" as
+ * "nothing there".
  */
 
 const mockGqlQuery = vi.fn();
@@ -121,8 +121,8 @@ describe("trace_funds — a capability handover is not 'gas only'", () => {
     const { summary } = await run({ digest: "hop1", direction: "forward", hops: 3 });
     expect(summary).toMatch(/package::UpgradeCap/);
     expect(summary).toMatch(/publish new code/i);
-    // The recipient was previously absent from the output entirely, which is
-    // what made the trace a dead end rather than a lead.
+    // The recipient must appear in the output, or the trace is a dead end
+    // rather than a lead.
     expect(summary).toMatch(/eda2/);
   });
 
@@ -176,10 +176,8 @@ describe("trace_funds — ordinary object transfers", () => {
 
 describe("trace_funds — the archive DOES report object changes", () => {
   /**
-   * An earlier version claimed the archive could not see object changes and
-   * disclaimed object flow on every archive hop. Verified false against
-   * mainnet: for a pruned digest the archive returns `changedObjects` with the
-   * type and BOTH owners. This is that shape.
+   * For a pruned digest the archive returns `changedObjects` with the type
+   * and both owners. This is that shape.
    */
   it("reads the capability transfer out of an archive hop", async () => {
     mockGqlQuery.mockImplementation((q: string) =>
@@ -217,8 +215,8 @@ describe("trace_funds — the archive DOES report object changes", () => {
 
 describe("trace_funds — kiosk transfers are custody changes", () => {
   /**
-   * Measured against four real mainnet wallets: requiring both ends to be
-   * addresses missed 10 of 28 genuine transfers, every one of them kiosk.
+   * A kiosk-to-kiosk move is a genuine transfer, so a custody change must not
+   * require both ends to be addresses.
    */
   it("reports a kiosk-to-kiosk NFT move instead of printing gas only", async () => {
     mockGqlQuery.mockImplementation((q: string) =>
@@ -234,7 +232,7 @@ describe("trace_funds — kiosk transfers are custody changes", () => {
 });
 
 describe("trace_funds — renouncing is not a handover", () => {
-  /** 27 of 30 real UpgradeCap departures go to an unspendable address. */
+  /** An UpgradeCap sent to an unspendable address is renounced. */
   it("does not warn that control changed hands", async () => {
     mockGqlQuery.mockImplementation((q: string) =>
       noNext(q)
@@ -252,10 +250,8 @@ describe("trace_funds — renouncing is not a handover", () => {
 
 describe("trace_funds — object changes are paginated, not truncated", () => {
   /**
-   * About 1 transaction in 400 exceeds a page, and a real three-hop mainnet
-   * trace hit one with 101 changes. The connection is ordered by object id,
-   * not importance, so silently keeping the first 50 drops a capability
-   * transfer on a coin flip.
+   * The connection is ordered by object id, not importance, so silently
+   * keeping the first 50 could drop a capability transfer.
    */
   const pagedCap = (pages: number) => (q: string, v: Record<string, unknown> = {}) => {
     if (noNext(q)) return Promise.resolve({ transactions: { nodes: [] } });
@@ -313,8 +309,8 @@ describe("trace_funds — object changes are paginated, not truncated", () => {
 describe("trace_funds — a cached hop is not an archive hop", () => {
   /**
    * A row cached before object flow existed deserialises without the field.
-   * Calling that "the archive cannot see objects" was wrong twice: the source
-   * is known, and the archive can.
+   * The source is known to be the cache, and the archive reports object
+   * changes, so the caveat names the cache.
    */
   it("blames the cache, not the archive", async () => {
     mockCache.mockReturnValue({

@@ -9,7 +9,9 @@ import { checkpointChain, gqlPage } from "./helpers/service-shapes.js";
 
 const mockGqlQuery = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
-vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
+/** A coin with no CoinMetadata answers NOT_FOUND over gRPC. */
+const mockGetCoinInfo = vi.fn();
+vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo: mockGetCoinInfo } }, archive: {} }));
 vi.mock("../src/utils/names.js", () => ({ batchResolveNames: async () => new Map() }));
 vi.mock("../src/protocols/registry.js", () => ({
   prefetchProtocolNames: async () => {},
@@ -18,6 +20,7 @@ vi.mock("../src/protocols/registry.js", () => ({
 }));
 
 const { registerTimelineTools } = await import("../src/tools/timeline.js");
+const { resetLiveCoinScale } = await import("../src/utils/valuation.js");
 
 type Args = {
   addresses: string[];
@@ -68,6 +71,9 @@ const txCalls = () => mockGqlQuery.mock.calls.filter(([q]) => String(q).includes
 
 beforeEach(() => {
   mockGqlQuery.mockReset();
+  mockGetCoinInfo.mockReset();
+  mockGetCoinInfo.mockRejectedValue(Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" }));
+  resetLiveCoinScale();
 });
 
 describe("build_timeline window", () => {
@@ -138,5 +144,33 @@ describe("build_timeline window", () => {
     });
     expect(body.activity_hours[0].sample_size).toBe(4);
     expect(body.entry_count).toBe(4);
+  });
+
+  /**
+   * The decode formats amounts after each coin's own decimals are read. KONG
+   * (1 decimal, in no curated list) in a sale modelled on 5WEK9KPv… must
+   * print as 745,279,357 KONG, not as 7.45279357 KONG at an assumed scale.
+   */
+  it("formats a coin no curated list knows at its on-chain decimals", async () => {
+    const KONG = "0xb0c3e7ae67c9161273aab9a06e589c1c13479337d14c794251a97df46822f2cb::kong::KONG";
+    mockGetCoinInfo.mockImplementation(async ({ coinType }: { coinType: string }) => {
+      if (coinType === KONG) return { response: { metadata: { decimals: 1, symbol: "KONG" } } };
+      throw Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" });
+    });
+    const sale = {
+      ...txAt("5WEK9KPvK1NmZ91ZrEhYbTdzyaEz2ipzLbbmRnZs5WEA", 999_990),
+      effects: {
+        ...txAt("x", 999_990).effects,
+        balanceChanges: gqlPage([
+          { coinType: { repr: KONG }, amount: "-7452793570", owner: { address: ADDR } },
+          { coinType: { repr: KONG }, amount: "7452793570", owner: { address: `0x${"b".repeat(64)}` } },
+        ]),
+      },
+    };
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => chain(q, v) ?? txPage([sale]));
+    const { body } = await run({ addresses: [ADDR], per_address: 1 });
+    const out = JSON.stringify(body);
+    expect(out).toContain("745279357 KONG");
+    expect(out).not.toContain("assumed scale");
   });
 });

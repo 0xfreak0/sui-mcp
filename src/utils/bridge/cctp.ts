@@ -11,10 +11,6 @@
  * the destination chain on mint, so it is also the key for confirming the
  * transfer completed.
  *
- * Verified against mainnet tx 4rDEyqGebKd98mc8vpPs3E9jFXe37MhGWFN4tp2HdVvL,
- * where the decoded `mint_recipient` matched, byte for byte, the destination
- * Wormholescan independently reported for the same transfer.
- *
  * Circle also serves an attestation API. It is deliberately not called here: an
  * attestation says Circle signed the message, not that anyone claimed it, so it
  * would add a third-party dependency for weaker information than the events
@@ -28,12 +24,11 @@ export const CCTP_DEPOSIT_EVENT_SUFFIX = "::deposit_for_burn::DepositForBurn";
 export const CCTP_MESSAGE_EVENT_SUFFIX = "::send_message::MessageSent";
 
 /**
- * Circle's domain numbering — its own namespace, neither CAIP-2 nor Wormhole's.
+ * Circle's domain numbering: its own namespace, neither CAIP-2 nor Wormhole's.
  *
- * Domain 8 (Sui) and domain 3 (Arbitrum) are confirmed from mainnet data: 8
- * appears as the source domain in a Sui transaction's own message header, and
- * a domain-3 transfer's recipient matched what an independent indexer reported.
- * The rest are Circle's published assignments.
+ * Domain 8 (Sui) appears as the source domain in a Sui transaction's own
+ * message header. The rest, domain 3 (Arbitrum) included, are Circle's
+ * published assignments.
  *
  * Only domains whose chain this server can normalize for are mapped; the others
  * are named but reported by number, so an address is never filed under a chain

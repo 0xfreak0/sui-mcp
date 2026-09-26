@@ -1,0 +1,294 @@
+{
+  "slug": "poisoning-0x6b74-2026-09",
+  "kind": "address-poisoning",
+  "title": "Address poisoning loss of 1.188 SUI to a 0x6b74…b3cf lookalike, 9 September 2026",
+  "network": "mainnet",
+  "summary": "No public report names a Sui address-poisoning theft, so this case is chain-derived only. On 9 September 2026 wallet 0x5e455d95 sent 209.8 USDC to 0x6b74e92c…2d93cf. Two seconds later operator 0x7c8e2ceb seeded the lookalike 0x6b745225…67b3cf with 0.00002 USDC, and the lookalike passed that dust to the victim. The victim then tried twice to send SUI to the real address, tried once to send to the lookalike, and at 18:18:25 UTC sent 1.188330952 SUI to the lookalike. The lookalike swept it to 0x6e7113d8 with the operator paying gas. The same operator funds and sponsors tens of thousands of lookalikes. One of them, 0x5aad0452, dusted a Bybit reserve wallet on 17 September.",
+  "sources": [
+    {
+      "url": "https://suiscan.xyz/mainnet/tx/8Z4iMqvGkVDizyLXP68AmHtypXWy9BeDbFsCDfc6TcaU",
+      "publisher": "Suiscan",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "victim": "0x5e455d9536112e97a185affcb7ab5887c080f340883526487844d964babe0b93",
+    "real_recipient": "0x6b74e92cfc7890b7a4a48c933bb8da38bb2897f3962f33af20f5f7101d2d93cf",
+    "lookalike": "0x6b745225460cf4aeebe5edb4e381474a58abf206aa34dd838eb6570edd67b3cf",
+    "collector": "0x6e7113d8c9d4099a2c8aac1972b0e3ae8923ba57f619d8c251671f0c961458c0",
+    "operator": "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf",
+    "operator_funder": "0xae3f7ba925a0fdfd553c313e97e1b63f4305933a166749e197a0af14caee613f",
+    "hot_wallet": "0x62f36b79d7ea8ae189491854edd9318b29c75346792177b230a95f333ffa53ad",
+    "bybit_reserve": "0x555bf90903ad18a90fa585fbc7f4b31945964c87f341eca53df9c04bd30365f6",
+    "bybit_lookalike": "0x5aad0452e5c194ca0f9beaea408861ec8f86728d91b00ee3c98d2cbfbbee3667",
+    "deposit_tx": "FGKEgbqE4CpMuMjCNbumGWXANJv8Zb4bsSuDkbSZmcGs",
+    "seed_tx": "D2sWimffSbAe61PrG2AP4r5vvkY6L5LZeWDiJJjaqhJT",
+    "dust_tx": "FH4S9fEmTrKfwYTARbAeWiw9AhWj6NgDLDkJtuKCFVni",
+    "failed_real_tx": "HoTxYf4HP4VZYbBEh2xHTNPpEogqBZhre4AtCrxo51qG",
+    "failed_real_tx_2": "9tnD1HjP2MQY2u1E52MspzpCf5dRNpZk2qZxNwrbukMv",
+    "failed_lookalike_tx": "6JG4mGVee6AtoDtk42gp1DWUf2B7k3CE2tBhrhg86tos",
+    "loss_tx": "8Z4iMqvGkVDizyLXP68AmHtypXWy9BeDbFsCDfc6TcaU",
+    "sweep_tx": "2N68SBHPz55abA1X4xXbRRYKkcrijnwo6QtNzUaWb2Ha",
+    "operator_first_funding_tx": "7aARfHH31xedFZvGj2n4jpb77B3itv51U3bCSQqBeyHG",
+    "bybit_seed_tx": "9FuGZMtLqp3QEUpERWyCfAzNPDU5rymifb7NpCJtWwFL",
+    "bybit_dust_tx": "132ZLNFkNBFBSoxwMgbfTVsP5ZpbkEd1BubaFh3ooZAc"
+  },
+  "checks": [
+    {
+      "id": "history-flags-lookalike",
+      "question": "Does the victim's own history show that the address it paid resembles the one it meant to pay?",
+      "tool": "get_transaction_history",
+      "args": { "address": "{victim}", "order": "oldest", "limit": 50 },
+      "expect": [
+        { "path": "address_poisoning.pairs[*].suspect", "op": "includes", "value": "{lookalike}" },
+        { "path": "address_poisoning.pairs[*].established", "op": "includes", "value": "{real_recipient}" },
+        { "path": "address_poisoning.pairs[*].suspect", "op": "excludes", "value": "{real_recipient}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: both addresses start 0x6b74 and end 3cf. The lookalike's first transaction is the operator's 0.00002 USDC seed two seconds after the victim paid the real address."
+    },
+    {
+      "id": "real-payment",
+      "question": "What did the victim send to the real address before the loss?",
+      "tool": "get_transaction",
+      "args": { "digest": "{deposit_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{victim}" },
+        { "path": "timestamp", "op": "equals", "value": "2026-09-09T17:54:29.969Z" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{real_recipient}" },
+        { "path": "balance_changes[*].amount", "op": "includes", "value": "209800000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: transaction FGKEgbqE moves 209.8 USDC from the victim to 0x6b74e92c."
+    },
+    {
+      "id": "operator-seeds-lookalike",
+      "question": "Who created the lookalike, and when?",
+      "tool": "get_transaction",
+      "args": { "digest": "{seed_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{operator}" },
+        { "path": "timestamp", "op": "equals", "value": "2026-09-09T17:54:31.522Z" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{lookalike}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the lookalike's first inflow is 20 raw USDC from the operator, 1.6 seconds after the real payment."
+    },
+    {
+      "id": "dust-to-victim",
+      "question": "How did the lookalike get into the victim's history?",
+      "tool": "get_transaction",
+      "args": { "digest": "{dust_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{lookalike}" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{victim}" },
+        { "path": "authorization[*].address", "op": "includes", "value": "{operator}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: FH4S9fEm sends the 20 raw USDC from the lookalike to the victim; the operator is the gas sponsor."
+    },
+    {
+      "id": "loss",
+      "question": "How much did the victim lose, and to which address?",
+      "tool": "get_transaction",
+      "args": { "digest": "{loss_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{victim}" },
+        { "path": "status", "op": "equals", "value": "success" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{lookalike}" },
+        { "path": "balance_changes[*].amount", "op": "includes", "value": "1188330952" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 8Z4iMqvG credits the lookalike with 1188330952 MIST at 2026-09-09T18:18:25Z."
+    },
+    {
+      "id": "failed-attempt-kind",
+      "question": "Why did the victim's first transfer attempt fail?",
+      "tool": "get_transaction",
+      "args": { "digest": "{failed_real_tx}" },
+      "expect": [
+        { "path": "status", "op": "equals", "value": "failure" },
+        { "path": "failure.kind", "op": "equals", "value": "INSUFFICIENT_COIN_BALANCE" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: effects status of HoTxYf4H is InsufficientCoinBalance in command 0."
+    },
+    {
+      "id": "failed-attempts-batch-kind",
+      "question": "Read the three failed attempts together: why did each fail?",
+      "tool": "get_transactions",
+      "args": { "digests": ["{failed_real_tx}", "{failed_real_tx_2}", "{failed_lookalike_tx}"] },
+      "expect": [
+        { "path": "transactions[*].failure.kind", "op": "includes", "value": "INSUFFICIENT_COIN_BALANCE" },
+        { "path": "transactions[*].failure.kind", "op": "excludes", "value": "unknown" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: all three effects report InsufficientCoinBalance in command 0, the same status get_transaction names."
+    },
+    {
+      "id": "sweep-to-collector",
+      "question": "Where did the stolen SUI go after the lookalike?",
+      "tool": "trace_funds",
+      "args": { "digest": "{loss_tx}", "direction": "forward", "hops": 4 },
+      "expect": [
+        { "path": "hops[*].digest", "op": "includes", "value": "{sweep_tx}" },
+        { "path": "hops[*].balance_changes[*].address", "op": "includes", "value": "{collector}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 2N68SBHP moves 1188330952 MIST from the lookalike to 0x6e7113d8 on 2026-09-10T01:54:57Z."
+    },
+    {
+      "id": "path-victim-to-collector",
+      "question": "Is there a value path from the victim to the collector, and through which transactions?",
+      "tool": "find_flow_path",
+      "args": { "from": "{victim}", "to": "{collector}" },
+      "expect": [
+        { "path": "found", "op": "equals", "value": true },
+        { "path": "paths[*].steps[*].digests[*]", "op": "includes", "value": "{loss_tx}" },
+        { "path": "paths[*].steps[*].digests[*]", "op": "includes", "value": "{sweep_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: loss 8Z4iMqvG then sweep 2N68SBHP."
+    },
+    {
+      "id": "collector-holds-loss",
+      "question": "What did the collector hold right after the sweep?",
+      "tool": "get_balance",
+      "args": { "address": "{collector}", "at": "2026-09-10T02:00:00Z" },
+      "expect": [
+        { "path": "complete", "op": "equals", "value": true },
+        { "path": "balance", "op": "equals", "value": "1188330952" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the sweep is the collector's first transaction, so its SUI at 02:00 UTC equals the swept amount."
+    },
+    {
+      "id": "victim-window-flows",
+      "question": "What did the victim pay out in the incident window, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{victim}", "from": "2026-09-09T17:00:00Z", "to": "2026-09-10T00:00:00Z" },
+      "expect": [
+        { "path": "coverage.complete", "op": "equals", "value": true },
+        { "path": "top_recipients[*].address", "op": "includes", "value": "{real_recipient}" },
+        { "path": "top_recipients[*].address", "op": "includes", "value": "{lookalike}" },
+        { "path": "inflow_sources[*].address", "op": "includes", "value": "{lookalike}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: in the window the victim paid 209.8 USDC to 0x6b74e92c and 1.188330952 SUI to 0x6b745225, and received 20 raw USDC from 0x6b745225."
+    },
+    {
+      "id": "victim-window-flows-poisoning",
+      "question": "Does the flow summary warn that two of the victim's recipients render alike?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{victim}", "from": "2026-09-09T17:00:00Z", "to": "2026-09-10T00:00:00Z" },
+      "expect": [
+        { "path": "address_poisoning.pairs[*].suspect", "op": "includes", "value": "{lookalike}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 0x6b74e92c…93cf and 0x6b745225…b3cf share the first 4 and last 3 characters and both appear in this window's top_recipients."
+    },
+    {
+      "id": "flow-graph-poisoning",
+      "question": "Does the all-branches flow graph from the victim warn about the lookalike it touched?",
+      "tool": "trace_flow_graph",
+      "args": { "address": "{victim}", "direction": "forward", "from": "2026-09-09T17:50:00Z", "to": "2026-09-11T00:00:00Z" },
+      "expect": [
+        { "path": "address_poisoning.pairs[*].suspect", "op": "includes", "value": "{lookalike}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the graph's terminal 0x6b74e92c and its pruned branch 0x6b745225 share the first 4 and last 3 characters."
+    },
+    {
+      "id": "lookalike-funder",
+      "question": "Who funded and operates the lookalike?",
+      "tool": "find_funding_source",
+      "args": { "address": "{lookalike}" },
+      "expect": [
+        { "path": "sponsored_by[*].sponsor", "op": "includes", "value": "{operator}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the operator sent the lookalike's first inflow (D2sWimff) and paid gas for its dust and its sweep."
+    },
+    {
+      "id": "bybit-lookalike-funder",
+      "question": "Who operates the lookalike that dusted the Bybit reserve wallet?",
+      "tool": "find_funding_source",
+      "args": { "address": "{bybit_lookalike}" },
+      "expect": [
+        { "path": "sponsored_by[*].sponsor", "op": "includes", "value": "{operator}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the operator sent this lookalike 1533 MIST (9FuGZMtL) and sponsored its only outgoing transaction (132ZLNFk)."
+    },
+    {
+      "id": "bybit-dust",
+      "question": "Which wallet did the second lookalike dust, and who paid for it?",
+      "tool": "get_transaction",
+      "args": { "digest": "{bybit_dust_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{bybit_lookalike}" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{bybit_reserve}" },
+        { "path": "authorization[*].address", "op": "includes", "value": "{operator}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 132ZLNFk sends 1533 MIST from 0x5aad0452 to the Bybit reserve wallet with the operator as gas sponsor."
+    },
+    {
+      "id": "operator-edge-lookalike",
+      "question": "Does the clustering tool link the operator to the lookalike it created?",
+      "tool": "build_wallet_edges",
+      "args": { "addresses": ["{operator}", "{lookalike}"], "expand": false },
+      "expect": [
+        { "path": "edges[*].signals[*].digests[*]", "op": "includes", "value": "{seed_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: D2sWimff is the operator's first payment to the lookalike."
+    },
+    {
+      "id": "operator-edge-bybit-lookalike",
+      "question": "Does the clustering tool link the operator to the lookalike that dusted Bybit?",
+      "tool": "build_wallet_edges",
+      "args": { "addresses": ["{operator}", "{bybit_lookalike}"], "expand": false },
+      "expect": [
+        { "path": "edges[*].signals[*].digests[*]", "op": "includes", "value": "{bybit_seed_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 9FuGZMtL is the only inflow 0x5aad0452 ever received, from the operator, and the operator sponsored its only outgoing transaction."
+    },
+    {
+      "id": "operator-first-funding",
+      "question": "Where did the poisoning operator get its first SUI?",
+      "tool": "find_funding_source",
+      "args": { "address": "{operator}" },
+      "expect": [
+        { "path": "chain[0].funded_by", "op": "iequals", "value": "{operator_funder}" },
+        { "path": "chain[0].funding_tx", "op": "equals", "value": "{operator_first_funding_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 7aARfHH3 paid the operator 0.81721998 SUI on 2026-08-24, its first transaction."
+    },
+    {
+      "id": "operator-fanout-sponsor-shape",
+      "question": "Is shared gas sponsorship through the operator a link between its lookalikes, or relayer noise?",
+      "tool": "get_address_fanout",
+      "args": { "address": "{operator}", "max_transactions": 1000 },
+      "expect": [
+        { "path": "sponsor_shape", "op": "equals", "value": "operator" },
+        { "path": "sponsored_and_paid_count", "op": "gte", "value": 300 }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: in the operator's last 1,000 transactions it paid gas for 377 addresses and sent a coin to all 377 of them (D2sWimff and 9FuGZMtL are two such seeds, 132ZLNFk a sponsored dust send)."
+    },
+    {
+      "id": "real-recipient-forwarding",
+      "question": "What is the address the victim meant to pay?",
+      "tool": "classify_deposit_address",
+      "args": { "address": "{real_recipient}" },
+      "expect": [
+        { "path": "hot_wallet", "op": "iequals", "value": "{hot_wallet}" }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: 0x6b74e92c swept the 209.8 USDC to 0x62f36b79 (9Ldc9cy7), the same wallet that paid the victim 1.18735 SUI at 17:51:11 (DAQuKgGF)."
+    }
+  ]
+}

@@ -8,20 +8,22 @@ import { clampPageSize } from "../utils/pagination.js";
 import { protoValueToJson } from "../utils/proto.js";
 import { formatOwner } from "../utils/formatting.js";
 import { objectAddressBalanceFields } from "../utils/address-balance.js";
+import { baseType } from "../utils/object-flow.js";
+import { KIOSK_TYPE, resolveKioskCapHolder, unresolvedCapHolderNote } from "../utils/kiosk.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
- * The Display standard, which is NOT in the object's own fields.
+ * The Display standard, which is not in the object's own fields.
  *
- * `0x2::display::Display<T>` is a template registered per TYPE and rendered
+ * `0x2::display::Display<T>` is a template registered per type and rendered
  * per object, so an NFT's name and image usually live nowhere in its struct.
- * Verified on a mainnet collection: `contents.json` holds
- * `id, number, index, attributes, metadata_version` and nothing human-readable,
- * while the rendered Display carries creator, description and image_url. The
- * field-guessing below finds nothing there, so `get_object` promised display
- * metadata and returned none for exactly the objects it was written for.
+ * Its `contents.json` can hold only fields like
+ * `id, number, index, attributes, metadata_version`, while the rendered
+ * Display carries creator, description and image_url. The field-guessing
+ * below finds nothing on such an object, so the rendered Display is read
+ * when the fields carry no display metadata.
  *
- * gRPC has no rendered Display, so this is GraphQL — the same exception, for
+ * gRPC has no rendered Display, so this is GraphQL: the same exception, for
  * the same reason, as event field JSON.
  */
 const DISPLAY_QUERY = `
@@ -70,7 +72,7 @@ function extractDisplay(content: unknown): Record<string, string | null> | null 
 export function registerObjectTools(server: McpServer) {
   server.tool(
     "get_object",
-    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs. For the latest version it also lists `address_balances`: funds the object holds in its own address balance, which are not among its fields and which only its defining module can withdraw.",
+    "Get a Sui object by its ID. Returns type, owner, version, content (JSON), and digest. Automatically extracts display metadata (name, description, image_url) for NFTs. For the LATEST version it also lists `address_balances` (funds the object holds in its own address balance, which are not among its fields and which only its defining module can withdraw) and, for a kiosk, `kiosk_cap_holder`: who actually controls it today, since `content.owner` is self-declared and not kept in sync with the KioskOwnerCap transfer that does. Neither is read for a specific `version`: both are current state and would misname a past snapshot's controller.",
     {
       object_id: addressArg().describe("The object ID (0x...)"),
       version: u64StringArg().optional().describe("Specific version to fetch"),
@@ -113,6 +115,17 @@ export function registerObjectTools(server: McpServer) {
         }
       }
       const held = heldRequest ? await heldRequest : {};
+      // `Kiosk.owner` (visible in `content` above) is a self-declared field
+      // the framework does not update when the `KioskOwnerCap` that
+      // controls the kiosk is transferred, so it can name a former owner.
+      // `kiosk_cap_holder` is read from the cap's own current owner instead,
+      // the only party who can list, delist or withdraw from this kiosk. Only
+      // for the latest version, like `heldRequest` above: the cap's current
+      // holder is not who controlled the kiosk in a past snapshot.
+      const kiosk =
+        !version && obj?.objectType && baseType(obj.objectType) === KIOSK_TYPE && obj.objectId
+          ? await resolveKioskCapHolder(obj.objectId)
+          : null;
 
       const result: Record<string, unknown> = {
         object_id: obj?.objectId,
@@ -125,6 +138,27 @@ export function registerObjectTools(server: McpServer) {
         content,
         balance: obj?.balance?.toString(),
         ...held,
+        ...(kiosk
+          ? {
+              kiosk_owner_field_caveat:
+                "The `owner` field above (inside `content`) is self-declared: it is set when the kiosk is created or by `set_owner`, and does not follow the KioskOwnerCap when the cap is transferred, so it can name a former owner. `kiosk_cap_holder` is who actually controls this kiosk, read from the cap's own current owner.",
+              ...(kiosk.status === "resolved"
+                ? {
+                    kiosk_cap_holder: kiosk.result.holder,
+                    kiosk_cap_id: kiosk.result.cap_id,
+                    ...(kiosk.result.wrapped_in ? { kiosk_cap_wrapped_in: kiosk.result.wrapped_in } : {}),
+                    ...(kiosk.result.holder ? {} : { kiosk_cap_holder_note: unresolvedCapHolderNote(kiosk.result) }),
+                  }
+                : {
+                    kiosk_cap_holder_note:
+                      kiosk.status === "creation_unreachable"
+                        ? "The kiosk's creation transaction could not be read, so its KioskOwnerCap could not be found."
+                        : kiosk.status === "cap_not_found"
+                          ? `No KioskOwnerCap naming this kiosk was found in its creation transaction (scanned ${kiosk.scanned_pages} page(s)${kiosk.truncated ? ", truncated before reaching the end" : ""}).`
+                          : `The KioskOwnerCap lookup failed and was skipped: ${kiosk.message}`,
+                  }),
+            }
+          : {}),
       };
 
       if (display) {
@@ -136,7 +170,8 @@ export function registerObjectTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(result, null, 2),
+            // Compact: indentation would bloat a large object's output.
+            text: JSON.stringify(result),
           },
         ],
       };

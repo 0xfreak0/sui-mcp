@@ -46,8 +46,8 @@ describe("live coin list — additive", () => {
 
   /**
    * The reviewed file is the floor. A fetched list must not be able to turn an
-   * ambiguous symbol into a confident one — that would reintroduce the exact
-   * failure this registry exists to prevent, just with a nicer source.
+   * ambiguous symbol into a confident one, because that is the guess this
+   * registry exists to prevent.
    */
   it("cannot make an ambiguous curated symbol unambiguous", async () => {
     liveReturns(

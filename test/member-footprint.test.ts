@@ -9,10 +9,9 @@ const fp = (n: number, active: number): MemberFootprint[] =>
   }));
 
 /**
- * Measured over four mainnet governance multisigs: 13 of 19 members had no
- * on-chain footprint at all, and one 3-of-6 had none whatsoever. Cold keys are
- * not missing data — they are what deliberate key hygiene looks like, and they
- * bound what else can be asked.
+ * Governance multisig members commonly have no on-chain footprint at all.
+ * Cold keys are what deliberate key hygiene looks like, and they bound what
+ * else can be asked.
  */
 describe("summarizeFootprints", () => {
   it("reads a committee of cold keys as hygiene, not as a gap", () => {

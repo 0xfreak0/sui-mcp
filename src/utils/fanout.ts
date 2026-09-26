@@ -76,10 +76,10 @@ export interface FanoutResult {
   /**
    * Outbound counterparties divided by inbound, over the sample.
    *
-   * Shape, not size — and it separates cases raw counts cannot. A measured
+   * Shape rather than size, so it separates cases raw counts cannot. An
    * exchange runs near 1 (deposits in, withdrawals out) while a distribution
-   * wallet runs high (it pays many and is paid by few). Two addresses with
-   * ~750 counterparties each came out at 0.9 and 9.2.
+   * wallet runs high (it pays many and is paid by few), even at the same
+   * counterparty count.
    */
   out_in_ratio: number | null;
   /** Plain-language reading of that ratio. */
@@ -108,23 +108,34 @@ export interface FanoutResult {
    * relayer sponsors strangers while moving no value of its own, so it looks
    * narrow by balance changes and is anything but.
    *
-   * The distinction that matters for clustering is breadth, not volume.
-   * Measured on mainnet: one sponsor paid gas in 278 of 400 sampled
-   * transactions but for only 7 distinct addresses — a private payer for a
-   * small set, where shared sponsorship is a real link. A public relayer pays
-   * for strangers and shared sponsorship through it means nothing.
+   * For clustering, breadth decides. A private sponsor may pay gas in most of
+   * its transactions but for a small set of addresses, and shared sponsorship
+   * through it is a real link. A public relayer pays for strangers and shared
+   * sponsorship through it means nothing.
    */
   sponsored_address_count: number;
+  /**
+   * Sponsored addresses this one also sent a coin to, in the window scanned.
+   *
+   * The pair `build_wallet_edges` calls an operator relationship (see
+   * `edge-probe.ts`): a public relayer pays gas for strangers' wallets and
+   * does not also fund them.
+   */
+  sponsored_and_paid_count: number;
   /** Transactions in the sample where this address paid someone else's gas. */
   sponsored_transaction_count: number;
-  /** Coarse reading of sponsorship breadth. `relayer` means treat it as noise. */
-  sponsor_shape: "relayer" | "private_sponsor" | "not_a_sponsor";
+  /**
+   * Coarse reading of sponsorship. `relayer` means treat it as noise;
+   * `operator` means it funds most of the wallets it sponsors, and shared
+   * sponsorship through it is a link however many it sponsors.
+   */
+  sponsor_shape: "operator" | "relayer" | "private_sponsor" | "not_a_sponsor";
   /** What that shape licenses. Absent when there is nothing worth saying. */
   sponsor_interpretation?: string;
   /**
    * The shape rests on a scan that hit its budget, so "narrow" may only mean
-   * "not far enough". Never set for `relayer`, which is proven by what was
-   * seen. See {@link sponsorIsProvisional}.
+   * "not far enough". Never set for `relayer` or `operator`, which are proven
+   * by what was seen. See {@link sponsorIsProvisional}.
    */
   sponsor_shape_provisional?: boolean;
   /** True when served from the optional local store rather than re-measured. */
@@ -135,11 +146,9 @@ export interface FanoutResult {
 /**
  * Thresholds on distinct counterparties within the sampled window.
  *
- * Calibrated against a deliberately small set: seven known exchange wallets
- * landed at 205–439 counterparties per 600 recent transactions, while ordinary
- * wallets landed at 6–12. The 20x gap is what makes a coarse cut defensible on
- * so few points — not the precision of the numbers themselves. Treat these as
- * "obviously busy / obviously not" rather than a calibrated classifier.
+ * Exchange wallets sit far above ordinary wallets on this count, and that wide
+ * gap is what makes a coarse cut defensible. Treat these as "obviously busy /
+ * obviously not" rather than a calibrated classifier.
  */
 const HUB_THRESHOLD = 1_000;
 
@@ -149,9 +158,8 @@ const HUB_THRESHOLD = 1_000;
  *
  * Same logic as the funder popularity filter and the same reason: a link
  * through an intermediary is only worth something if the intermediary is
- * narrow. Measured on mainnet, a real private sponsor paid gas in 278 of 400
- * sampled transactions for just 7 distinct addresses — heavy use, tiny
- * audience. A public relayer is the opposite shape, and shared sponsorship
+ * narrow. A private sponsor can pay gas often for only a handful of distinct
+ * addresses. A public relayer pays for strangers, and shared sponsorship
  * through one says nothing about whether two wallets are related.
  *
  * Deliberately below the funder limit of 50: sponsoring is an operational
@@ -159,9 +167,23 @@ const HUB_THRESHOLD = 1_000;
  */
 const SPONSOR_BREADTH_LIMIT = 20;
 
-function classifySponsor(count: number): FanoutResult["sponsor_shape"] {
-  if (count === 0) return "not_a_sponsor";
-  return count > SPONSOR_BREADTH_LIMIT ? "relayer" : "private_sponsor";
+/**
+ * Share of its sponsored addresses a sponsor must also have paid to be an
+ * operator.
+ *
+ * `build_wallet_edges` links a sponsor to an address it both paid and
+ * sponsored as an operator, at full weight and without asking how many
+ * others it sponsors: a public relayer pays gas for strangers' wallets, and
+ * it does not also fund them. This is the same pair counted across the whole
+ * window. An operator pays nearly every address it sponsors and a public gas
+ * station pays almost none, so the gap this share cuts is wide.
+ */
+const OPERATOR_PAID_SHARE = 0.5;
+
+function classifySponsor(sponsored: number, paid: number): FanoutResult["sponsor_shape"] {
+  if (sponsored === 0) return "not_a_sponsor";
+  if (paid >= sponsored * OPERATOR_PAID_SHARE) return "operator";
+  return sponsored > SPONSOR_BREADTH_LIMIT ? "relayer" : "private_sponsor";
 }
 
 /**
@@ -169,12 +191,13 @@ function classifySponsor(count: number): FanoutResult["sponsor_shape"] {
  *
  * `relayer` is proven by what was seen: 21 distinct payees is 21 distinct
  * payees however much history remains. `private_sponsor` is only ever "not
- * many so far", and the scan reads the most recent window.
+ * many so far", and the scan reads the most recent window. `operator` rests
+ * on addresses it both paid and sponsored, and each such pair is proven by
+ * the two transactions that show it.
  *
- * Measured on one mainnet sponsor, the count moves 1 -> 1 -> 12 -> 86 as the
- * window goes 100 -> 200 -> 400 -> 800, crossing the threshold. Reporting
- * "narrow, worth following" off a truncated scan asserts the opposite of what
- * a deeper look shows.
+ * A sponsor's distinct count can sit under the threshold in a short window
+ * and cross it in a longer one, so reporting "narrow, worth following" off a
+ * truncated scan can assert the opposite of what a deeper look shows.
  *
  * Same rule `used_intermediaries.scan_complete` applies to funders.
  */
@@ -182,7 +205,7 @@ function sponsorIsProvisional(
   shape: FanoutResult["sponsor_shape"],
   truncated: boolean,
 ): boolean {
-  return truncated && shape !== "relayer";
+  return truncated && shape !== "relayer" && shape !== "operator";
 }
 
 /**
@@ -196,6 +219,7 @@ function sponsorIsProvisional(
 function interpretSponsor(
   shape: FanoutResult["sponsor_shape"],
   count: number,
+  paid: number,
   truncated: boolean,
 ): string | undefined {
   if (shape === "not_a_sponsor") {
@@ -206,13 +230,47 @@ function interpretSponsor(
       ? "No sponsorship seen in the window scanned, which reached its budget before the end of this address's history. That is not evidence it has never paid anyone's gas."
       : undefined;
   }
+  if (shape === "operator") {
+    return `Pays gas for ${count}${truncated ? "+" : ""} distinct address(es) and sent a coin to ${paid} of them in the window scanned. A public relayer pays gas for strangers and does not fund them, so this address runs the wallets it sponsors: build_wallet_edges links each address it both paid and sponsored as an operator relationship. Shared sponsorship through it links those wallets however many it sponsors.`;
+  }
   if (shape === "relayer") {
-    return `Pays gas for ${count}+ distinct addresses, which is a relayer or paymaster. Two wallets sharing it as a sponsor is NOT evidence they are related — treat shared sponsorship through this address as noise, the same as a shared exchange.`;
+    const paidNote =
+      paid > 0
+        ? ` It also sent a coin to ${paid} of them, and build_wallet_edges links each of those to it as an operator relationship, so the noise reading holds only for the rest.`
+        : "";
+    return `Pays gas for ${count}+ distinct addresses, which is a relayer or paymaster. Two wallets sharing it as a sponsor is NOT evidence they are related — treat shared sponsorship through this address as noise, the same as a shared exchange.${paidNote}`;
   }
   const base = `Pays gas for ${count} distinct address(es) in the window scanned. A narrow sponsor is an operational relationship worth following: whoever funds the gas usually runs the wallets. This can be true even when value fan-out looks unremarkable, since sponsoring moves no value of its own.`;
   return truncated
-    ? `${base} PROVISIONAL: the scan hit its budget before the end of this address's history, and breadth only grows with the window — measured on one mainnet sponsor the count went 1 to 86 between a 100- and an 800-transaction scan, crossing from narrow to relayer. Raise max_transactions before relying on "narrow".`
+    ? `${base} PROVISIONAL: the scan hit its budget before the end of this address's history, and breadth only grows with the window, so a longer scan can cross from narrow to relayer. Raise max_transactions before relying on "narrow".`
     : base;
+}
+
+/** The sponsorship fields of a result, fresh or read back from the store. */
+function sponsorReport(
+  shape: FanoutResult["sponsor_shape"],
+  count: number,
+  paid: number,
+  transactions: number,
+  truncated: boolean,
+): Pick<
+  FanoutResult,
+  | "sponsored_address_count"
+  | "sponsored_and_paid_count"
+  | "sponsored_transaction_count"
+  | "sponsor_shape"
+  | "sponsor_interpretation"
+  | "sponsor_shape_provisional"
+> {
+  const interpretation = interpretSponsor(shape, count, paid, truncated);
+  return {
+    sponsored_address_count: count,
+    sponsored_and_paid_count: paid,
+    sponsored_transaction_count: transactions,
+    sponsor_shape: shape,
+    ...(interpretation ? { sponsor_interpretation: interpretation } : {}),
+    ...(sponsorIsProvisional(shape, truncated) ? { sponsor_shape_provisional: true } : {}),
+  };
 }
 const DISTRIBUTOR_THRESHOLD = 100;
 
@@ -279,13 +337,45 @@ export function reportedClassification(
 }
 
 /**
+ * The other parties of one transaction, split by direction coin by coin. An
+ * address that gained a coin the subject lost on net is a recipient; one that
+ * lost a coin the subject gained on net is a sender. A coin the subject did
+ * not move links nobody.
+ *
+ * Per coin because a transaction moves several. Reading the direction from
+ * whichever of the subject's rows GraphQL lists first would make the answer
+ * depend on row order: a subject that paid out one coin while a gain in its
+ * SUI row was listed first would not count the payee as a recipient.
+ */
+export function counterpartySides(
+  changes: GqlBalanceChangeNode[],
+  subject: string,
+): { recipients: string[]; senders: string[] } {
+  const own = new Map<string, bigint>();
+  for (const c of changes) {
+    if (c.owner?.address !== subject || !c.coinType?.repr) continue;
+    own.set(c.coinType.repr, (own.get(c.coinType.repr) ?? 0n) + BigInt(c.amount ?? "0"));
+  }
+  const recipients: string[] = [];
+  const senders: string[] = [];
+  for (const c of changes) {
+    const owner = c.owner?.address;
+    if (!owner || owner === subject || !c.coinType?.repr) continue;
+    const mine = own.get(c.coinType.repr) ?? 0n;
+    const amount = BigInt(c.amount ?? "0");
+    if (mine < 0n && amount > 0n) recipients.push(owner);
+    if (mine > 0n && amount < 0n) senders.push(owner);
+  }
+  return { recipients, senders };
+}
+
+/**
  * Count distinct counterparties of `address`, walking backwards from its most
  * recent activity and scanning at most `maxTransactions`.
  *
- * Both directions count. A balance change belonging to someone else is a
- * recipient when the subject's own change is negative and a sender when it is
- * positive. Counting outflows alone cannot see a custodial wallet, which
- * receives from thousands and pays almost nobody, and so read as "narrow".
+ * Both directions count, split by {@link counterpartySides}. Counting outflows
+ * alone cannot see a custodial wallet, which receives from thousands and pays
+ * almost nobody, and so read as "narrow".
  */
 export async function measureFanout(
   address: string,
@@ -322,28 +412,13 @@ export async function measureFanout(
         // Read back rather than recomputed. Defaulting these to 0 on a cache
         // hit would claim "not a sponsor" from data this path never looked at,
         // and a cached answer would silently disagree with a fresh one.
-        sponsored_address_count: cached.sponsored_address_count,
-        sponsored_transaction_count: cached.sponsored_transaction_count,
-        sponsor_shape: cached.sponsor_shape as FanoutResult["sponsor_shape"],
-        ...(interpretSponsor(
+        ...sponsorReport(
           cached.sponsor_shape as FanoutResult["sponsor_shape"],
           cached.sponsored_address_count,
+          cached.sponsored_and_paid_count,
+          cached.sponsored_transaction_count,
           cached.truncated === 1,
-        )
-          ? {
-              sponsor_interpretation: interpretSponsor(
-                cached.sponsor_shape as FanoutResult["sponsor_shape"],
-                cached.sponsored_address_count,
-                cached.truncated === 1,
-              ),
-            }
-          : {}),
-        ...(sponsorIsProvisional(
-          cached.sponsor_shape as FanoutResult["sponsor_shape"],
-          cached.truncated === 1,
-        )
-          ? { sponsor_shape_provisional: true }
-          : {}),
+        ),
         scanned_transactions: cached.scanned_transactions,
         truncated: cached.truncated === 1,
         ...reportedClassification(cached.counterparty_count, cached.truncated === 1),
@@ -387,26 +462,16 @@ export async function measureFanout(
       }
 
       const changes = completed[i].balanceChanges;
+      for (const bc of changes) if (bc.owner?.address && bc.coinType?.repr) coinTypes.add(bc.coinType.repr);
       // A sponsor's SUI change is gas or its storage rebate, never a payment:
       // counted, the sponsor of a sweep reads as a second recipient, and a
       // sponsor measured as the subject reads its rebate as an inflow.
-      const gasOnly = (bc: GqlBalanceChangeNode) =>
-        isSponsorGasChange(bc.owner?.address, bc.coinType?.repr, sender, sponsor);
-      // Whether this transaction moved value in or out decides which side each
-      // counterparty belongs to, so read the subject's own change first.
-      const own = changes.find((c) => c.owner?.address === address && !gasOnly(c));
-      const ownDelta = BigInt(own?.amount ?? "0");
-
-      for (const bc of changes) {
-        const owner = bc.owner?.address;
-        if (!owner) continue;
-        if (bc.coinType?.repr) coinTypes.add(bc.coinType.repr);
-        if (owner === address || gasOnly(bc)) continue;
-        // Subject paid out → the counterparty gaining value is a recipient.
-        if (ownDelta < 0n && BigInt(bc.amount ?? "0") > 0n) recipients.add(owner);
-        // Subject took value in → the counterparty losing value is a sender.
-        if (ownDelta > 0n && BigInt(bc.amount ?? "0") < 0n) senders.add(owner);
-      }
+      const sides = counterpartySides(
+        changes.filter((bc) => !isSponsorGasChange(bc.owner?.address, bc.coinType?.repr, sender, sponsor)),
+        address,
+      );
+      sides.recipients.forEach((a) => recipients.add(a));
+      sides.senders.forEach((a) => senders.add(a));
     }
 
     hasNext = page.transactions.pageInfo.hasPreviousPage;
@@ -418,7 +483,10 @@ export async function measureFanout(
   const ratio = senders.size > 0 ? recipients.size / senders.size : null;
   const flowShape: FanoutResult["flow_shape"] =
     ratio === null ? "unknown" : ratio >= 3 ? "disperser" : ratio <= 0.33 ? "collector" : "balanced";
-  const sponsorShape = classifySponsor(sponsored.size);
+  // The operator pair `build_wallet_edges` links, counted over the window: a
+  // sponsored address this one also sent a coin to.
+  const sponsoredAndPaid = [...sponsored].filter((a) => recipients.has(a)).length;
+  const sponsorShape = classifySponsor(sponsored.size, sponsoredAndPaid);
   // Persist every field the measurement produced. Storing only the total used
   // to make a cache hit report -1 for the in/out split and "unknown" for flow
   // shape — and recipient_count was written as the counterparty total, so a
@@ -432,6 +500,7 @@ export async function measureFanout(
     out_in_ratio: ratio,
     flow_shape: flowShape,
     sponsored_address_count: sponsored.size,
+    sponsored_and_paid_count: sponsoredAndPaid,
     sponsored_transaction_count: sponsoredTxs,
     sponsor_shape: sponsorShape,
     scanned_transactions: scanned,
@@ -446,13 +515,7 @@ export async function measureFanout(
     coin_type_count: coinTypes.size,
     out_in_ratio: ratio === null ? null : Number(ratio.toFixed(2)),
     flow_shape: flowShape,
-    sponsored_address_count: sponsored.size,
-    sponsored_transaction_count: sponsoredTxs,
-    sponsor_shape: sponsorShape,
-    ...(interpretSponsor(sponsorShape, sponsored.size, hasNext)
-      ? { sponsor_interpretation: interpretSponsor(sponsorShape, sponsored.size, hasNext) }
-      : {}),
-    ...(sponsorIsProvisional(sponsorShape, hasNext) ? { sponsor_shape_provisional: true } : {}),
+    ...sponsorReport(sponsorShape, sponsored.size, sponsoredAndPaid, sponsoredTxs, hasNext),
     scanned_transactions: scanned,
     truncated: hasNext,
     ...reportedClassification(counterparties.size, hasNext),

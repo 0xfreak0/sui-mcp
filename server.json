@@ -46,6 +46,12 @@
           "format": "string"
         },
         {
+          "name": "SUI_RATE_LIMIT",
+          "description": "Requests per 10 seconds sent to one RPC endpoint. Defaults to 180 for *.sui.io endpoints and no limit for others; 0 turns it off.",
+          "isRequired": false,
+          "format": "number"
+        },
+        {
           "name": "SUI_TOOLS",
           "description": "Tool profiles to load at startup, comma-separated, or 'all'. Defaults to 'core'.",
           "isRequired": false,

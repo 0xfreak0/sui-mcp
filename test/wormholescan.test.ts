@@ -82,7 +82,7 @@ describe("parseOperation", () => {
   });
 
   it("does not invent transfer detail from an all-zero standarizedProperties", () => {
-    // Observed on mainnet: a complete targetChain alongside an empty
+    // Wormholescan can return a complete targetChain alongside an empty
     // standarizedProperties. Reporting fromChain 0 / amount "" as real would
     // put a bogus zero-amount transfer in a case file.
     expect(parseOperation(REDEEMED)!.transfer).toBeNull();

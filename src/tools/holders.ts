@@ -16,6 +16,51 @@ const DEFAULT_MAX_SCAN = 5000;
 const MAX_SCAN_LIMIT = 50000;
 const PAGE_DELAY_MS = 100;
 
+/**
+ * Wall-clock budget for a scan's walks. A default token scan is 100 pages of
+ * coin objects, and on a loaded endpoint each page can wait out 429 backoff.
+ * Past this budget the walk stops and the answer is a sample, marked as one.
+ * The budget is checked between pages, so it leaves room under a client's 60s
+ * for the page in flight, the direct balance reads and the identity lookup.
+ */
+export const SCAN_TIME_BUDGET_MS = 35_000;
+
+/** Expected time per page of a coin walk or a directly held NFT walk, `PAGE_DELAY_MS` included. */
+const IDLE_PAGE_MS = 220;
+
+/** Expected time per page of an NFT walk whose items sit in kiosks, whose owners the same page resolves. */
+const IDLE_KIOSK_PAGE_MS = 400;
+
+/** How far a walk got before the time budget stopped it. */
+interface BudgetStop {
+  objects: number;
+  /** Pages of the deepest walk; token mode runs its two walks side by side. */
+  pages: number;
+  elapsedMs: number;
+}
+
+/**
+ * The caveat for a scan stopped by {@link SCAN_TIME_BUDGET_MS}: what it read,
+ * at the page rate this call observed, and the cause derived from `maxScan`
+ * at the expected `pageMs` rather than asserted. When `maxScan` pages fit
+ * inside the budget at that rate, only a slow endpoint stops the scan and a
+ * retry may go deeper. When they do not, a smaller `maxScan` is the way to
+ * fit. `mix`, when given, is a sentence on what the pages held.
+ */
+function timeBudgetNote(stop: BudgetStop, maxScan: number, pageMs: number, mix = ""): string {
+  const pagesNeeded = Math.ceil(maxScan / GQL_PAGE_SIZE);
+  const perPage = stop.pages > 0 ? `, ${(stop.elapsedMs / stop.pages / 1000).toFixed(2)}s per page` : "";
+  const read =
+    `The scan stopped at its ${SCAN_TIME_BUDGET_MS / 1000}s time budget after ${stop.objects} objects, ` +
+    `${stop.pages} page(s) deep, in ${(stop.elapsedMs / 1000).toFixed(1)}s${perPage}, before reaching max_scan or the end. ` +
+    `${mix}max_scan ${maxScan} (${pagesNeeded} page(s))`;
+  if (pagesNeeded * pageMs <= SCAN_TIME_BUDGET_MS) {
+    return `${read} can fit inside the budget. This endpoint answered too slowly to reach it, and a retry once it is less loaded may reach max_scan.`;
+  }
+  const fits = Math.floor(SCAN_TIME_BUDGET_MS / pageMs) * GQL_PAGE_SIZE;
+  return `${read} takes more than the budget, and a retry at the same max_scan stops short of it too. Lower max_scan to ${fits} or less to fit inside the budget, or accept this sample.`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -139,24 +184,21 @@ function holderKind(
  * updates it when the `KioskOwnerCap` is transferred, so after a cap changes
  * hands it still names whoever set it last.
  *
- * Measured on mainnet over 300 sampled KioskOwnerCaps, comparing each cap's
- * real holder against the `owner` field of the kiosk it controls: **121
- * disagreed, 40.3%**. The disagreement concentrates — one address is declared
- * by 82 different kiosks. Merging that into the holder list unmarked
- * manufactures a top holder out of a platform address and makes an ownership
- * ranking wrong in the direction a reader will act on.
+ * The disagreement concentrates: one address can be declared by many
+ * kiosks. Merging that into the holder list unmarked manufactures a top holder
+ * out of a platform address and makes an ownership ranking wrong in the
+ * direction a reader will act on.
  *
  * A production Sui NFT indexer resolves this with a five-step waterfall and
- * does NOT use this field at any step: address owner, then PersonalKioskCap,
- * then the latest SALE BUYER for that NFT, then the MINT TRANSACTION SENDER,
+ * does not use this field at any step: address owner, then PersonalKioskCap,
+ * then the latest sale buyer for that NFT, then the mint transaction sender,
  * and only then the kiosk id itself tagged as a kiosk rather than a wallet.
- * Steps three and four are the ones that actually carry a regular kiosk, and
- * both need an indexed sale and mint history that a per-call server does not
- * have — `trace_object_history` answers it for ONE object, not for a scan.
+ * Steps three and four are the ones that carry a regular kiosk, and both need
+ * an indexed sale and mint history that a per-call server does not have
+ * (`trace_object_history` answers it for one object, not for a scan).
  *
  * So the field is still used, because it is the only owner hint available
- * without a query per kiosk and it is right about 60% of the time, and every
- * entry it produces says so.
+ * without a query per kiosk, and every entry it produces says so.
  */
 function extractNftOwner(
   node: { owner?: OwnerNode },
@@ -257,16 +299,16 @@ function addressBalanceFieldType(coinType: string): string {
  *
  * Used only to settle an auto-detected mode. A coin type and an NFT type have
  * the same `0xpkg::module::Struct` shape, so nothing in the string separates
- * `0xabc::suipump::SUIPUMP` from a collection — and guessing wrong scanned a
- * real memecoin as NFTs and reported `unique_holders: 0`, which reads as "this
- * has no holders" rather than "this was looked up as the wrong kind of thing".
+ * `0xabc::suipump::SUIPUMP` from a collection, and a wrong guess scans a
+ * memecoin as NFTs and reports `unique_holders: 0`, which reads as "this has
+ * no holders" rather than "this was looked up as the wrong kind of thing".
  *
  * Any one of four objects is proof: a `Coin<T>`, an address-balance entry for
  * `T`, its `CoinMetadata<T>`, or its registry `Currency<T>`. The coin object
  * alone is not enough, because a coin can be held entirely in address balances
- * with no `Coin<T>` in existence (USAD on mainnet: the whole supply sits in one
- * owner's address balance), and probing only for coin objects scanned it as an
- * NFT collection with no holders. All four ask in one request.
+ * with no `Coin<T>` in existence (the whole supply in one owner's address
+ * balance), and probing only for coin objects would scan it as an NFT
+ * collection with no holders. All four ask in one request.
  */
 const COIN_PROBE_QUERY = `
   query($coin: String!, $addressBalance: String!, $metadata: String!, $currency: String!) {
@@ -289,11 +331,11 @@ async function looksLikeCoin(type: string): Promise<boolean | null> {
     });
     return Object.values(data).some((hit) => (hit?.nodes?.length ?? 0) > 0);
   } catch {
-    // Null, not false. Returning false reinstated the very guess this probe
-    // exists to correct, so one transient GraphQL error produced the original
-    // bug — a coin scanned as a collection, reporting no holders — and now
-    // labelled a complete ranking. It must never fail the tool either, so the
-    // caller carries the uncertainty into the result instead.
+    // Null rather than false: false would reinstate the guess this probe
+    // exists to correct, so one transient GraphQL error would scan a coin as a
+    // collection with no holders and label it a complete ranking. It must
+    // never fail the tool either, so the caller carries the uncertainty into
+    // the result instead.
     return null;
   }
 }
@@ -439,6 +481,12 @@ export interface TokenHolderResult {
   truncated: boolean;
   coin_walk_truncated: boolean;
   address_balance_walk_truncated: boolean;
+  /** A walk stopped at {@link SCAN_TIME_BUDGET_MS} rather than at `maxScan` or the end. */
+  time_budget_reached?: boolean;
+  /** Pages read by the deeper of the two walks, which run side by side. */
+  pages_deep: number;
+  /** Wall-clock time the two walks took together. */
+  elapsed_ms: number;
   /**
    * Coin objects or address-balance entries counted in `total_scanned` whose
    * owner or amount could not be read, so they are attributed to nobody.
@@ -459,34 +507,28 @@ export function stoppedWalks(scan: TokenHolderResult): string {
 }
 
 /**
- * A truncated holder scan is a SAMPLE, and must not be presented as a ranking.
+ * A truncated holder scan is a sample, and must not be presented as a ranking.
  *
  * The walk reads `objects(filter: Coin<T>)` in object-id order, which is
  * uncorrelated with balance. So a scan that stops early returns the largest
- * holder IT HAPPENED TO SEE, not the largest holder. Measured on SUI, the
- * reported "#1 holder" by scan depth:
- *
- *   max_scan 200  ->     66 SUI
- *   max_scan 400  ->    522 SUI
- *   max_scan 800  ->  3,454 SUI
- *   max_scan 5000 -> 25,000 SUI
- *
- * Zero of the top five at 200 survived to 800. The number climbs with effort
- * and never converges — the real top SUI holder holds millions. Ranking that
- * is not "approximately right", it is an artefact of how far the scan ran.
+ * holder it happened to see, not the largest holder. That figure climbs with
+ * scan depth and need not converge on the real top holder, so a ranking from
+ * it is an artefact of how far the scan ran.
  *
  * So when the scan is truncated the result carries `sampled_holders` rather
  * than `top_holders`, with no rank and no percentage of supply. This follows
  * `find_shared_multisig`: refusing beats truncating, because a partial search
  * cannot support the claim the caller is asking for.
  */
-function samplingCaveat(scan: TokenHolderResult): string {
+function samplingCaveat(scan: TokenHolderResult, maxScan: number): string {
   return (
     `INCOMPLETE: ${stoppedWalks(scan)} stopped before the end (${scan.unique_holders} distinct holders seen). ` +
     `Both are walked in object-id order, which has nothing to do with balance, so these are the largest holders WITHIN THE SAMPLE and not the largest holders of this coin. ` +
     `Scanning further keeps finding bigger ones: on SUI the reported top holder went from 66 to 3,454 SUI between max_scan 200 and 800, with no overlap in the top five. ` +
     `Each holder's balance, coin_balance and address_balance are read directly for that address, since the walk saw only some of its coins; balance_in_sample and count are what the walk saw. ` +
-    `Raise max_scan until "truncated" is false to get a real ranking, which is only feasible for coins with few enough objects to enumerate.`
+    (scan.time_budget_reached
+      ? `${timeBudgetNote({ objects: scan.total_scanned, pages: scan.pages_deep, elapsedMs: scan.elapsed_ms }, maxScan, IDLE_PAGE_MS)} A real ranking is only feasible for coins with few enough objects to enumerate.`
+      : `Raise max_scan until "truncated" is false to get a real ranking, which is only feasible for coins with few enough objects to enumerate.`)
   );
 }
 
@@ -508,37 +550,45 @@ async function walkObjects<N>(
   query: string,
   type: string,
   maxScan: number,
+  deadline: number,
   visit: (node: N) => void,
-): Promise<{ scanned: number; truncated: boolean }> {
+): Promise<{ scanned: number; pages: number; truncated: boolean; outOfTime: boolean }> {
   let cursor: string | undefined;
   let scanned = 0;
+  let pages = 0;
   while (scanned < maxScan) {
+    if (Date.now() >= deadline) return { scanned, pages, truncated: true, outOfTime: true };
     const data = await gqlQuery<{
       objects: { nodes: N[]; pageInfo: { hasNextPage: boolean; endCursor?: string | null } };
     }>(query, { type, first: Math.min(GQL_PAGE_SIZE, maxScan - scanned), after: cursor });
+    pages++;
 
     for (const node of data.objects.nodes) visit(node);
     scanned += data.objects.nodes.length;
 
-    if (!data.objects.pageInfo.hasNextPage) return { scanned, truncated: false };
+    if (!data.objects.pageInfo.hasNextPage) return { scanned, pages, truncated: false, outOfTime: false };
     cursor = data.objects.pageInfo.endCursor ?? undefined;
     if (!cursor) break;
     if (scanned >= maxScan) break;
     await sleep(PAGE_DELAY_MS);
   }
-  return { scanned, truncated: true };
+  return { scanned, pages, truncated: true, outOfTime: false };
 }
 
 /**
- * Rank a coin's holders by what they hold in `Coin<T>` objects AND in address
+ * Rank a coin's holders by what they hold in `Coin<T>` objects and in address
  * balances.
  *
- * An address balance is not an object the coin walk can see: it is a dynamic
- * field of the accumulator root, one per (owner, coin type). Walking coins alone
- * published `complete_ranking: true` for XAGM while leaving out its #2 holder,
- * 0xd70a55ed…, whose 5,494,449,074,000 base units (13.74% of supply) are all
- * in its address balance. So both walks run, each with its own `maxScan`
- * budget, and the ranking is complete only when both reached the end.
+ * An address balance is a dynamic field of the accumulator root, one per
+ * (owner, coin type), which the coin walk cannot see. Walking coins alone can
+ * leave out a large holder whose whole position is in its address balance
+ * while still reporting the ranking complete. So both walks run, each with its
+ * own `maxScan` budget, and the ranking is complete only when both reached
+ * the end.
+ *
+ * The two walks run side by side under one wall-clock deadline
+ * ({@link SCAN_TIME_BUDGET_MS}). A walk that runs out of time is truncated
+ * like one that ran out of `maxScan`, and `time_budget_reached` says which.
  */
 export async function scanTokenTopHolders(
   coinType: string,
@@ -556,10 +606,13 @@ export async function scanTokenTopHolders(
   // supply, with nothing saying a holder was missing.
   let unresolved = 0;
 
-  const coins = await walkObjects<CoinObjectsPage["objects"]["nodes"][number]>(
+  const started = Date.now();
+  const deadline = started + SCAN_TIME_BUDGET_MS;
+  const coinWalk = walkObjects<CoinObjectsPage["objects"]["nodes"][number]>(
     COIN_OBJECTS_QUERY,
     `0x2::coin::Coin<${inner}>`,
     maxScan,
+    deadline,
     (node) => {
       const addr = node.owner?.address?.address;
       const balanceStr = node.asMoveObject?.contents?.json?.balance;
@@ -573,10 +626,11 @@ export async function scanTokenTopHolders(
     },
   );
 
-  const balances = await walkObjects<AddressBalancePage["objects"]["nodes"][number]>(
+  const balanceWalk = walkObjects<AddressBalancePage["objects"]["nodes"][number]>(
     ADDRESS_BALANCE_QUERY,
     addressBalanceFieldType(inner),
     maxScan,
+    deadline,
     (node) => {
       const json = node.asMoveObject?.contents?.json;
       const addr = json?.name?.address;
@@ -589,6 +643,20 @@ export async function scanTokenTopHolders(
       addressBalances.set(holder, (addressBalances.get(holder) ?? 0n) + BigInt(value));
     },
   );
+  // `allSettled`, not `all`: on `all`, a rejection returns immediately while
+  // the other walk keeps paging in the background until its own deadline or
+  // `maxScan`, holding a slot of the shared GraphQL limiter and adding
+  // rate-limit pressure right as the caller's retry lands. Waiting for both
+  // to settle costs nothing when neither rejects, and ends the sibling walk
+  // before this call returns when one does.
+  const settled = await Promise.allSettled([coinWalk, balanceWalk]);
+  const elapsedMs = Date.now() - started;
+  const rejected = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
+  if (rejected) throw rejected.reason;
+  const [coins, balances] = settled.map((s) => (s as PromiseFulfilledResult<Awaited<typeof coinWalk>>).value) as [
+    Awaited<typeof coinWalk>,
+    Awaited<typeof balanceWalk>,
+  ];
 
   const totals = new Map<string, bigint>(coinBalances);
   for (const [holder, amount] of addressBalances) {
@@ -626,6 +694,9 @@ export async function scanTokenTopHolders(
     truncated: coins.truncated || balances.truncated,
     coin_walk_truncated: coins.truncated,
     address_balance_walk_truncated: balances.truncated,
+    ...(coins.outOfTime || balances.outOfTime ? { time_budget_reached: true } : {}),
+    pages_deep: Math.max(coins.pages, balances.pages),
+    elapsed_ms: elapsedMs,
     ...(unresolved ? { unresolved_owners: unresolved } : {}),
   };
 }
@@ -637,7 +708,7 @@ export async function scanTokenTopHolders(
 export function registerHolderTools(server: McpServer) {
   server.tool(
     "get_top_holders",
-    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin<T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. Results cached 24h.",
+    "(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin<T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. A scan stops after 35s and returns what it saw as a sample marked `time_budget_reached`. Results cached 24h.",
     {
       type: coinTypeArg()
         .optional()
@@ -665,7 +736,7 @@ export function registerHolderTools(server: McpServer) {
         .min(1)
         .max(50000)
         .optional()
-        .describe("Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address-balance entries separately, each up to this bound."),
+        .describe(`Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address-balance entries separately, each up to this bound. A ${SCAN_TIME_BUDGET_MS / 1000}s wall-clock budget applies regardless of this value. \`time_budget_reached\` says when that bound, not \`max_scan\`, stopped the scan, and the caveat says whether a slow endpoint or the requested depth was the cause.`),
     },
     async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
       if (rawType && collection_name) {
@@ -808,9 +879,10 @@ export function registerHolderTools(server: McpServer) {
               truncated: true,
               coin_walk_truncated: scan.coin_walk_truncated,
               address_balance_walk_truncated: scan.address_balance_walk_truncated,
+              ...(scan.time_budget_reached ? { time_budget_reached: true } : {}),
               complete_ranking: false,
               cached: false,
-              caveat: samplingCaveat(scan),
+              caveat: samplingCaveat(scan, maxScan),
               ...(scan.unresolved_owners ? { unresolved_owners: scan.unresolved_owners } : {}),
               sampled_holders: sampled,
             }
@@ -831,7 +903,9 @@ export function registerHolderTools(server: McpServer) {
                 : {}),
               top_holders: enrichedHolders,
             };
-        setCache(cacheKey, JSON.stringify(result));
+        // A scan cut short by a slow endpoint says nothing lasting about the
+        // coin, so it is not cached for a day.
+        if (!scan.time_budget_reached) setCache(cacheKey, JSON.stringify(result));
         return {
           content: [
             { type: "text" as const, text: JSON.stringify(result, null, 2) },
@@ -845,13 +919,13 @@ export function registerHolderTools(server: McpServer) {
       // `extractNftOwner` does not unwrap, or an owner kind it does not read.
       // Dropping these silently understates the supply the holder counts are a
       // share of, and makes "could not resolve an owner" look like "nobody
-      // holds it". Measured on one mainnet collection: 4 of 2,555.
+      // holds it".
       let unresolvedOwners = 0;
       // How many of each holder's NFTs were attributed from a kiosk's declared
       // owner rather than read from the object's own owner. Kept per holder
-      // because the wrongness concentrates: one mainnet address is declared by
-      // 82 kiosks, so an unmarked count would put it at the top of a ranking
-      // it does not belong in.
+      // because the error concentrates: one address can be declared by many
+      // kiosks, so an unmarked count would put it at the top of a ranking it
+      // does not belong in.
       const kioskDeclared = new Map<string, number>();
       // Resolved from a sale record. Chain-derived, but a SNAPSHOT at the sale's
       // checkpoint, which may be months old and which a later kiosk sale would
@@ -864,9 +938,20 @@ export function registerHolderTools(server: McpServer) {
       const pendingKiosk: Array<{ kiosk_id?: string; declared?: string }> = [];
       let cursor: string | undefined;
       let totalScanned = 0;
+      let pages = 0;
       let truncated = false;
+      let outOfTime = false;
+      const started = Date.now();
+      const deadline = started + SCAN_TIME_BUDGET_MS;
+      let stoppedAfterMs = 0;
 
       while (totalScanned < maxScan) {
+        if (Date.now() >= deadline) {
+          truncated = true;
+          outOfTime = true;
+          stoppedAfterMs = Date.now() - started;
+          break;
+        }
         const remaining = maxScan - totalScanned;
         const first = Math.min(GQL_PAGE_SIZE, remaining);
 
@@ -875,6 +960,7 @@ export function registerHolderTools(server: McpServer) {
           first,
           after: cursor ?? undefined,
         });
+        pages++;
 
         for (const node of data.objects.nodes) {
           const owner = extractNftOwner(node);
@@ -950,8 +1036,8 @@ export function registerHolderTools(server: McpServer) {
       // A marketplace sale names the buyer and the buyer's kiosk in one
       // record, so a kiosk seen trading has a chain-derived owner. That beats
       // the kiosk's own declared field, which does not follow the
-      // KioskOwnerCap and disagrees 40% of the time. Populate the table with
-      // get_nft_sales; this is a single store read whatever the scan's size.
+      // KioskOwnerCap. Populate the table with get_nft_sales; this is a single
+      // store read whatever the scan's size.
       const resolved = loadKioskOwners(
         getNetwork(),
         [...new Set(pendingKiosk.map((p) => p.kiosk_id).filter((k): k is string => !!k))],
@@ -1012,8 +1098,11 @@ export function registerHolderTools(server: McpServer) {
       }));
       const kioskAttributed = [...kioskDeclared.values()].reduce((a, b) => a + b, 0);
       const kioskTotal = pendingKiosk.length;
+      // The expected page time at this collection's kiosk mix, for the time-budget caveat.
+      const kioskShare = totalScanned ? kioskTotal / totalScanned : 0;
+      const nftIdlePageMs = IDLE_PAGE_MS + kioskShare * (IDLE_KIOSK_PAGE_MS - IDLE_PAGE_MS);
       const kioskCaveat = kioskAttributed
-        ? `${kioskAttributed} of ${totalScanned} objects are held in kiosks and attributed using the kiosk's own \`owner\` field (\`from_kiosk_owner_field\` per holder). That field is set by the kiosk and is NOT updated when the KioskOwnerCap is transferred: measured over 300 mainnet kiosks, it disagreed with the actual cap holder 40% of the time, and one address was declared by 82 different kiosks. Run get_nft_sales over a window covering these kiosks' trades to replace the guess with the buyer named in the sale itself.`
+        ? `${kioskAttributed} of ${totalScanned} objects are held in kiosks and attributed using the kiosk's own \`owner\` field (\`from_kiosk_owner_field\` per holder). That field is set when the kiosk is created or by \`set_owner\`, and does not follow the KioskOwnerCap when the cap is transferred, so it can name a former owner, and a platform address declared by many kiosks can look like a top holder. Run get_nft_sales over a window covering these kiosks' trades to replace the guess with the buyer named in the sale itself.`
         : null;
 
       const result = truncated
@@ -1023,12 +1112,20 @@ export function registerHolderTools(server: McpServer) {
             total_scanned: totalScanned,
             unique_holders: holderCounts.size,
             truncated: true,
+            ...(outOfTime ? { time_budget_reached: true } : {}),
             complete_ranking: false,
             cached: false,
             caveat:
               `INCOMPLETE: this scan stopped after ${totalScanned} objects (${holderCounts.size} distinct holders) and did not reach the end of the collection. ` +
               `Objects are walked in object-id order, not by how many anyone holds, so these are the biggest holders WITHIN THE SAMPLE and not the biggest holders of the collection. ` +
-              `Raise max_scan until "truncated" is false for a real ranking.`,
+              (outOfTime
+                ? timeBudgetNote(
+                    { objects: totalScanned, pages, elapsedMs: stoppedAfterMs },
+                    maxScan,
+                    nftIdlePageMs,
+                    `${Math.round(kioskShare * 100)}% of the items read here were in kiosks, and a kiosk-held item costs more per page because the same page resolves its kiosk's owner. `,
+                  )
+                : `Raise max_scan until "truncated" is false for a real ranking.`),
             ...(unresolvedOwners ? { unresolved_owners: unresolvedOwners } : {}),
             ...(kioskTotal
               ? {
@@ -1074,7 +1171,7 @@ export function registerHolderTools(server: McpServer) {
             top_holders: topHolders,
           };
 
-      setCache(cacheKey, JSON.stringify(result));
+      if (!outOfTime) setCache(cacheKey, JSON.stringify(result));
 
       return {
         content: [

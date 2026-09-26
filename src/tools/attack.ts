@@ -11,6 +11,7 @@ import { resolveWindow } from "../utils/checkpoint-time.js";
 import {
   displayCoin,
   formatUsd,
+  prefetchCoinScale,
   priceUsdAtTime,
   pricingScale,
   PRICE_STALE_THRESHOLD_SEC,
@@ -18,7 +19,9 @@ import {
 } from "../utils/valuation.js";
 import {
   aggregateIncident,
+  addDeltas,
   canonicalId,
+  isGasOnly,
   netByAddress,
   oracleTouches,
   pairFlashLegs,
@@ -40,6 +43,14 @@ const EVIDENCE_TIERS = {
   heuristic:
     "Matched on function and event names: flash legs, oracle touches and anomaly flags. A lead to check against the calls, not a finding on its own.",
 };
+
+/**
+ * A net this small, in either direction, reads as "paid gas and nothing
+ * else" rather than a real gain or loss. Sui gas on a mainnet transaction
+ * runs from a fraction of a cent to a few cents. $1 is above that and below
+ * any real profit worth naming.
+ */
+const GAS_ONLY_USD_THRESHOLD = 1;
 
 /** The protocol a package belongs to, by curated registry or MVR name. */
 const protocolOf = (pkg: string | null) => (pkg ? lookupProtocolDisplay(pkg)?.name ?? null : null);
@@ -93,7 +104,7 @@ export function registerAttackTools(server: McpServer) {
       attacker: z
         .string()
         .optional()
-        .describe("Address whose profit to summarise. Defaults to the transaction's sender."),
+        .describe("Address whose profit to summarise. Defaults to the transaction's sender, unless the sender's own coins show it only paid gas (no coin but SUI moved, and the SUI change was a payment): then it defaults to the largest PRICED gainer over the gas-only threshold in the same transaction instead, reported in attacker_defaulted_from_sender. A gain in an unpriced coin by any non-sender other than that gainer blocks this default; pass \"attacker\" to name a different address."),
     },
     async ({ digest: rawDigest, attacker }) => {
       try {
@@ -111,13 +122,14 @@ export function registerAttackTools(server: McpServer) {
         }
         await prefetchFor([tx]);
 
-        const who = subject ?? canonicalId(tx.sender);
+        const senderId = canonicalId(tx.sender);
         const net = netByAddress(tx.balanceChanges);
         const flows = poolFlows(tx);
         const coins = new Set<string>(tx.balanceChanges.map((b) => b.coinType));
         for (const f of flows) for (const c of f.deltas.keys()) if (c.includes("::")) coins.add(c);
         const atSec = tx.timestampMs !== null ? Math.floor(tx.timestampMs / 1000) : Math.floor(Date.now() / 1000);
-        const prices = await priceUsdAtTime([...coins], atSec);
+        // Decimals first: `valueDeltas` scales every amount it reports.
+        const [prices] = await Promise.all([priceUsdAtTime([...coins], atSec), prefetchCoinScale(coins)]);
 
         const addresses = [...net]
           .map(([address, deltas]) => {
@@ -125,7 +137,7 @@ export function registerAttackTools(server: McpServer) {
             const label = getLabel(address);
             return {
               address,
-              ...(address === canonicalId(tx.sender) ? { role: "sender" } : {}),
+              ...(address === senderId ? { role: "sender" } : {}),
               ...(label ? { label: label.label, label_source: label.source } : {}),
               usd_net: v.usd_net,
               coins: v.coins,
@@ -133,6 +145,38 @@ export function registerAttackTools(server: McpServer) {
             };
           })
           .sort((a, b) => Math.abs(b.usd_net) - Math.abs(a.usd_net));
+
+        // In a key compromise or an alias/protocol-level substitution, the
+        // signer does not end up holding the funds: it paid gas and nothing
+        // else in the same transaction that paid someone else. When the
+        // sender is gas-only, the largest actual gainer is named instead, with
+        // the reason stated.
+        const senderEntry = addresses.find((a) => a.role === "sender");
+        const senderIsGasOnly = isGasOnly(senderId ? net.get(senderId) : undefined, prices.points, GAS_ONLY_USD_THRESHOLD);
+        // A candidate whose gain includes a coin with no price must not be
+        // passed over for a smaller priced gain in the same transaction: a
+        // drained vault's assets are often exactly the coins with no price
+        // (LP tokens, receipts, a DefiLlama miss), and the address holding a
+        // small priced fee is not the one who took the value. The top priced
+        // gainer's own unpriced coins pass nobody over, so they do not block
+        // the default; its profit is then reported as a partial figure.
+        const topPriced =
+          !subject && senderIsGasOnly
+            ? [...addresses]
+                .filter((a) => a.address !== senderId && a.usd_net >= GAS_ONLY_USD_THRESHOLD)
+                .sort((a, b) => b.usd_net - a.usd_net)[0]
+            : undefined;
+        const unpricedGainers =
+          !subject && senderIsGasOnly
+            ? addresses.filter(
+                (a) =>
+                  a.address !== senderId &&
+                  a.address !== topPriced?.address &&
+                  a.coins.some((c) => c.usd === null && BigInt(c.amount) > 0n),
+              )
+            : [];
+        const defaultedFrom = unpricedGainers.length === 0 ? topPriced : undefined;
+        const who = subject ?? defaultedFrom?.address ?? senderId;
 
         const mine = valueDeltas(who ? net.get(who) ?? new Map() : new Map(), prices.points);
         const gains = mine.coins.filter((c) => BigInt(c.amount) > 0n);
@@ -177,10 +221,16 @@ export function registerAttackTools(server: McpServer) {
             pool: f.pool,
             pool_type: f.pool_type,
             protocol: protocolOf(packageOfEventType(f.pool_type)),
-            usd_net: v.usd_net,
+            usd_net: Number((v.usd_net - (f.recorded_loss_usd ?? 0)).toFixed(2)),
             deltas: v.coins,
             events: f.events,
             ...(f.undecoded_events.length ? { undecoded_events: f.undecoded_events } : {}),
+            ...(f.recorded_loss_usd
+              ? {
+                  recorded_loss_usd: Number(f.recorded_loss_usd.toFixed(2)),
+                  recorded_loss_note: "This pool's own event states a USD value change directly (no coin amount to price); it is folded into usd_net above.",
+                }
+              : {}),
           };
         });
 
@@ -202,6 +252,15 @@ export function registerAttackTools(server: McpServer) {
           `${digest} at ${tx.timestampMs ? new Date(tx.timestampMs).toISOString() : "unknown time"}, ${tx.success ? "success" : "FAILED"}: ` +
             `${tx.commandKinds.length} commands, ${tx.events.length} events, ${tx.balanceChanges.length} balance changes.`,
         );
+        if (unpricedGainers.length > 0) {
+          lines.push(
+            `No attacker given: the sender ${senderId} only paid gas in this transaction, but ${unpricedGainers.length === 1 ? `${unpricedGainers[0].address} gained` : `${unpricedGainers.length} other addresses gained`} a coin with no price, so the sender is kept rather than guessing from priced gains alone. See unpriced_gain_candidates.`,
+          );
+        } else if (defaultedFrom) {
+          lines.push(
+            `No attacker given: the sender ${senderId} only paid gas in this transaction (net ${formatUsd(senderEntry?.usd_net ?? 0)}), so ${who} is used instead as the largest gainer (net ${formatUsd(defaultedFrom.usd_net)}). Pass "attacker" to name a different address.`,
+          );
+        }
         if (who) {
           lines.push(
             `Profit for ${who}: ${formatUsd(mine.usd_net)} net at block time` +
@@ -257,9 +316,30 @@ export function registerAttackTools(server: McpServer) {
                       partial_note: "At least one coin this address gained or lost has no price, so usd_net covers only the priced coins.",
                     }
                   : {}),
+                ...(defaultedFrom
+                  ? {
+                      attacker_defaulted_from_sender: {
+                        sender: senderId,
+                        sender_usd_net: senderEntry?.usd_net ?? 0,
+                        reason: `No "attacker" was given. The sender only paid gas in this transaction, so this address, the largest gainer in the same transaction, is used instead. Pass "attacker" to name a different address.`,
+                      },
+                    }
+                  : {}),
                 note: "Net of gas: the sender's SUI change includes the fee it paid.",
               }
             : null,
+          ...(unpricedGainers.length > 0
+            ? {
+                unpriced_gain_candidates: unpricedGainers.map((a) => ({
+                  address: a.address,
+                  unpriced_coins: a.coins
+                    .filter((c) => c.usd === null && BigInt(c.amount) > 0n)
+                    .map((c) => ({ coin_type: c.coin_type, symbol: c.symbol, amount: c.amount_human })),
+                })),
+                unpriced_gain_candidates_note:
+                  'The sender only paid gas in this transaction, but an address other than the largest priced gainer gained a coin with no price. Defaulting to the largest PRICED gainer risks naming a small fee wallet or referrer over the address that actually took the unpriced value, so the sender was kept as `profit.address` instead. Investigate these candidates directly, or pass "attacker" to name one.',
+              }
+            : {}),
           addresses,
           flash_legs: legs,
           swaps,
@@ -326,7 +406,7 @@ export function registerAttackTools(server: McpServer) {
       attacker: z
         .string()
         .optional()
-        .describe("Address whose gains to total. Defaults to `sender`, or to each transaction's sender."),
+        .describe("Address whose gains to total. Defaults to `sender`, or to each transaction's sender, unless every successful transaction's sender only paid gas: then it defaults to the largest PRICED gainer over the gas-only threshold across the same transactions instead, reported in attacker_defaulted_from_sender. A gain in an unpriced coin by any non-sender other than that gainer blocks this default; pass \"attacker\" to name a different address."),
       price_at: z
         .union([numArg(), z.string()])
         .superRefine(refinePoint)
@@ -385,19 +465,74 @@ export function registerAttackTools(server: McpServer) {
 
         const read = await readAttackTransactions(list);
         await prefetchFor(read.txs);
-        const agg = aggregateIncident(read.txs, attackerId ?? undefined);
+        let agg = aggregateIncident(read.txs, attackerId ?? undefined);
 
         const firstOk = read.txs
           .filter((t) => t.success && t.timestampMs !== null)
           .reduce<number | null>((m, t) => (m === null || t.timestampMs! < m ? t.timestampMs! : m), null);
         const atSec = priceAt ?? (firstOk !== null ? Math.floor(firstOk / 1000) : Math.floor(Date.now() / 1000));
 
-        const coins = new Set<string>(agg.totals.keys());
-        for (const g of agg.groups) {
-          for (const c of g.attacker_deltas.keys()) coins.add(c);
-          for (const c of g.pool_deltas.keys()) if (c.includes("::")) coins.add(c);
+        // Every coin any address received across these transactions, not only
+        // the chosen subject's: with no attacker given, the subject defaults
+        // to each transaction's sender, and a sender that only paid gas never
+        // touches the coins the real beneficiary gained, so pricing keyed to
+        // `agg` alone would leave that beneficiary permanently unpriced.
+        const coins = new Set<string>();
+        for (const tx of read.txs) for (const b of tx.balanceChanges) if (b.coinType) coins.add(b.coinType);
+        for (const g of agg.groups) for (const c of g.pool_deltas.keys()) if (c.includes("::")) coins.add(c);
+        const [prices] = await Promise.all([priceUsdAtTime([...coins], atSec), prefetchCoinScale(coins)]);
+
+        // No attacker was named, and the sender-per-transaction default looks
+        // like it only paid gas: default to whoever gained the most across
+        // these same transactions instead of reporting near-zero for
+        // everyone. Excludes every address `agg` already used as a sender,
+        // since a key compromise's signer is never its own beneficiary.
+        // Decided from every successful transaction's own sender deltas, not
+        // the cross-transaction net: `agg.totals` nets a drain against a
+        // later forward of the same funds across transactions, which reads
+        // a sender that moved real money as "only paid gas".
+        let defaultedFrom: { address: string; senders: string[]; sender_usd_net: number } | undefined;
+        let unpricedGainers: Array<{ address: string; unpriced_coins: Array<{ coin_type: string; symbol: string; amount: number }> }> = [];
+        if (!attacker) {
+          const successful = read.txs.filter((t) => t.success);
+          const sendersGasOnly = successful.every((tx) => {
+            const sender = canonicalId(tx.sender);
+            return isGasOnly(sender ? netByAddress(tx.balanceChanges).get(sender) : undefined, prices.points, GAS_ONLY_USD_THRESHOLD);
+          });
+          if (sendersGasOnly) {
+            const byAddress = new Map<string, Map<string, bigint>>();
+            for (const tx of successful) {
+              for (const [address, deltas] of netByAddress(tx.balanceChanges)) {
+                if (agg.senders.includes(address)) continue;
+                const existing = byAddress.get(address);
+                if (existing) addDeltas(existing, deltas);
+                else byAddress.set(address, new Map(deltas));
+              }
+            }
+            const valued = [...byAddress].map(([address, deltas]) => ({ address, v: valueDeltas(deltas, prices.points) }));
+            // A gain in a coin with no price must not be passed over for a
+            // smaller priced gain elsewhere in the same set: a drained
+            // vault's assets are often exactly the coins with no price. The
+            // top priced gainer's own unpriced coins pass nobody over.
+            const top = valued.filter((c) => c.v.usd_net >= GAS_ONLY_USD_THRESHOLD).sort((a, b) => b.v.usd_net - a.v.usd_net)[0];
+            unpricedGainers = valued
+              .filter((c) => c.address !== top?.address && c.v.coins.some((coin) => coin.usd === null && BigInt(coin.amount) > 0n))
+              .map((c) => ({
+                address: c.address,
+                unpriced_coins: c.v.coins
+                  .filter((coin) => coin.usd === null && BigInt(coin.amount) > 0n)
+                  .map((coin) => ({ coin_type: coin.coin_type, symbol: coin.symbol, amount: coin.amount_human })),
+              }));
+            if (unpricedGainers.length === 0 && top) {
+              defaultedFrom = {
+                address: top.address,
+                senders: agg.senders,
+                sender_usd_net: valueDeltas(agg.totals, prices.points).usd_net,
+              };
+              agg = aggregateIncident(read.txs, top.address);
+            }
+          }
         }
-        const prices = await priceUsdAtTime([...coins], atSec);
 
         const perCoin = (v: ValuedDeltas) =>
           Object.fromEntries(v.coins.map((c) => [c.coin_type, [c.amount_human, c.usd]]));
@@ -405,16 +540,23 @@ export function registerAttackTools(server: McpServer) {
           .map((g) => {
             const a = valueDeltas(g.attacker_deltas, prices.points);
             const p = valueDeltas(g.pool_deltas, prices.points);
+            const poolUsd = Number((p.usd_net - (g.recorded_loss_usd ?? 0)).toFixed(2));
             const unpricedHere = new Set([...a.unpriced, ...p.unpriced]).size;
             return {
               pools: g.pools,
               protocol: protocolOf(packageOfEventType(g.pool_type)),
               transactions: g.digests,
               attacker_usd: a.usd_net,
-              pool_usd: p.usd_net,
+              pool_usd: poolUsd,
               ...(unpricedHere ? { unpriced_coins: unpricedHere } : {}),
               attacker: perCoin(a),
               pool: perCoin(p),
+              ...(g.recorded_loss_usd
+                ? {
+                    recorded_loss_usd: Number(g.recorded_loss_usd.toFixed(2)),
+                    recorded_loss_note: "At least one of these pools states its USD value change directly, from its own event, rather than a coin amount; it is folded into pool_usd above and not itemised in `pool`.",
+                  }
+                : {}),
             };
           })
           .sort((x, y) => y.attacker_usd - x.attacker_usd);
@@ -424,7 +566,14 @@ export function registerAttackTools(server: McpServer) {
         const poolLossUsd = allGroups.reduce((s, g) => s + Math.min(0, g.pool_usd), 0);
         const unpricedBy = new Map(prices.unpriced.map((u) => [u.coin_type, u]));
         const netOf = new Map(total.coins.map((c) => [c.coin_type, c]));
-        const coinRows = [...coins].map((coinType) => {
+        // Only the final attacker's own coins and the pools' reserve coins,
+        // not every coin any address touched across every transaction: the
+        // wide set above exists only to price the default candidates, and
+        // using it here mislabels a fully priced attacker total as a lower
+        // bound and lists irrelevant counterparties' coins.
+        const rowCoins = new Set<string>(agg.totals.keys());
+        for (const g of agg.groups) for (const c of g.pool_deltas.keys()) if (c.includes("::")) rowCoins.add(c);
+        const coinRows = [...rowCoins].map((coinType) => {
           const t = netOf.get(coinType);
           const coin = displayCoin(coinType);
           return {
@@ -446,6 +595,15 @@ export function registerAttackTools(server: McpServer) {
         const lines = [
           `${read.txs.length} transaction(s) read${read.missing.length ? `, ${read.missing.length} not found` : ""}` +
             `${agg.failed.length ? `, ${agg.failed.length} failed` : ""}. ${allGroups.length} pool group(s).`,
+          ...(unpricedGainers.length > 0
+            ? [
+                `No attacker given: the sender(s) only paid gas across these transactions, but ${unpricedGainers.length === 1 ? "one address gained" : `${unpricedGainers.length} addresses gained`} a coin with no price, so the sender(s) are kept rather than guessing from priced gains alone. See unpriced_gain_candidates.`,
+              ]
+            : defaultedFrom
+              ? [
+                  `No attacker given: ${defaultedFrom.senders.join(", ")} only paid gas across these transactions (net ${formatUsd(defaultedFrom.sender_usd_net)}), so ${defaultedFrom.address} is used instead as the largest gainer. Pass "attacker" to name a different address.`,
+                ]
+              : []),
           `Attacker gains at ${new Date(atSec * 1000).toISOString()}: ${formatUsd(total.usd_gained)} across ${pricedCoins.length} priced coin(s)` +
             (lowerBound ? `; ${unpricedRemainder.length} more coin(s) have no price, so this is a lower bound.` : "."),
           `Pool reserves lost, by their own events: ${formatUsd(-poolLossUsd)}.`,
@@ -464,7 +622,23 @@ export function registerAttackTools(server: McpServer) {
           ...(read.missing.length ? { not_found: read.missing } : {}),
           ...(read.events_undecoded.length ? { events_undecoded: read.events_undecoded } : {}),
           ...(window ? { window, ...(truncated ? { truncated: true } : {}) } : {}),
-          attacker: attackerId ?? "each transaction's sender",
+          attacker: defaultedFrom?.address ?? attackerId ?? "each transaction's sender",
+          ...(defaultedFrom
+            ? {
+                attacker_defaulted_from_sender: {
+                  senders: defaultedFrom.senders,
+                  senders_usd_net: defaultedFrom.sender_usd_net,
+                  reason: `No "attacker" was given. ${defaultedFrom.senders.length === 1 ? "The sender" : "The senders"} only paid gas across these transactions, so this address, the largest gainer across the same transactions, is used instead. Pass "attacker" to name a different address.`,
+                },
+              }
+            : {}),
+          ...(unpricedGainers.length > 0
+            ? {
+                unpriced_gain_candidates: unpricedGainers,
+                unpriced_gain_candidates_note:
+                  'The sender(s) only paid gas across these transactions, but an address other than the largest priced gainer gained a coin with no price. Defaulting to the largest PRICED gainer risks naming a small fee wallet or referrer over the address that actually took the unpriced value, so `attacker` was kept as the sender instead. Investigate these candidates directly, or pass "attacker" to name one.',
+              }
+            : {}),
           senders: agg.senders,
           priced_at: new Date(atSec * 1000).toISOString(),
           evidence_tiers: EVIDENCE_TIERS,
@@ -505,7 +679,7 @@ export function registerAttackTools(server: McpServer) {
           content: [
             { type: "text" as const, text: lines.join("\n") },
             // Compact: an incident runs to hundreds of groups, and indentation
-            // alone was a third of the payload.
+            // alone is a large share of the payload.
             { type: "text" as const, text: JSON.stringify(payload) },
           ],
         };

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { retryingFetch, gqlQuery, type GraphqlTransportOptions } from "../src/clients/graphql.js";
+import { retryingFetch, gqlQuery, RateWindow, type GraphqlTransportOptions } from "../src/clients/graphql.js";
 
 const ENDPOINT = "https://graphql.mainnet.sui.io/graphql";
 const waits: number[] = [];
@@ -140,5 +140,63 @@ describe("gqlQuery errors", () => {
     expect((err as Error).message).toBe(
       "Rate-limited by graphql.mainnet.sui.io (HTTP 429) after 4 attempts. Retry shortly, or set SUI_GRAPHQL_URL to a private endpoint for heavy use.",
     );
+  });
+});
+
+describe("request rate window", () => {
+  /** A clock the window's waits advance, so a test runs instantly. */
+  function fakeClock() {
+    const clock = { t: 1_000_000, waited: [] as number[] };
+    return {
+      clock,
+      now: () => clock.t,
+      sleep: async (ms: number) => {
+        clock.waited.push(ms);
+        clock.t += ms;
+      },
+    };
+  }
+
+  it("starts at most `limit` requests in any window and holds the rest until the oldest ages out", async () => {
+    const { clock, now, sleep } = fakeClock();
+    const w = new RateWindow(3, 10_000, now, sleep);
+    const starts: number[] = [];
+    await Promise.all([1, 2, 3, 4, 5].map(async () => {
+      await w.acquire();
+      starts.push(clock.t);
+    }));
+    // Three start at once; the fourth waits until the first is 10s old.
+    expect(starts.slice(0, 3)).toEqual([1_000_000, 1_000_000, 1_000_000]);
+    expect(starts[3]).toBeGreaterThan(1_000_000 + 10_000 - 1);
+    // Never more than 3 starts inside any 10s span.
+    for (const s of starts) expect(starts.filter((x) => x > s - 10_000 && x <= s).length).toBeLessThanOrEqual(3);
+  });
+
+  it("counts every attempt, retries included, against the window", async () => {
+    const { clock, now, sleep } = fakeClock();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(ok({ n: 1 }))
+      .mockResolvedValueOnce(rateLimited("0"))
+      .mockResolvedValueOnce(ok({ n: 2 }));
+    vi.stubGlobal("fetch", fetch);
+    const f = retryingFetch(ENDPOINT, { ...FAST, now, sleep, rateLimit: 2 });
+    await f(ENDPOINT, { method: "POST" });
+    await f(ENDPOINT, { method: "POST" });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(clock.waited.some((ms) => ms >= 9_000)).toBe(true);
+  });
+
+  it("reads SUI_RATE_LIMIT for any host, 0 turns it off, and leaves other hosts alone by default", async () => {
+    const { rateLimitFor } = await import("../src/config.js");
+    vi.stubEnv("SUI_RATE_LIMIT", "");
+    expect(rateLimitFor("graphql.mainnet.sui.io")).toBe(180);
+    expect(rateLimitFor("fullnode.testnet.sui.io")).toBe(180);
+    expect(rateLimitFor("my-node.example.com")).toBeNull();
+    expect(rateLimitFor("evilsui.io.example.com")).toBeNull();
+    vi.stubEnv("SUI_RATE_LIMIT", "500");
+    expect(rateLimitFor("my-node.example.com")).toBe(500);
+    vi.stubEnv("SUI_RATE_LIMIT", "0");
+    expect(rateLimitFor("graphql.mainnet.sui.io")).toBeNull();
+    vi.unstubAllEnvs();
   });
 });

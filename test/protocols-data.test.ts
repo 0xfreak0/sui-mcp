@@ -142,7 +142,7 @@ describe("registry additions resolve", () => {
   });
 
   it("classifies SpringSui as liquid staking", () => {
-    // Was previously mislabelled "lending"; it mints sSUI.
+    // SpringSui mints sSUI, which makes it liquid staking.
     expect(
       lookupProtocol("0xb0575765166030556a6eafd3b1b970eba8183ff748860680245b9edd41c716e7")?.type,
     ).toBe("liquid_staking");

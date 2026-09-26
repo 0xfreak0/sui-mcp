@@ -4,7 +4,7 @@ import { displayCoin, symbolOf } from "../src/utils/valuation.js";
 import { formatCoinAmount } from "../src/utils/coin-amount.js";
 import { decodeTransaction } from "../src/protocols/decoder.js";
 
-// Real mainnet types from the Cetus attacker's history.
+// Mainnet coin types.
 const WORMHOLE_USDC = "0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN";
 const WORMHOLE_WETH = "0xaf8cd5edc19c4512f4259f0bee101a40d41ebed738ade5874359610ef8eeced5::coin::COIN";
 const NATIVE_USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
@@ -12,9 +12,9 @@ const VAULT_SHARE = `0x5ffa69ee4ee14d899dcc750df92de12bad4bacf81efa1ae12ee764068
 
 describe("coin names", () => {
   /**
-   * Regression: the name was the last `::` segment of the type string, so the
-   * vault share wrapping USDC was called `USDC>`, and every Wormhole asset,
-   * each `<package>::coin::COIN`, was called `COIN`.
+   * A coin's name is its struct name with each generic argument named, so the
+   * vault share wrapping USDC is `MagicCoin<USDC>`. A Wormhole asset, each
+   * `<package>::coin::COIN`, takes its curated symbol.
    */
   it("keeps a generic coin's own name and names its argument", () => {
     expect(symbolOf(VAULT_SHARE)).toBe("MagicCoin<USDC>");
@@ -41,8 +41,8 @@ describe("coin names", () => {
 
 describe("formatCoinAmount", () => {
   /**
-   * Regression: identify_address showed `sui_balance: "50000000"` for the
-   * Cetus attacker, which is 0.05 SUI and reads as fifty million.
+   * A raw base-unit amount is shown in human units: `50000000` of SUI is
+   * 0.05 SUI, which as a bare integer reads as fifty million.
    */
   it("puts a raw base-unit amount in human units with its symbol", () => {
     expect(formatCoinAmount("50000000", "0x2::sui::SUI")).toBe("0.05 SUI");

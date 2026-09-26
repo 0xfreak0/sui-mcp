@@ -14,9 +14,8 @@ describe("decode_ptb on address-balance withdrawals", () => {
   /**
    * The signed bytes of mainnet CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay
    * (GraphQL `transactionBcs`): withdraw 1951 MIST of SUI from the sender's
-   * address balance, redeem it and send_funds it on. The withdrawal input came
-   * back as a bare `{type: "FundsWithdrawal"}`, hiding the one number a
-   * drainer PTB turns on.
+   * address balance, redeem it and send_funds it on. The decoded withdrawal
+   * input carries its amount, the one number a drainer PTB turns on.
    */
   it("shows the amount, coin type and source of a FundsWithdrawal input", async () => {
     const j = await decode(fixture.CD2e4_transaction_bcs);

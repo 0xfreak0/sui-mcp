@@ -8,18 +8,17 @@
  * the confidence, and it falls out of the same computation as the peak.
  *
  * That approach, the local-16:00 anchor and the deliberately wide region bands
- * are taken from a production implementation of the same idea rather than
- * invented here. A quiet-window scan, which was the first attempt, treats hour
- * 23 and hour 0 as unrelated and has no natural confidence measure.
+ * are taken from a production implementation of the same idea. A quiet-window
+ * scan treats hour 23 and hour 0 as unrelated and has no natural confidence
+ * measure.
  *
- * One improvement on that prior version: it consumed a *ranking* of active
- * hours with no counts, and its own comment notes confidence therefore could not
- * reflect activity mass. This weights by the real histogram.
+ * Confidence here reflects activity mass: this weights by the real histogram,
+ * where that implementation consumed a *ranking* of active hours with no
+ * counts.
  *
- * **`always_on` is a finding, not a failure.** Activity spread evenly around the
- * clock is what automation looks like, and on Sui it is the common answer: of 14
- * sampled active senders, 11 did 500 transactions inside a single day. An
- * address with no human rhythm is telling you something.
+ * **`always_on` is a finding.** Activity spread evenly around the clock is what
+ * automation looks like, and on Sui it is a common answer. An address with no
+ * human rhythm is telling you something.
  *
  * A region is not a city. The bands below are multi-hour-wide on purpose,
  * because the inference is worth about ±1-2 hours.
@@ -42,10 +41,9 @@ const MIN_RESULTANT = 0.35;
 /**
  * Transactions per day above which no human is doing this by hand.
  *
- * Measured: 17 of 20 sampled active senders did 400 transactions inside a
- * single day, which is thousands per day. A busy human trader might reach a few
- * dozen. This catches automation the circadian test cannot, because a burst has
- * no daily rhythm to read and would otherwise be reported as "not enough data".
+ * A busy human trader might reach a few dozen. This catches automation the
+ * circadian test cannot, because a burst has no daily rhythm to read and would
+ * otherwise be reported as "not enough data".
  */
 const HUMAN_RATE_CEILING = 200;
 
@@ -54,10 +52,9 @@ const HUMAN_RATE_CEILING = 200;
  *
  * `always_on` asks whether activity is spread evenly, and a 24/7 script and an
  * occasional person produce the same answer: a wallet doing 0.4 transactions a
- * day over 292 days CANNOT concentrate, because 120 points scattered across a
- * year never form a peak. Reading that as automation was wrong on a real
- * mainnet wallet, and it is the failure this codebase exists to avoid — a
- * confident label on an address that simply is not used much.
+ * day over 292 days cannot concentrate, because 120 points scattered across a
+ * year never form a peak. Below this rate a flat clock is not labelled
+ * automation, since the address may simply not be used much.
  *
  * Above this, flatness is informative: a person transacting several times a day
  * would have left a working-hours shape, and its absence means something.
@@ -113,8 +110,7 @@ export interface ActivityHours {
   transactions_per_day: number | null;
   /**
    * Automation is indicated, by either route: a flat clock over a long span, or
-   * a rate no person sustains by hand. The two catch different populations —
-   * measured on Sui, most active wallets are the second.
+   * a rate no person sustains by hand. The two catch different populations.
    */
   automation_indicated: boolean;
   utc_offset_estimate: number | null;

@@ -5,8 +5,7 @@
  * EIP-155 id, as a decimal string) and `to_addr` (20 raw bytes), so the far
  * side is chain-derived. `burn_id` is cBridge's transfer id, which its
  * `getTransferStatus` API and the destination mint quote back. Pinned to the
- * package, since `peg_bridge` is not a name Celer owns. Verified on
- * AkW2h1WQ… (USDC to Ethereum).
+ * package, since `peg_bridge` is not a name Celer owns.
  *
  * Celer also gives non-EVM chains ids in the same space (Sui is 12370001), so
  * `eip155:<to_chain>` is only claimed for a chain this server knows to be EVM.

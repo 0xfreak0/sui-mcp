@@ -27,7 +27,7 @@ const run = async (args: Record<string, unknown>) => JSON.parse((await handlers.
 
 const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 // SUI_USDC 1h candles from the DeepBook indexer, [open ms, open, high, low, close, volume]:
-// the two before the Cetus exploit, read with end_time 2025-05-22T10:40:00Z.
+// the two last candles read with end_time 2025-05-22T10:40:00Z.
 const END = Date.parse("2025-05-22T10:40:00Z") / 1000;
 const NINE = Date.parse("2025-05-22T09:00:00Z");
 const TEN = Date.parse("2025-05-22T10:00:00Z");

@@ -1,5 +1,9 @@
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
-import { assessCapHolder, type CapHolderStatus } from "./upgrade-cap.js";
+import { assessCapHolder, isUnspendableAddress, type CapHolderStatus } from "./upgrade-cap.js";
+import { fetchTypeOrigins, type TypeOrigin } from "./package-versions.js";
+import { describeAddresses } from "./identity.js";
+import { schemeLabel } from "./upgrade-history.js";
 
 /**
  * Capability auditing for a Move package: who holds the powerful capabilities
@@ -32,14 +36,15 @@ export interface CapabilityInfo {
   /**
    * UpgradeCap only: where the cap ended up relative to the publisher.
    *
-   * `burned` and `transferred` are deliberately distinct. 20% of mainnet caps
-   * are not with their publisher, but 27 of every 30 of those went to an
-   * unspendable address — reporting both as "moved" would flag the responsible
-   * choice as suspicious.
+   * `burned` and `transferred` are deliberately distinct. Most caps that
+   * leave their publisher go to an unspendable address, and reporting both
+   * as "moved" would flag that responsible choice as suspicious.
    */
   holder_status?: CapHolderStatus;
   /** UpgradeCap only: the publisher it was compared against. */
   publisher?: string;
+  /** How the holder authenticates (single-key scheme, or a multisig m-of-n), when known. */
+  signing_scheme?: string;
   risk: CapRisk;
   note: string;
 }
@@ -47,6 +52,20 @@ export interface CapabilityInfo {
 export interface CapabilityAudit {
   checked: boolean;
   capabilities: CapabilityInfo[];
+  /**
+   * Authority-named struct types held one-per-user rather than by a small
+   * number of protocol authorities (`USER_HELD_MIN_INSTANCES` or more live
+   * instances, or the scan hit its cap), reported as a count rather than one
+   * `capabilities` entry per holder. `truncated` means the type has at least
+   * `MAX_INSTANCES_PER_STRUCT` instances; `count` is a lower bound then.
+   */
+  user_held_types?: Array<{ type: string; count: number; truncated: boolean }>;
+  /**
+   * Authority-named struct types whose instance scan failed outright (a
+   * timeout, a 429 after retries). Absence here is not evidence the type has
+   * no live instances: the scan never completed.
+   */
+  incomplete_scans?: Array<{ type: string; reason: string }>;
   note?: string;
 }
 
@@ -90,7 +109,14 @@ export function classifyCapabilityRisk(input: {
   // A party object has exactly one owner, so it is held the way an
   // address-owned object is. Reading it as shared would say anyone might
   // reach a capability that only its owner can use.
-  const held = owner === "address" || owner === "consensus";
+  //
+  // An address nobody holds a key for is a different case from either:
+  // the object still exists and is still owned in the ordinary sense, but
+  // nobody can sign a transaction that uses it. A TreasuryCap the publish
+  // transaction created already owned by 0x0 cannot mint, so reporting it as
+  // a live mint risk names the wrong danger.
+  const unspendable = (owner === "address" || owner === "consensus") && !!ownerAddress && isUnspendableAddress(ownerAddress);
+  const held = (owner === "address" || owner === "consensus") && !unspendable;
   const who = ownerAddress
     ? owner === "consensus"
       ? `${ownerAddress} (a party object: one owner, transactions ordered through consensus)`
@@ -101,6 +127,12 @@ export function classifyCapabilityRisk(input: {
   if (kind === "upgrade") {
     if (owner === "burned") {
       return { risk: "info", note: "UpgradeCap has been destroyed — the package is immutable and can never be changed." };
+    }
+    if (unspendable) {
+      return {
+        risk: "info",
+        note: `UpgradeCap was sent to ${ownerAddress}, an address nobody holds a key for — upgrade rights are effectively renounced even though the object still exists.`,
+      };
     }
     if (policyLabel === "immutable") {
       return { risk: "low", note: "UpgradeCap policy is immutable — the package can no longer be upgraded." };
@@ -121,6 +153,12 @@ export function classifyCapabilityRisk(input: {
     if (owner === "burned") {
       return { risk: "info", note: `Mint authority (${shortType}) has been renounced — token supply is fixed.` };
     }
+    if (unspendable) {
+      return {
+        risk: "info",
+        note: `Mint authority (${shortType}) was sent to ${ownerAddress}, an address nobody holds a key for — no key can sign to mint, so supply is effectively fixed even though the object still exists.`,
+      };
+    }
     if (held) {
       return { risk: "high", note: `Mint authority (${shortType}) is held by ${who} — new tokens can be minted at will (inflation / rug risk).` };
     }
@@ -132,6 +170,12 @@ export function classifyCapabilityRisk(input: {
 
   if (kind === "deny") {
     if (owner === "burned") return { risk: "info", note: `Deny/freeze authority (${shortType}) has been destroyed.` };
+    if (unspendable) {
+      return {
+        risk: "info",
+        note: `Denylist/freeze authority (${shortType}) was sent to ${ownerAddress}, an address nobody holds a key for — freeze authority is effectively renounced.`,
+      };
+    }
     if (held) {
       return { risk: "medium", note: `Denylist/freeze authority (${shortType}) is held by ${who} — can freeze addresses or block transfers of this coin.` };
     }
@@ -140,6 +184,12 @@ export function classifyCapabilityRisk(input: {
 
   // admin / other *Cap
   if (owner === "burned") return { risk: "info", note: `Capability ${shortType} has been destroyed.` };
+  if (unspendable) {
+    return {
+      risk: "info",
+      note: `Capability ${shortType} was sent to ${ownerAddress}, an address nobody holds a key for — effectively renounced even though the object still exists.`,
+    };
+  }
   if (held) {
     return { risk: "low", note: `Privileged capability ${shortType} is held by ${who} — review what powers it grants.` };
   }
@@ -212,15 +262,128 @@ function ownerKindOf(typename: string | undefined): OwnerKind {
   }
 }
 
+/** Struct names already classified by `classifyCapType`; the authority scan below skips them. */
+const STANDARD_CAP_NAMES = /^(TreasuryCap|DenyCap|DenyCapV2|UpgradeCap|CoinMetadata)$/;
+/** A struct name that marks its holder as an authority over the package. */
+const AUTHORITY_NAME = /(Cap|Admin|Operator|Owner|Manager|Authority)$/;
+/**
+ * A struct name that names a protocol-level authority rather than a per-user
+ * object. DeepBook's `TradeCap`/`DepositCap`, 0x2's `KioskOwnerCap` and
+ * Suilend's `ObligationOwnerCap` all end in `Cap`/`Owner` and every user of
+ * the protocol holds one; `Admin`/`Operator`/`Authority` names do not have
+ * that per-user shape. Ranked first so the 12-type cap below keeps them over
+ * a package with more generic `*Cap`/`*Owner`/`*Manager` types than fit.
+ */
+const STRONG_AUTHORITY_NAME = /(Admin|Operator|Authority)/;
+
+/** A package's modules, reduced to what finding authority structs needs. */
+export interface CapCandidateModule {
+  name: string;
+  structs: { name: string; abilities: string[] }[];
+}
+
+/**
+ * Every `key`-ability struct in the package whose name marks it as an
+ * authority (`Cap`, `Admin`, `Operator`, `Owner`, `Manager`, `Authority`),
+ * excluding the framework types `classifyCapType` already recognizes.
+ *
+ * The publish-transaction scan below only finds capabilities minted at
+ * publish time. A cap minted in a later transaction and handed to one key is
+ * invisible to that scan, so this walks the package's own struct definitions
+ * instead of waiting for a cap to turn up in a transaction.
+ */
+export function findAuthorityStructs(modules: CapCandidateModule[]): Array<{ module: string; name: string }> {
+  const out: Array<{ module: string; name: string }> = [];
+  for (const m of modules) {
+    for (const s of m.structs) {
+      if (!s.abilities.includes("key")) continue;
+      if (STANDARD_CAP_NAMES.test(s.name)) continue;
+      if (!AUTHORITY_NAME.test(s.name)) continue;
+      out.push({ module: m.name, name: s.name });
+    }
+  }
+  // Array#sort is stable, so within each rank package/module order is kept.
+  out.sort((a, b) => Number(STRONG_AUTHORITY_NAME.test(b.name)) - Number(STRONG_AUTHORITY_NAME.test(a.name)));
+  return out;
+}
+
+/** A package with more authority-named struct types than this is scanned partially, not skipped. */
+const MAX_AUTHORITY_STRUCTS = 12;
+/** Live instances read per authority struct type. A count at this limit is a sample, not a full list. */
+const MAX_INSTANCES_PER_STRUCT = 50;
+/**
+ * More instances than this, or hitting the scan cap above, means the type is
+ * held one-per-user (DeepBook v3's `balance_manager::{BalanceManager,
+ * TradeCap, DepositCap, WithdrawCap}`, one per trader) rather than by a small
+ * number of protocol authorities, so it is reported as a count instead of one
+ * entry per holder. An operator cap held by a small team stays under this
+ * line and is still listed individually.
+ */
+const USER_HELD_MIN_INSTANCES = 20;
+
+interface TypeInstancesResult {
+  objects: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: Array<{ address: string; owner: { __typename: string; address?: { address: string } } | null }>;
+  };
+}
+
+const TYPE_INSTANCES_QUERY = `query ($t: String!, $after: String) {
+  objects(filter: { type: $t }, first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      address
+      owner {
+        __typename
+        ... on AddressOwner { address { address } }
+        ... on ConsensusAddressOwner { address { address } }
+      }
+    }
+  }
+}`;
+
+/** A `key`-ability struct instance found live on chain, and its current owner. */
+export interface CapInstance {
+  id: string;
+  owner: OwnerKind;
+  owner_address?: string;
+}
+
+export interface ScanTypeInstancesResult {
+  instances: CapInstance[];
+  truncated: boolean;
+}
+
+/** Every live instance of `type`, up to `MAX_INSTANCES_PER_STRUCT`. */
+async function scanTypeInstances(type: string): Promise<ScanTypeInstancesResult> {
+  const instances: CapInstance[] = [];
+  let after: string | undefined;
+  let scanned = 0;
+  while (scanned < MAX_INSTANCES_PER_STRUCT) {
+    const data: TypeInstancesResult = await gqlQuery<TypeInstancesResult>(TYPE_INSTANCES_QUERY, { t: type, after });
+    for (const n of data.objects.nodes) {
+      instances.push({ id: n.address, owner: ownerKindOf(n.owner?.__typename), owner_address: n.owner?.address?.address });
+    }
+    scanned += data.objects.nodes.length;
+    if (!data.objects.pageInfo.hasNextPage) return { instances, truncated: false };
+    after = data.objects.pageInfo.endCursor ?? undefined;
+    if (!after) return { instances, truncated: true };
+  }
+  return { instances, truncated: true };
+}
+
 /**
  * Audit the capabilities of a package. Best-effort: if the publish transaction
  * is unavailable (pruned) or GraphQL fails, returns { checked: false } with a
- * note rather than throwing — capability info should never break analyze_package.
+ * note rather than throwing, because capability info should never break
+ * analyze_package.
  *
- * Caveat: only finds capabilities minted in the package's PUBLISH transaction
- * (the common case — UpgradeCap always, plus caps created in module `init`).
- * Caps created in a later transaction (e.g. a coin whose currency is created
- * post-publish) are not discovered here.
+ * Two ways a capability is found: the package's publish transaction (the
+ * common case: UpgradeCap always, plus caps created in module `init`), and,
+ * when the caller passes `modules`, every other `key`-ability struct whose
+ * name marks it as an authority, whether or not a live instance was minted at
+ * publish. The second pass finds a cap minted after publish, such as an
+ * OperatorCap handed to one address.
  */
 export async function auditPackageCapabilities(
   packageId: string,
@@ -236,9 +399,11 @@ export async function auditPackageCapabilities(
    * here so `analyze_package` does not resolve it twice.
    */
   publisher?: string | null,
+  /** The package's own modules, for the authority-struct scan. Omit to skip it. */
+  modules?: CapCandidateModule[],
 ): Promise<CapabilityAudit> {
   // 1. Scan the publish tx for created cap-like objects (paginating a few pages).
-  const capObjects: Array<{ id: string; type: string; kind: CapKind }> = [];
+  const capObjects: Array<{ id: string; type: string; kind: CapKind; knownOwner?: { owner: OwnerKind; ownerAddress?: string } }> = [];
   let after: string | null = null;
   let pages = 0;
   try {
@@ -262,34 +427,116 @@ export async function auditPackageCapabilities(
     return { checked: false, capabilities: [], note: `Capability audit failed: ${(err as Error).message}` };
   }
 
-  // 2. Resolve each cap's CURRENT state (owner / policy / burned) in parallel.
+  // 1b. Every other authority-named struct the package defines, whether or
+  // not a live instance was minted at publish. Object ids the publish scan
+  // already found are not duplicated. A type held one-per-user (more than
+  // USER_HELD_MIN_INSTANCES live instances, or the scan hit its cap) is
+  // reported as a count in `user_held_types` instead of one `capObjects`
+  // entry per holder: DeepBook's `TradeCap`, 0x2's `KioskOwnerCap` and
+  // Suilend's `ObligationOwnerCap` all match `AUTHORITY_NAME` and every user
+  // of the protocol holds one. A struct whose scan fails is reported in
+  // `incompleteScans` rather than silently dropped: the answer must say the
+  // check did not run, never render identically to "no such capability".
+  let structsSkipped = 0;
+  const userHeldTypes: Array<{ type: string; count: number; truncated: boolean }> = [];
+  const incompleteScans: Array<{ type: string; reason: string }> = [];
+  if (modules?.length) {
+    const seen = new Set(capObjects.map((c) => c.id));
+    const candidates = findAuthorityStructs(modules);
+    structsSkipped = Math.max(0, candidates.length - MAX_AUTHORITY_STRUCTS);
+    const scanned = candidates.slice(0, MAX_AUTHORITY_STRUCTS);
+    // A struct may have been defined by an earlier version, and an object is
+    // indexed under the id that defined its type (the rule an event's type
+    // follows), so a scan under the requested id finds nothing. The origins
+    // are read once for every candidate; when that read fails, every
+    // candidate is reported unscanned rather than scanned under an id that
+    // may be wrong and read as "no such capability".
+    let origins: TypeOrigin[] | null = null;
+    let originsError: string | null = null;
+    if (scanned.length) {
+      try {
+        origins = await fetchTypeOrigins(packageId);
+      } catch (err) {
+        originsError = (err as Error).message;
+      }
+    }
+    await Promise.all(
+      scanned.map(async ({ module, name }) => {
+        const requested = `${packageId}::${module}::${name}`;
+        if (originsError !== null) {
+          incompleteScans.push({
+            type: requested,
+            reason: `type origins unreadable (${originsError}), so the package version defining this struct is unknown`,
+          });
+          return;
+        }
+        const definingId = origins?.find((o) => o.module === module && o.struct === name)?.definingId;
+        const type =
+          definingId && normalizeSuiAddress(definingId) !== normalizeSuiAddress(packageId)
+            ? `${normalizeSuiAddress(definingId)}::${module}::${name}`
+            : requested;
+        let scan: ScanTypeInstancesResult;
+        try {
+          scan = await scanTypeInstances(type);
+        } catch (err) {
+          incompleteScans.push({ type, reason: (err as Error).message });
+          return;
+        }
+        if (scan.instances.length > USER_HELD_MIN_INSTANCES || scan.truncated) {
+          userHeldTypes.push({ type, count: scan.instances.length, truncated: scan.truncated });
+          return;
+        }
+        for (const inst of scan.instances) {
+          if (seen.has(inst.id)) continue;
+          seen.add(inst.id);
+          // The scan already read each instance's current owner live, so
+          // reusing it here skips an otherwise-redundant CAP_STATE_QUERY per
+          // instance (up to MAX_AUTHORITY_STRUCTS * MAX_INSTANCES_PER_STRUCT
+          // of them).
+          capObjects.push({ id: inst.id, type, kind: "admin", knownOwner: { owner: inst.owner, ownerAddress: inst.owner_address } });
+        }
+      }),
+    );
+  }
+
+  // 2. Resolve each cap's current state (owner / policy / burned) in
+  // parallel, except one already known from the authority-struct scan
+  // above, which read it live moments ago.
   const capabilities = await Promise.all(
-    capObjects.map(async ({ id, type, kind }): Promise<CapabilityInfo> => {
+    capObjects.map(async ({ id, type, kind, knownOwner }): Promise<CapabilityInfo> => {
       let owner: OwnerKind = "unknown";
       let ownerAddress: string | undefined;
       let policyLabel: string | undefined;
-      try {
-        const state: CapStateResult = await gqlQuery<CapStateResult>(CAP_STATE_QUERY, { id });
-        if (!state.object) {
-          owner = "burned"; // object no longer exists → destroyed
-        } else {
-          owner = ownerKindOf(state.object.owner?.__typename);
-          ownerAddress = state.object.owner?.address?.address;
-          if (kind === "upgrade") {
-            const policy = state.object.asMoveObject?.contents?.json?.policy;
-            policyLabel = upgradePolicyLabel(typeof policy === "number" ? policy : undefined);
+      if (knownOwner) {
+        owner = knownOwner.owner;
+        ownerAddress = knownOwner.ownerAddress;
+      } else {
+        try {
+          const state: CapStateResult = await gqlQuery<CapStateResult>(CAP_STATE_QUERY, { id });
+          if (!state.object) {
+            owner = "burned"; // object no longer exists → destroyed
+          } else {
+            owner = ownerKindOf(state.object.owner?.__typename);
+            ownerAddress = state.object.owner?.address?.address;
+            if (kind === "upgrade") {
+              const policy = state.object.asMoveObject?.contents?.json?.policy;
+              policyLabel = upgradePolicyLabel(typeof policy === "number" ? policy : undefined);
+            }
           }
+        } catch {
+          owner = "unknown";
         }
-      } catch {
-        owner = "unknown";
       }
       const { risk, note } = classifyCapabilityRisk({ kind, type, owner, ownerAddress, policyLabel });
 
       // An UpgradeCap's holder means nothing on its own. Compared against the
       // publisher it says whether upgrade authority changed hands, which is
       // the question worth asking about the most consequential capability on
-      // the chain.
-      const held = kind === "upgrade" ? assessCapHolder(ownerAddress, publisher) : null;
+      // the chain. Skipped when the object itself is gone: `assessCapHolder`
+      // reads a missing holder as "shared, immutable or wrapped", which is
+      // wrong for a cap that was destroyed outright and already has its own
+      // note above.
+      const held = kind === "upgrade" && owner !== "burned" ? assessCapHolder(ownerAddress, publisher) : null;
 
       return {
         kind,
@@ -309,9 +556,39 @@ export async function auditPackageCapabilities(
     }),
   );
 
+  // 3. Signing scheme for every held cap, one batched identity lookup.
+  const ownerAddrs = [...new Set(capabilities.filter((c) => c.owner_address).map((c) => c.owner_address!))];
+  if (ownerAddrs.length) {
+    const identities = await describeAddresses(ownerAddrs, { authentication: true }).catch(() => new Map());
+    for (const cap of capabilities) {
+      const id = cap.owner_address ? identities.get(cap.owner_address) : undefined;
+      if (id?.authentication) cap.signing_scheme = schemeLabel(id.authentication);
+    }
+  }
+
   // Most-severe first.
   const order: Record<CapRisk, number> = { high: 0, medium: 1, low: 2, info: 3 };
   capabilities.sort((a, b) => order[a.risk] - order[b.risk]);
 
-  return { checked: true, capabilities };
+  const noteParts: string[] = [];
+  if (structsSkipped > 0) {
+    noteParts.push(
+      `${structsSkipped} additional authority-named struct type(s) were not scanned (capped at ${MAX_AUTHORITY_STRUCTS}); their instances may be missing.`,
+    );
+  }
+  if (incompleteScans.length) {
+    noteParts.push(
+      `${incompleteScans.length} authority-named struct type(s) could not be scanned: ${incompleteScans
+        .map((s) => s.type.split("::").slice(-2).join("::"))
+        .join(", ")}. Their instances may be missing from this audit — see incomplete_scans.`,
+    );
+  }
+
+  return {
+    checked: true,
+    capabilities,
+    ...(userHeldTypes.length ? { user_held_types: userHeldTypes } : {}),
+    ...(incompleteScans.length ? { incomplete_scans: incompleteScans } : {}),
+    ...(noteParts.length ? { note: noteParts.join(" ") } : {}),
+  };
 }

@@ -74,7 +74,7 @@ export const OVERRIDES: Record<string, Override> = {
   export_case: { network: false, annotations: LOCAL_READ },
   // add/import write labels and `remove` deletes one.
   // `list` and `export` return every label, and `export` must be whole for
-  // `import` to round-trip it: 123k characters with the shipped set.
+  // `import` to round-trip it. The bundled set alone is past the ~50k preview.
   manage_labels: {
     title: "Manage address labels",
     meta: FULL_SIZE,
@@ -94,6 +94,9 @@ export const OVERRIDES: Record<string, Override> = {
 
   // Policy-complete results: declare the size, and return structured JSON
   // where the result is one object.
+  // An object's fields are its answer. A lending market's reserves run to
+  // 280k characters, past the 100k default.
+  get_object: { meta: FULL_SIZE },
   get_transaction: { meta: FULL_SIZE },
   get_transactions: { meta: FULL_SIZE },
   find_funding_sources: { meta: FULL_SIZE, structured: true },

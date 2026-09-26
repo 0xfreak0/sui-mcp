@@ -1,36 +1,29 @@
 /**
  * Watching an investigation's addresses without drowning the agent.
  *
- * The constraint that shapes everything here is arithmetic. Mainnet produces
- * 4.25 checkpoints and ~74 transactions a second; subscribing to the checkpoint
- * stream is 1.1 GB/hour, which is ~323 million tokens an hour. An agent with a
- * 200k context would be full in 2.2 seconds. Streaming chain data to a model is
- * not expensive, it is impossible.
- *
- * The same measurement gives the way out: only 160 DISTINCT addresses were
- * touched in those 30 seconds. Against a watch set of twenty, the stream is
- * essentially all noise, so the useful signal is roughly one part in a million.
- * Everything here exists to do that reduction outside the model's context.
+ * The constraint that shapes everything here is arithmetic. The checkpoint
+ * stream carries far more data per hour than any model context holds, so
+ * streaming chain data to a model cannot work. Against a watch set of twenty
+ * the stream is almost entirely noise, and everything here exists to do that
+ * reduction outside the model's context.
  *
  * ## Polling, not streaming
  *
- * `afterCheckpoint` on the `transactions` filter is EXCLUSIVE — verified on a
- * wallet with no activity since January: asking after its last checkpoint
- * returns nothing, after the one before returns exactly one. So remembering the
- * highest checkpoint seen per address gives a delta with no duplicates and no
- * gaps, which is all a watch needs. Polling costs about 60 requests an hour
- * against 1.1 GB, and the latency it trades away is latency nobody consumes: an
- * investigation cares that funds moved, not that they moved 900ms ago.
+ * `afterCheckpoint` on the `transactions` filter is exclusive, so remembering
+ * the highest checkpoint seen per address gives a delta with no duplicates and
+ * no gaps, which is all a watch needs. The latency polling trades away is
+ * latency nobody consumes: an investigation cares that funds moved, not the
+ * moment they moved.
  *
- * Streaming becomes the better trade past roughly fifty watched addresses,
- * where polling's per-address cost overtakes the stream's flat one. Native gRPC
- * `subscribeCheckpoints` works against the public fullnode and is the way in if
- * that day comes — the gRPC-Web transport this server uses cannot do it, and
+ * Streaming becomes the better trade once enough addresses are watched that
+ * polling's per-address cost overtakes the stream's flat one. Native gRPC
+ * `subscribeCheckpoints` works against the public fullnode and is the way in
+ * if that day comes. The gRPC-Web transport this server uses cannot do it, and
  * the archive answers UNIMPLEMENTED.
  *
  * ## Two phases, forced by the service and useful anyway
  *
- * A batched delta query carries a MINIMAL selection — digest and checkpoint.
+ * A batched delta query carries a minimal selection: digest and checkpoint.
  * Twenty aliases of that is 3,917 bytes, inside the 5,000-byte query cap;
  * adding balance changes to each alias breaks the separate 300-node limit at
  * twenty and the byte cap at thirty. So detail is a second, separate fetch,
@@ -52,14 +45,13 @@ export const WATCH_BATCH_SIZE = 20;
  *
  * A delta query is built by interpolating twenty addresses into one aliased
  * GraphQL document, and the service answers a single bad `SuiAddress` with a
- * top-level `data: null` — not with a null for that one alias. Verified
- * against mainnet: a batch of two where one address was `not-an-address`
- * returned no data for either. So one mistyped address makes `poll_watch`
- * report nothing for every OTHER address being watched, which is the failure a
- * watch exists to prevent.
+ * top-level `data: null` for the whole document rather than a null for that
+ * one alias. So one mistyped address makes `poll_watch` report nothing for
+ * every other address being watched, which is the failure a watch exists to
+ * prevent.
  *
  * This is the same rule `get_transactions` already follows for digests, where
- * one malformed key among fifty returned nothing at all. The reason it needs
+ * one malformed key among fifty returns nothing at all. The reason it needs
  * its own check is that `normalizeSuiAddress` pads without validating:
  * `not-an-address` becomes a well-formed-looking 66-character string that is
  * not hex, and only `isValidSuiAddress` rejects it.
@@ -190,10 +182,10 @@ function bigOrZero(v: string | undefined): bigint {
  * `afterCheckpoint` is exclusive at CHECKPOINT granularity, but the page cap
  * cuts at TRANSACTION granularity. So when a page comes back full, its last
  * transaction is usually not the last one in its checkpoint, and advancing to
- * that checkpoint excludes the rest of it from every future poll. Measured on
- * one mainnet address: 30 transactions spanning 13 checkpoints, 8 of which held
- * more than one — a boundary landing mid-checkpoint most of the time, and only
- * on the busy addresses this feature exists for.
+ * that checkpoint excludes the rest of it from every future poll. A busy
+ * address often has several transactions per checkpoint, so the boundary
+ * lands mid-checkpoint most of the time on exactly the addresses this feature
+ * exists for.
  *
  * So a saturated page stops one checkpoint SHORT of its own maximum. The
  * boundary checkpoint is read again next poll and its transactions may be
@@ -231,10 +223,9 @@ export function evaluate(
 ): { hits: WatchHit[]; last_checkpoint: number; stalled: boolean } {
   const hits: WatchHit[] = [];
   // A stored floor is validated here too, not only where it was written: a row
-  // from an earlier build can hold "0.5", which threw inside BigInt and became
-  // a floor of zero, so the caller saw everything and was told nothing. An
-  // unusable value is no floor, which is what it already was — but now the
-  // read side agrees with the write side about what is acceptable.
+  // from an earlier build can hold "0.5", which BigInt cannot parse. An
+  // unusable value is no floor, so the read side agrees with the write side
+  // about what is acceptable.
   const floor = /^\d+$/.test((entry.min_amount ?? "").trim()) ? bigOrZero(entry.min_amount) : 0n;
 
   for (const tx of txs) {

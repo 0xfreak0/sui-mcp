@@ -78,7 +78,7 @@ interface SentPageResult {
 export function registerMultisigTools(server: McpServer) {
   server.tool(
     "analyze_multisig",
-    "(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction — this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.",
+    "(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction — this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.",
     {
       address: addressArg().describe("The multisig wallet's address (0x...)"),
       max_transactions: numArg()
@@ -247,6 +247,9 @@ export function registerMultisigTools(server: McpServer) {
                 dormant_members: history.dormant_members,
                 always_present: history.always_present,
                 active_signers_meet_threshold: history.active_signers_meet_threshold,
+                ...(history.effective_committee
+                  ? { unsignable_members: history.unsignable_members, effective_committee: history.effective_committee }
+                  : {}),
                 ...(signerHistoryNote(history, committee.threshold)
                   ? { note: signerHistoryNote(history, committee.threshold) }
                   : {}),

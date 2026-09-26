@@ -7,10 +7,8 @@ import { getNetwork } from "../config.js";
  *
  * The problem this closes: a Sui upgrade mints a brand-new package ID, and a
  * `MoveCall` carries whichever version the caller used, so an exact-match
- * registry keyed on package IDs goes stale on every upgrade. Measured on
- * mainnet, Cetus's CLMM lineage is 14 versions deep and `src/data/protocols.json`
- * names two of them — including neither v12 nor v13, both of which were emitting
- * events at the time of writing.
+ * registry keyed on package IDs goes stale on every upgrade. A lineage can be
+ * many versions deep, with several of them in use at once.
  *
  * The root is the stable identity. It is the same for every version, past and
  * future, so identifying a package by its root turns a hand-maintained list of
@@ -27,7 +25,7 @@ import { getNetwork } from "../config.js";
  *      failing the tool call, and leaves them *uncached* so the outage isn't
  *      sticky for the life of the process.
  *
- * Unlike an MVR name — a string anybody may register — a lineage is a fact the
+ * Unlike an MVR name (a string anybody may register), a lineage is a fact the
  * chain enforces: only the holder of the `UpgradeCap` can add a version. So a
  * root-tier hit is as trustworthy as the curated entry it came from, and
  * `lookupProtocol` (which gates behaviour, not just wording) is allowed to use
@@ -37,10 +35,10 @@ import { getNetwork } from "../config.js";
 /**
  * Packages resolved per GraphQL request.
  *
- * The service rejects a request carrying more than 21 queries that "require
- * dedicated access to a backing store" — 21 aliases came back RESOURCE_EXHAUSTED
- * against mainnet — and separately caps the query payload at 5000 bytes. Twenty
- * aliased `packageVersions` calls land at roughly 2.2KB, inside both.
+ * The service answers a request carrying 21 queries that "require dedicated
+ * access to a backing store" with RESOURCE_EXHAUSTED, and separately caps the
+ * query payload at 5000 bytes. Twenty aliased `packageVersions` calls land at
+ * roughly 2.2KB, inside both.
  */
 export const ROOT_BATCH_SIZE = 20;
 

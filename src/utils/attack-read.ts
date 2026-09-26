@@ -2,18 +2,15 @@
  * Read whole transactions for attack analysis: every command, every event with
  * its decoded fields, every balance change and every changed object.
  *
- * gRPC, not GraphQL. GraphQL's nested connections (commands, events, balance
- * changes) page at 20 by default, and an exploit PTB is exactly the shape that
- * overflows them: the Nemo exploit ran 214 commands and emitted 103 events. A
- * gRPC `ExecutedTransaction` carries all of it in one message, and its events
- * carry their JSON rendering (`Event.json`), on the fullnode and on the
- * archive alike. Verified on mainnet: the archive returned decoded fields for
- * all 6 events of the Cetus exploit and all 103 of the Nemo one.
+ * Reads use gRPC. GraphQL's nested connections (commands, events, balance
+ * changes) page at 20 by default, and an exploit PTB, with hundreds of commands
+ * and events, overflows them. A gRPC `ExecutedTransaction` carries all of it in
+ * one message, and its events carry their JSON rendering (`Event.json`), on the
+ * fullnode and on the archive alike.
  *
  * `batchGetTransactions` takes many digests per request. Its limit is the
- * 4 MiB response, not a count: 100 Cetus exploit transactions came back in one
- * call and 200 overflowed it. Batches are 25, and a batch that still overflows
- * is read one digest at a time.
+ * 4 MiB response size rather than a digest count. Batches are 25, and a batch
+ * that still overflows is read one digest at a time.
  */
 
 import type { GrpcTypes, SuiGrpcClient } from "@mysten/sui/grpc";
@@ -154,8 +151,8 @@ export async function readAttackTransactions(digests: string[]): Promise<AttackR
     const t = found.get(d);
     if (!t) continue;
     const tx = fromGrpcTransaction(t);
-    // Every node probed fills `Event.json`. Should one not, GraphQL decodes
-    // the same events, joined by position only when the counts agree.
+    // Fullnodes and the archive fill `Event.json`. Should one not, GraphQL
+    // decodes the same events, joined by position only when the counts agree.
     if (tx.events.some((e) => e.json === null)) {
       const parsed = await fetchEventJson(d);
       if (parsed && parsed.length === tx.events.length) {

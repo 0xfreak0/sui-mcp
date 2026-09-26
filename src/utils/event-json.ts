@@ -1,28 +1,25 @@
 /**
  * Parsed event fields, and the protocols an event set implicates.
  *
- * Two things live here because they come from the same place and were missing
- * for the same reason.
+ * Both come from the same GraphQL read of a transaction's events.
  *
  * **Parsed fields.** The gRPC `Event` carries `eventType`, `module`, `sender`
- * and BCS — but no decoded JSON. So `get_transaction` could report that an
- * `order_info::OrderPlaced` fired and not what was ordered, which sends anyone
- * who needs the actual values off to hand-write GraphQL. GraphQL exposes the
+ * and BCS, but no decoded JSON, so gRPC alone can report that an
+ * `order_info::OrderPlaced` fired but not what was ordered. GraphQL exposes the
  * decoded value under `contents.json`; this is the same documented exception
  * the bridge resolvers rely on, where a point lookup reaches for GraphQL
  * because gRPC cannot answer.
  *
- * **Protocol attribution.** Protocols used to be derived from Move call
- * targets alone. A transaction that calls an obfuscated wrapper and emits a
- * dozen DeepBook events therefore reported `protocols: []` — while the
- * registry, asked directly, resolves the event's own package to DeepBook by
- * upgrade lineage. Nobody asked it.
+ * **Protocol attribution.** Protocols are derived from Move call targets and
+ * from the packages that define the emitted events. A transaction that calls an
+ * obfuscated wrapper and emits DeepBook events names no protocol by its call
+ * targets, while the registry resolves the event's own package to DeepBook by
+ * upgrade lineage.
  *
- * That failure runs the wrong way round for investigation work. Hashed module
- * names (`h86261::h8b64d`) are exactly what a bot or a laundering route looks
- * like, so it is precisely the transactions worth naming that went unnamed. An
- * event type is also the harder thing to lie about: a wrapper package chooses
- * its own name, but the event it emits carries the type of whoever defined it.
+ * Hashed module names (`h86261::h8b64d`) are what a bot or a laundering route
+ * looks like, so these are the transactions most worth naming. An event type is
+ * also the harder thing to lie about: a wrapper package chooses its own name,
+ * but the event it emits carries the type of whoever defined it.
  */
 
 import { gqlQuery } from "../clients/graphql.js";
@@ -31,11 +28,9 @@ import { gqlQuery } from "../clients/graphql.js";
  * Note the explicit `first` and the cursor.
  *
  * The events connection defaults to **20 nodes and paginates**, while gRPC
- * returns every event. Asking without a page argument therefore produced a
- * short list for any busy transaction — a 59-event transaction came back with
- * 20 — and the length guard downstream then correctly refused to attach
- * anything, so the feature silently did nothing on exactly the transactions
- * that needed it. Page size is capped at 50 server-side.
+ * returns every event. Without a page argument a busy transaction yields a
+ * short list, and the length guard downstream then refuses to attach anything.
+ * Page size is capped at 50 server-side.
  */
 const EVENT_JSON_QUERY = `query ($digest: String!, $first: Int!, $after: String) {
   transaction(digest: $digest) {
@@ -56,9 +51,8 @@ const PAGE = 50;
 /**
  * Pages to walk before giving up.
  *
- * 20 pages is 1000 events, far beyond anything observed (the 99th percentile of
- * transactions with events sits at 20 events). The bound exists so a pathological
- * transaction cannot turn one lookup into an unbounded crawl.
+ * 20 pages is 1000 events. The bound exists so a pathological transaction
+ * cannot turn one lookup into an unbounded crawl.
  */
 const MAX_PAGES = 20;
 

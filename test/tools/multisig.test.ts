@@ -24,8 +24,8 @@ beforeEach(() => mockGqlQuery.mockReset());
 
 describe("analyze_multisig", () => {
   it("answers after one page for a wallet that signs with its own single key", async () => {
-    // An active ed25519 wallet timed out at 120s: non-multisig signatures never
-    // counted toward the loop's target, so it paged the whole history.
+    // Non-multisig signatures count toward the loop's target, so a wallet that
+    // signs with its own key is answered from one page, not its whole history.
     let calls = 0;
     mockGqlQuery.mockImplementation(async () => {
       if (++calls > 20) throw new Error("paged past the first page");
@@ -38,8 +38,8 @@ describe("analyze_multisig", () => {
   });
 
   it("reports transactions sent in the address's name but signed by someone else", async () => {
-    // 0xcd8962… sent one transaction, signed by a 31-of-64 multisig; the tool
-    // said "none is signed by a multisig" as if that settled the question.
+    // The address's only transaction carries no signature of its own: a
+    // multisig at another address authorized it.
     mockGqlQuery.mockResolvedValue({
       transactions: {
         pageInfo: { hasNextPage: false, endCursor: null },

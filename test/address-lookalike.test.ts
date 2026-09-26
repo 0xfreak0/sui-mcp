@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   ActivityLedger,
   findLookalikes,
+  LIFECYCLE_MAX_GAP_MS,
+  LookalikeIndex,
   lookalikeReport,
   MIN_MATCHING_CHARS,
   MIN_PER_END,
@@ -48,10 +50,9 @@ describe("findLookalikes — thresholds", () => {
   });
 
   /**
-   * Regression from a live run: two co-recipients of one 2023 batch airdrop
-   * matched 4 leading and 2 trailing characters and were flagged. They had
-   * never transacted with each other, and at 4+2 they do not even render
-   * alike — no wallet truncates to two trailing characters.
+   * Two addresses matching 4 leading and 2 trailing characters, the shape
+   * co-recipients of one batch airdrop form. At 4+2 they do not render alike:
+   * no wallet truncates to two trailing characters.
    */
   it("rejects a 4+2 match, which no real UI renders as a collision", () => {
     const a = "0x3f9ac21d5e480b6f93a7e04c1b8d27f6a95c3e0d7b41682fa9c5d301e7b48fb7";
@@ -69,9 +70,8 @@ describe("findLookalikes — thresholds", () => {
 
 describe("findLookalikes — low entropy", () => {
   /**
-   * Regression from the first live run: `0x0000…0000` matched
-   * `0x0000…0f0d000000` at four characters each end, entirely through zero
-   * padding. Both are real addresses; neither was grinding for the other.
+   * `0x0000…0000` and `0x0000…0f0d000000` match at four characters each end,
+   * entirely through zero padding. Neither is grinding for the other.
    */
   it("does not pair two zero-padded addresses", () => {
     const burn = `0x${"0".repeat(64)}`;
@@ -95,6 +95,30 @@ describe("findLookalikes — low entropy", () => {
     const real = addr("cafe", "beef1234");
     const fake = addr("caf1", "0def1234", "77ee11aa55bb99cc33dd77ee11aa55bb22");
     expect(findLookalikes([real, fake])).toHaveLength(1);
+  });
+});
+
+describe("LookalikeIndex — one address at a time", () => {
+  const real = addr("cafe", "beef1234");
+  const fake = addr("caf1", "0def1234", "77ee11aa55bb99cc33dd77ee11aa55bb22");
+
+  it("flags an address that renders like one recorded before, and only then", () => {
+    const index = new LookalikeIndex();
+    expect(index.addAndCheck(real)).toBe(false);
+    expect(index.addAndCheck(addr("1111", "22223333"))).toBe(false);
+    expect(index.addAndCheck(fake)).toBe(true);
+  });
+
+  it("does not call an address its own lookalike under another spelling", () => {
+    const index = new LookalikeIndex();
+    index.addAndCheck(real);
+    expect(index.addAndCheck(real.toUpperCase().replace("0X", "0x"))).toBe(false);
+  });
+
+  it("never flags a structurally low-entropy address", () => {
+    const index = new LookalikeIndex();
+    index.addAndCheck(`0x${"0".repeat(64)}`);
+    expect(index.addAndCheck(`0x${"0".repeat(48)}0f0d${"0".repeat(12)}`)).toBe(false);
   });
 });
 
@@ -299,6 +323,119 @@ describe("direction needs a real margin", () => {
       [real, { transactions: 1, received: 5_000_000_000n }],
     ]);
     expect(findLookalikes([real, fake], activity)[0]!.direction_known).toBe(false);
+  });
+});
+
+describe("direction falls back to lifecycle only for the poisoning shape", () => {
+  const real = `0xcafe${"1".repeat(56)}beef`;
+  const fake = `0xcaf1${"2".repeat(56)}beef`;
+  /** Anything seen before both, so neither pair member is the result's first row. */
+  const older = { [`0x77${"3".repeat(62)}`]: { transactions: 1, received: 5n, first_seen: "2026-09-09T17:00:00.000Z" } };
+  const at = (ms: number) => new Date(Date.parse("2026-09-09T18:00:00.000Z") + ms).toISOString();
+  const activity = (fakeEntry: Record<string, unknown>, realFirst = at(0)) =>
+    new Map(
+      Object.entries({
+        ...older,
+        [real]: { transactions: 1, received: 0n, first_seen: realFirst },
+        [fake]: { transactions: 1, received: 0n, ...fakeEntry },
+      }),
+    );
+
+  it("names the later address when it first appears paying the subject soon after", () => {
+    const [pair] = findLookalikes([real, fake], activity({ first_seen: at(3_900), first_seen_paying_subject: true }));
+    expect(pair).toMatchObject({ established: real, suspect: fake, direction_known: true, direction_basis: "lifecycle" });
+    expect(pair!.note).toMatch(/credited it nothing/i);
+  });
+
+  it("declines when the later address was credited in its first appearance", () => {
+    const [pair] = findLookalikes([real, fake], activity({ first_seen: at(3_900), first_seen_paying_subject: false }));
+    expect(pair!.direction_known).toBe(false);
+  });
+
+  it("declines past the gap a poisoning bot leaves", () => {
+    const inside = activity({ first_seen: at(LIFECYCLE_MAX_GAP_MS), first_seen_paying_subject: true });
+    expect(findLookalikes([real, fake], inside)[0]!.direction_known).toBe(true);
+    const outside = activity({ first_seen: at(LIFECYCLE_MAX_GAP_MS + 1), first_seen_paying_subject: true });
+    expect(findLookalikes([real, fake], outside)[0]!.direction_known).toBe(false);
+  });
+
+  it("declines when the earlier address first appears on the result's oldest row", () => {
+    // Nothing before that row was read, so the later address may well have
+    // been in use first.
+    const onlyPair = new Map([
+      [real, { transactions: 1, received: 0n, first_seen: at(0) }],
+      [fake, { transactions: 1, received: 0n, first_seen: at(3_900), first_seen_paying_subject: true }],
+    ]);
+    expect(findLookalikes([real, fake], onlyPair)[0]!.direction_known).toBe(false);
+  });
+
+  it("does not use lifecycle when footprint already decided it", () => {
+    const m = new Map([
+      [real, { transactions: 9, received: 0n, first_seen: "2026-09-09T18:00:01.600Z" }],
+      [fake, { transactions: 1, received: 0n, first_seen: "2026-09-09T18:00:00.000Z" }],
+    ]);
+    const [pair] = findLookalikes([real, fake], m);
+    // Fake is chronologically first here but has the smaller footprint by a
+    // real margin, and footprint outranks lifecycle.
+    expect(pair!.established).toBe(real);
+    expect(pair!.direction_basis).toBe("footprint");
+  });
+
+  it("stays unknown when first_seen is missing or identical", () => {
+    const missing = new Map([
+      [real, { transactions: 1, received: 0n }],
+      [fake, { transactions: 1, received: 0n }],
+    ]);
+    expect(findLookalikes([real, fake], missing)[0]!.direction_known).toBe(false);
+    expect(findLookalikes([real, fake], activity({ first_seen: at(0), first_seen_paying_subject: true }))[0]!.direction_known).toBe(false);
+  });
+
+  it("declines when the earlier address also first appears paying the subject", () => {
+    // Through the ledger: V pays X at 09:00; L sends V 20 raw at
+    // 09:30, imitating R, whose earlier payment to V is before the page; R
+    // pays V 500 SUI at 09:35. Both first appear paying V, so which came
+    // first says nothing about which one is the impostor.
+    const V = `0x5e455d${"4".repeat(58)}`;
+    const X = `0x77${"3".repeat(62)}`;
+    const L = fake;
+    const R = real;
+    const ledger = new ActivityLedger(V);
+    ledger.observe([{ address: V, amount: -1_000_000_000n }, { address: X, amount: 1_000_000_000n }], "2026-09-09T09:00:00.000Z");
+    ledger.observe([{ address: L, amount: -20n }, { address: V, amount: 20n }], "2026-09-09T09:30:00.000Z");
+    ledger.observe([{ address: R, amount: -500_000_000_000n }, { address: V, amount: 500_000_000_000n }], "2026-09-09T09:35:00.000Z");
+    const report = lookalikeReport(ledger.addressesLedBy(V), ledger.activity, V)!;
+    const [pair] = report.pairs;
+    expect(pair!.direction_known).toBe(false);
+  });
+});
+
+describe("ActivityLedger tracks first_seen", () => {
+  const A = "0xaa";
+
+  it("keeps the EARLIEST timestamp across observations, not the latest", () => {
+    const ledger = new ActivityLedger();
+    ledger.observe([{ address: A }], "2026-09-09T18:00:05.000Z");
+    ledger.observe([{ address: A }], "2026-09-09T18:00:00.000Z");
+    ledger.observe([{ address: A }], "2026-09-09T18:00:09.000Z");
+    expect(ledger.activity.get(A)!.first_seen).toBe("2026-09-09T18:00:00.000Z");
+  });
+
+  it("leaves first_seen unset when no timestamp is passed", () => {
+    const ledger = new ActivityLedger();
+    ledger.observe([{ address: A }]);
+    expect(ledger.activity.get(A)!.first_seen).toBeUndefined();
+  });
+
+  it("marks an address first seen crediting the subject and nothing to itself, whatever the subject's spelling", () => {
+    const victim = `0x5e455d${"4".repeat(58)}`;
+    const dust = `0x6b7452${"5".repeat(58)}`;
+    const real = `0x6b74e9${"6".repeat(58)}`;
+    const ledger = new ActivityLedger(victim.toUpperCase().replace("0X", "0x"));
+    ledger.observe([{ address: victim, amount: -209_800_000n }, { address: real, amount: 209_800_000n }], "2026-09-09T17:54:29.969Z");
+    ledger.observe([{ address: dust }, { address: dust, amount: -20n }, { address: victim, amount: 20n }], "2026-09-09T17:54:33.917Z");
+    expect(ledger.activity.get(real)!.first_seen_paying_subject).toBe(false);
+    expect(ledger.activity.get(dust)!.first_seen_paying_subject).toBe(true);
+    expect(ledger.activity.get(victim)!.first_seen_paying_subject).toBe(false);
   });
 });
 

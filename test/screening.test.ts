@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bridgeExitsOf, flowsOf, hitsFor, timeConsistent, type Leg, type ScreenTx } from "../src/utils/screening.js";
+import { bridgeExitsOf, bridgeSentPerCoin, flowsOf, hitsFor, timeConsistent, type Leg, type ScreenTx } from "../src/utils/screening.js";
 import { runWithNetwork } from "../src/config.js";
 
 const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
@@ -13,7 +13,9 @@ const tx = (over: Partial<ScreenTx>): ScreenTx => ({
   digest: "d",
   timestamp: "2025-05-22T11:00:00Z",
   sender: A,
+  status: "success",
   gasSponsor: A,
+  netGas: null,
   changes: [],
   calls: [],
   eventTypes: [],
@@ -82,20 +84,66 @@ describe("timeConsistent", () => {
 });
 
 describe("bridgeExitsOf", () => {
-  // Call lists as seen on the Cetus attacker's mainnet transactions.
+  // Call lists as mainnet Mayan MCTP transactions carry them.
   const mayanCctp = [
     { packageId: "0x1", module: "calculate_mctp_fee", function: "calculate_mctp_fee" },
     { packageId: "0x2", module: "deposit_for_burn", function: "deposit_for_burn_with_caller_with_package_auth" },
   ];
 
-  it("reports every curated bridge a sent transaction used", () => {
-    const exits = bridgeExitsOf(A, [tx({ digest: "GQAArGh6UR", calls: mayanCctp })]);
-    expect(exits.map((e) => e.protocol).sort()).toEqual(["Circle CCTP", "Mayan MCTP"]);
+  /**
+   * The Mayan order 62MTsGpC… fires Mayan's, Wormhole's and CCTP's markers
+   * (event types below, as mainnet returns them). It counts as one exit,
+   * under Mayan, with the bridges it settled over as its route.
+   */
+  it("counts a Mayan order once, under Mayan, with the bridges it settled over as its route", () => {
+    const exits = bridgeExitsOf(A, [
+      tx({
+        digest: "62MTsGpC8t9TosVErGxMfUNc1LnR2hJdLBNmDM8yBXrT",
+        calls: [
+          { packageId: "0x1", module: "calculate_mctp_fee", function: "calculate_mctp_fee" },
+          { packageId: "0x2", module: "deposit_for_burn", function: "deposit_for_burn_with_caller_with_package_auth" },
+          { packageId: "0x3", module: "publish_message", function: "publish_message" },
+          { packageId: "0x1", module: "init_order", function: "log_initialize_mctp" },
+        ],
+        eventTypes: [
+          "0x08d87d37ba49e785dde270a83f8e979605b03dc552b5548f26fdf2f49bf7ed1b::send_message::MessageSent",
+          "0x2aa6c5d56376c371f88a6cc42e852824994993cb9bab8d3e6450cbe3cb32b94e::deposit_for_burn::DepositForBurn",
+          "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df::init_order::OrderCreated",
+          "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage",
+          "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df::init_order::InitMctpLogged",
+        ],
+      }),
+      tx({ digest: "7ehoqkiBm3WxmYzUPirH6a9TePErt8ESavNpJdVDw2Vs", calls: [{ packageId: "0x2", module: "deposit_for_burn", function: "deposit_for_burn" }] }),
+    ]);
+    expect(exits.map((e) => [e.tx.digest, e.protocol, [...e.route].sort()])).toEqual([
+      ["62MTsGpC8t9TosVErGxMfUNc1LnR2hJdLBNmDM8yBXrT", "Mayan MCTP", ["Circle CCTP", "Wormhole"]],
+      ["7ehoqkiBm3WxmYzUPirH6a9TePErt8ESavNpJdVDw2Vs", "Circle CCTP", []],
+    ]);
+  });
+
+  it("excludes a failed transaction — a bridge call in an aborted PTB moved nothing", () => {
+    // A Mayan MCTP attempt that aborted with INSUFFICIENT_COIN_BALANCE still
+    // carries the bridge call.
+    const exits = bridgeExitsOf(A, [tx({ digest: "aborted", calls: mayanCctp, status: "failure" })]);
+    expect(exits).toHaveLength(0);
   });
 
   it("reports an exit visible only in events, as a wrapper's is", () => {
     // Mayan's bridge_with_fee (777Emr4V…) puts no marker call in the PTB; its
-    // CCTP burn and Wormhole message are events.
+    // order marker, CCTP burn and Wormhole message are events.
+    const exits = bridgeExitsOf(A, [
+      tx({
+        eventTypes: [
+          "0x2aa6c5d56376c371f88a6cc42e852824994993cb9bab8d3e6450cbe3cb32b94e::deposit_for_burn::DepositForBurn",
+          "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage",
+          "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df::init_order::InitMctpLogged",
+        ],
+      }),
+    ]);
+    expect(exits.map((e) => e.protocol)).toEqual(["Mayan MCTP"]);
+  });
+
+  it("keeps a transaction with two unrelated bridges as one exit, naming the other apart from its route", () => {
     const exits = bridgeExitsOf(A, [
       tx({
         eventTypes: [
@@ -104,7 +152,9 @@ describe("bridgeExitsOf", () => {
         ],
       }),
     ]);
-    expect(exits.map((e) => e.protocol).sort()).toEqual(["Circle CCTP", "Wormhole"]);
+    expect(exits).toHaveLength(1);
+    expect(exits[0].route).toEqual([]);
+    expect([exits[0].protocol, ...exits[0].alsoExited].sort()).toEqual(["Circle CCTP", "Wormhole"]);
   });
 
   it("ignores transactions the address did not send", () => {
@@ -117,6 +167,42 @@ describe("bridgeExitsOf", () => {
     const wormholePkg = "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4";
     const exits = bridgeExitsOf(A, [tx({ calls: [{ packageId: wormholePkg, module: "vaa", function: "parse_and_verify" }] })]);
     expect(exits).toEqual([]);
+  });
+});
+
+describe("bridgeSentPerCoin", () => {
+  it("excludes a bridge fee and a relayer payment from what left Sui", () => {
+    // Balance changes of transaction 7ehoqkiB…, a 400,000 USDC CCTP burn. The
+    // sender's negative changes include the USDC bridge fee and the SUI
+    // relayer payment, which other Sui addresses received, so neither is sent.
+    const FEE = "0xbfa1240e48c622d97881473953be730091161b7931d89bd6afe667841cf69ef4";
+    const RELAYER = "0xfa922d7f6eaad8b0014ed9ac262ea0d8f19f4a7a7f2caf249b4cd1ad05c45e18";
+    const t = tx({
+      changes: [
+        { owner: FEE, coinType: USDC, amount: 40_000_000n },
+        { owner: A, coinType: SUI, amount: -559_771_286n },
+        { owner: A, coinType: USDC, amount: -400_000_000_000n },
+        { owner: RELAYER, coinType: SUI, amount: 559_771_286n },
+      ],
+    });
+    const sent = bridgeSentPerCoin(t);
+    expect(sent.get(USDC)).toBe(399_960_000_000n);
+    expect(sent.has(SUI)).toBe(false);
+  });
+
+  it("removes gas from the sender's own row before splitting fee legs out", () => {
+    // Same burn, with the sender's SUI row also carrying its gas charge:
+    // netGas must come off before what is left of the relayer fee is found,
+    // or the leftover gas reads as bridged SUI.
+    const RELAYER = "0xfa922d7f6eaad8b0014ed9ac262ea0d8f19f4a7a7f2caf249b4cd1ad05c45e18";
+    const t = tx({
+      netGas: 3_400_492n,
+      changes: [
+        { owner: A, coinType: SUI, amount: -563_171_778n },
+        { owner: RELAYER, coinType: SUI, amount: 559_771_286n },
+      ],
+    });
+    expect(bridgeSentPerCoin(t).has(SUI)).toBe(false);
   });
 });
 

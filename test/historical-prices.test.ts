@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { explainUnpriced, priceUsdAtTime, pricingScale } from "../src/utils/valuation.js";
 
 const REAL_SUI = `0x${"0".repeat(63)}2::sui::SUI`;
-/** Struct name says SUI; nothing vouches for it. Real one found on mainnet. */
+/** Struct name says SUI; nothing vouches for it. A real mainnet coin type. */
 const FAKE_SUI = "0x00a3017cc5fd396c38263ec57c8f2266507ce1a737000000000000000000000f::sui::SUI";
 const HASUI = "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d::hasui::HASUI";
-const AT = 1747909800; // 2025-05-22 10:30:00 UTC, the Cetus exploit
+const AT = 1747909800; // 2025-05-22 10:30:00 UTC
 
 const savedEnv = { ...process.env };
 let fetchMock: ReturnType<typeof vi.fn>;

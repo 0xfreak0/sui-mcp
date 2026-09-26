@@ -33,9 +33,8 @@ import {
 
 /**
  * The Sui Token Bridge's emitter (its EmitterCap object id, as the VAA holds
- * it). Verified on mainnet: transfers GkWjxVGi… and Heso3vSy… and the relayed
- * transfer 7oiD7oNk… all carry it. Wormholescan attributes it to
- * PORTAL_TOKEN_BRIDGE.
+ * it). Token Bridge transfers, relayed ones included, carry it. Wormholescan
+ * attributes it to PORTAL_TOKEN_BRIDGE.
  */
 export const SUI_TOKEN_BRIDGE_EMITTER =
   "ccceeb29348f71bdd22ffef43a2a19c1f5b5e17c5cca5411529120182672ade5";
@@ -43,9 +42,8 @@ export const SUI_TOKEN_BRIDGE_EMITTER =
 /**
  * `fromAddress` values of the Token Bridge Relayer on Sui. A payload-3
  * transfer from one of these carries the Relayer's `TransferWithRelay`
- * message, whose last field is the recipient. Verified on 7oiD7oNk…, where
- * the decoded recipient matches Wormholescan's `toAddress` and the Ethereum
- * redemption forwarded the funds to it.
+ * message, whose last field is the recipient: the address the destination
+ * redemption forwards the funds to.
  */
 const TOKEN_BRIDGE_RELAYER_SENDERS: Record<string, true> = {
   c4c610707eab9b222996b075f7d07c7d9b07766ab7bcafef621fd53bbf089f4e: true,
@@ -241,9 +239,8 @@ const MAYAN_MARKER_EVENT = "::init_order::InitMctpLogged";
 /**
  * Mayan Swift's original package, which types its events. Swift shares the
  * `init_order` module name with MCTP and with DEX order books, so its events
- * are recognised by this package and nothing else. Verified on 3aVcL3mh…
- * (2025-05-05), an `OrderCreated` to Solana; the SDK's `SUI_SWIFT_STATE`
- * lives here.
+ * are recognised by this package and nothing else. The SDK's
+ * `SUI_SWIFT_STATE` lives here.
  */
 export const MAYAN_SWIFT_PACKAGE = "0x974af8e76ab7655b142ac344ce550cfdf9a288f2d2b0e3deff46983c4d255954";
 
@@ -268,9 +265,8 @@ export function raw32(v: unknown): Buffer | null {
  * `init_order` is a generic module name that DEX order books also use, so an
  * `OrderCreated` is only read when Mayan's own marker event came from the same
  * package, or when the package is Swift's. `OrderCreated.chain_dest` is a
- * Wormhole chain id (2 with CCTP domain 0 on 6jMEFeap…, 1 on the Swift order
- * 3aVcL3mh…); `BridgeSubmittedWithFee.dest_domain` is a CCTP domain (6, Base,
- * on 777Emr4V…).
+ * Wormhole chain id (1 is Solana, 2 Ethereum);
+ * `BridgeSubmittedWithFee.dest_domain` is a CCTP domain (6 is Base).
  */
 export function mayanBeneficiaries(events: SuiEventNode[], qualify: boolean): Beneficiary[] {
   const mayanPackages = new Set<string>();
@@ -296,7 +292,14 @@ export function mayanBeneficiaries(events: SuiEventNode[], qualify: boolean): Be
       const swift = canonicalSuiAddress(pkg) === MAYAN_SWIFT_PACKAGE;
       out.push(
         wormholeBeneficiary(swift ? "Mayan Swift" : "Mayan MCTP", "mayan-order", f.chain_dest, dest, qualify, {
-          ...(typeof f.amount_in === "string" ? { amount: f.amount_in, amount_note: "amount_in, in the source coin's units." } : {}),
+          ...(typeof f.amount_in === "string"
+            ? {
+                amount: f.amount_in,
+                amount_note: swift
+                  ? "amount_in, in the source coin's units."
+                  : "amount_in, in USDC base units — Mayan MCTP swaps the source coin to USDC on Sui before bridging it via Circle CCTP, so this is the post-swap amount, not the trader's source coin.",
+              }
+            : {}),
           ...(swift && typeof f.hash === "string" ? { transfer_id: f.hash } : {}),
         }),
       );

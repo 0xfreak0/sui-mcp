@@ -8,9 +8,8 @@ import {
 } from "../src/utils/nft-sales.js";
 
 /**
- * Field names were read off real mainnet events, not guessed. Each shape below
- * is quoted from one, so a marketplace renaming a field fails here rather than
- * silently reporting that nothing traded.
+ * Each shape below is quoted from a mainnet event, so a marketplace renaming
+ * a field fails here rather than silently reporting that nothing traded.
  */
 const TRADEPORT_SIMPLE =
   "0xff2251ea99230ed1cbe3a347a209352711c6723fcdcd9286e16636e65bb55cab::tradeport_listings::BuySimpleListingEvent";
@@ -116,8 +115,8 @@ describe("reading a sale out of its event", () => {
 });
 
 /**
- * The point of the whole path: a sale states outright which wallet held which
- * kiosk, which the kiosk's own field gets wrong 40% of the time.
+ * A sale states outright which wallet held which kiosk, which the kiosk's own
+ * `owner` field can get wrong.
  */
 describe("kiosk ownership stated by a sale", () => {
   it("takes both legs, because the seller held its kiosk just as surely", () => {
@@ -174,11 +173,11 @@ describe("totalling sales", () => {
 });
 
 /**
- * Marketplace events emit the defining address unprefixed and unpadded — a live
- * BlueMove sale carries `2dcd5252…::bluemove_launchpad::SUIS` — while every
+ * Marketplace events emit the defining address unprefixed and unpadded (a
+ * BlueMove sale carries `2dcd5252…::bluemove_launchpad::SUIS`), while every
  * other surface here uses the `0x`-padded form. An exact compare between the
- * two never matches, so a caller filtering by the type any other tool gave them
- * saw no sales at all.
+ * two never matches, so a caller filtering by the type any other tool gave
+ * them would see no sales at all.
  */
 describe("canonicalType", () => {
   const PADDED = `0x${"0".repeat(62)}2c`;

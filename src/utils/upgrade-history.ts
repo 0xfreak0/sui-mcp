@@ -334,10 +334,22 @@ export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
       ? auth.get(usual.holder.address)
       : undefined;
   if (usualAuth?.scheme === "multisig") {
+    // Before the cap first reaches its usual holder, a single-key publish is
+    // the deployer's own initial custody rather than a departure from an
+    // established norm, the same reason v1 itself is never flagged. Upgrades
+    // the deployer signs before first handing the cap to a multisig are
+    // normal setup, and flagging them reads as a violation that never
+    // happened.
+    const firstUsualIdx = usual ? periods.findIndex((p) => ownerKey(p.holder) === ownerKey(usual!.holder)) : -1;
+    const firstUsualFrom = firstUsualIdx >= 0 ? periods[firstUsualIdx].from : null;
     for (const v of versions) {
       if (v.version === 1 || !v.sender) continue;
       const signer = signerByVersion.get(v.version) ?? auth.get(v.sender);
       if (!signer || !SINGLE_KEY[signer.scheme]) continue;
+      if (firstUsualFrom) {
+        const cmp = comparePoints(v, firstUsualFrom);
+        if (cmp !== null && cmp < 0) continue;
+      }
       flags.push({
         kind: "single_key_upgrade",
         severity: "high",

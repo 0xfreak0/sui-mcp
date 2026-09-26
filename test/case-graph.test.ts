@@ -90,8 +90,8 @@ describe("buildCaseGraph", () => {
 
 describe("buildCaseGraph — value held by shared objects", () => {
   const cited = [finding({ id: 3, title: "Exploit", addresses: [`sui:mainnet:${ATTACKER}`], digests: ["drain1", "drain2", "swap"] })];
-  // Two exploit transactions credit the attacker from Nemo's markets. No
-  // address paid it, which is why the diagram used to draw no arrow at all.
+  // Two transactions credit ATTACKER from Nemo's markets, and no address pays
+  // it. The diagram must still draw an arrow for that value.
   const drain = (digest: string, amount: string): CaseTx => ({
     digest,
     sender: ATTACKER,

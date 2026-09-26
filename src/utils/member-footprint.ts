@@ -1,28 +1,24 @@
 /**
  * Whether a committee's signing keys exist anywhere outside the committee.
  *
- * The security question this answers is **key exposure**, and it is not the one
- * I expected to be asking. A key that only ever signs for its multisig has one
- * attack surface: whatever device holds it. A key that is also somebody's
- * everyday wallet has signed arbitrary transactions for arbitrary packages,
- * lives in a browser extension, and has been exposed to every dApp its owner
- * ever connected to. Same threshold, very different risk — and nothing in a
- * `4-of-7` label distinguishes them.
+ * The security question this answers is **key exposure**. A key that only
+ * ever signs for its multisig has one attack surface: whatever device holds
+ * it. A key that is also somebody's everyday wallet has signed arbitrary
+ * transactions for arbitrary packages, lives in a browser extension, and has
+ * been exposed to every dApp its owner ever connected to. Both can sit under
+ * the same threshold, and nothing in a `4-of-7` label distinguishes them.
  *
- * Measured over four mainnet governance multisigs: 13 of 19 members had no
- * on-chain footprint at all — never sent a transaction, never appeared in one.
- * One 3-of-6 had zero members with any history.
- *
- * That inverts the reading. Cold keys are not missing data; they are what
+ * Governance multisig members commonly have no on-chain footprint at all:
+ * they never sent a transaction and never appeared in one. Cold keys are what
  * deliberate key hygiene looks like. The case worth investigating is the
- * reverse — a "committee" whose members are all active existing wallets is
+ * reverse: a "committee" whose members are all active existing wallets is
  * more plausibly one operator's alts than several parties.
  *
- * It also bounds what else can be asked. Funding analysis, clustering and
- * activity timing all need an address to have done something, so for a
- * cold-key committee they are not weak signals, they are unavailable. Saying
- * "no two members share a funder" about six addresses with no transactions
- * would be a finding manufactured from an absence.
+ * Cold keys also bound what else can be asked. Funding analysis, clustering
+ * and activity timing all need an address to have done something, so for a
+ * cold-key committee they are unavailable. Saying "no two members share a
+ * funder" about six addresses with no transactions would be a finding
+ * manufactured from an absence.
  */
 
 export interface MemberFootprint {

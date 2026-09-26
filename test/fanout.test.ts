@@ -72,9 +72,8 @@ describe("classifyFanout", () => {
     expect(classifyFanout(12).classification).toBe("narrow");
   });
 
-  // Calibrated against measured exchanges (205-440 counterparties per 600
-  // recent txs) versus ordinary wallets (6-12). The gap is what makes a coarse
-  // cut defensible; the exact boundaries are not precise.
+  // Exchanges sit far above ordinary wallets on this count. The gap is what
+  // makes a coarse cut defensible; the exact boundaries are not precise.
   it("puts the boundaries where documented", () => {
     expect(classifyFanout(99).classification).toBe("narrow");
     expect(classifyFanout(100).classification).toBe("distributor");
@@ -114,8 +113,8 @@ describe("measureFanout", () => {
     expect(r.scanned_transactions).toBe(3);
   });
 
-  // The bug this fixes: an exchange cold wallet receives from thousands and
-  // sends to almost nobody, so an outbound-only scan called it "narrow".
+  // An exchange cold wallet receives from thousands and sends to almost
+  // nobody, so an outbound-only scan would call it "narrow".
   it("counts inbound counterparties, not just outbound", async () => {
     gqlQuery.mockResolvedValueOnce(
       page([receiveFrom("0xs1"), receiveFrom("0xs2"), sendTo("0xr1")]),
@@ -180,6 +179,33 @@ describe("measureFanout", () => {
     expect(sponsor.sponsored_address_count).toBe(1);
   });
 
+  // Which of the subject's rows GraphQL lists first says nothing about the
+  // direction of another coin. In the first transaction (4b4KuDfY…) the
+  // subject pays 5 IKA while its own SUI row (+0.0029 SUI) is listed first;
+  // in the second it receives USDC while paying its own gas, listed first.
+  it("reads each counterparty's side from the subject's change in the same coin", async () => {
+    const IKA = "0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA";
+    const USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+    gqlQuery.mockResolvedValueOnce(
+      page([
+        [
+          { owner: ADDR, amount: "2876160" },
+          { owner: ADDR, amount: "-4502943424206", coin: IKA },
+          { owner: "0x280bd7e4", amount: "5000000000", coin: IKA },
+        ],
+        [
+          { owner: ADDR, amount: "-1530072" },
+          { owner: ADDR, amount: "20000000000", coin: USDC },
+          { owner: "0xpayer", amount: "-20000000000", coin: USDC },
+        ],
+      ]),
+    );
+    const r = await measureFanout(ADDR, 50);
+    expect(r.recipient_count).toBe(1);
+    expect(r.sender_count).toBe(1);
+    expect(r.counterparty_count).toBe(2);
+  });
+
   it("counts distinct coin types", async () => {
     gqlQuery.mockResolvedValueOnce(
       page([sendTo("0xb", "0x2::sui::SUI"), sendTo("0xc", "0xusdc::usdc::USDC")]),
@@ -225,8 +251,7 @@ describe("measureFanout", () => {
   });
 
   // `first` returns the OLDEST transactions, so a forward scan of a long-lived
-  // address measures what it did years ago. This is the bug that made every
-  // earlier fan-out number describe 2023.
+  // address measures what it did years ago.
   it("walks backwards from the newest transaction", async () => {
     gqlQuery.mockResolvedValueOnce(page([sendTo("0xb")], true, "cur1"));
     gqlQuery.mockResolvedValueOnce(page([sendTo("0xc")], false, undefined));

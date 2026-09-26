@@ -131,9 +131,9 @@ describe("get_object", () => {
   });
 
   /**
-   * The jupnet bridge Bank 0x44cf…4b4b holds ~118k USDC in its own address
-   * balance. Its content lists a balances bag and no amounts, so the funds
-   * were invisible here.
+   * The jupnet bridge Bank 0x44cf…4b4b holds 118,304 USDC in its own address
+   * balance. Its content lists a balances bag and no amounts, so the address
+   * balance is the only place the funds appear.
    */
   it("lists funds the object holds in its own address balance", async () => {
     const BANK = "0x44cf357eda762cf0cd86547f7bfcaa51a4b55de615c57903ab461f38ffed4b4b";

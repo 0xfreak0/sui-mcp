@@ -12,8 +12,6 @@
  * `(source_chain, seq_num)` is the bridge's own transfer identifier and is
  * quoted back by the Ethereum side when the transfer is claimed, so it is also
  * the join key for confirming the redemption on Ethereum.
- *
- * Verified against mainnet tx 4xLuY6N68PgqBow9i4iawBvVw3eEkxKQNRQeSWFGwjJi.
  */
 
 import { ETHEREUM, SUI_MAINNET, formatAccountId, normalizeAddressForChain } from "../chain-id.js";

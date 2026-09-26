@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * The kiosk resolution path, which had no coverage at all.
+ * The kiosk resolution path.
  *
- * A kiosk's own `owner` field does not follow the `KioskOwnerCap` and disagreed
- * with the real holder in 121 of 300 sampled mainnet kiosks. A marketplace sale
- * names the buyer beside the buyer's kiosk in one record, so a kiosk seen
- * trading has a chain-derived owner. These tests drive the real handler against
- * a real temporary store.
+ * A kiosk's own `owner` field does not follow the `KioskOwnerCap`, so it can
+ * name someone other than the real holder. A marketplace sale names the buyer
+ * beside the buyer's kiosk in one record, so a kiosk seen trading has a
+ * chain-derived owner. These tests drive the real handler against a real
+ * temporary store.
  *
  * The store path is set per test rather than inherited: without that, a
  * developer with `SUI_STORE_PATH` exported runs the suite against their own
@@ -99,7 +99,7 @@ describe("a kiosk a sale has named resolves to the real wallet", () => {
     expect(holder.address).toBe(REAL);
     expect(holder.holder_kind).toBe("kiosk_resolved");
     expect(holder.from_sale_records).toBe(1);
-    // The declared owner must not appear at all: it was wrong.
+    // A sale record supersedes the declared owner, which must not appear.
     expect(r.top_holders.some((h: { address: string }) => h.address === DECLARED)).toBe(false);
   });
 

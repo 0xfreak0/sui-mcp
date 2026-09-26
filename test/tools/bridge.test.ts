@@ -189,9 +189,8 @@ describe("resolve_bridge_transfer", () => {
   });
 
   it("names Mayan's beneficiary and marks the CCTP leg as settlement (6jMEFeap…)", async () => {
-    // 54.4M of the Cetus attacker's 61.3M USDC left through Mayan. The CCTP
-    // burn mints to Mayan's contract 0x875d…, which was reported as the
-    // destination account with a next step to record it.
+    // The CCTP burn mints to Mayan's contract 0x875d…, a settlement
+    // intermediate; the beneficiary is the address Mayan's order names.
     const pkg = "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df";
     mockGqlQuery.mockResolvedValue(
       txWith([
@@ -220,6 +219,99 @@ describe("resolve_bridge_transfer", () => {
       "eip155:1:0x89012a55cd6b88e407c9d4ae9b3425f55924919b",
     ]);
     expect(data.circle_cctp[0].role).toBe("settlement_intermediate");
+  });
+
+  /** 62MTsGpC…'s events as mainnet returned them. */
+  const MAYAN_PKG = "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df";
+  const MAYAN_ORDER_EVENTS = [
+    {
+      contents: {
+        type: { repr: "0x2aa6c5d56376c371f88a6cc42e852824994993cb9bab8d3e6450cbe3cb32b94e::deposit_for_burn::DepositForBurn" },
+        json: {
+          nonce: "250187",
+          amount: "335761619",
+          mint_recipient: "0x000000000000000000000000875d6d37ec55c8cf220b9e5080717549d8aa8eca",
+          destination_domain: 0,
+        },
+      },
+    },
+    {
+      contents: {
+        type: { repr: `${MAYAN_PKG}::init_order::OrderCreated` },
+        json: { amount_in: "335761619", addr_dest: "0x000000000000000000000000eb8a15d28dd54231e7e950f5720bc3d7af77b443", chain_dest: 2 },
+      },
+    },
+    {
+      contents: {
+        type: { repr: "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage" },
+        json: {
+          sender: "0x89b91e68d0264956632bf11f8abd2243caa56c4a42c97d9b97eadc71bf1074bf",
+          sequence: "102615",
+          nonce: 0,
+          payload: "lK8lmll78QD2YvD20VO9+Yt5gKpFpxO7wKqv87fMYbw=",
+          consistency_level: 0,
+        },
+      },
+    },
+    { contents: { type: { repr: `${MAYAN_PKG}::init_order::InitMctpLogged` }, json: {} } },
+  ];
+
+  /**
+   * On Mayan order 62MTsGpC… the Wormhole message is Mayan's own order
+   * message, which is never redeemed, and Wormholescan lists the operation
+   * with no target chain. The message is reported as a settlement message
+   * whose redemption is not expected, and the transfer as carried by Mayan.
+   */
+  it("does not read a Mayan order's unredeemed Wormhole message as an incomplete transfer (62MTsGpC…)", async () => {
+    mockGqlQuery.mockResolvedValue(txWith(MAYAN_ORDER_EVENTS));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ operations: [{ id: "21/89b91e68d0264956632bf11f8abd2243caa56c4a42c97d9b97eadc71bf1074bf/102615" }] }),
+    );
+
+    const data = await call({ digest: "62MTsGpC8t9TosVErGxMfUNc1LnR2hJdLBNmDM8yBXrT" });
+    const message = data.wormhole_messages[0];
+    expect(message.role).toBe("settlement_message");
+    expect(message.destination.status).toBe("not_redeemed");
+    expect(message.destination.redemption_expected).toBe(false);
+    expect(data.carried_by).toBe("Mayan MCTP");
+    expect([...data.settled_over].sort()).toEqual(["Circle CCTP", "Wormhole"]);
+  });
+
+  /**
+   * A Sui Bridge deposit in the same transaction as a Mayan order is a
+   * separate transfer and stays out of settled_over. The deposit is
+   * 4xLuY6N6…'s TokenDepositedEvent, as mainnet returned it.
+   */
+  it("names a native-bridge deposit beside a Mayan order as a separate transfer, not a settlement leg", async () => {
+    mockGqlQuery.mockResolvedValue(
+      txWith([
+        ...MAYAN_ORDER_EVENTS,
+        {
+          contents: {
+            type: { repr: "0x000000000000000000000000000000000000000000000000000000000000000b::bridge::TokenDepositedEvent" },
+            json: {
+              seq_num: "23371",
+              source_chain: 0,
+              sender_address: "xKRFS6UEKXM8q3C7Q0rJnXTSCnU0w9/Tux+m6Ts8SzI=",
+              target_chain: 10,
+              target_address: "1vBbGb8sBcJkpka3dXBX13RmHFw=",
+              token_type: 4,
+              amount: "130004100000",
+            },
+          },
+        },
+      ]),
+    );
+    const data = await call({ digest: "D", include_destination: false });
+
+    expect(data.carried_by).toBe("Mayan MCTP");
+    expect([...data.settled_over].sort()).toEqual(["Circle CCTP", "Wormhole"]);
+    expect(data.also_exited).toEqual(["Sui Bridge"]);
+    expect(data.note).toContain("a separate transfer through Sui Bridge");
+    expect(data.beneficiaries.map((b: { account: string }) => b.account)).toEqual([
+      "eip155:1:0xeb8a15d28dd54231e7e950f5720bc3d7af77b443",
+      "eip155:1:0xd6f05b19bf2c05c264a646b7757057d774661c5c",
+    ]);
   });
 });
 
@@ -280,6 +372,48 @@ describe("resolve_bridge_transfer on the newer bridges", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  /**
+   * An Allbridge pool transfer through Allbridge's Wormhole messenger is one
+   * transfer settled over Wormhole. Allbridge's own message carries no
+   * recipient and is reported as a settlement message whose redemption is
+   * not expected, whatever Wormholescan's missing targetChain suggests.
+   */
+  it("reads an Allbridge pool transfer as one transfer settled over Allbridge's Wormhole message (6S9udfgK…)", async () => {
+    mockGqlQuery.mockResolvedValue(FIXTURES["6S9udfgK1GSCabDEsuUDB4ysdCTXkfvt2rwze2Wrdb7K"]);
+    // Wormholescan's operation for this transaction, as returned (vaa omitted).
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        operations: [
+          {
+            id: "21/45a4ce7279dc1da00f16555dca7c04c0f19bb168fd787e57026a79600524515b/0",
+            emitterChain: 21,
+            emitterAddress: { hex: "45a4ce7279dc1da00f16555dca7c04c0f19bb168fd787e57026a79600524515b" },
+            sequence: "0",
+            sourceChain: {
+              chainId: 21,
+              timestamp: "2025-01-28T14:17:44Z",
+              transaction: { txHash: "6S9udfgK1GSCabDEsuUDB4ysdCTXkfvt2rwze2Wrdb7K" },
+              from: "0x22101391e2bbd3141e0aabd093643fad4c6fba70438071d8cd7364ca0225f9a7",
+              status: "confirmed",
+            },
+            content: { standarizedProperties: { appIds: null, fromChain: 0, fromAddress: "", toChain: 0, toAddress: "", tokenChain: 0, tokenAddress: "", amount: "" } },
+          },
+        ],
+      }),
+    );
+    const data = await call({ digest: "6S9udfgK1GSCabDEsuUDB4ysdCTXkfvt2rwze2Wrdb7K" });
+
+    expect(data.beneficiaries.map((b: { account: string }) => b.account)).toEqual([
+      "eip155:42161:0xfb4717318748a204b028e7920bb86fe2b110917c",
+    ]);
+    expect(data.carried_by).toBe("Allbridge Core");
+    expect(data.settled_over).toEqual(["Wormhole"]);
+    const [message] = data.wormhole_messages;
+    expect(message.role).toBe("settlement_message");
+    expect(message.destination.status).toBe("not_redeemed");
+    expect(message.destination.redemption_expected).toBe(false);
+  });
+
   it("reports Meson from its call, with no destination (7EyRb8Bb…)", async () => {
     mockGqlQuery.mockResolvedValue(FIXTURES["7EyRb8BbLPKvKQmuH2ExUFDnzxV6d6nhKGWBxG18ohiZ"]);
     const data = await call({ digest: "7EyRb8BbLPKvKQmuH2ExUFDnzxV6d6nhKGWBxG18ohiZ" });
@@ -308,5 +442,45 @@ describe("resolve_bridge_transfer on the newer bridges", () => {
     expect(data.beneficiaries[0].protocol).toBe("Mayan Swift");
     expect(data.other_bridge_activity).toBeUndefined();
     expect(data.note).toContain("Mayan Swift");
+  });
+});
+
+describe("resolve_bridge_transfer — an aborted transaction moved nothing", () => {
+  // A Move abort reverts every effect but the gas charge, so its events are
+  // always empty, but a Mayan/CCTP call still sits in the PTB's declared
+  // commands whether or not execution reached it. The fixture aborted with
+  // INSUFFICIENT_COIN_BALANCE and moved nothing but gas.
+  it("does not claim a bridge exit or say funds left, even with a bridge marker present", async () => {
+    mockGqlQuery.mockResolvedValue({
+      transaction: {
+        digest: "D",
+        effects: {
+          status: "FAILURE",
+          executionError: { abortCode: null, message: "Error in 1st command, Insufficient coin balance for operation." },
+          events: { nodes: [MAYAN_EVENT] },
+        },
+      },
+    });
+    const data = await call({ digest: "D" });
+    expect(data.status).toBe("failure");
+    expect(data.note).not.toMatch(/funds did leave/i);
+    expect(data.other_bridge_activity).toBeUndefined();
+    expect(data.beneficiaries).toBeUndefined();
+  });
+
+  it("names the failure kind from the execution error", async () => {
+    mockGqlQuery.mockResolvedValue({
+      transaction: {
+        digest: "D",
+        effects: {
+          status: "FAILURE",
+          executionError: { abortCode: null, message: "Error in 1st command, Insufficient coin balance for operation." },
+          events: { nodes: [] },
+        },
+      },
+    });
+    const data = await call({ digest: "D" });
+    expect(data.failure.kind).toBe("INSUFFICIENT_COIN_BALANCE");
+    expect(data.failure.command).toBe(0);
   });
 });

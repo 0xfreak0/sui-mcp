@@ -13,9 +13,9 @@ import {
   type PublishedVersion,
 } from "../src/utils/upgrade-history.js";
 
-// The Nemo lineage on mainnet: a 3-of-4 multisig held the UpgradeCap, lent it
-// to a single ed25519 key for eleven minutes around the v10 upgrade, lent it
-// again from 2025-08-10 to 2025-09-08, and the exploit ran on 2025-09-07 16:03.
+// A mainnet package lineage: a 3-of-4 multisig held the UpgradeCap, lent it
+// to a single ed25519 key for eleven minutes around the v10 upgrade, and lent
+// it again from 2025-08-10 to 2025-09-08.
 const SINGLE = "0xf55cc609b13e87470d3da78d39ad6f84458a8059eb06aa66f94103d775e8a663";
 const MULTI = "0xaa71d7166a7f7df65cd0e33b5adc2c53028f31605864a76887180415d604ac8e";
 
@@ -159,6 +159,41 @@ describe("single-key upgrades", () => {
   it("does not flag the deployer's own publish of v1", () => {
     const { flags } = analyse();
     expect(flags.some((f) => f.kind === "single_key_upgrade" && f.versions?.includes(1))).toBe(false);
+  });
+});
+
+describe("single-key upgrades before the cap ever reaches its usual holder", () => {
+  // The deployer publishes v2-v4 with its own single key while it still
+  // holds the cap, before handing it to the 2-of-4 admin multisig for the
+  // first time. That is normal setup before handover, the same reason v1
+  // itself is never flagged. Long afterward, a loan (v5) away from the
+  // established multisig custody is still a departure.
+  const preHandoverCaps: CapVersion[] = [
+    cap("v1tx", "2025-01-01T00:00:00Z", 100, SINGLE, SINGLE, 1),
+    cap("handover", "2025-01-10T00:00:00Z", 1000, SINGLE, MULTI, 4),
+    cap("loanout", "2025-06-01T00:00:00Z", 5000, MULTI, SINGLE, 5),
+    cap("loanback", "2025-06-02T00:00:00Z", 5100, SINGLE, MULTI, 5),
+  ];
+  const preHandoverVersions: PublishedVersion[] = [
+    ver(1, "v1tx", "2025-01-01T00:00:00Z", 100, SINGLE),
+    ver(2, "v2tx", "2025-01-03T00:00:00Z", 300, SINGLE),
+    ver(3, "v3tx", "2025-01-05T00:00:00Z", 500, SINGLE),
+    ver(4, "v4tx", "2025-01-09T00:00:00Z", 900, SINGLE),
+    ver(5, "v5tx", "2025-06-01T12:00:00Z", 5050, SINGLE),
+  ];
+
+  it("does not flag v2-v4, published by the deployer before the cap ever reached the multisig", () => {
+    const { flags } = analyse(24, null, preHandoverCaps, preHandoverVersions);
+    const flaggedVersions = flags.filter((f) => f.kind === "single_key_upgrade").flatMap((f) => f.versions ?? []);
+    expect(flaggedVersions).not.toContain(2);
+    expect(flaggedVersions).not.toContain(3);
+    expect(flaggedVersions).not.toContain(4);
+  });
+
+  it("still flags a genuine single-key loan long after the multisig was established", () => {
+    const { flags } = analyse(24, null, preHandoverCaps, preHandoverVersions);
+    const flaggedVersions = flags.filter((f) => f.kind === "single_key_upgrade").flatMap((f) => f.versions ?? []);
+    expect(flaggedVersions).toContain(5);
   });
 });
 

@@ -5,7 +5,7 @@ import fixture from "../fixtures/address-balance-txs.json" with { type: "json" }
 
 /**
  * A real mainnet digest. get_transaction rejects a malformed one before making
- * any request, so a placeholder like "TxDigest123" no longer reaches the
+ * any request, so a placeholder like "TxDigest123" never reaches the
  * handler under test.
  */
 const TEST_DIGEST = "6rbfmByTyP4k7EREQBV9XZNhaG4RPm2ExT5bhVDfhGpu";
@@ -35,6 +35,11 @@ const mockServer = {
 } as any;
 
 registerTransactionTools(mockServer);
+
+// Coin-scale prefetch runs before every decode. Tests that do not care
+// about decimals get a coin with no CoinMetadata, which takes the
+// "unknown, fall back to the symbol guess" path.
+mockSui.stateService.getCoinInfo.mockResolvedValue({ response: {} });
 
 describe("get_transaction", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -250,9 +255,9 @@ describe("query_transactions", () => {
   });
 
   /**
-   * Nemo's lineage has 12 versions, and one document aliasing all 12 was
-   * refused with "Query has over 300 nodes". The service counts every field
-   * of every alias; measured, 10 fit without commands and 5 with them.
+   * One document aliasing all 12 versions of a lineage exceeds the service's
+   * 300-node cap. The service counts every field of every alias, so 10 fit
+   * without commands and 5 with them.
    */
   it.each([
     [false, 10],
@@ -307,10 +312,9 @@ describe("query_transactions", () => {
 /**
  * What the tool says when a transaction moved no coin.
  *
- * These assert on the HANDLER's output, not on the helpers it calls. The first
- * version of this cover exercised `summarizeObjectChanges` and `custodyChanges`
- * directly, so reverting the owner kind to a bare address — the exact defect it
- * was written to guard — left the whole suite green.
+ * These assert on the handler's output rather than on the helpers it calls,
+ * so a handler that reports an owner as a bare address, without its kind,
+ * fails here.
  */
 describe("get_transaction reports what a transaction touched", () => {
   const EMPTY = "F7xprc5y7LmkzMQqRjaEWexzupdtFTSPUXoF49GNepjY";
@@ -375,9 +379,8 @@ describe("get_transaction reports what a transaction touched", () => {
   });
 
   /**
-   * A kiosk-held NFT is owned by the Kiosk object. Reporting a bare address
-   * made a kiosk id read as a wallet, on a real TradePort sale where BOTH
-   * parties were kiosks.
+   * A kiosk-held NFT is owned by the Kiosk object, so a sale between two
+   * kiosks names both parties with the `object` kind rather than as wallets.
    */
   it("names each party's owner KIND, so a kiosk is not reported as a wallet", async () => {
     const kioskSale = emptyTx({
@@ -433,6 +436,39 @@ describe("get_transaction reports what a transaction touched", () => {
   it("omits object_transfers when nothing changed hands", async () => {
     const j = await run(emptyTx());
     expect(j.object_transfers).toBeUndefined();
+  });
+
+  /**
+   * A transaction whose only object change is a coin created for an address
+   * other than the sender. A coin is never listed in object_transfers or
+   * created_for, so the recipient is named from the balance changes.
+   */
+  it("names the addresses that received coins when no other object moved", async () => {
+    const XAUM = "0x9d297676e7a4b771ab023291377b2adfaa4938fb9080b8d12430e4b108b836a9::xaum::XAUM";
+    const drain = emptyTx({
+      effects: {
+        status: { success: true },
+        gasUsed: { computationCost: 1n, storageCost: 1n, storageRebate: 1n, nonRefundableStorageFee: 1n },
+        epoch: 1100n,
+        changedObjects: [
+          {
+            objectId: "0xnewxaumcoin",
+            objectType: `0x2::coin::Coin<${XAUM}>`,
+            idOperation: 1,
+            inputState: 1,
+            outputOwner: { kind: 1, address: "0xbeneficiary" },
+          },
+        ],
+      },
+    });
+    drain.response.transaction.balanceChanges = [
+      { address: "0xsender", coinType: "0x2::sui::SUI", amount: "-106785456" },
+      { address: "0xbeneficiary", coinType: XAUM, amount: "215600000000" },
+    ] as never;
+    mockSui.stateService.getCoinInfo.mockRejectedValue(Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" }));
+    const j = await run(drain);
+    expect(j.created_for).toBeUndefined();
+    expect(j.coins_delivered_to).toEqual(["0xbeneficiary"]);
   });
 
   it("says decoding was skipped when max_event_field_bytes is 0", async () => {
@@ -501,8 +537,8 @@ describe("get_transaction reports address-balance activity", () => {
 
   /**
    * CD2e4… redeemed 1951 MIST from the sender's address balance and sent it
-   * on, paying gas from the address balance too. No object was written, yet
-   * it reported two changed objects and "none changed hands".
+   * on, paying gas from the address balance too. No object was written, so
+   * no changed object and no custody note may be reported.
    */
   it("shows withdrawals and deposits instead of phantom object changes", async () => {
     const j = await run("CD2e4GVCjgHjjp9Z52yge5WF2HB52vBpreJGYe4Utiay");
@@ -531,8 +567,8 @@ describe("get_transaction reports address-balance activity", () => {
   });
 
   /**
-   * 8eHgw5…: Cetus's multisig minted MessageFromCetus NFTs to both exploiter
-   * addresses, and the note said nothing changed hands.
+   * 8eHgw5…: a multisig minted MessageFromCetus NFTs to two addresses other
+   * than the sender.
    */
   it("lists objects minted to someone other than the sender", async () => {
     const j = await run("8eHgw5hBnALFJKPstXWcPgKjeh1av1CzFAz8n85Primr");
@@ -549,8 +585,7 @@ describe("get_transaction reports address-balance activity", () => {
 describe("get_transactions with no well-formed digest", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  // Every digest malformed came back as a success with `returned: 0`, which
-  // reads as a lookup that found nothing.
+  // A success with `returned: 0` would read as a lookup that found nothing.
   it("is an error that names the digests, and sends no request", async () => {
     const result = await tools.get("get_transactions")!({ digests: ["notadigest0OIl", "notadigest0OIl", "1".repeat(44)] });
     expect(result.isError).toBe(true);

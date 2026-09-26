@@ -17,6 +17,7 @@ import { buildCaseGraph, type CaseTx } from "../utils/case-graph.js";
 import { toCsv, toGraphJson, toMermaid } from "../utils/flow-export.js";
 import { fetchTx, formatAmount } from "../utils/trace-read.js";
 import { getLabel } from "../utils/labels.js";
+import { prefetchCoinScale } from "../utils/valuation.js";
 import { detectBridges } from "../utils/bridge/detect.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
@@ -56,7 +57,11 @@ async function caseFlowGraph(findings: Finding[]) {
   const packages = new Set(
     read.flatMap((tx) => tx?.callSites.map((c) => normalizeSuiAddress(c.packageId)) ?? []).filter((p) => !FRAMEWORK.has(p)),
   );
-  await prefetchProtocolNames(packages).catch(() => undefined);
+  await Promise.all([
+    prefetchProtocolNames(packages).catch(() => undefined),
+    // Edge labels are formatted amounts of these coins.
+    prefetchCoinScale(read.flatMap((tx) => tx?.balanceChanges.map((c) => c.coin_type) ?? [])),
+  ]);
   read.forEach((tx, i) => {
     if (!tx) {
       unread.push(digests[i]);

@@ -5,6 +5,7 @@ import { describeAddresses, identityNote, type AddressIdentity } from "../utils/
 import { getLabel, labelProvenance } from "../utils/labels.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { coinKey } from "../utils/trace-hop.js";
+import { ActivityLedger, lookalikeReport, lookalikeWarning, type LookalikeReport } from "../utils/address-lookalike.js";
 import { formatAmount } from "../utils/trace-read.js";
 import { displayCoin, formatUsd } from "../utils/valuation.js";
 import { invalidDigestMessage, isDigest, normalizeDigest } from "../utils/digest.js";
@@ -35,7 +36,7 @@ const FORMAT_ARG = z
   .enum(EXPORT_FORMATS)
   .optional()
   .describe(
-    "Output format (default json). mermaid: a fenced ```mermaid flowchart that renders in a markdown viewer. graph_json: {nodes, edges} for graph tools. csv: one row per edge.",
+    "Output format (default json). mermaid: a fenced ```mermaid flowchart that renders in a markdown viewer. graph_json: {nodes, edges} for graph tools, plus address_poisoning from trace_flow_graph when two reached addresses render alike. csv: one row per edge.",
   );
 
 /** Who an address is, for labels: name, then label, then protocol, then the short address. */
@@ -114,6 +115,7 @@ function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rende
         max_transaction_reads: engine.opts.maxTxReads,
       },
       ...(engine.notes.length ? { notes: engine.notes } : {}),
+      ...(engine.partial.length ? { partial: engine.partial } : {}),
     };
     if (engines.length === 1) Object.assign(coverage, c);
     else coverage[i === 0 ? "forward" : "backward"] = c;
@@ -290,7 +292,7 @@ async function identitiesFor(engines: FlowEngine[]): Promise<Map<string, Address
 }
 
 /** Plain-language summary: where the value ended, largest first. */
-function prose(engine: FlowEngine, ids: Map<string, AddressIdentity>, start: string): string {
+function prose(engine: FlowEngine, ids: Map<string, AddressIdentity>, start: string, poisoning: LookalikeReport | null): string {
   const lines = [`FLOW GRAPH — ${engine.opts.direction.toUpperCase()} from ${start}`];
   const addressNodes = [...engine.nodes.values()].filter((n) => n.kind === "address");
   lines.push(
@@ -309,11 +311,24 @@ function prose(engine: FlowEngine, ids: Map<string, AddressIdentity>, start: str
     }
     if (g.code !== "below_threshold" && g.entries.length > 5) lines.push(`    … ${g.entries.length - 5} more`);
   }
-  if (engine.truncated || engine.pending > 0) {
+  const ends = engine.ledger.summary().map((g) => g.code);
+  if (engine.pending > 0 || ends.includes("budget") || ends.includes("read_failed") || (engine.truncated && engine.partial.length === 0)) {
     lines.push("");
     lines.push(
       "⚠ Partial: some branches hit a limit (see terminals `budget` and coverage). Raise max_depth or max_nodes, or start a new graph from a budget node.",
     );
+  }
+  if (engine.partial.length > 0) {
+    lines.push("");
+    lines.push("⚠ Partial: the start address's search stopped at its limit before reading every move in the window. Narrow `from` and `to` to read the rest.");
+    for (const reason of engine.partial) lines.push(`  ${reason}`);
+  }
+  if (poisoning) {
+    // In the prose, which every format carries, and not only in the JSON: a
+    // mermaid or CSV export has no JSON, and the lookalike is drawn there as
+    // an ordinary wallet.
+    lines.push("");
+    lines.push(lookalikeWarning(poisoning, "graph"));
   }
   lines.push("");
   lines.push(
@@ -322,10 +337,20 @@ function prose(engine: FlowEngine, ids: Map<string, AddressIdentity>, start: str
   return lines.join("\n");
 }
 
-function formatted(format: ExportFormat, engines: FlowEngine[], ids: Map<string, AddressIdentity>, json: unknown, summary: string) {
+function formatted(
+  format: ExportFormat,
+  engines: FlowEngine[],
+  ids: Map<string, AddressIdentity>,
+  json: unknown,
+  summary: string,
+  poisoning: LookalikeReport | null,
+) {
   const text = (t: string) => ({ type: "text" as const, text: t });
   if (format === "mermaid") return { content: [text(summary), text(toMermaid(exportGraph(engines, ids)))] };
-  if (format === "graph_json") return { content: [text(JSON.stringify(toGraphJson(exportGraph(engines, ids)), null, 2))] };
+  if (format === "graph_json") {
+    const graph = { ...toGraphJson(exportGraph(engines, ids)), ...(poisoning ? { address_poisoning: poisoning } : {}) };
+    return { content: [text(JSON.stringify(graph, null, 2))] };
+  }
   if (format === "csv") return { content: [text(summary), text(edgeCsv(engines, ids))] };
   return { content: [text(summary), text(JSON.stringify(json, null, 2))] };
 }
@@ -352,18 +377,18 @@ function parseTarget(raw: string): Target {
 export function registerFlowGraphTools(server: McpServer) {
   server.tool(
     "trace_flow_graph",
-    "(Incident investigation) Follow ALL of the funds, not one branch. Builds a fund-flow graph from a transaction (or from an address after a time), forward to where the value went or backward to where it came from, allocating each transfer's traced value across every recipient in proportion to what each received. Same hop rules as trace_funds: follows the tracked coin, keeps the actor across swaps and self-credits, follows value released from objects, and stops at sinks, hubs, protocol addresses, bridge exits (with the far-side beneficiary read from the transaction) and transactions signed by someone other than the sender. Returns nodes (address, coin, identity, traced share and amount, why it ended), edges (amount, USD at transaction time, digests), `terminals` grouped by reason with the share of the traced value that ended there (bridge_exit, sink, hub, unspent, consumed, budget, …), and `coverage` (nodes expanded, pruned, truncated). `format` renders Mermaid, graph JSON or CSV. Costs roughly one search plus the spends it finds per node: 40 nodes is typically 100-300 requests.",
+    "(Incident investigation) Follow ALL of the funds, not one branch. Builds a fund-flow graph from a transaction (or from an address after a time), forward to where the value went or backward to where it came from, allocating each transfer's traced value across every recipient in proportion to what each received. Same hop rules as trace_funds: follows the tracked coin, keeps the actor across swaps and self-credits, follows value released from objects, and stops at sinks, hubs, protocol addresses, bridge exits (with the far-side beneficiary read from the transaction) and transactions signed by someone other than the sender. From an address, a swap it made counts once: its later moves of the proceeds carry that value (backward: its earlier inflows of what it paid in), and the part they did not move ends at the address as unspent (backward: source), or budget when the search stopped at its move limit. Returns nodes (address, coin, identity, traced share and amount, why it ended), edges (amount, USD at transaction time, digests), `terminals` grouped by reason with the share of the traced value that ended there (bridge_exit, sink, hub, unspent, consumed, budget, …), `coverage` (nodes expanded, pruned, truncated, and `partial` when the start address's search stopped at its move limit), and `address_poisoning` when two addresses the graph reached render alike, also stated in the summary of every format. A branch to an address that renders like one already reached is never pruned, whatever its share. `format` renders Mermaid, graph JSON or CSV. Costs roughly one search plus the spends it finds per node: 40 nodes is typically 100-300 requests.",
     {
       digest: z.string().optional().describe("Starting transaction (Base58). Give this or `address`."),
-      address: addressArg().optional().describe("Start from this address instead of a transaction: its outflows after `from` (forward) or inflows before `to` (backward)."),
+      address: addressArg().optional().describe("Start from this address instead of a transaction: every coin its moves paid out after `from` (forward) or took in before `to` (backward)."),
       direction: z.enum(["forward", "backward"]).optional().describe("forward (default) follows where the value went; backward follows who paid it in."),
       coin_type: coinTypeArg().optional().describe("Follow only this coin from the start (e.g. 0x2::sui::SUI). The graph still follows value across swaps. Omitted: every coin the start moved."),
       from: timePointArg().optional().describe("Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search."),
       to: timePointArg().optional().describe("Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search."),
       max_depth: numArg().int().min(1).max(8).optional().describe("Hops to follow from the start (default 4, max 8)."),
       max_nodes: numArg().int().min(1).max(150).optional().describe("Address nodes to expand (default 40, max 150). Larger branches are expanded first."),
-      min_share: numArg().min(0).max(1).optional().describe("Do not expand branches carrying less than this fraction of the traced value (default 0.01 = 1%). They are counted under coverage.pruned."),
-      min_usd: numArg().min(0).optional().describe("Prune by USD instead: branches worth less than this at transaction time. Unpriced branches fall back to min_share."),
+      min_share: numArg().min(0).max(1).optional().describe("Do not expand branches carrying less than this fraction of the traced value (default 0.01 = 1%), except a branch to an address that renders like one already reached. They are counted under coverage.pruned."),
+      min_usd: numArg().min(0).optional().describe("Prune by USD instead: branches worth less than this at transaction time, except a branch to an address that renders like one already reached. Unpriced branches fall back to min_share."),
       format: FORMAT_ARG,
     },
     async ({ digest, address, direction, coin_type, from, to, max_depth, max_nodes, min_share, min_usd, format }) => {
@@ -402,10 +427,19 @@ export function registerFlowGraphTools(server: McpServer) {
       }
       await engine.run();
 
+      // Address poisoning over every address the graph named, expanded or
+      // pruned: a lookalike branch is protected from pruning (see
+      // FlowEngine.connect), but an investigator still needs the warning
+      // stated, not just the edge left visible.
+      const poisonLedger = new ActivityLedger();
+      for (const n of engine.nodes.values()) if (n.address) poisonLedger.observe([{ address: n.address, amount: n.traced }]);
+      for (const p of engine.pruned) poisonLedger.observe([{ address: p.address, amount: p.traced }]);
+      const poisoning = lookalikeReport(poisonLedger.addresses(), poisonLedger.activity);
+
       const ids = await identitiesFor([engine]);
       const r = render([engine], ids);
       const start = digest ? `tx ${normalizeDigest(digest)}` : `${address} (${displayName(address!, ids)})`;
-      const summary = prose(engine, ids, start);
+      const summary = prose(engine, ids, start, poisoning);
       const json = {
         start: digest ? { digest: normalizeDigest(digest) } : { address, account: currentSuiAccount(address!) },
         direction: opts.direction,
@@ -413,6 +447,7 @@ export function registerFlowGraphTools(server: McpServer) {
         ...(from || to ? { window: describeWindow(from, to, window) } : {}),
         terminals: r.terminals,
         coverage: r.coverage,
+        ...(poisoning ? { address_poisoning: poisoning } : {}),
         ...(r.pruned.length ? { largest_pruned: r.pruned } : {}),
         nodes: r.nodes,
         edges: r.edges,
@@ -422,7 +457,7 @@ export function registerFlowGraphTools(server: McpServer) {
         next_steps:
           "resolve_bridge_transfer on an exit's digests to follow it on the destination chain; classify_deposit_address or screen_address on a sink or hub; trace_flow_graph again from a `budget` node's address to go further.",
       };
-      return formatted(format ?? "json", [engine], ids, json, summary);
+      return formatted(format ?? "json", [engine], ids, json, summary, poisoning);
     },
   );
 
@@ -432,12 +467,12 @@ export function registerFlowGraphTools(server: McpServer) {
     {
       from: addressArg().describe("Address the value starts at."),
       to: z.string().describe("Address the value should reach: a Sui address, a foreign-chain address a bridge exit pays (0x + 40 hex for EVM, base58 for Solana), or a CAIP-10 account."),
-      max_hops: numArg().int().min(1).max(6).optional().describe("Longest path to look for, in transfers (default 4, max 6)."),
+      max_hops: numArg().int().min(1).max(6).optional().describe("Longest path to look for, in transfers (default 5, max 6)."),
       coin_type: coinTypeArg().optional().describe("Start by following only this coin. Swaps are still followed."),
       window_start: timePointArg().optional().describe("Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history."),
       window_end: timePointArg().optional().describe("Only transactions before this: ISO date or checkpoint."),
       max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100)."),
-      min_share: numArg().min(0).max(1).optional().describe("Do not expand branches below this fraction of each side's value (default 0.001)."),
+      min_share: numArg().min(0).max(1).optional().describe("Do not expand branches below this fraction of each side's value (default 0.001), except a branch to an address that renders like one already reached."),
       format: FORMAT_ARG,
     },
     async ({ from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share, format }) => {
@@ -449,7 +484,7 @@ export function registerFlowGraphTools(server: McpServer) {
       } catch (err) {
         return errorResult((err as Error).message);
       }
-      const hops = max_hops ?? 4;
+      const hops = max_hops ?? 5;
       const base = {
         coin: coin_type ? coinKey(coin_type) : null,
         maxDepth: hops,
@@ -537,6 +572,8 @@ export function registerFlowGraphTools(server: McpServer) {
           (backward ? `, backward ${backward.expandedNodes} node(s) over ${bLevels} level(s)` : " (a foreign-chain target is reached only forward, through a bridge exit)") +
           `, ${forward.txReads + (backward?.txReads ?? 0)} transactions read.`,
       );
+      for (const reason of forward.partial) lines.push(`Partial (the \`from\` address): ${reason} Narrow the window to read the rest.`);
+      for (const reason of backward?.partial ?? []) lines.push(`Partial (the \`to\` address): ${reason} Narrow the window to read the rest.`);
       if (!found) {
         lines.push(
           "Absence is not evidence: the search is bounded by max_hops, max_nodes and min_share, stops at hubs and sinks, and cannot see value that leaves through an exchange or another chain. Widen the window or the limits, or trace_flow_graph from either end.",

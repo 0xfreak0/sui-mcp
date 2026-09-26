@@ -12,7 +12,8 @@
 
 import { z } from "zod";
 import { numArg, addressArg, coinTypeArg } from "./args.js";
-import { errorResult } from "../utils/errors.js";
+import { errorResult, describeError } from "../utils/errors.js";
+import { getNetwork } from "../config.js";
 import { describeAddresses } from "../utils/identity.js";
 import { restrictionNote } from "../utils/deny-list.js";
 import {
@@ -55,22 +56,20 @@ export function registerRestrictionTools(server: McpServer) {
         // The epoch decides what is in force. Guessing it would turn a
         // scheduled denial into a reported freeze.
         return errorResult(
-          `Could not read the current epoch (${err instanceof Error ? err.message : String(err)}), and without it a recorded denial cannot be told from an active one.`,
+          `Could not read the current epoch (${describeError(err, getNetwork())}), and without it a recorded denial cannot be told from an active one.`,
         );
       }
 
       // --- one address, across every configured coin -----------------------
       if (address && !coin_type) {
-        // Exhaustive by default. Checking only the coins an address holds does
-        // not work, and the reason is structural: freezing and holding are
-        // ANTI-CORRELATED. An issuer freezes an address and it ends up holding
-        // none of that coin. Measured on a real denied address, held-coins
-        // found 11 restrictions where the full scan found 58 — missing 81%,
-        // including the coin that led us to the address in the first place.
-        const scan = await checkAddressAcrossCoins(address, epoch).catch(() => null);
-        if (!scan) {
+        // Exhaustive by default. Checking only the coins an address holds
+        // misses most restrictions, because freezing and holding are
+        // anti-correlated: an issuer freezes an address and it ends up holding
+        // none of that coin.
+        const scan = await checkAddressAcrossCoins(address, epoch).catch((err: unknown) => ({ failed: err }));
+        if ("failed" in scan) {
           return errorResult(
-            `Could not read the deny list for ${address}. This is not evidence it is unrestricted.`,
+            `Could not read the deny list for ${address} (${describeError(scan.failed, getNetwork())}). This is not evidence it is unrestricted.`,
           );
         }
 

@@ -330,9 +330,8 @@ export function chooseNextHop(params: {
   const recipients = positiveToOthers.filter(tracked);
   if (recipients.length > 0) {
     // Rank by value, then prefer a non-pass-through recipient (skip DEX pools /
-    // protocol addresses). Ranking before filtering matters: the note used to
-    // claim it followed "the largest" while taking whichever element happened
-    // to be first in the array.
+    // protocol addresses). Ranking comes before filtering so the choice is the
+    // largest recipient rather than whichever comes first in the array.
     const ranked = rank(recipients, valueUsd);
     const nonPool = ranked.find((c) => !isPassThrough(c.address));
     const chosen = nonPool ?? ranked[0];
@@ -395,6 +394,8 @@ export interface CandidateTx {
   sender: string | null;
   gas: GasCharge;
   changes: HopChange[];
+  /** The page reader could not fetch every balance change, so `changes` is partial. */
+  changesTruncated?: boolean;
 }
 
 /**
@@ -422,9 +423,9 @@ function changeFor(tx: CandidateTx, address: string, coin: string | null, sign: 
  * in which `address` spends the tracked coin.
  *
  * "The next transaction the recipient sent" is not "the next move of these
- * funds": a wallet that received SUI and then moved an unrelated token was
- * reported as moving the SUI. Gas is removed first, since every transaction
- * the payer sends lowers its SUI.
+ * funds": a wallet that received SUI and then moved an unrelated token has
+ * not moved the SUI. Gas is removed first, since every transaction the payer
+ * sends lowers its SUI.
  *
  * Candidates up to and including `current` are dropped when `current` is in
  * the page: they are earlier transactions of the same checkpoint.
@@ -446,55 +447,137 @@ export function firstSpend(
 }
 
 /**
+ * Key a shared remaining-capacity map by transaction and coin: a digest can
+ * move several coins independently, so "how much of this digest is still
+ * available" is meaningless without saying of which coin. A wildcard key
+ * (`coin === null`) is written only when an address-start root could not
+ * tell which coin a transaction moved, the one case a whole-digest block is
+ * still the safe, conservative answer; see
+ * {@link allSpends}. A caller that wants a whole digest skipped for reasons
+ * unrelated to coin (trace_funds' same-checkpoint revisit guard) uses
+ * `hardSkip`, not this map.
+ */
+export function availabilityKey(digest: string, coin: string | null): string {
+  return `${digest}|${coin ? coinKey(coin) : "*"}`;
+}
+
+/**
+ * One transaction+coin's remaining capacity, and who last claimed it.
+ *
+ * `byRoot` distinguishes an address-start root's claim (keyed by the coin it
+ * followed, even though the root's own node has no single coin) from a
+ * coin-specific node's claim on its own key. The only writer of a
+ * `digest|<coin>` entry that is not byRoot is the node `(address, coin)`
+ * itself, i.e. an earlier arrival at this same node.
+ */
+export interface RemainingEntry {
+  avail: bigint;
+  byRoot: boolean;
+}
+
+
+/**
  * Forward, every spend: each candidate after `current` in which `address`
  * spent the tracked coin, in the order they happened. {@link firstSpend} is
  * the first of these; a flow graph follows all of them until the traced
  * amount is accounted for.
+ *
+ * `hardSkip` is a caller's own revisit guard (trace_funds' same-checkpoint
+ * ping-pong: A→B→A must not rediscover A→B as "the next spend" a second
+ * time). It is invisible here and never counts toward `alreadyAllocated`,
+ * since nothing about it says the value moved elsewhere in a graph; there is
+ * no graph, only this one caller's own earlier step.
+ *
+ * `remaining` is shared across every coin-lineage of the same address in one
+ * flow graph, keyed by transaction and coin. A digest not yet in it is fully
+ * available (its own on-chain amount); one already in it may be partially
+ * available, because an earlier arrival already took part of it, and the
+ * rest stays available to a later need. A candidate drained to
+ * exactly zero is a non-hit either way, and who drained it (`entry.byRoot`)
+ * decides which count it goes to. A node's own earlier arrival draining its
+ * own key means this arrival's share was never spent and is still held:
+ * the caller reports it as unspent/source, and `drainedBySelf`
+ * lets the wording say those spends are already counted rather than that
+ * nothing moved. An address-start root's claim (byRoot, keyed by the coin it
+ * followed) counts toward `alreadyAllocated`: that value is known to be
+ * spoken for by an edge the root itself already recorded.
  */
 export function allSpends(
   candidates: CandidateTx[],
   address: string,
   coin: string | null,
-  skip: ReadonlySet<string>,
+  remaining: ReadonlyMap<string, RemainingEntry>,
+  hardSkip?: ReadonlySet<string>,
   current?: string,
-): Array<{ tx: CandidateTx; spent: bigint }> {
+): { hits: Array<{ tx: CandidateTx; spent: bigint }>; alreadyAllocated: number; drainedBySelf: number } {
   const at = current ? candidates.findIndex((t) => t.digest === current) : -1;
-  const out: Array<{ tx: CandidateTx; spent: bigint }> = [];
+  const hits: Array<{ tx: CandidateTx; spent: bigint }> = [];
+  let alreadyAllocated = 0;
+  let drainedBySelf = 0;
   for (const tx of candidates.slice(at + 1)) {
-    if (skip.has(tx.digest)) continue;
+    if (hardSkip?.has(tx.digest)) continue;
     const net = changeFor(tx, address, coin, -1n);
-    if (net < 0n) out.push({ tx, spent: -net });
+    if (net >= 0n) continue;
+    if (coin !== null && remaining.get(`${tx.digest}|*`)?.byRoot) {
+      alreadyAllocated++;
+      continue;
+    }
+    const entry = remaining.get(availabilityKey(tx.digest, coin));
+    const avail = entry ? entry.avail : -net;
+    if (avail <= 0n) {
+      if (entry?.byRoot) alreadyAllocated++;
+      else drainedBySelf++;
+      continue;
+    }
+    hits.push({ tx, spent: avail });
   }
-  return out;
+  return { hits, alreadyAllocated, drainedBySelf };
 }
 
 /**
  * Backward: every candidate in which `address` gained the tracked coin,
  * newest first.
  *
- * GraphQL returns a `last` page in ascending order. Taking the first element
- * that was not the current hop picked the OLDEST of the window, and without a
- * direction filter it picked the address's own outflows: a stranger's deposit
- * five transactions back became "the funder", and an outflow sent by the
- * address itself read as a cycle. Candidates at or after `current` in the page
- * are later than the hop being explained and are dropped.
+ * GraphQL returns a `last` page in ascending order, so the newest inflow is
+ * nearest the end. Taking the first element would name the oldest transaction
+ * of the window as "the funder", and without a direction filter the
+ * address's own outflows would read as inflows and as a cycle. Candidates at
+ * or after `current` in the page are later than the hop being explained and
+ * are dropped.
+ *
+ * `remaining` and `hardSkip` mirror {@link allSpends}.
  */
 export function inflowsNewestFirst(
   candidates: CandidateTx[],
   address: string,
   coin: string | null,
-  skip: ReadonlySet<string>,
+  remaining: ReadonlyMap<string, RemainingEntry>,
+  hardSkip?: ReadonlySet<string>,
   current?: string,
-): Array<{ tx: CandidateTx; received: bigint }> {
+): { hits: Array<{ tx: CandidateTx; received: bigint }>; alreadyAllocated: number; drainedBySelf: number } {
   const at = current ? candidates.findIndex((t) => t.digest === current) : -1;
   const earlier = at >= 0 ? candidates.slice(0, at) : candidates;
-  const out: Array<{ tx: CandidateTx; received: bigint }> = [];
+  const hits: Array<{ tx: CandidateTx; received: bigint }> = [];
+  let alreadyAllocated = 0;
+  let drainedBySelf = 0;
   for (const tx of [...earlier].reverse()) {
-    if (skip.has(tx.digest)) continue;
+    if (hardSkip?.has(tx.digest)) continue;
     const net = changeFor(tx, address, coin, 1n);
-    if (net > 0n) out.push({ tx, received: net });
+    if (net <= 0n) continue;
+    if (coin !== null && remaining.get(`${tx.digest}|*`)?.byRoot) {
+      alreadyAllocated++;
+      continue;
+    }
+    const entry = remaining.get(availabilityKey(tx.digest, coin));
+    const avail = entry ? entry.avail : net;
+    if (avail <= 0n) {
+      if (entry?.byRoot) alreadyAllocated++;
+      else drainedBySelf++;
+      continue;
+    }
+    hits.push({ tx, received: avail });
   }
-  return out;
+  return { hits, alreadyAllocated, drainedBySelf };
 }
 
 /**

@@ -1,24 +1,19 @@
 /**
  * Builders for responses the real services can actually produce.
  *
- * Three separate bugs shipped green because a mock answered something the
- * service never sends:
+ * A mock that answers something the service never sends lets a dead code path
+ * pass. Two constraints these builders encode:
  *
- *   - `activeValidators(first: 200)` was mocked as a single page with no
- *     `pageInfo`. Mainnet rejects that query outright — "Page size is too
- *     large: 200 > 50" — so `identify_address` had *never once* detected a
- *     validator and `get_staking_summary` failed on every call naming one. The
- *     tests passed throughout.
- *   - Absence was mocked as `new Error("not found")`. The service signals it
- *     with a gRPC `NOT_FOUND` status, so a fix that keys on the status looked
- *     broken while the buggy catch-everything looked correct.
- *   - Both let a completely dead code path report success.
+ *   - A GraphQL connection page is capped at 50 and always carries
+ *     `pageInfo`. Mainnet rejects `activeValidators(first: 200)` outright
+ *     ("Page size is too large: 200 > 50").
+ *   - The gRPC service signals absence with a `NOT_FOUND` status. Code that
+ *     keys on the status needs a mock that sends the status.
  *
  * A mock is an assertion about the outside world. When it asserts something
- * false, the test stops testing anything. These builders encode the
- * constraints the services actually impose, and **throw** rather than build a
- * response that could not occur — so an impossible assumption fails loudly at
- * authoring time instead of silently passing forever.
+ * false, the test stops testing anything. These builders **throw** rather than
+ * build a response that could not occur, so an impossible assumption fails at
+ * authoring time.
  */
 
 /** GraphQL page cap. Documented in CLAUDE.md and enforced by the service. */

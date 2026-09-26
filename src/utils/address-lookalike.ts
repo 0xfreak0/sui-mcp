@@ -8,18 +8,17 @@
  * visually identical to the real one in the only view anyone actually reads.
  * The payoff is a human copying the wrong row out of their own history.
  *
- * Confirmed on mainnet against a real target: a fresh address was funded, sent
- * 0.001 SUI to the victim, and swept its change back to the funder — nine
- * seconds from first to last transaction. It has no purpose other than to
- * occupy a line in a transaction list.
+ * A poisoning address is typically funded fresh, sends a dust amount such as
+ * 0.001 SUI to the target, and sweeps its change back to the funder within
+ * seconds. It has no purpose other than to occupy a line in a transaction list.
  *
  * ## Why the threshold is a TOTAL, not a symmetric k
  *
- * The obvious rule is "k leading and k trailing characters match". Both real
- * cases found break it: one matches 3 leading and 4 trailing, the other 5 and
- * 3. At k=4 symmetric both are missed; at k=3 symmetric the noise floor rises
- * by two orders of magnitude. Attackers grind whichever end is cheaper, and the
- * victim's eye reads the concatenation, so the score is the sum.
+ * The obvious rule is "k leading and k trailing characters match". Poisoning
+ * pairs are asymmetric: 3 leading and 4 trailing, or 5 and 3. At k=4 symmetric
+ * both are missed; at k=3 symmetric the noise floor rises by two orders of
+ * magnitude. Attackers grind whichever end is cheaper, and the victim's eye
+ * reads the concatenation, so the score is the sum.
  *
  * The rule is a floor of {@link MIN_PER_END} at EACH end — 3 and 3. That puts
  * the per-pair collision probability at 16^-6, about 6x10^-8: under one
@@ -34,11 +33,11 @@
  *
  * ## Why low-entropy addresses are excluded first
  *
- * The first run of this flagged `0x0000…0000` against `0x0000…0f0d000000`.
- * Both are real addresses and both genuinely share leading and trailing
- * characters, but they share them through zero padding rather than through
- * anybody's effort. Vanity and burn addresses collide with each other for
- * structural reasons and are not evidence of targeting.
+ * `0x0000…0000` and `0x0000…0f0d000000` are both real addresses and genuinely
+ * share leading and trailing characters, but they share them through zero
+ * padding rather than through anybody's effort. Vanity and burn addresses
+ * collide with each other for structural reasons and are not evidence of
+ * targeting.
  */
 
 const MIN_PER_END_VALUE = 3;
@@ -53,20 +52,15 @@ export const MIN_MATCHING_CHARS = MIN_PER_END_VALUE * 2;
 /**
  * Minimum match at EACH end.
  *
- * Three, not two, and the difference is a false positive this produced on
- * mainnet. Two addresses matched 4 leading and 2 trailing characters and were
- * flagged; they turned out to be co-recipients of one 2023 batch airdrop that
- * paid 0.01 SUI to dozens of addresses at once, with no contact between them
- * ever. They also do not look alike: `0x3f9ac21d…d301e7b4` beside
- * `0x3f9a7e04…480b6f93` — a 4+2 match collides only in a view truncated to four
- * and two characters, and no wallet or explorer truncates that hard; four
- * trailing is the common floor.
+ * A 4+2 match collides only in a view truncated to four leading and two
+ * trailing characters, and no wallet or explorer truncates that hard; four
+ * trailing is the common floor. Co-recipients of one batch airdrop form such
+ * pairs with no contact between them.
  *
  * So a 2-character match at either end is not deceptive in any view a human
- * reads, and admitting it only buys collisions. Both confirmed mainnet
- * poisoning cases match 3 or more at both ends (3+4 and 5+3), so nothing real
- * is lost. A shared prefix with a divergent tail is the least deceptive shape,
- * not the most.
+ * reads, and admitting it only buys collisions. Known poisoning pairs match 3
+ * or more at both ends (3+4 and 5+3). A shared prefix with a divergent tail is
+ * the least deceptive shape.
  */
 export const MIN_PER_END = MIN_PER_END_VALUE;
 
@@ -83,7 +77,50 @@ export interface AddressActivity {
    * dust, abandoned.
    */
   received?: bigint;
+  /**
+   * Earliest timestamp this address was observed at, within whatever was
+   * scanned. ISO 8601, comparable as plain strings because the service
+   * always renders them in the same format and zone.
+   *
+   * "First seen in this result" can differ from "existed first": a page can
+   * start after both addresses were in use. It is read only when footprint and
+   * receipts are both silent, and only for the shape {@link LIFECYCLE_MAX_GAP_MS}
+   * describes.
+   */
+  first_seen?: string | null;
+  /**
+   * Set with `first_seen`: the transaction this address was first seen in
+   * credited the subject and credited this address nothing. That is how
+   * poisoning dust arrives, and a victim's payment to a real recipient never
+   * looks like it, since there the recipient is the one credited.
+   */
+  first_seen_paying_subject?: boolean;
 }
+
+/** Which signal decided a pair's direction, so the note can name it. */
+export type DirectionBasis = "footprint" | "receipt" | "lifecycle";
+
+/**
+ * The longest gap between two lookalikes' first appearances that lets which
+ * one came first decide the pair.
+ *
+ * Order within one result is weak evidence on its own. A page can open after
+ * both addresses were in use, and a victim who pays the lookalike by mistake
+ * and then re-pays the real recipient shows the lookalike first. So order
+ * decides only the poisoning shape: the later address first appears paying
+ * the subject and receiving nothing (`first_seen_paying_subject`), within
+ * this long of the earlier one, the earlier one first appears in some other
+ * way (being paid, in the victim's payment the dust imitates), and the
+ * earlier one's first appearance is not the oldest row, so the result reaches
+ * back before it. When both first appear paying the subject, a real payer
+ * whose earlier payment is off the page and the dust imitating it look the
+ * same, and order would name whichever the page happened to show first.
+ *
+ * Poisoning is automated and lands its dust within seconds of the payment it
+ * imitates. Ten minutes leaves room for a slow bot and none for a victim's
+ * later repayment.
+ */
+export const LIFECYCLE_MAX_GAP_MS = 10 * 60_000;
 
 export interface LookalikePair {
   /** The address with the larger observed footprint, where that is knowable. */
@@ -101,6 +138,8 @@ export interface LookalikePair {
    * roles are arbitrary and the reader must not treat them as assigned.
    */
   direction_known: boolean;
+  /** Which signal decided the direction; set alongside `direction_known: true`. */
+  direction_basis?: DirectionBasis;
   note: string;
 }
 
@@ -151,8 +190,8 @@ function commonSuffix(a: string, b: string): number {
  * A 2-vs-1 margin is not evidence. Dust repeating inside one page is the normal
  * shape of this attack, so a poisoner that sends three times beats a real
  * counterparty seen once, and the tool would then point the accusation at the
- * legitimate address. Measured on the pinned mainnet case, the real margin is
- * 4-vs-1 — five dust sends invert it.
+ * legitimate address. A real counterparty's lead can be as small as 4-vs-1,
+ * which five dust sends invert.
  *
  * The established side must also have been seen at least this many times, so a
  * 3-vs-0 reading off a nearly empty page cannot assign roles either.
@@ -166,14 +205,18 @@ export const DIRECTION_MIN_MARGIN = 3;
  * reports the pair without assigning roles. Declining is cheap; naming the
  * victim as the attacker is not.
  */
-function footprintOrder(a: AddressActivity | undefined, b: AddressActivity | undefined): number {
+function footprintOrder(
+  a: AddressActivity | undefined,
+  b: AddressActivity | undefined,
+  oldestSeen: string | undefined,
+): { order: number; basis?: DirectionBasis } {
   const at = a?.transactions ?? 0;
   const bt = b?.transactions ?? 0;
   const hi = Math.max(at, bt);
   const lo = Math.min(at, bt);
 
   if (hi >= DIRECTION_MIN_MARGIN && hi - lo >= DIRECTION_MIN_MARGIN) {
-    return at > bt ? 1 : -1;
+    return { order: at > bt ? 1 : -1, basis: "footprint" };
   }
 
   // Counts are too close to separate them. One remaining signal is decimals-
@@ -181,8 +224,25 @@ function footprintOrder(a: AddressActivity | undefined, b: AddressActivity | und
   // one side received something, and never about how much.
   const ar = (a?.received ?? 0n) > 0n;
   const br = (b?.received ?? 0n) > 0n;
-  if (ar !== br) return ar ? 1 : -1;
-  return 0;
+  if (ar !== br) return { order: ar ? 1 : -1, basis: "receipt" };
+
+  // Footprint and receipts both silent: which one came first, but only for
+  // the shape a poisoner leaves (see LIFECYCLE_MAX_GAP_MS).
+  const aSeen = a?.first_seen;
+  const bSeen = b?.first_seen;
+  if (!aSeen || !bSeen || aSeen === bSeen || !oldestSeen) return { order: 0 };
+  const aFirst = aSeen < bSeen;
+  const [earlierSeen, laterSeen, earlier, later] = aFirst ? [aSeen, bSeen, a, b] : [bSeen, aSeen, b, a];
+  const gap = Date.parse(laterSeen) - Date.parse(earlierSeen);
+  if (
+    later?.first_seen_paying_subject &&
+    !earlier?.first_seen_paying_subject &&
+    gap <= LIFECYCLE_MAX_GAP_MS &&
+    earlierSeen > oldestSeen
+  ) {
+    return { order: aFirst ? 1 : -1, basis: "lifecycle" };
+  }
+  return { order: 0 };
 }
 
 function pairNote(p: LookalikePair): string {
@@ -194,7 +254,70 @@ function pairNote(p: LookalikePair): string {
   if (!p.direction_known) {
     return `Two addresses in this result share ${shape}, close enough to be mistaken for one another at a glance or in a short truncation. Nothing here separates their footprints, so which one is the impostor cannot be told from this data — check both before sending anything to either.`;
   }
+  if (p.direction_basis === "lifecycle") {
+    return `${p.rendered.suspect} shares ${shape} with ${p.rendered.established}. It first appeared in this result within ${LIFECYCLE_MAX_GAP_MS / 60_000} minutes after that address, in a transaction that credited this address and credited it nothing, which is how poisoning dust lands beside the payment it imitates. Footprint and receipts did not separate the two, so the direction rests on that timing and on activity seen in this result only. Verify the full 32 bytes of any address taken from this history before sending to it.`;
+  }
   return `${p.rendered.suspect} shares ${shape} with ${p.rendered.established}, which has the larger footprint here. That is consistent with address poisoning: a lookalike exists so a copy taken from transaction history lands on it instead. The direction rests on activity seen in this result only. Verify the full 32 bytes of any address taken from this history before sending to it.`;
+}
+
+/**
+ * Leading and trailing characters two normalized addresses share, when they
+ * share enough at both ends to be reported; null otherwise. The one
+ * acceptance rule {@link findLookalikes} and {@link LookalikeIndex} apply.
+ */
+function sharedEnds(a: string, b: string): { prefix: number; suffix: number } | null {
+  const prefix = commonPrefix(a, b);
+  const suffix = commonSuffix(a, b);
+  if (prefix < MIN_PER_END || suffix < MIN_PER_END || prefix + suffix < MIN_MATCHING_CHARS) return null;
+  return { prefix, suffix };
+}
+
+/**
+ * The lookalike rule for addresses met one at a time: a graph expansion
+ * deciding whether to prune a branch, rather than a batch it can bucket up
+ * front. A branch a poisoner built to imitate an address the graph has
+ * already reached must never be pruned as dust: the small amount is the
+ * finding.
+ *
+ * Bucketed on the first {@link MIN_PER_END} characters, as
+ * {@link findLookalikes} is, and each spelling is normalized once. Comparing
+ * every new address against every address seen would be quadratic in a
+ * batch payout's width, and it runs as synchronous CPU that blocks the server.
+ */
+export class LookalikeIndex {
+  private readonly buckets = new Map<string, Set<string>>();
+  /** Each spelling's normalized form, or null when it is never compared. */
+  private readonly hexOf = new Map<string, string | null>();
+
+  /**
+   * Record `address` and say whether an address recorded before renders like
+   * it (3+3 at each end, neither structurally low-entropy, not the same
+   * address spelled differently).
+   */
+  addAndCheck(address: string): boolean {
+    let hex = this.hexOf.get(address);
+    if (hex === undefined) {
+      const h = normalize(address);
+      hex = h !== null && !lowEntropy(h) ? h : null;
+      this.hexOf.set(address, hex);
+    }
+    if (hex === null) return false;
+    const key = hex.slice(0, MIN_PER_END);
+    let bucket = this.buckets.get(key);
+    if (!bucket) {
+      bucket = new Set();
+      this.buckets.set(key, bucket);
+    }
+    let alike = false;
+    for (const other of bucket) {
+      if (other !== hex && sharedEnds(hex, other)) {
+        alike = true;
+        break;
+      }
+    }
+    bucket.add(hex);
+    return alike;
+  }
 }
 
 /**
@@ -220,20 +343,28 @@ export function findLookalikes(
   // wallet gets named the impostor. `chain-id.ts`, `package-roots.ts` and
   // `registry.ts` all normalize before using an address as a key.
   const byHex = new Map<string, AddressActivity>();
+  // The oldest timestamp anywhere in the result: the first row, which the
+  // lifecycle signal must not treat as where an address began.
+  let oldestSeen: string | undefined;
   if (activity) {
     for (const [raw, act] of activity) {
+      if (act.first_seen && (!oldestSeen || act.first_seen < oldestSeen)) oldestSeen = act.first_seen;
       const hex = normalize(raw);
       if (!hex) continue;
       const prev = byHex.get(hex);
-      byHex.set(
-        hex,
-        prev
-          ? {
-              transactions: (prev.transactions ?? 0) + (act.transactions ?? 0),
-              received: (prev.received ?? 0n) + (act.received ?? 0n),
-            }
-          : act,
-      );
+      if (!prev) {
+        byHex.set(hex, act);
+        continue;
+      }
+      // Two spellings of one address: sum the footprint, keep the earlier
+      // first appearance with the shape it had.
+      const first = !prev.first_seen || (act.first_seen && act.first_seen < prev.first_seen) ? act : prev;
+      byHex.set(hex, {
+        transactions: (prev.transactions ?? 0) + (act.transactions ?? 0),
+        received: (prev.received ?? 0n) + (act.received ?? 0n),
+        first_seen: first.first_seen,
+        first_seen_paying_subject: first.first_seen_paying_subject,
+      });
     }
   }
 
@@ -258,12 +389,11 @@ export function findLookalikes(
       for (let j = i + 1; j < bucket.length; j++) {
         const a = bucket[i]!;
         const b = bucket[j]!;
-        const prefix = commonPrefix(a.hex, b.hex);
-        const suffix = commonSuffix(a.hex, b.hex);
-        if (prefix < MIN_PER_END || suffix < MIN_PER_END) continue;
-        if (prefix + suffix < MIN_MATCHING_CHARS) continue;
+        const ends = sharedEnds(a.hex, b.hex);
+        if (!ends) continue;
+        const { prefix, suffix } = ends;
 
-        const order = footprintOrder(byHex.get(a.hex), byHex.get(b.hex));
+        const { order, basis } = footprintOrder(byHex.get(a.hex), byHex.get(b.hex), oldestSeen);
         const [established, suspect] = order >= 0 ? [a, b] : [b, a];
 
         const pair: LookalikePair = {
@@ -276,6 +406,7 @@ export function findLookalikes(
           matching_chars: prefix + suffix,
           rendered: { established: render(established.hex), suspect: render(suspect.hex) },
           direction_known: order !== 0,
+          ...(basis ? { direction_basis: basis } : {}),
           note: "",
         };
         pair.note = pairNote(pair);
@@ -308,18 +439,37 @@ export interface Appearance {
  */
 export class ActivityLedger {
   private readonly byAddress = new Map<string, AddressActivity>();
+  private readonly subjectHex: string | null;
 
-  /** Record every appearance within ONE transaction. */
-  observe(appearances: Iterable<Appearance>): void {
+  /**
+   * `subject` is the address whose history is being read. Without it no
+   * appearance can be recognized as paying the subject, and the lifecycle
+   * signal never decides a pair.
+   */
+  constructor(subject?: string) {
+    this.subjectHex = subject ? normalize(subject) : null;
+  }
+
+  /** Record every appearance within one transaction, at its timestamp. */
+  observe(appearances: Iterable<Appearance>, timestamp?: string | null): void {
+    const list = [...appearances];
+    const receivedHere = new Map<string, bigint>();
+    for (const { address, amount } of list) {
+      if (amount !== undefined && amount > 0n) receivedHere.set(address, (receivedHere.get(address) ?? 0n) + amount);
+    }
+    const creditsSubject =
+      this.subjectHex !== null && [...receivedHere.keys()].some((a) => normalize(a) === this.subjectHex);
     const seen = new Set<string>();
-    for (const { address, amount } of appearances) {
+    for (const { address } of list) {
+      if (seen.has(address)) continue;
+      seen.add(address);
       const entry = this.byAddress.get(address) ?? { transactions: 0, received: 0n };
-      if (!seen.has(address)) {
-        seen.add(address);
-        entry.transactions = (entry.transactions ?? 0) + 1;
-      }
-      if (amount !== undefined && amount > 0n) {
-        entry.received = (entry.received ?? 0n) + amount;
+      entry.transactions = (entry.transactions ?? 0) + 1;
+      const got = receivedHere.get(address) ?? 0n;
+      if (got > 0n) entry.received = (entry.received ?? 0n) + got;
+      if (timestamp && (!entry.first_seen || timestamp < entry.first_seen)) {
+        entry.first_seen = timestamp;
+        entry.first_seen_paying_subject = creditsSubject && got === 0n && normalize(address) !== this.subjectHex;
       }
       this.byAddress.set(address, entry);
     }
@@ -409,4 +559,20 @@ export function lookalikeReport(
       `${pairs.length} pair${pairs.length === 1 ? "" : "s"} of addresses in this result are close enough to be mistaken for one another. Addresses were compared only within what was returned here, so this is not a complete scan of the wallet's counterparties.` +
       (excludedNote ? ` ${excludedNote}` : ""),
   };
+}
+
+/**
+ * The warning a tool's prose summary carries for a report, one pair per
+ * entry with its note. The summary is what gets read: a lookalike that only
+ * appears in JSON is a warning nobody sees before they copy an address, and
+ * a diagram or CSV export carries no JSON at all. `scope` names what was
+ * compared ("trace", "graph").
+ */
+export function lookalikeWarning(report: LookalikeReport, scope: string): string {
+  const lines = [`⚠ Addresses in this ${scope} close enough to be mistaken for one another:`];
+  for (const pair of report.pairs) {
+    lines.push(`  ${pair.rendered.established}  vs  ${pair.rendered.suspect}`);
+    lines.push(`    ${pair.note}`);
+  }
+  return lines.join("\n");
 }

@@ -7,8 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * The set **replaces** the signer rather than extending it: the verifier
  * accepts a signature from any member in place of the address itself. So an
  * owner absent from its own set can no longer authorize for itself, and whether
- * it is present is the finding. Measured across all 63 mainnet sets, 50 owners
- * are absent from their own, and only 2 hold the owner alone.
+ * it is present is the finding.
  *
  * These pin the reading, because getting it wrong produces a confident wrong
  * answer about who controls a wallet rather than a missing one.
@@ -49,7 +48,7 @@ describe("who may authorize for a wallet", () => {
   /**
    * `enable` seeds the set with the owner alone, so a set in that shape is the
    * absence of delegation. Reporting the owner as a party it authorized invents
-   * one, and it fires on a real mainnet multisig treasury.
+   * one.
    */
   it("treats a set holding only the owner as no delegation", async () => {
     respondWith([OWNER]);
@@ -129,9 +128,8 @@ describe("a lookup that could not run", () => {
 });
 
 /**
- * The batch is the part that broke: `AUTH_BATCH_SIZE` was measured against a
- * much shorter query, and at 19 aliases this one crosses the service's
- * 5,000-byte cap and the whole document is rejected.
+ * Batches must keep the alias query under the service's 5,000-byte cap. At 19
+ * aliases the query crosses it, and the whole document is rejected.
  */
 describe("batching many addresses", () => {
   const many = Array.from({ length: 40 }, (_, i) => `0x${(i + 16).toString(16)}${"7".repeat(62)}`);

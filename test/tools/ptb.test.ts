@@ -10,8 +10,8 @@ import type { SuiClientTypes } from "@mysten/sui/client";
  * reach the network are stubbed, typed as the core responses.
  *
  * The sender is a real mainnet holder, 0xa766…0c07, whose CETUS sits entirely
- * in its address balance (coinBalance 0). Selecting from listCoins found no
- * coins for it and refused to build.
+ * in its address balance (coinBalance 0), so listCoins returns no coins for
+ * it.
  */
 const SENDER = "0xa766f11b571df4a5d00464bd1009d57b1e5457bc0be08e2dfc0ce14cb1a50c07";
 const RECIPIENT = "0xa727cd9023836d0ac8435918ece422bc0b6a90c3086a5eea0c65a497402e0be6";

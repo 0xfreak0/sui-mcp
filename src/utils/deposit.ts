@@ -2,7 +2,7 @@ import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { getLabel, labelProvenance } from "./labels.js";
 import { measureFanout, type FanoutResult } from "./fanout.js";
-import { decimalsForCoinType, displayCoin, toHumanAmount } from "./valuation.js";
+import { decimalsForCoinType, displayCoin, prefetchCoinScale, toHumanAmount } from "./valuation.js";
 import { isSponsorGasChange } from "./sponsor-gas.js";
 
 /**
@@ -297,7 +297,9 @@ export function decideDepositVerdict(
         ? `Sweep gas was paid by ${pattern.sponsors.join(", ")}; its sponsorship breadth was not measured.`
         : sponsorShape === "relayer"
           ? `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which sponsors many unrelated senders (relayer-shaped).`
-          : `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which sponsors few senders; that fits a private payer better than an exchange relayer.`,
+          : sponsorShape === "operator"
+            ? `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which also sent a coin to most of the addresses it sponsors; that fits an operator running its own wallets better than an exchange relayer.`
+            : `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which sponsors few senders; that fits a private payer better than an exchange relayer.`,
     );
   } else {
     checks.sponsor_relayer_shaped = false;
@@ -417,6 +419,8 @@ export interface ClassifyOptions {
 export async function classifyDepositAddress(address: string, options: ClassifyOptions = {}) {
   const { measureSponsor = true, measureDestination = true, last = 50 } = options;
   const scan = await scanForDeposit(address, last);
+  // Sweep and deposit amounts are formatted as the pattern is read.
+  await prefetchCoinScale(scan.txs.flatMap((t) => t.changes.map((c) => c.coinType)));
   const pattern = readDepositPattern(scan);
 
   const hotWallet = pattern.destinations.length === 1 ? pattern.destinations[0]! : null;

@@ -5,8 +5,8 @@
  *
  * ## Why the field names are a list rather than a constant
  *
- * Every marketplace names the same three things differently, and the names were
- * read off real mainnet events rather than guessed:
+ * Every marketplace names the same three things differently, as its mainnet
+ * events show:
  *
  *   TradePort listings       nft_id, seller, buyer, price
  *   TradePort kiosk_listings nft_id, seller, seller_kiosk_id, buyer, buyer_kiosk_id, price
@@ -21,15 +21,13 @@
  * ## The kiosk mapping is the valuable half
  *
  * `get_top_holders` attributes a kiosk-held NFT through the kiosk's own `owner`
- * field, which does not follow the `KioskOwnerCap` and disagrees with the real
- * holder 40% of the time. These events carry `buyer` beside `buyer_kiosk_id` in
- * the same record, which is a chain-derived statement that at this checkpoint
- * that wallet owned that kiosk. Measured on mainnet: 600 TradePort sale events
- * produced 185 distinct kiosk-to-wallet mappings, and one 24-hour window on a
- * single package produced 54.
+ * field, which does not follow the `KioskOwnerCap` and can disagree with the
+ * real holder. These events carry `buyer` beside `buyer_kiosk_id` in the same
+ * record, which is a chain-derived statement that at this checkpoint that
+ * wallet owned that kiosk.
  *
- * A mapping is a snapshot, not a permanent fact — a kiosk can be sold — so each
- * one carries the checkpoint it was observed at and a later observation wins.
+ * A kiosk can be sold, so a mapping is a snapshot: each one carries the
+ * checkpoint it was observed at and a later observation wins.
  */
 
 import { normalizeSuiAddress } from "@mysten/sui/utils";
@@ -52,12 +50,12 @@ const registry: Map<string, SaleEventEntry> = new Map();
 /**
  * Canonical form of a Move type, so two spellings of one type compare equal.
  *
- * Marketplace events emit the defining address WITHOUT the `0x` prefix and
- * unpadded — a live BlueMove sale carries
- * `2dcd5252…::bluemove_launchpad::SUIS` — while every other surface in this
- * server, `nft-collections.json` included, uses the padded `0x` form. An exact
- * string compare between the two never matches, so a caller filtering by the
- * type they got from any other tool silently saw no sales.
+ * Marketplace events emit the defining address without the `0x` prefix and
+ * unpadded (a BlueMove sale carries `2dcd5252…::bluemove_launchpad::SUIS`),
+ * while every other surface in this server, `nft-collections.json` included,
+ * uses the padded `0x` form. An exact string compare between the two never
+ * matches, so a caller filtering by the type they got from any other tool
+ * would see no sales.
  */
 export function canonicalType(moveType: string): string {
   const t = moveType.trim();

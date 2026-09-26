@@ -51,8 +51,8 @@ beforeEach(() => {
 
 describe("fetchTransactions", () => {
   it("reads many digests in ONE request", async () => {
-    // The whole point: ten digests were ten round trips, and the model turn per
-    // call cost more than the latency did.
+    // Read one at a time, each digest costs a round trip and a model turn;
+    // the batch reads them all in one request.
     mockGqlQuery.mockResolvedValue({ multiGetTransactions: [tx(D1), tx(D2)] });
     const r = await fetchTransactions([D1, D2], 0);
     expect(mockGqlQuery).toHaveBeenCalledTimes(1);
@@ -87,7 +87,7 @@ describe("fetchTransactions", () => {
 
   it("rejects a malformed digest WITHOUT sending the batch", async () => {
     // The server refuses the whole batch over one bad key, so a single typo
-    // among fifty digests returned nothing at all.
+    // among fifty digests would return nothing at all.
     mockGqlQuery.mockResolvedValue({ multiGetTransactions: [tx(D1)] });
     const r = await fetchTransactions([D1, "not-a-digest!!"], 0);
     expect(r.invalid).toEqual(["not-a-digest!!"]);
@@ -105,9 +105,8 @@ describe("fetchTransactions", () => {
 
   it("reports a system transaction's sender as the null address, not null", async () => {
     // GraphQL returns `sender: null` for a system transaction while gRPC
-    // returns the null address. Cross-checking 24 real digests against
-    // get_transaction, that single difference disagreed on 15 of them. Two
-    // tools describing one transaction differently is worse than either alone.
+    // returns the null address. The batch reports the null address so it
+    // describes the transaction the same way get_transaction does.
     mockGqlQuery.mockResolvedValue({
       multiGetTransactions: [
         {
@@ -176,10 +175,8 @@ describe("fetchTransactions", () => {
 
   it("reads Move calls from a ProgrammableSystemTransaction too", async () => {
     // A distinct GraphQL type from ProgrammableTransaction that still carries
-    // real Move calls — framework settlement, randomness. A fragment on
-    // ProgrammableTransaction alone never sees them, and this tool reported no
-    // protocols where get_transaction reported "Sui Framework" on 7 of 24
-    // cross-checked digests.
+    // real Move calls (framework settlement, randomness), which a fragment on
+    // ProgrammableTransaction alone never sees.
     mockGqlQuery.mockResolvedValue({
       multiGetTransactions: [
         {
@@ -218,8 +215,8 @@ describe("fetchTransactions", () => {
   });
 
   /**
-   * FujboNeQt8Nbb…: 202 balance changes. A batch read of it used to report 20
-   * with no flag, and the sender's debit, sorting past row 20, was missing.
+   * FujboNeQt8Nbb… has 202 balance changes, and the sender's debit sorts past
+   * the first page. Every page is read, so the debit is reported.
    */
   it("reports every balance change of a transaction past the first page", async () => {
     const all = Array.from({ length: 202 }, (_, i) => ({

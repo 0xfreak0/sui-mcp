@@ -162,7 +162,7 @@ describe("the injected network argument", () => {
 
 describe("result size", () => {
   it("declares the result-size ceiling on tools whose completeness is policy", () => {
-    for (const name of ["get_transaction", "get_transactions", "find_funding_sources", "screen_address"]) {
+    for (const name of ["get_transaction", "get_transactions", "get_object", "find_funding_sources", "screen_address"]) {
       expect(byName(name)._meta?.["anthropic/maxResultSizeChars"], name).toBe(500_000);
     }
   });

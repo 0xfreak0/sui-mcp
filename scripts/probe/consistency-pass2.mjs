@@ -117,8 +117,8 @@ await runWithNetwork("mainnet", async () => {
      fan.sponsored_address_count === payees.size,
      `tool=${fan.sponsored_address_count} direct=${payees.size} (scanned ${scanned})`);
   ck("shape follows the count",
-     (fan.sponsored_address_count > 20) === (fan.sponsor_shape === "relayer"),
-     `count=${fan.sponsored_address_count} shape=${fan.sponsor_shape}`);
+     fan.sponsor_shape === "operator" || (fan.sponsored_address_count > 20) === (fan.sponsor_shape === "relayer"),
+     `count=${fan.sponsored_address_count} paid=${fan.sponsored_and_paid_count} shape=${fan.sponsor_shape}`);
 
   // ---- #92 upgrade cap: burned must classify as burned --------------------
   console.log("\n#92 a cap sent somewhere unspendable reads as burned");

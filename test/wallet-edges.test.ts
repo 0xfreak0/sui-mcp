@@ -211,10 +211,9 @@ describe("independent intermediaries", () => {
 
 describe("the strict batch tuning misses ordinary personal alts", () => {
   /**
-   * The signal shape measured on a real set of four co-owned mainnet addresses:
-   * two direct funding edges, and a third pair whose only link is a shared
-   * sponsor. Each pair is corroborated by exactly one mechanism, which is what
-   * ordinary personal alt-wallets look like.
+   * Four co-owned addresses: two direct funding edges, and a third pair whose
+   * only link is a shared sponsor. Each pair is corroborated by exactly one
+   * mechanism, which is what ordinary personal alt-wallets look like.
    */
   const groundTruth = [
     edge("0xw1", "0xw2", ["funding_edge"]),
@@ -229,10 +228,10 @@ describe("the strict batch tuning misses ordinary personal alts", () => {
   });
 
   it("finds nothing under the >=2-signal batch rule", () => {
-    // Not a bug in either setting. The batch rule exists to avoid painting
-    // honest wallets as operator crews across a whole-chain population; this
-    // tool has one subject and an analyst reading the evidence. Pinned so the
-    // default is never "tightened" back to the batch value by eye.
+    // The batch rule avoids painting honest wallets as operator crews across a
+    // whole-chain population; this tool has one subject and an analyst reading
+    // the evidence, so its default is looser. Pinned so the default is never
+    // tightened to the batch value by eye.
     const { clusters } = clusterEdges(groundTruth, { minSignalTypes: 2, minWeight: 1.5 });
     expect(clusters).toHaveLength(0);
   });
@@ -274,6 +273,20 @@ describe("addCoSignerEdges", () => {
     const s = new EdgeSet();
     addCoSignerEdges(s, [committee(4, [1, 1, 1, 1, 1, 1, 1])]);
     expect(s.edges()).toHaveLength(7);
+  });
+
+  /**
+   * A key written by hand (member 3 of this 2-of-4) derives an address
+   * nobody controls. Linking it as a co-signer would name that address as
+   * able to act for the wallet.
+   */
+  it("gives a hand-made key no co-signer edge", () => {
+    const s = new EdgeSet();
+    const c = committee(2, [1, 1, 1, 1]);
+    c.members[3] = { ...c.members[3], unsignable: true } as (typeof c.members)[number];
+    addCoSignerEdges(s, [c]);
+    const linked = s.edges().map((e) => (e.wallet_a === safe ? e.wallet_b : e.wallet_a));
+    expect(linked.sort()).toEqual(["0xm0", "0xm1", "0xm2"]);
   });
 
   it("weights a member who cannot spend alone below the merge floor", () => {
@@ -361,12 +374,12 @@ describe("clusterEdges — evidence tier", () => {
 
 describe("addCoSignerEdges — service keys", () => {
   /**
-   * Found by running the real tool against a mainnet seed: one key sat on 31
-   * distinct 1-of-2 committees, each with a different second member, and the
-   * star fused 31 strangers into one 63-member cluster rated chain-derived and
-   * high. The key really can spend all 31 wallets — that part is true — but
-   * "shares an operator with" is a claim about the OTHER members, and a
-   * wallet provider's recovery key says nothing about them.
+   * A service key, such as a wallet provider's recovery key, sits on many
+   * 1-of-2 committees, each with a different second member. Without a limit
+   * the star fuses every second member into one cluster rated chain-derived
+   * and high. The key can spend all of those wallets, but "shares an operator
+   * with" is a claim about the other members, and a service key says nothing
+   * about them.
    *
    * Same guard the funder signals already apply, and for the same reason: an
    * intermediary has to be measured before shared ancestry through it means

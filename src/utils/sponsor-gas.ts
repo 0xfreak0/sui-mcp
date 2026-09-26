@@ -4,9 +4,7 @@
  * The gas payer's SUI change nets computation and storage against the storage
  * rebate, and the rebate goes to whoever paid gas. A sweep deletes coin
  * objects, so the sponsor of a sweep ends with a positive SUI change nobody
- * sent it: in G9ygnUnq… a deposit address moved 879,484 SUI to an exchange
- * and the sponsor `0x85c81a4f…` shows +0.0057 SUI. Read as a balance change,
- * that is a second recipient.
+ * sent it. Read as a balance change, that is a second recipient.
  *
  * Only a sponsor who is not the sender is gas-only. A self-paid transaction
  * reports the sender as its own sponsor, and the sender's SUI change carries

@@ -110,9 +110,8 @@ describe("readOwner — every owner kind, including the one the query forgot", (
 
 describe("custody is not only address-to-address", () => {
   /**
-   * Measured against four real mainnet wallets: filtering to address-to-address
-   * missed 10 of 28 genuine transfers, all of them kiosk. A kiosk-held NFT is
-   * owned by the Kiosk object, so the ordinary NFT trade is object -> object.
+   * A kiosk-held NFT is owned by the Kiosk object, so the ordinary NFT trade
+   * is object -> object, and filtering to address-to-address would drop it.
    */
   it("keeps kiosk-to-kiosk moves", () => {
     const m = readObjectMovements([moved("0x1", "0xabc::hero::Hero", objOwner("0xk1"), objOwner("0xk2"))]);
@@ -140,11 +139,10 @@ describe("custody is not only address-to-address", () => {
 
 describe("pre-2024 effects do not record the input owner", () => {
   /**
-   * Mainnet returns `inputState: null` for EVERY change on old transactions —
-   * 117 of 117 non-created changes at checkpoint 20,000,000, not just genuine
-   * unwraps. Reading that as "unwrapped" and dropping it loses every object
-   * transfer over the chain's first year, which is the era a backward trace
-   * reaches.
+   * Mainnet returns `inputState: null` for every change on old transactions,
+   * not only genuine unwraps. Reading that as "unwrapped" and dropping it
+   * loses every object transfer over the chain's first year, which is the era
+   * a backward trace reaches.
    */
   const old: GqlObjectChange = {
     address: "0xcap",
@@ -170,9 +168,9 @@ describe("pre-2024 effects do not record the input owner", () => {
 
 describe("renouncing is not handing over", () => {
   /**
-   * upgrade-cap.ts measured 27 of 30 UpgradeCap departures going to an
-   * unspendable address. Reporting those as handovers would make the loudest
-   * output wrong most of the time for the type that motivated the feature.
+   * Most UpgradeCap departures go to an unspendable address. Reporting those
+   * as handovers would be wrong most of the time for the type that motivated
+   * the feature.
    */
   const burn = (to: string) =>
     readObjectMovements([moved("0xcap", "0x2::package::UpgradeCap", addrOwner(A), addrOwner(to))])[0]!;
@@ -199,10 +197,9 @@ describe("renouncing is not handing over", () => {
 
 describe("readGrpcObjectChanges — the archive CAN report object changes", () => {
   /**
-   * An earlier version claimed it could not and disclaimed object flow on
-   * every archive hop. Verified false: for a digest the fullnode has pruned,
-   * the archive returns changedObjects with objectType and both owners. This
-   * is the shape mainnet actually returned.
+   * For a digest the fullnode has pruned, the archive returns changedObjects
+   * with objectType and both owners. This fixture has the shape mainnet
+   * returns.
    */
   const real: GrpcChangedObject = {
     objectId: "0x00055d67",
@@ -266,9 +263,8 @@ describe("classifyKind edge cases", () => {
 
 describe("summarizeObjectFlow", () => {
   it("counts every movement, not only the transfers", () => {
-    // The old version was fed a pre-filtered list, so `movements` could only
-    // ever equal `transfers.length` — the field described something it never
-    // measured.
+    // `movements` counts every movement read, so it can exceed
+    // `transfers.length`.
     const m = readObjectMovements([
       { address: "0x1", idCreated: true, outputState: state("0xa::b::C", addrOwner(B)) },
       moved("0x2", "0xa::b::C"),
@@ -292,13 +288,26 @@ describe("summarizeObjectFlow", () => {
   });
 });
 
+describe("capability_transfers is not limited to curated framework types", () => {
+  // `capability_transfers` covers every transfer with category
+  // "capability", including a protocol-defined OperatorCap, rather than only
+  // the five 0x2 types `high_consequence` marks.
+  it("includes a protocol-defined Cap that is not one of the curated 0x2 types", () => {
+    const m = readObjectMovements([moved("0xopcap", "0xvault::vault::OperatorCap")])[0]!;
+    expect(m.category).toBe("capability");
+    expect(m.high_consequence).toBe(false);
+    const s = summarizeObjectFlow([m])!;
+    expect(s.capability_transfers).toHaveLength(1);
+    expect(s.capability_transfers[0]!.object_id).toBe("0xopcap");
+    expect(s.note).toMatch(/carrying control changed hands/);
+  });
+});
+
 describe("appeared is not custody unless it lands on a party", () => {
   /**
    * `appeared` means the previous holder was not recorded, which before
-   * ~March 2024 is EVERY change. Admitting all of them turned ordinary
-   * shared-object traffic into custody changes: a live Pyth price update
-   * reported three oracle objects as having changed hands, and 58 of 59
-   * movements at checkpoint 10,000,000 were storage or shared-object churn.
+   * ~March 2024 is every change. Admitting all of them would report ordinary
+   * shared-object traffic, such as a price-oracle update, as custody changes.
    */
   const appeared = (type: string, to: unknown): GqlObjectChange => ({
     address: "0x1",
@@ -325,7 +334,7 @@ describe("appeared is not custody unless it lands on a party", () => {
   });
 
   it("excludes dynamic fields outright — storage, not assets", () => {
-    // 49 of 59 movements at checkpoint 10,000,000 were dynamic fields.
+    // Dynamic fields dominate object changes on older transactions.
     const m = readObjectMovements([
       appeared(`${P2}::dynamic_field::Field<u64,u8>`, objOwner("0xparent")),
     ]);
@@ -378,8 +387,8 @@ describe("gRPC classification honesty", () => {
   };
 
   it("does not call an ownerless change a transfer", () => {
-    // Neither side names an owner: there is nobody at either end, and the old
-    // default fired the capability warning with "? -> ?" as the parties.
+    // Neither side names an owner: with nobody at either end, the change is
+    // dropped rather than reported as a transfer.
     expect(readGrpcObjectChanges([{ ...base, inputState: 2 }])).toEqual([]);
   });
 

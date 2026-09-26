@@ -3,6 +3,7 @@ import { boolArg, numArg, addressListArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
+import { prefetchCoinScale } from "../utils/valuation.js";
 import { batchResolveNames } from "../utils/names.js";
 import { getLabel } from "../utils/labels.js";
 import { activityHours } from "../utils/activity-hours.js";
@@ -105,8 +106,12 @@ async function fetchAddressEntries(
         commands: node.kind?.commands,
       })),
     );
-    // One bulk MVR lookup per page, ahead of the synchronous decode loop.
-    await prefetchProtocolNames(completed.flatMap((c) => collectPackageIds(adaptCommands(c.commands))));
+    // One bulk MVR lookup per page, and the coin scales the decode formats
+    // amounts with, ahead of the synchronous decode loop.
+    await Promise.all([
+      prefetchProtocolNames(completed.flatMap((c) => collectPackageIds(adaptCommands(c.commands)))),
+      prefetchCoinScale(completed.flatMap((c) => c.balanceChanges.flatMap((b) => (b.coinType?.repr ? [b.coinType.repr] : [])))),
+    ]);
     for (const [i, node] of page.nodes.entries()) {
       const sender = node.sender?.address ?? null;
       const bcNodes = completed[i].balanceChanges;

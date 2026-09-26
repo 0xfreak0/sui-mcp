@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  allSpends,
+  availabilityKey,
   chooseNextHop,
   firstSpend,
   inflowsNewestFirst,
@@ -66,8 +68,8 @@ describe("chooseNextHop — backward", () => {
 
 describe("chooseNextHop — forward, value that no third party received", () => {
   it("follows an exploit that credits only its caller, switching to what it gained", () => {
-    // DVMG3B2… (Cetus): flash swap, open/remove liquidity, repay; the sender
-    // nets +haSUI and +SUI and nobody else is paid. It used to stop here.
+    // DVMG3B2…: flash swap, open/remove liquidity, repay; the sender nets
+    // +haSUI and +SUI and nobody else is paid.
     const d = chooseNextHop({
       sender: attacker,
       changes: [
@@ -113,7 +115,7 @@ describe("chooseNextHop — forward, value that no third party received", () => 
   });
 
   it("treats an undecoded swap_* call as a swap", () => {
-    // `_` is a word character, so /\bswap\b/ never matched swap_exact_*.
+    // `_` is a word character, so /\bswap\b/ does not match swap_exact_*.
     expect(isSwapHop(["Call 0x1234…abcd::market::swap_exact_pt_for_sy"])).toBe(true);
     expect(isSwapHop(["Flash swap on Cetus"])).toBe(false);
   });
@@ -141,8 +143,63 @@ describe("candidate selection", () => {
     const in1 = tx("in1", [{ address: victim, amount: "1000000000", coin_type: SUI }]);
     const in2 = tx("in2", [{ address: victim, amount: "3000000000", coin_type: SUI }]);
     const current = tx("current", [{ address: victim, amount: "-3000000000", coin_type: SUI }]);
-    const found = inflowsNewestFirst([in1, out1, in2, current], victim, SUI, new Set(), "current");
-    expect(found.map((f) => f.tx.digest)).toEqual(["in2", "in1"]);
+    const found = inflowsNewestFirst([in1, out1, in2, current], victim, SUI, new Map(), undefined, "current");
+    expect(found.hits.map((f) => f.tx.digest)).toEqual(["in2", "in1"]);
+    expect(found.alreadyAllocated).toBe(0);
+  });
+
+  it("skips a spend a sibling arrival at this address already fully claimed, without counting it as a cycle", () => {
+    // Two transactions the address spent SUI in; the caller's remaining-
+    // capacity map (shared per address across coin-lineages in a flow
+    // graph) already reduced the first one to zero under a sibling node's
+    // same-coin claim (byRoot: false). That is a non-hit and does not count
+    // toward `alreadyAllocated`: the value this arrival brought was never
+    // spent and is still held (see noSpendReason's `exhausted` branch).
+    const first = tx("first", [{ address: victim, amount: "-1000000000", coin_type: SUI }]);
+    const second = tx("second", [{ address: victim, amount: "-2000000000", coin_type: SUI }]);
+    const result = allSpends([first, second], victim, SUI, new Map([[availabilityKey("first", SUI), { avail: 0n, byRoot: false }]]));
+    expect(result.hits.map((h) => h.tx.digest)).toEqual(["second"]);
+    expect(result.alreadyAllocated).toBe(0);
+    expect(result.drainedBySelf).toBe(1);
+  });
+
+  it("caps a spend at the remaining capacity a sibling arrival left behind, rather than skipping it whole", () => {
+    // A 31,175 SUI transfer has room for both a 0.63 SUI need already served
+    // elsewhere and a later 35.68 SUI need, so the second need draws on the
+    // capacity left rather than skipping the whole digest.
+    const big = tx("big", [{ address: victim, amount: "-31175413804700", coin_type: SUI }]);
+    const result = allSpends([big], victim, SUI, new Map([[availabilityKey("big", SUI), { avail: 35682807413n, byRoot: false }]]));
+    expect(result.hits).toEqual([{ tx: big, spent: 35682807413n }]);
+    expect(result.alreadyAllocated).toBe(0);
+  });
+
+  it("blocks every coin at a digest a caller hard-skipped under the wildcard key", () => {
+    const burn = tx("burn", [{ address: victim, amount: "-500000000", coin_type: USDC }]);
+    const result = allSpends([burn], victim, USDC, new Map([["burn|*", { avail: 0n, byRoot: true }]]));
+    expect(result.hits).toEqual([]);
+    expect(result.alreadyAllocated).toBe(1);
+    expect(result.drainedBySelf).toBe(0);
+  });
+
+  it("skips an inflow a sibling arrival at this address already fully claimed, without counting it as a cycle", () => {
+    const in1 = tx("in1", [{ address: victim, amount: "1000000000", coin_type: SUI }]);
+    const in2 = tx("in2", [{ address: victim, amount: "2000000000", coin_type: SUI }]);
+    const result = inflowsNewestFirst([in1, in2], victim, SUI, new Map([[availabilityKey("in2", SUI), { avail: 0n, byRoot: false }]]));
+    expect(result.hits.map((h) => h.tx.digest)).toEqual(["in1"]);
+    expect(result.alreadyAllocated).toBe(0);
+    expect(result.drainedBySelf).toBe(1);
+  });
+
+  it("hides a caller-hard-skipped digest entirely, not counted as a cycle", () => {
+    // trace_funds' own same-checkpoint revisit guard is invisible and does
+    // not count toward alreadyAllocated, since there is no graph and no
+    // other arrival to point to (see allSpends).
+    const skip = tx("skip", [{ address: victim, amount: "-500000000", coin_type: SUI }]);
+    const keep = tx("keep", [{ address: victim, amount: "-100000000", coin_type: SUI }]);
+    const result = allSpends([skip, keep], victim, SUI, new Map(), new Set(["skip"]));
+    expect(result.hits.map((h) => h.tx.digest)).toEqual(["keep"]);
+    expect(result.alreadyAllocated).toBe(0);
+    expect(result.drainedBySelf).toBe(0);
   });
 });
 
@@ -260,8 +317,8 @@ describe("chooseNextHop — split transfers", () => {
   });
 
   it("follows the largest by value, not by array position", () => {
-    // The old note claimed it followed "the largest" while taking
-    // positiveToOthers[0] — first in the array, unsorted.
+    // w1 comes first among the recipients but w2 received the most, so a
+    // choice by array position would follow w1.
     const reordered = [split[0], split[1], split[3], split[2]];
     const d = chooseNextHop({
       sender: attacker,
@@ -422,7 +479,7 @@ describe("pruned-transaction handling", () => {
 describe("chooseNextHop — guards against following the wrong party", () => {
   it("refuses to pick a next hop when the transaction has no sender", () => {
     // With sender null, `c.address !== sender` is true for every change, so the
-    // subject's OWN inflows became candidate recipients and got followed.
+    // subject's own inflows would become candidate recipients and be followed.
     const d = chooseNextHop({
       sender: null,
       changes: [

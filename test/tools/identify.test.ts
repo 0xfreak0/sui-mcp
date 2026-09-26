@@ -164,8 +164,8 @@ describe("identify_address", () => {
 
   /**
    * The jupnet bridge Bank 0x44cf…4b4b holds ~118k USDC and ~764 SUI in its
-   * own address balance and none of it among its fields. Identified as a
-   * plain shared object, it pointed at get_object, which showed no funds.
+   * own address balance and none of it among its fields, so get_object shows
+   * no funds for it and identify_address has to list them.
    */
   it("lists funds a shared object holds in its own address balance", async () => {
     const BANK = "0x44cf357eda762cf0cd86547f7bfcaa51a4b55de615c57903ab461f38ffed4b4b";
@@ -277,8 +277,8 @@ describe("identify_address", () => {
   });
 
   it("reports a SuiNS name another address sent the wallet as received, not as its own", async () => {
-    // The Cetus attacker: 0x407fb974 sent it registration 0xb00a20b5 in
-    // 2uE2WRav after validators froze the wallet. Node shape as mainnet returns it.
+    // 0x407fb974 sent the wallet registration 0xb00a20b5 in 2uE2WRav. Node
+    // shape as mainnet returns it.
     const HOLDER = "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06";
     const SENDER = "0x407fb97400abc8f37defc658ab9c9f53a8953a1a446cd820561382fb3728ca20";
     mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
@@ -370,7 +370,7 @@ describe("identify_address", () => {
     expect(data.staking_pool_sui_balance).toBe("9000000000000");
     // Raw MIST reads as nine trillion SUI; the unit travels with it.
     expect(data.staking_pool_sui_balance_formatted).toBe("9000 SUI");
-    // The hint used to name get_validator_detail, which does not exist.
+    // Every tool the hint names must be registered.
     const names = new Set(registeredTools().map((t) => t.name));
     expect(unknownToolsIn(data.hint, names)).toEqual([]);
   });
@@ -379,10 +379,10 @@ describe("identify_address", () => {
 describe("identify_address error handling", () => {
   it("does not report a wallet when the object lookup fails for any other reason", async () => {
     // An outage must not read as "there is no object here". The CASE 4 reads
-    // also swallow their errors, so the old code answered
-    // `type: "wallet", sui_balance: "0"` for a package or a pool during an
-    // outage — and this is the recommended first step, so a wrong answer
-    // steers every tool call after it.
+    // also swallow their errors, so falling through would answer
+    // `type: "wallet", sui_balance: "0"` for a package or a pool. This is the
+    // recommended first step, so a wrong answer steers every tool call after
+    // it.
     mockSui.ledgerService.getObject.mockRejectedValue(grpcError("UNAVAILABLE"));
     const handler = tools.get("identify_address")!;
     const res = await handler({ address: "0xsomething" });

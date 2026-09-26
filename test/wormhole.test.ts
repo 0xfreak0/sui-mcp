@@ -10,10 +10,10 @@ import {
 } from "../src/utils/bridge/wormhole.js";
 
 /**
- * A real mainnet WormholeMessage event, captured from transaction
+ * A mainnet WormholeMessage event from transaction
  * 7g4nQFxU4sP7DRWG8kJSAYLCnyVTxc1VefThUYAUnBLh. Its sender and sequence match
- * Wormholescan's VAA id 21/89b91e…74bf/188994 exactly — which is the
- * deterministic join this module exists to expose.
+ * Wormholescan's VAA id 21/89b91e…74bf/188994, the deterministic join this
+ * module exists to expose.
  */
 const REAL_EVENT: SuiEventNode = {
   contents: {

@@ -52,8 +52,8 @@ describe("fetchAftermath", () => {
   });
 
   it("batches into one request", async () => {
-    // Measured: four coins in one request is faster than one coin. Looping
-    // would be both slower and ruder to the endpoint.
+    // One request carries the whole set. Looping would be slower and heavier
+    // on the endpoint.
     fetchMock.mockResolvedValue(ok({}));
     await fetchAftermath([SUI, USDC, "0xb::c::D"]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -120,8 +120,8 @@ describe("opt-in providers", () => {
 describe("pricesForRanking", () => {
   it("uses the free current-price source and never a paid historical one", async () => {
     // Ranking needs relative value; which recipient got the most does not
-    // become more correct with block-time precision. The old code paid for a
-    // per-hop historical lookup to answer a question that did not need it.
+    // become more correct with block-time precision, so no paid per-hop
+    // historical lookup is made.
     process.env.PYTH_API_KEY = "k1";
     fetchMock.mockResolvedValue(ok({ [SUI]: { price: 0.75, priceChange24HoursPercentage: 0 } }));
 
@@ -149,8 +149,8 @@ const HISTORICAL_BODY = {
 
 describe("defiLlamaKey", () => {
   it("pads the address, because DefiLlama does not resolve a stripped leading zero", () => {
-    // Measured: sui:0x6864a6f9…::cetus::CETUS returns nothing, the padded key
-    // returns CETUS. The 2025 Cetus replay lost CETUS to exactly this.
+    // sui:0x6864a6f9…::cetus::CETUS returns nothing; the padded key returns
+    // CETUS.
     expect(defiLlamaKey("0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS")).toBe(
       `sui:${CETUS}`,
     );

@@ -125,11 +125,10 @@ describe("restrictionNote", () => {
 
 describe("BCS key encoding", () => {
   /**
-   * Both encodings are verified against mainnet in
-   * `scripts/probe/dyn-keyed.mjs` and `dyn-configkey.mjs`: the ConfigKey below
-   * resolves to config 0xf314b4f8… and the AddressKey to a real denial. A wrong
-   * encoding returns null, which is indistinguishable from "not denied" — so
-   * these are pinned rather than trusted.
+   * These encodings match `scripts/probe/dyn-keyed.mjs` and
+   * `dyn-configkey.mjs`. A wrong encoding returns null, which is
+   * indistinguishable from "not denied", so these are pinned rather than
+   * trusted.
    */
   it("encodes ConfigKey as u64 index + length-prefixed type, without 0x", () => {
     const coin =
@@ -155,13 +154,10 @@ describe("BCS key encoding", () => {
 
 describe("query chunking", () => {
   /**
-   * Regression. The cross-coin scan aliased 20 lookups per request because 20
-   * is the store-backed query limit — but the service ALSO caps query text at
-   * 5000 bytes, and 20 of these came to 5132B. The whole chunk was rejected,
-   * so a scan of 1,250 coins checked 10 and reported 58 restrictions as 1.
-   *
-   * Packing to a byte budget adapts; a fixed count encodes a number that breaks
-   * the moment the query text changes.
+   * The service caps a request at 20 store-backed queries and at 5000 bytes
+   * of query text, and 20 of these aliases exceed the byte cap. A chunk over
+   * the cap is rejected whole, so chunks pack to a byte budget; a fixed count
+   * encodes a number that breaks when the query text changes.
    */
   it("keeps an alias chunk inside the service's query-text budget", () => {
     const bcs = addressKeyBcs("0x" + "a".repeat(64));

@@ -1,16 +1,17 @@
 /**
  * Which committee members actually sign, over a multisig's whole history.
  *
- * The committee is fixed for the life of the address — it is part of the
- * address hash — so the only thing that varies between transactions is the
+ * The committee is fixed for the life of the address (it is part of the
+ * address hash), so the only thing that varies between transactions is the
  * bitmap saying who signed that one. That bitmap is the entire behavioural
  * signal a multisig emits, and reading a single transaction cannot interpret
- * it: measured on a mainnet 4-of-7, eight transactions used three different
- * signer sets, and two of the seven keys had never signed at all.
+ * it: one committee can sign with several different signer sets, and some of
+ * its keys may never sign at all.
  *
  * ```
  * 4-of-7   8 txs, 3 signer sets      [0,1,3,4]x4  [1,2,3,4]x2  [0,2,3,4]x2
  *                                    → 3 and 4 sign everything; 5 and 6 never sign
+ *                                      (6 is a key written by hand, which cannot)
  * 2-of-3   200 txs, 3 signer sets    [0,2]x90  [1,2]x68  [0,1]x42
  *                                    → genuinely shared between three live keys
  * ```
@@ -52,6 +53,23 @@ export interface MemberActivity {
    * needed to act. Which of those it is does not follow from chain data.
    */
   never_signed: boolean;
+  /**
+   * Why this member's public key has no private key behind it, when it was
+   * written by hand. Such a member is dormant by construction, not by
+   * choice, and its weight can never be used.
+   */
+  unsignable?: string;
+}
+
+/** The committee as it can actually sign, when some keys never can. */
+export interface EffectiveCommittee {
+  /** Total weight of the members that are able to sign. */
+  signable_weight: number;
+  threshold: number;
+  /** e.g. `2-of-3` for a 2-of-4 with one unsignable key. */
+  shape: string;
+  /** False when even every signable member together falls short of the threshold. */
+  can_reach_threshold: boolean;
 }
 
 /** A distinct combination of members that has signed together. */
@@ -80,6 +98,10 @@ export interface SignerHistory {
    * about the observed period, not a permanent property.
    */
   active_signers_meet_threshold: boolean;
+  /** Members whose key was written by hand and can never sign. Indices, ascending. */
+  unsignable_members: number[];
+  /** Present only when `unsignable_members` is not empty. */
+  effective_committee?: EffectiveCommittee;
 }
 
 /**
@@ -134,6 +156,7 @@ export function summarizeSigners(
     ...(firsts[i] ? { first_signed: firsts[i] } : {}),
     ...(lasts[i] ? { last_signed: lasts[i] } : {}),
     never_signed: counts[i] === 0,
+    ...(m.unsignable ? { unsignable: m.unsignable } : {}),
   }));
 
   const dormant = members.filter((m) => m.never_signed).map((m) => m.index);
@@ -145,6 +168,23 @@ export function summarizeSigners(
     .filter((m) => !m.never_signed)
     .reduce((sum, m) => sum + m.weight, 0);
 
+  // A property of the keys, not of the history: it holds however few
+  // transactions were read.
+  const unsignable = members.filter((m) => m.unsignable).map((m) => m.index);
+  const signable = members.filter((m) => !m.unsignable);
+  const signableWeight = signable.reduce((sum, m) => sum + m.weight, 0);
+  const effective: EffectiveCommittee | undefined =
+    unsignable.length === 0
+      ? undefined
+      : {
+          signable_weight: signableWeight,
+          threshold: committee.threshold,
+          shape: signable.every((m) => m.weight === 1)
+            ? `${committee.threshold}-of-${signable.length}`
+            : `threshold ${committee.threshold} of ${signableWeight} weight`,
+          can_reach_threshold: signableWeight >= committee.threshold,
+        };
+
   return {
     transactions_examined: total,
     members,
@@ -152,6 +192,8 @@ export function summarizeSigners(
     dormant_members: dormant,
     always_present: alwaysPresent,
     active_signers_meet_threshold: total > 0 && activeWeight >= committee.threshold,
+    unsignable_members: unsignable,
+    ...(effective ? { effective_committee: effective } : {}),
   };
 }
 
@@ -164,16 +206,23 @@ export function summarizeSigners(
  * from it is the exact failure this module exists to fix.
  */
 export function signerHistoryNote(h: SignerHistory, threshold: number): string | undefined {
+  const e = h.effective_committee;
+  const keys = e
+    ? `Member${h.unsignable_members.length === 1 ? "" : "s"} ${h.unsignable_members.join(", ")} hold${h.unsignable_members.length === 1 ? "s" : ""} a public key written by hand, whose private key nobody holds, so ${h.unsignable_members.length === 1 ? "it" : "they"} can never sign: the committee is in practice ${e.shape}${e.can_reach_threshold ? "" : ", and the keys that can sign together fall short of the threshold"}.`
+    : undefined;
   if (h.transactions_examined < 2) {
-    return h.transactions_examined === 0
-      ? "No multisig transactions were examined, so nothing follows about which keys are live."
-      : "Only one transaction was examined. Which members signed it says nothing about which keys are normally used — a signer set varies per transaction.";
+    const thin =
+      h.transactions_examined === 0
+        ? "No multisig transactions were examined, so nothing follows about which keys are live."
+        : "Only one transaction was examined. Which members signed it says nothing about which keys are normally used — a signer set varies per transaction.";
+    return keys ? `${keys} ${thin}` : thin;
   }
 
-  const parts: string[] = [];
-  if (h.dormant_members.length > 0) {
+  const parts: string[] = keys ? [keys] : [];
+  const dormant = h.dormant_members.filter((i) => !h.unsignable_members.includes(i));
+  if (dormant.length > 0) {
     parts.push(
-      `${h.dormant_members.length} of ${h.members.length} committee keys signed none of the ${h.transactions_examined} transactions examined (members ${h.dormant_members.join(", ")}). They hold weight and have not used it — a cold key, a lost key, or a party that has never needed to act; chain data does not say which.`,
+      `${dormant.length} of ${h.members.length} committee keys signed none of the ${h.transactions_examined} transactions examined (members ${dormant.join(", ")}). They hold weight and have not used it — a cold key, a lost key, or a party that has never needed to act; chain data does not say which.`,
     );
   }
   if (h.always_present.length > 0) {

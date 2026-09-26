@@ -4,8 +4,8 @@ import { resolvePublisher } from "../utils/publisher.js";
 import { boolArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
-import { errorResult } from "../utils/errors.js";
-import { suivisionPackageUrl } from "../config.js";
+import { errorResult, describeError } from "../utils/errors.js";
+import { suivisionPackageUrl, getNetwork } from "../config.js";
 import {
   formatVisibility,
   formatSignature,
@@ -176,13 +176,27 @@ export function analyzePackageModules(modules: AnalyzedModule[]): Finding[] {
 
   // --- No public entry surface ----------------------------------------------
   if (allFns.length > 0 && !allFns.some(isPublic)) {
+    // A one-time-witness struct is exactly the upper-cased module name with
+    // only the `drop` ability, which is what `init` consumes to create a
+    // currency. A package with one of these and no public functions is the
+    // ordinary shape of a bare coin template: mint/transfer happen through
+    // the TreasuryCap the capability audit already reports rather than
+    // through a public API, so "library other packages call" names the wrong
+    // reason for the absence.
+    const witnessStructs = modules.flatMap((m) =>
+      m.structs
+        .filter((s) => s.name === m.name.toUpperCase() && s.abilities.length === 1 && s.abilities[0] === "drop")
+        .map((s) => `struct ${m.name}::${s.name}`),
+    );
+    const isCoinTemplate = witnessStructs.length > 0;
     findings.push({
       severity: "info",
       code: "no-public-api",
-      title: "No public entry points",
-      detail:
-        "No public or entry functions — this reads as a library/internal package that other packages call, not one users transact with directly.",
-      evidence: [],
+      title: isCoinTemplate ? "No public entry points (bare coin-currency template)" : "No public entry points",
+      detail: isCoinTemplate
+        ? "No public or entry functions, and the package defines a one-time-witness struct matching its module name — the ordinary shape of a bare coin-currency package, where init mints the TreasuryCap/CoinMetadata and nothing else. This is normal for a token launch, not evidence the package is a library; see the capability audit for who actually holds the TreasuryCap."
+        : "No public or entry functions — this reads as a library/internal package that other packages call, not one users transact with directly.",
+      evidence: witnessStructs,
     });
   }
 
@@ -222,7 +236,7 @@ function publicApi(mod: AnalyzedModule): string[] {
 export function registerAnalyzePackageTools(server: McpServer) {
   server.tool(
     "analyze_package",
-    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. `upgrade_cap` counts the UpgradeCap's owner changes and names the latest; get_upgrade_history has the per-version join of publishers, signing schemes and cap holders. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. `overview.modules` is a per-module summary by default: function and struct counts, entry and public function names. Pass `modules: ['pool']` for those modules' struct shapes (full field names and types) and signatures, or `detail: 'full'` for every module; use that rather than hand-writing GraphQL, whose `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
+    "(Developer) Analyze a Sui Move package: summarize what it does (modules, public/entry API, key struct shapes) and run a fast heuristic scan for quickly-identifiable risks (freeze/denylist authority, mint authority, admin capabilities, fund handling, randomness, hot-potato types). Also audits capabilities: who currently holds the UpgradeCap / TreasuryCap / deny caps and what that means for upgrade / mint / rug risk, including authority-named structs minted after publish. A struct type held one-per-protocol-user (DeepBook's TradeCap, a KioskOwnerCap) is reported as a count in `user_held_types` rather than one entry per holder; a struct whose instance scan failed outright (timeout, 429), or whose defining package version could not be read, is named in `incomplete_scans` rather than silently reading as having no live instances. Reports two publishers: `root_publisher` deployed the package lineage and received the UpgradeCap, so the cap's holder is judged against it; `version_publisher` sent the upgrade that created the version you passed, so it is who pushed that code. `upgrade_cap` counts the UpgradeCap's owner changes and names the latest; get_upgrade_history has the per-version join of publishers, signing schemes and cap holders. Accepts a 0x package ID or an MVR name (@org/app). Set include_disassembly=true to also return per-module bytecode assembly. NOTE: this is a surface scan to guide review, NOT a security audit. `overview.modules` is a per-module summary by default: function and struct counts, entry and public function names. Pass `modules: ['pool']` for those modules' struct shapes (full field names and types) and signatures, or `detail: 'full'` for every module; use that rather than hand-writing GraphQL, whose `structs` connection pages at 20 while `fields` is a plain list with no `nodes`, a shape that is easy to get wrong and silently truncating.",
     {
       package_id: z
         .string()
@@ -301,10 +315,13 @@ export function registerAnalyzePackageTools(server: McpServer) {
         ]);
 
         // Capability audit (default on). Best-effort — never breaks the analysis.
+        // `modules` lets it also find authority-named caps minted after
+        // publish (an OperatorCap handed out post-deploy is invisible to a
+        // publish-transaction scan alone).
         const capabilities =
           audit_capabilities === false
             ? undefined
-            : await auditPackageCapabilities(packageId, rootPublisher.publisher);
+            : await auditPackageCapabilities(packageId, rootPublisher.publisher, modules);
 
         // Current custody says nothing about how the cap got there. Its
         // owner-change count and the latest change are one query; the full
@@ -392,7 +409,7 @@ export function registerAnalyzePackageTools(server: McpServer) {
           ],
         };
       } catch (err) {
-        return errorResult(err instanceof Error ? err.message : String(err));
+        return errorResult(describeError(err, getNetwork()));
       }
     },
   );

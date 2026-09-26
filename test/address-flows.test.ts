@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   allocate,
   exitCandidates,
@@ -7,6 +8,7 @@ import {
   summarizeFlows,
   type FlowTx,
 } from "../src/utils/address-flows.js";
+import { bridgeExitsOf } from "../src/utils/screening.js";
 
 const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 const USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
@@ -19,6 +21,7 @@ function tx(over: Partial<FlowTx> & { digest: string }): FlowTx {
     timestamp: "2025-09-07T16:00:00.000Z",
     checkpoint: 1,
     sender: ME,
+    status: "success",
     gasSponsor: ME,
     netGas: 0n,
     changes: [],
@@ -170,6 +173,14 @@ describe("bridge exits", () => {
     expect(exitCandidates(ME, [burn("mine"), theirs]).map((t) => t.digest)).toEqual(["mine"]);
   });
 
+  it("excludes a failed transaction — its bridge call is what it attempted, not what happened", () => {
+    // A Mayan MCTP attempt that aborted with INSUFFICIENT_COIN_BALANCE moved
+    // nothing but gas, yet a bridge call still sits in its PTB. Only the
+    // successful one is a real exit.
+    const failed = { ...burn("aborted"), status: "failure" };
+    expect(exitCandidates(ME, [burn("ok"), failed]).map((t) => t.digest)).toEqual(["ok"]);
+  });
+
   it("reads the CCTP recipient from the burn event and groups exits by destination", () => {
     const a = readExit(ME, burn("a"), CCTP_EVENTS, true)!;
     const b = readExit(ME, burn("b"), CCTP_EVENTS, true)!;
@@ -196,5 +207,98 @@ describe("bridge exits", () => {
     expect(group.destinations.map((d) => d.sharedDigests)).toEqual([["two"], ["two"]]);
     expect(group.destinations.every((d) => d.sent.size === 0)).toBe(true);
     expect(group.sent.get(USDC)).toBe(11_085_939n);
+  });
+
+  it("excludes a bridge fee and a relayer payment from what left Sui, and reports them as retained", () => {
+    // Balance changes of 7ehoqkiBm3Wx…, a 400,000 USDC CCTP burn: 40 USDC
+    // went to a fee address and 0.559771286 SUI went to a relayer as a
+    // LayerZero executor fee. Neither crossed the bridge; only the 399,960
+    // USDC DepositForBurn amount did.
+    const FEE = "0xbfa1240e48c622d97881473953be730091161b7931d89bd6afe667841cf69ef4";
+    const RELAYER = "0xfa922d7f6eaad8b0014ed9ac262ea0d8f19f4a7a7f2caf249b4cd1ad05c45e18";
+    const t = tx({
+      digest: "cctpFee",
+      calls: [{ packageId: "0xecf47609", module: "deposit_for_burn", function: "deposit_for_burn_with_package_auth" }],
+      eventTypes: ["0xecf47609::deposit_for_burn::DepositForBurn"],
+      changes: [
+        { owner: FEE, coinType: USDC, amount: 40_000_000n },
+        { owner: ME, coinType: SUI, amount: -559_771_286n },
+        { owner: ME, coinType: USDC, amount: -400_000_000_000n },
+        { owner: RELAYER, coinType: SUI, amount: 559_771_286n },
+      ],
+    });
+    const e = readExit(ME, t, null, true)!;
+    expect(e.sent.get(USDC)).toBe(399_960_000_000n);
+    expect(e.sent.has(SUI)).toBe(false);
+    expect(e.retained.get(USDC)).toBe(40_000_000n);
+    expect(e.retained.get(SUI)).toBe(559_771_286n);
+
+    const [group] = groupExits([e]);
+    expect(group.retained.get(USDC)).toBe(40_000_000n);
+    expect(group.retained.get(SUI)).toBe(559_771_286n);
+  });
+
+  /**
+   * 6S9udfgK… is an Allbridge pool transfer sent through Allbridge's Wormhole
+   * messenger. Its WormholeMessage is Allbridge's own and names no recipient,
+   * and TokensSentEvent already names one, so the message is no unresolved
+   * VAA and needs no Wormholescan lookup.
+   */
+  it("does not list the carrier's own Wormhole message as unresolved (6S9udfgK…)", () => {
+    const FIXTURES = JSON.parse(readFileSync(new URL("./fixtures/bridge-transactions.json", import.meta.url), "utf8"));
+    const { effects, kind } = FIXTURES["6S9udfgK1GSCabDEsuUDB4ysdCTXkfvt2rwze2Wrdb7K"].transaction;
+    const events = effects.events.nodes as Array<{ contents: { type: { repr: string }; json: unknown } }>;
+    const sender = "0x22101391e2bbd3141e0aabd093643fad4c6fba70438071d8cd7364ca0225f9a7";
+    const allbridge = tx({
+      digest: "6S9udfgK1GSCabDEsuUDB4ysdCTXkfvt2rwze2Wrdb7K",
+      sender,
+      gasSponsor: sender,
+      calls: (kind.commands.nodes as Array<{ function?: { name: string; module: { name: string; package: { address: string } } } }>).flatMap((c) =>
+        c.function ? [{ packageId: c.function.module.package.address, module: c.function.module.name, function: c.function.name }] : [],
+      ),
+      eventTypes: events.map((e) => e.contents.type.repr),
+      changes: [{ owner: sender, coinType: USDC, amount: -100_000n }],
+    });
+    const e = readExit(sender, allbridge, events, true)!;
+    expect(e.bridge).toBe("Allbridge Core");
+    expect(e.beneficiaries.map((b) => b.account)).toEqual(["eip155:42161:0xfb4717318748a204b028e7920bb86fe2b110917c"]);
+    expect(e.unresolvedVaas).toEqual([]);
+
+    // The same message with no Allbridge transfer beside it is a Wormhole
+    // transfer whose recipient this server cannot read.
+    const wormholeOnly = events.filter((ev) => ev.contents.type.repr.endsWith("::publish_message::WormholeMessage"));
+    const bare = readExit(sender, { ...allbridge, calls: [], eventTypes: wormholeOnly.map((ev) => ev.contents.type.repr) }, wormholeOnly, true)!;
+    expect(bare.bridge).toBe("Wormhole");
+    expect(bare.unresolvedVaas).toEqual(["21/45a4ce7279dc1da00f16555dca7c04c0f19bb168fd787e57026a79600524515b/0"]);
+  });
+
+  /**
+   * A Sui Bridge deposit (from 4xLuY6N6…) and a CCTP burn (from 4rDEyqGe…)
+   * in one transaction. The screen cannot know the first beneficiary's
+   * protocol before it reads events, so readExit picks the carrier by the
+   * same rule screen_address uses, and both file it under Sui Bridge.
+   */
+  it("files two unrelated bridges under the carrier screen_address files them under", () => {
+    const deposit = {
+      contents: {
+        type: { repr: "0x000000000000000000000000000000000000000000000000000000000000000b::bridge::TokenDepositedEvent" },
+        json: {
+          seq_num: "23371",
+          source_chain: 0,
+          sender_address: "xKRFS6UEKXM8q3C7Q0rJnXTSCnU0w9/Tux+m6Ts8SzI=",
+          target_chain: 10,
+          target_address: "1vBbGb8sBcJkpka3dXBX13RmHFw=",
+          token_type: 4,
+          amount: "130004100000",
+        },
+      },
+    };
+    const events = [...CCTP_EVENTS, deposit];
+    const both = tx({ digest: "both", eventTypes: events.map((e) => e.contents.type.repr), changes: [{ owner: ME, coinType: USDC, amount: -11_085_939n }] });
+    const e = readExit(ME, both, events, true)!;
+    const [screened] = bridgeExitsOf(ME, [{ ...both, gasSponsor: ME, netGas: null }]);
+    expect(e.bridge).toBe("Sui Bridge");
+    expect(screened.protocol).toBe(e.bridge);
+    expect(e.beneficiaries.map((b) => b.protocol).sort()).toEqual(["Circle CCTP", "Sui Bridge"]);
   });
 });

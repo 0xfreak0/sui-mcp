@@ -1,6 +1,6 @@
 # Live checks
 
-Nine scripts, run together by `npm run verify:live` from the repo root. Build
+Eleven scripts, run together by `npm run verify:live` from the repo root. Build
 first — they drive the built tools, not the source.
 
 ```bash
@@ -18,6 +18,13 @@ npm run build && npm run verify:live && npm test
 | `incident-pass.mjs` | The incident tools replayed on the Cetus and Nemo exploits through the built server over stdio, each answer against a raw chain read taken in the same run: attack and incident-loss nets against the raw balance changes, trace and flow-graph hops against the payer and next debit on chain, every bridge's beneficiary against its event or payload bytes, flow totals against per-transaction sums, upgrade history and cap custody against package versions and object changes, signatures and bytecode against each exact version, diffs against a line diff of both versions, a deny list against its Config's fields, and prices against DefiLlama read directly. Records every call's latency and size. |
 | `attribution-pass.mjs` | The attribution and history tools (funding, fan-out, deposit, screening, wallet edges, control groups, multisig, timelines, events, transactions, balances, holders, NFT sales, identity) against a raw GraphQL read of the same fact in the same run, plus one malformed input per tool. Prints each tool's slowest call and largest result, and fails on a call over 60s or a result over the tool's declared size. |
 | `surface-pass.mjs` | The stateful tools (labels, findings, watches, `enable_tools`), the prompts and the `sui://case` resource, and the core, market and developer tools, each against a raw read of the same fact taken in the same run: staking principal vs raw StakedSui objects, pools vs a raw walk of every pool type, a decoded PTB vs the raw transaction, a simulated transfer vs its amount, MVR names vs the PackageInfo on chain. Every tool also gets one malformed call that must be refused, and each call's latency and size are checked. |
+| `case-pass.mjs` | Replays every case in `cases/incidents/` (and in `$SUI_CASES_DIR` when set): each check's tool call through the built server, its answer against the value the incident's post-mortem or the chain gives. Validates each file against the format in `cases/README.md` first. A check marked `known_defect` that fails is reported as known; one that passes fails the run until the marker is removed. Prints each call's latency and size. `--case <slug>` and `--check <id>` run one. |
+| `invariant-pass.mjs` | A seeded random sample of mainnet: transactions from checkpoints spread over the whole chain, plus the kinds random checkpoints rarely hold (system, failed, sponsored, multisig, zkLogin, address-balance, 100+ command PTBs, packages, shared objects, kiosks, bridge exits). Each is run through the tools and checked against rules that hold for any input, every value against a raw GraphQL read: balance changes against the effects, coin conservation, batch against single reads, balances against coin objects plus the address balance and against a forward sum at a past checkpoint, history and timeline pages against the raw query, flow totals, fan-out recounts, trace and attack nets, identity types, holder balances and bridge beneficiaries against the event bytes. Prints the seed; `--seed S --n N --tip T` redraws the same sample. Default n is 12, four to seven minutes; n 30 takes about ten. |
+
+`test/live-coverage.test.ts` runs with `npm test` and fails when a registered
+tool is called by none of these scripts and named by no check in
+`cases/incidents/`. `adversarial.mjs` does not count toward it: it proves input
+handling, not answers. A new tool needs a live check here or a case.
 
 ## When to run them
 
@@ -46,7 +53,7 @@ They need the network and mainnet's current state, so they would be flaky on a
 schedule nobody chose. A flaky required check teaches people to ignore failures,
 which costs more than the check is worth.
 
-## Why there are only nine
+## Why there are only eleven
 
 There were seventy. The rest were one-off measurements — symbol-collision
 counts, deny-list base rates, upgrade-cap destinations — and each produced a

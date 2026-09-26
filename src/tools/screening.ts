@@ -22,7 +22,7 @@ const SCREEN_CAVEATS = [
   "Each address is read over a window of its most recent transactions (see windows); older activity is not screened when a window is truncated.",
   "Indirect hops expand only the highest-value counterparties of each hop (max_expand); unexpanded_counterparties says how many were not followed.",
   "Paths respect time order: an outgoing hop must happen after the previous one, an incoming hop before it. Leg amounts are what each leg moved, not the share of the subject's funds that reached the end of the path.",
-  "Bridge exits are detected from curated Move-call and event markers. Destinations are read from the exit's own events (chain-derived) for every bridge that writes one on Sui, up to 10 exit transactions, and screened. A Wormhole message whose payload this server cannot attribute, a non-OFT LayerZero message and a Meson swap are reported without a destination; run resolve_bridge_transfer on them.",
+  "Bridge exits are detected from curated Move-call and event markers, one per transaction under the protocol that carried it: a Mayan order that settles over Wormhole and Circle CCTP counts once, under Mayan, with those two named in `route`. Any other bridge used in the same transaction is named in `also_exited`. Destinations are read from the exit's own events (chain-derived) for every bridge that writes one on Sui, every recipient of the transaction included, up to 10 exit transactions taken from each bridge group in turn, and screened. A Wormhole message whose payload this server cannot attribute, a non-OFT LayerZero message and a Meson swap are reported without a destination; run resolve_bridge_transfer on them.",
   "Exposure is not a risk verdict. An exchange or bridge counterparty is ordinary; an exploiter or sanctioned counterparty is a lead to examine, with the path and digests to do it.",
 ];
 
@@ -59,7 +59,7 @@ export function registerScreeningTools(server: McpServer) {
 
   server.tool(
     "screen_address",
-    "(Incident investigation) Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. Every exposure carries the path, per-leg digests and amounts, and the label's entity, evidence kind and source_url. Bridge exits are screened too: the beneficiaries resolve_bridge_transfer reads from chain data (CCTP, Sui Bridge, Wormhole, Mayan, LayerZero OFT, Axelar, Allbridge, Celer) are matched against the labels and OFAC's SDN digital currency list. States its coverage: which label sources exist, that OFAC lists no Sui addresses, and how much of each address's history was read. About 10-40 requests. A CAIP-10 account on another chain gets a direct label and sanctions lookup only.",
+    "(Incident investigation) Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. Every exposure carries the path, per-leg digests and amounts, and the label's entity, evidence kind and source_url. Bridge exits are screened too, each counted once under the protocol that carried it, with the bridges it settled over in `route` and any other bridge the same transaction used in `also_exited`: the beneficiaries resolve_bridge_transfer reads from chain data (CCTP, Sui Bridge, Wormhole, Mayan, LayerZero OFT, Axelar, Allbridge, Celer) are matched against the labels and OFAC's SDN digital currency list. States its coverage: which label sources exist, that OFAC lists no Sui addresses, and how much of each address's history was read. About 15-60 requests: the subject's own send-and-receive window now reads up to 300 transactions each way by default, since a 100-transaction window can miss an active address's one biggest exit. A CAIP-10 account on another chain gets a direct label and sanctions lookup only.",
     {
       address: z.string().describe("Sui address (0x...) or CAIP-10 account (e.g. 'eip155:1:0x...')."),
       hops: numArg().int().min(1).max(3).optional().describe("How far to follow counterparties (default 2)."),
@@ -72,7 +72,9 @@ export function registerScreeningTools(server: McpServer) {
         .min(10)
         .max(300)
         .optional()
-        .describe("Most recent transactions read for the subject (default 100). Expanded counterparties get 50."),
+        .describe(
+          "Most recent transactions read for the subject (default 300, the schema max: a 100-transaction window can miss the one send that carries most of an active address's value). Expanded counterparties get 50.",
+        ),
       max_expand: numArg()
         .int()
         .min(1)
@@ -112,7 +114,7 @@ export function registerScreeningTools(server: McpServer) {
         const result = await screenAddress(account.address, {
           hops: hops ?? 2,
           directions,
-          subjectTransactions: max_transactions ?? 100,
+          subjectTransactions: max_transactions ?? 300,
           hopTransactions: 50,
           maxExpand: max_expand ?? 8,
           maxBridgeLookups: 10,

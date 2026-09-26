@@ -95,8 +95,9 @@ export function registerLabelTools(server: McpServer) {
         ),
     },
     async ({ action, address, label, category, confidence, notes, labels: bulk }) => {
-      // A malformed reference used to be looked up as it was and answered
-      // "no label", which reads as an address that was checked and is clean.
+      // A malformed reference is rejected here. Looked up as it was, it would
+      // answer "no label", which reads as an address that was checked and is
+      // clean.
       if (address !== undefined && (action === "lookup" || action === "add" || action === "remove")) {
         try {
           currentSuiAccount(address);
@@ -158,9 +159,9 @@ export function registerLabelTools(server: McpServer) {
             imported,
             skipped_count: skipped.length,
             ...(skipped.length ? { skipped } : {}),
-            // Counted, not assumed from whether a store is configured. A
-            // configured store whose writes all fail reported the whole import
-            // as saved, and the set was gone at the next restart.
+            // Counted, not assumed from whether a store is configured: a
+            // configured store's writes can all fail, and an import reported
+            // as saved would then be gone at the next restart.
             persisted,
             note: !storeStatus().enabled
               ? "In-memory only — set SUI_STORE_PATH to keep these across restarts."
@@ -177,10 +178,9 @@ export function registerLabelTools(server: McpServer) {
           // The exported address is the CAIP-10 account, never the bare
           // chain-native one. `import` resolves a bare address against
           // whichever network the importing call runs on, so exporting bare
-          // used to re-file an Ethereum label as a zero-padded Sui address —
-          // and since `bridge` and `cex` are sink categories, that phantom
-          // would silently terminate later Sui traces at an address belonging
-          // to nobody.
+          // would re-file an Ethereum label as a zero-padded Sui address. Since
+          // `bridge` and `cex` are sink categories, that phantom would silently
+          // terminate later Sui traces at an address belonging to nobody.
           const all = allLabels();
           return jsonResult({
             count: all.length,

@@ -91,4 +91,21 @@ describe("groupCapabilities", () => {
     expect(out).toHaveLength(4);
     expect(out[0]).toBe(upgrade);
   });
+
+  /**
+   * Two same-type admin caps both sent to 0x0 are each risk "info" and fold
+   * into one entry. The note is built from their shared real address, so it
+   * agrees with the "info" risk rather than reading as a held capability to
+   * review.
+   */
+  it("passes the real shared address instead of a placeholder when every folded member is unspendable", () => {
+    const caps = [
+      cap({ object_id: "0x1", type: "0x1::vault::AdminCap", owner_address: "0x0", risk: "info" }),
+      cap({ object_id: "0x2", type: "0x1::vault::AdminCap", owner_address: "0x0", risk: "info" }),
+    ];
+    const [group] = groupCapabilities(caps);
+    const note = (group as { note: string }).note;
+    expect(note).not.toContain("the holder of each object in holders");
+    expect(note).toMatch(/nobody holds a key/);
+  });
 });

@@ -329,9 +329,9 @@ function isLikelyNft(typeRepr: string): boolean {
  * Walk directly-owned (non-kiosk) objects until at least `target` NFTs are
  * collected or the address is exhausted. Excludes coins, KioskOwnerCaps,
  * PersonalKioskCaps, and staked SUI. Stops at exactly `target`: when it fills
- * mid-page, the next cursor is the last kept object's edge cursor. A page of
- * 50 used to be returned whole, and 50 NFTs with SVG images was 150k
- * characters for `limit: 1`.
+ * mid-page, the next cursor is the last kept object's edge cursor. Returning
+ * the whole page would send every NFT on it, SVG images included, for
+ * `limit: 1`.
  */
 async function listDirectNftsPage(
   owner: string,
@@ -498,18 +498,39 @@ export function registerNftTools(server: McpServer) {
         }
       }
 
+      // The target can land exactly on a kiosk boundary: the kiosk just
+      // scanned drains with no remainder, so `nextInnerCursor` above is null
+      // while kiosks the walk has not reached still sit in `state.kiosks`.
+      // Unvisited kiosks mean more remains, so the page is not done, and no
+      // extra query is needed to know it.
+      if (state.ki < state.kiosks.length) {
+        return buildResponse(address, state, nfts, /*done*/ false);
+      }
+
       // Phase 2: walk direct-owned objects. Only entered after every kiosk is
       // drained. We rely on `state.dc` to resume across calls.
-      if (state.ki >= state.kiosks.length && nfts.length < target) {
-        const remaining = target - nfts.length;
-        const { items, nextCursor: nextDc } = await listDirectNftsPage(address, state.dc, remaining, true);
-        nfts.push(...items);
-        if (nextDc) {
-          state.dc = nextDc;
-          return buildResponse(address, state, nfts, /*done*/ false);
-        }
-        state.dc = null;
+      //
+      // Runs even when the target is already met by kiosks alone: the target
+      // can also land exactly where the kiosks end, so the wallet is declared
+      // fully enumerated only after checking that no direct-owned object
+      // follows. With no budget left, this probes for one item without
+      // keeping it or moving `state.dc`, so a `limit`-sized page never grows
+      // and the probed item is picked up cleanly on the next real page.
+      const remaining = target - nfts.length;
+      const probing = remaining <= 0;
+      const { items, nextCursor: nextDc } = await listDirectNftsPage(
+        address,
+        state.dc,
+        probing ? 1 : remaining,
+        !probing,
+      );
+      const moreDirect = probing ? items.length > 0 || nextDc !== null : nextDc !== null;
+      if (!probing) nfts.push(...items);
+      if (moreDirect) {
+        if (!probing) state.dc = nextDc;
+        return buildResponse(address, state, nfts, /*done*/ false);
       }
+      state.dc = null;
 
       // Both phases drained.
       return buildResponse(address, state, nfts, /*done*/ true);

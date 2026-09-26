@@ -1,5 +1,151 @@
 # Changelog
 
+## Unreleased
+
+Seven blind investigations of real Sui incidents ran through the server using
+only its tools: an address-poisoning loss, a wallet drainer campaign and its NFT
+thefts, a token rug, an airdrop claim farm, a vault key compromise and an
+exploit cash-out. Their answers were graded against the published reports and
+the chain, and each incident is now a case file replayed on every
+`npm run verify:live`. The fixes below come from those investigations and from
+two code reviews of the fixes.
+
+### Added
+- **Incident case files.** `cases/incidents/*.json` pin the facts of eight
+  incidents, each check tied to a source or to the chain.
+  `scripts/probe/case-pass.mjs` replays them through the built server, and
+  `cases/README.md` documents the format. A check the server gets wrong is
+  marked `known_defect` and reported as known; a known defect that starts
+  passing fails the run until the marker is removed.
+- **A live-coverage gate.** `test/live-coverage.test.ts` fails when a
+  registered tool is called by no live check and named by no case, so a new
+  tool cannot ship without one.
+- **A random-sample invariant pass.** `scripts/probe/invariant-pass.mjs` draws a
+  seeded sample of mainnet transactions and addresses and checks rules that
+  hold for any input against raw reads: balance changes, history against a raw
+  query, flow totals against their parts, identify against the object lookup.
+- **Running a blind investigation**, a CONTRIBUTING section, and
+  `scripts/probe/blind-investigation.md`, a brief anyone can be handed to run
+  one.
+- **A symbol index of every mainnet coin.** `analyze_token` and `search_token`
+  answer a symbol from `src/data/coin-symbols.json`
+  (`npm run sync:coin-symbols`) before scanning. A symbol several coins use
+  returns every candidate as `ambiguous_symbol`, verified first; `KONG` now
+  lists its 30 coins where it answered "not found". Coins published after the
+  index's sync date fall back to the live scan, and every answer names the
+  sync date. The npm tarball grows from 1.7 MB to 8.0 MB.
+- **Request pacing.** Each GraphQL and fullnode attempt, retries included,
+  takes a slot in a per-host window: at most 180 per 10 seconds for `*.sui.io`
+  hosts by default. `SUI_RATE_LIMIT` sets the number for every host; `0` turns
+  it off.
+- `get_object` and `identify_address` name a kiosk's controller
+  (`kiosk_cap_holder`), following a KioskOwnerCap through a PersonalKioskCap or
+  any other wrapper, including one wrapped in the kiosk's creation
+  transaction.
+- `get_transaction` reports `mutated_capabilities` (a capability used without
+  changing owner) and `coins_delivered_to`.
+- `identify_address` and `get_transaction_history` find transactions an
+  address signed as an address alias for another wallet (`signed_as_alias`).
+- `analyze_package` finds authority capabilities minted after publish (for
+  example an OperatorCap held by one hot key), with each holder's signing
+  scheme. Per-user capability types are reported as counts in
+  `user_held_types`, and failed scans in `incomplete_scans`.
+- `analyze_multisig` marks a committee key written by hand as `unsignable` and
+  states the `effective_committee`.
+- `decode_ptb` resolves 32-byte pure inputs to addresses and flags a payout to
+  an address other than the sender and a call into a package on the Sui wallet
+  blocklist.
+- `get_address_fanout` classes a sponsor that also paid most of the addresses
+  it sponsors as `operator`, with `sponsored_and_paid_count`.
+- `trace_funds` hops report `residual` when the holder moved much less than
+  it received, and `object_flow.capability_transfers` lists every capability
+  handover, not only the framework types.
+- `summarize_address_flows` and `screen_address` report bridge fee and relayer
+  legs as `retained_on_sui`, apart from the bridged amount.
+- `summarize_address_flows` and `trace_flow_graph` warn about lookalike
+  address pairs (`address_poisoning`), and the flow graph never prunes a
+  branch to one.
+
+### Fixed
+- **Coin amounts used an assumed scale.** A coin outside the curated list was
+  formatted at 9 decimals in several tools, and at its real scale in others
+  once a previous call had loaded its metadata. KONG (1 decimal) read 10^8
+  too small. Every tool that formats or values an amount now reads the coin's
+  CoinMetadata first.
+- **`trace_flow_graph` counted value twice or called it a cycle.** From an
+  address it counted burns reached through a swap twice, over-reporting the
+  Typus attacker's 3,430,717 USDC CCTP exit, and later called a third of the
+  same graph a cycle. From an address it now traces every coin a transaction
+  moved. A swap made at the start address counts once: through the later leg
+  that spends its proceeds, or as unspent (source backward) at the address
+  while they are held. A payment funded partly by a swap and partly by coin
+  already held is traced once, an edge's amount is what moved on chain, and a
+  bridge exit counts each transaction's beneficiaries once. A swap between a
+  priced coin and one with no price keeps the swap's value on both sides. The
+  Typus graph ends 99.99% at the CCTP exit. First-in-first-out allocation no
+  longer skips an earlier transfer for a later one, and held funds are
+  reported as unspent rather than as a cycle.
+- A deposit into a contract that returns a little change or dust is traced
+  as consumed, and a withdrawal that paid a small fee in another coin is
+  traced back to a source, instead of handing the whole value to the dust or
+  fee coin.
+- `trace_flow_graph` and `find_flow_path` mark the graph truncated, and say
+  why in `coverage.partial`, when the search of the start address stops at
+  its move or page limit before reading every move in the window.
+- **Failed transactions counted as bridge exits**, and `resolve_bridge_transfer`
+  said funds had left for an aborted transaction.
+- **A bridge exit counted under every bridge it touched.** It now counts once,
+  under the protocol that carried it, with its settlement legs in `route`.
+  Unrelated bridges in one transaction stay separate exits, and every
+  beneficiary is screened.
+- **`build_wallet_edges` linked unrelated wallets.** Intermediaries the query
+  budget never measured, or whose read failed, were treated as narrow and
+  linked seeds; a public gas station became an operator. Edges are
+  deterministic between runs, and an unpriced dust transfer no longer counts
+  as a first funding.
+- **Funding walks passed hubs they could not measure.** A failed popularity
+  read, on any page, now stops the walk and says so. A price outage no longer
+  changes who funded a wallet. An unpriced coin inflow counts as funding when
+  it is at least 1% of the coin's supply, or 0.1% from its publisher.
+- **The attacker defaulted to a gas-only sender.** `analyze_attack_tx` and
+  `summarize_incident_losses` name the largest gainer when the sender only paid
+  gas, and attribute losses to the vault or pool whose own events record
+  them.
+- **Module event filters on upgraded packages.** `query_events`,
+  `aggregate_events` and `sample_control_addresses` query each version's id
+  in the era where events carry it, per network, and name the lineage's other
+  ids.
+- **`trace_object_history`** resolves kiosk-held owners, handles deleted and
+  wrapped objects, reaches distant ownership changes by checkpoint search, and
+  says when that search cannot prove the history complete.
+- **`analyze_package`** no longer rates a capability sent to an unspendable
+  address as a live risk, and judges a destroyed UpgradeCap consistently.
+- **`screen_address`** missed an active address's main exit at its default
+  window; the default is now 300 transactions.
+- **`list_nfts`** truncated a wallet when a kiosk boundary fell on the page
+  limit.
+- **`analyze_token`** resolved a symbol query to a coin whose name merely
+  contained it.
+- Swap direction in decoded actions no longer flips when another leg of the
+  transaction moves the same coins.
+- `get_transactions` names failures the same way `get_transaction` does.
+- `get_top_holders` stops a holder scan at a time budget and says how far it
+  read, and whether a retry or a smaller `max_scan` would help.
+- `get_address_fanout` reads each counterparty's direction per coin.
+- `get_transaction_history` names up to 25 counterparties per row, with
+  `counterparty_count` for the rest.
+- Transient read failures in `check_coin_restrictions` and `analyze_package`
+  name their cause.
+- `find_flow_path` defaults to 5 hops.
+- `get_token_prices` and `analyze_token` ask DefiLlama for SUI's 24h change
+  under its short address. The 64-digit key answered a stale change.
+
+### Changed
+- Fan-out, funding and holder cache versions were raised; cached rows from
+  earlier releases are measured again.
+- `get_top_holders` and the kiosk owner caveats state their rules without
+  sampled endpoint figures.
+
 ## 1.20.0 (2026-09-25)
 
 Every tool now has a live check against real mainnet data. Before this release

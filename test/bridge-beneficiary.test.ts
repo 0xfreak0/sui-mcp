@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { decodeWormholePayload, mayanBeneficiaries } from "../src/utils/bridge/beneficiary.js";
+import { decodeWormholePayload, mayanBeneficiaries, MAYAN_SWIFT_PACKAGE } from "../src/utils/bridge/beneficiary.js";
 import { extractWormholeMessages } from "../src/utils/bridge/wormhole.js";
 
 /**
  * Payloads captured from mainnet WormholeMessage events. The expected
  * recipients are Wormholescan's `standarizedProperties.toAddress` for the same
  * VAA, and for the relayed transfer the Ethereum redemption forwarded the
- * funds to it. The destination contract each redemption called is what
- * resolve_bridge_transfer used to report as the destination account.
+ * funds to it. The destination contract each redemption called is not the
+ * destination account.
  */
 const message = (sender: string, hex: string) =>
   extractWormholeMessages([
@@ -47,7 +47,7 @@ describe("decodeWormholePayload", () => {
       "03000000000000000000000000000000000000000000000000000000293ca6226f069b8857feab8184fb687f634618c035dac439dc1aeb3b5598a0f000000000010001000000000000000000000000cafd2f0a35a4459fa40c0517e17e6fa2939441ca0002c4c610707eab9b222996b075f7d07c7d9b07766ab7bcafef621fd53bbf089f4e010000000000000000000000000000000000000000000000000000000003a6794a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000089012a55cd6b88e407c9d4ae9b3425f55924919b",
     );
     const d = decodeWormholePayload(m, true)!;
-    // The Cetus attacker's EVM address, not the relayer contract 0xcafd2f0a….
+    // The recipient's EVM address; the relayer 0xcafd2f0a… is via_contract.
     expect(d.beneficiary?.account).toBe("eip155:1:0x89012a55cd6b88e407c9d4ae9b3425f55924919b");
     expect(d.beneficiary?.via_contract).toBe("0xcafd2f0a35a4459fa40c0517e17e6fa2939441ca");
   });
@@ -101,6 +101,43 @@ describe("mayanBeneficiaries", () => {
     expect(mayanBeneficiaries([submitted, marker], true)[0].account).toBe(
       "eip155:8453:0x1e0b842ca732d3bb91bb130a2b01559442160770",
     );
+  });
+
+  it("labels an MCTP order's amount as post-swap USDC, not the source coin's units (62MTsGpC…)", () => {
+    // Mayan MCTP order event of transaction 62MTsGpC…: amount_in is
+    // 335761619, exactly the paired CCTP burn's amount. Mayan MCTP swaps the
+    // source coin (SUI here) to USDC on Sui before bridging, so this is
+    // 335.76 USDC; read in the source coin's units it would be 0.336 SUI.
+    const order = {
+      contents: {
+        type: { repr: `${PKG}::init_order::OrderCreated` },
+        json: {
+          addr_dest: "0x000000000000000000000000eb8a15d28dd54231e7e950f5720bc3d7af77b443",
+          chain_dest: 2,
+          amount_in: "335761619",
+        },
+      },
+    };
+    const [b] = mayanBeneficiaries([order, marker], true);
+    expect(b.amount).toBe("335761619");
+    expect(b.amount_note).toMatch(/USDC base units/);
+    expect(b.amount_note).not.toBe("amount_in, in the source coin's units.");
+  });
+
+  it("keeps the source-coin note for a Mayan Swift order, which bridges the source coin directly (3aVcL3mh…)", () => {
+    const order = {
+      contents: {
+        type: { repr: `${MAYAN_SWIFT_PACKAGE}::init_order::OrderCreated` },
+        json: {
+          addr_dest: `0x${"1".repeat(64)}`,
+          chain_dest: 1,
+          amount_in: "9000000000",
+          hash: "0xabc",
+        },
+      },
+    };
+    const [b] = mayanBeneficiaries([order], true);
+    expect(b.amount_note).toBe("amount_in, in the source coin's units.");
   });
 
   it("ignores an OrderCreated from a package that emitted no Mayan marker", () => {

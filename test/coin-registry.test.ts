@@ -8,7 +8,7 @@ import {
 
 const NATIVE_USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
-/** Returned by the old first-match scan for the symbol "USDC". */
+/** Shares native USDC's symbol and module name under another package. */
 const IMPOSTOR_USDC =
   "0x006e09c3c3ebb8c4670e0320da7efe926d35347608f964b4625dd47bae40a664::usdc::USDC";
 
@@ -47,8 +47,8 @@ describe("isVerifiedCoin", () => {
   });
 
   /**
-   * The whole point. This type is what the old symbol scan handed back for
-   * "USDC" — same symbol, same module name, different package.
+   * This type has USDC's symbol and module name under a different package,
+   * and is not verified.
    */
   it("rejects the impostor that shares USDC's symbol and module name", () => {
     expect(isVerifiedCoin(IMPOSTOR_USDC)).toBe(false);

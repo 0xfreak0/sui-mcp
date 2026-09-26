@@ -1,14 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * `get_top_holders` walks `objects(filter: Coin<T>)` in OBJECT-ID order, which
+ * `get_top_holders` walks `objects(filter: Coin<T>)` in object-id order, which
  * is uncorrelated with balance. A scan that stops early therefore returns the
  * largest holder it happened to see, not the largest holder.
  *
- * Measured on mainnet SUI, the reported "#1 holder" by scan depth: 66 SUI at
- * max_scan 200, 522 at 400, 3,454 at 800, 25,000 at 5,000 — with zero of the
- * top five surviving from 200 to 800. The real top holder holds millions. That
- * is not an approximate ranking, it is an artefact of how far the loop ran.
+ * That figure climbs with scan depth and need not converge on the real top
+ * holder, so a ranking from it is an artefact of how far the loop ran.
  */
 
 const mockGqlQuery = vi.fn();
@@ -19,7 +17,7 @@ vi.mock("../src/clients/grpc.js", () => ({
 }));
 vi.mock("../src/utils/names.js", () => ({ batchResolveNames: async () => new Map() }));
 
-const { registerHolderTools } = await import("../src/tools/holders.js");
+const { registerHolderTools, scanTokenTopHolders } = await import("../src/tools/holders.js");
 
 type Args = { type?: string; mode?: string; limit?: number; max_scan?: number };
 let handler: (a: Args) => Promise<{ content: { text: string }[] }>;
@@ -284,10 +282,10 @@ describe("out-of-range arguments are clamped, not obeyed", () => {
 });
 
 /**
- * A kiosk's `owner` field is written by `set_owner` and is NOT updated when the
- * `KioskOwnerCap` is transferred. Measured over 300 mainnet kiosks it disagreed
- * with the real cap holder 40% of the time, and the disagreement concentrates:
- * one address was declared by 82 kiosks, which is enough to invent a top holder.
+ * A kiosk's `owner` field is written by `set_owner` and does not follow the
+ * `KioskOwnerCap` when the cap is transferred. The error concentrates: one
+ * address can be declared by many kiosks, which is enough to invent a top
+ * holder.
  */
 describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
   /** owner -> dynamic field -> kiosk object, which declares `owner`. */
@@ -404,5 +402,226 @@ describe("kiosk-held NFTs are marked as a weaker kind of answer", () => {
     });
     const r = await run({ type: "0xk3::art::Piece", mode: "nft", limit: 5, max_scan: 500 });
     expect(r.unresolved_owners).toBe(1);
+  });
+});
+
+describe("a scan stops at its time budget and says so", () => {
+  // A default scan is 100 pages of coin objects, and on a loaded endpoint each
+  // page can wait out 429 backoff. Each page here costs 10s of clock; the scan
+  // must stop near 35s, return a sample marked as cut short by time, and still
+  // include the address-balance walk, which runs beside the coin walk rather
+  // than after it.
+  const AAA = "0xd976fda9a9786cda1a36dee360013d775a5e5f206f8e20f84fad3385e99eeb2d::aaa::AAA";
+  it("returns a marked sample instead of running past the budget", async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let coinPages = 0;
+    mockGqlQuery.mockImplementation((query: string, vars?: { type?: string; keys?: { address: string }[] }) => {
+      if (query.includes("multiGetObjects")) return Promise.resolve({ multiGetObjects: vars!.keys!.map(() => null) });
+      if (query.includes("balance(coinType")) return Promise.resolve({});
+      if (query.includes("multiGetAddresses")) {
+        return Promise.resolve({ multiGetAddresses: vars!.keys!.map((k) => ({ address: k.address, objects: { nodes: [] } })) });
+      }
+      if (vars?.type?.includes("::accumulator::Key<")) {
+        return Promise.resolve({
+          objects: {
+            nodes: [{ asMoveObject: { contents: { json: { name: { address: B }, value: { value: "500" } } } } }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        });
+      }
+      coinPages++;
+      now += 10_000;
+      return Promise.resolve({
+        objects: { nodes: [coin(A, "1")], pageInfo: { hasNextPage: true, endCursor: `c${coinPages}` } },
+      });
+    });
+    try {
+      const r = await run({ type: AAA, mode: "token", limit: 5, max_scan: 1000 });
+      expect(coinPages).toBeLessThanOrEqual(5);
+      expect(r.truncated).toBe(true);
+      expect(r.complete_ranking).toBe(false);
+      expect(r.time_budget_reached).toBe(true);
+      expect(r.coin_walk_truncated).toBe(true);
+      expect(r.address_balance_walk_truncated).toBe(false);
+      expect(r.address_balances_scanned).toBe(1);
+      expect(r.caveat).toMatch(/time budget/);
+      // At holders.ts's expected page time, max_scan 1000 (20 pages) fits the
+      // budget with room to spare, so only a slow endpoint stops it. The
+      // caveat reports what was read and derives that cause instead of
+      // advising a smaller max_scan.
+      expect(r.caveat).toMatch(/after 5 objects, 4 page\(s\) deep, in 40\.0s, 10\.00s per page/);
+      expect(r.caveat).toMatch(/max_scan 1000 \(20 page\(s\)\) can fit inside the budget/);
+      expect(r.caveat).toMatch(/retry once it is less loaded may reach max_scan/);
+      expect(r.caveat).not.toMatch(/not the endpoint being unusually slow/i);
+      expect(r.caveat).not.toMatch(/Lower max_scan/);
+
+      // Not cached: the same call scans again.
+      const before = coinPages;
+      await run({ type: AAA, mode: "token", limit: 5, max_scan: 1000 });
+      expect(coinPages).toBeGreaterThan(before);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  /** The other regime: a max_scan whose pages cannot fit in 35s even at the
+   *  expected page time. 7,950 (159 pages) is the largest that fits. */
+  it.each([
+    { maxScan: 7950, fits: true },
+    { maxScan: 8000, fits: false },
+    { maxScan: 20000, fits: false },
+  ])("derives the cause from max_scan $maxScan, not from a fixed claim", async ({ maxScan, fits }) => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let coinPages = 0;
+    mockGqlQuery.mockImplementation((query: string, vars?: { type?: string; keys?: { address: string }[] }) => {
+      if (query.includes("multiGetObjects")) return Promise.resolve({ multiGetObjects: vars!.keys!.map(() => null) });
+      if (query.includes("balance(coinType")) return Promise.resolve({});
+      if (query.includes("multiGetAddresses")) {
+        return Promise.resolve({ multiGetAddresses: vars!.keys!.map((k) => ({ address: k.address, objects: { nodes: [] } })) });
+      }
+      if (vars?.type?.includes("::accumulator::Key<")) {
+        return Promise.resolve({ objects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } });
+      }
+      coinPages++;
+      now += 10_000;
+      return Promise.resolve({
+        objects: { nodes: [coin(A, "1")], pageInfo: { hasNextPage: true, endCursor: `c${coinPages}` } },
+      });
+    });
+    try {
+      const r = await run({ type: AAA, mode: "token", limit: 5, max_scan: maxScan });
+      expect(r.time_budget_reached).toBe(true);
+      if (fits) {
+        expect(r.caveat).toMatch(/inside the budget/);
+        expect(r.caveat).toMatch(/retry once it is less loaded may reach max_scan/);
+        expect(r.caveat).not.toMatch(/Lower max_scan/);
+      } else {
+        expect(r.caveat).toMatch(/more than the budget, and a retry at the same max_scan stops short of it too/);
+        expect(r.caveat).toMatch(/Lower max_scan to 7950 or less/);
+        expect(r.caveat).not.toMatch(/less loaded/);
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+describe("an NFT scan stops at its time budget and says so", () => {
+  /** The NFT branch builds the same derived caveat as coin mode, so a
+   *  time-budget stop there does not blame the endpoint either. */
+  it("does not blame the endpoint for a time-budget stop in NFT mode either", async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let pages = 0;
+    mockGqlQuery.mockImplementation(() => {
+      pages++;
+      now += 10_000;
+      return Promise.resolve({
+        objects: { nodes: [{ owner: { address: { address: A } } }], pageInfo: { hasNextPage: true, endCursor: `c${pages}` } },
+      });
+    });
+    try {
+      const r = await run({ type: "0xnft::art::Piece", mode: "nft", limit: 5, max_scan: 1000 });
+      expect(r.truncated).toBe(true);
+      expect(r.time_budget_reached).toBe(true);
+      expect(r.caveat).toMatch(/after 4 objects, 4 page\(s\) deep, in 40\.0s, 10\.00s per page/);
+      expect(r.caveat).toMatch(/inside the budget/);
+      expect(r.caveat).toMatch(/retry once it is less loaded may reach max_scan/);
+      expect(r.caveat).not.toMatch(/not the endpoint being unusually slow/i);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  /**
+   * NFT pages cost more when their items sit in kiosks, since the same page
+   * resolves each kiosk, so the expected page time is weighted by the kiosk
+   * share read. At the default max_scan 5000, a directly held collection fits
+   * in 35s and an all-kiosk one does not.
+   */
+  const kioskHeld = {
+    owner: {
+      address: {
+        asObject: {
+          owner: {
+            address: {
+              address: "0xkiosk1",
+              asObject: {
+                asMoveObject: {
+                  contents: {
+                    type: { repr: "0x0000000000000000000000000000000000000000000000000000000000000002::kiosk::Kiosk" },
+                    json: { owner: A },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  const direct = { owner: { address: { address: A } } };
+  it.each([
+    { held: "directly", nodes: [direct], fits: true, expected: /\b0% of the items read here were in kiosks.*max_scan 5000 \(100 page\(s\)\) can fit inside the budget/ },
+    { held: "half in kiosks", nodes: [direct, kioskHeld], fits: true, expected: /\b50% of the items read here were in kiosks.*max_scan 5000 \(100 page\(s\)\) can fit inside the budget/ },
+    { held: "in kiosks", nodes: [kioskHeld], fits: false, expected: /\b100% of the items read here were in kiosks.*max_scan 5000 \(100 page\(s\)\) takes more than the budget/ },
+  ])("derives the default scan's cause from the kiosk mix when items are held $held", async ({ nodes, fits, expected }) => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let pages = 0;
+    mockGqlQuery.mockImplementation(() => {
+      pages++;
+      now += 10_000;
+      return Promise.resolve({ objects: { nodes, pageInfo: { hasNextPage: true, endCursor: `c${pages}` } } });
+    });
+    try {
+      const r = await run({ type: "0xnft::art::Piece", mode: "nft", limit: 5 });
+      expect(r.time_budget_reached).toBe(true);
+      expect(r.caveat).toMatch(expected);
+      if (fits) {
+        expect(r.caveat).not.toMatch(/Lower max_scan/);
+      } else {
+        expect(r.caveat).toMatch(/Lower max_scan to 4350 or less/);
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+describe("a rejected walk does not leave its sibling paging in the background", () => {
+  /**
+   * The two walks run under `Promise.allSettled`. If one rejects (an
+   * accumulator-key page erroring, say), the call waits for the
+   * address-balance walk to settle before rejecting, so that walk does not
+   * keep paging in the background, holding a slot of the shared GraphQL
+   * limiter while the caller retries.
+   */
+  it("waits for the address-balance walk to settle before rejecting, instead of returning immediately", async () => {
+    const gate = Promise.withResolvers<{ objects: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } }>();
+    mockGqlQuery.mockImplementation((_query: string, vars?: { type?: string }) => {
+      if (vars?.type?.includes("::accumulator::Key<")) return gate.promise;
+      // The coin-object walk fails on its very first page.
+      return Promise.reject(new Error("coin walk failed"));
+    });
+
+    const result = scanTokenTopHolders("0x2::sui::SUI", 5, 1000);
+    let settled = false;
+    result.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    // Flush microtasks without any real wall-clock wait. The coin walk has
+    // already rejected, but the call must not settle while the
+    // address-balance page is pending.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+
+    gate.resolve({ objects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } });
+    await expect(result).rejects.toThrow("coin walk failed");
+    expect(settled).toBe(true);
   });
 });

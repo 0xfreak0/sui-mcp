@@ -6,7 +6,7 @@ const OTHER = "0xeda2e0ec67390985f70a0261992ce255f12122127374ffdc5494d4f665d36c2
 const pad = (short: string) => `0x${short.replace(/^0x/, "").padStart(64, "0")}`;
 
 describe("isUnspendableAddress", () => {
-  /** The two destinations 27 of 30 departing mainnet caps actually went to. */
+  /** Where a renounced cap goes: the zero address or a framework address. */
   it("recognises the zero address and the framework addresses", () => {
     expect(isUnspendableAddress(pad("0"))).toBe(true);
     expect(isUnspendableAddress(pad("2"))).toBe(true);
@@ -52,10 +52,8 @@ describe("assessCapHolder", () => {
   });
 
   /**
-   * The distinction the whole module exists for. 20% of mainnet caps are not
-   * with their publisher, but 27 of every 30 of those were burned — collapsing
-   * the two would fire on a fifth of all packages and flag the responsible
-   * choice as suspicious.
+   * The distinction the whole module exists for. Collapsing a burn into a
+   * transfer would flag the responsible choice as suspicious.
    */
   it("calls a burn a burn, and says it reduces risk", () => {
     const a = assessCapHolder(pad("2"), PUBLISHER);
@@ -74,7 +72,7 @@ describe("assessCapHolder", () => {
     expect(a.status).toBe("transferred");
     expect(a.publisher).toBe(PUBLISHER);
     expect(a.note).toMatch(/not by itself wrong/i);
-    expect(a.note).toMatch(/2%/);
+    expect(a.note).toMatch(/usually stays with its publisher/);
   });
 
   /**

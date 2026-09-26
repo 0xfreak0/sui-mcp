@@ -1,0 +1,847 @@
+{
+  "slug": "suisses-drainer-2024-04",
+  "kind": "wallet-drainer",
+  "title": "Suisses NFT wallet drainer, April and May 2024",
+  "network": "mainnet",
+  "summary": "From 8 to 14 April 2024 one address airdropped Suisses NFTs to wallets. Holders who followed the NFT signed a PTB that called managed::mint in two packages from the same publisher, then transferred the signer's SUI, coins, LP and farm positions and NFTs to a collector and paid a fee address about 0.58% of the SUI. Between 8 April and 28 May 2024, 341 wallets signed it 599 times; four collectors in rotation received 19,462 SUI in the drain transactions alone, the fee address 113.81 SUI, and part of the proceeds left Sui through Wormhole to Solana and Ethereum.",
+  "sources": [
+    {
+      "url": "https://github.com/MystenLabs/sui/issues/17510",
+      "publisher": "GitHub",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://github.com/MystenLabs/wallet_blocklist",
+      "publisher": "MystenLabs",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "victim": "0xecb58af86777cd758f4f1c7c3fb25880ab5aa22cd24eb77fa4871703d239b633",
+    "victim_tx": "8pRzHLYa8kaW63WZVWrxrgnrDGLxy8D8TALpuP9R6zkf",
+    "collector_1": "0xb5c5a76ce0726802d8c13525c1650c7ba2d10f19c5a20b3d22d120be9c946695",
+    "collector_2": "0x958e135ceff67ae1f13525f120b04d769dac96106ab453a66979e0bec1350297",
+    "collector_3": "0x5ecf90fa681d13629e91067782316d89893c5cede1b889d7e2ea4eabd0e54088",
+    "collector_4": "0x58559fd2b580dfe5862a2438cc959661a19bba48eae91a1b54edd3d1ff889af3",
+    "fee_address": "0x0000daa77f7d845a8d3bac77b6821fb37f37960a214da6ac32e1d35d805d2cd6",
+    "publisher": "0x021e506919f5c496230aea47ddc5d470357df771c2ac8258971f74a4d1145aaf",
+    "airdropper": "0x8b58ec7274af0dad9aaacfcd7158000519e7e9a11bb955b8d0ac2a3f0c90aa0a",
+    "test_wallet": "0xb2fc23a4106ea81b9a6eaa44fba5b3bf5826484f7c8ba2aa361e46f4fb291526",
+    "kit_package_a": "0x7ca9d75e9b1281a2f41f77c2034aeaf241c6c3a7a2e279d835840f91a1323327",
+    "kit_package_b": "0x586589839b7da886e47ee17fcc6af6f4c54527534d1b695302c8d15064adfba4",
+    "lure_package": "0x89ca96affb8a4d1db84fc6682d4256be409d511b1de8547a05b26ecba266b1f3",
+    "first_drain_tx": "EGTgiLEXFSkQQPN2iJhsVc99zdWCmS4YMchn8ZoC3n5M",
+    "first_airdrop_tx": "DFS21Tk3n5PPwfTTJep9gLqcEmR43KaYsdShUW7DCdey",
+    "stolen_lp_token": "0x1af0f8c1239c98dfa9f11ddb35377c2681aa62f697be44a6f773888d08a3531a",
+    "consolidator": "0x025be32ea98ee82650384e924047e73caedd1a94d7d3d04b1dba80c3ad5c593b",
+    "dormant_hub": "0xe866957cf7e13caf5f26e1af17eaa7712df2bfffe351d32992597c7ba10befc1",
+    "bridge_tx": "AWwu2Rk5LPxUhwyCx3pkvvLxJSeTR5rHQw6tfwPbbRdK",
+    "solana_beneficiary": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:6Lwf2AjmqgnKGNDgsLcM14oKgUDnwj6p7j6xzujb7WZR"
+  },
+  "checks": [
+    {
+      "id": "victim-tx-recipients",
+      "question": "In the drain the victim reported, where did the coins and the LP and farm positions go?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{victim_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{victim}"
+        },
+        {
+          "path": "object_transfers[*].to.address",
+          "op": "includes",
+          "value": "{collector_3}"
+        },
+        {
+          "path": "object_transfers[*].object_id",
+          "op": "includes",
+          "value": "{stolen_lp_token}"
+        },
+        {
+          "path": "object_transfers[*].object_id",
+          "op": "count_gte",
+          "value": 5
+        },
+        {
+          "path": "balance_changes[*].address",
+          "op": "includes",
+          "value": "{fee_address}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "The GitHub issue names this digest. On chain it transfers five objects (a Kriya LP token, two Kriya farm positions, a Suisses NFT and a Liquidpool object) and 0.631405462 SUI plus 35.113392755 vSUI to the collector, and 0.00369243 SUI to the fee address."
+    },
+    {
+      "id": "decode-ptb-flags-drain",
+      "question": "Given the bytes the victim was asked to sign, does pre-sign triage flag that every asset goes to a stranger?",
+      "tool": "decode_ptb",
+      "args": {
+        "transaction_bcs": "AAAYAAiOVzgAAAAAAAAIlnuiJQAAAAABAQC5jZtWXTiSrHnz6TtQ0oXeFx2myIIkyjxrZUz9DlDcnaUaBQAAAAABAAgAypo7AAAAAAAgAADap399hFqNO6x3toIfs383lgohTaasMuHTXYBdLNYAIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQANZg7E44w7cNDy0WWdJ8V2+IWN+Ah7ZmeCAC+/pDTO9/6l0AUAAAAAIKApp2Hr/QMeei10Vc8VUDrMnNCJmRCdUWcSUkQw+u2SACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEAGvD4wSOcmN+p8R3bNTd8JoGqYvaXvkSm93OIjQijUxq0D6QFAAAAACDDaFrBAAbeyxnLt9bYRkWowSMHy2d7ssEYB4hWWjcyFAAgXs+Q+mgdE2KekQZ3gjFtiYk8XO3huInX4upOq9DlQIgBADFeiJb8/FRPFPsJZ03SMppQqIESIyVDVUNzKybaxflk/qXQBQAAAAAgyIzzPLcCaC3n0S4Hc2bV8ecBRBW0f36NjgfdoMBPBDMAIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQBb2vNqSjE9UgTgH04KlBplML4NqR3ZkfeiKWnCKZmcglUq0wUAAAAAIHG8hhmuixmOFb8Dc5CCsPtI2EZRtjeicPwbbZBetdl1ACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEAaqu3LGC2lbJFL0/sZ7YoJb6R9B6xts8mwwVyBSM/aHPMpxoFAAAAACCFhXiPOUkF0YS6ZmsaOukK9YHLDpJaVhfBbAyK2sP67QAgXs+Q+mgdE2KekQZ3gjFtiYk8XO3huInX4upOq9DlQIgBAH6kK9UqPCprT8Ug3ZGZ1NsaYWv0e6D87dsCWh/KtNs6zKLQBQAAAAAgNatyCqtmS8/hRONPCTKewnpQrXVLXjb7tXyx89gf3Q4AIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQDTYkc0uGHv3WFP/iUmmTxE0KRk2QzBpfvgJM+lwYJuvJKd6QQAAAAAIK5xDKRAlSyuEpgWycqAlAT6JsLrOPXwo+4+NsaM5N17ACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEB9fFbsVFbErPjBvfvasGCUYAuTpWS1MFCksF79I9sLK6fpRoFAAAAAAEACABgL0YCFAAAACAAANqnf32EWo07rHe2gh+zfzeWCiFNpqwy4dNdgF0s1gAgAADap399hFqNO6x3toIfs383lgohTaasMuHTXYBdLNYNAgABAQAAAgABAQEAAHyp116bEoGi9B93wgNK6vJBxsOnouJ52DWED5GhMjMnB21hbmFnZWQEbWludAADAQIAAQMAAQQAAQEDAQAAAAEFAAEBAQYAAQcAAQEBCAABCQABAQEKAAELAAEBAQwAAQ0AAQEBDgABDwABAQEQAAERAAEBARIAARMAAFhliYObfaiG5H7hf8xq9vTFRSdTTRtpUwLI0VBkrfukB21hbmFnZWQEbWludAADARQAARUAARYAAQEDAAAAAAEXAOy1ivhnd811j08cfD+yWICrWqIs0k63f6SHFwPSObYzAgG7LGC7dTPy/S+LK0UH8l+IWl5zveNUFiI6agBzN3PE/qXQBQAAAAAgijU7yGGAcDcgUemZeVgt1Wy5EwxUskeb/P/Kau6maeyDY/axHi5kppSf5YpnYN2QHX+DQlnuOVa+c+S2r/XdG/6l0AUAAAAAIGjW/woeTwPgeRQ6MGq2rR9wYn2XkNUdDPDKPTsfJrva7LWK+Gd3zXWPTxx8P7JYgKtaoizSTrd/pIcXA9I5tjPuAgAAAAAAAADh9QUAAAAAAA=="
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].evidence[*]",
+          "op": "includes",
+          "value": "{kit_package_a}::managed::mint"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "count_gte",
+          "value": 2
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Bytes are the chain's transactionBcs for the victim digest. The PTB has 2 SplitCoins of the gas coin and 8 TransferObjects, all paying addresses other than the sender, and calls two packages on the MystenLabs wallet blocklist."
+    },
+    {
+      "id": "kit-package-blocklisted",
+      "question": "Is the package the drainer PTB calls a known scam package?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{kit_package_a}"
+      },
+      "expect": [
+        {
+          "path": "flagged_by[*].list",
+          "op": "includes",
+          "value": "MystenLabs/wallet_blocklist"
+        },
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{publisher}"
+        }
+      ],
+      "tier": "indexer-attested",
+      "basis": "MystenLabs wallet_blocklist package-list.json lists 0x7ca9d75e…3327. The publisher is the sender of publish tx 4SHgTcDHJZe8RthXBu2NyAva7XeG1t4Wug7eLPBeafiW on chain."
+    },
+    {
+      "id": "lure-nft-same-publisher",
+      "question": "Who published the Suisses NFT the victim interacted with, and is its type blocklisted?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{lure_package}"
+      },
+      "expect": [
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{publisher}"
+        },
+        {
+          "path": "root_publisher.publish_tx",
+          "op": "equals",
+          "value": "3ySSZmXFaFyj9dJCwCSQpP53vwnWxbWBAVHpAsJ4guSp"
+        },
+        {
+          "path": "flagged_by[*].kind",
+          "op": "includes",
+          "value": "object-type-package"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the liquid::Suisses package was published by 0x021e5069 on 2024-04-04, 20 minutes before the two managed packages, from the same address. MystenLabs wallet_blocklist object-list.json lists the type."
+    },
+    {
+      "id": "first-drain-call",
+      "question": "When was the drainer kit first used, and by whom?",
+      "tool": "query_transactions",
+      "args": {
+        "function": "{kit_package_a}::managed::mint",
+        "order": "oldest",
+        "limit": 5
+      },
+      "expect": [
+        {
+          "path": "transactions[0].digest",
+          "op": "equals",
+          "value": "{first_drain_tx}"
+        },
+        {
+          "path": "transactions[0].sender",
+          "op": "iequals",
+          "value": "{test_wallet}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Paging every call to managed::mint on chain gives 601 transactions from 2024-04-08 to 2024-05-28; the first is EGTgiLEX, sent by 0xb2fc23a4, which also sent the first drain into each later collector."
+    },
+    {
+      "id": "lure-airdropper",
+      "question": "Who airdropped the Suisses lure NFTs?",
+      "tool": "query_transactions",
+      "args": {
+        "function": "{lure_package}::liquid::airdrop",
+        "order": "oldest",
+        "limit": 50
+      },
+      "expect": [
+        {
+          "path": "transactions[0].digest",
+          "op": "equals",
+          "value": "{first_airdrop_tx}"
+        },
+        {
+          "path": "transactions[*].sender",
+          "op": "includes",
+          "value": "{airdropper}"
+        },
+        {
+          "path": "transactions[*].sender",
+          "op": "count_gte",
+          "value": 50
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain all 2,658 liquid::airdrop calls (2024-04-08 to 2024-04-14) were sent by 0x8b58ec72, which also sent the first funding to the package publisher."
+    },
+    {
+      "id": "fee-address-take",
+      "question": "How much did the fee address take from victims, and from how many?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{fee_address}",
+        "from": "2024-04-08T00:00:00Z",
+        "to": "2024-06-01T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "coverage.complete",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "coins[*].raw.in",
+          "op": "includes",
+          "value": "113810862594"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "count_gte",
+          "value": 338
+        },
+        {
+          "path": "recipient_count",
+          "op": "equals",
+          "value": 0
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Summing the fee address's SUI balance change over the 599 successful managed::mint transactions on chain gives 113.810862594 SUI in 596 transactions from 338 senders; the address has never sent a transaction."
+    },
+    {
+      "id": "collector3-flows",
+      "question": "Who paid collector 3, and where did it send the money?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{collector_3}",
+        "from": "2024-04-23T00:00:00Z",
+        "to": "2024-06-30T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "coverage.complete",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{victim}"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "count_gte",
+          "value": 158
+        },
+        {
+          "path": "top_recipients[*].address",
+          "op": "includes",
+          "value": "{consolidator}"
+        },
+        {
+          "path": "top_recipients[*].address",
+          "op": "includes",
+          "value": "{dormant_hub}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 158 victims paid collector 3 in 271 drain transactions, and it sent 31,175.41 SUI and 1,501.67 USDC to 0x025be32e on 2024-05-26 and 1,693.96 SUI and 500.66 USDC to 0xe866957c on 2024-06-01."
+    },
+    {
+      "id": "collector3-drain-total",
+      "question": "What did collector 3 take in the drain transactions themselves?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "AJXDYP3xWvwLbTdfctcppx9h1KHBcpgFappj3Sp1fRa1",
+          "ndLgJaqy3sNUokJTFXPzuqj6vpAB4qLjRE63sZvZWzE",
+          "LDzbSgG66h7iUp8HAzWY88sq5BXbTkp87cuggHXrobw",
+          "D245RkN7tRCzx1Fer5Bu4wo3w7obQJcQLMocb35HvnZ1",
+          "BVrHAJXGdWszQwJcABodpeyoCTzLfJByPxismdPTbEsf",
+          "2Ns4Gx3NmfpFHuKpDF762BA8ceUhhub57nQBEGHuSewA",
+          "6YCf8V18tNNL3xgHkQhJpBfkYkMLeQJiWyrSfB1AvbCz",
+          "A6w2ZHpoNc8gt8kAwiz9KDCkoyVyxm8S7iWQ5kbGtEg2",
+          "HUTDiKxCfR34rcZrCM9dUNc8CnrKuBz2vkNYoWWoP55W",
+          "5gUiw1AMbirxa7VEk6P1LzPQv3hSVoJHHjW8LszzpUqi",
+          "81aUkYWtUM9w2qxHvXgxRDG2emxToYag8dhPKR1G2mrw",
+          "6BDADkPG38Z6yKe6xAiT6gjorrP6hEpc582dHEj2CUr",
+          "ArMi9nQmCT4kUuXmabAHGNBNpN9893ZoBCyxAhuGx16n",
+          "CsWFDCHQ2PjkZW1yQQPCKFGDUqFpKC91xydRme8NvYuf",
+          "Gp5xSkMs4d9KwrRX8z8eY8sG2LA24yxCv8FXvAmf2nLs",
+          "PcryBvNTS77hPXEFgWXP9zaJKN4BA8DVM5WxpHrjZJF",
+          "AApruqt1XykuSvcZCfinGyhQRh9esuR6kEks9CnxYSdD",
+          "5Qx4Y7k8eU61XcNF2LQRf2HV5Sv2JpLviu6axCKAm38F",
+          "8tgxSPGrbfk3Xb5kzWmDTszhNrnxoR9z5PoZVybpqYf6",
+          "F4D9qkMfCPw1vJ5SQNBY82XoYPwtnAoUpSdEqjvULdZy",
+          "4SXYMKEGYY6MdkDiZkbuAppgJgXdzkxQcGSFgpbP3wfL",
+          "4zJJTUXatdPpFjuMABk1rkCRRMkFBa612S8dL5uWEgk5",
+          "FDyd1V5Tw65rycrn6QkS1YwLNtWZwtwJnnYrVbbhBbuq",
+          "FzhydBmWJafsgnHAfxWmRyD99V79NMK1TYM6ziYkBwhi",
+          "2bSLrMEKEnjY64TLhTn1bsXjHQe93XqNqf69eHQ6yW5j",
+          "iPT7wH8Cr8w8pB4JWPwspzTfS4Wo3yfiPuiihDzUXgt",
+          "5bCe2supqKYPxFptyUrZBJi7bDmFW9jFiGb1JXjX3f44",
+          "9mkCBKy26o3D2k7QmdqX4c8rvyNWkKzWKWNJVqD9pj8Y",
+          "Chf2YWsPAEYHHNGbE395ikQaNcH5ME5xQk394GaEWM6Q",
+          "5N7ukgZ4KJTTsrNWz7emWNHgwmGh2MB6Ef9SqpsMhBB6",
+          "8RpHSafUkLXyGkiM7QA8fu58WuizhToVL3LJx7vf7ftc",
+          "9126JVRX7qksomtJN4dPYNrmLdYEEhJa6LJmKBeaoRny",
+          "A26rYiGbkVQG5nLMEHx6jLzFs4yjD1hmDxyp8q4BZESz",
+          "6AnW3RnTqt88e4tUNxV7ATNG9ZJHUzqEcbBHaQSkeaci",
+          "6UghXq3NH23Rpi8Dt7x2a3sS2TfHUyqPgQy8HfAbHTFi",
+          "AZhfTFyDsedMq87Pb9W6W6i31rUb77dU3bAEnn8viAZ3",
+          "BEpfSR5ezpNCKpucmWpbfoRJm1Nrqhvw5F3b48gtoVwz",
+          "5mdtwGjTwrGsXKW3Py19e94XYNKHfL5Uw6AjLyaSmF91",
+          "8iRDV7SQM2vveECmU3xpqrwfvy5diAJuM4NfEMDrTubi",
+          "B8VFrRfDnsVckA3Hu3fxb1p3bs2XFA4dyAv3VDY33J8K",
+          "Astu2Aby9GFJPdohh1KQWVRtEVmEEAuAy2LzUv4ZVEtf",
+          "Ec7Sr4bWRUfdcqNzJCFQphdUZDCNSDGgLHJDAVHEnHs5",
+          "6DuEiB6Zio87qWn9a9JePyWipMHxqTu8QC9WWUZSy4t3",
+          "EUC7yvYSJMwd2mbYcoHhmAJttU2mjq67iNkA4g6hZuG7",
+          "GQK27ipT7LWVJQBWoZskC5n9KqGiK7iPdhsLVNPP1Hm6",
+          "BspaWyDQmmHXFZGN8avq5Vov8Lx7X5j6WpQUdtXL567x",
+          "HZTUeHwzfBvtFRbMufRGnhZcda6hybUZxp9sCfmVzaj4",
+          "3inysqGcTK6sQiqJouRJhTpHEnS59inbM2AMV2jHAZpU",
+          "C9YHZHBr41KsgfXRPX7SqjEpMU5mmDL4WXnHfofzzWqA",
+          "ER8pAdCy2BDiCBH1wmb4LXVhEwNDgzgF6Xg66bAjjhX7",
+          "7zzZDUTGpp9FMSg2EGYXTHiviXBvBquJMjuREKBmjYq1",
+          "BPLvGcf1BQ9UKNC3n4mDmkHnxe6viK1gcjo1XCJ6NQds",
+          "J8tRhueHutKJJDq8SBsfdgajc18sGJowcHCt7eBqu8hz",
+          "DHZ3n1WN9UBpPP5Ps4ZyX9waPGH1vNpyL98XT35pkHuQ",
+          "6pmFwPp96Y3Fs8wEo5kHhkPyxGGHte4bJvn4gbLKCEGQ",
+          "8eHi3G48hdjDQ5RbCCjCFJr7ZwzkZxEZKciQVZa1dYDD",
+          "5JmaPF69iu7KrfnSEjjEbYLjkrNCxFvgFo9i6VCshoNU",
+          "SuAodJ4on4T7Vs14X2RtwymEmrrxSs5gJvwJweJmMsY",
+          "2f3JL3ag11pzHw9RcgSXKAXG1JLcbDJUxzy6AATPg86d",
+          "4YZDR8mZvxKqtJWyB3FBCbC1SttFVrNLxRk6zm7RXwW6",
+          "5tu3Qk1Nx5jM2WnYnzZNovZaVxR2qe1XLDjvjWYnEiR7",
+          "2Yf4qa3cQy9LrrHpBbBRXvcb8QN5dTY6aD6Ea2NT9ZoQ",
+          "8GTfAhcZRhuh66TVwsD8fzx5jdmMyz6CJacbCRYgrgpK",
+          "AnQsi49ym8oPgDgJZE3S2RwdLsDY1qDHkqCBBMFDkGSV",
+          "EW7it6HuSTUFC5j14Gno2s4Mhi37v8VYRMmhytZLRzHQ",
+          "68xSFMiwX2qPteow8ihBWvgVUXkhDfJXV5pvCATV4jkD",
+          "G2LsbvN7GJg8mBDaZ6w1GupqCbFzpkzXYTAa2zby2aJU",
+          "EdV6582FFS15XfxPUUcLhAQYkDr9s7XJ4QpL6rb5BUeS",
+          "AL6gixDH52YpgzMs81iryyjh5rBPj3H9hJZysxnHq4pe",
+          "6sBBqyndcXoZhvZUkBEcWM7U1Wn13CvuUGhAn5PfN5AH",
+          "GwvJb6WPbXmQsKrauEurZha66GkJZ7W7CJ9AKgzUewyG",
+          "6uVB7B5zSQs8XmAAW96CtsHpfMqbiUs7DAdUm7ahFzm4",
+          "H7Mp948sCmhfkK2qz2cJCF9C4TDNMYyLzzGWYCvt9Ma5",
+          "AfDQbXcfoW1Yq9WZbTmNYKDQwVxr8LjovKukEyWmSQgj",
+          "626oGP1vDP5evEFJHrEajicg5pr1AChWcrzh4fpNcpLC",
+          "4YiaVTeihudfy7sKwo6NuUY4bgj8EZhqdAHCLk7ri2k1",
+          "34vjbuow72xep3b932Sgijc8WSM3hkaY4rD7jbc4TaVp",
+          "AuqWNt177CfWXuU4aHQhgVXtztbVWRp8W8mrBqDV1qBK",
+          "A7SruvUspB4kH9drqhVq931UzUA582CVniQTYg5shwtH",
+          "D8FrZDmKESCro2hDMEcLfVR6AqWDTuQRsn4b5RzG1rzr",
+          "AYjLW9rT3MM7m8gu3wvUr41fnHTAzvsVffiWgNUoZK2Q",
+          "HLHxu6MKpFd3V3SR8hq3G8XWTkV3yUht1mjfd5cbqdeT",
+          "DQTWnd3YBgbxwUSK3m6AniHAXS2TeeMJSBSFy1B4c6G8",
+          "4ZZxvyTWBK9c4nt3baWMiZjyZ4KvRbdLiSbixxe95noX",
+          "4Qtiex6iPzr9yBQzWiVhGdVVzh6jrZ4xEjqCUf5riU7S",
+          "5q1v8Y1vN1npnAwduFwe3MhJGRX4CQfAUdr2ukkH58Sw",
+          "8JG11MDfLw9EXk8SbvdDJeRW6eidhYULagXSRqYEkzpX",
+          "3vZ6XXVK3WQRk8mD6bEou6vwxhWzGUANrqaHk8DVeq2X",
+          "ACzPX5X4kQSANoYJStimD1oywUasM6zV98Xawop9DuuC",
+          "4KJk5cbrTy2dCJjdqtuoNNrbZiJCQB7ncn7pWxSyixUb",
+          "6i6ps4KG57znyrditswxJGf1k1TynUZsGtv1QpDY6zGE",
+          "EpatVFdV7eCDgRkKVhVZwtHyrTVdiXigq8ZGjodWfpii",
+          "CtDi8f76oHpWguS2bu9s6Eo2Xi9Gx97okE3Qbenr4dcy",
+          "5YnyrMYQaL1uZNwXbYExQYR84s6tbX7ZaGaBZzxY3KhS",
+          "DQ6ZkBNJtFtGkZnNFbwf3nHqk2EsqeKh7bVYpwoSDuzg",
+          "Db6URWePZuwhYzbCmATtt7NHsKfm7oqZ4HCTibGswLQc",
+          "2YX5amvkqzhJDnHSiNBzSHte1RCGsSaGqohgj47KP1bX",
+          "5z4KTZSsha9bfnd7M15UahU9zS8tmqRFRH4FND66io8R",
+          "8ZF2gAd1h9y1UX8uryWEeCKMDJwgTdkki8hw6wPtutm5",
+          "AXPNKUbRQzPzxJCUeYJbGKEmttycAMFzFbMenEELFBHZ",
+          "F7Dhvcu86zNd2m1MNGv2H3rzGVHevWxdksGXAzpMTFUv",
+          "2MAa4orciFiFBrH9ifk7vPkSYkbfbjR9ARUfcszou5SC",
+          "F9zcxsxFgGQVkQHs1VmhLQ5jSqE78pdWxz8tQNbFhfHE",
+          "A1xQ3FwHn8qFP96rEJufP8V4KDSawUEVH5xo2XhqFxnP",
+          "kDtqWFRETzaKoUFFBRCGwp4bRaabzwtp3ckrhrwR9DD",
+          "AvmT8rXL8yNjWvNUcLQ9dfW35GVipS2v7vmWff3FkVpY",
+          "BrXRQ3YQy2Ad2aunNGKFBQcPiaC4Z7UMsEDcKkiwakt5",
+          "2qqqhwinx6ntcK83XxrzhK5uwitEhF3mSLWuyML7dhEC",
+          "8jrecu1pYoh9fHLPeddJM9ndt7jerxHeCPCH2oqaPwnJ",
+          "GezMkZUMSArmy6MLpqHVLiCfUgvn4xUFJHYRbrpZR5Ls",
+          "EiN5Q4MMtpygwH3PVGPfz3bGAb2Rw5UcpFZyorLFe9mn",
+          "GkCRgMg8y1JPbANh5jzDyebz1aBmJZvDqEWLcazoPwsd",
+          "DqBo8vpacwhxoii8Grx3Bo1aoEAhbNLscQamFsP4Ae9",
+          "2KKfB4PVFAfoHZp5GUxm7XvxQXSdYLiJyZJrc49P1Ho3",
+          "HGMzKvjUENK7RKYeLosUHv1ch2NtcV5Hv9f3mF12JEMg",
+          "7qpqKQZYm1opXaLjsWkqAgdDXZyhf5a4wPj816eh95f5",
+          "Eto1RoL3CA96UwcLQ9eVFdhgk16Hzbbmkm7SoVV4qDSY",
+          "6UcBURHFCPiYDypbdpyswmDcz48Ldn6Xbr6xWb2sG7ct",
+          "8gQzYptLVRncs62Wv5iXPZYHRset3aopjV9XgmByLxCp",
+          "CJNuoB5UxvymgyWtymFyQCJnK1RS8nvUjT1nppy73Fia",
+          "7jF64PuNsALjZDCrxwrGiSpaHLb1QDDMheDLmVPJ5zwD",
+          "3zKbHMDcny8JCJCkdBCPWQzGzsY9nmaeQemk5bqy5VBm",
+          "FrDZjpi2YVJbZMsFPF2qYL5FQWHD37QkBVyXn6uBNvvM",
+          "4R3rNpwM2VKaVvzTkDJ4KNjzJtz4fkiay9T8xV3MRzXm",
+          "9D173aZxRwVBhFLaNtwbXGykihAVt3Mb6DT92EPN45rD",
+          "Bb2A6guM2DmoJXj6x9Fzj6RQZPmG4KkqXFhF2sYv4BA6",
+          "HxwTw7QwA2RpyvWcpedjbEiDi4Z124Pu92BjFTEftcVK",
+          "8kVp8josK8UmZjsg28uDs4vUWhcMdoqZ247iUzTQ3py9",
+          "7afJCQcMQyoMFjvKEdFdLRadxap37A38jC1hAd3mJnWE",
+          "CSK8BEmQMMryqqxkp92DisavXkLQzFuQHYHQumRuQXiU",
+          "F9JKuZGZwLD6oDkTJZd2D45mqRkjxV2G8ULDazn1awUB",
+          "4N5b3wXXJjom6KUqoaKxPzJvqEAhZLSVX3DUfttJ6t9c",
+          "CH4eagFmxH63aZBJw8UVFjR4cEDADF5KLLNhKjmRxDcg",
+          "4db36i1Mzpv7tpDrfyGMNmH11Z3xmjAiGtcwfuvw1Kw9",
+          "AzKxjdXMbi1ByFvoiLmPz2Sx2G79YifdH7gU3Tgjcjfi",
+          "J3ykD59uRizVA2JGnuKSqaBjXnw8uQL4FgeEkETk7TSL",
+          "6nU4GNeYgVX5C2jVfqe5Xp3ifHDaYiszsiW3p8Cam1Tv",
+          "8m7ESJMhCqDWHCgwA1FfJbGwvkTgzSUhojVFmXR7kZTC",
+          "Dwr7UtjN1SLxiXbGnJFhZQf6XUUjxbaX52NRmdakaTLD",
+          "8pRzHLYa8kaW63WZVWrxrgnrDGLxy8D8TALpuP9R6zkf",
+          "FHoWdJL4hsEoiHveHH45VXRuhVhjCzF3EjQTfh6Bu4yM",
+          "SMa7gXiQQ9vyT6LpKwnTUcReEL2eP5cxwbqCHgVLzve",
+          "CXCpiKztV7ACUC7JT1FC1QnMEjwDS119VT9XkGrMZwV9",
+          "J1dHr5qYWPGRMXGG2eH4kjXwnygFt8j2uxRPJmZDAbQn",
+          "GbTfPSAuKnaqvzMMG8nYfquW847VjHnAty13zsv4VvsT",
+          "DKgWqw3n6S75gG7wg2VykysP52rnxNFRmZDhas4mS7Sd",
+          "7A4XFr8ZVdcZuRCGoteNFBcwwVL7MLtvQoYUxmt8e1kD",
+          "4bbK9LVmkQnjrLeDWq92YTxioNo1bzSKxxNBw7LDowLQ",
+          "4doKUN1q3LaMo4UCB5wR4SVwDyeJ54cLPCvCYttYeu1t",
+          "ECe2yu8dLyMfxZBjSVQW8FD2nUcEuoL2ZHxEMgCsBJrB",
+          "FRUvXdg5zHhgWXKMuXyVkKSBBgFDG18nJPsk9gYqBBZ4",
+          "2zDCVmazFUuk5C6KC7YoNtoBrSh7EJa8NoWVj5vsH5Fy",
+          "BtCpXeL1iEMz8tQiDBjQQFr6vTGyQXTiVETCJw9SKVKa",
+          "Dz5RzWSZg5uGzCaGrTZB5X517ZAAZsnZRoicZRFc7WvM",
+          "6GaibhKkSGAs2YbsZrkudjxfWSnGuN6SRK43Za8S8smA",
+          "7HodEx7RtP4K3QhgFerRC51SRXg3rFprX8acGXni8wCF",
+          "3e7J8xJbfCDX4PNGKEcEM2NXf7mSLZEvCa53APdRAheH",
+          "8zz7z4ik9rxJ8oFyCDmQPiZrkfVr4KuydVHfg67X8EzT",
+          "AwKFxYj4dnEYMBUEEgkhA7hHYuuHvD473JfSEuFn1V2r",
+          "9vMAV6YMJ9BPHWJKHkqSAJoLjxyKBrCzxEa4bxxHf6nE",
+          "Gf9UcaSAMaP3ZPAf8GoXxJkZTmsf5hAQ94WNhGJtmDR5",
+          "85bRfPiPh2xWH3ki866NxiEJeccfQ5SqsnsuRmpfmn5B",
+          "HE9rKsSkwSCCisvpDUcwCC6xSYB6T4wN3ekGiMzN9UG1",
+          "3AxAK9JUXy7jyTMqyKv4n9sGiG6rN4YbrPfv2g2vN9a7",
+          "8uCmTPHVbdnn5nsZFoBuQDtV5z7aPYUuXv7XYYCRS5P3",
+          "4e3puAjKyLuYCJvWLBM4wkhEDNbXSVHi8uLZNEoNxTBw",
+          "E36NEsN1KBejAv9i8enrUVDom1uBNdUhezdLQ6cesbc3",
+          "8b5ZMmZ45yX89TBgfHjDT2CYovR3eiVjidHphjZS1BjS",
+          "Au1B7nxoxkZpnpQ7eUCeMzQgPtamP56tPqL6aaLwSmyF",
+          "9HvvRmjuEaDLW5NG13kBwo5zJnY2UcMRXDMwQgEN6iTV",
+          "Aj5xGmFk4TSrkSqFhHaRwbjBeZbfG1Tyeg6GKNeE287u",
+          "BxJbvttFs86dRvcA5AuuYa8Xhq8Am1nc6Bi38r5zxMhn",
+          "DjCoTtr3TKvXNTWdZrfjZQkrZRBKFSuiYzScKTTiErEp",
+          "93wmf4N3TCYRq16tPY4KJuxxnRJuKqPY8B8TpQXJW85u",
+          "AZKbYq5UnX2gAFzabK9AJooRVV7sbfKPcKHEoaBwfbQB",
+          "BzRX2z2q61xsYtkkWCFdDfcGMzjvxBrnid8UQGB8KfDr",
+          "ALpgYtocT5P4T6j3pyGbSMYM5xjvQiZspaVgBk7cXVUs",
+          "Beg48vFv8aPBF6YAuZwDaTy9hgkHq1UoeagEvGZJcp9C",
+          "2FMXnB9HjJ7cPwoDF1wJSwz3tKqdxNCWKiBf25rJ9E9E",
+          "21RxYdwxKw3KvX8BBwbVdXesuhWjyYkhiLmQNRBRHxS5",
+          "D6JeBbyoAjxQ6WtNwTP43K3jdwWMkd4H78X8QvtfATZr",
+          "EUQ5H2mL89ib263AKkzBGwK2yvihaWf4Yzad5JecGEoF",
+          "CXnLzbpkyTHgSNr7uNQYoNfyc6mkCXjSnDqrRHbnzSmW",
+          "9A2VbL4KVMLFoxi8PrxMHTi7b89pp4GA3zU167JTAeP4",
+          "QcXxbNbNaSkRxYUyxKjCKTZJhngVPtU7od7m7vXpTbU",
+          "A2ZHWq75YV7d9nPAvTeBoiSmfcupDXvTe2xKxBA9fsxx",
+          "D77ZvHvVf46hEZTAXUC6Zm4GHYSwgqeRdeUFA1JNairo",
+          "HfpKrgBAwo1EjcnxEUNc6951e9BdKQg9rXxb8d6W8TJv",
+          "GVvqSqrdaW9Yobo1Ana1jiho2JmEiTiTmsaFyoLjXB4w",
+          "HYpQ4PcRdS8kogEc6iMgyEQQ6qXS7KgBPzELD32MzPcJ",
+          "7maPELpBXkpBAu37siUs5g4ACwQEtQwmW3mLkscuwcg6",
+          "F27Cfk3EoPvMaK8BRCLgVjnMgYrP9w5R3AG1shwQvUPg",
+          "FCWd3YWdxhZ3m3bK5ETrZmuEaaDmLc5SKnhSqSo9rnYs",
+          "BABzHCkVi2qDczuL95V1Fe6ZTtMYeoKg3sVMjZPbMh7D",
+          "CuhD9jHdxxtpFQU5Vk6n8zah7EBgHgZiQNhLSNyxaWZg",
+          "8wsjCmuNSSJ6FwpNziTQrnFMmEtD1mphxzYanvbDmS6k",
+          "5QjWtaREFzEkQMn1wtDMRtHCXzkrMgvFQN49EWdBsv4b",
+          "D6rG9z93vLp2S4gXv9TPTa9KDxoY4Lta2t22aEgSHnsp",
+          "3fkVtoyyqQHw2uvkZAUofbBmWBz12uvtqTT2bX21eHyY",
+          "Ctaaeu5eUCToUGrobnB5VXd6fa7AJA1CE5Cwk6UqvLFX",
+          "BAMqXL7iQxD4nJu4P3QzAFKwPPkzuKhRzVJ3ur4Qvgy4",
+          "814es9cje4VWTEqacV26UFM2taBjU32M4f8WNTqiJAiV",
+          "4nRpjbrZZs6NB7UgxRGAxp5eMjx7YhvUSoZYcmu4So43",
+          "7spSn6AsHsDwwhsxrXbKVK2p1FRkLFcRsMdbC4qmqiAL",
+          "8eL9BB71rPWrWTnVyPQUhUjy6f3EXNgGwaUXF8gvD4uM",
+          "GHaHVzuY9NLfYUdMga3QtNVB4WJKVKM8drYVJJ9deJ3X",
+          "7SxK1fS6nyKCztweYqRbubxW7b9jfWwf9k8CuQfvNk4j",
+          "6R7eGz3S8zBVbRHRQbFA9pVgECbAYb521Sjb1YNyTjhu",
+          "4J58sWX1fLgaz8PbpGhV9Uk3nNnPUT2PuAJmjY2PDZhe",
+          "AWMRrz5VwgGSpQS33AWdYzdeJTNQ53r31hwF48unGD6m",
+          "34StJ1RXtGvuFaBqPfvcLcLLfQaHfcmnmswcjqYVYzKr",
+          "NDKp7cbcJdcG1MAPZXbARHR7wSFuUT2CU72jZRft497",
+          "8vMA8xBWXvWq49CVg4RFEzohkLZoHDMXf9MajQat5RVw",
+          "GK43fUsAtPshktg72ajr9N7CuToZtWdtNvKk5mzueAuJ",
+          "GuoX7wmaBXqUjwkAyKYthczkxJrLK7mTP1prb2Apb4yz",
+          "B6NQorrBExE831YjDUsmVfjuvaR2xYebiwa6G8TqfR8e",
+          "4S9B72SJZAKCyDfDVBmwXX2EDJ4z6i3b42yDofHH2yGZ",
+          "4rHPY2so2f266DLSeXNTVxWksj9LdsKkUaRwMa3HBA6t",
+          "HfaK42db6mvdzat8Gif9oLidK1Dtg9L9qwk2aLRwpmZG",
+          "5kEButSTZiW2K4kMmrtzgaARQn5qW6Ap6RrBfwxhTZwF",
+          "CG5zPiGMmRH1qVAKC9j9EpjsgvngHXBvVpUvDfmKRZEZ",
+          "BruGSuDLUBtw19eiEJRg7hb1HYLqirMYAsN7sn3hcYRR",
+          "9zZN2DpudumXSBjztaPHkvKEvhcmEL4utX2kwePQV5C9",
+          "5KhdBRyLnG4sLiywTcDdNVjc5AyTGzL5iKNEvZj9E92g",
+          "CRwJQK5PXfomMAhB8c3qWscuMmzeXg1Q2vxAgcTA8S5x",
+          "5eRU5aEhrg4M5LLTaPCvpd9spBdgb1rVqXbJSu58VQpR",
+          "9gMUHeZUoTSkiS8tdF7xzbSDZcaAqZL17EQYRQfLe6j1",
+          "GkNd8srj6CBmsJFnoz5qi76nk6HUqJM4TihAEUofJVd6",
+          "9AHJhwF1D23ZCMCdAwtZjtYerx1EBz47rYj9GkiiY6or",
+          "BLQAGJmEFUTiVZ1uFUjJNJHqCTyvXyzEE5fFjSYKRehR",
+          "HEtR3bPP2dox3tF7WfYzoGGLAxw4Uv1WWBuSpQtrKgXR",
+          "Bq4CDYimw5CE1nZN2DBhKZ6FaKgZ2dPQXBXFwHH8Pa5v",
+          "GcppjQrkpeiGnotbJ8BbbLkiS7JPQrRopyhxoRDWzJ5x",
+          "3cuQSydUybv6178XUMceuUd6mWvWSZHDoYzbRZ7RsGDt",
+          "EnqRsh8qGDmz2EXgjtgdPHRwh9eLxvna3SpkipsLBSTy",
+          "9vhDWbrEeDrxtGTVobKauUzYtQe7Etwue5UcBF4hxAGG",
+          "6VvyVXSSBwSaZkbBQ9y1HQFsrVTPcbimbXizKvb6VEat",
+          "BTRwzq6pV4yQrUapPqmyjsLCrydMbgc9tmpvXjdDn9QU",
+          "AZS4Ysw5hfSaKXVTGDTZ5VVTRBVkqqqkqzhwJgzJi9nU",
+          "59Xskjcgh785qSXj3spbckKwWPVxhtbYEDDq9VL3keTF",
+          "EgB6xYMZuATKPXxMkk5kC9Dwx9ToX5Wks5fZ1AxZzDjd",
+          "8Sr5qipSfiEhqVtmrrnLw5shsMVwmCB4d5zsfdx93B9Y",
+          "J52aP2mL3fKXvydqu2DLevt4VgeVePLZvNsCcSioqMFV",
+          "6TtPF7wRYA2C1ro63piniLDAZqGJgEpShD2N5v1ZMVqs",
+          "9G8Q4T4iJpeNVcnZz1nwAt4KEdukcvoqXsJdiV71eF4P",
+          "3ZBKizEfnKt8UPFw7bCUDDmN14SjYFjPA9Gdm2k1cLx1",
+          "2dFemUuX4NatJCLHJuEjs43uwNq8RaugE619UrqfKHv5",
+          "J1Lef8HPAeqhJkQu4Jyq7E5YtqexPJ6shcKydCb73ZxV",
+          "ERnkd5doA6223cwg1xWpyecbj8Vv6ysCWJvsQEZbDWD5",
+          "2jfufhiSo3F6gfrZht4zQCq2BF8u6quo6n8kjE5vm7Kc",
+          "4qfWBQeB1ecowFZ82c8cWnH5o1qLu9MUtEc87UnoL4xQ",
+          "49uSwNQ1b8sed7Ecao4czN4uEz1zCUKVrbE4qAgvfW9h",
+          "89tJ1L6YMuzfVmuDPiuvgWHX38AocjvvjiYwJm2sDZDB",
+          "8d1u4LonbmP7T8DuUAYpCFsLTeqSLsm2r5M53wurs5sD",
+          "Fa4dgtvzdzrAFnu5Q9nw1LwLz5iKg6bsBzEeim9UxM2Z",
+          "bupdQoayxUF7Yvi4DKho8fD628PggrvUE4AUg4P4MJf",
+          "CLJTrwmz2CrePZ9fAanDrJ1QDb8Yqs4pcunmo77Pu7J3",
+          "GXcfgmtNZ9WDwafEZRoygYCPkABV7dLRLLF2TGhChyVx",
+          "6qBcBV4mdu4t2Ttfe2ZLjCFPjSM99Uhxu9f41ffJmQqr",
+          "2bbNdvmUTymaUrJewFeiUWfmxgWnCcu6UNsgq7p3D2qA",
+          "CQUGUdYAzcs7xddW45RVBNSabtJ3zEmRo49V4V62vL7J",
+          "GZCe6hgnXk4AafiGrkHHxai2STH6Vgpod5TuwH1GoWXh",
+          "HQ1U8utEregzoCP2zopSHWyymrfUWbqm3SYVN7PNYnWN",
+          "JAVbrWVptphG6LWjbkjaAn5fgJziJrrWFyk7QoryGMEW",
+          "4biGmnPpd1AnYZHmwpHSJcit5qHvp1EYffjPSDUtyKDt",
+          "EAHdUoBDPPgih2QgkQmR5VGwPyRwvmndDwyhAc5p8Dgo",
+          "hB83XP8YUw63fCEyatrXAFKnjZpHesNuWbPDoidbyXE",
+          "G4pBZjiMap3KarhRbCAiduiCXXQMVc2jF1Dcg7nTqsVa",
+          "GTKfZtFd2ZuBen91TWXwWsx9d7q5va6RY57bCqRRREGv",
+          "5YxbVsdMaCmAEos13PE1w82ma8akJ6HJwF2ZoQTkeweP",
+          "DhRpeW1MWALaKbdX7xziJ6bCx6JjcDaNEziirGYXSuJb"
+        ],
+        "attacker": "{collector_3}"
+      },
+      "expect": [
+        {
+          "path": "transactions_read",
+          "op": "equals",
+          "value": 271
+        },
+        {
+          "path": "priced_coins[*].attacker_net_raw",
+          "op": "includes",
+          "value": "4762130055993"
+        },
+        {
+          "path": "senders",
+          "op": "count_gte",
+          "value": 158
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Summing collector 3's SUI balance change over its 271 drain transactions on chain gives 4,762.130055993 SUI from 158 senders.",
+      "timeout_s": 300
+    },
+    {
+      "id": "consolidator-bridge-exit",
+      "question": "Where did the consolidation wallet send the collected funds?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{consolidator}",
+        "to": "2024-06-30T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "bridge_exits.transaction_count",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].account",
+          "op": "includes",
+          "value": "{solana_beneficiary}"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{collector_3}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x025be32e swapped the 31,175 SUI to USDC (4N92pDi5) and sent 33,670 USDC through the Wormhole Token Bridge Relayer (AWwu2Rk5); Wormholescan shows the VAA redeemed on Solana to 6Lwf2A."
+    },
+    {
+      "id": "bridge-beneficiary",
+      "question": "Who received the Wormhole transfer on Solana, and how much?",
+      "tool": "resolve_bridge_transfer",
+      "args": {
+        "digest": "{bridge_tx}"
+      },
+      "expect": [
+        {
+          "path": "beneficiaries[*].account",
+          "op": "includes",
+          "value": "{solana_beneficiary}"
+        },
+        {
+          "path": "beneficiaries[0].amount",
+          "op": "equals",
+          "value": "33670000000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "The Wormhole message in AWwu2Rk5 on chain names Solana account 6Lwf2A (hex 0x4f6644ea…463c) and 33,670 USDC; the Wormholescan operation for VAA 21/ccceeb29…/131741 agrees."
+    },
+    {
+      "id": "screen-collector-default",
+      "question": "With default settings, does screening collector 3 find the Wormhole exit that carried most of its money?",
+      "tool": "screen_address",
+      "args": {
+        "address": "{collector_3}"
+      },
+      "expect": [
+        {
+          "path": "exposures[*].destinations[*].account",
+          "op": "includes",
+          "value": "{solana_beneficiary}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain collector 3 sent 31,175 SUI to 0x025be32e, which bridged 33,670 USDC to Solana 6Lwf2A. That is two hops out, inside the default hops of 2."
+    },
+    {
+      "id": "screen-collector-full-window",
+      "question": "Reading all of collector 3's sends, which bridge exits does screening find?",
+      "tool": "screen_address",
+      "args": {
+        "address": "{collector_3}",
+        "max_transactions": 300,
+        "direction": "out"
+      },
+      "expect": [
+        {
+          "path": "exposures[*].destinations[*].account",
+          "op": "includes",
+          "value": "{solana_beneficiary}"
+        },
+        {
+          "path": "exposures[*].destinations[*].account",
+          "op": "includes",
+          "value": "eip155:1:0xcfe43825e33aad258a08080967a95c18eac9f8ea"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain collector 3 paid 0x025be32e (Wormhole to Solana 6Lwf2A, AWwu2Rk5) and 0x8922fbbf (Wormhole to Ethereum 0xcfe43825, DnFCrbsP).",
+      "timeout_s": 300
+    },
+    {
+      "id": "trace-victim-fifo",
+      "question": "Following the victim's drained coins forward, where did they end up?",
+      "tool": "trace_flow_graph",
+      "args": {
+        "digest": "{victim_tx}",
+        "max_depth": 5
+      },
+      "expect": [
+        {
+          "path": "terminals[*].entries[*].node",
+          "op": "includes",
+          "value": "exit:Wormhole:{solana_beneficiary}"
+        },
+        {
+          "path": "terminals[*].entries[*].node",
+          "op": "excludes",
+          "value": "{dormant_hub}|0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain collector 3 swapped the victim's vSUI to SUI at 12:17 on 2024-05-26 (88ugfeaF) and at 13:26 sent 31,175 SUI to 0x025be32e (GAcRB4HK), which bridged to Solana. The tool's own first-in first-out rule puts all traced SUI in that 13:26 transfer; its next SUI transfer, to 0xe866957c, was on 2024-06-01.",
+      "timeout_s": 300
+    },
+    {
+      "id": "flow-path-default-hops",
+      "question": "Is there a value path from the victim to the Solana account, at default limits?",
+      "tool": "find_flow_path",
+      "args": {
+        "from": "{victim}",
+        "to": "6Lwf2AjmqgnKGNDgsLcM14oKgUDnwj6p7j6xzujb7WZR",
+        "window_start": "2024-05-04T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "found",
+          "op": "equals",
+          "value": true
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the victim's 0.631 SUI goes 8pRzHLYa, GAcRB4HK, the swap 4N92pDi5 and the bridge AWwu2Rk5: four hops, within the default max_hops (5).",
+      "timeout_s": 300
+    },
+    {
+      "id": "flow-path-six-hops",
+      "question": "With six hops allowed, which transactions carry the victim's funds to Solana?",
+      "tool": "find_flow_path",
+      "args": {
+        "from": "{victim}",
+        "to": "6Lwf2AjmqgnKGNDgsLcM14oKgUDnwj6p7j6xzujb7WZR",
+        "window_start": "2024-05-04T00:00:00Z",
+        "max_hops": 6,
+        "max_nodes": 100
+      },
+      "expect": [
+        {
+          "path": "found",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "paths[*].steps[*].digests[*]",
+          "op": "includes",
+          "value": "{victim_tx}"
+        },
+        {
+          "path": "paths[*].steps[*].digests[*]",
+          "op": "includes",
+          "value": "{bridge_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain: 8pRzHLYa (victim to collector 3), 88ugfeaF (vSUI to SUI), GAcRB4HK (to 0x025be32e), 4N92pDi5 (SUI to USDC), AWwu2Rk5 (Wormhole to Solana).",
+      "timeout_s": 300
+    },
+    {
+      "id": "collectors-first-funded-by-test-wallet",
+      "question": "What funded the four collectors and the package publisher?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "{publisher}",
+          "{collector_1}",
+          "{collector_2}",
+          "{collector_3}",
+          "{collector_4}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "results[*].first_funder",
+          "op": "includes",
+          "value": "{test_wallet}"
+        },
+        {
+          "path": "results[*].first_funder",
+          "op": "includes",
+          "value": "{airdropper}"
+        },
+        {
+          "path": "shared_funders[*].funder",
+          "op": "includes",
+          "value": "{test_wallet}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain each collector's first inflow is a drain PTB sent by 0xb2fc23a4 (EGTgiLEX, AQxAzwZt, DhRpeW1M, 6BLPf4CD); the publisher's first funding is 10 SUI from 0x8b58ec72 (9c2eVQsv).",
+      "timeout_s": 300
+    },
+    {
+      "id": "wallet-edges-seed-links",
+      "question": "Do the collectors and the test wallet link to each other?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "{test_wallet}",
+          "{collector_1}",
+          "{collector_2}",
+          "{collector_3}",
+          "{collector_4}"
+        ],
+        "expand": false
+      },
+      "expect": [
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "DhRpeW1MWALaKbdX7xziJ6bCx6JjcDaNEziirGYXSuJb"
+        },
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "{first_drain_tx}"
+        },
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "6BLPf4CD9qz3zUG5vFZ1ufLeKvtmdj9MCRjxfTuCAym"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0xb2fc23a4 sent the first inflow of every collector; find_funding_sources reports all four funding transactions.",
+      "timeout_s": 300
+    },
+    {
+      "id": "stolen-lp-token-history",
+      "question": "When did the victim's Kriya LP token change hands, and to whom?",
+      "tool": "trace_object_history",
+      "args": {
+        "object_id": "{stolen_lp_token}"
+      },
+      "expect": [
+        {
+          "path": "owner_changes[0].tx",
+          "op": "equals",
+          "value": "{victim_tx}"
+        },
+        {
+          "path": "owner_changes[0].from.address",
+          "op": "iequals",
+          "value": "{victim}"
+        },
+        {
+          "path": "owner_changes[0].to.address",
+          "op": "iequals",
+          "value": "{collector_3}"
+        },
+        {
+          "path": "created.tx",
+          "op": "equals",
+          "value": "5UsssSpBAFFM3q536gmYSJnkH49xHiS3kawCBWCLjEuq"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the victim created the KriyaLPToken on 2024-04-20 and it moved to collector 3 in the reported drain, as the GitHub issue describes."
+    }
+  ]
+}

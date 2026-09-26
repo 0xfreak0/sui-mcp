@@ -33,11 +33,9 @@
  * clusters the world together.
  *
  * Reciprocal flow is a different claim and is NOT excluded. You do not normally
- * get money back from a merchant, and the measurement bears that out: across 47
- * counterparty relationships of ordinary active wallets, 1 was reciprocal — a
- * 2.1% base rate. Among four addresses known to share an owner, 4 of 6 pairs
- * were. That is roughly a 32x enrichment, which is why it is weighted level with
- * a shared narrow funder rather than treated as volume.
+ * get money back from a merchant, so reciprocal flow is rare between unrelated
+ * wallets and common between co-owned ones. That is why it is weighted level
+ * with a shared narrow funder rather than treated as volume.
  */
 export type SignalType =
   | "co_signer"
@@ -77,10 +75,10 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
   co_signer: 1.5,
   cofunded: 1.0,
   funding_edge: 1.0,
-  // Level with a shared narrow funder, on a measured 2.1% base rate. Both
-  // carry the same kind of false positive — a friend who pays you back, an OTC
-  // counterparty — and both are guarded the same way, by refusing the pair when
-  // either side is popular enough to be a service.
+  // Level with a shared narrow funder. Both carry the same kind of false
+  // positive (a friend who pays you back, an OTC counterparty), and both are
+  // guarded the same way, by refusing the pair when either side is popular
+  // enough to be a service.
   reciprocal: 1.0,
   sponsor: 0.7,
   co_tx: 0.5,
@@ -296,7 +294,12 @@ export interface CommitteeMembership {
   /** The multisig wallet's address. */
   multisig: string;
   threshold: number;
-  members: { address: string; weight: number }[];
+  /**
+   * Every member with an address. `unsignable` marks a key written by hand
+   * (see `unsignableKeyReason`): it counts toward the committee's size but
+   * cannot spend the wallet, so it gets no co-signer edge.
+   */
+  members: { address: string; weight: number; unsignable?: boolean }[];
 }
 
 /**
@@ -325,13 +328,12 @@ export interface CommitteeMembership {
 /**
  * Wallets one key may co-sign before it is treated as a service.
  *
- * Set from a mainnet observation: seeding one ordinary 1-of-2 wallet surfaced a
- * key sitting on 31 distinct committees, each with a different second member —
- * a wallet provider's recovery key, not an operator. Five leaves room for a
- * person running several of their own multisigs while catching that shape
- * immediately. Much lower than the funder popularity limit of 50 because the
- * populations differ: a narrow funder legitimately pays dozens of addresses,
- * whereas a key on dozens of committees is a service by construction.
+ * A wallet provider's recovery key sits on many 1-of-2 committees, each with a
+ * different second member. Five leaves room for a person running several of
+ * their own multisigs while catching that shape immediately. Much lower than
+ * the funder popularity limit of 50 because the populations differ: a narrow
+ * funder legitimately pays dozens of addresses, whereas a key on dozens of
+ * committees is a service by construction.
  */
 export const DEFAULT_CO_SIGNER_LIMIT = 5;
 
@@ -349,7 +351,7 @@ export function addCoSignerEdges(
   const signsFor = new Map<string, Set<string>>();
   for (const c of committees) {
     for (const m of c.members) {
-      if (!m.address || m.address === c.multisig) continue;
+      if (!m.address || m.address === c.multisig || m.unsignable) continue;
       let seen = signsFor.get(m.address);
       if (!seen) signsFor.set(m.address, (seen = new Set()));
       seen.add(c.multisig);
@@ -364,7 +366,7 @@ export function addCoSignerEdges(
 
   for (const c of committees) {
     for (const m of c.members) {
-      if (!m.address || m.address === c.multisig) continue;
+      if (!m.address || m.address === c.multisig || m.unsignable) continue;
       if (isService.has(m.address)) continue;
       const unilateral = m.weight >= c.threshold;
       const detail = unilateral

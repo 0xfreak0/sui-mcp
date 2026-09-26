@@ -9,9 +9,6 @@
  * package can use. `source_address` is the ITS channel the transfer was sent
  * through, not the sender. The gateway's `ContractCall` only names the ITS hub
  * on Axelar, so it says nothing about where the funds went.
- *
- * Verified on 6YaLkwRs… (INK to Ethereum) and the Axelar probe transfers to
- * Solana, e.g. BYcsyud1….
  */
 
 import { ETHEREUM, SOLANA_MAINNET, SUI_MAINNET, chainDisplayName, type ChainId } from "../chain-id.js";

@@ -16,9 +16,6 @@
  * `oft::OFTSentEvent` with the same GUID in the same transaction: the message
  * format is the OApp's own, and a shape match on another app's message would
  * name a stranger.
- *
- * Verified on 4rH8bqFB… (wBTC OFT to Ethereum), where the decoded `sendTo`
- * equals LayerZero Scan's payload and the GUID equals its `guid`.
  */
 
 import { ETHEREUM, SOLANA_MAINNET, SUI_MAINNET, canonicalSuiAddress, chainDisplayName, type ChainId } from "../chain-id.js";

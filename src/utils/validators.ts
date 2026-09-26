@@ -1,18 +1,14 @@
 /**
  * The active validator set, paginated.
  *
- * Three call sites asked for `activeValidators(first: 200)`, which mainnet
- * rejects outright — GraphQL caps a page at 50, and the service answers
- * `Page size is too large: 200 > 50` with a validation error rather than a
- * truncated page. The consequences differed by how each caller handled it:
- * `identify_address` swallowed the throw and so never once classified an
- * address as a validator, while `get_staking_summary` had no catch and failed
- * on every call that named a validator.
+ * GraphQL caps a page at 50, and the service answers a larger `first` with
+ * `Page size is too large: 200 > 50`, a validation error rather than a
+ * truncated page.
  *
- * Paginating rather than clamping to 50 is the part that matters. Mainnet has
- * more than 50 active validators, so a single capped page silently omits some —
- * which turns "is this address a validator" into a coin flip and makes any
- * ranking over the set a ranking of whichever 50 came back first.
+ * Mainnet has more than 50 active validators, so a single capped page silently
+ * omits some. That turns "is this address a validator" into a coin flip and
+ * makes any ranking over the set a ranking of whichever 50 came back first, so
+ * the set is paginated rather than clamped to 50.
  */
 
 import { gqlQuery } from "../clients/graphql.js";
@@ -101,10 +97,9 @@ interface QueryResult {
 /**
  * Fetch every active validator, walking pages until the connection ends.
  *
- * Throws on a GraphQL failure. Callers that would rather degrade than fail —
- * `identify_address` classifying an address it cannot confirm — should catch,
- * but they must not confuse "the query failed" with "not a validator", which
- * is the bug this replaces.
+ * Throws on a GraphQL failure. Callers that would rather degrade than fail
+ * (`identify_address` classifying an address it cannot confirm) should catch,
+ * but they must not confuse "the query failed" with "not a validator".
  */
 export async function fetchActiveValidators(): Promise<ValidatorSet> {
   const validators: ActiveValidator[] = [];

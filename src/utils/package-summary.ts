@@ -78,7 +78,7 @@ export interface CapabilityGroup {
   owner: CapabilityInfo["owner"];
   risk: CapabilityInfo["risk"];
   count: number;
-  holders: Array<{ object_id: string; owner_address?: string }>;
+  holders: Array<{ object_id: string; owner_address?: string; signing_scheme?: string }>;
   note: string;
 }
 
@@ -112,6 +112,14 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
     const members = groups.get(entry)!;
     const [head] = members;
     if (members.length === 1) return head;
+    // Every member already shares one `owner` kind (the group key), but not
+    // necessarily one address. `classifyCapabilityRisk` needs a real
+    // address to decide `unspendable`, so one is passed only when every
+    // member is at the same address (e.g. two AdminCaps both sent to 0x0).
+    // Otherwise there is no single address honest to pass, so the note stays
+    // generic rather than naming one arbitrary holder for all of them.
+    const addresses = new Set(members.map((c) => c.owner_address).filter((a): a is string => !!a));
+    const sharedAddress = addresses.size === 1 ? [...addresses][0] : undefined;
     return {
       kind: head.kind,
       type: head.type,
@@ -121,12 +129,13 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
       holders: members.map((c) => ({
         object_id: c.object_id,
         ...(c.owner_address ? { owner_address: c.owner_address } : {}),
+        ...(c.signing_scheme ? { signing_scheme: c.signing_scheme } : {}),
       })),
       note: classifyCapabilityRisk({
         kind: head.kind,
         type: head.type,
         owner: head.owner,
-        ownerAddress: head.owner_address ? "the holder of each object in holders" : undefined,
+        ownerAddress: sharedAddress ?? (head.owner_address ? "the holder of each object in holders" : undefined),
       }).note,
     };
   });

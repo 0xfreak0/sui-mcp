@@ -2,15 +2,18 @@ import { buildPythFeedMap } from "../discovery.js";
 import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
 import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
+import { sui } from "../clients/grpc.js";
+import { getNetwork } from "../config.js";
+import { isNotFound } from "./errors.js";
 
 /**
  * Decimals for common Sui coins, keyed by short symbol.
  *
  * **Kept only as a last-resort fallback, never as identification.** Keying a
- * scale on the struct name is how a coin whose type merely ends `::sui::SUI`
- * inherited real SUI's 9 decimals. Measured on mainnet: of 289 unverified
- * coins whose struct name matches one of these symbols, 47 declare different
- * decimals — a fake SUI with 0 would have reported every amount 10^9 out.
+ * scale on the struct name gives any coin whose type merely ends `::sui::SUI`
+ * real SUI's 9 decimals, and many unverified coins that share a symbol here
+ * declare different decimals. A fake SUI with 0 would report every amount
+ * 10^9 out.
  *
  * The registry is consulted first and answers by coin TYPE, which is the
  * identity. This map only softens the failure when nothing knows the coin.
@@ -26,14 +29,13 @@ export const DEFAULT_DECIMALS = 9;
 /**
  * Short symbol from a full coin type (`0x2::sui::SUI` → `SUI`).
  *
- * This is the struct name and nothing more. It is not an identifier: 585
- * mainnet coins end `::SUI`. Use {@link displayCoin} anywhere a reader will
- * see it.
+ * This is the struct name and nothing more, and many unrelated coins share
+ * it. Use {@link displayCoin} anywhere a reader will see it.
  *
  * Type arguments are kept, each named by its curated symbol where the list
  * has one: `0x5ffa…::vault::MagicCoin<0xdba3…::usdc::USDC>` is
- * `MagicCoin<USDC>`. Splitting the whole string on `::` instead named that
- * vault share `USDC>`, the asset it wraps.
+ * `MagicCoin<USDC>`. The base is split on `::` apart from its arguments, so a
+ * wrapper is never named after the asset it wraps.
  */
 export function symbolOf(coinType: string): string {
   const open = coinType.indexOf("<");
@@ -64,27 +66,99 @@ export interface CoinScale {
   decimals: number;
   /**
    * `registry` means a curated list vouches for this exact coin type and
-   * supplied its decimals. `price_provider` means the service that priced the
+   * supplied its decimals. `coin_metadata` means nothing curated does, but a
+   * live read of the coin's own on-chain `CoinMetadata` did, from the coin's
+   * own publish. `price_provider` means the service that priced the
    * coin reported the decimals its price is per, so amount and price agree.
    * `assumed` means nothing does, and the amount was scaled by a guess, which
    * the caller must pass on rather than absorb.
    */
-  source: "registry" | "price_provider" | "assumed";
+  source: "registry" | "coin_metadata" | "price_provider" | "assumed";
+}
+
+/**
+ * Live-read decimals for a coin type, keyed `network:coinType`. Populated only
+ * by {@link prefetchCoinScale}; `coinScale` itself never blocks on the network,
+ * so a coin type nobody prefetched still falls through to the symbol guess.
+ */
+const liveDecimals = new Map<string, number | null>();
+const liveDecimalsInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Warm {@link coinScale}'s live-metadata tier for these coin types, so the
+ * synchronous calls that follow resolve a coin's real decimals instead of
+ * guessing 9.
+ *
+ * Tools that format amounts read a coin's `CoinMetadata` decimals through
+ * this cache, the same value `analyze_token` reads directly, so one coin
+ * gets one scale.
+ *
+ * Skips anything the curated registry already answers (no network call
+ * needed) and anything already cached, so calling this with mostly-known
+ * coins (SUI, USDC, …) costs nothing. A coin with no `CoinMetadata` (a
+ * genuine gRPC NOT_FOUND, or a successful response with no `metadata` field)
+ * is cached as `null`, so a second call in the same session does not
+ * re-request it; the symbol guess still applies for it. A transient failure
+ * (a timeout, which `retryingFetch` does not retry, or 429/5xx after retries
+ * run out) is left uncached instead: caching it as `null` would say "this
+ * coin has no metadata" for the rest of the process from one bad request,
+ * silently pinning an assumed-9 guess for a coin whose real decimals a later
+ * call might have read successfully.
+ */
+export async function prefetchCoinScale(coinTypes: Iterable<string>): Promise<void> {
+  const network = getNetwork();
+  const toFetch = [...new Set(coinTypes)].filter(
+    (t) => !verifiedCoin(t) && !liveDecimals.has(`${network}:${t}`),
+  );
+  await Promise.all(
+    toFetch.map((coinType) => {
+      const key = `${network}:${coinType}`;
+      let pending = liveDecimalsInFlight.get(key);
+      if (!pending) {
+        pending = sui.stateService
+          .getCoinInfo({ coinType })
+          .then(({ response }) => {
+            const decimals = response.metadata?.decimals;
+            liveDecimals.set(key, decimals ?? null);
+          })
+          .catch((err) => {
+            if (isNotFound(err)) liveDecimals.set(key, null);
+            // Else: transient. Leave uncached so the next prefetch retries it.
+          })
+          .finally(() => {
+            liveDecimalsInFlight.delete(key);
+          });
+        liveDecimalsInFlight.set(key, pending);
+      }
+      return pending;
+    }),
+  );
+}
+
+/** Tests only: forget every live-read decimals value. */
+export function resetLiveCoinScale(): void {
+  liveDecimals.clear();
+  liveDecimalsInFlight.clear();
 }
 
 /**
  * The decimal scale for a coin type, and how much that scale is worth.
  *
- * Resolved by TYPE against the verified registry. Only when nothing knows the
- * coin does it fall back to the symbol map, and it says so — an amount scaled
- * by a guess is not the same claim as one scaled by a known decimals value,
- * and 16% of imitators on mainnet declare a different scale from the coin they
- * imitate.
+ * Resolved by type against the verified registry, then against a live
+ * `CoinMetadata` read if {@link prefetchCoinScale} warmed one for it. Only
+ * when neither knows the coin does it fall back to the symbol map, and it
+ * says so: an amount scaled by a guess is a weaker claim than one scaled by
+ * a known decimals value, and an imitator can declare a different scale
+ * from the coin it imitates.
  */
 export function coinScale(coinType: string): CoinScale {
   const known = verifiedCoin(coinType);
   if (known?.decimals !== null && known?.decimals !== undefined) {
     return { decimals: known.decimals, source: "registry" };
+  }
+  const live = liveDecimals.get(`${getNetwork()}:${coinType}`);
+  if (live !== null && live !== undefined) {
+    return { decimals: live, source: "coin_metadata" };
   }
   return {
     decimals: KNOWN_DECIMALS[symbolOf(coinType)] ?? DEFAULT_DECIMALS,
@@ -100,14 +174,17 @@ export function decimalsForCoinType(coinType: string): number {
 /**
  * The scale to value an amount at, given the price that will multiply it.
  *
- * A price is per whole token at the provider's own decimals, so when the
- * curated registry does not know the coin, the provider's decimals are the
- * ones that make amount × price correct. Registry decimals still win: they
- * were reviewed, and the provider's were read from whatever the minter wrote.
+ * A price is per whole token at the provider's own decimals, so when neither
+ * the curated registry nor a live `CoinMetadata` read knows the coin, the
+ * provider's decimals are the ones that make amount × price correct. Registry
+ * and on-chain-metadata decimals still win: one was reviewed, and the other is
+ * the coin's own publish. The provider's were read from whatever the minter
+ * wrote, same as the coin's metadata, but on someone else's schedule and with
+ * no guarantee it still matches.
  */
 export function pricingScale(coinType: string, point?: { decimals?: number } | null): CoinScale {
   const scale = coinScale(coinType);
-  if (scale.source === "registry" || point?.decimals === undefined) return scale;
+  if (scale.source === "registry" || scale.source === "coin_metadata" || point?.decimals === undefined) return scale;
   return { decimals: point.decimals, source: "price_provider" };
 }
 

@@ -30,6 +30,7 @@ const fanout = (over: Record<string, unknown>) => ({
   out_in_ratio: 1,
   flow_shape: "balanced",
   sponsored_address_count: 0,
+  sponsored_and_paid_count: 0,
   sponsored_transaction_count: 0,
   sponsor_shape: "not_a_sponsor",
   scanned_transactions: 1,
@@ -364,14 +365,52 @@ describe("fan-out cache invalidation across method changes", () => {
     expect(cached?.recipient_count).toBe(792);
     expect(cached?.method_version).toBe(FANOUT_METHOD_VERSION);
   });
+
+  it("discards a row measured before counterparties were split per coin", () => {
+    // Version 4 took each transaction's direction from the subject's first
+    // non-gas row. A SUI-to-USDC swap then counted the pool as a recipient
+    // only; the per-coin rule counts it both ways, so a v4 row reports a
+    // lower sender_count than a fresh measurement of the same address.
+    const path = join(dir, "v4.db");
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    saveFanout(fanout({ account: ADDR, recipient_count: 12, sender_count: 3 }));
+    resetStore();
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(path);
+    raw.exec(`PRAGMA user_version = 4`);
+    raw.close();
+
+    resetStore();
+    expect(getCachedFanout(ADDR)).toBeNull();
+  });
+
+  it("discards a row whose sponsor shape ignored the addresses it paid", () => {
+    // Version 5 read sponsorship breadth alone and stored a sponsor that paid
+    // every address it sponsored as a relayer. Served from the store, that
+    // row keeps calling it noise.
+    const path = join(dir, "v5.db");
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    saveFanout(fanout({ account: ADDR, sponsored_address_count: 377, sponsor_shape: "relayer" }));
+    resetStore();
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(path);
+    raw.exec(`PRAGMA user_version = 5`);
+    raw.close();
+
+    resetStore();
+    expect(getCachedFanout(ADDR)).toBeNull();
+  });
 });
 
 /**
- * The cache used to persist only recipient_count, so a cache hit returned -1
- * for sender_count/coin_type_count and "unknown" for flow_shape. That silently
- * disabled the 1.5.0 headline feature on exactly the documented path:
+ * A cache hit returns every measured field, not only recipient_count.
  * find_funding_sources populates the cache, so the follow-up fan-out call on a
- * shared funder was always a cache hit.
+ * shared funder is always a cache hit, and it must still carry sender_count,
+ * coin_type_count and flow_shape.
  */
 describe("fan-out cache round-trips the full measurement", () => {
   it("restores the in/out split, coin diversity and flow shape", () => {
@@ -386,8 +425,9 @@ describe("fan-out cache round-trips the full measurement", () => {
       coin_type_count: 7,
       out_in_ratio: 9.78,
       flow_shape: "disperser",
-      // Measured on mainnet: heavy sponsorship of a tiny audience.
+      // Heavy sponsorship of a tiny audience.
       sponsored_address_count: 7,
+      sponsored_and_paid_count: 2,
       sponsored_transaction_count: 278,
       sponsor_shape: "private_sponsor",
       scanned_transactions: 600,
@@ -404,9 +444,9 @@ describe("fan-out cache round-trips the full measurement", () => {
     expect(c?.flow_shape).toBe("disperser");
     // Sponsorship is measured on the same scan but answers a different
     // question, so it has to survive the round trip too. Defaulting it to 0 on
-    // a cache hit would claim "not a sponsor" from data never read — the same
-    // failure this whole describe block exists to prevent.
+    // a cache hit would claim "not a sponsor" from data never read.
     expect(c?.sponsored_address_count).toBe(7);
+    expect(c?.sponsored_and_paid_count).toBe(2);
     expect(c?.sponsored_transaction_count).toBe(278);
     expect(c?.sponsor_shape).toBe("private_sponsor");
     expect(c?.scanned_transactions).toBe(600);
@@ -414,7 +454,7 @@ describe("fan-out cache round-trips the full measurement", () => {
   });
 
   // null is the honest value for "nothing was received", and must not come
-  // back as 0 — which would read as a measured ratio of zero.
+  // back as 0, which would read as a measured ratio of zero.
   it("keeps a null out_in_ratio null rather than zero", () => {
     process.env.SUI_STORE_PATH = join(dir, "nullratio.db");
     resetStore();
@@ -427,6 +467,7 @@ describe("fan-out cache round-trips the full measurement", () => {
       out_in_ratio: null,
       flow_shape: "unknown",
       sponsored_address_count: 0,
+      sponsored_and_paid_count: 0,
       sponsored_transaction_count: 0,
       sponsor_shape: "not_a_sponsor",
       scanned_transactions: 3,
@@ -474,8 +515,8 @@ describe("fan-out cache round-trips the full measurement", () => {
 
     // The table must actually be rebuilt, not just emptied: CREATE TABLE IF NOT
     // EXISTS leaves an old table's columns in place, so a write would fail with
-    // "no column named sender_count". Only a pre-existing store hits this, which
-    // is why a fresh temp DB per test never caught it.
+    // "no column named sender_count". Only a pre-existing store hits this; a
+    // fresh temp DB per test never does.
     expect(saveFanout(fanout({ account: "sui:mainnet:0xnew", flow_shape: "collector" }))).toBe(true);
     expect(getCachedFanout("sui:mainnet:0xnew")?.flow_shape).toBe("collector");
   });
@@ -487,8 +528,7 @@ describe.skipIf(!hasSqlite)("legacy store migration", () => {
    * Write a store in the pre-chain-qualified shape: labels keyed on a bare
    * `address`, findings holding bare addresses. This is what any existing
    * user's store looks like, and it holds attribution they established by
-   * hand — losing it on upgrade would be a data-loss bug, not an
-   * inconvenience.
+   * hand, so losing it on upgrade is data loss.
    */
   function writeLegacyStore(path: string): void {
     const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {

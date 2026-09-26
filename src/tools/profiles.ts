@@ -90,12 +90,11 @@ export const PROFILES = {
     // the question comes up the moment a traced address stops being able to move
     // a token.
     "check_coin_restrictions",
-    // Reading an unknown package IS investigation work: naming an obfuscated
+    // Reading an unknown package is investigation work: naming an obfuscated
     // wrapper, reading a protocol's event structs, checking what a suspicious
-    // package can do. These sat in `developer` only, so an investigator running
-    // core+forensics had no way to inspect a package — and the observed
-    // consequence was hand-written GraphQL against the Move schema, which is
-    // both easy to get wrong and not authoritative. The deployed bytecode is.
+    // package can do. Without these, core+forensics leaves only hand-written
+    // GraphQL against the Move schema, which is easy to get wrong and not
+    // authoritative. The deployed bytecode is.
     "analyze_package",
     "get_package",
     "get_move_function",

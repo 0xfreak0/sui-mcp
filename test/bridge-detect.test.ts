@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   detectBridges,
+  exitCarrier,
   resolvableHit,
   type BridgeHit,
   type CallSite,
@@ -80,8 +81,8 @@ describe("detectBridges", () => {
 
   it("does not call a Pyth price update through Wormhole core a bridge exit", () => {
     // EpA8fqmv… is a NAVI deposit of 400 SUI. Its Pyth update verifies a VAA
-    // in the Wormhole core package, which the registry types `bridge`; the
-    // registry tier reported "Value left Sui via Wormhole".
+    // in the Wormhole core package, which the registry types `bridge`, so the
+    // registry tier alone would report "Value left Sui via Wormhole".
     const naviDeposit: CallSite[] = [
       { packageId: "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4", module: "vaa", function: "parse_and_verify" },
       { packageId: "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0", module: "pyth", function: "update_single_price_feed" },
@@ -169,6 +170,63 @@ describe("Mayan MCTP", () => {
         ["0xdex::order::OrderCanceled", "0xdex::order_info::OrderPlaced"],
       ),
     ).toEqual([]);
+  });
+});
+
+describe("exitCarrier", () => {
+  // Event types as mainnet emits them: 62MTsGpC… (Mayan), 4xLuY6N6… (Sui
+  // Bridge), 6S9udfgK… and FmxxWhRo… (Allbridge pool).
+  const MAYAN = "0xb5bd3599ec7f4ae86afd84398f6f2d862deecce965e8ace2d8d8c8108d5076df::init_order::InitMctpLogged";
+  const CCTP_BURN = "0x2aa6c5d56376c371f88a6cc42e852824994993cb9bab8d3e6450cbe3cb32b94e::deposit_for_burn::DepositForBurn";
+  const WORMHOLE = "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage";
+  const SUI_BRIDGE = "0x000000000000000000000000000000000000000000000000000000000000000b::bridge::TokenDepositedEvent";
+  const ALLBRIDGE_POOL = "0x83d6f864a6b0f16898376b486699aa6321eb6466d1daf6a2e3764a51908fe99d::events::TokensSentEvent";
+  const of = (types: string[]) => {
+    const e = exitCarrier(detectBridges([], types))!;
+    return { carrier: e.carrier.protocol, route: e.route, alsoExited: e.alsoExited, settled: e.settled };
+  };
+
+  it("routes a Mayan order over its own legs only", () => {
+    expect(of([CCTP_BURN, WORMHOLE, MAYAN])).toEqual({
+      carrier: "Mayan MCTP",
+      route: ["Wormhole", "Circle CCTP"],
+      alsoExited: [],
+      settled: true,
+    });
+  });
+
+  /**
+   * A Sui Bridge deposit beside a Mayan order is a separate exit outside the
+   * order's route, so resolve_bridge_transfer does not say it paid Mayan's
+   * contracts and screen_address's carrier filter keeps its recipient.
+   */
+  it("keeps an unrelated bridge beside a wrapper out of its route", () => {
+    expect(of([MAYAN, CCTP_BURN, WORMHOLE, SUI_BRIDGE])).toEqual({
+      carrier: "Mayan MCTP",
+      route: ["Wormhole", "Circle CCTP"],
+      alsoExited: ["Sui Bridge"],
+      settled: true,
+    });
+  });
+
+  it("does not claim a CCTP burn as the leg of an Allbridge pool transfer", () => {
+    // The pool route settles over Wormhole; a burn beside it is its own exit.
+    expect(of([ALLBRIDGE_POOL, WORMHOLE, CCTP_BURN])).toEqual({
+      carrier: "Allbridge Core",
+      route: ["Wormhole"],
+      alsoExited: ["Circle CCTP"],
+      settled: true,
+    });
+    expect(of([ALLBRIDGE_POOL, CCTP_BURN])).toEqual({
+      carrier: "Circle CCTP",
+      route: [],
+      alsoExited: ["Allbridge Core"],
+      settled: false,
+    });
+  });
+
+  it("routes nothing for two unrelated bridges", () => {
+    expect(of([SUI_BRIDGE, CCTP_BURN])).toEqual({ carrier: "Sui Bridge", route: [], alsoExited: ["Circle CCTP"], settled: false });
   });
 });
 

@@ -11,6 +11,7 @@ import {
   sameCoin,
   type GasCharge,
   type HopBasis,
+  type RemainingEntry,
   type UnfollowedRecipient,
 } from "../utils/trace-hop.js";
 import {
@@ -34,7 +35,7 @@ import {
   summarizeObjectFlow,
   type ObjectMovement,
 } from "../utils/object-flow.js";
-import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
+import { ActivityLedger, lookalikeReport, lookalikeWarning } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
 import { pricesForRanking } from "../utils/price-providers.js";
 import {
@@ -44,6 +45,7 @@ import {
   dominantFlowUsd,
   formatUsd,
   PRICE_STALE_THRESHOLD_SEC,
+  prefetchCoinScale,
   priceUsdAtTime,
   pricingScale,
   usdValue,
@@ -53,6 +55,14 @@ import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { errorResult } from "../utils/errors.js";
 import { EXPORT_FORMATS, shortAddress, toCsv, toGraphJson, toMermaid, type ExportGraph } from "../utils/flow-export.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+/**
+ * trace_funds is a single linear walk, never sharing FIFO capacity across
+ * arrivals the way a flow graph does, so it has nothing to put in the
+ * remaining-capacity map `findNextForward`/`findPriorInflow` take. Only the
+ * `hardSkip` digest set (`visitedDigests`) matters here.
+ */
+const EMPTY_REMAINING: ReadonlyMap<string, RemainingEntry> = new Map();
 
 interface HopResult {
   hop: number;
@@ -85,6 +95,13 @@ interface HopResult {
   authorized_by?: string[];
   /** The holder spent more of the tracked coin than the trace delivered to it. */
   commingled?: { received: string; spent: string; coin_type: string; note: string };
+  /**
+   * The holder received more of the tracked coin before this hop than it
+   * moved here. The rest (`amount`) stayed at the holder's address; this
+   * trace picked one next transaction to follow and does not walk the
+   * remainder, so it is neither "moved" nor "stopped" from this hop's view.
+   */
+  residual?: { coin_type: string; amount: string; received: string; moved: string; note: string };
   actions: string[];
   token_flow: { coin: string; amount: string; raw_type: string }[];
   /**
@@ -101,10 +118,9 @@ interface HopResult {
   /** More events existed than could be read, so bridge detection may be incomplete. */
   events_incomplete?: true;
   /**
-   * Set when the transport that answered this hop cannot report object
-   * changes at all — the archive path. "No objects moved" and "could not
-   * read what moved" are opposite claims, and only one of them is knowable
-   * here.
+   * Set when this hop's object changes were not read: a row cached before
+   * object flow was recorded. "No objects moved" and "could not read what
+   * moved" are opposite claims, and only one of them is knowable here.
    */
   object_flow_unavailable?: string;
   /** Note about how the next hop was chosen (swap follow-through, pool skip). */
@@ -123,7 +139,7 @@ function addrLabel(addr: string, nameMap: Map<string, string>): string {
 /**
  * At least 0.001 of a whole unit of the coin, on the coin's own scale.
  *
- * A raw threshold of 1e6 hid every USDC flow under 1 USDC as "gas only",
+ * A raw threshold of 1e6 would hide every USDC flow under 1 USDC as "gas only",
  * because USDC has 6 decimals where SUI has 9.
  */
 function isSignificant(amount: string, coinType: string): boolean {
@@ -206,7 +222,7 @@ function buildSummary(
       }
     }
 
-    // "gas only" has meant two different things: no value moved, and value
+    // "gas only" can mean two different things: no value moved, and value
     // moved as an object where a balance change cannot see it. On a hop that
     // handed over a capability, the second reading is the finding and the
     // first is false.
@@ -239,6 +255,7 @@ function buildSummary(
       lines.push(`  ⚠ Not signed by the sender: authorized by ${hop.authorized_by?.join(", ")}.`);
     }
     if (hop.commingled) lines.push(`  ⚠ ${hop.commingled.note}`);
+    if (hop.residual) lines.push(`  ⚠ ${hop.residual.note}`);
     if (hop.note) lines.push(`Note:   ${hop.note}`);
 
     lines.push("");
@@ -418,8 +435,7 @@ export function registerTraceTools(server: McpServer) {
       const format = formatArg ?? "json";
       const maxHops = Math.min(hops ?? 3, 10);
       // Compared and echoed in canonical form. GraphQL reports the padded type,
-      // so `0x2::sui::SUI` compared as a raw string matched nothing and every
-      // hop rendered empty.
+      // so `0x2::sui::SUI` compared as a raw string would match nothing.
       const coinFilter = coin_type ? coinKey(coin_type) : null;
       const traceHops: HopResult[] = [];
       /** Full movement lists per hop — internal, never serialised. */
@@ -464,7 +480,11 @@ export function registerTraceTools(server: McpServer) {
       // the trace fills maxHops with a two-wallet loop and presents it as a
       // ten-hop chain.
       const visitedAddresses = new Set<string>();
-      // Digests already read, so a same-checkpoint window cannot hand one back.
+      // Digests already read, so a same-checkpoint window cannot hand one
+      // back. A single linear trace only ever needs a hard block, so this is
+      // a plain digest set, not the remaining-capacity map a flow graph's
+      // multi-arrival FIFO sharing needs (there is only ever one arrival
+      // here).
       const visitedDigests = new Set<string>();
       let custodyBreak: Record<string, unknown> | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
@@ -484,9 +504,9 @@ export function registerTraceTools(server: McpServer) {
         }
         if (!tx) {
           // Not found on the fullnode *or* the archive. Breaking silently here
-          // produced `hop_count: 0, hops: []` with no error, which a reader
-          // takes as "there is nothing to follow" rather than "this could not
-          // be fetched" — and on hop 0 those are opposite conclusions.
+          // would produce `hop_count: 0, hops: []` with no error, which a
+          // reader takes as "there is nothing to follow" rather than "this
+          // could not be fetched", and on hop 0 those are opposite conclusions.
           if (hop === 0) {
             return errorResult(
               `Could not fetch the starting transaction ${currentDigest} from the fullnode or the archive. ` +
@@ -519,8 +539,14 @@ export function registerTraceTools(server: McpServer) {
         const commands = tx.commands;
         const grpcBc = tx.grpcBalanceChanges;
         // Per-hop rather than batched: hops are discovered one at a time, so
-        // there is no earlier point at which the package set is known.
-        await prefetchProtocolNames(collectPackageIds(commands));
+        // there is no earlier point at which the package set is known. The
+        // coin scales are read here too, before the decode formats amounts,
+        // so a coin no curated list knows prints at its own decimals rather
+        // than at an assumed scale.
+        await Promise.all([
+          prefetchProtocolNames(collectPackageIds(commands)),
+          prefetchCoinScale(allChanges.map((c) => c.coin_type)),
+        ]);
         const decoded = decodeTransaction(commands, grpcBc, sender ?? undefined);
 
         // Detect a bridge exit from this hop's Move calls and events. Runs
@@ -577,8 +603,13 @@ export function registerTraceTools(server: McpServer) {
           ...(tx.eventsIncomplete ? { events_incomplete: true as const } : {}),
         };
 
-        // Spending more than the trace delivered means other funds are mixed
-        // in, so amounts from here on are not all the traced funds.
+        // The two ways a hop's own spend can diverge from what the previous
+        // hop delivered: spending more means other funds are mixed in;
+        // spending less means part of what arrived stayed at the holder,
+        // untouched by this transaction. chooseNextHop still had to pick one
+        // next transaction, so "the trace continues" can be a sliver of the
+        // balance while most of it sits at `holder`, moved later in
+        // transactions this trace never visits.
         if (direction === "forward" && delivered && holder === delivered.address) {
           const spent = -allChanges
             .filter((c) => c.address === holder && sameCoin(c.coin_type, delivered!.coin))
@@ -595,13 +626,28 @@ export function registerTraceTools(server: McpServer) {
                 `${formatAmount(delivered.amount.toString(), delivered.coin).slice(1)} the previous hop delivered, so funds it ` +
                 "already held or received elsewhere are mixed in. Amounts from here on are not all the traced funds.",
             };
+          } else if (spent * 100n < delivered.amount * 99n) {
+            // More than 1% under, symmetric with the commingled threshold
+            // above, so a gas rebate or rounding dust is not flagged.
+            const moved = spent > 0n ? spent : 0n;
+            const heldBack = delivered.amount - moved;
+            const pctHeld = (Number((heldBack * 1000n) / delivered.amount) / 10).toFixed(1);
+            hopResult.residual = {
+              coin_type: delivered.coin,
+              amount: heldBack.toString(),
+              received: delivered.amount.toString(),
+              moved: moved.toString(),
+              note:
+                `${holder} received ${formatAmount(delivered.amount.toString(), delivered.coin).slice(1)} before this hop but moved only ` +
+                `${formatAmount(moved.toString(), delivered.coin).slice(1)} of it here (${pctHeld}% held back). The remaining ` +
+                `${formatAmount(heldBack.toString(), delivered.coin).slice(1)} stayed at ${holder} and is not followed by this trace.`,
+            };
           }
         }
 
-        // Object flow. Both live transports report it, so `undefined` now means
-        // exactly one thing: a row cached before this field existed. Saying
-        // "the archive cannot see objects" for a cache hit was wrong twice
-        // over — the source is known two lines above, and the archive can.
+        // Object flow. Both live transports report it, so `undefined` means
+        // exactly one thing: a row cached before this field existed. The
+        // archive reports object changes too, so the message names the cache.
         if (tx.objectMovements === undefined) {
           hopResult.object_flow_unavailable =
             tx.source === "cache"
@@ -610,9 +656,9 @@ export function registerTraceTools(server: McpServer) {
               : "Object changes were not reported for this hop. That is not a statement that none happened.";
         } else {
           // Kept out of the hop payload on purpose: creations, deletions and
-          // wraps are needed to COUNT movements and to collect counterparties,
-          // but serialising them costs tokens for output nobody reads. A
-          // 13-movement kiosk hop carries one transfer.
+          // wraps are needed to count movements and to collect counterparties,
+          // but serialising them costs tokens for output nobody reads. A kiosk
+          // hop can carry many movements and a single transfer.
           movementsByHop.set(hopResult.hop, tx.objectMovements);
           const moved = custodyChanges(tx.objectMovements);
           if (moved.length > 0) hopResult.object_transfers = moved;
@@ -630,8 +676,7 @@ export function registerTraceTools(server: McpServer) {
         // another chain: resolve_bridge_transfer is how it is followed.
         // Forward only. A bridge exit means value left the chain going forward;
         // a backward trace is asking where the money in this transaction came
-        // FROM, which the exit says nothing about. Terminating there cut a
-        // four-hop funding walk to one.
+        // FROM, which the exit says nothing about.
         const exitHere =
           direction === "forward"
             ? bridgeExits.find((e) => e.digest === currentDigest)
@@ -737,7 +782,7 @@ export function registerTraceTools(server: McpServer) {
         // Stop at known sinks: once funds reach an exchange, bridge, mixer or
         // burn address, further hops are noise. A malicious label is not a
         // sink: it marks the attacker whose money the trace is following, and
-        // since the shipped labels name exploiters, stopping there ended every
+        // the bundled labels name exploiters, so stopping there would end an
         // exploit trace at hop 1. trace_flow_graph applies the same rule.
         if (isSink(nextAddress)) {
           const label = getLabel(nextAddress);
@@ -803,7 +848,7 @@ export function registerTraceTools(server: McpServer) {
 
         if (direction === "forward") {
           delivered = trackedCoin && movedHere > 0n ? { address: nextAddress, coin: trackedCoin, amount: movedHere } : null;
-          const step = await findNextForward(nextAddress, checkpointNum, trackedCoin, visitedDigests, currentDigest);
+          const step = await findNextForward(nextAddress, checkpointNum, trackedCoin, EMPTY_REMAINING, currentDigest, visitedDigests);
           if (step.digest === null) {
             terminationReason = step.reason;
             break;
@@ -816,7 +861,7 @@ export function registerTraceTools(server: McpServer) {
           currentDigest = step.digest;
         } else {
           const need = movedHere < 0n ? -movedHere : 1n;
-          const step = await findPriorInflow(nextAddress, checkpointNum, trackedCoin, visitedDigests, currentDigest, need);
+          const step = await findPriorInflow(nextAddress, checkpointNum, trackedCoin, EMPTY_REMAINING, currentDigest, need, visitedDigests);
           if (step.digest === null) {
             terminationReason = step.reason;
             break;
@@ -959,7 +1004,7 @@ export function registerTraceTools(server: McpServer) {
             formatted: formatAmount(bc.amount, bc.coin_type),
             // Structural, not just in the formatted string: a report generated
             // from this must be able to see that the asset is unidentified
-            // without parsing prose. 8,008 mainnet coins share a symbol with
+            // without parsing prose. Many mainnet coins share a symbol with
             // another, so "moved 10,000 USDC" is not a claim about which USDC.
             coin_verified: coin.verified,
             ...(coin.verified ? {} : { coin_scale: coinScale(bc.coin_type).source }),
@@ -1091,8 +1136,8 @@ export function registerTraceTools(server: McpServer) {
         parts.push(lines.join("\n"));
       }
       // Renunciation is the opposite finding and must not borrow the warning.
-      // Measured in upgrade-cap.ts: 27 of 30 UpgradeCap departures go to an
-      // unspendable address, so treating those as handovers would make the
+      // Most UpgradeCap departures go to an unspendable address (see
+      // upgrade-cap.ts), so treating those as handovers would make the
       // loudest output wrong most of the time.
       if (objectFlow && objectFlow.renounced_capabilities.length > 0) {
         const lines = ["Capability rights renounced in this trace:"];
@@ -1108,12 +1153,7 @@ export function registerTraceTools(server: McpServer) {
         // In the summary as well as the payload, for the same reason the bridge
         // exits are: the prose is what gets read, and a lookalike that only
         // appears in JSON is a warning nobody sees before they copy an address.
-        const lines = ["⚠ Addresses in this trace close enough to be mistaken for one another:"];
-        for (const pair of poisoning.pairs) {
-          lines.push(`  ${pair.rendered.established}  vs  ${pair.rendered.suspect}`);
-          lines.push(`    ${pair.note}`);
-        }
-        parts.push(lines.join("\n"));
+        parts.push(lookalikeWarning(poisoning, "trace"));
       }
 
       const summary = parts.join("\n\n");

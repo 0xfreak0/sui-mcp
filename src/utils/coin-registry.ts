@@ -1,25 +1,23 @@
 /**
  * Which coin a symbol is allowed to mean.
  *
- * **A symbol is not an identifier on Sui.** A mainnet census found 15,000+
- * coins across 8,819 symbols, 1,827 of them colliding: 585 coins claim `SUI`,
- * 100 claim `DEEP`, 59 claim `USDT`. The collisions are adversarial — the
- * impostors carry names like "Sui v2 (migrate asset: suiv2.com)".
+ * **A symbol is not an identifier on Sui.** Many coins share a symbol, and
+ * the collisions are adversarial: impostors carry names like "Sui v2
+ * (migrate asset: suiv2.com)".
  *
  * The full coin type is the identity and always wins. This module exists only
  * for the case where a caller supplies a bare symbol, where the type is
  * precisely the unknown.
  *
  * Nothing cheap separates a real coin from an impostor by inspection, which is
- * why this is a curated list rather than a rule. Measured against the fake
- * `USDC` the scan used to return:
+ * why this is a curated list rather than a rule:
  *
- * - **Supply** does not work: the impostor's is 10^16 against real USDC's
- *   2.8x10^14. Minting is free.
+ * - **Supply** does not work: minting is free, so an impostor's supply can be
+ *   any size.
  * - **Module naming** does not work: `::usdc::USDC` looks native but costs a
  *   scammer nothing to copy.
- * - **A deny-list config** does not generalise: of USDC, USDT and WBTC, only
- *   USDC's issuer had registered one.
+ * - **A deny-list config** does not generalise: many legitimate issuers never
+ *   register one.
  *
  * So the rule is: resolve from the curated set, and where even that is
  * ambiguous, return candidates rather than pick. Guessing is the failure this
@@ -35,18 +33,17 @@ import registry from "../data/coins.json" with { type: "json" };
  * package ID.
  *
  * Package IDs are derived from the publish transaction, so the same type
- * string on another network is a different thing or nothing at all. Checked on
- * testnet: mainnet's `0xdba34672…::usdc::USDC` does not exist there, while a
- * real testnet USDC lives at `0xa1ec7fc0…::usdc::USDC`. Consulting the list
- * regardless of network therefore got BOTH answers wrong — it vouched for a
- * coin that was absent, and refused to vouch for the genuine one.
+ * string on another network is a different thing or nothing at all. Mainnet
+ * USDC's type does not exist on testnet, and testnet USDC has its own package
+ * ID. Consulting the list regardless of network would vouch for a coin that
+ * is absent and refuse to vouch for the genuine one.
  *
  * This is why the same reasoning does not apply to
  * `labeled-addresses.json`, which is deliberately cross-network: addresses are
- * KEY-derived, so one entity can legitimately hold the same address on several
+ * key-derived, so one entity can legitimately hold the same address on several
  * networks. Package IDs cannot.
  *
- * Off mainnet the answer is "no curated knowledge for this network" — not
+ * Off mainnet the answer is "no curated knowledge for this network": not
  * verified, and not unverified either.
  */
 function registryApplies(): boolean {
@@ -149,8 +146,9 @@ export function registrySize(): number {
 /**
  * The checked-in list goes stale: new legitimate coins launch continuously, and
  * a coin that launched after the last sync resolves as `unverified`. That is
- * the conservative answer rather than a wrong one — the caller can always pass
- * the full coin type, which never needed the registry — but it is inconvenient.
+ * the conservative answer rather than a wrong one, since the caller can always
+ * pass the full coin type, which never needs the registry. It is still
+ * inconvenient.
  *
  * So the live list is consulted too, under three rules that keep it from
  * becoming a hole:
@@ -158,7 +156,7 @@ export function registrySize(): number {
  * - **Additive only.** It can add coins the checked-in file lacks. It can never
  *   remove one or override a `canonical` pin. The reviewed file is the floor.
  * - **Fails closed.** A fetch that errors, times out or returns something
- *   unexpected leaves the registry exactly as shipped. The failure mode is
+ *   unexpected leaves the registry exactly as checked in. The failure mode is
  *   "this new coin is unverified", never "this impostor is verified".
  * - **Marked.** A coin vouched for only by the live list reports
  *   `via: "live"`, so a reader can tell reviewed data from data fetched a

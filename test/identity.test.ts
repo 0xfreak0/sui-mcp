@@ -29,7 +29,7 @@ vi.mock("../src/protocols/registry.js", () => ({
   lookupProtocolDisplay: (p: string) => (p === "0xpkg" ? { name: "DeepBook", type: "dex" } : null),
 }));
 
-const { classifyHeldNames, describeAddresses, identityNote } = await import("../src/utils/identity.js");
+const { classifyHeldNames, describeAddresses, identityNote, resetAliasDelegateCache } = await import("../src/utils/identity.js");
 const { readAuthentication } = await import("../src/utils/multisig.js");
 
 /** multiGetObjects answers positionally: null means nothing lives there. */
@@ -72,7 +72,10 @@ function route(kinds: unknown, held: unknown) {
  */
 const NO_ARGS = { keys: [] as unknown[] };
 
-beforeEach(() => mockGqlQuery.mockReset());
+beforeEach(() => {
+  mockGqlQuery.mockReset();
+  resetAliasDelegateCache();
+});
 
 describe("describeAddresses", () => {
   it("tells a wallet, a package and an object apart", async () => {
@@ -137,8 +140,7 @@ describe("describeAddresses", () => {
       expect(keys.reduce((a, b) => a + b, 0)).toBe(120);
     }
     // The service counts variables toward its 5,000-byte cap, at about 80
-    // bytes per full-length address. Measured live: 44 held-names keys were
-    // rejected at 5,127 bytes and 40 were accepted.
+    // bytes per full-length address.
     expect(Math.max(...keysPerCall("multiGetAddresses"))).toBeLessThanOrEqual(40);
   });
 
@@ -215,9 +217,8 @@ describe("historical SuiNS names", () => {
 });
 
 describe("where a held SuiNS registration came from", () => {
-  // The Cetus attacker: 0x407fb974 sent it the taunt name in 2uE2WRav after
-  // validators froze the wallet, and the wallet never touched it. Values are
-  // the ones mainnet returned for registration 0xb00a20b5.
+  // Registration 0xb00a20b5 as mainnet returns it: SENDER delivered it to
+  // HOLDER in 2uE2WRav, and HOLDER never touched it afterwards.
   const HOLDER = "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06";
   const SENDER = "0x407fb97400abc8f37defc658ab9c9f53a8953a1a446cd820561382fb3728ca20";
   const taunt: HeldNode = {
@@ -395,8 +396,8 @@ describe("describeAddresses — authentication", () => {
   });
 
   it("records who signed when the address's sent transactions carry none of its own signatures", async () => {
-    // B2eGLFo… was sent as a Cetus attacker address and signed by a multisig
-    // acting for it. Dropping that transaction reported "never sent".
+    // B2eGLFo… was sent as this address and signed by a multisig acting for
+    // it. That transaction still counts as sent.
     const sender = fixtures.ed25519.address;
     mockGqlQuery.mockImplementation(
       withAuth(reply([null]), heldReply([[]]), {
@@ -407,6 +408,113 @@ describe("describeAddresses — authentication", () => {
     expect(id.authentication).toBeUndefined();
     expect(id.foreign_authorization).toEqual({ digest: "B2eGLFo", authorized_by: [ms.address], transactions_examined: 1 });
     expect(identityNote(id)).toMatch(/none of the 1 examined carries its own signature/);
+  });
+
+  it("recovers authentication for an address that only signs as an alias for someone else", async () => {
+    // The address signed its owner's transactions as an address alias and
+    // never sent one of its own, so `sentAddress` alone finds nothing. The
+    // reverse scan finds the owner that named it, then matches its signature
+    // on that owner's own sent transaction.
+    const alias = fixtures.ed25519.address;
+    const owner = ms.address;
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("address_alias::AddressAliases")) {
+        return {
+          objects: {
+            nodes: [
+              {
+                owner: { address: { address: owner } },
+                asMoveObject: { contents: { json: { aliases: { contents: [alias] } } } },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        };
+      }
+      if (String(q).includes("o0:")) {
+        return {
+          o0: {
+            nodes: [
+              { digest: "OwnerTx1", signatures: fixtures.ed25519.signatures.map((signatureBytes) => ({ signatureBytes })) },
+            ],
+          },
+        };
+      }
+      if (String(q).includes("sentAddress")) return { a0: { nodes: [] } };
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? heldReply([[]]) : reply([null]);
+    });
+    const id = (await describeAddresses([alias], { authentication: true, checkAliasSignatures: true })).get(alias)!;
+    expect(id.authentication?.scheme).toBe("ed25519");
+    expect(id.signed_as_alias_for).toEqual({ owner, digest: "OwnerTx1" });
+    // Behaviour, not wording: the note surfaces the actual owner and digest
+    // this scan found, not a fixed phrase.
+    expect(identityNote(id)).toContain("OwnerTx1");
+    expect(identityNote(id)).toContain(owner);
+  });
+
+  it("surfaces alias_delegate_for even when no sampled owner transaction carries the signature", async () => {
+    // The scan finds the address named in an owner's alias set, but none of
+    // that owner's sampled sent transactions signs for it. The delegation
+    // itself must still be reported, not dropped as if no alias set names it.
+    const alias = fixtures.ed25519.address;
+    const owner = ms.address;
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("address_alias::AddressAliases")) {
+        return {
+          objects: {
+            nodes: [
+              {
+                owner: { address: { address: owner } },
+                asMoveObject: { contents: { json: { aliases: { contents: [alias] } } } },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        };
+      }
+      if (String(q).includes("o0:")) return { o0: { nodes: [] } };
+      if (String(q).includes("sentAddress")) return { a0: { nodes: [] } };
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? heldReply([[]]) : reply([null]);
+    });
+    const before = Date.now();
+    const id = (await describeAddresses([alias], { authentication: true, checkAliasSignatures: true })).get(alias)!;
+    expect(id.authentication).toBeUndefined();
+    expect(id.signed_as_alias_for).toBeUndefined();
+    expect(id.alias_delegate_for).toEqual([owner]);
+    // The delegation comes from a cached reverse scan, so it says when that scan read chain state.
+    expect(Date.parse(id.alias_scan_as_of!)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(id.alias_scan_as_of!)).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("reports alias_scan_unavailable rather than reading a failed reverse scan as 'never sent'", async () => {
+    const alias = fixtures.ed25519.address;
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("address_alias::AddressAliases")) throw new Error("429 Too Many Requests");
+      if (String(q).includes("sentAddress")) return { a0: { nodes: [] } };
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? heldReply([[]]) : reply([null]);
+    });
+    const id = (await describeAddresses([alias], { authentication: true, checkAliasSignatures: true })).get(alias)!;
+    expect(id.authentication).toBeUndefined();
+    expect(id.alias_scan_unavailable).toBe(true);
+    expect(identityNote(id)).toMatch(/could not fully complete/);
+  });
+
+  it("does not run the reverse alias scan unless asked", async () => {
+    const alias = fixtures.ed25519.address;
+    let scanned = false;
+    mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
+      if (String(q).includes("address_alias::AddressAliases")) scanned = true;
+      if (String(q).includes("sentAddress")) return { a0: { nodes: [] } };
+      if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
+      return String(q).includes("multiGetAddresses") ? heldReply([[]]) : reply([null]);
+    });
+    const id = (await describeAddresses([alias], { authentication: true })).get(alias)!;
+    expect(scanned).toBe(false);
+    expect(id.authentication).toBeUndefined();
+    expect(id.signed_as_alias_for).toBeUndefined();
   });
 
   it("calls an id that transactions recorded as an object a former object, not a wallet", async () => {
@@ -423,7 +531,8 @@ describe("describeAddresses — authentication", () => {
   });
 
   it("classifies kinds in chunks under the payload cap", async () => {
-    // multiGetObjects with 62 keys is 5,222 bytes, over the service's 5,000.
+    // The service caps a request at 5,000 bytes including variables, about 81
+    // bytes per multiGetObjects key.
     mockGqlQuery.mockImplementation(async (q: string, v?: unknown) => {
       if (!v) return { multiGetObjects: [], multiGetAddresses: [] };
       const n = (v as { keys: unknown[] }).keys.length;

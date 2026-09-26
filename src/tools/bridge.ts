@@ -5,12 +5,13 @@ import { getNetwork } from "../config.js";
 import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { readBridgeEvents, sameForeignAddress } from "../utils/bridge/exits.js";
-import { detectBridges, type CallSite } from "../utils/bridge/detect.js";
+import { detectBridges, exitCarrier, type CallSite } from "../utils/bridge/detect.js";
 import { layerZeroMessagesByTx, layerZeroScanAvailable, type LayerZeroScanMessage } from "../utils/bridge/layerzeroscan.js";
 import { nttRedemptions, type PureInputNode } from "../utils/bridge/wormhole-inbound.js";
 import { fetchEventJson } from "../utils/event-json.js";
 import type { GqlCommandNode } from "../utils/gql-adapters.js";
 import { COMMANDS_SELECTION, NESTED_PAGE_SIZE, readAllCommands, type GqlConnection } from "../utils/tx-connections.js";
+import { failureFromGraphql, type GqlExecutionError } from "../utils/multi-tx.js";
 import {
   EVIDENCE_TIER_MEANING,
   WORMHOLE_CHAIN_SUI,
@@ -42,6 +43,8 @@ const TX_EVENTS_QUERY = `
     transaction(digest: $digest) {
       digest
       effects {
+        status
+        executionError { abortCode message module { name package { address } } function { name } }
         events(first: ${NESTED_PAGE_SIZE}) {
           pageInfo { hasNextPage }
           nodes { contents { type { repr } json } }
@@ -60,7 +63,11 @@ const TX_EVENTS_QUERY = `
 interface TxEventsResponse {
   transaction?: {
     digest?: string;
-    effects?: { events?: { pageInfo?: { hasNextPage?: boolean }; nodes?: SuiEventNode[] } };
+    effects?: {
+      status?: string;
+      executionError?: GqlExecutionError | null;
+      events?: { pageInfo?: { hasNextPage?: boolean }; nodes?: SuiEventNode[] };
+    };
     kind?: {
       commands?: GqlConnection<GqlCommandNode> | null;
       inputs?: { pageInfo?: { hasNextPage?: boolean }; nodes?: PureInputNode[] } | null;
@@ -177,6 +184,28 @@ export function registerBridgeTools(server: McpServer) {
         return errorResult(
           `Transaction ${digest} not found on ${getNetwork()}. Check the digest and the network.`,
         );
+      }
+
+      // A Move abort reverts every effect except the gas charge, so its
+      // events are always empty, but a bridge call still sits in the PTB's
+      // declared commands whether or not execution reached it. An aborted
+      // transaction is therefore answered here, before the bridge markers are
+      // read, so a call that never ran is not reported as funds that left.
+      if (data.transaction.effects?.status === "FAILURE") {
+        const failure = data.transaction.effects.executionError
+          ? failureFromGraphql(data.transaction.effects.executionError)
+          : { kind: "unknown" as const };
+        return ok({
+          digest,
+          network: getNetwork(),
+          source_chain: caip2ForSuiNetwork(getNetwork()),
+          status: "failure",
+          failure,
+          note:
+            "This transaction aborted and reverted; only gas was charged to the sender. " +
+            "Nothing crossed a bridge in it — a bridge call in its Move calls describes what it attempted, not what happened. " +
+            "Look for a later, successful transaction from the same sender instead.",
+        });
       }
 
       const network = getNetwork();
@@ -482,6 +511,23 @@ export function registerBridgeTools(server: McpServer) {
         celer.length ? "Celer cBridge (celer_cbridge)" : null,
         ...mayanProtocols.map((p) => `${p} (beneficiaries)`),
       ].filter((s): s is string => s !== null);
+      const carried = exitCarrier(hits.filter((h) => h.matched === "call" || h.matched === "event"));
+      const settledExit = carried?.settled ? carried : null;
+      // The carrier's own Wormhole message when it settles over Wormhole: a
+      // Mayan order's, or an Allbridge pool transfer sent through Allbridge's
+      // Wormhole messenger. No token transfer rides on it.
+      const ownMessageNote =
+        mayan.length > 0
+          ? MAYAN_MESSAGE_NOTE
+          : settledExit?.route.includes("Wormhole")
+            ? `This is ${settledExit.carrier.protocol}'s own message for the transfer. It carries no token and names no recipient; the transfer's recipient is in beneficiaries.`
+            : null;
+      // Wormholescan records no redemption for either carrier's own message.
+      const ownMessageNotRedeemed = mayan.some((b) => b.protocol === "Mayan MCTP")
+        ? MAYAN_MESSAGE_NOT_REDEEMED
+        : settledExit?.carrier.protocol === "Allbridge Core" && settledExit.route.includes("Wormhole")
+          ? ALLBRIDGE_MESSAGE_NOT_REDEEMED
+          : null;
       const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0;
 
       return ok({
@@ -505,6 +551,10 @@ export function registerBridgeTools(server: McpServer) {
           ...(decoded
             ? { payload: { evidence: "chain-derived" as const, kind: decoded.kind, to_chain: decoded.to_chain, to_raw: decoded.to_raw } }
             : {}),
+          // The carrier's own message. A Mayan order's is never redeemed:
+          // the order is delivered by the CCTP mint to Mayan's settlement
+          // contract and its fulfilment on the destination chain.
+          ...(ownMessageNote && !chainDerived ? { role: "settlement_message", note: ownMessageNote } : {}),
           beneficiary: chainDerived
             ? {
                 ...chainDerived,
@@ -523,7 +573,13 @@ export function registerBridgeTools(server: McpServer) {
               : destinationError
                 ? { status: "lookup_failed", error: destinationError }
                 : op
-                  ? { evidence: "indexer-attested" as const, ...renderDestination(op, qualify) }
+                  ? {
+                      evidence: "indexer-attested" as const,
+                      ...renderDestination(op, qualify),
+                      ...(ownMessageNotRedeemed && !chainDerived && !op.destination
+                        ? { redemption_expected: false, meaning: ownMessageNotRedeemed }
+                        : {}),
+                    }
                   : {
                       status: "not_indexed",
                       meaning:
@@ -542,9 +598,20 @@ export function registerBridgeTools(server: McpServer) {
           ...(op?.appIds.length ? { protocols: op.appIds } : {}),
         })),
         ...(otherBridges.length ? { other_bridge_activity: otherBridges } : {}),
+        ...(settledExit
+          ? {
+              carried_by: settledExit.carrier.protocol,
+              settled_over: settledExit.route,
+              ...(settledExit.alsoExited.length ? { also_exited: settledExit.alsoExited } : {}),
+            }
+          : {}),
         ...(exits.length
           ? {
-              note: `This transaction exited through ${exits.join(", ")}.`,
+              note: !settledExit
+                ? `This transaction exited through ${exits.join(", ")}.`
+                : settledExit.alsoExited.length
+                  ? `This transaction made a transfer through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")}, and a separate transfer through ${settledExit.alsoExited.join(" and ")} (sections: ${exits.join(", ")}). The ${settledExit.route.join(" and ")} legs belong to the ${settledExit.carrier.protocol} transfer; each transfer's recipient is in beneficiaries.`
+                  : `This transaction made one transfer, through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")} in the same transaction (sections: ${exits.join(", ")}). Those legs belong to that transfer, whose recipient is in beneficiaries.`,
               next_step: allBeneficiaries.length
                 ? BENEFICIARY_NEXT_STEP
                 : "No recipient could be read for this transfer. Its identity above is still chain-derived: look it up on the destination chain to find where it was delivered.",
@@ -567,7 +634,16 @@ export function registerBridgeTools(server: McpServer) {
 }
 
 const BENEFICIARY_NEXT_STEP =
-  "Record the beneficiary account with save_finding (`beneficiaries[].account` is already CAIP-10), and label it with manage_labels if you can attribute it. A `redeemed_via_contract`, a `destination_oapp`, or a CCTP leg marked `settlement_intermediate` is the bridge's own contract, not the recipient. Confirm the destination transaction on that chain before treating it as established.";
+  "Record the beneficiary account with save_finding (`beneficiaries[].account` is already CAIP-10), and label it with manage_labels if you can attribute it. A `redeemed_via_contract`, a `destination_oapp`, a CCTP leg marked `settlement_intermediate` or a Wormhole message marked `settlement_message` belongs to the bridge, not the recipient. Confirm the destination transaction on that chain before treating it as established.";
+
+const MAYAN_MESSAGE_NOTE =
+  "This is Mayan's own order message, not a token transfer, so it names no recipient. The order's beneficiary is in beneficiaries.";
+
+const MAYAN_MESSAGE_NOT_REDEEMED =
+  "No redemption is expected for this message: it is Mayan's order message, and Mayan MCTP delivers through the Circle CCTP mint to its settlement contract and a fulfilment transaction on the destination chain that pays the beneficiary. A missing redemption here does not mean the transfer failed; confirm the beneficiary's receipt on the destination chain.";
+
+const ALLBRIDGE_MESSAGE_NOT_REDEEMED =
+  "No redemption is expected on Wormholescan for this message: it is Allbridge's messenger message, and Wormholescan recorded none for any message sampled from Allbridge's emitter 45a4ce72… (sequences 0, 100, 300 and 492). Allbridge releases the tokens to the recipient on the destination chain, so a missing redemption here does not mean the transfer failed; confirm the recipient's receipt on the destination chain.";
 
 const EVENTS_INCOMPLETE =
   "This transaction has more events than could be read, so a bridge event may be missing from this result.";

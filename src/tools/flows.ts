@@ -12,8 +12,10 @@ import { readBridgeEvents } from "../utils/bridge/exits.js";
 import { EVIDENCE_TIER_MEANING, type SuiEventNode } from "../utils/bridge/wormhole.js";
 import { describeAddresses, identityNote, type AddressIdentity } from "../utils/identity.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
-import { displayCoin, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
+import { displayCoin, prefetchCoinScale, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
 import { coinKey } from "../utils/trace-hop.js";
+import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
+import type { Appearance } from "../utils/address-lookalike.js";
 import {
   coinValuer,
   roundUsd as round,
@@ -40,6 +42,7 @@ const SCAN_QUERY = `query ($filter: TransactionFilter!, $last: Int!, $before: St
       gasInput { gasSponsor { address } }
       kind { ... on ProgrammableTransaction { ${COMMANDS_SELECTION} } }
       effects {
+        status
         timestamp
         checkpoint { sequenceNumber }
         gasEffects { gasSummary { computationCost storageCost storageRebate } }
@@ -57,6 +60,7 @@ interface ScanNode {
   gasInput?: { gasSponsor?: { address?: string } | null } | null;
   kind?: { commands?: GqlConnection<GqlCommandNode> | null } | null;
   effects?: {
+    status?: string | null;
     timestamp?: string | null;
     checkpoint?: { sequenceNumber?: number } | null;
     gasEffects?: { gasSummary?: { computationCost?: string; storageCost?: string; storageRebate?: string } | null } | null;
@@ -119,6 +123,7 @@ function toFlowTx(n: ScanNode, balanceChanges: GqlBalanceChangeNode[], commands:
     timestamp: n.effects?.timestamp ?? null,
     checkpoint: n.effects?.checkpoint?.sequenceNumber ?? null,
     sender: n.sender?.address ?? null,
+    status: n.effects?.status ? n.effects.status.toLowerCase() : null,
     gasSponsor: n.gasInput?.gasSponsor?.address ?? null,
     netGas,
     changes: balanceChanges
@@ -164,7 +169,7 @@ function who(address: string, identity: AddressIdentity | undefined) {
 export function registerFlowTools(server: McpServer) {
   server.tool(
     "summarize_address_flows",
-    "(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.",
+    "(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. `address_poisoning` warns when two addresses seen in the scan (as a source, a recipient, or dust the subject received) render alike enough to be mistaken for one another. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.",
     {
       address: addressArg().describe("Address to summarise (0x... or a SuiNS name)."),
       from: timePointArg()
@@ -219,6 +224,20 @@ export function registerFlowTools(server: McpServer) {
         }
         const truncated = more;
 
+        // Address poisoning across the whole scan, not per counterparty row:
+        // a lookalike is dust the subject received, or a payment it sent, and
+        // either shape must land beside the address it imitates for the
+        // comparison to see them together. Oldest first, so a counterparty
+        // the subject has dealt with longer keeps the larger footprint here
+        // when the transaction-count margin cannot separate them outright.
+        const ledger = new ActivityLedger();
+        for (const tx of [...txs].reverse()) {
+          const appearances: Appearance[] = tx.sender ? [{ address: tx.sender }] : [];
+          for (const c of tx.changes) appearances.push({ address: c.owner, amount: c.amount });
+          ledger.observe(appearances);
+        }
+        const poisoning = lookalikeReport(ledger.addressesLedBy(address), ledger.activity, address);
+
         const summary = summarizeFlows(address, txs, coin_type ?? null);
 
         // Bridge transactions get their event JSON read; everything else was
@@ -253,10 +272,13 @@ export function registerFlowTools(server: McpServer) {
         const newestMs = times.length ? times[times.length - 1] : null;
         const atSec = times.length ? Math.floor(times[Math.floor(times.length / 2)] / 1000) : null;
         const coinSet = new Set<string>(summary.coins.keys());
-        for (const e of exits) for (const c of e.sent.keys()) coinSet.add(c);
+        for (const e of exits) for (const c of [...e.sent.keys(), ...e.retained.keys()]) coinSet.add(c);
         const sui = coinKey("0x2::sui::SUI");
         coinSet.add(sui);
-        const prices = await priceUsdAtTime([...coinSet], atSec ?? undefined);
+        const [prices] = await Promise.all([
+          priceUsdAtTime([...coinSet], atSec ?? undefined),
+          prefetchCoinScale(coinSet),
+        ]);
         const v = coinValuer(prices);
 
         const rank = (m: Map<string, Counterparty>) =>
@@ -363,6 +385,7 @@ export function registerFlowTools(server: McpServer) {
                 }
               : {}),
           },
+          ...(poisoning ? { address_poisoning: poisoning } : {}),
           usd_basis:
             atSec !== null
               ? {
@@ -412,10 +435,13 @@ export function registerFlowTools(server: McpServer) {
             transaction_count: exits.length,
             scope: "Transactions this address sent that carry a bridge marker, read from their events.",
             evidence: EVIDENCE_TIER_MEANING["chain-derived"],
+            sent_meaning:
+              "What actually crossed the bridge: the subject's own outflow minus whatever another Sui address was credited in the same coin in the same transaction (a bridge fee, a relayer payment, a referrer cut). Those legs are reported separately, in retained_on_sui, wherever they are non-zero.",
             by_bridge: bridgeGroups.map((g) => ({
               bridge: g.bridge,
               transactions: g.digests.length,
               sent: v.amounts(g.sent),
+              ...(g.retained.size ? { retained_on_sui: v.amounts(g.retained) } : {}),
               destinations: g.destinations.map((d) => ({
                 chain: d.beneficiary.chain,
                 chain_label: d.beneficiary.chain_label,
@@ -440,6 +466,7 @@ export function registerFlowTools(server: McpServer) {
               bridge: e.bridge,
               protocols: e.protocols,
               sent: v.amounts(e.sent),
+              ...(e.retained.size ? { retained_on_sui: v.amounts(e.retained) } : {}),
               beneficiaries: e.beneficiaries,
               ...(e.unresolvedVaas.length ? { unresolved_vaas: e.unresolvedVaas } : {}),
               ...(e.eventsIncomplete ? { events_incomplete: true } : {}),

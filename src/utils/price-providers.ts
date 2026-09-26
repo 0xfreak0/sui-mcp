@@ -96,9 +96,8 @@ interface AftermathEntry {
 /**
  * Current prices for Sui coin types.
  *
- * Batching is both supported and faster — four coins in one request measured
- * quicker than one coin — so callers should pass the whole set rather than
- * looping.
+ * Batching is supported and faster than one request per coin, so callers
+ * should pass the whole set rather than looping.
  *
  * An unknown coin comes back as `price: -1`, not null and not absent. That
  * sentinel is filtered here so it can never reach a caller as a negative USD
@@ -136,7 +135,7 @@ const DEFILLAMA_PERCENTAGE_URL = "https://coins.llama.fi/percentage";
 
 /**
  * Coins per request. Keys are ~90 characters, so 25 keeps the URL near 2.3 KB,
- * well inside what proxies accept. The Cetus replay priced 195 coins in 8.
+ * well inside what proxies accept.
  */
 export const DEFILLAMA_BATCH = 25;
 
@@ -216,11 +215,9 @@ export interface DefiLlamaResult {
  *
  * The quote's `at` is the timestamp of the point DefiLlama actually used, which
  * can sit on either side of the one asked for, so the caller can see how far
- * from block time a price is. Measured for SUI at 2025-05-22 10:30:00 UTC: the
- * point is 1 s away and priced at $4.16.
+ * from block time a price is.
  *
- * Batches run in sequence: this is a public endpoint and a 200-coin incident
- * is eight requests.
+ * Batches run in sequence because this is a shared public endpoint.
  */
 export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Promise<DefiLlamaResult> {
   const quotes = new Map<string, PriceQuote>();
@@ -264,14 +261,18 @@ export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Prom
  * is absent from its answer and from this map, as is every coin of a batch
  * whose request failed: an unknown change is never a zero.
  *
+ * A framework coin (package 0x2) is asked for under its short address:
+ * DefiLlama's `/percentage` answer for the 64-digit form of SUI does not
+ * follow the price, while the short form does.
+ *
  * Aftermath's `priceChange24HoursPercentage` is not used: it reads 0.0 for
- * every coin, SUI included, on days SUI moved 17%.
+ * every coin, SUI included, whatever the price did.
  */
 export async function fetchDefiLlamaChange24h(coinTypes: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const keyToCoins = new Map<string, string[]>();
   for (const coinType of new Set(coinTypes)) {
-    const key = defiLlamaKey(coinType);
+    const key = defiLlamaKey(coinType)?.replace(/^sui:0x0{63}2::/, "sui:0x2::");
     if (key) keyToCoins.set(key, [...(keyToCoins.get(key) ?? []), coinType]);
   }
   const keys = [...keyToCoins.keys()];

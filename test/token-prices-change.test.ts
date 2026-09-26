@@ -15,7 +15,8 @@ registerPriceTools({
 
 const SUI = "0x2::sui::SUI";
 const JUNK = "0x1111111111111111111111111111111111111111111111111111111111111111::junk::JUNK";
-const SUI_KEY = "sui:0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+const SUI_KEY = "sui:0x2::sui::SUI";
+const SUI_LONG_KEY = "sui:0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
 
 let fetchMock: Mock;
@@ -34,8 +35,12 @@ describe("get_token_prices: 24h change", () => {
         return ok({ [SUI]: { price: 1.1598, priceChange24HoursPercentage: 0.0 }, [JUNK]: { price: -1, priceChange24HoursPercentage: 0.0 } });
       }
       if (url.startsWith("https://coins.llama.fi/percentage/")) {
-        // A coin DefiLlama does not list is absent from its answer.
-        return ok({ coins: { [SUI_KEY]: 16.778330414302467 } });
+        // A coin DefiLlama does not list is absent from its answer. The
+        // 64-digit SUI key answers a change that does not follow the price.
+        const coins: Record<string, number> = {};
+        if (url.includes(SUI_LONG_KEY)) coins[SUI_LONG_KEY] = -3.3695327927804772;
+        if (url.includes(`/${SUI_KEY}`) || url.includes(`,${SUI_KEY}`)) coins[SUI_KEY] = 16.778330414302467;
+        return ok({ coins });
       }
       return ok({ coins: {} });
     });

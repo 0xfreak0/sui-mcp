@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.21.0 (2026-09-26)
 
 Seven blind investigations of real Sui incidents ran through the server using
 only its tools: an address-poisoning loss, a wallet drainer campaign and its NFT

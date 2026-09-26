@@ -1,13 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * Regression: identity enrichment was fetched and then dropped on the way out.
+ * Identity enrichment from `describeAddresses` reaches the funding tool's
+ * output.
  *
- * `describeAddresses` returned ten held names, six expired, and the funding
- * tool's own output carried none of them — because the response object was
- * built from an explicit field list that never mentioned them. The unit tests
- * passed throughout, because they exercised the resolver rather than the tool.
- * These assert on what a caller actually receives.
+ * The response object is built from an explicit field list, so held and
+ * expired names appear only if that list carries them. These assert on what a
+ * caller actually receives, rather than on the resolver.
  */
 
 const mockGqlQuery = vi.fn();
@@ -122,9 +121,9 @@ describe("find_funding_sources reports expired names for the batch", () => {
   });
 
   it("lists a name another address sent apart from the ones the holder used", async () => {
-    // The Cetus attacker's taunt name: 0x407fb974 sent the registration to the
-    // frozen wallet in 2uE2WRav, and the holder never touched it. Reporting it
-    // as a name the address "was known by" attributes a stranger's message.
+    // 0x407fb974 sent this registration to the holder in 2uE2WRav, and the
+    // holder never touched it. Reporting it as a name the address "was known
+    // by" would attribute a stranger's message.
     const SENDER = "0x407fb97400abc8f37defc658ab9c9f53a8953a1a446cd820561382fb3728ca20";
     mockDescribe.mockImplementation(async (addrs: string[] = []) =>
       new Map(

@@ -19,10 +19,8 @@ describe("diffLines", () => {
   });
 
   /**
-   * Regression: the excerpt used to be the diff from the top of the module,
-   * so a change below the first 60 lines was never shown. On the Nemo v9→v10
-   * upgrade the `sy` sample was 60 lines of `use` statements and structs with
-   * no `+` or `-` line at all.
+   * The excerpt is built from hunks around the changes, so a change below the
+   * first 60 lines is shown in place of the unchanged lines above it.
    */
   it("shows a change deep in a module, not the leading unchanged lines", () => {
     const prefix = Array.from({ length: 100 }, (_, i) => `\t${i}: Nop`);
@@ -213,9 +211,8 @@ describe("diffPackages", () => {
 });
 
 describe("diffLinkage", () => {
-  // Real linkage rows of Cetus CLMM v10 and v11 (0x1eabed72… lineage). The
-  // fix for the May 2025 exploit shipped as a relink of integer-mate, with
-  // only a version constant changing in CLMM's own modules.
+  // Linkage rows of Cetus CLMM v10 and v11 (0x1eabed72… lineage) as mainnet
+  // returns them: integer-mate is relinked from v3 to v5 and ACL is unchanged.
   const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002";
   const MATE = "0x714a63a0dba6da4f017b42d5d0fb78867f18bcde904868e51d951a5a6f5b7f57";
   const ACL = "0xbe21a06129308e0495431d12286127897aff07a8ade3970495a4404d97f9eaaa";

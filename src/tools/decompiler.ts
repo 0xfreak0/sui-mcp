@@ -237,7 +237,7 @@ export function registerDecompilerTools(server: McpServer) {
                   package_id: pkg.storageId,
                   module_count: results.length,
                   // Surfaced so a truncated result is never mistaken for the
-                  // whole package — silence here would be the actual bug.
+                  // whole package.
                   total_modules_with_bytecode: modulesWithBytecode.length,
                   complete: results.length === modulesWithBytecode.length,
                   ...(notes.length ? { notes } : {}),

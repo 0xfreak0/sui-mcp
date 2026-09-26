@@ -16,6 +16,7 @@ import {
   inflowsNewestFirst,
   payerOf,
   type CandidateTx,
+  type RemainingEntry,
   type UnfollowedRecipient,
 } from "./trace-hop.js";
 import { fetchEventJson } from "./event-json.js";
@@ -194,11 +195,9 @@ export interface FetchedTx {
 /**
  * Read the remaining object changes of a transaction that exceeded one page.
  *
- * Measured: about 1 transaction in 400 carries more than 50 object changes,
- * and a real three-hop trace hit one with 101. The connection is ordered by
- * object id, not by importance, so which 50 arrive first is arbitrary with
- * respect to whether the interesting transfer is among them — truncating
- * silently would drop a capability transfer on a coin flip.
+ * The connection is ordered by object id, not by importance, so which 50
+ * arrive first is arbitrary with respect to whether the interesting transfer
+ * is among them, and truncating silently could drop a capability transfer.
  *
  * Bounded rather than exhaustive: the caller states the cap it hit, which is
  * the one thing a truncated read must never leave unsaid.
@@ -294,7 +293,7 @@ export async function fetchTx(digest: string): Promise<FetchedTx | null> {
   // needs no TTL. This is deliberately the only thing about a trace that is
   // cached: the *conclusion* is derived from labels and from how far the chain
   // has grown, both of which move, and a stale conclusion looks identical to a
-  // current one. Re-running a trace after adding a label now costs nothing but
+  // current one. Re-running a trace after adding a label costs nothing but
   // the recomputation.
   const network = getNetwork();
   const cached = getCachedTransaction<FetchedTx>(network, digest);
@@ -363,12 +362,10 @@ export async function fetchTx(digest: string): Promise<FetchedTx | null> {
 
   // The fullnode prunes. A digest it no longer holds is exactly what the
   // archives exist for, and a trace that stops there is the case an
-  // investigator most needs to follow — old money is the money worth tracing.
+  // investigator most needs to follow.
   //
-  // The commit that removed this fallback justified it on the archive not
-  // returning balance_changes. Measured against mainnet, it returns the same
-  // sender, balance changes, commands, timestamp and checkpoint the fullnode
-  // does, so that reason no longer holds.
+  // The archive returns the same sender, balance changes, commands,
+  // timestamp and checkpoint the fullnode does.
   let res;
   try {
     res = await withArchiveFallback(
@@ -422,12 +419,11 @@ export async function fetchTx(digest: string): Promise<FetchedTx | null> {
     signatures: (g.signatures ?? [])
       .map((s) => (s.bcs?.value ? Buffer.from(s.bcs.value).toString("base64") : ""))
       .filter(Boolean),
-    // The archive DOES report object changes. An earlier version claimed it
-    // could not and disclaimed object flow on every archive hop; verified
-    // false against mainnet, where a digest the fullnode has pruned comes back
-    // with changedObjects carrying objectType and both owners. This transport
-    // is also the only one that can resolve the pre-2024 ambiguity, because it
-    // states inputState as EXISTS / DOES_NOT_EXIST rather than a null.
+    // The archive reports object changes: a digest the fullnode has pruned
+    // comes back with changedObjects carrying objectType and both owners.
+    // This transport is also the only one that can resolve the pre-2024
+    // ambiguity, because it states inputState as EXISTS / DOES_NOT_EXIST
+    // rather than a null.
     objectMovements: readGrpcObjectChanges(
       (g.effects?.changedObjects ?? []) as GrpcChangedObject[],
       protocolForPackage,
@@ -476,10 +472,9 @@ const AFFECTED_BEFORE = `query($address: SuiAddress!, $last: Int!, $before: Stri
  * Candidates per page, and pages per search.
  *
  * The sent-transaction search reaches 500 transactions because an attacker
- * keeps working before moving the proceeds: the Cetus exploiter sent 385
- * transactions (the rest of the drain) before its first haSUI outflow. Each
- * page is one request of about 0.2s. The object and backward searches read
- * inflows, which a busy address has many more of, so they stop sooner.
+ * can send hundreds of transactions before moving the proceeds. The object
+ * and backward searches read inflows, which a busy address has many more of,
+ * so they stop sooner.
  */
 export const CANDIDATE_PAGE = 50;
 export const SENT_PAGES = 10;
@@ -531,6 +526,7 @@ export async function candidatePage(
         coin_type: b.coinType?.repr ?? "",
         amount: b.amount ?? "0",
       })),
+      ...(completed[i].balanceChangesTruncated ? { changesTruncated: true } : {}),
     };
   });
   const forward = paging === "forward";
@@ -560,18 +556,30 @@ export interface ForwardSpend {
   via: "sent" | "released-from-object";
   spent: bigint;
 }
-
 export interface ForwardScan {
   /** Spends in the order they happened. */
   spends: ForwardSpend[];
   /** The filter that found them, or the last one read when none was found. */
   phase: "sent" | "affected";
-  /** Transactions read in that phase, the current one excluded. */
+  /** Transactions read in that phase, the current one and the caller's `hardSkip` excluded. */
   seen: number;
   /** The phase reached the end of the address's history (or of the window). */
   exhausted: boolean;
   /** Stopped early because `need` was covered or `maxSpends` was reached. */
   satisfied: boolean;
+  /**
+   * Candidates that did spend the tracked coin but whose value the
+   * address-start root of the same graph already claimed. Nonzero here means
+   * the value did move, just not through a transaction this scan may count
+   * again.
+   */
+  alreadyAllocated: number;
+  /**
+   * Candidates that spent the tracked coin but were drained to zero by this
+   * same node's earlier arrivals: those spends are already counted against
+   * them, and this arrival's share is still held.
+   */
+  drainedBySelf: number;
 }
 
 /**
@@ -579,10 +587,10 @@ export interface ForwardScan {
  *
  * Forward tracing filters on **sentAddress**, not `affectedAddress`. "The next
  * transaction affecting R" includes someone paying R, and following that
- * attributed a third party's transaction to the subject. Within R's own
+ * would attribute a third party's transaction to the subject. Within R's own
  * transactions, only one that SPENDS the tracked coin (gas removed) continues
- * the funds; the first one of any kind does not, and following it reported an
- * unrelated token transfer as the traced SUI.
+ * the funds; the first one of any kind does not, and following it would
+ * report an unrelated token transfer as the traced SUI.
  *
  * An object cannot send. When R has sent nothing since the hop, the funds may
  * be held by an object (a `Receiving<T>` transfer to an object's id, an
@@ -590,11 +598,10 @@ export interface ForwardScan {
  * by someone else. That case is found through `affectedAddress`, as the later
  * transactions in which R's balance of the coin goes down.
  *
- * `afterCheckpoint` is **exclusive** — verified against mainnet: passing a
- * transaction's own checkpoint excludes it, passing `cp - 1` includes it.
- * Same-checkpoint forwarding is what a script does, so the window starts at
- * `cp - 1` and the current digest and anything before it in the page are
- * dropped.
+ * `afterCheckpoint` is **exclusive**: passing a transaction's own checkpoint
+ * excludes it, passing `cp - 1` includes it. Same-checkpoint forwarding is
+ * what a script does, so the window starts at `cp - 1` and the current digest
+ * and anything before it in the page are dropped.
  *
  * Stops at `maxSpends` spends or once they add up to `need`, whichever comes
  * first; with neither it reads every page it is allowed.
@@ -603,9 +610,9 @@ export async function scanForwardSpends(
   address: string,
   atCheckpoint: number | undefined,
   coin: string | null,
-  visited: ReadonlySet<string>,
+  remaining: ReadonlyMap<string, RemainingEntry>,
   current: string | undefined,
-  opts: { need?: bigint; maxSpends?: number; window?: SearchWindow } = {},
+  opts: { need?: bigint; maxSpends?: number; window?: SearchWindow; hardSkip?: ReadonlySet<string> } = {},
 ): Promise<ForwardScan> {
   const w = opts.window ?? {};
   const fromHop = atCheckpoint === undefined ? undefined : atCheckpoint - 1;
@@ -623,6 +630,8 @@ export async function scanForwardSpends(
     const spends: ForwardSpend[] = [];
     let covered = 0n;
     let seen = 0;
+    let alreadyAllocated = 0;
+    let drainedBySelf = 0;
     let after: string | null = null;
     for (let page = 0; page < pages; page++) {
       const { txs, cursor, more } = await candidatePage(query, {
@@ -632,16 +641,25 @@ export async function scanForwardSpends(
         afterCheckpoint,
         ...(w.beforeCheckpoint !== undefined ? { beforeCheckpoint: w.beforeCheckpoint } : {}),
       }, "forward");
-      seen += txs.filter((t) => t.digest !== current).length;
-      for (const hit of allSpends(txs, address, coin, visited, current)) {
+      // A hard-skipped digest is the caller's own earlier step, which predates
+      // this receipt, so it is not a transaction sent since.
+      seen += txs.filter((t) => t.digest !== current && !opts.hardSkip?.has(t.digest)).length;
+      const found = allSpends(txs, address, coin, remaining, opts.hardSkip, current);
+      alreadyAllocated += found.alreadyAllocated;
+      drainedBySelf += found.drainedBySelf;
+      for (const [k, hit] of found.hits.entries()) {
         spends.push({ tx: hit.tx, via, spent: hit.spent });
         covered += hit.spent;
-        if (done(spends, covered)) return { spends, seen, exhausted: false, satisfied: true };
+        if (done(spends, covered)) {
+          // The last spend of the last page leaves nothing unread.
+          const last = k === found.hits.length - 1 && (!more || !cursor);
+          return { spends, seen, exhausted: last, satisfied: true, alreadyAllocated, drainedBySelf };
+        }
       }
-      if (!more || !cursor) return { spends, seen, exhausted: true, satisfied: false };
+      if (!more || !cursor) return { spends, seen, exhausted: true, satisfied: false, alreadyAllocated, drainedBySelf };
       after = cursor;
     }
-    return { spends, seen, exhausted: false, satisfied: false };
+    return { spends, seen, exhausted: false, satisfied: false, alreadyAllocated, drainedBySelf };
   };
 
   const sent = await read(SENT_AFTER, "sent", SENT_PAGES);
@@ -652,10 +670,42 @@ export async function scanForwardSpends(
 /**
  * Why a forward search found nothing to follow. The wording is the one
  * `trace_funds` reports as its `stop_reason`.
+ *
+ * A scan that hit its page limit is reported as budget-limited first, even
+ * when it also saw a wildcard-blocked candidate along the way: a truncated
+ * scan has not actually ruled out an unblocked spend sitting in the pages it
+ * never reached, and telling the reader "it did move, see the other arrival"
+ * when the search may simply have stopped too soon is worse than saying
+ * nothing was found yet.
  */
 export function noSpendReason(address: string, coin: string | null, scan: ForwardScan): string {
   const coinName = coin ? displayCoin(coin).symbol : "the funds";
-  const { seen, exhausted } = scan;
+  const { seen, exhausted, satisfied, alreadyAllocated, drainedBySelf } = scan;
+  const budgetLimited = !exhausted && !satisfied;
+  if (!budgetLimited && alreadyAllocated > 0) {
+    return (
+      `${address} spent ${coinName} in ${alreadyAllocated} transaction(s) whose value was already counted from ` +
+      `this address's start node elsewhere in this graph, so this branch's share is not counted a second time. ` +
+      `It did move; see the start node's edges for where.`
+    );
+  }
+  if (!budgetLimited && drainedBySelf > 0) {
+    return (
+      `${address}'s ${drainedBySelf} later spend(s) of ${coinName} are already counted against its earlier ` +
+      `arrival(s) in this graph, so this arrival's share is still held.`
+    );
+  }
+  // Spends of the coin the scan saw but could not count again: saying that
+  // none of the transactions moved it would be false.
+  const counted = alreadyAllocated + drainedBySelf;
+  if (budgetLimited && counted > 0) {
+    return (
+      `${address} ${scan.phase === "sent" ? "sent" : "was touched by"} ${seen} transactions after receiving the funds, ` +
+      `and the ${counted} of them that moved ${coinName} are already counted elsewhere in this graph. The search ` +
+      `stopped at that limit, so this arrival's share may have moved in a later transaction: restart from ` +
+      `${address}'s later activity.`
+    );
+  }
   if (scan.phase === "sent") {
     return exhausted
       ? `${address} has sent ${seen} transaction(s) since receiving the funds and none of them moved ${coinName}, so it has not spent them yet.`
@@ -671,10 +721,11 @@ export async function findNextForward(
   address: string,
   atCheckpoint: number | undefined,
   coin: string | null,
-  visited: ReadonlySet<string>,
+  remaining: ReadonlyMap<string, RemainingEntry>,
   current: string,
+  hardSkip?: ReadonlySet<string>,
 ): Promise<ForwardStep> {
-  const scan = await scanForwardSpends(address, atCheckpoint, coin, visited, current, { maxSpends: 1 });
+  const scan = await scanForwardSpends(address, atCheckpoint, coin, remaining, current, { maxSpends: 1, hardSkip });
   const hit = scan.spends[0];
   if (hit) return { digest: hit.tx.digest, via: hit.via, spent: hit.spent };
   return { digest: null, reason: noSpendReason(address, coin, scan) };
@@ -698,6 +749,13 @@ export interface BackwardScan {
   scanned: number;
   /** Reached the start of the address's history (or of the window). */
   exhausted: boolean;
+  /**
+   * Candidates that did pay the tracked coin in but whose value the
+   * address-start root of the same graph already claimed.
+   */
+  alreadyAllocated: number;
+  /** Inflows drained to zero by this same node's earlier arrivals. See {@link ForwardScan.drainedBySelf}. */
+  drainedBySelf: number;
 }
 
 /**
@@ -711,10 +769,10 @@ export async function scanPriorInflows(
   address: string,
   atCheckpoint: number | undefined,
   coin: string | null,
-  visited: ReadonlySet<string>,
+  remaining: ReadonlyMap<string, RemainingEntry>,
   current: string | undefined,
   need: bigint,
-  opts: { maxInflows?: number; window?: SearchWindow } = {},
+  opts: { maxInflows?: number; window?: SearchWindow; hardSkip?: ReadonlySet<string> } = {},
 ): Promise<BackwardScan> {
   const w = opts.window ?? {};
   const fromHop = atCheckpoint === undefined ? undefined : atCheckpoint + 1;
@@ -725,6 +783,8 @@ export async function scanPriorInflows(
   let before: string | null = null;
   let scanned = 0;
   let exhausted = false;
+  let alreadyAllocated = 0;
+  let drainedBySelf = 0;
   const full = () => covered >= need || (opts.maxInflows !== undefined && found.length >= opts.maxInflows);
 
   for (let page = 0; page < AFFECTED_PAGES && !full(); page++) {
@@ -736,23 +796,57 @@ export async function scanPriorInflows(
       ...(w.afterCheckpoint !== undefined ? { afterCheckpoint: w.afterCheckpoint } : {}),
     }, "backward");
     scanned += txs.length;
-    for (const inflow of inflowsNewestFirst(txs, address, coin, visited, page === 0 ? current : undefined)) {
+    const inflows = inflowsNewestFirst(txs, address, coin, remaining, opts.hardSkip, page === 0 ? current : undefined);
+    alreadyAllocated += inflows.alreadyAllocated;
+    drainedBySelf += inflows.drainedBySelf;
+    // Stopping before the page's last inflow leaves older inflows unread, even on the oldest page.
+    let cut = false;
+    for (const [k, inflow] of inflows.hits.entries()) {
       found.push(inflow);
       covered += inflow.received;
-      if (full()) break;
+      if (full()) {
+        cut = k < inflows.hits.length - 1;
+        break;
+      }
     }
     if (!more || !cursor) {
-      exhausted = true;
+      exhausted = !cut;
       break;
     }
     before = cursor;
   }
-  return { found, covered, scanned, exhausted };
+  return { found, covered, scanned, exhausted, alreadyAllocated, drainedBySelf };
 }
 
-/** Why a backward search found no inflow. The wording is `trace_funds`'s. */
+/**
+ * Why a backward search found no inflow. The wording is `trace_funds`'s.
+ *
+ * Same ordering as {@link noSpendReason}: a page-limited scan is reported as
+ * budget-limited first, even if it also saw a wildcard-blocked candidate.
+ */
 export function noInflowReason(address: string, coin: string | null, scan: BackwardScan): string {
   const coinName = coin ? displayCoin(coin).symbol : "value";
+  if (scan.exhausted && scan.alreadyAllocated > 0) {
+    return (
+      `${address} was paid ${coinName} in ${scan.alreadyAllocated} transaction(s) whose value was already counted ` +
+      `into this address's start node elsewhere in this graph, so this branch's share is not counted a second time.`
+    );
+  }
+  if (scan.exhausted && scan.drainedBySelf > 0) {
+    return (
+      `${address}'s ${scan.drainedBySelf} earlier inflow(s) of ${coinName} already explain its other arrival(s) ` +
+      `in this graph, and no other inflow explains this one: a mint, a withdrawal from a protocol it sent itself, ` +
+      `or a transfer older than the history this server can read.`
+    );
+  }
+  const counted = scan.alreadyAllocated + scan.drainedBySelf;
+  if (!scan.exhausted && counted > 0) {
+    return (
+      `Of the ${scan.scanned} transactions before this one that touch ${address}, the ${counted} that paid ` +
+      `${coinName} into it are already counted elsewhere in this graph. The search stopped at that limit; the ` +
+      `funding is older.`
+    );
+  }
   return scan.exhausted
     ? `No earlier transaction paid ${coinName} into ${address}. Where it got these funds is not visible as an inflow: a mint, a withdrawal from a protocol it sent itself, or a transfer older than the history this server can read.`
     : `None of the ${scan.scanned} transactions before this one that touch ${address} paid ${coinName} into it. The search stopped at that limit; the funding is older.`;
@@ -769,11 +863,12 @@ export async function findPriorInflow(
   address: string,
   atCheckpoint: number | undefined,
   coin: string | null,
-  visited: ReadonlySet<string>,
+  remaining: ReadonlyMap<string, RemainingEntry>,
   current: string,
   need: bigint,
+  hardSkip?: ReadonlySet<string>,
 ): Promise<BackwardStep> {
-  const scan = await scanPriorInflows(address, atCheckpoint, coin, visited, current, need);
+  const scan = await scanPriorInflows(address, atCheckpoint, coin, remaining, current, need, { hardSkip });
   if (scan.found.length === 0) return { digest: null, reason: noInflowReason(address, coin, scan) };
   const [followed, ...rest] = scan.found;
   return {
@@ -793,10 +888,9 @@ export async function findPriorInflow(
 /**
  * Transactions sampled to decide whether a backward source is a hub.
  *
- * A hub's earlier inflows are other parties' deposits: walking past an
- * exchange-scale wallet named mainnet-launch-era strangers as the source of a
- * 2025 payment. `measureFanout` classifies at 100 distinct counterparties, and
- * 200 recent transactions is four requests.
+ * A hub's earlier inflows are other parties' deposits, so walking past one
+ * names strangers as the source. `measureFanout` classifies at 100 distinct
+ * counterparties, and 200 recent transactions is four requests.
  */
 export const HUB_SCAN_TRANSACTIONS = 200;
 
@@ -872,11 +966,9 @@ export function backwardDeadEnd(tx: FetchedTx, recipient: string | null, coin: s
 /**
  * Signed human amount with its symbol, marked when nothing vouches for the coin.
  *
- * Scale comes from {@link coinScale}, which resolves by coin TYPE. This used to
- * carry its own symbol-keyed decimals map — a third copy of the same table —
- * which meant any coin whose struct name was `SUI` was rendered with real SUI's
- * 9 decimals. Measured on mainnet, 47 of 289 imitators declare a different
- * scale, one of them 10^9 out.
+ * Scale comes from {@link coinScale}, which resolves by coin type, so a coin
+ * whose struct name is `SUI` is rendered at real SUI's 9 decimals only when it
+ * is real SUI. An imitator can declare a different scale.
  */
 export function formatAmount(amount: string, coinType: string): string {
   const val = BigInt(amount);

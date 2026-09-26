@@ -27,17 +27,16 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  * `chain-derived` versus `indexer-attested`: the weaker claim must not borrow
  * the stronger one's confidence on its way into a report.
  *
- * Clusters used to be uniformly `heuristic`, and mostly still are. `co_signer`
- * is the exception and it is a different KIND of claim, not a stronger guess:
+ * Most clusters are `heuristic`. `co_signer` is a different kind of claim:
  * every other signal says two addresses behaved the way co-controlled wallets
  * tend to, measured against a base rate, while co-signature says a key is in
- * the committee that hashes to the wallet's address. So the tier moved onto
- * each cluster. A component that needed one behavioural edge to hold together
- * is heuristic however strong the rest of it looks — the same weakest-link
- * rule `min_edge_weight` already follows.
+ * the committee that hashes to the wallet's address. So the tier is set per
+ * cluster. A component that needs one behavioural edge to hold together is
+ * heuristic however strong the rest of it looks, the same weakest-link rule
+ * `min_edge_weight` follows.
  *
- * What co-signature still does NOT establish is ownership. Holding a spending
- * key is control; a custodian holds one for a client. And a multi-party
+ * Co-signature does not establish ownership. Holding a spending key is
+ * control; a custodian holds one for a client. And a multi-party
  * committee is as much evidence its members are separate parties as that they
  * share an operator, which is why a member who cannot spend alone is weighted
  * below the merge floor rather than treated as a weaker co-signer.
@@ -148,7 +147,7 @@ export function registerClusterTools(server: McpServer) {
             threshold: ms.threshold,
             members: ms.members
               .filter((m): m is typeof m & { address: string } => Boolean(m.address))
-              .map((m) => ({ address: m.address, weight: m.weight })),
+              .map((m) => ({ address: m.address, weight: m.weight, ...(m.unsignable ? { unsignable: true } : {}) })),
           });
         }
 
@@ -275,15 +274,19 @@ export function registerClusterTools(server: McpServer) {
                   })),
 
                   // --- inference ---
-                  // Per-cluster now, not blanket. A cluster built purely on
+                  // Decided per cluster. A cluster built purely on
                   // unilateral co-signature is read from the address hash, so
                   // calling it heuristic alongside a shared-funder guess would
                   // understate it as badly as the reverse would overstate one.
-                  evidence_tier: clustered.clusters.every((c) => c.evidence_tier === "chain-derived")
-                    ? "chain-derived"
-                    : clustered.clusters.some((c) => c.evidence_tier === "chain-derived")
-                      ? "mixed — see each cluster's evidence_tier"
-                      : "heuristic",
+                  // No cluster at all is the null result of a heuristic
+                  // search, so an empty result is `heuristic` although every
+                  // cluster of none passes the chain-derived test.
+                  evidence_tier:
+                    clustered.clusters.length > 0 && clustered.clusters.every((c) => c.evidence_tier === "chain-derived")
+                      ? "chain-derived"
+                      : clustered.clusters.some((c) => c.evidence_tier === "chain-derived")
+                        ? "mixed — see each cluster's evidence_tier"
+                        : "heuristic",
                   clusters: clustered.clusters.map((c) => ({
                     ...c,
                     members: c.members.map(describe),
@@ -319,7 +322,7 @@ export function registerClusterTools(server: McpServer) {
                     ? {
                         used_intermediaries: built.used_intermediaries,
                         used_intermediary_note:
-                          "The shared funders and sponsors the edges above rest on. `scan_complete: false` means the scan hit its page cap before reaching the end of that address's history, so calling it narrow is provisional — a widely-distributing address that has since gone quiet can read as narrow from recent activity alone.",
+                          "The shared funders and sponsors the edges above rest on. `scan_complete: false` means the scan stopped at its page cap or the query budget before reaching the end of that address's history, so calling it narrow is provisional — a widely-distributing address that has since gone quiet can read as narrow from recent activity alone.",
                       }
                     : {}),
                   ...(coSigner.excluded.length
@@ -333,7 +336,7 @@ export function registerClusterTools(server: McpServer) {
                     ? {
                         excluded_intermediaries: built.excluded_intermediaries,
                         exclusion_note:
-                          "Measured and discarded. These addresses pay or sponsor too many distinct parties for shared ancestry through them to mean anything — this is the control that keeps a single exchange from linking every wallet on the chain into one cluster.",
+                          "Discarded, with the reason on each entry. Most were measured and pay or sponsor too many distinct parties for shared ancestry through them to mean anything, which is the control that keeps a single exchange from linking every wallet on the chain into one cluster. An entry whose reason says it was never measured (the budget ran out, or the read failed) was dropped because nobody looked, not because it is wide, and edges through it were not looked for.",
                       }
                     : {}),
                   ...(labeledSeeds.length

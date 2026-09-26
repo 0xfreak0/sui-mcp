@@ -54,6 +54,8 @@ const CHECKS = [
   ["probe/incident-pass", "the incident tools on the Cetus and Nemo exploits, against raw chain reads"],
   ["probe/attribution-pass", "funding, clustering, multisig, event, history and holder tools, each against a raw chain read"],
   ["probe/surface-pass", "stateful, prompt, core, market and developer tools against raw chain reads, plus malformed input"],
+  ["probe/case-pass", "every case in cases/incidents, against the answers its sources and the chain give"],
+  ["probe/invariant-pass", "a seeded random sample of mainnet through the tools, against rules that hold for any input"],
 ];
 
 const run = (script) =>

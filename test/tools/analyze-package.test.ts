@@ -24,6 +24,34 @@ describe("analyzePackageModules", () => {
     expect(findings.map((f) => f.code)).toEqual(["no-public-api"]);
   });
 
+  it("does not read an init-only struct merely named like its module as a one-time witness", () => {
+    // `struct Registry has key` in module `registry`: same name case-
+    // insensitively, but not a one-time witness (wrong ability, not upper-cased).
+    const findings = analyzePackageModules([
+      mod({
+        name: "registry",
+        functions: [{ name: "init", visibility: "private", isEntry: false, params: [], returns: [] }],
+        structs: [{ name: "Registry", abilities: ["key"], fields: [] }],
+      }),
+    ]);
+    const finding = findings.find((f) => f.code === "no-public-api");
+    expect(finding?.title).toBe("No public entry points");
+    expect(finding?.evidence).toEqual([]);
+  });
+
+  it("reads the exact one-time-witness shape (upper-cased module name, drop only) as a coin template", () => {
+    const findings = analyzePackageModules([
+      mod({
+        name: "kong",
+        functions: [{ name: "init", visibility: "private", isEntry: false, params: [], returns: [] }],
+        structs: [{ name: "KONG", abilities: ["drop"], fields: [] }],
+      }),
+    ]);
+    const finding = findings.find((f) => f.code === "no-public-api");
+    expect(finding?.title).toBe("No public entry points (bare coin-currency template)");
+    expect(finding?.evidence).toEqual(["struct kong::KONG"]);
+  });
+
   it("flags freeze authority from a DenyCap struct (high severity)", () => {
     const findings = analyzePackageModules([
       mod({

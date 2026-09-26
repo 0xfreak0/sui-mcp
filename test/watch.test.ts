@@ -38,9 +38,8 @@ const tx = (
 describe("planBatches", () => {
   /**
    * The 5,000-byte query cap is what binds: 20 aliases of a minimal selection
-   * measured 3,917 bytes and was accepted; 30 measured 5,877 and was rejected.
-   * A batch that silently drops an address is a watch that reports nothing and
-   * looks calm.
+   * fit under it and 30 do not. A batch that silently drops an address is a
+   * watch that reports nothing and looks calm.
    */
   it("batches at the measured service limit", () => {
     expect(WATCH_BATCH_SIZE).toBe(20);
@@ -185,9 +184,9 @@ describe("summarizePoll", () => {
 
 describe("summarizePoll — a saturated poll is not a complete one", () => {
   /**
-   * Measured on a real mainnet address doing a transaction every two seconds:
-   * it fills the per-poll cap every time. Without saying so, the watch falls
-   * permanently behind while every poll reads as a full report.
+   * An address busier than the per-poll cap fills it every time. Without
+   * saying so, the watch falls permanently behind while every poll reads as a
+   * full report.
    */
   it("says when an address filled the cap", () => {
     const s = summarizePoll(2, [{ address: W, digest: "d", checkpoint: 1, reasons: ["value_out"] }], 3, [W]);
@@ -323,9 +322,7 @@ describe("flagLookalikes", () => {
  *
  * The delta query interpolates a whole batch into one aliased GraphQL document,
  * and the service answers a single unparseable `SuiAddress` with a top-level
- * `data: null` rather than a null for that alias. Verified against mainnet: a
- * batch of two where one address was `not-an-address` returned no data for
- * either.
+ * `data: null` rather than a null for that alias.
  */
 describe("normalizeWatchAddress", () => {
   it("pads a short address to its canonical form", () => {
@@ -363,8 +360,8 @@ describe("normalizeWatchAddress", () => {
  * `afterCheckpoint` is exclusive at CHECKPOINT granularity while the page cap
  * cuts at TRANSACTION granularity, so a full page usually ends part-way through
  * a checkpoint. Advancing to that checkpoint excludes the rest of it from every
- * future poll. Measured on one mainnet address: 30 transactions over 13
- * checkpoints, 8 of them holding more than one.
+ * future poll, and a busy address often has several transactions per
+ * checkpoint.
  */
 describe("safeAdvance", () => {
   const tx = (checkpoint: number, digest = `d${checkpoint}`) => ({ digest, checkpoint });
@@ -428,8 +425,8 @@ describe("flagLookalikes only fires against a watched address", () => {
   // Every address here needs real entropy in the middle: `lowEntropy` drops a
   // candidate with four or fewer distinct hex characters (or a run of twelve
   // zeroes) BEFORE any bucketing, so a lazily built pair is discarded by the
-  // filter rather than by the rule under test, and the assertion passes with
-  // the fix reverted.
+  // filter rather than by the rule under test, and the assertion would pass
+  // without the rule.
   const mid = (seed: string) => (seed + "13579bdf2468ace0").repeat(3).slice(0, 48);
   const WATCHED = "0xaaaabbbb" + mid("4f1c") + "ccccdddd";
   const LOOKALIKE = "0xaaaabbbb" + mid("9b7e") + "ccccdddd";

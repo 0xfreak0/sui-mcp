@@ -37,6 +37,20 @@ export type BridgeResolution =
   /** The exit is recognised, but this server cannot follow it. */
   | "detect-only";
 
+/**
+ * One way a protocol settles its own transfer over other bridges in the same
+ * transaction.
+ */
+export interface SettlementRoute {
+  /** Bridges (by `name`) this route settles over. */
+  over: string[];
+  /**
+   * The protocol's own call or event markers that select this route. Absent
+   * when every transfer of the protocol settles this way.
+   */
+  markers?: string[];
+}
+
 export interface BridgeProtocol {
   id: string;
   name: string;
@@ -52,6 +66,12 @@ export interface BridgeProtocol {
   resolution: BridgeResolution;
   /** What the caller can do next. */
   note: string;
+  /**
+   * The bridges this protocol settles its own transfer over, in the same
+   * transaction. Their markers then fire too, but they are the route of
+   * this protocol's one exit, not further exits: see {@link exitCarrier}.
+   */
+  settlesOver?: SettlementRoute[];
 }
 
 /**
@@ -96,6 +116,9 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     eventMarkers: ["init_order::InitMctpLogged"],
     resolution: "identifier",
     note: "Mayan is a cross-chain swap layer that settles over other bridges, observed on mainnet through Wormhole and Circle CCTP in the same transaction. Those legs pay Mayan's own contracts on the far side, so their recipient is not the beneficiary. resolve_bridge_transfer reads the beneficiary from Mayan's order event (`beneficiaries`).",
+    // Mayan's order event, a WormholeMessage and a CCTP DepositForBurn in one
+    // transaction are one transfer.
+    settlesOver: [{ over: ["Wormhole", "Circle CCTP"] }],
   },
   {
     id: "cctp",
@@ -132,7 +155,15 @@ export const BRIDGE_PROTOCOLS: BridgeProtocol[] = [
     callMarkers: ["cctp_bridge_interface::bridge", "bridge_interface::swap_and_bridge"],
     eventMarkers: [ALLBRIDGE_CCTP_EVENT, ALLBRIDGE_POOL_EVENT],
     resolution: "identifier",
-    note: "Run resolve_bridge_transfer on this transaction. Allbridge's TokensSentEvent names the destination chain and the recipient wallet, so the far side is read from chain data. The live route burns through Circle CCTP with the same nonce.",
+    note: "Run resolve_bridge_transfer on this transaction. Allbridge's TokensSentEvent names the destination chain and the recipient wallet, so the far side is read from chain data. The CCTP route burns through Circle CCTP with the same nonce; the pool route sends a message through Allbridge's own messenger or through Wormhole.",
+    settlesOver: [
+      // The CCTP interface burns through Circle CCTP with the transfer's nonce.
+      { markers: ["cctp_bridge_interface::bridge", ALLBRIDGE_CCTP_EVENT], over: ["Circle CCTP"] },
+      // The pool bridge's messenger 2 is Wormhole, whose WormholeMessage comes
+      // from Allbridge's emitter. A CCTP burn beside a pool transfer is a
+      // separate exit.
+      { markers: ["bridge_interface::swap_and_bridge", ALLBRIDGE_POOL_EVENT], over: ["Wormhole"] },
+    ],
   },
   {
     id: "celer-cbridge",
@@ -184,6 +215,12 @@ export interface BridgeHit {
    * deposit address — and that is precisely the case the label was created for.
    */
   matched: "call" | "event" | "protocol-registry" | "address-label";
+  /**
+   * Bridges this protocol's transfer settles over, from the routes its fired
+   * markers select (`BridgeProtocol.settlesOver`). Absent when it settles
+   * over none.
+   */
+  settlesOver?: string[];
 }
 
 /**
@@ -215,19 +252,29 @@ function matchesCall(marker: string, signature: string): boolean {
  */
 export function detectBridges(calls: CallSite[], eventTypes: string[] = []): BridgeHit[] {
   const hits = new Map<string, BridgeHit>();
+  const signatures = calls.map(callSignature);
 
   for (const proto of BRIDGE_PROTOCOLS) {
-    const byCall = calls.some((c) => {
-      const sig = callSignature(c);
-      return proto.callMarkers.some((m) => matchesCall(m, sig)) || (proto.exactCallMarkers?.includes(sig) ?? false);
-    });
-    const byEvent = eventTypes.some((t) => proto.eventMarkers.some((m) => matchesEvent(m, t)));
-    if (byCall || byEvent) {
+    const firedCalls = [
+      ...proto.callMarkers.filter((m) => signatures.some((sig) => matchesCall(m, sig))),
+      ...(proto.exactCallMarkers ?? []).filter((m) => signatures.includes(m)),
+    ];
+    const firedEvents = proto.eventMarkers.filter((m) => eventTypes.some((t) => matchesEvent(m, t)));
+    if (firedCalls.length || firedEvents.length) {
+      const fired = new Set([...firedCalls, ...firedEvents]);
+      const settlesOver = [
+        ...new Set(
+          (proto.settlesOver ?? [])
+            .filter((r) => !r.markers || r.markers.some((m) => fired.has(m)))
+            .flatMap((r) => r.over),
+        ),
+      ];
       hits.set(proto.name, {
         protocol: proto.name,
         resolution: proto.resolution,
         note: proto.note,
-        matched: byCall ? "call" : "event",
+        matched: firedCalls.length ? "call" : "event",
+        ...(settlesOver.length ? { settlesOver } : {}),
       });
     }
   }
@@ -238,8 +285,8 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
   //
   // A protocol with curated markers is decided by those markers alone. A call
   // into its package is not an exit: every Pyth price update calls Wormhole's
-  // `vaa::parse_and_verify`, which reported a NAVI deposit as value leaving
-  // Sui. 14 of 30 sampled NAVI deposits carried that call.
+  // `vaa::parse_and_verify`, so a NAVI deposit carrying a price update would
+  // otherwise read as value leaving Sui.
   for (const call of calls) {
     const proto = lookupProtocol(call.packageId);
     if (proto?.type !== "bridge" || hits.has(proto.name)) continue;
@@ -258,4 +305,35 @@ export function detectBridges(calls: CallSite[], eventTypes: string[] = []): Bri
 /** The first hit that can actually be followed, if any. */
 export function resolvableHit(hits: BridgeHit[]): BridgeHit | null {
   return hits.find((h) => h.resolution === "identifier") ?? null;
+}
+
+/**
+ * Which of a transaction's bridge hits carried its exit, which are the route
+ * it settled over, and which exited beside it. One transaction is one exit:
+ * a Mayan MCTP order fires Mayan's, Wormhole's and CCTP's markers together
+ * and is one transfer. The carrier is a hit whose `settlesOver` names another
+ * hit, failing that the first hit in the order `BRIDGE_PROTOCOLS` lists them.
+ * The rule reads markers only, so `screen_address`, which groups before it
+ * reads any event JSON, and `summarize_address_flows`, which reads it first,
+ * file a transaction under the same carrier. `route` holds only the
+ * carrier's settlement legs. Every other hit is `alsoExited`: a separate
+ * transfer in the same transaction whose recipient is a destination of its
+ * own. `settled` is true when the carrier was picked by the settlement
+ * relation. Null for no hits.
+ */
+export function exitCarrier(
+  hits: BridgeHit[],
+): { carrier: BridgeHit; route: string[]; alsoExited: string[]; settled: boolean } | null {
+  if (hits.length === 0) return null;
+  const present = new Set(hits.map((h) => h.protocol));
+  const wrapper = hits.find((h) => h.settlesOver?.some((s) => present.has(s)));
+  const carrier = wrapper ?? hits[0];
+  const others = hits.filter((h) => h !== carrier).map((h) => h.protocol);
+  const legs = wrapper?.settlesOver ?? [];
+  return {
+    carrier,
+    route: others.filter((p) => legs.includes(p)),
+    alsoExited: others.filter((p) => !legs.includes(p)),
+    settled: wrapper !== undefined,
+  };
 }

@@ -107,8 +107,7 @@ describe("npm tarball contents", () => {
 describe("ESM correctness", () => {
   // The build output is ESM, where a bare `require` is undefined. Vitest's
   // transform provides one, so this class of bug passes every unit test and
-  // only fails when the built server runs — which is how it reached a manual
-  // smoke test once already. A static check is cheaper than catching it there.
+  // only fails when the built server runs. A static check catches it first.
   it("never calls require() without createRequire in the same file", () => {
     const offenders: string[] = [];
     const walk = (dir: string) => {

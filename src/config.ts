@@ -160,6 +160,24 @@ export const GRAPHQL_TRANSPORT = {
  */
 export const GRPC_TRANSPORT = GRAPHQL_TRANSPORT;
 
+/** Default requests per {@link RATE_WINDOW_MS} window to a `*.sui.io` host. */
+export const PUBLIC_RATE_LIMIT = 180;
+export const RATE_WINDOW_MS = 10_000;
+
+/**
+ * Requests per window for `host`, or null for no limit. `SUI_RATE_LIMIT` sets it
+ * for every host; `0` turns limiting off.
+ */
+export function rateLimitFor(host: string): number | null {
+  const raw = process.env.SUI_RATE_LIMIT?.trim();
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0) return n === 0 ? null : n;
+    process.stderr.write(`[config] ignoring SUI_RATE_LIMIT=${JSON.stringify(raw)}: expected a whole number of requests per 10 seconds, or 0\n`);
+  }
+  return /(^|\.)sui\.io$/.test(host) ? PUBLIC_RATE_LIMIT : null;
+}
+
 export const DECOMPILER_PATH = process.env.SUI_DECOMPILER_PATH ?? "move-decompiler";
 
 export function suivisionPackageUrl(packageId: string): string {

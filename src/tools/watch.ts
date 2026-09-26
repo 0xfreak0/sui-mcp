@@ -61,9 +61,9 @@ export function registerWatchTools(server: McpServer) {
         return errorResult("addresses is required for add and remove.");
       }
 
-      // Raw integer units only. "0.5", "1e9" and "1_000" all threw inside
-      // BigInt and fell back to no floor at all, so a caller asking to see only
-      // large movements got every movement and was told nothing.
+      // Raw integer units only. BigInt cannot parse "0.5", "1e9" or "1_000",
+      // and an unparseable floor is no floor at all, so a caller asking to see
+      // only large movements would get every movement and be told nothing.
       if (min_amount !== undefined && !/^\d+$/.test(min_amount.trim())) {
         return errorResult(
           `min_amount must be a whole number of RAW coin units, not "${min_amount}". SUI has 9 decimals, so 0.5 SUI is "500000000".`,
@@ -83,10 +83,10 @@ export function registerWatchTools(server: McpServer) {
         ),
       ];
 
-      // REMOVE runs before this check. A malformed row can exist in the store —
-      // written by an earlier build, or by hand — and poll_watch tells the
-      // caller to remove it by name. Refusing the only call that can clear it
-      // left that row unremovable except by editing the database.
+      // `remove` runs before this check. A malformed row can exist in the
+      // store (written by an earlier build, or by hand), and poll_watch tells
+      // the caller to remove it by name. Refusing it here would leave that row
+      // unremovable except by editing the database.
       if (action === "remove") {
         const seen = new Set<string>();
         const removed: string[] = [];
@@ -132,7 +132,7 @@ export function registerWatchTools(server: McpServer) {
         listWatches(network).map((w) => [normalizeWatchAddress(w.address) ?? w.address, w.last_checkpoint]),
       );
       // saveWatch returns false when the write failed, and since that failure
-      // is now swallowed to keep reads working, counting the input instead
+      // is swallowed to keep reads working, counting the input instead
       // would report addresses as watched that were never recorded.
       const saved = valid.filter((address) =>
         saveWatch(network, {

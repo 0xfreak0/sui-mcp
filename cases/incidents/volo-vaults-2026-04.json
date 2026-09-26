@@ -1,0 +1,341 @@
+{
+  "slug": "volo-vaults-2026-04",
+  "kind": "key-compromise",
+  "title": "Volo vault operator key compromise, 21 April 2026",
+  "network": "mainnet",
+  "summary": "On 21 April 2026 the single ed25519 key 0xe769…ef75, which held the Volo vault OperatorCap, sent three transactions that withdrew the vaults' NAVI positions and paid 925,120 USDC, 19.6 WBTC, 215.6 XAUm, 0.98 xBTC and 0.98 wBTC to a fresh wallet 0xd763…a46a that the same key had funded 22 minutes earlier. The attacker bridged 1,557,392.63 USDC to Ethereum 0x0ff5…f1ca in six CCTP burns and sent 19.6 WBTC through LayerZero to the same address; the 2-of-4 multisig that holds the UpgradeCap and AdminCap disabled 16 vaults and froze the OperatorCap within two hours. On 23 April the attacker's own key set an address-alias set that excludes itself, and the alias 0xe28b…0a94 moved the remaining 100.6 XAUm to 0xbfcd…a175 on 24 April.",
+  "sources": [
+    { "url": "https://rekt.news/volo-rekt", "publisher": "Rekt", "kind": "news" },
+    { "url": "https://x.com/volo_sui/status/2046715584201511351", "publisher": "Volo", "kind": "official" },
+    { "url": "https://x.com/volo_sui/status/2048109952536129876", "publisher": "Volo", "kind": "official" },
+    { "url": "https://news.bitcoin.com/volo-protocol-loses-3-5-million-in-sui-blockchain-exploit-blocks-wbtc-bridge-attempt/", "publisher": "Bitcoin.com News", "kind": "news" },
+    { "url": "https://ambcrypto.com/volo-claims-successful-recovery-of-90-of-stolen-funds-within-days-of-exploit/", "publisher": "AMBCrypto", "kind": "news" }
+  ],
+  "subjects": {
+    "operator_key": "0xe76970bbf9b038974f6086009799772db5190f249ce7d065a581b1ac0adaef75",
+    "attacker": "0xd763599972ea5a8cfe53d182371ee010dc52ace7e39ccff7d8803ba7100fa46a",
+    "admin_multisig": "0x5da3b6fb1312a96afe8622a0675420a77d348a274931132574b557362618cfd3",
+    "alias_signer": "0xe28b8db376deb260de751dc05f4f55fc31895b479117ca3560d2f55730510a94",
+    "alias_second": "0x21efb1328a4d7c69428223ba85ce2194221c44a10b3d3514dd16c173b954d35d",
+    "recovery_wallet": "0xbfcd10fc8664d6d1f93c888f3a1c15111af819fecc56e6a5f2734b21119fa175",
+    "operator_cap": "0xba079aab0c8868bc2806185ea4776ad9ac2a0f1c307db318badd10e938293474",
+    "wbtc_vault": "0x79d30e223ca30e61b736b76bc9c55a6dc32bc3ad4f43bd7f361b653ab2ad38d3",
+    "vault_package_v10": "0x8d9b38f82fcfc70a869eac1f7cefa871e9f22360aab94224f6bf751c1b9d7a2b",
+    "xaum": "0x9d297676e7a4b771ab023291377b2adfaa4938fb9080b8d12430e4b108b836a9::xaum::XAUM",
+    "xbtc": "0x876a4b7bce8aeaef60464c11f4026903e9afacab79b9b142686158aa86560b50::xbtc::XBTC",
+    "evm_attacker": "0x0ff50710e37c0fb6aa9b4eeeccaa1437562af1ca",
+    "drain_usdc_tx": "AQw9wMFfxSpDoF6YAfDhPLvKbdGSkxbGkc1DnZb43RUS",
+    "drain_wbtc_xaum_tx": "7pTrudZb57z2acJFvC2CnBCuaU6RA1UpU9auDZQEESit",
+    "drain_btc_tx": "9cN7frSP7XaMQbFu4mwMmaMnRLfnrpqWYBdwLyyqA7jm",
+    "funding_tx": "BHQzn3AeAFkLrm5DbgQqdRH7184f69xe1wtBJUm1HGQ",
+    "cap_handover_tx": "8MAJdnVkwtTeva8RTLR4oUEk3ELFdmt1BCyi7xmgUZXR",
+    "vault_disable_tx": "E71Qyd1syeroMMHgXiR6X34eMXKRKeUxwE37C1fYpjk2",
+    "lz_wbtc_tx": "GqFPRF2eMjcEHcukJxzfLpza55cDvddygjMxohTGgzbM",
+    "xaum_return_tx": "EP443Hq4a7MDZsbCCJEhVZbXeycSrS5YSqjycVQ2upvg"
+  },
+  "checks": [
+    {
+      "id": "xaum-flow-graph-coin-scale",
+      "question": "Does the flow graph of the XAUm drain state XAUm amounts at the coin's own scale, in a process that has not read XAUm before?",
+      "tool": "trace_flow_graph",
+      "args": { "digest": "{drain_wbtc_xaum_tx}", "coin_type": "{xaum}" },
+      "expect": [
+        { "path": "nodes[*].traced_formatted", "op": "includes", "value": "215.6 XAUM (unverified)" },
+        { "path": "edges[*].amount_formatted", "op": "includes", "value": "215.6 XAUM (unverified)" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: XAUm's CoinMetadata declares 9 decimals and 7pTrudZb… credits 215600000000 of it. This check runs first in the case so that no earlier call has loaded XAUm's decimals; unwarmed, the labels read \"(unverified, assumed scale)\"."
+    },
+    {
+      "id": "usdc-drain-signed-by-operator-key",
+      "question": "Who signed the USDC drain, with what kind of key, and who received the USDC?",
+      "tool": "get_transaction",
+      "args": { "digest": "{drain_usdc_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{operator_key}" },
+        { "path": "authorization[0].role", "op": "equals", "value": "sender" },
+        { "path": "authorization[0].scheme", "op": "equals", "value": "ed25519" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{attacker}" },
+        { "path": "balance_changes[*].amount", "op": "includes", "value": "925120000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: signature of AQw9wMFf… hashes to 0xe769…ef75 (flag 0, ed25519); balance change +925120000000 USDC to 0xd763…a46a. Bitcoin.com News names 0xe769…ef75 as the compromised admin account."
+    },
+    {
+      "id": "drain-coins-delivered-to-attacker",
+      "question": "Which address did the WBTC/XAUm drain deliver coins to, when no other object changed hands?",
+      "tool": "get_transaction",
+      "args": { "digest": "{drain_wbtc_xaum_tx}" },
+      "expect": [
+        { "path": "coins_delivered_to", "op": "includes", "value": "{attacker}" },
+        { "path": "coins_delivered_to", "op": "excludes", "value": "{operator_key}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 7pTrudZb… creates the WBTC and XAUm coins owned by 0xd763…a46a (+19.6 WBTC, +215.6 XAUm) while the sender 0xe769…ef75 only pays gas, and no other object changes owner."
+    },
+    {
+      "id": "wbtc-xaum-drain-gains",
+      "question": "What did the attacker wallet receive in the WBTC/XAUm drain?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{drain_wbtc_xaum_tx}", "attacker": "{attacker}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{attacker}" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "1960000000" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "215600000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: balance changes of 7pTrudZb… credit 0xd763…a46a with 1960000000 WBTC and 215600000000 XAUm. Rekt lists this digest as attack transaction 1."
+    },
+    {
+      "id": "attack-tx-default-names-beneficiary",
+      "question": "Without being told the attacker, does the breakdown of the USDC drain report the address that took the value?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{drain_usdc_tx}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{attacker}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the sender 0xe769…ef75 only paid gas; 0xd763…a46a received 925,120 USDC in the same transaction."
+    },
+    {
+      "id": "incident-total-usd",
+      "question": "How much did the attacker take across every transaction the operator key sent during the attack window?",
+      "tool": "summarize_incident_losses",
+      "args": { "sender": "{operator_key}", "start": "2026-04-21T17:30:00Z", "end": "2026-04-21T19:15:00Z", "attacker": "{attacker}" },
+      "expect": [
+        { "path": "totals.usd_gained", "op": "approx", "value": 3500000, "tolerance": 0.06 }
+      ],
+      "tier": "price-provider",
+      "basis": "Volo and Rekt report about $3.5M lost; the vaults' own OperationValueUpdateChecked events on chain sum to $3.44M."
+    },
+    {
+      "id": "third-drain-found",
+      "question": "Does the sender-window scan find the third drain (xBTC and wBTC vaults) that press reports omit?",
+      "tool": "summarize_incident_losses",
+      "args": { "sender": "{operator_key}", "start": "2026-04-21T17:30:00Z", "end": "2026-04-21T19:15:00Z", "attacker": "{attacker}" },
+      "expect": [
+        { "path": "groups[*].transactions[*]", "op": "includes", "value": "{drain_btc_tx}" },
+        { "path": "groups[*].transactions[*]", "op": "includes", "value": "{drain_wbtc_xaum_tx}" },
+        { "path": "priced_coins[*].coin_type", "op": "includes", "value": "{xbtc}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 9cN7frSP… at 19:09:20 UTC, sent by 0xe769…ef75, credits 0xd763…a46a with 98000000 XBTC and 98000000 BTC from vaults 0x041b49dc… and 0x6e53ffe5…. Rekt lists only two attack transactions."
+    },
+    {
+      "id": "losses-name-victim-vaults",
+      "question": "Which objects lost the funds in the two reported drains?",
+      "tool": "summarize_incident_losses",
+      "args": { "digests": ["{drain_usdc_tx}", "{drain_wbtc_xaum_tx}"], "attacker": "{attacker}" },
+      "expect": [
+        { "path": "groups[*].pools[*]", "op": "includes", "value": "{wbtc_vault}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: OperationValueUpdateChecked events name vault 0x79d30e22… with loss 1484622535338549 (USD, 9 decimals). Rekt cites NAVI confirming it was unaffected."
+    },
+    {
+      "id": "cctp-exits",
+      "question": "How much USDC left Sui through CCTP, in how many transactions, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2026-04-21T17:00:00Z", "to": "2026-04-22T00:00:00Z" },
+      "expect": [
+        { "path": "coverage.complete", "op": "equals", "value": true },
+        { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Circle CCTP" },
+        { "path": "bridge_exits.by_bridge[*].transactions", "op": "includes", "value": 6 },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].address", "op": "includes", "value": "{evm_attacker}" },
+        { "path": "bridge_exits.by_bridge[*].sent[*].amount", "op": "includes", "value": 1557392.626185 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: six deposit_for_burn transactions from 17:44 to 19:11 UTC burn 1,557,392.626185 USDC with mint recipient 0x0ff5…f1ca. Rekt reports about $1.55M in six CCTP transactions to the same EVM address."
+    },
+    {
+      "id": "lz-wbtc-beneficiary",
+      "question": "Where was the 19.6 WBTC sent through LayerZero addressed?",
+      "tool": "resolve_bridge_transfer",
+      "args": { "digest": "{lz_wbtc_tx}", "include_destination": false },
+      "expect": [
+        { "path": "beneficiaries[*].address", "op": "includes", "value": "{evm_attacker}" },
+        { "path": "beneficiaries[*].amount", "op": "includes", "value": "1960000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the OFT send in GqFPRF2e… names 0x0ff5…f1ca with amount_received_ld 1960000000. Rekt and AMBCrypto report the 19.6 WBTC LayerZero transfer was intercepted."
+    },
+    {
+      "id": "attacker-funded-by-operator-key",
+      "question": "Who first funded the attacker wallet?",
+      "tool": "find_funding_source",
+      "args": { "address": "{attacker}" },
+      "expect": [
+        { "path": "chain[0].funded_by", "op": "iequals", "value": "{operator_key}" },
+        { "path": "chain[0].funding_tx", "op": "equals", "value": "{funding_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: BHQzn3Ae… at 17:21:17 UTC, 22 minutes before the first drain, is 0xd763…a46a's first transaction and sends it 1 SUI from 0xe769…ef75."
+    },
+    {
+      "id": "xaum-return-signed-by-alias",
+      "question": "Who signed the transaction that moved the remaining 100.6 XAUm out of the attacker wallet?",
+      "tool": "get_transaction",
+      "args": { "digest": "{xaum_return_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{attacker}" },
+        { "path": "authorization[0].role", "op": "equals", "value": "acting_for_sender" },
+        { "path": "authorization[0].address", "op": "iequals", "value": "{alias_signer}" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{recovery_wallet}" },
+        { "path": "balance_changes[*].amount", "op": "includes", "value": "100600000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the signature on EP443Hq4… hashes to 0xe28b…0a94, which CVjzaubT… (signed by 0xd763…a46a's own key) placed in its alias set. AMBCrypto quotes Volo: 100.6 XAUm were unlocked and returned to Volo's wallet."
+    },
+    {
+      "id": "alias-signer-authentication",
+      "question": "How does the alias signer 0xe28b…0a94 authenticate?",
+      "tool": "identify_address",
+      "args": { "address": "{alias_signer}" },
+      "expect": [
+        { "path": "authentication.scheme", "op": "equals", "value": "ed25519" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 0xe28b…0a94 signed D9xPFEB7…, 2ZSdQtGr… and EP443Hq4… with an ed25519 key as alias for 0xd763…a46a. An address hashes one authenticator, so its scheme is fixed."
+    },
+    {
+      "id": "upgrade-authority-at-attack",
+      "question": "Who held the vault package's UpgradeCap at the first drain, and which version was newest?",
+      "tool": "get_upgrade_history",
+      "args": { "package": "{vault_package_v10}", "as_of": "2026-04-21T17:43:31Z" },
+      "expect": [
+        { "path": "as_of.cap_state", "op": "equals", "value": "held" },
+        { "path": "as_of.holder.address", "op": "iequals", "value": "{admin_multisig}" },
+        { "path": "as_of.holder.scheme", "op": "contains", "value": "multisig 2-of-4" },
+        { "path": "as_of.newest_version.version", "op": "equals", "value": 10 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: UpgradeCap 0x813db902… moved to multisig 0x5da3…cfd3 in 7KjrKzj3… on 2025-08-08; v10 0x8d9b38f8… was published 2026-04-03 and v11 on 2026-06-11."
+    },
+    {
+      "id": "operator-key-is-single-key",
+      "question": "Is the compromised operator key a multisig?",
+      "tool": "analyze_multisig",
+      "args": { "address": "{operator_key}" },
+      "expect": [
+        { "path": "_isError", "op": "equals", "value": true },
+        { "path": "error", "op": "contains", "value": "not a multisig wallet" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: every transaction 0xe769…ef75 sent carries a flag-0 ed25519 signature. Rekt notes the admin role had no multisig or timelock."
+    },
+    {
+      "id": "admin-multisig-hand-made-key",
+      "question": "How many keys can actually sign for the admin multisig?",
+      "tool": "analyze_multisig",
+      "args": { "address": "{admin_multisig}", "max_transactions": 500 },
+      "expect": [
+        { "path": "committee.shape", "op": "equals", "value": "2-of-4" },
+        { "path": "unsignable_members", "op": "equals", "value": [3] },
+        { "path": "effective_committee.shape", "op": "equals", "value": "2-of-3" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the committee hashed into 0x5da3…cfd3 lists member 3 as the ed25519 key 6d6176656e0000…01…00, the text \"maven\" padded with zeros. Nobody holds a private key for it, so the 2-of-4 signs as a 2-of-3."
+    },
+    {
+      "id": "operator-cap-handover",
+      "question": "When and from whom did the compromised key receive the OperatorCap?",
+      "tool": "get_transaction",
+      "args": { "digest": "{cap_handover_tx}" },
+      "expect": [
+        { "path": "object_transfers[0].object_id", "op": "iequals", "value": "{operator_cap}" },
+        { "path": "object_transfers[0].from.address", "op": "iequals", "value": "{admin_multisig}" },
+        { "path": "object_transfers[0].to.address", "op": "iequals", "value": "{operator_key}" },
+        { "path": "object_transfers[0].category", "op": "equals", "value": "capability" },
+        { "path": "authorization[0].scheme", "op": "equals", "value": "multisig" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 8MAJdnVk… on 2026-01-15, signed by multisig members 0 and 1, changes the OperatorCap's owner from 0x5da3…cfd3 to 0xe769…ef75."
+    },
+    {
+      "id": "trace-reports-cap-transfer",
+      "question": "Does a forward trace from the handover report the OperatorCap that changed hands?",
+      "tool": "trace_funds",
+      "args": { "digest": "{cap_handover_tx}", "direction": "forward", "hops": 2 },
+      "expect": [
+        { "path": "object_flow.capability_transfers[*].object_id", "op": "includes", "value": "{operator_cap}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 8MAJdnVk… transfers vault::OperatorCap 0xba079aab… to 0xe769…ef75."
+    },
+    {
+      "id": "cap-history-reaches-handover",
+      "question": "Does the OperatorCap's history show it arriving at the compromised key?",
+      "tool": "trace_object_history",
+      "args": { "object_id": "{operator_cap}", "limit": 50 },
+      "expect": [
+        { "path": "owner_changes[*].to.address", "op": "includes", "value": "{operator_key}" },
+        { "path": "owner_change_note", "op": "matches", "value": "found [1-9][0-9]* transition" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 8MAJdnVk… on 2026-01-15 moved the cap from 0x5da3…cfd3 to 0xe769…ef75; the cap then changed version thousands of times through operator calls. That handover lies past the first 50 versions, so the checkpoint search is what finds it, and its note says so."
+    },
+    {
+      "id": "package-audit-lists-operator-cap",
+      "question": "Does the vault package's capability audit cover the OperatorCap used in the drain?",
+      "tool": "analyze_package",
+      "args": { "package_id": "{vault_package_v10}" },
+      "expect": [
+        { "path": "capabilities.capabilities[*].type", "op": "includes", "value": "0xcd86f77503a755c48fe6c87e1b8e9a137ec0c1bf37aac8878b6083262b27fefa::vault::OperatorCap" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: OperatorCap 0xba079aab… of type 0xcd86f775…::vault::OperatorCap authorised all three drains; it was created 2025-07-29 in EJqBZrpu…."
+    },
+    {
+      "id": "xaum-left-after-sale",
+      "question": "How much XAUm did the attacker wallet still hold on 22 April?",
+      "tool": "get_balance",
+      "args": { "owner": "{attacker}", "coin_type": "{xaum}", "at": "2026-04-22T12:00:00Z" },
+      "expect": [
+        { "path": "complete", "op": "equals", "value": true },
+        { "path": "balance", "op": "equals", "value": "100600000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 215.6 XAUm in, 115 out in four swaps on 21 April, nothing more until EP443Hq4… on 24 April. AMBCrypto quotes Volo: 100.6 XAUm frozen and returned, 115 sold."
+    },
+    {
+      "id": "xaum-balance-at-coin-scale",
+      "question": "Is the XAUm balance shown at the coin's own decimals?",
+      "tool": "get_balance",
+      "args": { "owner": "{attacker}", "coin_type": "{xaum}", "at": "2026-04-22T12:00:00Z" },
+      "expect": [
+        { "path": "balance_formatted", "op": "matches", "value": "^100\\.6 XAUM( \\(unverified\\))?$" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: XAUm's CoinMetadata states 9 decimals, so the raw 100600000000 is 100.6 XAUm, read from the coin, not assumed."
+    },
+    {
+      "id": "xaum-flow-graph-split",
+      "question": "Where did all 215.6 XAUm go?",
+      "tool": "trace_flow_graph",
+      "args": { "digest": "{drain_wbtc_xaum_tx}", "coin_type": "{xaum}" },
+      "expect": [
+        { "path": "terminals[*].reason", "op": "excludes", "value": "cycle" },
+        { "path": "terminals[0].reason", "op": "equals", "value": "bridge_exit" },
+        { "path": "terminals[0].share", "op": "approx", "value": 0.5334, "tolerance": 0.01 },
+        { "path": "terminals[1].reason", "op": "equals", "value": "signer_not_sender" },
+        { "path": "terminals[1].share", "op": "approx", "value": 0.4666, "tolerance": 0.01 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 100.6 of 215.6 XAUm (46.66%) left in EP443Hq4…, signed by alias 0xe28b…0a94. The 115 sold became USDC, 90 of them through D3GkRRzM, 4214QZCU and PUhjLTcQ and 25 through SUI (31ND7vyU, then 3r45UdSL), and that USDC left through the four CCTP burns."
+    },
+    {
+      "id": "vaults-disabled-by-multisig",
+      "question": "Who stopped the drain, and when?",
+      "tool": "get_transaction",
+      "args": { "digest": "{vault_disable_tx}" },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{admin_multisig}" },
+        { "path": "authorization[0].scheme", "op": "equals", "value": "multisig" },
+        { "path": "timestamp", "op": "equals", "value": "2026-04-21T19:17:50.162Z" },
+        { "path": "events[*].parsed.vault_id", "op": "includes", "value": "{wbtc_vault}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: E71Qyd1s… calls vault_manage::set_vault_enabled 16 times and emits VaultEnabled false for 16 vaults, 8 minutes after the last drain. Volo reports freezing all remaining vaults."
+    }
+  ]
+}

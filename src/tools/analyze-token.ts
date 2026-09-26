@@ -13,7 +13,8 @@ import { fetchDefiLlamaChange24h } from "../utils/price-providers.js";
 
 import { describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { getNetwork } from "../config.js";
-import { resolveSymbolDetailed } from "../discovery.js";
+import { resolveSymbolDetailed, type SymbolDetail } from "../discovery.js";
+import type { IndexedCoin } from "../utils/coin-symbols.js";
 import { vouchFor } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin } from "../utils/guardians.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -29,19 +30,16 @@ export type DecimalsSource =
 /**
  * Pick the tier that actually supplied the decimals.
  *
- * Exported so the tests exercise THIS rather than a copy. The guard for the
- * defect below was first written as a re-implementation inside the test file,
- * and reintroducing the defect left all 1,214 tests green while the live tool
- * went back to mislabelling the guess.
+ * Exported so the tests exercise this function rather than a copy of it.
  *
  * Decimals set the magnitude of every amount derived from them, and a guess has
- * to say it is one: 47 of 289 sampled impostors declare a different scale from
- * the coin they imitate, so the coins most likely to reach the fallback are the
- * ones it is most dangerous for.
+ * to say it is one: impostors often declare a different scale from the coin
+ * they imitate, so the coins most likely to reach the fallback are the ones it
+ * is most dangerous for.
  *
  * **Test against null, not undefined.** `discoveredDecimals` is `number | null`,
- * so `!== undefined` is always true and made `assumed` unreachable while the
- * value chain's `??` still fell through to 9. The guess then shipped labelled
+ * so `!== undefined` is always true. That would make `assumed` unreachable
+ * while the value chain's `??` falls through to 9, labelling the guess
  * `curated`, the strongest tier short of chain data, beside `verified: false`
  * in the same payload. TypeScript cannot catch it: that comparison is legal.
  *
@@ -63,14 +61,131 @@ export function decimalsTier(input: {
   return "assumed";
 }
 
+/** Index candidates ranked by supply at most; each costs one getCoinInfo. */
+const SUPPLY_RANKED_MAX = 50;
+const SUPPLY_CONCURRENCY = 8;
+
+interface SymbolCandidate {
+  coin_type: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  verified: boolean;
+  total_supply: string | null;
+}
+
+/**
+ * Candidates for a symbol several coins use: verified first, then by total
+ * supply in whole coins, largest first. Supply is read only for up to
+ * `SUPPLY_RANKED_MAX` coins; past that the order is verified, then coin type.
+ */
+async function rankSymbolCandidates(coins: IndexedCoin[]): Promise<{ candidates: SymbolCandidate[]; by_supply: boolean }> {
+  const candidates: SymbolCandidate[] = coins.map((c) => ({ ...c, verified: vouchFor(c.coin_type) !== null, total_supply: null }));
+  const bySupply = candidates.length <= SUPPLY_RANKED_MAX;
+  if (bySupply) {
+    let next = 0;
+    const worker = async () => {
+      while (next < candidates.length) {
+        const c = candidates[next++];
+        try {
+          const { response } = await sui.stateService.getCoinInfo({ coinType: c.coin_type });
+          c.total_supply = response.treasury?.totalSupply?.toString() ?? null;
+          if (response.metadata?.decimals != null) c.decimals = response.metadata.decimals;
+        } catch {
+          // Left null and ranked last: a failed read says nothing about the coin.
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(SUPPLY_CONCURRENCY, candidates.length) }, worker));
+  }
+  const whole = (c: SymbolCandidate) => (c.total_supply === null ? -1 : Number(BigInt(c.total_supply)) / 10 ** c.decimals);
+  candidates.sort(
+    (a, b) =>
+      Number(b.verified) - Number(a.verified) ||
+      (bySupply ? whole(b) - whole(a) : 0) ||
+      (a.coin_type < b.coin_type ? -1 : a.coin_type > b.coin_type ? 1 : 0),
+  );
+  return { candidates, by_supply: bySupply };
+}
+
+async function ambiguousFromIndex(
+  query: string,
+  detailed: Extract<SymbolDetail, { status: "ambiguous"; source: "symbol_index" }>,
+) {
+  const { candidates, by_supply } = await rankSymbolCandidates(detailed.candidates);
+  const verifiedCount = candidates.filter((c) => c.verified).length;
+  const message =
+    candidates.length === 0
+      ? `${detailed.count} coins on mainnet use the symbol "${query}". The symbol index lists no candidates for a symbol more than ${detailed.index.max_rows_per_symbol} coins use, since no list that long identifies a coin. Pass the full coin type (0x...::module::TOKEN) that the transaction or balance you are investigating names.`
+      : `${detailed.count} coins on mainnet use the symbol "${query}", ${verifiedCount === 0 ? "and no curated list vouches for any of them" : `${verifiedCount} of them verified`}. A symbol does not identify a coin on Sui: pass one of these coin_type values instead.`;
+  return {
+    query,
+    status: "ambiguous_symbol",
+    message,
+    coin_count: detailed.count,
+    candidates,
+    ...(candidates.length > 0
+      ? {
+          candidate_order: by_supply
+            ? "Verified coins first, then by total supply in whole coins, largest first. Supply is not evidence that a coin is the one you meant: an impostor can mint more than the real asset."
+            : `Verified coins first, then by coin type. Not ranked by supply: that costs one request per coin, and ${candidates.length} is more than ${SUPPLY_RANKED_MAX}.`,
+        }
+      : {}),
+    symbol_index: {
+      synced_at: detailed.index.synced_at,
+      checkpoint: detailed.index.checkpoint,
+      note: `Coins published after ${detailed.index.synced_at} (checkpoint ${detailed.index.checkpoint}) are not in the symbol index, so a newer coin using this symbol is not listed.`,
+    },
+  };
+}
+
+function notFoundMessage(query: string, detailed: Extract<SymbolDetail, { status: "not_found" }>): string {
+  const index = detailed.index
+    ? `the symbol index (every mainnet coin up to ${detailed.index.synced_at}, checkpoint ${detailed.index.checkpoint}) has no coin with this symbol, and `
+    : "";
+  if (detailed.scan.failed) {
+    return `Token "${query}" could not be looked up: ${index}the live scan of CoinMetadata failed after ${detailed.scan.scanned} objects (${detailed.scan.failed}). A failed read says nothing about the objects after it, so the symbol may still exist: retry, or pass its full coin type (e.g. '0x...::module::TOKEN').`;
+  }
+  const scan = `a live scan of ${detailed.scan.scanned} CoinMetadata objects in object-ID order ${detailed.scan.truncated ? "stopped before the end without finding one" : "found none"}`;
+  if (detailed.index) {
+    return `Token "${query}" not found: ${index}${scan}. A coin published after ${detailed.index.synced_at} is reachable only by that scan: pass its full coin type (e.g. '0x...::module::TOKEN'), or use search_token for a name or part of a symbol.`;
+  }
+  return `Token "${query}" not found: ${scan}. Try using the full coin type string (e.g. '0x...::module::TOKEN'), or use search_token for fuzzy search.`;
+}
+
+/** How an unverified symbol reached its coin, and what that route cannot see. */
+interface SymbolResolutionNote {
+  via: "symbol_index" | "live_scan";
+  synced_at?: string;
+  checkpoint?: number;
+  note: string;
+}
+
+function symbolResolution(detailed: Extract<SymbolDetail, { status: "unverified" }>): SymbolResolutionNote {
+  if (detailed.source === "symbol_index") {
+    return {
+      via: "symbol_index",
+      synced_at: detailed.index.synced_at,
+      checkpoint: detailed.index.checkpoint,
+      note: `The only coin using this symbol in the symbol index. A coin published after ${detailed.index.synced_at} (checkpoint ${detailed.index.checkpoint}) with the same symbol is not counted, so check coin_type against the transaction or balance you are investigating.`,
+    };
+  }
+  return {
+    via: "live_scan",
+    note: detailed.index
+      ? `The symbol index (synced ${detailed.index.synced_at}) has no coin with this symbol, so it was found by a live scan of CoinMetadata in object-ID order, which stops at the first match. It was probably published after ${detailed.index.synced_at}, and other coins using the symbol may exist outside the scanned window.`
+      : "Found by a live scan of CoinMetadata in object-ID order, which stops at the first match. Other coins using the symbol may exist outside the scanned window.",
+  };
+}
+
 export function registerAnalyzeTokenTools(server: McpServer) {
   server.tool(
     "analyze_token",
-    "(Recommended for token research) Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. Accepts either a coin type (e.g. '0x2::sui::SUI') or a name/symbol (e.g. 'DEEP', 'cetus').",
+    "(Recommended for token research) Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. Accepts either a coin type (e.g. '0x2::sui::SUI') or a symbol (e.g. 'DEEP', 'cetus'). A symbol several coins use returns status ambiguous_symbol with candidates (verified first, then by supply) from a symbol index of every mainnet coin up to its sync date. A symbol more than 100 coins use returns its count and no candidates, since the index keeps only the count; a coin published after the sync date is found only by a bounded live scan.",
     {
       query: z
         .string()
-        .describe("Token name, symbol (e.g. 'USDC', 'deep'), or full coin type (e.g. '0x2::sui::SUI')"),
+        .describe("Symbol (e.g. 'USDC', 'deep') or full coin type (e.g. '0x2::sui::SUI'). A symbol is matched exactly; for a name or part of a symbol use search_token."),
       include_holders: boolArg()
         .optional()
         .describe("Include top 5 holders (default: true). Set false for faster response."),
@@ -86,36 +201,33 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       let discoveredName: string | null = null;
       let discoveredSymbol: string | null = null;
       let discoveredDecimals: number | null = null;
+      let resolvedBySymbol: SymbolResolutionNote | null = null;
 
       if (query.includes("::")) {
         coinType = query;
       } else {
-        // A symbol is not an identifier here: 8,008 mainnet coins share one with
+        // A symbol does not identify a coin here: many coins share one with
         // another, and the impostors are named to be mistaken. Ambiguity is
         // reported rather than resolved.
         const detailed = await resolveSymbolDetailed(query);
         if (detailed.status === "ambiguous") {
-          return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                query,
-                status: "ambiguous_symbol",
-                message: `${detailed.candidates.length} verified coins use the symbol "${query}". A symbol does not identify a coin on Sui — pass one of these coin_type values instead.`,
-                candidates: detailed.candidates.map((c) => ({
-                  coin_type: c.coin_type, symbol: c.symbol, name: c.name, decimals: c.decimals,
-                })),
-              }, null, 2),
-            }],
-          };
+          const body =
+            detailed.source === "symbol_index"
+              ? await ambiguousFromIndex(query, detailed)
+              : {
+                  query,
+                  status: "ambiguous_symbol",
+                  message: `${detailed.candidates.length} verified coins use the symbol "${query}". A symbol does not identify a coin on Sui — pass one of these coin_type values instead.`,
+                  candidates: detailed.candidates.map((c) => ({
+                    coin_type: c.coin_type, symbol: c.symbol, name: c.name, decimals: c.decimals,
+                  })),
+                };
+          return { content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }] };
         }
-        const match = detailed.status === "resolved" ? detailed.token : detailed.token;
+        if (detailed.status === "not_found") return errorResult(notFoundMessage(query, detailed));
         symbolVerified = detailed.status === "resolved";
-        if (!match) {
-          return errorResult(
-            `Token "${query}" not found. Try using the full coin type string (e.g. '0x...::module::TOKEN'), or use search_token for fuzzy search.`
-          );
-        }
+        if (detailed.status === "unverified") resolvedBySymbol = symbolResolution(detailed);
+        const match = detailed.token;
         coinType = match.coin_type;
         discoveredName = match.name;
         discoveredSymbol = match.symbol;
@@ -212,12 +324,13 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         ...(vouchFor(coinType) === null
           ? {
               unverified_note:
-                "No curated list vouches for this coin. 8,008 mainnet coins share a symbol with another and impostors are named to be mistaken for the real asset, so treat the symbol and name here as claims made by whoever minted it, not as identification." +
+                "No curated list vouches for this coin. 142,152 mainnet coins share a symbol with another and impostors are named to be mistaken for the real asset, so treat the symbol and name here as claims made by whoever minted it, not as identification." +
                 (symbolVerified
                   ? ""
-                  : " It was reached by scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin."),
+                  : " It was reached through its symbol, from metadata anyone can write, which is the weakest way to arrive at a coin."),
             }
           : { verified_by: vouchFor(coinType) }),
+        ...(resolvedBySymbol ? { symbol_resolution: resolvedBySymbol } : {}),
         // A third-party scam list, stated beside the curated answer rather
         // than folded into it: it is evidence about the coin, weaker than the
         // curated list and never attribution of anyone who holds it.
@@ -235,7 +348,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         ...(decimalsSource === "symbol_scan"
           ? {
               decimals_note:
-                "These decimals came from scanning on-chain metadata for the symbol, which is the weakest way to arrive at a coin. Nothing curated vouches for the scale.",
+                "These decimals came from the metadata found when the symbol was resolved (the synced symbol index or a live scan), because this coin's own metadata could not be read now. Nothing curated vouches for the scale.",
             }
           : {}),
         // The registry is Sui's canonical on-chain metadata, not a whitelist:

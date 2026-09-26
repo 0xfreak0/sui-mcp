@@ -7,9 +7,9 @@ import type { LinkageEntry } from "./package-diff.js";
  * A "package reference" accepted by the developer tools can be either a raw
  * hex package ID (0x...) or a Move Registry (MVR) name (@org/app[/version]).
  *
- * Heads up: MVR coverage is thin — most packages on mainnet are NOT registered.
- * Name resolution is a convenience for the packages that ARE registered; callers
- * should expect to fall back to raw 0x IDs for the long tail.
+ * Most packages on mainnet are not registered in MVR. Name resolution is a
+ * convenience for the packages that are registered; callers should expect to
+ * fall back to raw 0x IDs for the long tail.
  */
 export function looksLikeMvrName(ref: string): boolean {
   const r = ref.trim();
@@ -51,11 +51,11 @@ export async function resolvePackageId(ref: string): Promise<string> {
 /**
  * The package stored at exactly this address.
  *
- * `package(address:)` resolves any version's address to the LATEST version of
- * the lineage: Nemo v1 (`0x2b71…`) and v5 (`0xef9c…`) both came back as v12
- * (`0x4fb3…`), so disassembling v1 showed `redeem_pt`, which v5 added. An
- * object read is not linkage-resolved: the object at a package's address is
- * that version and no other. Packages are immutable, so it has one version.
+ * `package(address:)` resolves any version's address to the latest version of
+ * the lineage, so disassembling an older version through it shows functions a
+ * later upgrade added. An object read is not linkage-resolved: the object at a
+ * package's address is that version and no other. Packages are immutable, so
+ * it has one version.
  */
 interface ExactPackage<T> {
   object: { asMovePackage: T | null } | null;

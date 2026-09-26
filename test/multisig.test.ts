@@ -72,6 +72,37 @@ describe("readAuthentication — multisig committees", () => {
     expect(auth!.multisig!.signed_weight).toBe(4);
     expect(auth!.multisig!.total_weight).toBe(7);
   });
+
+  /**
+   * A mainnet 2-of-4 committee whose member 3 public key is the bytes
+   * "maven", zeros, one 0x01 and more zeros. Nobody can hold its private key,
+   * so the committee is in practice 2-of-3, and that member is reported as
+   * unable to sign rather than as a cold or lost key. Signature of
+   * transaction 8MAJdnVk… on mainnet.
+   */
+  it("marks a hand-made committee key as unable to sign, and only that one", () => {
+    const address = "0x5da3b6fb1312a96afe8622a0675420a77d348a274931132574b557362618cfd3";
+    const auth = readAuthentication(address, [
+      "AwIANIk4C9gq9qxBLIiHfkBL8FFNt15IjvDmJY2P4526ay5iBFOkGcdD60kmzLmNhTQsFSFfGBzsb1MWbJhQ209ABABogqGV7q1gBtqcIZJPfmp7d+mc1uFE+zgQPrBOxoHQF68uuY72D9pPZ7lhzCQghJcRmee/tj9t8eIWAc5nX9MGAwAEAG9RMyu/7khxOLKn8GhAVkKHZQIWrMnmwOUDDJYaQpHMAQBu4W8NAh5wTtY5j7liJfcqH1+fORYdhWzZvZa8uvrQCQEAE4SYnRwmouSHMqnlBf6plobZr8+Aoccly/W30pP15swBAG1hdmVuAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQIA",
+    ]);
+    expect(auth!.verified).toBe(true);
+    const members = auth!.multisig!.members;
+    expect(members.map((m) => Boolean(m.unsignable))).toEqual([false, false, false, true]);
+    expect(members[3].unsignable).toContain('"maven"');
+  });
+
+  it("does not mark any key of real generated committees as hand-made", () => {
+    for (const f of [fixtures.ms_2of3, fixtures.ms_3of6, fixtures.ms_1of2]) {
+      const members = readAuthentication(f.address, f.signatures)!.multisig!.members;
+      expect(members.filter((m) => m.unsignable)).toEqual([]);
+    }
+  });
+
+  it("finds the same hand-made key shape in the mainnet 4-of-7, where it is one of the two keys that never sign", () => {
+    // 0x045dadba…: member 6 is "maven" followed by 27 zero bytes.
+    const members = readAuthentication(fixtures.ms_4of7.address, fixtures.ms_4of7.signatures)!.multisig!.members;
+    expect(members.filter((m) => m.unsignable).map((m) => m.index)).toEqual([6]);
+  });
 });
 
 describe("readAuthentication — picking the right signature", () => {
@@ -326,8 +357,8 @@ describe("assignSignerRoles", () => {
   const ed = fixtures.ed25519;
 
   it("names a signature that derives to neither sender nor sponsor as acting for the sender", () => {
-    // The recovery of the Cetus attacker's funds: sent as the attacker, signed
-    // by a multisig. The first signature used to be labelled "sender".
+    // Sent as one address and signed only by a multisig at another, so the
+    // signature acts for the sender rather than being the sender's own.
     const r = assignSignerRoles(ed.address, ed.address, ms.signatures);
     expect(r.signer_is_sender).toBe(false);
     expect(r.authorized_by).toEqual([ms.address]);

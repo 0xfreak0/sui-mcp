@@ -4,16 +4,16 @@
  *
  * Everything here is a **keyed lookup**, not a scan. Both levels of the deny
  * list are dynamic fields with structured keys, so a question about one coin
- * or one address is one or two requests. Paging the whole thing instead costs
- * about 5.5s — mainnet has ~1000 configured coin types — and answers a
- * question nobody asked.
+ * or one address is one or two requests. Paging the whole thing instead is
+ * slow, since mainnet has many configured coin types, and answers a question
+ * nobody asked.
  *
  * The keys are BCS-encoded by hand because they are tiny and fixed:
  * `ConfigKey` is a u64 plus a length-prefixed string, `AddressKey` is 32 raw
  * bytes, and `GlobalPauseKey` is empty.
  *
  * "Is this address frozen anywhere" still has no index. Callers answer it
- * against the coins that matter — the ones the address actually holds —
+ * against the coins that matter (the ones the address actually holds)
  * because being denied for a coin it has never touched is not a finding.
  */
 
@@ -187,12 +187,12 @@ export async function checkAddress(
 /**
  * Every coin type with a deny config, mapped to its config object.
  *
- * ~1000 entries on mainnet, so this pages and costs seconds. Only worth it for
- * "show me everything regulated" — a question about one coin should use
- * {@link findCoinConfig}, and one about one address {@link checkAddress}.
+ * The list is long, so this pages. Only worth it for "show me everything
+ * regulated": a question about one coin should use {@link findCoinConfig},
+ * and one about one address {@link checkAddress}.
  */
 /**
- * Cached because the walk costs ~5.5s and the map is append-mostly: a new
+ * Cached because the walk is slow and the map is append-mostly: a new
  * regulated coin appears when someone creates one, and missing it for an hour
  * degrades to "not checked against that coin" rather than a wrong answer.
  */
@@ -220,11 +220,10 @@ export function resetCoinMapCache(): void {
  *
  * Checking only the coins an address holds does not work, and the reason is
  * structural: **freezing and holding are anti-correlated.** An issuer freezes
- * an address and it ends up holding none of that coin — measured on a real
- * denied address, the held-coins approach found 11 restrictions where the full
- * scan found 58, missing 81% including the very coin that led us to it.
+ * an address and it ends up holding none of that coin, so the held-coins
+ * approach misses most restrictions.
  *
- * Costs roughly 65 aliased requests over ~1,250 configured coins. That is the
+ * Costs one aliased request per chunk of configured coins. That is the
  * floor: the alias limit is 20 store-backed queries per request, and there is
  * no reverse index from address to deny entries.
  */
@@ -240,11 +239,11 @@ export async function checkAddressAcrossCoins(
   let checked = 0;
   let complete = true;
 
-  // Chunks are packed to a BYTE budget, not a fixed count. The service caps a
-  // request at 5000 bytes of query text as well as at 20 store-backed queries,
-  // and which limit binds depends on how long the alias bodies are — 20 of
-  // these came to 5132B and were rejected whole. Packing by size adapts instead
-  // of encoding a magic number that breaks when the query text changes.
+  // Chunks are packed to a byte budget as well as an alias count. The service
+  // caps a request at 5000 bytes of query text as well as at 20 store-backed
+  // queries, and which limit binds depends on how long the alias bodies are.
+  // Packing by size adapts instead of encoding a count that breaks when the
+  // query text changes.
   const aliasLine = (j: number, cfg: string) =>
     `c${j}:object(address:${JSON.stringify(cfg)}){dynamicField(name:{type:"0x2::deny_list::AddressKey",bcs:${JSON.stringify(bcs)}}){value{...on MoveValue{json}}}}`;
 

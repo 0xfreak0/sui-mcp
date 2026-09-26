@@ -3,7 +3,7 @@
  *
  * Two phases, and the split is forced by the service before it is a choice.
  * A delta query per watched address is batched with aliases, and the selection
- * has to stay MINIMAL — digest and checkpoint only. Measured against mainnet:
+ * has to stay minimal (digest and checkpoint only). The service's answers:
  *
  *   20 aliases, digest + checkpoint          3,917 bytes   accepted
  *   30 aliases, digest + checkpoint          5,877 bytes   "Query payload too large: > 5000B"
@@ -33,25 +33,22 @@ interface DeltaNode {
  * Ask, for each address, what is new since its high-water checkpoint.
  *
  * `afterCheckpoint` is exclusive, so the address's own last-seen checkpoint is
- * passed directly and the result contains no overlap. Verified on a wallet
- * with no activity since January: after its last checkpoint returns nothing,
- * after the one before returns exactly one.
+ * passed directly and the result contains no overlap.
  */
 export async function fetchDeltas(
   entries: WatchEntry[],
   perAddress = 10,
 ): Promise<{ deltas: Map<string, DeltaTx[]>; requests: number; saturated: string[] }> {
   const deltas = new Map<string, DeltaTx[]>();
-  // Addresses with MORE than this poll reported. Measured on a real mainnet
-  // address doing a transaction every two seconds: it fills the cap on every
-  // poll, and without saying so the watch falls permanently behind while
-  // reporting confidently.
+  // Addresses with more than `perAddress` new transactions this poll. An
+  // address busier than the cap fills it on every poll, and without this flag
+  // the watch falls permanently behind while reporting confidently.
   //
-  // Proven by asking for one more than will be reported, the same bound-not-a-
-  // count trick `probeRecipients` uses. A FULL page is not the same claim: at
-  // `perAddress` 1 every non-empty page is full, so treating full as "there is
-  // more" made a single new transaction look like a page cut in half and
-  // stalled the cursor permanently.
+  // Saturation is proven by asking for one more than will be reported, the
+  // same bound-not-a-count trick `probeRecipients` uses. A full page does not
+  // prove there is more: at `perAddress` 1 every non-empty page is full, so
+  // treating full as "there is more" would make a single new transaction look
+  // like a page cut in half and stall the cursor permanently.
   const saturated: string[] = [];
   let requests = 0;
 
@@ -106,9 +103,8 @@ const DETAIL_SELECTION =
 /**
  * Digests per detail request.
  *
- * Five, not eight. Object changes are many nodes each, and the 300-node limit
- * binds long before the byte cap: measured, 8 digests is 4,767 bytes and
- * rejected as "over 300 nodes", while 5 is 2,982 bytes and accepted.
+ * Object changes are many nodes each, so the 300-node limit binds long before
+ * the byte cap: 8 digests exceed 300 nodes, and 5 fit.
  */
 const DETAIL_BATCH = 5;
 

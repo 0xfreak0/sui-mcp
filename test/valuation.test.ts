@@ -67,8 +67,8 @@ describe("dominantFlowUsd", () => {
   });
 
   it("values a bridge burn by what the sender sent, not by the fee its collector got", () => {
-    // Nemo's CCTP exit 9ZzZ6C8m…: the attacker sent 100,000 USDC, 99,990 was
-    // burned (no recipient on Sui) and a fee collector received 10 USDC.
+    // CCTP burn 9ZzZ6C8m…: the sender sent 100,000 USDC, 99,990 was burned
+    // (no recipient on Sui) and a fee collector received 10 USDC.
     expect(
       dominantFlowUsd([
         { address: atk, usd: -99993.4 },

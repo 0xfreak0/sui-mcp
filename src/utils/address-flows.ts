@@ -20,7 +20,7 @@
  *   `unattributed`.
  */
 
-import { detectBridges, type BridgeHit, type CallSite } from "./bridge/detect.js";
+import { detectBridges, exitCarrier, type BridgeHit, type CallSite } from "./bridge/detect.js";
 import type { Beneficiary } from "./bridge/beneficiary.js";
 import { readBridgeEvents } from "./bridge/exits.js";
 import { CLAIM_EVENT_SUFFIX } from "./bridge/sui-native.js";
@@ -40,6 +40,8 @@ export interface FlowTx {
   timestamp: string | null;
   checkpoint: number | null;
   sender: string | null;
+  /** "success" or "failure", lowercased. Null when not read (never for a real transaction). */
+  status: string | null;
   gasSponsor: string | null;
   /** Computation + storage - rebate, charged to the gas payer. Null when not read. */
   netGas: bigint | null;
@@ -144,6 +146,35 @@ export function netOfGas(subject: string, tx: FlowTx): { own: Map<string, bigint
 }
 
 /**
+ * Split a bridge-exit transaction's own outflow into what actually left Sui
+ * and what a Sui party besides the subject was credited in the same coin
+ * (a bridge fee, a relayer payment, a referrer cut). Whatever the reason, an
+ * amount another Sui address ended up holding never crossed the bridge: only
+ * value that disappeared from every address's balance did. A CCTP burn or a
+ * Mayan swap-then-bridge leaves no such trace, so the remainder after every
+ * credited party is removed is exactly what the far side received.
+ */
+export function splitBridgeOutflow(
+  own: Map<string, bigint>,
+  others: FlowChange[],
+): { bridged: Map<string, bigint>; retained: Map<string, bigint> } {
+  const bridged = new Map<string, bigint>();
+  const retained = new Map<string, bigint>();
+  for (const [coin, delta] of own) {
+    if (delta >= 0n) continue;
+    const outflow = -delta;
+    const keptOnSui = others
+      .filter((c) => c.coinType === coin && c.amount > 0n)
+      .reduce((sum, c) => sum + c.amount, 0n);
+    const kept = keptOnSui < outflow ? keptOnSui : outflow;
+    if (kept > 0n) retained.set(coin, kept);
+    const left = outflow - kept;
+    if (left > 0n) bridged.set(coin, left);
+  }
+  return { bridged, retained };
+}
+
+/**
  * Split `total` across `parts` in proportion when they add up to more than it,
  * so no counterparty is credited with value the subject did not move.
  */
@@ -213,11 +244,17 @@ export function summarizeFlows(subject: string, txs: FlowTx[], coinFilter?: stri
 /**
  * Transactions the subject sent that may carry a bridge exit: a curated marker
  * or a bridge-typed package in the calls or event types, or an event list the
- * scan could not read whole.
+ * scan could not read whole. A failed transaction is never a candidate: a
+ * bridge call in its PTB records only what it attempted. Its only
+ * balance change is gas, and its events (which is where every decoder here
+ * reads the transfer) are always empty.
  */
 export function exitCandidates(subject: string, txs: FlowTx[]): FlowTx[] {
   return txs.filter(
-    (tx) => tx.sender === subject && (tx.eventsTruncated || detectBridges(tx.calls, tx.eventTypes).length > 0),
+    (tx) =>
+      tx.sender === subject &&
+      tx.status !== "failure" &&
+      (tx.eventsTruncated || detectBridges(tx.calls, tx.eventTypes).length > 0),
   );
 }
 
@@ -233,8 +270,18 @@ export interface ExitRecord {
   bridge: string;
   protocols: string[];
   hits: BridgeHit[];
-  /** What left the subject in this transaction, per coin, gas removed. */
+  /**
+   * What actually crossed the bridge, per coin, gas removed: the subject's
+   * own outflow minus whatever another Sui address was credited in the same
+   * coin in this transaction (see {@link splitBridgeOutflow}).
+   */
   sent: Map<string, bigint>;
+  /**
+   * The rest of the subject's own outflow in a bridged coin: a bridge fee, a
+   * relayer payment, a referrer cut, credited to another Sui address in the
+   * same transaction and never sent to the far side.
+   */
+  retained: Map<string, bigint>;
   beneficiaries: Beneficiary[];
   /** Wormhole messages whose recipient is not in the payload this server reads. */
   unresolvedVaas: string[];
@@ -260,25 +307,29 @@ export function readExit(
   const hits = detectBridges(tx.calls, types);
   if (hits.length === 0) return null;
   const reading = events ? readBridgeEvents(events, qualify) : null;
-  const sent = new Map<string, bigint>();
-  for (const [coin, delta] of netOfGas(subject, tx).own) if (delta < 0n) sent.set(coin, -delta);
+  const { own, others } = netOfGas(subject, tx);
+  const { bridged: sent, retained } = splitBridgeOutflow(own, others);
   const beneficiaries = reading?.beneficiaries ?? [];
   const protocols = hits.map((h) => h.protocol);
-  // Mayan settles over CCTP and Wormhole in the same transaction, so its
-  // order is the transfer and the legs are how it was paid.
-  const bridge = protocols.find((p) => p.startsWith("Mayan")) ?? beneficiaries[0]?.protocol ?? protocols[0];
+  // One transaction is one exit, under the protocol that carried it: Mayan
+  // settles over CCTP and Wormhole in the same transaction, so its order is
+  // the transfer and the legs are how it was paid. screen_address groups by
+  // the same rule, from markers alone.
+  const exit = exitCarrier(hits)!;
+  const ownMessage = exit.route.includes("Wormhole");
   return {
     digest: tx.digest,
     timestamp: tx.timestamp,
-    bridge,
+    bridge: exit.carrier.protocol,
     protocols,
     hits,
     sent,
+    retained,
     beneficiaries,
-    // A Wormhole leg of a Mayan order pays Mayan's own contract; the order
-    // already named the beneficiary.
+    // A Wormhole leg of a Mayan order or an Allbridge pool transfer carries
+    // the carrier's own message; the carrier already named the beneficiary.
     unresolvedVaas:
-      reading && reading.mayan.length === 0
+      reading && reading.mayan.length === 0 && !ownMessage
         ? reading.messages.filter((_, i) => !reading.decodedMessages[i]?.beneficiary).map((m) => m.vaaId)
         : [],
     eventsIncomplete: events === null,
@@ -299,6 +350,8 @@ export interface BridgeTotal {
   bridge: string;
   digests: string[];
   sent: Map<string, bigint>;
+  /** Fee and relayer legs paid on Sui in the same transactions, never sent to the far side. */
+  retained: Map<string, bigint>;
   destinations: DestinationTotal[];
   /** Exits with no recipient read from chain data. */
   unresolvedDigests: string[];
@@ -317,12 +370,14 @@ export function groupExits(exits: ExitRecord[]): BridgeTotal[] {
       bridge: e.bridge,
       digests: [],
       sent: new Map(),
+      retained: new Map(),
       destinations: [],
       unresolvedDigests: [],
     };
     byBridge.set(e.bridge, g);
     g.digests.push(e.digest);
     for (const [coin, v] of e.sent) g.sent.set(coin, (g.sent.get(coin) ?? 0n) + v);
+    for (const [coin, v] of e.retained) g.retained.set(coin, (g.retained.get(coin) ?? 0n) + v);
     const keys = [...new Set(e.beneficiaries.map(destinationKey))];
     if (keys.length === 0) g.unresolvedDigests.push(e.digest);
     for (const key of keys) {

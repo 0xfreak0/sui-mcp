@@ -17,8 +17,8 @@ const page = (
   epoch: {
     epochId: 700,
     validatorSet: {
-      // gqlPage refuses an over-cap page and always carries pageInfo — the two
-      // things whose absence let `first: 200` look like it worked.
+      // gqlPage refuses an over-cap page and always carries pageInfo, as the
+      // real service does, so a query the service would reject cannot pass.
       activeValidators: gqlPage(
         addresses.map((a) => ({
           atRisk: 0,
@@ -35,10 +35,9 @@ beforeEach(() => mockGqlQuery.mockReset());
 
 describe("fetchActiveValidators", () => {
   it("never requests a page larger than the service allows", async () => {
-    // The bug this replaces: three call sites asked for `first: 200`, which
-    // mainnet rejects outright with "Page size is too large: 200 > 50". The
-    // old tests passed because their mocks answered a query the real service
-    // refuses, so a completely broken feature looked healthy.
+    // Mainnet rejects `first: 200` outright with "Page size is too large: 200
+    // > 50", so a mock that answers any page size lets a query the real
+    // service refuses look healthy.
     mockGqlQuery.mockResolvedValue(page(["0xa"], false));
     await fetchActiveValidators();
 

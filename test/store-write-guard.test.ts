@@ -7,10 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 /**
  * A store write that fails must not fail the read that produced it.
  *
- * This was not hypothetical: an older server process writing into a database a
- * newer build had migrated failed with "NOT NULL constraint failed:
- * fanout.sponsored_address_count", and that took down `get_address_fanout`
- * entirely rather than returning the fan-out it had just measured. The store is
+ * A write into a table the current writer cannot satisfy (as when an older
+ * server process writes into a database a newer build migrated) fails with
+ * "NOT NULL constraint failed: fanout.sponsored_address_count", and
+ * `get_address_fanout` must still return the fan-out it measured. The store is
  * a cache beside a read-only server; losing a cache entry is not worth losing
  * the answer.
  */
@@ -57,6 +57,7 @@ describe("store writes fail soft", () => {
         out_in_ratio: 1,
         flow_shape: "balanced",
         sponsored_address_count: 0,
+        sponsored_and_paid_count: 0,
         sponsored_transaction_count: 0,
         sponsor_shape: "not_a_sponsor",
         scanned_transactions: 10,
@@ -157,7 +158,7 @@ describe("store writes fail soft", () => {
     store.saveFanout({
       account: "sui:mainnet:0xb",
       recipient_count: 1, sender_count: 1, counterparty_count: 1, coin_type_count: 1,
-      out_in_ratio: 1, flow_shape: "balanced", sponsored_address_count: 0,
+      out_in_ratio: 1, flow_shape: "balanced", sponsored_address_count: 0, sponsored_and_paid_count: 0,
       sponsored_transaction_count: 0, sponsor_shape: "not_a_sponsor",
       scanned_transactions: 10, truncated: 0,
     });

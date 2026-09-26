@@ -4,10 +4,9 @@ import { gqlPage } from "./helpers/service-shapes.js";
 /**
  * A coin can be held in two places: `Coin<T>` objects, and the owner's address
  * balance, which is a dynamic field of the accumulator root and not a coin
- * object at all. Walking coins alone ranked XAGM as complete while leaving out
- * its #2 holder (0xd70a55ed…, 13.74% of supply, all of it in the address
- * balance), and scanned USAD, whose whole supply sits in one address balance,
- * as an NFT collection with no holders.
+ * object at all. A ranking that walks coins alone misses any holder whose
+ * balance sits in an address balance, and a coin whose whole supply sits in
+ * address balances has no coin objects to find.
  */
 
 const mockGqlQuery = vi.fn();

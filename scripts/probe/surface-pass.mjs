@@ -206,7 +206,7 @@ try {
   const circle = (search.results ?? []).find((r) => r.coin_type === USDC);
   const firstUnverified = (search.results ?? []).findIndex((r) => !r.verified);
   ck("search_token lists Circle USDC as verified, before any unverified match", circle?.verified === true && (firstUnverified === -1 || firstUnverified > search.results.indexOf(circle)), short(circle));
-  ck("search_token marks no scan result as verified", (search.results ?? []).every((r) => r.source !== "discovery" || r.verified === false));
+  ck("search_token marks no index or scan result as verified", (search.results ?? []).every((r) => (r.source !== "discovery" && r.source !== "symbol_index") || r.verified === false));
 
   // ======================================================================
   // NFTs, DeFi, staking

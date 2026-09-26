@@ -93,8 +93,8 @@ describe("disassemble_module tool", () => {
   });
 
   // GraphQL's package(address:) resolves any version's address to the lineage's
-  // LATEST version: disassembling Nemo v1 showed redeem_pt, which v5 added. The
-  // mock answers the way the service does, so reading through package() fails.
+  // latest version. The mock answers the way the service does (only the latest
+  // has redeem_pt), so reading through package() fails.
   it("disassembles the version at the address given, not the lineage's latest", async () => {
     const V1 = "0x2b71664477755b90f9fb71c9c944d5d0d3832fec969260e3f18efc7d855f57c4";
     const latest = { module: { name: "py", disassembly: "public redeem_pt() {}" } };

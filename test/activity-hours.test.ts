@@ -7,10 +7,8 @@ const at = (hour: number, n: number) => Array.from({ length: n }, (_, i) => iso(
 
 describe("activityHours", () => {
   it("flags a burst as automated on RATE, without reading the clock", () => {
-    // 17 of 20 sampled active senders did 400 transactions inside a single day.
-    // A burst has no daily rhythm, so the circadian test cannot see it — it
-    // would otherwise be dismissed as "not enough data" when it is in fact the
-    // clearest automation signal available.
+    // 400 transactions inside a single day. A burst has no daily rhythm, so the
+    // circadian test cannot see it; the rate alone marks it as automation.
     const burst = Array.from({ length: 400 }, (_, i) => iso(0, (i % 6) + 9));
     const r = activityHours(burst)!;
     expect(r.transactions_per_day).toBeGreaterThan(200);
@@ -21,10 +19,9 @@ describe("activityHours", () => {
   });
 
   it("flags a flat clock over a long span as automated", () => {
-    // The other automation population: measured at R 0.03-0.06 over ~298 days.
-    // Every day and most hours — the rate matters as much as the flatness, and
-    // this fixture originally ran at 1.3 a day, which is a person who uses a
-    // wallet occasionally rather than a script.
+    // Six transactions a day, every day for 300 days, spread across the clock.
+    // The rate matters as much as the flatness: at about one a day the same
+    // spread is a person who uses a wallet occasionally.
     const flat: string[] = [];
     for (let d = 0; d < 300; d++) for (const h of [1, 5, 9, 13, 17, 21]) flat.push(iso(d, h));
     const r = activityHours(flat)!;
@@ -36,10 +33,9 @@ describe("activityHours", () => {
   });
 
   it("does NOT call a rarely-used wallet automated", () => {
-    // Found on a real mainnet wallet: 120 transactions over 292 days, 0.4 a
-    // day, flat clock — and it was labelled automated. It could not have looked
-    // otherwise. A 24/7 script and an occasional person produce the same R, and
-    // at that rate the flatness carries no information at all.
+    // 120 transactions over 292 days, 0.4 a day, on a flat clock. A 24/7 script
+    // and an occasional person produce the same R, and at that rate the
+    // flatness carries no information.
     const sparse: string[] = [];
     for (let i = 0; i < 120; i++) sparse.push(iso(Math.floor((i * 292) / 120), (i * 7) % 24));
     const r = activityHours(sparse)!;

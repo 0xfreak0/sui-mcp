@@ -175,9 +175,10 @@ await runWithNetwork("mainnet", async () => {
     `shape=${fan.sponsor_shape} truncated=${fan.truncated} note=${fan.sponsor_interpretation ? "yes" : "no"}`,
   );
   // Provisional whenever the scan was cut short and the reading is one that
-  // more history could overturn. `relayer` is the exception — 21 distinct
-  // payees stay 21 however much further you look.
-  const shouldBeProvisional = fan.truncated && fan.sponsor_shape !== "relayer";
+  // more history could overturn. `relayer` and `operator` are the exceptions:
+  // distinct payees already seen stay counted however much further you look,
+  // and an address both paid and sponsored stays so.
+  const shouldBeProvisional = fan.truncated && fan.sponsor_shape !== "relayer" && fan.sponsor_shape !== "operator";
   check(
     "a reading more history could overturn is marked provisional",
     shouldBeProvisional === (fan.sponsor_shape_provisional === true),

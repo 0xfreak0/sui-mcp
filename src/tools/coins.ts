@@ -3,6 +3,7 @@ import { numArg, addressArg, coinTypeArg, timePointArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { errorResult } from "../utils/errors.js";
 import { formatCoinAmount } from "../utils/coin-amount.js";
+import { prefetchCoinScale } from "../utils/valuation.js";
 import { checkpointAt } from "../utils/checkpoint-time.js";
 import {
   DEFAULT_MAX_TRANSACTIONS,
@@ -55,8 +56,9 @@ export function registerCoinTools(server: McpServer) {
         }
         const coinType = canonicalCoinType(coin_type ?? "0x2::sui::SUI");
         if (!coinType) return errorResult(`'${coin_type}' is not a coin type. Use the full type, e.g. 0x2::sui::SUI.`);
-
-        const range = await readBalanceRange();
+        // Every path below formats the amount, which needs the coin's own
+        // decimals for a coin no curated list knows.
+        const [range] = await Promise.all([readBalanceRange(), prefetchCoinScale([coinType])]);
         if (!range) {
           return errorResult("Could not read the checkpoint range GraphQL serves balance reads for, so the balance at a past point cannot be placed. Retry.");
         }
@@ -131,6 +133,7 @@ export function registerCoinTools(server: McpServer) {
         owner,
         coinType: coin_type,
       });
+      await prefetchCoinScale([res.balance.coinType]);
       return {
         content: [
           {

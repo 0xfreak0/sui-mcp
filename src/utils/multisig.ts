@@ -1,10 +1,10 @@
 /**
  * How an address authenticates, read from the signatures it has produced.
  *
- * A Sui address IS the hash of its authenticator — for a multisig,
+ * A Sui address is the hash of its authenticator. For a multisig that is
  * `blake2b(0x03 ‖ threshold ‖ flag₁‖pk₁‖w₁ ‖ … ‖ flagₙ‖pkₙ‖wₙ)`
  * (`sui-types/src/base_types.rs`, `impl From<&MultiSigPublicKey> for SuiAddress`).
- * So the entire committee — every member key, every weight, the threshold —
+ * So the entire committee (every member key, every weight, the threshold)
  * travels inside every transaction the multisig sends, and re-deriving it
  * reproduces the address. That makes membership **chain-derived**: it trusts
  * no indexer and no heuristic, and a caller can check it independently.
@@ -14,13 +14,12 @@
  *
  * - **The committee cannot change.** Rotating a member changes the hash, which
  *   changes the address. A Gnosis Safe rotates owners in place; a Sui multisig
- *   cannot. Measured on one mainnet wallet: 200 sent transactions, one
- *   committee, no variation.
+ *   cannot.
  * - **An address has exactly one authenticator, forever.** There is no key
  *   rotation, so "what is this address" has a single permanent answer.
  * - **A wallet that has never sent cannot be classified at all.** No
  *   transaction, no signature, no committee. That is `null` here, and it must
- *   surface as "unknown", never as "ordinary wallet" — a receive-only treasury
+ *   surface as "unknown", never as "ordinary wallet": a receive-only treasury
  *   multisig looks exactly like a fresh personal wallet from the outside.
  *
  * Everything in this module is pure. Fetching the signatures is the caller's
@@ -95,14 +94,19 @@ export interface MultisigMember {
   /** Present for a zkLogin member; names the identity provider. */
   zklogin?: ZkLoginIdentity;
   /**
+   * Why no private key can exist for this member's public key, when its bytes
+   * show it was written by hand (see {@link unsignableKeyReason}). Such a
+   * member holds weight it can never use.
+   */
+  unsignable?: string;
+  /**
    * Did this member sign **the one transaction this reading came from**.
    *
    * Not a property of the wallet. The committee is fixed for the life of the
-   * address, but which members sign varies per transaction: a mainnet 4-of-7
-   * used three different signer sets across eight transactions, and two of its
-   * seven keys had never signed at all. Reading one transaction and presenting
-   * its bitmap as "who signs" cannot tell a permanently dormant key from one
-   * that sat out a single transfer.
+   * address, but which members sign varies per transaction, and some keys may
+   * never sign at all. Reading one transaction and presenting its bitmap as
+   * "who signs" cannot tell a permanently dormant key from one that sat out a
+   * single transfer.
    *
    * For the wallet-level question, see `analyze_multisig`.
    */
@@ -170,12 +174,48 @@ function publicKeyFor(scheme: string, bytes: Uint8Array): PublicKey | null {
 }
 
 /**
+ * The longest run of one repeated byte a generated public key plausibly
+ * contains. A key is a curve point whose encoding looks uniformly random: a
+ * run of 8 identical bytes somewhere in 32 has probability about 25 × 256 ×
+ * 2^-64, roughly 4e-16. A longer run means the bytes were written, not
+ * generated.
+ */
+const MAX_GENERATED_RUN = 7;
+
+/**
+ * Why no private key can exist for these public-key bytes, or null when they
+ * look generated. A public key chosen by hand still parses, and may even be a
+ * valid curve point, but finding the private key behind a chosen point is
+ * the discrete-logarithm problem, so nobody holds it. A member with such a
+ * key can never sign, so a 2-of-4 committee with one is in practice 2-of-3.
+ */
+export function unsignableKeyReason(bytes: Uint8Array): string | null {
+  let longest = 0;
+  let longestByte = 0;
+  for (let i = 0, run = 0; i < bytes.length; i++) {
+    run = i > 0 && bytes[i] === bytes[i - 1] ? run + 1 : 1;
+    if (run > longest) {
+      longest = run;
+      longestByte = bytes[i];
+    }
+  }
+  if (longest <= MAX_GENERATED_RUN) return null;
+  let text = 0;
+  while (text < bytes.length && bytes[text] >= 0x20 && bytes[text] <= 0x7e) text++;
+  const prefix = text >= 3 ? `begins with the text "${Buffer.from(bytes.subarray(0, text)).toString("latin1")}" and ` : "";
+  return (
+    `The public key ${prefix}contains a run of ${longest} bytes of 0x${longestByte.toString(16).padStart(2, "0")}, which a generated key has with probability below 1e-15: it was written by hand. ` +
+    "Nobody holds a private key for a public key chosen this way (finding one is the discrete-logarithm problem), so this member can never sign."
+  );
+}
+
+/**
  * A zkLogin address, trying both derivations.
  *
- * zkLogin shipped two: the current one left-pads the address seed to 32 bytes,
- * the legacy one does not, and both produced live mainnet addresses. Nothing
+ * zkLogin has two derivations: the current one left-pads the address seed to
+ * 32 bytes, the legacy one does not, and addresses exist under both. Nothing
  * in the signature says which was used, so the only way to know is to derive
- * both and see which reproduces the address — which is why this takes the
+ * both and see which reproduces the address. That is why this takes the
  * address it is trying to match rather than returning one answer.
  */
 function zkLoginAddress(seed: bigint | string, iss: string, expected?: string): string | null {
@@ -244,9 +284,8 @@ function readCommittee(parsed: {
 
     if (scheme === "zklogin") {
       // A zkLogin member is a ZkLoginPublicIdentifier (issuer + address seed),
-      // not a key. Unobserved in a live committee so far — the shape is taken
-      // from the protobuf definition, and the address stays absent unless the
-      // derivation actually succeeds.
+      // not a key. The shape is taken from the protobuf definition, and the
+      // address stays absent unless the derivation actually succeeds.
       const zk = raw as { iss?: string; addressSeed?: string } | undefined;
       if (zk?.iss && zk.addressSeed) {
         member.zklogin = { iss: zk.iss, address_seed: String(zk.addressSeed) };
@@ -258,6 +297,8 @@ function readCommittee(parsed: {
       member.public_key = Buffer.from(bytes).toString("base64");
       const pk = publicKeyFor(sdkScheme, bytes);
       if (pk) member.address = normalize(pk.toSuiAddress());
+      const unsignable = unsignableKeyReason(bytes);
+      if (unsignable) member.unsignable = unsignable;
     }
 
     members.push(member);
@@ -356,9 +397,8 @@ export interface TransactionSigners {
   /**
    * Whether the sender's own key signed. False when every signature derives
    * to an address and none of them is the sender: an address alias, or a
-   * protocol-level substitution such as the one that moved frozen funds out
-   * of the Cetus attacker's addresses. Null when a signature could not be
-   * derived, so the question cannot be settled.
+   * protocol-level substitution of the signer. Null when a signature could
+   * not be derived, so the question cannot be settled.
    */
   signer_is_sender: boolean | null;
   /** The addresses that authorized in the sender's place. */
@@ -511,10 +551,9 @@ function* subsets<T>(items: T[]): Generator<T[]> {
  *
  * **Weight 1 only.** Weights are unbounded, so admitting them makes the space
  * infinite rather than merely large. A committee using non-uniform weights is
- * therefore invisible to this search, and the caller must say so — reporting
+ * therefore invisible to this search, and the caller must say so: reporting
  * "no shared multisig found" without that caveat would state a negative the
- * search never tested. No non-uniform committee has been observed on mainnet,
- * but that is an absence of evidence, not a guarantee.
+ * search never tested.
  *
  * Subsets of size 2 and up, every ordering of each, every threshold from 1 to
  * the subset size. Deduplicated, because different orderings of a symmetric

@@ -11,10 +11,13 @@ import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
+import { prefetchCoinScale } from "../utils/valuation.js";
+import { isSponsorGasChange } from "../utils/sponsor-gas.js";
 import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
 import {
   createdFor,
   custodyChanges,
+  mutatedCapabilities,
   readGrpcObjectChanges,
   summarizeObjectChanges,
   type ObjectMovement,
@@ -81,8 +84,8 @@ interface QueriedTx {
 /**
  * Aliased version connections per request. The service refuses a document of
  * more than 300 query nodes, and each alias repeats the fragment: about 26
- * nodes each, 38 with commands selected. Measured on mainnet: 10 aliases pass
- * and 12 fail without commands; 5 pass and 8 fail with them.
+ * nodes each, 38 with commands selected. 10 aliases fit under the limit
+ * without commands and 5 with them.
  */
 const versionAliasesPerRequest = (includeFunctions: boolean) => (includeFunctions ? 5 : 10);
 
@@ -143,9 +146,8 @@ function movementOut(m: ObjectMovement) {
     object_id: m.object_id,
     type: m.type_short ?? m.type,
     kind: m.kind,
-    // The owner KIND travels with the address. A kiosk-held NFT is owned by
-    // the Kiosk object, so reporting a bare address made a kiosk id read as a
-    // wallet — verified on a TradePort sale where BOTH parties were kiosks.
+    // The owner kind travels with the address. A kiosk-held NFT is owned by
+    // the Kiosk object, and a bare address would read a kiosk id as a wallet.
     // `trace.ts` renders the same movement as "kiosk/object 0x…" and the two
     // tools must not disagree about who a party is.
     from: m.from ? { kind: m.from.kind, address: m.from.address } : null,
@@ -164,7 +166,7 @@ function movementOut(m: ObjectMovement) {
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. Funds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender.",
+    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. Funds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender; coins are never listed there, and when no other object moved `coins_delivered_to` names the addresses other than the sender that gained coins. `mutated_capabilities` lists a sender-owned capability the call mutated in place (a nonce, a rate limit) without changing its owner — the authorising capability itself, present even when nothing changed hands.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -180,16 +182,13 @@ export function registerTransactionTools(server: McpServer) {
       const digest = normalizeDigest(rawDigest);
       // No default cap. A budget that silently omits decoded values would let
       // an investigation draw a conclusion from a subset of the events without
-      // the reader having chosen that trade-off, which is the failure this
-      // whole codebase is built to avoid. Measured, it would almost never fire
-      // anyway: the 99th percentile of transactions with events carries 12 KB
-      // of decoded fields. Bounding the payload is the caller's call to make.
+      // the reader having chosen that trade-off. Bounding the payload is the
+      // caller's call to make.
       const fieldBudget = max_event_field_bytes ?? Number.POSITIVE_INFINITY;
 
       // Checked here so a typo comes back as "that is not a digest" rather than
-      // a thrown transport error about Base58 — and so it is never mistaken for
-      // the transaction not existing. get_transactions has always done this;
-      // the single-digest path had not.
+      // a thrown transport error about Base58, and so it is never mistaken for
+      // the transaction not existing. get_transactions checks the same way.
       if (!isDigest(digest)) return errorResult(invalidDigestMessage(digest));
 
       const req = {
@@ -221,17 +220,15 @@ export function registerTransactionTools(server: McpServer) {
 
       // Protocol-aware decoding.
       //
-      // `commandCount` is reported because an empty `actions` array had more
-      // than one cause and no way to tell them apart: a transaction that ran no
-      // commands, and commands that could not be decoded. Verified on mainnet:
-      // an empty PTB carries `commands` as an EMPTY ARRAY, so the count is
-      // real rather than inferred from its absence.
+      // `commandCount` is reported because an empty `actions` array has more
+      // than one cause: a transaction that ran no commands, and commands that
+      // could not be decoded. An empty PTB carries `commands` as an empty
+      // array, so the count is real rather than inferred from its absence.
       //
-      // `kindUnreadable` covers a third case that no mainnet probe has
-      // produced — a transaction present in the response with no readable kind.
-      // A nonexistent or pruned digest throws NOT_FOUND instead and never
-      // reaches here. It is labelled rather than removed because the branch
-      // already existed and was returning an empty `actions` silently.
+      // `kindUnreadable` covers a third case: a transaction present in the
+      // response with no readable kind. A nonexistent or pruned digest throws
+      // NOT_FOUND instead and never reaches here. The case is labelled so an
+      // empty `actions` never stands for it silently.
       let decoded;
       let commandCount: number | null = null;
       let kindUnreadable = false;
@@ -239,6 +236,7 @@ export function registerTransactionTools(server: McpServer) {
         const ptb = kind.data.programmableTransaction;
         commandCount = ptb.commands?.length ?? 0;
         await prefetchProtocolNames(collectPackageIds(ptb.commands));
+        await prefetchCoinScale((tx?.balanceChanges ?? []).map((bc) => bc.coinType).filter((t): t is string => !!t));
         decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
       } else if (kind?.data.oneofKind) {
         decoded = {
@@ -267,6 +265,30 @@ export function registerTransactionTools(server: McpServer) {
       const objectMovements = readGrpcObjectChanges(changedObjects, protocolForObjectType);
       const custody = custodyChanges(objectMovements);
       const deliveredOnCreation = createdFor(objectMovements, sender);
+      // Coins never appear in `custody` or `deliveredOnCreation`: they are
+      // tracked by balance change. When nothing else moved, "no object changed
+      // custody" is still false for a coin created for someone else, which is
+      // how a drain pays its beneficiary. A gas payer's storage rebate is not
+      // a delivery.
+      const coinRecipients = [
+        ...new Set(
+          (tx?.balanceChanges ?? [])
+            .filter(
+              (bc) =>
+                bc.address &&
+                bc.address !== sender &&
+                BigInt(bc.amount ?? "0") > 0n &&
+                !isSponsorGasChange(bc.address, bc.coinType ?? "", sender, transaction?.gasPayment?.owner),
+            )
+            .map((bc) => bc.address!),
+        ),
+      ];
+      // Capabilities that authorised this call by mutating themselves in
+      // place (a nonce, a rate limit) rather than changing hands. Neither
+      // `custody` nor `deliveredOnCreation` sees these, since both require an
+      // owner change, so this is the only place a privileged call names the
+      // capability that authorised it.
+      const mutatedCaps = mutatedCapabilities(changedObjects, protocolForObjectType);
       const objectSummary = summarizeObjectChanges(changedObjects);
       // Address balances hold funds without a coin object, so what they did is
       // read from the accumulator writes and the transaction's inputs. Both
@@ -333,10 +355,8 @@ export function registerTransactionTools(server: McpServer) {
 
       // Decoded fields are attached in order until a byte budget is spent.
       //
-      // The constraint is the caller's context, not any single event: measured
-      // on mainnet, the 99th percentile of transactions with events sits at
-      // 12 KB of decoded fields, but a 59-event DeepBook transaction reaches
-      // 53 KB — roughly 13k tokens for one lookup, and a ten-hop trace would
+      // The budget bounds the caller's context: an event-heavy transaction can
+      // carry tens of kilobytes of decoded fields, and a multi-hop trace would
       // spend its whole budget on event bodies. Types and senders are cheap and
       // always useful, so they are never dropped; only the decoded values are
       // rationed, and what was skipped is reported rather than silently missing.
@@ -422,8 +442,9 @@ export function registerTransactionTools(server: McpServer) {
                   : {}),
                 actions: decoded.actions,
                 ...(commandCount !== null ? { command_count: commandCount } : {}),
-                // Said outright, because an empty `actions` used to cover this
-                // case, a decode failure and an unreadable kind alike.
+                // Stated outright, because an empty `actions` would
+                // otherwise cover this case, a decode failure and an
+                // unreadable kind alike.
                 ...(commandCount === 0
                   ? {
                       empty_transaction_note:
@@ -446,22 +467,33 @@ export function registerTransactionTools(server: McpServer) {
                 // comparing them would otherwise be misled. `changed` counts
                 // every object effect, including the coin that paid and any
                 // dynamic field the transaction walked; `object_transfers`
-                // keeps only what changed hands. Measured over 818 changed
-                // objects on mainnet, coins and dynamic fields were 48% of
-                // `changed`. Address-balance writes are not objects and are
-                // not counted.
+                // keeps only what changed hands. Address-balance writes are
+                // not objects and are not counted.
                 ...(objectSummary.changed > 0 && custody.length === 0 && deliveredOnCreation.length === 0
-                  ? {
-                      object_changes_note:
-                        "Objects were written but none changed hands. `changed` counts every object effect, including the coin that paid for the transaction and any dynamic field it touched, so a non-zero count here is not by itself evidence that anything moved.",
-                    }
+                  ? coinRecipients.length
+                    ? {
+                        coins_delivered_to: coinRecipients,
+                        object_changes_note:
+                          "No object other than a coin changed custody here (object_transfers and created_for are both empty, and coins are never listed there). Coins did: every address in coins_delivered_to, other than the sender, gained coins in this transaction, and balance_changes has the amounts. `changed` also counts the coin that paid for the transaction, any dynamic field it touched, and a capability mutated in place without changing hands (see mutated_capabilities below if present).",
+                      }
+                    : {
+                        object_changes_note:
+                          "No object changed custody here (object_transfers and created_for are both empty). `changed` counts every object effect, including the coin that paid for the transaction, any dynamic field it touched, and a capability mutated in place without changing hands (see mutated_capabilities below if present), so a non-zero count here is not by itself evidence that anything of value moved. Coins are tracked in balance_changes instead, not here.",
+                      }
                   : {}),
                 ...(custody.length ? { object_transfers: custody.map(movementOut) } : {}),
                 ...(deliveredOnCreation.length
                   ? {
                       created_for: deliveredOnCreation.map(movementOut),
                       created_for_note:
-                        "These objects were created in this transaction and handed to an owner other than the sender. A mint delivered to someone else moves no coin, so it produces no balance change.",
+                        "These objects were created in this transaction and handed to an owner other than the sender. A mint delivered to someone else moves no coin, so it produces no balance change. A newly created COIN delivered to someone else is not listed here: it is tracked in balance_changes instead, which covers every coin regardless of who receives it.",
+                    }
+                  : {}),
+                ...(mutatedCaps.length
+                  ? {
+                      mutated_capabilities: mutatedCaps.map(movementOut),
+                      mutated_capabilities_note:
+                        "These capabilities were mutated (version bumped) without changing owner, which is how a privileged call authorises itself without moving custody. They do not appear in object_transfers or created_for because custody did not change; this is the only place the transaction names which capability it used.",
                     }
                   : {}),
                 ...(addressBalanceOps.length ? { address_balance_ops: addressBalanceOps } : {}),

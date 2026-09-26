@@ -19,21 +19,17 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  *
  * ## Why a window and not "all time"
  *
- * `events` has no collection filter — only an event type — so a collection's
- * sales are found by reading a marketplace's sales and keeping the ones whose
- * `nft_id` belongs to it. All-time on a busy marketplace is unbounded paging,
- * which is the context-burn this server exists to avoid. A window is bounded,
- * states its own edges, and answers the question anyone actually asks.
- *
- * Measured on mainnet, a 24-hour window across every registered event type: 13
- * requests, 237 sales, 5,982 SUI, and 249 kiosk-to-wallet mappings. The floor
- * is one request per registered type.
+ * `events` filters by event type only, with no collection filter, so a
+ * collection's sales are found by reading a marketplace's sales and keeping
+ * the ones whose `nft_id` belongs to it. All-time on a busy marketplace is
+ * unbounded paging, which is the context-burn this server exists to avoid. A
+ * window is bounded, states its own edges, and answers the question anyone
+ * actually asks. The floor is one request per registered event type.
  *
  * ## Events page OLDEST first
  *
- * So "recent sales" is `afterCheckpoint`, never paging to the end. Getting this
- * wrong reported a collection's volume as a fraction of the real figure, twice,
- * because the first pages were its earliest trades rather than its latest.
+ * So "recent sales" is `afterCheckpoint`, never paging to the end: the first
+ * pages of a collection's events are its earliest trades, not its latest.
  */
 
 const SALES_QUERY = `
@@ -62,11 +58,11 @@ interface SalesPage {
 /**
  * Checkpoints per second, used only to turn an hours argument into a bound.
  *
- * Mainnet measured 4.50 in September 2026, against 4.25 earlier in the year, so
- * this drifts and any window derived from it is approximate. That is why the
- * response reports `from_checkpoint`/`to_checkpoint` and the timestamps of the
- * oldest and newest sale actually read, rather than echoing `hours` back as
- * though it were the window covered.
+ * The mainnet checkpoint rate drifts over time, so any window derived from it
+ * is approximate. That is why the response reports
+ * `from_checkpoint`/`to_checkpoint` and the timestamps of the oldest and
+ * newest sale actually read, rather than echoing `hours` back as though it
+ * were the window covered.
  */
 const CHECKPOINTS_PER_SECOND = 4.5;
 
@@ -134,15 +130,15 @@ export function registerNftSalesTools(server: McpServer) {
       let truncated = false;
       // Min and max over every type, not first-seen and last-seen. Each type is
       // paged separately, so assigning once at the start and overwriting at the
-      // end reported an "oldest" sale later than the "newest" one whenever more
-      // than one marketplace traded in the window.
+      // end would report an "oldest" sale later than the "newest" one whenever
+      // more than one marketplace traded in the window.
       let oldest: string | null = null;
       let newest: string | null = null;
       const wanted = collection_type ? canonicalType(collection_type) : undefined;
       // Sales the filter cannot judge, because their marketplace does not emit
-      // the collection type. Measured on mainnet: 70 of 73 sales carry no
-      // nft_type at all, so a filtered result that did not say this reads as
-      // "this collection did not trade" when it means "cannot tell".
+      // the collection type. Most sales carry no nft_type at all, so a
+      // filtered result that did not say this would read as "this collection
+      // did not trade" when it means "cannot tell".
       let unattributable = 0;
       const unread: string[] = [];
 
@@ -152,10 +148,9 @@ export function registerNftSalesTools(server: McpServer) {
         // like a marketplace with no sales.
         if (requests >= max_pages) {
           unread.push(eventType);
-          // Also truncated. Removing the old outer break stopped this being set
-          // when the budget ran out exactly on a type boundary, so a read that
-          // skipped whole marketplaces reported truncated: false beside a
-          // caveat saying it was incomplete.
+          // Also truncated: when the budget runs out exactly on a type
+          // boundary, whole marketplaces are skipped, and the read must not
+          // report truncated: false beside a caveat saying it is incomplete.
           truncated = true;
           continue;
         }
@@ -268,8 +263,8 @@ export function registerNftSalesTools(server: McpServer) {
           : {
               note: "Kiosk ownership was read but not stored: set SUI_STORE_PATH so get_top_holders can use it.",
             }),
-        // NOT `sales`: `...totals` already puts the sale COUNT there, and
-        // spreading the array over it left the count reported nowhere.
+        // Not `sales`: `...totals` already puts the sale count there, and
+        // spreading the array over it would leave the count reported nowhere.
         ...(include_sales ? { sale_records: sales } : {}),
       });
     },

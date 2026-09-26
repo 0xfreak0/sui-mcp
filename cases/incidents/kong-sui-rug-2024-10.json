@@ -1,0 +1,735 @@
+{
+  "slug": "kong-sui-rug-2024-10",
+  "kind": "token-rug",
+  "title": "KONG SUI (KONG) rug pull, 14 October 2024",
+  "network": "mainnet",
+  "summary": "KONG SUI was published on 26 September 2024 by 0x70f10425 and paired with SUI in a Turbos pool whose two LP positions the deployer sent to 0x0 the same day. BitPinas reported the developer sold about $20,000 of tokens around 14 October and deleted the project's X account and website. On chain, 35 wallets sold KONG into the pool between 08:53 and 08:58 UTC on 14 October: the deployer, two wallets it had given 1B and 500M KONG at launch, eight wallets first funded by one exchange-shaped hot wallet four hours before publish that were among the first buyers, all within four minutes of pool creation, and 24 wallets given 0.5 SUI of gas each by one of those eight in the preceding 50 minutes. On 24 October all 35 sent their SUI, 7,650.19 in total, to 0xfbbab0fd, which sent 7,649 SUI on 29 October to an address that swept it into the same hot wallet that had funded the deployer. KONG has 1 decimal, and several tools print its amounts at 9.",
+  "sources": [
+    {
+      "url": "https://bitpinas.com/cryptocurrency/kong-sui-rugpull/",
+      "publisher": "BitPinas",
+      "kind": "news"
+    },
+    {
+      "url": "https://bitpinas.com/feature/rugpull-millions-pinoy-trader-sog-sui/",
+      "publisher": "BitPinas",
+      "kind": "news"
+    },
+    {
+      "url": "https://coinpaprika.com/coin/kong-kong-sui/",
+      "publisher": "CoinPaprika",
+      "kind": "news"
+    }
+  ],
+  "subjects": {
+    "coin": "0xb0c3e7ae67c9161273aab9a06e589c1c13479337d14c794251a97df46822f2cb::kong::KONG",
+    "coin_kong_ding_dong": "0xcc345bb9b0d5ddd2d01a4e303a9fa4c00b6da760e4618ed31e303c585df962ca::kong::KONG",
+    "coin_yungog": "0x009f33ecca62cb3a6eff9df6517f4bc2cd3f879003e3c69454f5271f6674be26::yungog::YUNGOG",
+    "package": "0xb0c3e7ae67c9161273aab9a06e589c1c13479337d14c794251a97df46822f2cb",
+    "deployer": "0x70f1042521565aa5c3fb887f939ef05e8dee264cc11ee07735132691801d360d",
+    "insider_1b": "0x7ea76fb3e64d7c4bcb1d0f57454810062beee1c81b8c0e3cede9a7e63886ef5b",
+    "insider_500m": "0x2a79bc11a10bdc6e8ee15360a07afbf6bf9460bdbefaf4f8f2b0a3b1358f9bee",
+    "gas_funder": "0xbb8f4fa08e6591f392a4f68cb3e1632d8c00615788eed84b18411c71c06a8ae9",
+    "relay": "0x6730b5661d2a741d810ab425112507979326d09906874b265a80e0dd1a172f32",
+    "consolidator": "0xfbbab0fdf16bd65d7ff7d17b86e0086892573337b6e7f466794506bc8aa6c0f3",
+    "deposit_address": "0x97ab09d16d5c8ffb611abac70ccbe3898a2b11802589df4e6206fbc09afb4e97",
+    "hot_wallet": "0xf8b7b95d01ae79756fc3d1bc58675e59a17f07cdafe3d31ea57425adbec2d43f",
+    "turbos_pool": "0x48ff70ae056c64407ebf08dc532964434ef2108b2b232e7a01d78d17f51123b7",
+    "lp_position": "0x1319ebdb7136d2e4ecc0ee29b6b00346b2e44f0cc4f28af4860f781b231ea956",
+    "zero": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "publish_tx": "99s8gEPTAvdks4xwUVNvtrWDg1npNH3NJKatjqLyKJ7q",
+    "pool_create_tx": "vcKkoDdg7sS3PkyNB7LVvFozPg1Wn5yWk7GhB8iFXZn",
+    "lp_burn_tx": "8vYiG6cKB5tFg5svE4LURBaxhBWh9VvYTmncb8LXbYEi",
+    "make_immutable_tx": "DwjmYzZFXBsjUoTowH7h9dJ2CS7rVQKASS8FUHGNimed",
+    "deployer_dump_tx": "rC4ijs7mTe3KXnY1ChDVWXmxyHAXLBrJpyiU4jovPA1",
+    "insider_dump_tx": "5WEK9KPvK1NmZ91ZrEhYbTdzyaEz2ipzLbbmRnZs5WEA",
+    "exit_tx": "6sdKKWtJiWtUmvs4B58HBqKh8cWWmCJSRhmvttEMTSV6",
+    "turbos_v9": "0x1a3c42ded7b75cdf4ebc7c7b7da9d1e1db49f16fcdca934fac003f35f39ecad9",
+    "turbos_v1": "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1"
+  },
+  "checks": [
+    {
+      "id": "symbol-query-kong-candidates",
+      "question": "Which coin is KONG?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "KONG",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "status",
+          "op": "equals",
+          "value": "ambiguous_symbol"
+        },
+        {
+          "path": "coin_count",
+          "op": "gte",
+          "value": 2
+        },
+        {
+          "path": "candidates[*].coin_type",
+          "op": "includes",
+          "value": "{coin}"
+        },
+        {
+          "path": "candidates[*].coin_type",
+          "op": "includes",
+          "value": "{coin_kong_ding_dong}"
+        },
+        {
+          "path": "candidates[*].coin_type",
+          "op": "excludes",
+          "value": "{coin_yungog}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: every CoinMetadata and coin registry Currency on mainnet, read on 2026-09-26 by npm run sync:coin-symbols: 30 coins have the symbol KONG, among them {coin} (KONG SUI, the coin CoinPaprika lists) and {coin_kong_ding_dong} (Kong Ding Dong). No curated list covers either, so a symbol query must answer with candidates, never one coin. A live scan in object-ID order reached neither within 30,257 objects and 100 seconds. {coin_yungog} has the symbol YUNGOG and only its name 'Yung Kong Khan' contains Kong; the original defect reported it as KONG."
+    },
+    {
+      "id": "symbol-search-kong",
+      "question": "Which coins does a search for KONG turn up?",
+      "tool": "search_token",
+      "args": {
+        "query": "KONG"
+      },
+      "expect": [
+        {
+          "path": "results[*].coin_type",
+          "op": "includes",
+          "value": "{coin}"
+        },
+        {
+          "path": "results[*].coin_type",
+          "op": "includes",
+          "value": "{coin_kong_ding_dong}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the same walk as symbol-query-kong-candidates. search_token read only the first 2,992 CoinMetadata objects in object-ID order and listed neither KONG coin, only names containing Kong."
+    },
+    {
+      "id": "token-metadata",
+      "question": "What are KONG SUI's decimals and supply, and is it vouched for?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{coin}",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "decimals",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "total_supply",
+          "op": "equals",
+          "value": "100000000000"
+        },
+        {
+          "path": "verified",
+          "op": "equals",
+          "value": false
+        },
+        {
+          "path": "name",
+          "op": "equals",
+          "value": "KONG SUI"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "CoinMetadata on chain: decimals 1, supply 100000000000 raw (10,000,000,000 KONG), matching the 10 billion maximum supply BitPinas quotes."
+    },
+    {
+      "id": "deployer",
+      "question": "Who published the KONG package, and in which transaction?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "root_publisher.publish_tx",
+          "op": "equals",
+          "value": "{publish_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Publish transaction {publish_tx} on chain, sender {deployer}, 2024-09-26T05:54:55Z."
+    },
+    {
+      "id": "treasury-cap-renounced",
+      "question": "Can anyone still mint KONG or upgrade its package?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "capabilities.capabilities[*].owner_address",
+          "op": "includes",
+          "value": "{zero}"
+        },
+        {
+          "path": "capabilities.capabilities[*].risk",
+          "op": "excludes",
+          "value": "high"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the publish transaction created the TreasuryCap already owned by 0x0, which cannot sign, and the UpgradeCap was destroyed by 0x2::package::make_immutable in {make_immutable_tx}. Nobody can mint or upgrade."
+    },
+    {
+      "id": "upgrade-cap-destroyed-audit",
+      "question": "Does the package audit know the UpgradeCap was destroyed?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "capabilities.capabilities[*].holder_status",
+          "op": "excludes",
+          "value": "unknown"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: UpgradeCap 0x45ae77b4 was deleted by make_immutable in {make_immutable_tx}; get_upgrade_history reports it as cap_destroyed."
+    },
+    {
+      "id": "upgrade-history",
+      "question": "When did the package become immutable, and who did it?",
+      "tool": "get_upgrade_history",
+      "args": {
+        "package": "{package}"
+      },
+      "expect": [
+        {
+          "path": "upgrade_cap.state",
+          "op": "equals",
+          "value": "deleted"
+        },
+        {
+          "path": "flags[*].kind",
+          "op": "includes",
+          "value": "cap_destroyed"
+        },
+        {
+          "path": "cap_end.tx",
+          "op": "equals",
+          "value": "{make_immutable_tx}"
+        },
+        {
+          "path": "cap_end.sender",
+          "op": "iequals",
+          "value": "{deployer}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: {make_immutable_tx} at 2024-09-26T06:43:42Z, sender {deployer}, calls 0x2::package::make_immutable."
+    },
+    {
+      "id": "lp-position-burned",
+      "question": "Was the pool liquidity pulled, or was the LP position given up?",
+      "tool": "trace_object_history",
+      "args": {
+        "object_id": "{lp_position}"
+      },
+      "expect": [
+        {
+          "path": "created.tx",
+          "op": "equals",
+          "value": "{pool_create_tx}"
+        },
+        {
+          "path": "current.owner.address",
+          "op": "iequals",
+          "value": "{zero}"
+        },
+        {
+          "path": "owner_changes[0].tx",
+          "op": "equals",
+          "value": "{lp_burn_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the full-range Turbos position (75,000,000 KONG raw 74999999070 and 700 SUI) was minted in {pool_create_tx} and sent to 0x0 in {lp_burn_tx} 25 minutes later. The BitPinas account of a developer sell-off fits: the dump went through the pool, liquidity was never withdrawn."
+    },
+    {
+      "id": "holders-complete",
+      "question": "Who holds KONG, and is the ranking complete?",
+      "tool": "get_top_holders",
+      "args": {
+        "type": "{coin}",
+        "max_scan": 20000,
+        "limit": 25
+      },
+      "expect": [
+        {
+          "path": "complete_ranking",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "total_supply",
+          "op": "equals",
+          "value": "100000000000"
+        },
+        {
+          "path": "top_holders[*].address",
+          "op": "includes",
+          "value": "{zero}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: about 3,300 Coin<KONG> objects, small enough to enumerate. 0x0 received 5,500,000,000 raw (550,000,000 KONG) from the deployer in six transfers between 27 September and 6 October 2024; it can only grow.",
+      "timeout_s": 240
+    },
+    {
+      "id": "deployer-dump",
+      "question": "Did the deployer sell KONG on the day of the rug?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{deployer_dump_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "-4499000000"
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "431391181040"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: {deployer_dump_tx} at 2024-10-14T08:54:39Z swaps 449,900,000 KONG for 431.39 SUI in Turbos pool {turbos_pool}. BitPinas dates the rug to around 14 October."
+    },
+    {
+      "id": "insider-dump-amount",
+      "question": "How much KONG did the 1B-KONG insider sell in its first swap?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{insider_dump_tx}"
+      },
+      "expect": [
+        {
+          "path": "token_flow[1].formatted",
+          "op": "matches",
+          "value": "^-745,?279,?357(\\.0+)? KONG"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: balance change -7452793570 raw KONG; CoinMetadata decimals 1, so 745,279,357 KONG, sold for 4,519.07 SUI at 2024-10-14T08:53:38Z."
+    },
+    {
+      "id": "deployer-flows-scale",
+      "question": "How much KONG passed through the deployer's wallet?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{deployer}",
+        "from": "2024-09-26T00:00:00Z",
+        "to": "2024-12-31T00:00:00Z",
+        "top": 20
+      },
+      "expect": [
+        {
+          "path": "coins[*].raw.in",
+          "op": "includes",
+          "value": "100093037531"
+        },
+        {
+          "path": "coins[*].in",
+          "op": "includes",
+          "value": 10009303753.1
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the deployer received 100000000000 raw at publish and 93037531 raw in fees from {pool_create_tx}'s position; at 1 decimal that is 10,009,303,753.1 KONG."
+    },
+    {
+      "id": "insider-received-from-deployer",
+      "question": "Where did the largest seller get its KONG, and where did its SUI go?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{insider_1b}",
+        "from": "2024-09-26T00:00:00Z",
+        "to": "2024-12-31T00:00:00Z",
+        "top": 15
+      },
+      "expect": [
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{deployer}"
+        },
+        {
+          "path": "coins[*].in",
+          "op": "includes",
+          "value": 1000000000
+        },
+        {
+          "path": "top_recipients[*].address",
+          "op": "includes",
+          "value": "{relay}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 7SumEFmUMbBRv47a5A3MaMFeV31eoTxBrvET7uAhuicw sent 1,000,000,000 KONG from the deployer 87 seconds after publish; FcFNEp1DHpBWw7ky4t9SQtHU6bw6Zd2Dzn5G38AHjgc3 sent 4,910.75 SUI to {relay} on 24 October."
+    },
+    {
+      "id": "proceeds-converge",
+      "question": "Did the deployer's and the insiders' proceeds end up in one place?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "{deployer}",
+          "{insider_1b}",
+          "{insider_500m}",
+          "{relay}",
+          "{consolidator}"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "subject_paid_subject[*].payee",
+          "op": "includes",
+          "value": "{consolidator}"
+        },
+        {
+          "path": "subject_paid_subject[*].digest",
+          "op": "includes",
+          "value": "H6MEzkPoCw53PySLF5DMebuZnGAshrLv6b3TZcT81GA6"
+        },
+        {
+          "path": "subject_paid_subject[*].digest",
+          "op": "includes",
+          "value": "DHqhADcCDDGskKoqAQwvqGxir4Vorzh6wG8tMyoF2vbe"
+        },
+        {
+          "path": "subject_paid_subject[*].digest",
+          "op": "includes",
+          "value": "jmrkD22GZ1zLeSJwdnZAU1VNMWxQ9sHzhSjNp4bbGcA"
+        },
+        {
+          "path": "subject_funded_subject[*].funded",
+          "op": "includes",
+          "value": "{insider_1b}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: on 2024-10-24 between 06:42 and 06:48 UTC the deployer (440.33 SUI), {insider_500m} (226.95 SUI) and {relay} (4,910.77 SUI, received from {insider_1b} 84 seconds earlier) all paid {consolidator}."
+    },
+    {
+      "id": "insider-kong-grant-amount",
+      "question": "How much KONG did the deployer give the insider at launch?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "{deployer}",
+          "{insider_1b}",
+          "{insider_500m}",
+          "{relay}",
+          "{consolidator}"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "subject_paid_subject[0].digest",
+          "op": "equals",
+          "value": "7SumEFmUMbBRv47a5A3MaMFeV31eoTxBrvET7uAhuicw"
+        },
+        {
+          "path": "subject_paid_subject[0].received[0]",
+          "op": "matches",
+          "value": "^1,?000,?000,?000 KONG"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 7SumEFmUMbBRv47a5A3MaMFeV31eoTxBrvET7uAhuicw credits {insider_1b} with 10000000000 raw KONG; at 1 decimal that is 1,000,000,000 KONG, 10% of supply."
+    },
+    {
+      "id": "bundle-funders",
+      "question": "Were the wallets that paid the consolidator funded from common sources?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "0x6730b5661d2a741d810ab425112507979326d09906874b265a80e0dd1a172f32",
+          "0x172d29112606d7d08018e4d37b2a395c655b794c1ace3071e8f9dfb5d96ca39f",
+          "0x70f1042521565aa5c3fb887f939ef05e8dee264cc11ee07735132691801d360d",
+          "0xfe7d1e61901814ff6e83b10250a9bc9358e7d29131c301fae51ccd13f973e378",
+          "0x2a79bc11a10bdc6e8ee15360a07afbf6bf9460bdbefaf4f8f2b0a3b1358f9bee",
+          "0xbb8f4fa08e6591f392a4f68cb3e1632d8c00615788eed84b18411c71c06a8ae9",
+          "0xfa42e478bc36b18f5002fafe0a1469b652bf41ee223183f47b63c7ad55306487",
+          "0x6d5e514b105b1f13a3f60e3470c40e8a5c6b1b470614e40de7879f6081682a5c",
+          "0x413c7698d24ca11cecc9b68d016ac35d6802d30b7cb1f367849fe3c7b056dd9c",
+          "0x002357b6f995cecfd91cd8c06becf40bd33f70cafe162c444ccbc1175358c9cf",
+          "0xf475ad5720058cd4918de63fbe82a791c4e219d20b03885729a49c69d3191783",
+          "0xca557e3aa7d2d8f993073c60833b8eeb4eb0fc17442aa55b25dbb692be2081fb",
+          "0xce9dfab1cc207e32a6dae3fc46c61c8050a84094aedfaea79c3b4148cf65c270",
+          "0xb3b3019bc168b3d7cef1fd505922bfb7c6d668348819ed6fec8e5fd43dd61c7e",
+          "0x338a8386b8d55f41a9d5fc0c4363154606f73f6042c19d3accca00741ba9917b",
+          "0x3875a893aab032b8d1116593028bb761eb9ace42904ec298521759e0c2f9b0e8",
+          "0x170d7fed2f46d497149ed0ba33e4f1e9c18323616ae864d70c3cd14a5d0fcae2",
+          "0xa09b340c589abd7994d2ddcad5339234735b8e0b28bc45ce5e8660ee2fe4901f",
+          "0xf3c4874622cb5acbf5d35a940bcec9b776a40839ea37e12286f42d4169883fc4",
+          "0x9504595419953ae09b540d03e7bc0ae1978803af94bbd88c2a1ef055bf701936",
+          "0x1b111b6bc6f169efa232a264b74bae55133d77b8a94bb5840cbbbe27d5340c92",
+          "0xd70075374d0071582dc86ed977301f2ea76817232f6064574c2c2084fe74f4f5",
+          "0x328a539ca69e796c7f91ffaf7042e47d60b3e7222f2263fb5d5de11d42399789",
+          "0x21099a282760f6aff823e964242d1fabb992815640b73f634dcbdae8cee18648",
+          "0x8c071e107d4cde1fb56293c75d5252e50b0870ee8a75fad243b35cbfe3de5766",
+          "0xfcae09ba0dce0e4b887b31961322e5c0d8b41ac0356d5706bb721ab2c147b103",
+          "0xea3cd2d844642ec2d68841fa3ea448697cd801474e957263f806c2e3f0e1133d",
+          "0x0b57f50b7c21af72cbbdb150ca041bd3735df8dbc4ab9301e99a9dd97c9b176e",
+          "0xeadff8974666ca0b9a8e9bd289040995ee8f35717ff7aac30c0741de8ed8edf5",
+          "0x9396b97081a5e5ce7254ef50cbe6dd93e2429664bd0c243ac6fae7656867d492",
+          "0x59a3b4d2b56ab603459e9346ff71a8dd0f8121064a198c1f600f3ac1c1cd9918",
+          "0x661c4ec71cdeed2495e36be7da0562d146771fc7472d74c461cb9c63c9f369ad",
+          "0xa2ee13ad89cf473bc60dc373a34699a5d91f7a8414dd87919c817aba9dab681e",
+          "0x8e77342ace4a9255e392f4af201a41da240c485265155aa744d735590f3c3cb5",
+          "0xa65a38e0d6f827ba4a23a5f8a870681594dd45935ced5792784b0d7e29397f45"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "shared_funders[*].funder",
+          "op": "includes",
+          "value": "{gas_funder}"
+        },
+        {
+          "path": "shared_funders[*].funder",
+          "op": "includes",
+          "value": "{hot_wallet}"
+        },
+        {
+          "path": "subject_funded_subject[*].funder",
+          "op": "includes",
+          "value": "{gas_funder}"
+        },
+        {
+          "path": "subject_funded_subject",
+          "op": "count_gte",
+          "value": 25
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: {gas_funder} paid 0.5 SUI to each of 24 of these wallets between 08:06 and 08:46 UTC on 14 October, minutes before they sold; {hot_wallet} first funded the deployer and eight others between 01:45 and 02:19 UTC on 26 September. A control of 9 Turbos swappers from the launch window (seed 20241014) shared no funder with them and funded none of each other.",
+      "timeout_s": 300
+    },
+    {
+      "id": "consolidation",
+      "question": "How much SUI reached the consolidation wallet on 24 October, and from how many wallets?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{consolidator}",
+        "from": "2024-10-24T06:00:00Z",
+        "to": "2024-10-24T08:00:00Z",
+        "top": 30
+      },
+      "expect": [
+        {
+          "path": "coverage.complete",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "inflow_sources",
+          "op": "count_gte",
+          "value": 35
+        },
+        {
+          "path": "inflow_sources",
+          "op": "count_lte",
+          "value": 35
+        },
+        {
+          "path": "coins[0].in",
+          "op": "approx",
+          "value": 7650.187157164,
+          "tolerance": 0.0001
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{deployer}"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{gas_funder}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 36 incoming transfers from 35 addresses between 06:39:06 and 07:01:22 UTC totalling 7,650.187157164 SUI. 34 of the 35 sold KONG in pool {turbos_pool} between 08:53 and 08:58 UTC on 14 October; the 35th is {relay}. BitPinas reports a sale of over $20,000; at SUI $2.22 the 14 October sales were about $16,600."
+    },
+    {
+      "id": "proceeds-exit",
+      "question": "Where did the consolidated SUI go?",
+      "tool": "trace_flow_graph",
+      "args": {
+        "address": "{consolidator}",
+        "direction": "forward",
+        "from": "2024-10-24T06:48:00Z",
+        "coin_type": "0x2::sui::SUI",
+        "max_depth": 5,
+        "max_nodes": 60
+      },
+      "expect": [
+        {
+          "path": "terminals[0].reason",
+          "op": "equals",
+          "value": "hub"
+        },
+        {
+          "path": "edges[*].to",
+          "op": "includes",
+          "value": "{deposit_address}|0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+        },
+        {
+          "path": "edges[*].digests[*]",
+          "op": "includes",
+          "value": "{exit_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: {exit_tx} at 2024-10-29T16:07:34Z sends 7,649 SUI from {consolidator} to {deposit_address}, which sent 7,648.999 SUI to {hot_wallet} eight minutes later (E3rCEX7ex5uBuPpZ9scXeChkMGaZha5gVRk4Qxiheg53).",
+      "timeout_s": 240
+    },
+    {
+      "id": "deposit-sweeps-to-funder",
+      "question": "Is the exit address a deposit address, and whose?",
+      "tool": "classify_deposit_address",
+      "args": {
+        "address": "{deposit_address}"
+      },
+      "expect": [
+        {
+          "path": "hot_wallet",
+          "op": "iequals",
+          "value": "{hot_wallet}"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: {deposit_address} received 7,649 SUI in {exit_tx} and sent 7,648.999 SUI to {hot_wallet} eight minutes later; every outflow seen went there. {hot_wallet} is the address that first funded the deployer (DGbdmrFNNmMT29KzUmzug3wr2sXBSbh7SRywMvVawcma, 710 SUI). No label source names the exchange that runs it."
+    },
+    {
+      "id": "wallet-edges",
+      "question": "Which links does clustering find among the sellers and the consolidator?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "{deployer}",
+          "{insider_1b}",
+          "{insider_500m}",
+          "{gas_funder}",
+          "{relay}",
+          "{consolidator}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "7SumEFmUMbBRv47a5A3MaMFeV31eoTxBrvET7uAhuicw"
+        },
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "AAP47v49Qv4o9uTa36VELqMf6Uaqjhtxs3og1Tkb3hK4"
+        },
+        {
+          "path": "excluded_intermediaries[*].address",
+          "op": "includes",
+          "value": "{hot_wallet}"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: 7SumEF is the deployer's first transfer to {insider_1b}; AAP47v49 is {gas_funder}'s first payment to {consolidator} (140.29 SUI). {hot_wallet} paid more than 50 addresses, so shared ancestry through it is discounted.",
+      "timeout_s": 240
+    },
+    {
+      "id": "control-by-upgraded-module",
+      "question": "Can a control group be drawn from callers of the Turbos version the sellers called?",
+      "tool": "sample_control_addresses",
+      "args": {
+        "module": "{turbos_v9}::swap_router",
+        "size": 9,
+        "from": "2024-09-26T06:00:00Z",
+        "to": "2024-09-26T08:00:00Z",
+        "seed": 20241014
+      },
+      "expect": [
+        {
+          "path": "population_size",
+          "op": "gte",
+          "value": 9
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: {insider_dump_tx} and {deployer_dump_tx} call {turbos_v9}::swap_router, and dozens of swaps went through it in this window. Events record the module under the original package id 0x91bfbc38...; drawing with that id returns 5,000 events."
+    },
+    {
+      "id": "control-by-upgraded-module-post-cutover",
+      "question": "Can a control group still be drawn from Turbos v9 callers after Sui made a module's emitting id version-aware?",
+      "tool": "sample_control_addresses",
+      "args": {
+        "module": "{turbos_v9}::swap_router",
+        "size": 9,
+        "from": "2025-01-01T00:00:00Z",
+        "to": "2025-01-02T00:00:00Z",
+        "seed": 1
+      },
+      "expect": [
+        {
+          "path": "population_size",
+          "op": "gte",
+          "value": 9
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: mainnet checkpoint 69,982,635 (2024-10-17) shipped protocol 62's relocate_event_module, which made an event's emitting module carry the id of the package VERSION ACTUALLY CALLED rather than the lineage's original id. {turbos_v9} stayed in active use through 2025; a module filter drawn with its own id (not rewritten to the pre-cutover original 0x91bfbc38...) over this 2025 window returns 2,540 distinct callers on chain."
+    },
+    {
+      "id": "original-id-module-after-cutover-names-versions",
+      "question": "Does a Turbos swap_router filter written with the original id, as pre-cutover events show it, say which versions it misses after the cutover?",
+      "tool": "query_events",
+      "args": {
+        "module": "{turbos_v1}::swap_router",
+        "after_checkpoint": "2025-01-01T00:00:00Z",
+        "before_checkpoint": "2025-01-02T00:00:00Z",
+        "limit": 5
+      },
+      "expect": [
+        {
+          "path": "module_scope.other_version_ids",
+          "op": "includes",
+          "value": "{turbos_v9}"
+        },
+        {
+          "path": "module_scope.other_version_ids",
+          "op": "count_gte",
+          "value": 21
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: packageVersions lists 22 versions of the Turbos lineage rooted at {turbos_v1}. From mainnet checkpoint 69,982,635 an event carries the id of the version called, and no swap_router event over 2025-01-01 carries {turbos_v1}, while {turbos_v9} alone has 2,540 distinct callers in that window."
+    }
+  ]
+}

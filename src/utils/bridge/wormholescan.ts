@@ -87,9 +87,8 @@ const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
  * and pinning that variance down is worth more than testing the fetch.
  *
  * Wormholescan reports a fully-populated `targetChain` for some operations and
- * a fully-populated `standarizedProperties` for others — observed on mainnet,
- * where one real transfer had an empty `standarizedProperties` while its
- * `targetChain` was complete. Both are therefore optional and read
+ * a fully-populated `standarizedProperties` for others, and either can be
+ * empty while the other is complete. Both are therefore optional and read
  * independently; neither may be used to decide the other is absent.
  */
 export function parseOperation(raw: unknown): WormholescanOperation | null {

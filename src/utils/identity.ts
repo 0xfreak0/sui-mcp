@@ -19,6 +19,7 @@
 
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
+import { getNetwork, type SuiNetwork } from "../config.js";
 import { getLabel, labelProvenance, type LabelProvenance } from "./labels.js";
 import { batchResolveNames } from "./names.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
@@ -50,15 +51,12 @@ const ALIAS_TYPE = `${normalizeSuiAddress("0x2")}::address_alias::AddressAliases
 /**
  * Aliases per alias-lookup request. NOT `AUTH_BATCH_SIZE`.
  *
- * That constant was measured against the `transactions` query, whose line is
- * short. This one repeats the 97-character type string and a 66-character owner
- * per alias, about 270 bytes each, so it crosses the service's 5,000-byte query
- * cap far sooner. Measured: 18 aliases is 4,859 bytes and accepted, 19 is 5,129
- * and rejected outright.
- *
- * Reusing 20 made every full batch fail, and the catch below turned that into
- * "this wallet has delegated to nobody" for all twenty. Fifteen leaves room for
- * the type string to grow without anyone re-deriving this.
+ * This query repeats the 97-character type string and a 66-character owner
+ * per alias, about 270 bytes each, so it reaches the service's 5,000-byte
+ * query cap far sooner than the short `transactions` query that constant is
+ * sized for. A rejected batch reaches the catch below and reads as "this
+ * wallet has delegated to nobody" for every alias in it. Fifteen leaves room
+ * for the type string to grow.
  */
 const ALIAS_BATCH_SIZE = 15;
 
@@ -80,10 +78,9 @@ const NAMES_PER_ADDRESS = 25;
  * Addresses per held-names request. NOT `CHUNK`.
  *
  * The service's 5,000-byte cap counts the variables as well as the query text,
- * and each full-length address key costs about 80 bytes. Measured with this
- * query: 40 addresses accepted, 44 rejected at 5,127 bytes, and 50 rejected at
- * 5,694. The catch below would turn that rejection into "holds no names" for
- * the whole chunk, so this stays well under the line.
+ * and each full-length address key costs about 80 bytes on top of the query
+ * text. The catch below would turn a rejection into "holds no names" for the
+ * whole chunk, so this stays well under the line.
  */
 const HELD_NAMES_BATCH_SIZE = 35;
 
@@ -141,10 +138,9 @@ interface MultiGetResult {
 
 /**
  * Addresses per kind lookup. The service caps a request at 5,000 bytes
- * including variables, and each key costs about 81 bytes: measured on mainnet,
- * 58 keys (4,898 bytes) were accepted and 62 (5,222 bytes) rejected with
- * "Query payload too large". A rejected chunk classifies as nothing, and the
- * caller's default then reads every address in it as a wallet.
+ * including variables, and each key costs about 81 bytes. A rejected chunk
+ * classifies as nothing, and the caller's default then reads every address in
+ * it as a wallet.
  */
 const KINDS_BATCH_SIZE = 40;
 
@@ -245,6 +241,43 @@ export interface AddressIdentity {
     transactions_examined: number;
   };
   /**
+   * This address's own authentication, recovered from a transaction it
+   * signed as an address alias for another wallet, because none of its own
+   * sent transactions carry its signature (`authentication` and
+   * `foreign_authorization` are both absent). `sentAddress` and
+   * `affectedAddress` both key on the transaction's sender, which an alias
+   * signature never is, so this is read the other way: from the owners whose
+   * alias set names this address, through their own sent transactions.
+   */
+  signed_as_alias_for?: {
+    owner: string;
+    digest: string;
+  };
+  /**
+   * Every owner whose `0x2::address_alias` set names this address as a
+   * delegate, from the reverse scan, whether or not a signature match was
+   * found among that owner's sampled sent transactions. Present even when
+   * `signed_as_alias_for` is absent: a real delegation whose key has simply
+   * never signed within the sample must not read the same as "not a
+   * delegate at all".
+   */
+  alias_delegate_for?: string[];
+  /**
+   * The reverse alias-signature scan (the on-chain delegate discovery, or
+   * one of the owner-transaction batches checked against it) failed or hit
+   * its cap. `signed_as_alias_for` and `alias_delegate_for` may understate
+   * reality: a delegation or a signature can exist beyond what this reached.
+   */
+  alias_scan_unavailable?: boolean;
+  /**
+   * When the reverse scan behind `signed_as_alias_for`, `alias_delegate_for`
+   * and `alias_scan_unavailable` read which alias sets name this address
+   * (ISO). The scan is cached per network, so this can trail a recent
+   * `add` or `remove`; see `aliasScanAsOfClause`. Set whenever that scan ran
+   * for this address.
+   */
+  alias_scan_as_of?: string;
+  /**
    * For `wrapped_or_deleted_object`: a transaction that recorded this id as
    * an object, which is the evidence for the kind.
    */
@@ -258,10 +291,9 @@ export interface AddressIdentity {
    * and the owner's own presence in it is a fact that has to be reported rather
    * than assumed.
    *
-   * Measured on mainnet 2026-09-15 across all 63 sets: **50 owners are absent
-   * from their own set**, so their own key can no longer authorize for them; 4
-   * of those name exactly one other address, which is a total handover. Only 2
-   * sets hold the owner alone.
+   * An owner absent from its own set can no longer authorize for itself, and a
+   * set without the owner that names exactly one other address is a total
+   * handover.
    *
    * Chain-derived control, and not a claim of shared ownership: a custodian
    * holds authority for a client, the same distinction `co_signer` draws.
@@ -385,8 +417,7 @@ async function fetchHeldNames(addresses: string[]): Promise<Map<string, HeldName
  * **The set replaces the signer rather than extending it.** The verifier
  * accepts a signature from any member in place of the address itself, so an
  * owner absent from its own set can no longer authorize for itself. That is
- * reported, never assumed: measured across all 63 mainnet sets, 50 owners are
- * absent from their own.
+ * reported, never assumed.
  *
  * Batched at `ALIAS_BATCH_SIZE`. That is deliberately not the authentication
  * batch size; see the constant. Addresses are validated before being
@@ -476,11 +507,10 @@ interface AuthenticationLookup {
  * about who may spend — see `fetchAliases`.
  *
  * A sent transaction does not always carry the sender's own signature: an
- * address alias, or a protocol-level substitution like the one that moved the
- * Cetus attacker's frozen funds, authorizes in its place. Such a transaction
- * says who acted, and dropping it reported an address that had sent as "never
- * sent". Up to `AUTH_SAMPLE` transactions are read; when none is self-signed
- * the address lands in `foreign` with the signers that did authorize.
+ * address alias, or a protocol-level substitution, authorizes in its place.
+ * Such a transaction says who acted, and the address counts as having sent.
+ * Up to `AUTH_SAMPLE` transactions are read; when none is self-signed the
+ * address lands in `foreign` with the signers that did authorize.
  *
  * An address with no sent transaction is absent from all three results. It
  * has signed nothing, so there is nothing to read, and saying "single-key
@@ -604,6 +634,247 @@ async function fetchFormerObjects(addresses: string[]): Promise<Map<string, stri
   return out;
 }
 
+/** Objects of `0x2::address_alias::AddressAliases` read per full-scan page. */
+const ALIAS_SCAN_PAGE = 50;
+
+/**
+ * Full-scan cap. The owner population is small, so this is headroom rather
+ * than a limit expected to bind; it exists so a future surge in `enable`
+ * calls cannot turn a single `identify_address` lookup into an unbounded
+ * crawl. Hitting it reports `status: "truncated"` rather than silently
+ * under-reporting delegators.
+ */
+const ALIAS_SCAN_CAP = 2000;
+
+const ALIAS_SCAN_QUERY = `query ($first: Int!, $after: String) {
+  objects(filter: { type: "${ALIAS_TYPE}" }, first: $first, after: $after) {
+    nodes {
+      owner { ... on AddressOwner { address { address } } ... on ConsensusAddressOwner { address { address } } }
+      asMoveObject { contents { json } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+interface AliasScanResult {
+  objects: {
+    nodes: Array<{
+      owner?: { address?: { address?: string } } | null;
+      asMoveObject?: { contents?: { json?: { aliases?: { contents?: unknown } } } } | null;
+    }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+}
+
+/**
+ * "complete": every page was read. "truncated": stopped at `ALIAS_SCAN_CAP`
+ * with more pages remaining. "failed": a request threw; `byDelegate` holds
+ * whatever had already been read.
+ */
+export type AliasScanStatus = "complete" | "truncated" | "failed";
+
+interface AliasDelegateScan {
+  byDelegate: Map<string, string[]>;
+  status: AliasScanStatus;
+  /** When the scan read chain state (epoch ms); a cached scan keeps its own. */
+  readAt: number;
+}
+
+/**
+ * `scanAliasDelegators` costs ceil(owner_objects/50) sequential requests, and
+ * `get_transaction_history` and `identify_address` both call it. The owner
+ * population changes only on an `enable`/`disable` call, so a short cache
+ * absorbs repeated calls within one session; the TTL bounds how long a change
+ * can go unseen. Every answer resting on it states when it was read
+ * (`aliasScanAsOfClause`), since the forward direction (`fetchAliases`) is
+ * read live and the two can disagree inside one TTL.
+ */
+const ALIAS_DELEGATE_CACHE_TTL_MS = 5 * 60 * 1000;
+const aliasDelegateCache = new Map<SuiNetwork, AliasDelegateScan>();
+
+/** Test-only: a scan cached by an earlier case must not leak into the next one. */
+export function resetAliasDelegateCache(): void {
+  aliasDelegateCache.clear();
+}
+
+/**
+ * The sentence said beside any answer that rests on the reverse delegate
+ * scan (`alias_delegate_for`, `signed_as_alias`, a never-sent caveat), so a
+ * cached scan is never presented as a live read.
+ */
+export function aliasScanAsOfClause(asOf: string): string {
+  return `Which alias sets name this address was read at ${asOf} and is reused for up to ${ALIAS_DELEGATE_CACHE_TTL_MS / 60_000} minutes, so a delegation added or removed after that is not reflected.`;
+}
+
+/**
+ * Every `AddressAliases` object that exists, decoded to delegate -> owners.
+ *
+ * This is the reverse of `fetchAliases`: that reads one owner's set from the
+ * object derived at its own address, and there is no filter that goes the
+ * other way, from a delegate key back to the owners who named it. The owner
+ * population is tiny enough that a full scan answers it directly.
+ *
+ * Cached per network (see `ALIAS_DELEGATE_CACHE_TTL_MS`). A failed scan is
+ * never cached, so the next call retries instead of being pinned to an
+ * empty result for the whole TTL window.
+ */
+async function scanAliasDelegators(): Promise<AliasDelegateScan> {
+  const network = getNetwork();
+  const cached = aliasDelegateCache.get(network);
+  if (cached && Date.now() - cached.readAt < ALIAS_DELEGATE_CACHE_TTL_MS) return cached;
+
+  // Stamped before the first page, so the reported time never postdates what was read.
+  const readAt = Date.now();
+  const byDelegate = new Map<string, string[]>();
+  let after: string | null = null;
+  let scanned = 0;
+  let status: AliasScanStatus = "complete";
+  try {
+    for (;;) {
+      const r: AliasScanResult = await gqlQuery<AliasScanResult>(ALIAS_SCAN_QUERY, { first: ALIAS_SCAN_PAGE, after });
+      const nodes = r.objects.nodes;
+      scanned += nodes.length;
+      for (const n of nodes) {
+        const owner = n.owner?.address?.address;
+        const contents = n.asMoveObject?.contents?.json?.aliases?.contents;
+        if (!owner || !Array.isArray(contents)) continue;
+        const ownerNorm = normalizeSuiAddress(owner);
+        for (const raw of contents) {
+          if (typeof raw !== "string" || !raw) continue;
+          const delegate = normalizeSuiAddress(raw);
+          if (delegate === ownerNorm) continue; // the owner's own membership, not a delegation
+          const list = byDelegate.get(delegate) ?? [];
+          list.push(ownerNorm);
+          byDelegate.set(delegate, list);
+        }
+      }
+      if (!r.objects.pageInfo.hasNextPage) break;
+      if (scanned >= ALIAS_SCAN_CAP) {
+        status = "truncated";
+        break;
+      }
+      after = r.objects.pageInfo.endCursor;
+    }
+  } catch {
+    status = "failed";
+  }
+  const scan: AliasDelegateScan = { byDelegate, status, readAt };
+  if (status !== "failed") aliasDelegateCache.set(network, scan);
+  return scan;
+}
+
+/**
+ * Owners' sent transactions read per GraphQL request. Chunked, not capped:
+ * a custodian key can be named by far more owners than one request's
+ * 21-aliased-connection limit allows in a single round trip, and every
+ * delegating owner is checked rather than only the first few.
+ */
+const ALIAS_AUTH_OWNER_BATCH = 20;
+
+/** Each candidate owner's sent transactions read, newest first. */
+export const ALIAS_AUTH_SAMPLE = 10;
+
+/** One transaction a target address signed as an address alias for `owner`. */
+export interface AliasSignedTransaction {
+  owner: string;
+  digest: string;
+  timestamp?: string;
+  authentication: Authentication;
+}
+
+export interface AliasSignedLookup {
+  /** Every alias-signed transaction found per target. */
+  matches: Map<string, AliasSignedTransaction[]>;
+  /**
+   * Every owner whose alias set names the target, whether or not a
+   * signature match was found among that owner's sampled sent transactions.
+   */
+  delegateFor: Map<string, string[]>;
+  /** Worst status across the delegate scan and every owner-transaction batch read. */
+  status: AliasScanStatus;
+  /** When the delegate scan behind `delegateFor` read chain state (epoch ms). Absent when no scan ran. */
+  scanReadAt?: number;
+}
+
+/**
+ * Every transaction `targets` signed as an address alias for someone else,
+ * rather than one they sent themselves.
+ *
+ * `sentAddress` and `affectedAddress` both key on the transaction's sender,
+ * which an alias signature never is: the sender is the address being acted
+ * for. An address that only ever signs as an alias is therefore invisible to
+ * both filters: `get_transaction_history` on it shows only what it received,
+ * and `fetchAuthentication` reports it as having never sent anything. This
+ * walks the relationship the other way: which owners named `target` in their
+ * alias set (`scanAliasDelegators`), then which of those owners' own
+ * signatures derive to `target` (`readAuthentication`, which matches by
+ * re-deriving the key, never by position or role).
+ *
+ * Every delegating owner is checked, chunked at `ALIAS_AUTH_OWNER_BATCH` per
+ * request, and only each owner's `ALIAS_AUTH_SAMPLE` most recent sent
+ * transactions are read, so an owner who delegated long ago and has sent
+ * more than that since may have an earlier alias signature this does not
+ * reach. `status` says whether the scan itself completed, and `delegateFor`
+ * is populated even where no signature was found, so a real delegation is
+ * never silently dropped.
+ */
+export async function findAliasSignedTransactions(targets: string[]): Promise<AliasSignedLookup> {
+  const matches = new Map<string, AliasSignedTransaction[]>();
+  const delegateFor = new Map<string, string[]>();
+  if (targets.length === 0) return { matches, delegateFor, status: "complete" };
+  const scan = await scanAliasDelegators();
+  const wanted = targets
+    .map((original) => ({ original, norm: normalizeSuiAddress(original) }))
+    .filter((t) => scan.byDelegate.has(t.norm));
+  for (const t of wanted) delegateFor.set(t.original, scan.byDelegate.get(t.norm)!);
+  if (wanted.length === 0) return { matches, delegateFor, status: scan.status, scanReadAt: scan.readAt };
+
+  const owners = [...new Set(wanted.flatMap((t) => scan.byDelegate.get(t.norm)!))];
+  const byOwner: Record<
+    string,
+    { nodes: Array<{ digest: string; effects?: { timestamp?: string } | null; signatures: { signatureBytes: string }[] }> }
+  > = {};
+  let ownerReadFailed = false;
+  for (let i = 0; i < owners.length; i += ALIAS_AUTH_OWNER_BATCH) {
+    const chunk = owners.slice(i, i + ALIAS_AUTH_OWNER_BATCH);
+    const query =
+      "query {\n" +
+      chunk
+        .map(
+          (_, j) =>
+            `  o${j}: transactions(filter: { sentAddress: $o${j} }, last: ${ALIAS_AUTH_SAMPLE}) { nodes { digest effects { timestamp } signatures { signatureBytes } } }`,
+        )
+        .join("\n") +
+      "\n}";
+    const inlined = chunk.reduce((q, addr, j) => q.replace(`$o${j}`, JSON.stringify(addr)), query);
+    try {
+      const page = await gqlQuery<
+        Record<string, { nodes: Array<{ digest: string; effects?: { timestamp?: string } | null; signatures: { signatureBytes: string }[] }> }>
+      >(inlined);
+      chunk.forEach((addr, j) => {
+        byOwner[addr] = page[`o${j}`] ?? { nodes: [] };
+      });
+    } catch {
+      ownerReadFailed = true; // This chunk's owners are simply unchecked; other chunks still stand.
+    }
+  }
+
+  for (const t of wanted) {
+    const found: AliasSignedTransaction[] = [];
+    for (const owner of scan.byDelegate.get(t.norm)!) {
+      for (const tx of byOwner[owner]?.nodes ?? []) {
+        const sigs = tx.signatures?.map((s) => s.signatureBytes) ?? [];
+        const auth = readAuthentication(t.original, sigs);
+        if (auth) found.push({ owner, digest: tx.digest, timestamp: tx.effects?.timestamp ?? undefined, authentication: auth });
+      }
+    }
+    if (found.length > 0) matches.set(t.original, found);
+  }
+
+  const status: AliasScanStatus = ownerReadFailed ? "failed" : scan.status;
+  return { matches, delegateFor, status, scanReadAt: scan.readAt };
+}
+
 export interface DescribeOptions {
   /**
    * Also read how each address authenticates.
@@ -635,6 +906,16 @@ export interface DescribeOptions {
    * it costs its own batched request.
    */
   aliases?: boolean;
+  /**
+   * For an address `fetchAuthentication` found nothing for, also check
+   * whether it authenticates by signing as an address alias for someone
+   * else, which a plain `sentAddress`/`affectedAddress` read cannot see. Adds
+   * a full scan of every `AddressAliases` object plus, only when that scan
+   * names a candidate, one batched read of the candidate owners' own sent
+   * transactions, too costly to default on for a per-hop batch, which is
+   * why `identify_address` is the one caller that sets it.
+   */
+  checkAliasSignatures?: boolean;
 }
 
 /**
@@ -678,7 +959,12 @@ export async function describeAddresses(
           !auth.failed.has(a),
       )
     : [];
-  const formerObjects = unsigned.length > 0 ? await fetchFormerObjects(unsigned) : new Map<string, string>();
+  const [formerObjects, aliasLookup] = await Promise.all([
+    unsigned.length > 0 ? fetchFormerObjects(unsigned) : Promise.resolve(new Map<string, string>()),
+    options.checkAliasSignatures && unsigned.length > 0
+      ? findAliasSignedTransactions(unsigned)
+      : Promise.resolve<AliasSignedLookup>({ matches: new Map(), delegateFor: new Map(), status: "complete" }),
+  ]);
 
   for (const address of unique) {
     const k = kinds.get(address);
@@ -699,8 +985,27 @@ export async function describeAddresses(
           }
         : {}),
       ...(protocol ? { protocol } : {}),
-      ...(auth.found.get(address) ? { authentication: auth.found.get(address) } : {}),
+      ...(auth.found.get(address)
+        ? { authentication: auth.found.get(address) }
+        : aliasLookup.matches.get(address)?.[0]
+          ? { authentication: aliasLookup.matches.get(address)![0].authentication }
+          : {}),
       ...(auth.foreign.get(address) ? { foreign_authorization: auth.foreign.get(address) } : {}),
+      ...(aliasLookup.matches.get(address)?.[0]
+        ? {
+            signed_as_alias_for: {
+              owner: aliasLookup.matches.get(address)![0].owner,
+              digest: aliasLookup.matches.get(address)![0].digest,
+            },
+          }
+        : {}),
+      ...(aliasLookup.delegateFor.get(address)?.length ? { alias_delegate_for: aliasLookup.delegateFor.get(address) } : {}),
+      ...(options.checkAliasSignatures && unsigned.includes(address) && aliasLookup.status !== "complete"
+        ? { alias_scan_unavailable: true }
+        : {}),
+      ...(options.checkAliasSignatures && unsigned.includes(address) && aliasLookup.scanReadAt !== undefined
+        ? { alias_scan_as_of: new Date(aliasLookup.scanReadAt).toISOString() }
+        : {}),
       ...(auth.failed.has(address) ? { authentication_unavailable: true } : {}),
       ...(aliases.found.get(address) ? { aliases: aliases.found.get(address) } : {}),
       ...(aliases.failed.has(address) ? { aliases_unavailable: true } : {}),
@@ -827,6 +1132,18 @@ export function identityNote(id: AddressIdentity): string | undefined {
     const f = id.foreign_authorization;
     return `This address has sent transactions, but none of the ${f.transactions_examined} examined carries its own signature: ${f.digest} was authorized by ${f.authorized_by.join(", ")} acting for it (an address alias or a protocol-level substitution).`;
   }
+  if (id.signed_as_alias_for) {
+    const s = id.signed_as_alias_for;
+    return `This address has never sent a transaction of its own, but its key signed ${s.digest} as an address alias for ${s.owner}. That signature is where its authentication above is read from.`;
+  }
+  if (!id.authentication && id.alias_scan_unavailable) {
+    return "This address has never sent a transaction of its own, and the reverse scan that checks whether it signed as an address alias for someone else could not fully complete (a request failed, or the on-chain scan was capped). Whether it authenticates that way is unknown, not ruled out.";
+  }
+  if (!id.authentication && id.alias_delegate_for?.length) {
+    const owners = id.alias_delegate_for;
+    return `This address has never sent a transaction of its own, but its key is named as a delegate in ${owners.length === 1 ? "one owner's" : `${owners.length} owners'`} 0x2::address_alias set (${owners.join(", ")}); none of the sampled sent transactions of ${owners.length === 1 ? "that owner" : "those owners"} carried its signature.`;
+  }
+
   // Said after the kind checks because those describe what is AT the address,
   // and this describes who can spend from it. A multisig is still a wallet;
   // the point is that it is not one person's key.

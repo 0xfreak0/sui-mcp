@@ -91,9 +91,8 @@ export interface DeepBookOrderbook {
 /**
  * @param levelsPerSide price levels wanted on *each* side.
  *
- * Upstream `depth` counts levels across BOTH sides — `depth=6` returns 3 bids
- * and 3 asks, verified against mainnet — which is not what anyone means by
- * "depth". Callers pass per-side and this doubles it.
+ * Upstream `depth` counts levels across both sides: `depth=6` returns 3 bids
+ * and 3 asks. Callers pass per-side and this doubles it.
  */
 export async function fetchOrderbook(
   poolName: string,
@@ -142,9 +141,9 @@ export async function fetchTrades(
 export type DeepBookCandle = [number, number, number, number, number, number];
 
 /**
- * @param params start/end in **Unix seconds** — converted below.
+ * @param params start/end in **Unix seconds**, converted below.
  *
- * Two undocumented quirks, both verified against mainnet:
+ * Two undocumented quirks:
  *
  *   - The path is `/ohclv`, not `/ohlcv`. The letters are transposed upstream
  *     and in the Sui docs; `/ohlcv` silently returns nothing.

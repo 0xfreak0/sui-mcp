@@ -126,10 +126,10 @@ function key(reference: string): string {
  *
  * A curated entry keyed by a bare address is knowledge about an *entity*
  * ("this is the burn address", "this is a Binance hot wallet") and is not
- * network-specific, so it applies on every Sui network — which is also what
- * this server did before chain qualification existed, and losing it would
- * silently strip attribution from every testnet investigation. An entry keyed
- * by an explicit CAIP-10 id is a claim about one chain and matches only there.
+ * network-specific, so it applies on every Sui network. Scoping it to one
+ * network would silently strip attribution from every testnet investigation.
+ * An entry keyed by an explicit CAIP-10 id is a claim about one chain and
+ * matches only there.
  */
 interface FileLabels {
   /** Keyed by canonical CAIP-10: matches exactly one chain. */
@@ -242,10 +242,9 @@ const overrideLabels: FileLabels = (() => {
  * leaking it across chains would terminate traces that should have continued.
  *
  * Seeded from the optional store when one is configured, so attribution
- * established in a previous investigation is still there — labels decide where
+ * established in a previous investigation is still there: labels decide where
  * fund traces stop, and re-deriving them every session is both tedious and a
- * correctness risk. Without SUI_STORE_PATH this stays in-memory exactly as
- * before.
+ * correctness risk. Without SUI_STORE_PATH this stays in-memory.
  */
 const sessionLabels = new Map<string, AddressLabel>();
 
@@ -360,7 +359,7 @@ export function addSessionLabel(
  * store delete that fails leaves the row to be seeded back at the next start,
  * so a `cex` label the investigator believes they retracted silently keeps
  * terminating every trace that reaches it. Reporting only the session result
- * called that a clean removal.
+ * would call that a clean removal.
  */
 export function removeSessionLabel(address: string): {
   removed: boolean;
@@ -397,8 +396,9 @@ export function importLabels(
   let imported = 0;
 
   // Counted separately: "the store took it" is a different claim from "the
-  // label is in force this session", and reporting the second as the first told
-  // a team their imported attribution file was saved when none of it was.
+  // label is in force this session", and reporting the second as the first
+  // would tell a team their imported attribution file was saved when none of
+  // it was.
   let persisted = 0;
 
   for (const e of entries) {
@@ -407,9 +407,9 @@ export function importLabels(
       continue;
     }
     // addSessionLabel throws on an address it cannot parse, and a whitespace
-    // string passes the truthiness check above. Letting that escape aborted the
-    // batch partway, after rows were already written, against a documented
-    // skip-and-continue contract.
+    // string passes the truthiness check above. Letting that escape would
+    // abort the batch partway, after rows were already written, against a
+    // documented skip-and-continue contract.
     try {
       const r = addSessionLabel(
         e.address,

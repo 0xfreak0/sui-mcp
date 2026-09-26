@@ -9,11 +9,11 @@ import {
   type AggregatableEvent,
 } from "../utils/aggregate.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
-import { fetchPackageVersions, resolveEventTypeFilter, versionScopeNote } from "../utils/package-versions.js";
+import { fetchPackageVersions, resolveEventTypeFilter, resolveModuleEventFilter } from "../utils/package-versions.js";
 import { readAttackTransactions } from "../utils/attack-read.js";
 import { participantPnl } from "../utils/participant-pnl.js";
 import { coinValuer, roundUsd } from "../utils/address-flows.js";
-import { priceUsdAtTime } from "../utils/valuation.js";
+import { prefetchCoinScale, priceUsdAtTime } from "../utils/valuation.js";
 import { getLabel } from "../utils/labels.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -68,7 +68,7 @@ export function registerAggregateTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Filter by the EMITTING package/module — the one whose function ran. Usually what you want when you know a protocol's package ID. Accepts 0x... or 0x...::module.",
+          "Filter by the emitting module. Before the relocate_event_module cutover (mainnet checkpoint 69,982,635 on 2024-10-17, testnet 118,397,835 on 2024-10-09, devnet at genesis), events carry the package's ORIGINAL id regardless of the version called; from the cutover on they carry the id of the version actually called. The filter is queried at whichever id (or both, merged) your window needs, and `module_scope` reports how. From the cutover on, any one id (the original included) matches calls through that version only, and `module_scope.other_version_ids` lists the lineage's other ids. Accepts 0x... or 0x...::module.",
         ),
       sender: addressArg().optional().describe("Only events sent by this address."),
       from: timePointArg()
@@ -140,23 +140,33 @@ export function registerAggregateTools(server: McpServer) {
 
         // Both edges resolved to the checkpoints stamped inside the window.
         const window = await resolveWindow(from, to);
-        // An event carries the package version that DEFINED its struct; a type
-        // written with an upgraded ID would silently match nothing.
+        // An event carries the package version that defined its struct; a type
+        // or module written with an upgraded ID would silently match nothing.
         const typeFilter = event_type ? await resolveEventTypeFilter(event_type) : null;
-        const moduleScope = module ? await versionScopeNote(module, "module") : null;
+        const moduleFilter = module
+          ? await resolveModuleEventFilter(module, window.after?.checkpoint ?? null, window.before?.checkpoint ?? null)
+          : null;
 
-        const filter: Record<string, unknown> = {};
-        if (typeFilter) filter.type = typeFilter.filter;
-        if (module) filter.module = module;
-        if (sender) filter.sender = sender;
-        if (window.after?.checkpoint != null) filter.afterCheckpoint = window.after.checkpoint;
-        if (window.before?.checkpoint != null) filter.beforeCheckpoint = window.before.checkpoint;
+        // One segment when the window sits on one side of the
+        // relocate_event_module cutover (or there is no module filter); two
+        // when it spans the cutover, queried and merged in turn.
+        const segments: Array<{ module?: string; afterCheckpoint: number | null; beforeCheckpoint: number | null }> =
+          moduleFilter
+            ? moduleFilter.segments.map((s) => ({
+                module: s.filter,
+                afterCheckpoint: s.afterCheckpoint,
+                beforeCheckpoint: s.beforeCheckpoint,
+              }))
+            : [{ afterCheckpoint: window.after?.checkpoint ?? null, beforeCheckpoint: window.before?.checkpoint ?? null }];
 
         const budget = max_events ?? DEFAULT_MAX_EVENTS;
         const events: AggregatableEvent[] = [];
-        let cursor: string | undefined;
-        let hasNext = true;
         let pages = 0;
+        // Truncation is reported because a ranking built from a partial scan
+        // looks exactly like a complete one. True when any segment stopped
+        // mid-scan on budget, or a later segment was skipped entirely because
+        // budget was already spent.
+        let truncated = false;
         // One sample per event type, not just the first event seen. A protocol
         // emits bookkeeping events (reward refreshes, rate updates) far more
         // often than user actions, so a single sample almost always describes
@@ -166,34 +176,49 @@ export function registerAggregateTools(server: McpServer) {
         // Distinct transactions behind the events, oldest first, for group_pnl.
         const txDigests = new Set<string>();
 
-        while (hasNext && events.length < budget) {
-          const page: EventPage = await gqlQuery(PAGE_QUERY, {
-            filter,
-            first: Math.min(PAGE_SIZE, budget - events.length),
-            after: cursor,
-          });
-          pages++;
-
-          for (const n of page.events.nodes) {
-            const t = n.contents?.type?.repr;
-            if (t) {
-              countsByType.set(t, (countsByType.get(t) ?? 0) + 1);
-              if (!samplesByType.has(t) && n.contents?.json) samplesByType.set(t, n.contents.json);
-            }
-            if (n.transaction?.digest) txDigests.add(n.transaction.digest);
-            events.push({
-              sender: n.sender?.address ?? null,
-              type: n.contents?.type?.repr ?? null,
-              data: n.contents?.json,
-            });
+        for (const seg of segments) {
+          if (events.length >= budget) {
+            truncated = true;
+            break;
           }
+          const filter: Record<string, unknown> = {};
+          if (typeFilter) filter.type = typeFilter.filter;
+          if (seg.module) filter.module = seg.module;
+          if (sender) filter.sender = sender;
+          if (seg.afterCheckpoint != null) filter.afterCheckpoint = seg.afterCheckpoint;
+          if (seg.beforeCheckpoint != null) filter.beforeCheckpoint = seg.beforeCheckpoint;
 
-          hasNext = page.events.pageInfo.hasNextPage;
-          cursor = page.events.pageInfo.endCursor;
-          // A claimed next page with no cursor would re-read page one and
-          // double-count those events in the ranking.
-          if (!cursor) break;
-          if (!cursor) break;
+          let cursor: string | undefined;
+          let hasNext = true;
+          while (hasNext && events.length < budget) {
+            const page: EventPage = await gqlQuery(PAGE_QUERY, {
+              filter,
+              first: Math.min(PAGE_SIZE, budget - events.length),
+              after: cursor,
+            });
+            pages++;
+
+            for (const n of page.events.nodes) {
+              const t = n.contents?.type?.repr;
+              if (t) {
+                countsByType.set(t, (countsByType.get(t) ?? 0) + 1);
+                if (!samplesByType.has(t) && n.contents?.json) samplesByType.set(t, n.contents.json);
+              }
+              if (n.transaction?.digest) txDigests.add(n.transaction.digest);
+              events.push({
+                sender: n.sender?.address ?? null,
+                type: n.contents?.type?.repr ?? null,
+                data: n.contents?.json,
+              });
+            }
+
+            hasNext = page.events.pageInfo.hasNextPage;
+            cursor = page.events.pageInfo.endCursor;
+            // A claimed next page with no cursor would re-read page one and
+            // double-count those events in the ranking.
+            if (!cursor) break;
+          }
+          if (hasNext) truncated = true;
         }
 
         // A path no event carries sums to 0 for every group, and a ranking of
@@ -213,11 +238,6 @@ export function registerAggregateTools(server: McpServer) {
           top,
           sortOrder: sort_order,
         });
-
-        // Truncation is surfaced loudly: a ranking built from a partial scan
-        // looks exactly like a complete one, and that is how a wrong answer
-        // gets believed.
-        const truncated = hasNext && events.length >= budget;
 
         const pnl = group_pnl
           ? await senderPnl([...txDigests], {
@@ -242,7 +262,7 @@ export function registerAggregateTools(server: McpServer) {
                   },
                   window: describeWindow(from, to, window),
                   ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
-                  ...(moduleScope ? { module_scope: moduleScope } : {}),
+                  ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
                   group_by: group_by ?? "sender",
                   events_scanned: events.length,
                   pages_fetched: pages,
@@ -256,10 +276,20 @@ export function registerAggregateTools(server: McpServer) {
                     : {}),
                   ...(events.length === 0
                     ? {
-                        no_results_hint:
-                          "No events matched. `event_type` filters on the struct's DEFINING package, which for many " +
-                          "protocols differs from the package you call — try `module` with the same address instead. " +
+                        no_results_hint: [
+                          "No events matched.",
+                          ...(event_type
+                            ? [
+                                "`event_type` filters on the struct's DEFINING package, which for many protocols differs from the package you call, so try `module` with the same address instead.",
+                              ]
+                            : []),
+                          ...(moduleFilter?.resolution?.other_version_ids
+                            ? [
+                                "From the relocate_event_module cutover on, a `module` filter matches calls through one package version only; query the ids in module_scope.other_version_ids for the rest.",
+                              ]
+                            : []),
                           "Also check the window: bounds are checkpoints, and GraphQL retains only recent history.",
+                        ].join(" "),
                       }
                     : {}),
                   distinct_keys: result.distinct_keys,
@@ -330,7 +360,8 @@ async function senderPnl(
   const times = read.txs.map((t) => t.timestampMs).filter((t): t is number => t !== null).sort((a, b) => a - b);
   const atSec = times.length ? Math.floor(times[Math.floor(times.length / 2)] / 1000) : undefined;
   const coins = new Set(rows.flatMap((r) => [...r.net.keys()]));
-  const prices = await priceUsdAtTime([...coins], atSec);
+  // Decimals first: `coinValuer` scales every amount in `net`.
+  const [prices] = await Promise.all([priceUsdAtTime([...coins], atSec), prefetchCoinScale(coins)]);
   const v = coinValuer(prices);
   const others = new Set(rows.flatMap((r) => [...r.otherPackages]));
   if (others.size) await prefetchProtocolNames(others).catch(() => {});

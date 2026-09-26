@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { detectBridges, resolvableHit, type CallSite } from "../src/utils/bridge/detect.js";
+import { detectBridges, exitCarrier, resolvableHit, type CallSite } from "../src/utils/bridge/detect.js";
 import { matchesEvent } from "../src/utils/bridge/event-type.js";
 import { readBridgeEvents } from "../src/utils/bridge/exits.js";
 import { layerZeroTransfers } from "../src/utils/bridge/layerzero.js";
@@ -9,11 +9,11 @@ import { nttRedemptions, type PureInputNode } from "../src/utils/bridge/wormhole
 import type { SuiEventNode } from "../src/utils/bridge/wormhole.js";
 
 /**
- * resolve_bridge_transfer's own GraphQL query, run against mainnet for each
- * digest and stored as returned. The expected recipients were checked against
- * an independent source where one exists: LayerZero Scan's payload for
- * 4rH8bqFB…, Axelarscan's destinationAddress for 6YaLkwRs…, Allbridge's API
- * recipientAddress for AyApNXU7….
+ * resolve_bridge_transfer's own GraphQL query, as mainnet returns it for each
+ * digest. The expected recipients match an independent source where one
+ * exists: LayerZero Scan's payload for 4rH8bqFB…, Axelarscan's
+ * destinationAddress for 6YaLkwRs…, Allbridge's API recipientAddress for
+ * AyApNXU7….
  */
 interface FixtureTx {
   transaction: {
@@ -39,6 +39,7 @@ const LZ_OAPP = "5LR4enKoPtdUxkZx2xkXWC6u5vxTsKXS5cFgPcPkqymA";
 const AXELAR = "6YaLkwRs9BkjDJYWCbqhmBMXdH64AXsPnsC2eC977iw9";
 const ALLBRIDGE_SOL = "AyApNXU7fNRcism61V76ijzxbXKAefLL6U5wXooJVthc";
 const ALLBRIDGE_POOL = "FmxxWhRozP6j8PUBKYNXnNpLJcwGgNWuQkurvY2M1pxj";
+const ALLBRIDGE_WORMHOLE = "6S9udfgK1GSCabDEsuUDB4ysdCTXkfvt2rwze2Wrdb7K";
 const CELER = "AkW2h1WQc7wPJXEfZBTG6R3MwjoHB5ohEvfKfsqrRUoL";
 const SWIFT = "3aVcL3mhsmhrNbBS3L21YrF6tGXozpaHBB7TVJqpsEMR";
 const MESON = "7EyRb8BbLPKvKQmuH2ExUFDnzxV6d6nhKGWBxG18ohiZ";
@@ -105,6 +106,31 @@ describe("detecting the newer bridges", () => {
   it("reports nothing for an inbound redemption", () => {
     expect(detectBridges(callsOf(NTT_IN), typesOf(NTT_IN))).toEqual([]);
     expect(detectBridges(callsOf(TOKEN_BRIDGE_IN), typesOf(TOKEN_BRIDGE_IN))).toEqual([]);
+  });
+});
+
+describe("the carrier of an Allbridge transfer", () => {
+  const carrierOf = (digest: string) => {
+    const exit = exitCarrier(detectBridges(callsOf(digest), typesOf(digest)))!;
+    return { carrier: exit.carrier.protocol, route: exit.route, settled: exit.settled };
+  };
+
+  /**
+   * The pool route sent through Allbridge's Wormhole messenger emits a
+   * WormholeMessage beside Allbridge's TokensSentEvent. That route settles
+   * over Wormhole, so Allbridge is the carrier even though Wormhole comes
+   * first in BRIDGE_PROTOCOLS.
+   */
+  it("is Allbridge, settled over Wormhole, on the pool route's Wormhole messenger (6S9udfgK…)", () => {
+    expect(carrierOf(ALLBRIDGE_WORMHOLE)).toEqual({ carrier: "Allbridge Core", route: ["Wormhole"], settled: true });
+  });
+
+  it("is Allbridge, settled over CCTP, on the CCTP route (AyApNXU7…)", () => {
+    expect(carrierOf(ALLBRIDGE_SOL)).toEqual({ carrier: "Allbridge Core", route: ["Circle CCTP"], settled: true });
+  });
+
+  it("is Allbridge alone on the pool route's own messenger (FmxxWhRo…)", () => {
+    expect(carrierOf(ALLBRIDGE_POOL)).toEqual({ carrier: "Allbridge Core", route: [], settled: false });
   });
 });
 

@@ -22,7 +22,7 @@
  *   `flash_swap` is a flash swap by convention, not by proof.
  */
 
-import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { normalizeSuiAddress, normalizeStructTag } from "@mysten/sui/utils";
 import { displayCoin, pricingScale, toHumanAmount, type CoinScale, type PricePoint } from "./valuation.js";
 
 /* ------------------------------------------------------------------ *
@@ -150,11 +150,16 @@ function i32Field(o: Record<string, unknown>, ...names: string[]): number | null
   return null;
 }
 
-/** The pool an event is about, when it names one. */
+/**
+ * The pool, or the vault, an event is about, when it names one directly. A
+ * protocol's own value-tracking event (Volo's `vault_id`) is as much "the
+ * object whose own events record the loss" as a DEX pool is, so it is read
+ * here rather than only where a coin amount is also present.
+ */
 export function poolOfEvent(json: unknown): string | null {
   const o = asRecord(json);
   if (!o) return null;
-  for (const k of ["pool", "pool_id", "pool_address", "poolId"]) {
+  for (const k of ["pool", "pool_id", "pool_address", "poolId", "vault_id"]) {
     const direct = canonicalId(o[k]);
     if (direct) return direct;
     // `ID` sometimes renders as `{ id: "0x…" }` or `{ bytes: "0x…" }`.
@@ -164,6 +169,36 @@ export function poolOfEvent(json: unknown): string | null {
   }
   return null;
 }
+
+/**
+ * A coin type carried in event JSON, canonicalised with `normalizeStructTag`.
+ * A Move `TypeName` serializes its package address without the `0x` prefix
+ * (Typus's `lp_pool::SwapEvent` has `from_token_type` reading
+ * `0000…0002::sui::SUI`), so a raw string here would not match the `0x…`
+ * form the price lookup and the coin registry use.
+ */
+function coinTypeField(o: Record<string, unknown>, ...names: string[]): string | null {
+  for (const n of names) {
+    const v = o[n];
+    if (typeof v !== "string" || !v.includes("::")) continue;
+    try {
+      return normalizeStructTag(v);
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a changed object's type reads as a pool by name. Broader than an
+ * exact match on `Pool`, because it also has to catch a DEX-specific name
+ * (Typus's `LiquidityPool`) without hard-coding one per protocol.
+ */
+function isPoolLikeType(type: string | null | undefined): boolean {
+  return type !== null && type !== undefined && /pool$/i.test(structName(type));
+}
+
 
 /* ------------------------------------------------------------------ *
  * Who gained what
@@ -185,6 +220,36 @@ export function netByAddress(changes: AttackBalanceChange[]): Map<string, Map<st
 /** Add `b` into `a`, coin by coin. */
 export function addDeltas(a: Map<string, bigint>, b: Map<string, bigint>): void {
   for (const [coin, v] of b) a.set(coin, (a.get(coin) ?? 0n) + v);
+}
+
+/** Canonical SUI coin type, padded the way the chain reports it. */
+const SUI_COIN_TYPE = normalizeStructTag("0x2::sui::SUI");
+
+/**
+ * Whether a set of deltas reads as "only paid gas": nothing but SUI moved,
+ * and that SUI change is a payment (<= 0) rather than a gain. A sender with
+ * no balance-change row at all (a sponsored transaction) counts too: it paid
+ * nothing of its own.
+ *
+ * Deciding this from the netted priced USD instead reads two different
+ * things as the same case: an offsetting swap (10,000 USDT for 9,998 USDC)
+ * nets near zero without being gas-only, and a sender whose own SUI was
+ * genuinely drained reads as gas-only whenever that drain happens to be
+ * unpriced. Checking the coins directly catches both.
+ */
+export function isGasOnly(deltas: Map<string, bigint> | undefined, prices: Map<string, PricePoint>, thresholdUsd: number): boolean {
+  if (!deltas || deltas.size === 0) return true;
+  for (const [coinType, amount] of deltas) {
+    if (coinType !== SUI_COIN_TYPE && amount !== 0n) return false;
+  }
+  const sui = deltas.get(SUI_COIN_TYPE) ?? 0n;
+  if (sui > 0n) return false;
+  const point = prices.get(SUI_COIN_TYPE);
+  if (point) {
+    const scale = pricingScale(SUI_COIN_TYPE, point);
+    if (toHumanAmount(sui, scale.decimals) * point.price >= thresholdUsd) return false;
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -286,6 +351,14 @@ export interface PoolFlow {
   events: number[];
   /** Events naming this pool whose shape is not one read here. */
   undecoded_events: number[];
+  /**
+   * A loss (or gain, if negative) this vault's own event states directly in
+   * USD, when its shape carries no raw coin amount to convert (Volo's
+   * `OperationValueUpdateChecked`: `total_usd_value_before`/
+   * `total_usd_value_after`, already priced). Kept separate from `deltas`,
+   * which `valueDeltas` prices from a raw amount: this is already a price.
+   */
+  recorded_loss_usd?: number;
 }
 
 type LiquidityKind = "add" | "remove" | "collect";
@@ -298,11 +371,28 @@ function liquidityKind(type: string): LiquidityKind | null {
   return null;
 }
 
+/** Fixed decimals of Volo's `total_usd_value_before`/`total_usd_value_after`. */
+const VOLO_VAULT_VALUE_SCALE = 1e9;
+
 /**
  * Per-pool reserve changes from the pool's events. Coin A and B are the pool
  * type's first two type arguments, which is how every CLMM on Sui orders them;
  * a pool whose type is not in the changed objects is keyed `A`/`B` so the
  * amounts are kept without a coin name being invented.
+ *
+ * Three event shapes are read, by field name rather than by struct or module
+ * name, so a new protocol needs no registration:
+ *
+ * - A swap naming its pool directly (`pool`/`pool_id`/…), with amounts keyed
+ *   to the pool's own A/B position (`readSwap`) or its liquidity fields.
+ * - A swap naming no pool of its own, only the two coin types that moved
+ *   (Typus's `lp_pool::SwapEvent`: `from_token_type`/`to_token_type`). Read
+ *   directly from those types rather than an assumed A/B order, and
+ *   attributed to the transaction's pool-shaped object only when exactly one
+ *   is touched. With more than one, which pool an id-less event belongs to
+ *   is not decidable from the event.
+ * - A vault stating a USD value change directly rather than a coin amount
+ *   (Volo's `OperationValueUpdateChecked`), kept in `recorded_loss_usd`.
  */
 export function poolFlows(tx: Pick<AttackTx, "events" | "objects">): PoolFlow[] {
   const typeById = new Map<string, string>();
@@ -310,6 +400,9 @@ export function poolFlows(tx: Pick<AttackTx, "events" | "objects">): PoolFlow[] 
     const id = canonicalId(o.objectId);
     if (id && o.objectType) typeById.set(id, o.objectType);
   }
+  const poolLikeIds = [...typeById].filter(([, t]) => isPoolLikeType(t)).map(([id]) => id);
+  const impliedPool = poolLikeIds.length === 1 ? poolLikeIds[0] : null;
+
   const flows = new Map<string, PoolFlow>();
   const flowFor = (pool: string): PoolFlow => {
     let f = flows.get(pool);
@@ -322,13 +415,30 @@ export function poolFlows(tx: Pick<AttackTx, "events" | "objects">): PoolFlow[] 
   const add = (f: PoolFlow, coin: string, v: bigint) => f.deltas.set(coin, (f.deltas.get(coin) ?? 0n) + v);
 
   for (const ev of tx.events) {
-    const pool = poolOfEvent(ev.json);
-    if (!pool) continue;
-    const f = flowFor(pool);
+    const o = asRecord(ev.json);
+    if (!o) continue;
+    const named = poolOfEvent(ev.json);
+
+    const fromType = coinTypeField(o, "from_token_type");
+    const toType = coinTypeField(o, "to_token_type");
+    const fromAmount = uintField(o, "from_amount");
+    const toAmount = uintField(o, "actual_to_amount", "to_amount");
+    if (fromType && toType && fromAmount !== null && toAmount !== null) {
+      const pool = named ?? impliedPool;
+      if (pool) {
+        const f = flowFor(pool);
+        add(f, fromType, fromAmount);
+        add(f, toType, -toAmount);
+        f.events.push(ev.index);
+      }
+      continue;
+    }
+
+    if (!named) continue;
+    const f = flowFor(named);
     const poolArgs = f.pool_type ? typeArgsOf(f.pool_type) : [];
     const coinA = poolArgs[0] ?? "A";
     const coinB = poolArgs[1] ?? "B";
-    const o = asRecord(ev.json)!;
 
     const swap = readSwap(ev);
     if (swap && swap.a_to_b !== null && swap.amount_in !== null && swap.amount_out !== null) {
@@ -348,6 +458,16 @@ export function poolFlows(tx: Pick<AttackTx, "events" | "objects">): PoolFlow[] 
       f.events.push(ev.index);
       continue;
     }
+    // Volo's vault value-check states a USD change directly in place of a
+    // coin amount, as fixed-point values with `VOLO_VAULT_VALUE_SCALE`
+    // decimals.
+    const before = uintField(o, "total_usd_value_before");
+    const after = uintField(o, "total_usd_value_after");
+    if (before !== null && after !== null) {
+      f.recorded_loss_usd = (f.recorded_loss_usd ?? 0) + Number(before - after) / VOLO_VAULT_VALUE_SCALE;
+      f.events.push(ev.index);
+      continue;
+    }
     // An event with no amount field (opening a position, say) moves nothing.
     if (Object.keys(o).some((k) => /amount/i.test(k))) f.undecoded_events.push(ev.index);
   }
@@ -357,19 +477,24 @@ export function poolFlows(tx: Pick<AttackTx, "events" | "objects">): PoolFlow[] 
 }
 
 /**
- * The pools a transaction touched. Pools named by events come first; a
- * changed object whose struct is named `Pool` covers a DEX whose events carry
- * no pool id.
+ * The pools a transaction touched. Pools named by events come first, then
+ * every pool `flows` credits an amount to: an id-less, type-keyed swap
+ * (Typus's `lp_pool::SwapEvent`) is credited to the transaction's one
+ * pool-shaped object, and grouping it anywhere else drops its deltas from the
+ * group while `analyze_attack_tx`, reading `poolFlows` directly, still shows
+ * them. Only when neither names a pool does a changed object whose struct
+ * reads as a pool by name cover a DEX whose events carry no pool id.
  */
-export function poolsTouched(tx: Pick<AttackTx, "events" | "objects">): string[] {
+export function poolsTouched(tx: Pick<AttackTx, "events" | "objects">, flows: PoolFlow[] = poolFlows(tx)): string[] {
   const out = new Set<string>();
   for (const ev of tx.events) {
     const p = poolOfEvent(ev.json);
     if (p) out.add(p);
   }
+  for (const f of flows) out.add(f.pool);
   if (out.size === 0) {
     for (const o of tx.objects) {
-      if (o.objectType && structName(o.objectType) === "Pool") {
+      if (isPoolLikeType(o.objectType)) {
         const id = canonicalId(o.objectId);
         if (id) out.add(id);
       }
@@ -609,6 +734,8 @@ export interface IncidentGroup {
   attacker_deltas: Map<string, bigint>;
   /** Reserve change of the pool(s), from their events. Negative is drained. */
   pool_deltas: Map<string, bigint>;
+  /** Sum of `PoolFlow.recorded_loss_usd` across these transactions' pools. */
+  recorded_loss_usd?: number;
 }
 
 export interface IncidentAggregate {
@@ -647,7 +774,8 @@ export function aggregateIncident(txs: AttackTx[], attacker?: string): IncidentA
       failed.push(tx.digest);
       continue;
     }
-    const pools = poolsTouched(tx).sort();
+    const flows = poolFlows(tx);
+    const pools = poolsTouched(tx, flows).sort();
     if (pools.length === 0) {
       unattributed.push(tx.digest);
       continue;
@@ -663,7 +791,10 @@ export function aggregateIncident(txs: AttackTx[], attacker?: string): IncidentA
     }
     g.digests.push(tx.digest);
     addDeltas(g.attacker_deltas, mine);
-    for (const f of poolFlows(tx)) if (pools.includes(f.pool)) addDeltas(g.pool_deltas, f.deltas);
+    for (const f of flows) {
+      addDeltas(g.pool_deltas, f.deltas);
+      if (f.recorded_loss_usd) g.recorded_loss_usd = (g.recorded_loss_usd ?? 0) + f.recorded_loss_usd;
+    }
   }
   return { groups: [...groups.values()], totals, failed, unattributed, senders: [...senders] };
 }

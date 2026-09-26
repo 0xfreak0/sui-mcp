@@ -2,38 +2,26 @@
  * Where a package's `UpgradeCap` ended up, and what that means.
  *
  * Whoever holds the cap can replace the package's code. It is the single most
- * consequential capability on Sui, and `analyze_package` reported only who
- * holds it now — with nothing to compare that against, "held by 0xabc" is not a
- * finding.
+ * consequential capability on Sui, and with nothing to compare the current
+ * holder against, "held by 0xabc" is not a finding.
  *
  * The comparison that makes it one is the **publisher**: the address that sent
  * the transaction creating the package. If the cap is somewhere else, upgrade
  * authority changed hands.
  *
- * This needs no history, which matters because there is none to be had.
- * Historical object versions and the transactions that moved them both fall
- * outside the indexer's retention for a cap that has sat still for months —
- * `trace_object_history` returns zero versions for every UpgradeCap sampled.
- * Two current facts answer the question that a history walk cannot.
+ * This needs no history. Historical object versions and the transactions that
+ * moved them both fall outside the indexer's retention for a cap that has sat
+ * still for months, and two current facts answer the question that a history
+ * walk cannot.
  *
  * ## Burned is not transferred
  *
- * Measured over 150 mainnet caps:
- *
- * ```
- * 120 (80%)  still held by the publisher
- *  30 (20%)  elsewhere — of which
- *              20  ->  0x2   framework address, unspendable
- *               7  ->  0x0   zero address, unspendable
- *               3  ->  a real live address
- * ```
- *
- * So 27 of 30 departures are the team **renouncing** upgrade rights, which is
- * the responsible thing to do and the opposite of a warning. Collapsing them
- * into one "the cap moved" flag would fire on 20% of packages and mark good
- * behaviour as suspicious, which is how a signal gets ignored.
- *
- * A genuine transfer to a live address is 2%. That is the one worth surfacing.
+ * A cap sent to the zero address or a framework address such as `0x2` means
+ * the team **renounced** upgrade rights, which is the responsible thing to do
+ * and the opposite of a warning. Most caps that leave their publisher go to
+ * such an address, so collapsing both into one "the cap moved" flag would mark
+ * good behaviour as suspicious, which is how a signal gets ignored. A transfer
+ * to a live address is the one worth surfacing.
  */
 
 /**
@@ -112,6 +100,6 @@ export function assessCapHolder(
     status: "transferred",
     holder,
     publisher,
-    note: `Upgrade authority has changed hands: the package was published by ${publisher} but its upgrade cap is now held by ${holder}. Measured on mainnet, this is uncommon — about 2% of packages — and most caps that leave the publisher are burned rather than transferred. It is not by itself wrong: teams move caps to treasuries and multisigs deliberately. Identify the holder before concluding anything.`,
+    note: `Upgrade authority has changed hands: the package was published by ${publisher} but its upgrade cap is now held by ${holder}. A cap usually stays with its publisher or is burned, so a transfer stands out. It is not by itself wrong: teams move caps to treasuries and multisigs deliberately. Identify the holder before concluding anything.`,
   };
 }

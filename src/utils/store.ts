@@ -39,6 +39,7 @@ export interface FanoutRecord {
   out_in_ratio: number | null;
   flow_shape: string;
   sponsored_address_count: number;
+  sponsored_and_paid_count: number;
   sponsored_transaction_count: number;
   sponsor_shape: string;
   scanned_transactions: number;
@@ -91,7 +92,7 @@ let unavailableReason: string | null = null;
  *
  * The cache is keyed on address alone, so nothing in a row records *how* it was
  * taken; without this, an upgrade keeps serving the previous method's numbers
- * until they age out. 1 marks the 1.5.0 measurement — backwards through
+ * until they age out. 1 marks the 1.5.0 measurement: backwards through
  * history, both directions counted. Only the fan-out cache is discarded on a
  * bump; labels and findings are user data and are never touched.
  *
@@ -102,17 +103,39 @@ let unavailableReason: string | null = null;
  *
  * 4 marks a gas sponsor's SUI change no longer counting as a payment, which
  * lowered the recipient count of every sponsored sweep by one.
+ *
+ * 5 marks `measureFanout` reading each transaction's direction coin by coin
+ * (`counterpartySides`) instead of from the subject's first non-gas row. A v4
+ * row counts a SUI-to-USDC swap's pool only as a recipient, where v5 counts it
+ * both ways, and misses a payee in a second coin, so a v4 row has a different
+ * sender_count, out_in_ratio and flow_shape.
+ *
+ * 6 marks `sponsor_shape` weighing how many sponsored addresses the sponsor
+ * also paid (`sponsored_and_paid_count`, a new column). A v5 row can call a
+ * sponsor that paid every address it sponsored a relayer.
  */
-export const FANOUT_METHOD_VERSION = 4;
+export const FANOUT_METHOD_VERSION = 6;
 
 /**
  * Stamp for cached first-funder answers.
  *
- * Bump whenever the rules in `pickFundingTx` change what counts as funding —
- * the dust floors, the unpriced-coin rule, or how the funder is chosen. A row
+ * Bump whenever the rules in `pickFundingTx` change what counts as funding
+ * (the dust floors, the unpriced-coin rule, or how the funder is chosen). A row
  * written under the old rules is a different measurement wearing the same key.
+ *
+ * 2 marks `build_wallet_edges` wiring real prices into `pickFundingTx`
+ * (`firstFunderOf` in `edge-probe.ts`). Under 1 every non-SUI inflow it saw
+ * was accepted regardless of price, so a row written under 1 may
+ * have taken an unpriced dust transfer as funding where the current rule would
+ * skip it.
+ *
+ * 3 marks writing only a pick that no price decided: every inflow up to it was
+ * SUI. A row written under 2 may hold a pick made during a price outage, when
+ * every non-SUI inflow read as unpriced and a later SUI sender was named.
+ * Because a row now involves SUI alone, a change to how non-SUI inflows are
+ * judged (prices, or an unpriced coin's share of supply) cannot alter one.
  */
-export const FUNDING_METHOD_VERSION = 1;
+export const FUNDING_METHOD_VERSION = 3;
 
 /**
  * Stamped into every cached transaction, and checked on read.
@@ -160,6 +183,8 @@ CREATE TABLE IF NOT EXISTS fanout (
   -- so it is stored rather than recomputed: a cache hit that reported 0 here
   -- would be claiming "not a sponsor" from data it never read.
   sponsored_address_count     INTEGER NOT NULL,
+  -- Sponsored addresses it also paid: the operator pair build_wallet_edges links.
+  sponsored_and_paid_count    INTEGER NOT NULL,
   sponsored_transaction_count INTEGER NOT NULL,
   sponsor_shape        TEXT NOT NULL,
   scanned_transactions INTEGER NOT NULL,
@@ -240,10 +265,10 @@ CREATE TABLE IF NOT EXISTS watches (
 
 -- Who held a kiosk, as stated by a marketplace sale event.
 --
--- A kiosk's own owner field does not follow the KioskOwnerCap and disagrees
--- with the real holder 40% of the time, so a holder scan cannot trust it. A
--- sale event names the buyer and the buyer's kiosk in one record, which is a
--- chain-derived statement of ownership at that checkpoint.
+-- A kiosk's own owner field does not follow the KioskOwnerCap, so it can
+-- name a former owner and a holder scan cannot trust it. A sale event names
+-- the buyer and the buyer's kiosk in one record, which is a chain-derived
+-- statement of ownership at that checkpoint.
 --
 -- Snapshot, not a permanent fact: a kiosk can change hands, so the checkpoint
 -- is stored and a later observation wins. Network-keyed like everything else.
@@ -429,6 +454,7 @@ function migrateFanoutCache(opened: DatabaseLike): void {
     "coin_type_count",
     "flow_shape",
     "sponsored_address_count",
+    "sponsored_and_paid_count",
     "sponsor_shape",
   ].every((c) => columns.has(c));
   if ((row?.user_version ?? 0) >= FANOUT_METHOD_VERSION && shapeOk) return;
@@ -524,16 +550,13 @@ export function resetStore(): void {
  * Run a store write, returning `fallback` if it throws.
  *
  * **For caches and cursors only.** The rule is that a failed write must not
- * fail the READ that produced it: the measurement already succeeded and the
- * caller is entitled to it, persisted or not. A fan-out write failing with
- * "NOT NULL constraint failed: fanout.sponsored_address_count" took down
- * `get_address_fanout` entirely rather than returning the fan-out it had just
- * measured, which is the shape this exists to prevent.
+ * fail the read that produced it: the measurement already succeeded and the
+ * caller is entitled to it, persisted or not.
  *
- * It is therefore the WRONG wrapper for a writer whose write is the whole
+ * It is therefore the wrong wrapper for a writer whose write is the whole
  * point. `saveFinding` and `deleteFinding` record the investigator's own
  * conclusions, and a swallowed failure there means `save_finding` reports
- * `saved: true` over evidence that was never stored. Those throw on purpose —
+ * `saved: true` over evidence that was never stored. Those throw on purpose;
  * see the note on `saveFinding`.
  *
  * The handle is passed in rather than read from the module binding so the body
@@ -589,9 +612,9 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
     db.prepare(
       `INSERT INTO fanout (account, recipient_count, sender_count, counterparty_count,
                            coin_type_count, out_in_ratio, flow_shape,
-                           sponsored_address_count, sponsored_transaction_count, sponsor_shape,
-                           scanned_transactions, truncated, measured_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           sponsored_address_count, sponsored_and_paid_count, sponsored_transaction_count,
+                           sponsor_shape, scanned_transactions, truncated, measured_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(account) DO UPDATE SET
          recipient_count=excluded.recipient_count,
          sender_count=excluded.sender_count,
@@ -600,6 +623,7 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
          out_in_ratio=excluded.out_in_ratio,
          flow_shape=excluded.flow_shape,
          sponsored_address_count=excluded.sponsored_address_count,
+         sponsored_and_paid_count=excluded.sponsored_and_paid_count,
          sponsored_transaction_count=excluded.sponsored_transaction_count,
          sponsor_shape=excluded.sponsor_shape,
          scanned_transactions=excluded.scanned_transactions,
@@ -614,6 +638,7 @@ export function saveFanout(r: Omit<FanoutRecord, "measured_at">): boolean {
       r.out_in_ratio,
       r.flow_shape,
       r.sponsored_address_count,
+      r.sponsored_and_paid_count,
       r.sponsored_transaction_count,
       r.sponsor_shape,
       r.scanned_transactions,
@@ -941,9 +966,9 @@ export function kioskOwnerVersion(network: string): string {
       .get(network) as { n?: number; hi?: number; seen?: number } | undefined;
     // observed_at is what makes this move. Raising one existing row's
     // checkpoint to a value below the table's maximum changes neither the count
-    // nor the maximum, so a version built from those two alone kept serving the
-    // stale ranking this key exists to invalidate — verified against a real
-    // store. observed_at is written on every accepted update.
+    // nor the maximum, so a version built from those two alone would keep
+    // serving the stale ranking this key exists to invalidate. observed_at is
+    // written on every accepted update.
     return `${r?.n ?? 0}:${r?.hi ?? 0}:${r?.seen ?? 0}`;
   } catch {
     return "0:0:0";

@@ -31,9 +31,11 @@ export interface Branch {
   address: string;
   coin_type: string;
   /**
-   * What this party received (forward) or paid (backward), raw units,
-   * positive. For a swap or conversion, the part of the proceeds bought with
-   * the traced coin.
+   * The part of what this party received (forward) or paid (backward) that
+   * the split transaction's traced side accounts for, raw units, positive. A
+   * direct branch carries at most the holder's own outflow (forward) or
+   * inflow (backward) of the coin; a swap or conversion, the part of the
+   * proceeds bought with the traced coin.
    */
   amount: bigint;
   /** Fraction of the split transaction's traced value this branch carries. */
@@ -107,7 +109,7 @@ export function ratio(a: bigint, b: bigint): number {
 export function scaleAmount(amount: bigint, fraction: number): bigint {
   if (fraction >= 1) return amount;
   if (fraction <= 0) return 0n;
-  return (amount * BigInt(Math.round(fraction * 1e12))) / 1_000_000_000_000n;
+  return (amount * BigInt(Math.floor(fraction * 1e12))) / 1_000_000_000_000n;
 }
 
 /** The coin of a party's largest-value change of one sign, for a split with no tracked coin. */
@@ -137,17 +139,175 @@ function netOf(changes: HopChange[], address: string, coin: string): bigint {
     .reduce((s, c) => s + BigInt(c.amount), 0n);
 }
 
+/** `address`'s net change in `coin` on one transaction, gas removed, as a positive amount: what moved on chain. */
+export function movedOnChain(changes: HopChange[], address: string, coin: string, gas?: GasCharge): bigint {
+  return abs(netOf(withoutGas(changes, gas), address, coin));
+}
+
+/**
+ * Every coin `address` net spent (`sign` -1) or net received (`sign` 1) on one
+ * transaction, gas removed, once per coin. An address-start root splits each
+ * of them, so a transaction that pays several coins out is traced in all of
+ * them rather than in the dominant one alone.
+ */
+export function coinsMoved(changes: HopChange[], address: string, sign: 1 | -1, gas?: GasCharge): string[] {
+  const cs = withoutGas(changes, gas);
+  const byKey = new Map<string, string>();
+  for (const c of cs) if (c.address === address && !byKey.has(coinKey(c.coin_type))) byKey.set(coinKey(c.coin_type), c.coin_type);
+  return [...byKey.values()].filter((coin) => {
+    const net = netOf(cs, address, coin);
+    return sign > 0 ? net > 0n : net < 0n;
+  });
+}
+
+/** Positive changes in `coin` of every address but `holder`. */
+function receiptsOfOthers(cs: HopChange[], holder: string, coin: string): HopChange[] {
+  return cs.filter((c) => c.address !== holder && BigInt(c.amount) > 0n && sameCoin(c.coin_type, coin));
+}
+
+function sumAbs(cs: HopChange[]): bigint {
+  return cs.reduce((s, c) => s + abs(BigInt(c.amount)), 0n);
+}
+
+interface Part {
+  address: string;
+  coin_type: string;
+  amount: bigint;
+}
+
+/**
+ * What `holder` put into a transaction that no other address took in the same
+ * coin, per coin it net spent: its net outflow less what the other addresses
+ * received of that coin. That part went into a conversion or reached no address.
+ */
+function unpaidOutflows(cs: HopChange[], holder: string): Part[] {
+  return coinsMoved(cs, holder, -1)
+    .map((coin) => {
+      const spent = -netOf(cs, holder, coin);
+      const received = sumAbs(receiptsOfOthers(cs, holder, coin));
+      return { address: holder, coin_type: coin, amount: received >= spent ? 0n : spent - received };
+    })
+    .filter((p) => p.amount > 0n);
+}
+
+/**
+ * What other addresses took out of a transaction beyond what `holder` paid
+ * them in the same coin. When recipients of a coin got more than the holder
+ * spent of it, each one's excess is its pro-rata part of that difference.
+ */
+function unpaidReceipts(cs: HopChange[], holder: string): Part[] {
+  const excess = new Map<string, { received: bigint; unpaid: bigint }>();
+  const out: Part[] = [];
+  for (const c of cs) {
+    const amount = BigInt(c.amount);
+    if (c.address === holder || amount <= 0n) continue;
+    const key = coinKey(c.coin_type);
+    let e = excess.get(key);
+    if (!e) {
+      const received = sumAbs(receiptsOfOthers(cs, holder, c.coin_type));
+      const net = netOf(cs, holder, c.coin_type);
+      const spent = net < 0n ? -net : 0n;
+      e = { received, unpaid: received > spent ? received - spent : 0n };
+      excess.set(key, e);
+    }
+    const unpaid = (amount * e.unpaid) / e.received;
+    if (unpaid > 0n) out.push({ address: c.address, coin_type: c.coin_type, amount: unpaid });
+  }
+  return out;
+}
+
+/**
+ * {@link valueWeights} of one side of a conversion. When that side has parts
+ * with no market price and every part of the `other` side has a market price
+ * or a `drawn` one, the unpriced parts are worth what the other side is worth
+ * beyond this side's priced parts, split between them as `valueWeights`
+ * splits unpriced amounts. Otherwise the side is weighed at `drawn` prices,
+ * which fall back to the market's.
+ */
+function conversionWeights(side: Part[], other: Part[], valueUsd: ValueUsd, drawn: ValueUsd): { weights: number[]; weighting: Weighting } {
+  const at = (v: ValueUsd) => (p: Part) => v({ amount: p.amount.toString(), coin_type: p.coin_type });
+  const usd = side.map(at(valueUsd));
+  const unpriced = side.filter((_, i) => usd[i] === null);
+  if (unpriced.length === 0) return valueWeights(side, valueUsd);
+  const otherUsd = other.map((p) => at(valueUsd)(p) ?? at(drawn)(p));
+  if (otherUsd.some((u) => u === null)) return valueWeights(side, drawn);
+  const residual = otherUsd.reduce<number>((s, u) => s + (u ?? 0), 0) - usd.reduce<number>((s, u) => s + (u ?? 0), 0);
+  if (residual <= 0) return valueWeights(side, drawn);
+  const split = valueWeights(unpriced).weights;
+  let next = 0;
+  return valueWeights(side.map((p, i) => ({ ...p, usd: usd[i] ?? residual * split[next++] })));
+}
+
+/**
+ * Below this ratio of one side of a conversion to the other, both at market
+ * prices, a readable transaction is not a swap. Forward, proceeds this small
+ * are change or dust, and the rest of the outflow went into a contract.
+ * Backward, inputs this small are a fee, and the rest of the inflow came out
+ * of a contract. Forward, a transaction that swaps without depositing is a
+ * sale at whatever price the pool gave, however far below the market price,
+ * and converts in full.
+ */
+const DUST_RETURN_RATIO = 0.1;
+
+/** A call that puts value into a contract: a deposit, stake, loan, lock or liquidity add. */
+function isDepositHop(actions: string[]): boolean {
+  return actions.some((a) => /(^|[^a-z])(deposit|supply|stake|lend|lock|add_liquidity)/i.test(a));
+}
+
+/** What `part` is worth as a fraction of `whole`, at most 1; 1 when either has a part with no price. */
+function worthRatio(whole: Part[], part: Part[], valueUsd: ValueUsd): number {
+  const total = (parts: Part[]) => {
+    let usd = 0;
+    for (const p of parts) {
+      const u = valueUsd({ amount: p.amount.toString(), coin_type: p.coin_type });
+      if (u === null) return null;
+      usd += u;
+    }
+    return usd;
+  };
+  const [w, p] = [total(whole), total(part)];
+  return w === null || p === null || w <= 0 ? 1 : Math.min(1, p / w);
+}
+
+/**
+ * What went into a transaction that no address took, per payer: for each
+ * coin, the amount paid out beyond what every address received of it, split
+ * between the payers `include` accepts in proportion to what each paid.
+ */
+function unpaidPayments(cs: HopChange[], include: (address: string) => boolean): Part[] {
+  const totals = new Map<string, { paid: bigint; consumed: bigint }>();
+  const out: Part[] = [];
+  for (const c of cs) {
+    const amount = BigInt(c.amount);
+    if (amount >= 0n || !include(c.address)) continue;
+    const key = coinKey(c.coin_type);
+    let t = totals.get(key);
+    if (!t) {
+      const same = cs.filter((x) => sameCoin(x.coin_type, c.coin_type));
+      const paid = sumAbs(same.filter((x) => BigInt(x.amount) < 0n));
+      const received = sumAbs(same.filter((x) => BigInt(x.amount) > 0n));
+      t = { paid, consumed: paid > received ? paid - received : 0n };
+      totals.set(key, t);
+    }
+    const unpaid = (-amount * t.consumed) / t.paid;
+    if (unpaid > 0n) out.push({ address: c.address, coin_type: c.coin_type, amount: unpaid });
+  }
+  return out;
+}
+
 /**
  * Forward: where the `holder`'s outflow of the tracked coin went on one
  * transaction.
  *
  * Recipients of the tracked coin take their share first, in proportion to
- * what each received. What the holder spent beyond that was either turned into
- * another asset (the holder's own swap or conversion when it sent the
- * transaction, or another party paid a different coin for it) or reached no
- * address (a bridge burn, a protocol deposit, a burn), which is `unallocated`.
- * On a bridge exit the remainder is always the exit. Gas is removed first:
- * the payer's SUI change includes it.
+ * what each received, and carry at most what the holder spent: when they got
+ * more of it than the holder spent, the rest came from another input. What
+ * the holder spent beyond what they received went into a conversion or
+ * reached no address (a bridge burn, a protocol deposit, a burn), which is
+ * `unallocated`. A conversion's proceeds are the holder's own gains when it
+ * sent the transaction and what other addresses took out beyond what the
+ * holder paid them in the same coin. On a bridge exit the remainder is always
+ * the exit. Gas is removed first: the payer's SUI change includes it.
  */
 export function splitSpend(params: {
   sender: string | null;
@@ -163,8 +323,20 @@ export function splitSpend(params: {
    * in another coin is not a conversion of it.
    */
   bridgeExit?: boolean;
+  /**
+   * The changes come from a search row, which carries no events, so a bridge
+   * marker cannot be seen. When both sides of the conversion are priced, only
+   * the part of the outflow its proceeds are worth is converted; the rest
+   * stays unallocated. Without it the same cap applies only when the
+   * proceeds are worth less than {@link DUST_RETURN_RATIO} of the inputs at
+   * market prices.
+   */
+  capToProceeds?: boolean;
+  /** Prices that also value a coin with no market price at a rate drawn from an earlier conversion; defaults to `valueUsd`. */
+  drawnUsd?: ValueUsd;
 }): Split {
   const valueUsd = params.valueUsd ?? (() => null);
+  const drawn = params.drawnUsd ?? valueUsd;
   const { holder, sender } = params;
   const cs = withoutGas(params.changes, params.gas);
   const coin = params.trackedCoin ?? dominantCoin(cs, holder, -1, valueUsd);
@@ -174,13 +346,13 @@ export function splitSpend(params: {
   if (net >= 0n) return empty;
   const spent = -net;
 
-  const recipients = cs.filter((c) => c.address !== holder && BigInt(c.amount) > 0n && sameCoin(c.coin_type, coin));
-  const received = recipients.reduce((s, c) => s + BigInt(c.amount), 0n);
+  const recipients = receiptsOfOthers(cs, holder, coin);
+  const received = sumAbs(recipients);
   const base = received > spent ? received : spent;
   const branches: Branch[] = recipients.map((c) => ({
     address: c.address,
     coin_type: c.coin_type,
-    amount: BigInt(c.amount),
+    amount: received > spent ? (BigInt(c.amount) * spent) / received : BigInt(c.amount),
     weight: ratio(BigInt(c.amount), base),
     basis: "direct",
   }));
@@ -188,35 +360,34 @@ export function splitSpend(params: {
   let unallocated = received >= spent ? 0 : ratio(spent - received, spent);
 
   if (unallocated > 0 && !params.bridgeExit) {
-    const gains =
+    const gains: Part[] =
       holder === sender
-        ? cs.filter((c) => c.address === holder && BigInt(c.amount) > 0n && !sameCoin(c.coin_type, coin))
+        ? coinsMoved(cs, holder, 1).map((c) => ({ address: holder, coin_type: c, amount: netOf(cs, holder, c) }))
         : [];
-    const others = cs.filter((c) => c.address !== holder && BigInt(c.amount) > 0n && !sameCoin(c.coin_type, coin));
-    const into = gains.length > 0 ? gains : others;
+    const into = [...gains, ...unpaidReceipts(cs, holder)];
     if (into.length > 0) {
       // Proceeds bought with several inputs belong to the traced coin only in
       // proportion to its part of what went in: a swap that spent 0.1 SUI and
       // 18,000 USDT for 18,000 USDC did not turn the SUI into 18,000 USDC.
-      const otherInputs = cs.filter((c) => c.address === holder && BigInt(c.amount) < 0n && !sameCoin(c.coin_type, coin));
-      const inputShare = valueWeights(
-        [{ amount: spent - received, coin_type: coin }, ...otherInputs.map((c) => ({ amount: -BigInt(c.amount), coin_type: c.coin_type }))],
-        valueUsd,
-      ).weights[0];
-      const w = valueWeights(into.map((c) => ({ amount: BigInt(c.amount), coin_type: c.coin_type })), valueUsd);
+      const inputs = unpaidOutflows(cs, holder);
+      const inputShare = conversionWeights(inputs, into, valueUsd, drawn).weights[inputs.findIndex((p) => sameCoin(p.coin_type, coin))];
+      const w = conversionWeights(into, inputs, valueUsd, drawn);
       weighting = w.weighting;
-      const basis: FlowBasis = gains.length > 0 && isSwapHop(params.actions) ? "swap-follow" : "conversion";
+      const swap = isSwapHop(params.actions);
+      const cover = params.capToProceeds ? worthRatio(inputs, into, drawn) : worthRatio(inputs, into, valueUsd);
+      const dust = cover < DUST_RETURN_RATIO && (!swap || isDepositHop(params.actions));
+      const converted = unallocated * (params.capToProceeds || dust ? cover : 1);
       into.forEach((c, i) => {
         if (w.weights[i] <= 0) return;
         branches.push({
           address: c.address,
           coin_type: c.coin_type,
-          amount: scaleAmount(BigInt(c.amount), inputShare),
-          weight: unallocated * w.weights[i],
-          basis,
+          amount: scaleAmount(c.amount, inputShare),
+          weight: converted * w.weights[i],
+          basis: swap && c.address === holder ? "swap-follow" : "conversion",
         });
       });
-      unallocated = 0;
+      unallocated -= converted;
     }
   }
   return { coin_type: coin, total: spent, branches, unallocated, weighting };
@@ -292,11 +463,18 @@ export function splitOriginBackward(params: {
  * transaction.
  *
  * Every other party whose balance of the coin went down, in proportion to
- * what each paid. When the recipient sent the transaction and turned another
- * asset into the tracked one (a swap, an unstake, a redemption) with no
- * wallet paying it, its own outflow of that asset is where the value came
- * from. With nobody paying, the coin was minted, withdrawn from a protocol or
- * claimed from a bridge: `unallocated`.
+ * what each paid, carrying at most the recipient's inflow. What the recipient
+ * received beyond what they paid came out of a conversion: the assets that
+ * went into the transaction and that no address took (a swap, an unstake, a
+ * redemption) are where the value came from, at the addresses that paid them
+ * in, in proportion to this coin's part of everything the conversion
+ * produced. The recipient's own such outflows count only when it sent the
+ * transaction, and a curated pool paying the coin is then the other side of
+ * its swap, not a payer. With no such asset, the coin was minted, withdrawn
+ * from a protocol or claimed from a bridge: `unallocated`. When those assets
+ * are worth less than {@link DUST_RETURN_RATIO} of what the conversion
+ * produced, they were a fee, and only the part of the inflow they are worth
+ * comes from them; the rest is `unallocated`.
  */
 export function splitInflow(params: {
   sender: string | null;
@@ -307,8 +485,11 @@ export function splitInflow(params: {
   isPassThrough: (address: string) => boolean;
   gas?: GasCharge;
   valueUsd?: ValueUsd;
+  /** See {@link splitSpend}. */
+  drawnUsd?: ValueUsd;
 }): Split {
   const valueUsd = params.valueUsd ?? (() => null);
+  const drawn = params.drawnUsd ?? valueUsd;
   const { recipient, sender } = params;
   const cs = withoutGas(params.changes, params.gas);
   const coin = params.trackedCoin ?? dominantCoin(cs, recipient, 1, valueUsd);
@@ -317,45 +498,59 @@ export function splitInflow(params: {
   const net = netOf(cs, recipient, coin);
   if (net <= 0n) return empty;
 
-  const payers = cs.filter((c) => c.address !== recipient && BigInt(c.amount) < 0n && sameCoin(c.coin_type, coin));
-  const paidOther =
-    recipient === sender
-      ? cs.filter((c) => c.address === recipient && BigInt(c.amount) < 0n && !sameCoin(c.coin_type, coin))
-      : [];
-  if (paidOther.length > 0 && payers.every((p) => params.isPassThrough(p.address))) {
-    const w = valueWeights(paidOther.map((c) => ({ amount: -BigInt(c.amount), coin_type: c.coin_type })), valueUsd);
-    const basis: FlowBasis = isSwapHop(params.actions) ? "swap-follow" : "conversion";
-    return {
-      coin_type: coin,
-      total: net,
-      branches: paidOther
-        .map((c, i): Branch => ({
-          address: c.address,
-          coin_type: c.coin_type,
-          amount: -BigInt(c.amount),
-          weight: w.weights[i],
-          basis,
-        }))
-        .filter((b) => b.weight > 0),
-      unallocated: 0,
-      weighting: w.weighting,
-    };
+  const own = recipient === sender;
+  // A curated pool's changes are the other side of the recipient's own swap.
+  const swapView = own ? cs.filter((c) => c.address === recipient || !params.isPassThrough(c.address)) : cs;
+  const sources = unpaidPayments(swapView, (address) => address !== recipient || own);
+  const view = sources.length > 0 ? swapView : cs;
+  const payersOf = (c: string) => view.filter((x) => x.address !== recipient && BigInt(x.amount) < 0n && sameCoin(x.coin_type, c));
+  const payers = payersOf(coin);
+  const paid = sumAbs(payers);
+  const base = paid > net ? paid : net;
+  const branches: Branch[] = payers.map((c) => ({
+    address: c.address,
+    coin_type: c.coin_type,
+    amount: paid > net ? (-BigInt(c.amount) * net) / paid : -BigInt(c.amount),
+    weight: ratio(-BigInt(c.amount), base),
+    basis: "inflow",
+  }));
+  let weighting: Weighting = "raw";
+  let unallocated = paid >= net ? 0 : ratio(net - paid, net);
+
+  if (unallocated > 0 && sources.length > 0) {
+    // Everything the conversion produced: the recipient's gains beyond what
+    // payers paid it, and what other addresses took out beyond what the
+    // recipient paid them.
+    const outputs: Part[] = [
+      ...coinsMoved(view, recipient, 1).map((c) => {
+        const gained = netOf(view, recipient, c);
+        const paidIn = sumAbs(payersOf(c));
+        return { address: recipient, coin_type: c, amount: paidIn >= gained ? 0n : gained - paidIn };
+      }),
+      ...unpaidReceipts(view, recipient),
+    ].filter((p) => p.amount > 0n);
+    const outputShare = conversionWeights(outputs, sources, valueUsd, drawn).weights[
+      outputs.findIndex((p) => p.address === recipient && sameCoin(p.coin_type, coin))
+    ];
+    const w = conversionWeights(sources, outputs, valueUsd, drawn);
+    weighting = w.weighting;
+    const swap = isSwapHop(params.actions);
+    // Inputs worth this little beside the outputs are a fee; the rest came out of a contract.
+    const cover = worthRatio(outputs, sources, valueUsd);
+    const converted = unallocated * (cover < DUST_RETURN_RATIO ? cover : 1);
+    sources.forEach((c, i) => {
+      if (w.weights[i] <= 0) return;
+      branches.push({
+        address: c.address,
+        coin_type: c.coin_type,
+        amount: scaleAmount(c.amount, outputShare),
+        weight: converted * w.weights[i],
+        basis: swap && c.address === recipient ? "swap-follow" : "conversion",
+      });
+    });
+    unallocated -= converted;
   }
-  if (payers.length === 0) return { ...empty, total: net, unallocated: 1 };
-  const paid = payers.reduce((s, c) => s - BigInt(c.amount), 0n);
-  return {
-    coin_type: coin,
-    total: net,
-    branches: payers.map((c) => ({
-      address: c.address,
-      coin_type: c.coin_type,
-      amount: -BigInt(c.amount),
-      weight: ratio(-BigInt(c.amount), paid),
-      basis: "inflow",
-    })),
-    unallocated: 0,
-    weighting: "raw",
-  };
+  return { coin_type: coin, total: net, branches, unallocated, weighting };
 }
 
 /**
@@ -421,7 +616,7 @@ export const STOP_MEANING: Record<StopCode, string> = {
   protocol: "Paid to a curated protocol or pool address, a shared contract whose later moves belong to its other users.",
   source: "Backward: no address paid it in. It was minted, withdrawn from a protocol, or claimed.",
   bridge_entry: "Backward: it arrived on Sui through a bridge.",
-  cycle: "Came back to an address already expanded from another address.",
+  cycle: "Value converged with an address's own activity already expanded elsewhere in the graph: on its own upstream path, or a different coin-lineage of the same address counted under another node.",
   signer_not_sender: "The transaction was signed by another address acting for the sender (an alias or a protocol substitution), so its moves are not attributed to the sender.",
   read_failed: "A transaction or search could not be read. This is incomplete, not finished.",
   budget: "Not expanded: the depth, node or search limit was reached. The funds may have moved further.",

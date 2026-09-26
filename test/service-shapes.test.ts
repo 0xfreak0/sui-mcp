@@ -12,8 +12,8 @@ import { isNotFound } from "../src/utils/errors.js";
 
 describe("gqlPage", () => {
   it("always carries pageInfo, because every real connection does", () => {
-    // The validator bug survived because a mock omitted pageInfo entirely, so
-    // paginating code had nothing to read and the test never exercised it.
+    // A mock that omits pageInfo gives paginating code nothing to read, so the
+    // test never exercises pagination.
     const page = gqlPage([{ a: 1 }]);
     expect(page.pageInfo).toEqual({ hasNextPage: false, endCursor: null });
   });

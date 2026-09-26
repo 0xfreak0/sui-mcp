@@ -95,8 +95,8 @@ describe("pickFundingTx — dust is not funding", () => {
   it("skips a spam-sized SUI send and reports why", () => {
     // 1 MIST is 1e-9 SUI. Gas for a simple transfer is ~0.001-0.005 SUI, so a
     // dust send is orders of magnitude below anything that could fund a
-    // wallet — yet it used to become "first funded by", and the funding walk
-    // would then chase the spammer's ancestry as the subject's origin.
+    // wallet. Named as the funder, it would send the funding walk up the
+    // spammer's ancestry as the subject's origin.
     const txs = [
       tx("dust", "0xspammer", [
         { address: "0xspammer", amount: "-1", coinType: SUI },
@@ -151,6 +151,107 @@ describe("pickFundingTx — dust is not funding", () => {
     ])];
     expect(pickFundingTx(txs, TARGET).funding).toBeNull();
     expect(pickFundingTx(txs, TARGET, { minSuiMist: 0n }).funding?.digest).toBe("tiny");
+  });
+});
+
+describe("pickFundingTx — an unpriced coin that no airdrop could send counts", () => {
+  // A KONG grant to TARGET, then 3 SUI from the deployer. KONG has 1 decimal
+  // and a supply of 10B (100,000,000,000 raw), and no price source quotes it.
+  const KONG = "0xb0c3::kong::KONG";
+  const DEPLOYER = "0xdep";
+  const SUPPLY = 100_000_000_000n;
+  const valueUsd = (coinType: string) => (coinType === SUI ? 3.5 : null);
+  const grantThenGas = (grant: string, from = DEPLOYER) => [
+    tx("grant", from, [
+      { address: from, amount: `-${grant}`, coinType: KONG },
+      { address: TARGET, amount: grant, coinType: KONG },
+    ]),
+    tx("gas", DEPLOYER, [
+      { address: DEPLOYER, amount: "-3001747880", coinType: SUI },
+      { address: TARGET, amount: "3000000000", coinType: SUI },
+    ]),
+  ];
+
+  it("counts an inflow of 1% or more of the coin's supply, and says why", () => {
+    const r = pickFundingTx(grantThenGas("10000000000", "0xstranger"), TARGET, {
+      valueUsd,
+      coinOrigin: () => ({ totalSupply: SUPPLY, publisher: DEPLOYER }),
+    });
+    expect(r.funding).toMatchObject({ digest: "grant", funder: "0xstranger" });
+    expect(r.funding?.unpriced).toEqual({ share_of_supply: 0.1, from_publisher: false });
+    expect(r.dustSkipped).toEqual([]);
+  });
+
+  it("counts a smaller allocation only when the coin's publisher sent it", () => {
+    const half = "500000000"; // 0.5% of supply
+    const origin = () => ({ totalSupply: SUPPLY, publisher: DEPLOYER });
+    const fromPublisher = pickFundingTx(grantThenGas(half), TARGET, { valueUsd, coinOrigin: origin });
+    expect(fromPublisher.funding).toMatchObject({ digest: "grant", unpriced: { from_publisher: true } });
+    const fromStranger = pickFundingTx(grantThenGas(half, "0xstranger"), TARGET, { valueUsd, coinOrigin: origin });
+    expect(fromStranger.funding?.digest).toBe("gas");
+    expect(fromStranger.dustSkipped[0]).toMatchObject({ digest: "grant", reason: "unpriced_coin" });
+  });
+
+  it("still skips a publisher's airdrop: a share thousands of wallets could each get", () => {
+    // 0.01% each: 10,000 wallets can be sent this much, so it says nothing
+    // about who created this one.
+    const r = pickFundingTx(grantThenGas("10000000"), TARGET, {
+      valueUsd,
+      coinOrigin: () => ({ totalSupply: SUPPLY, publisher: DEPLOYER }),
+    });
+    expect(r.funding?.digest).toBe("gas");
+    expect(r.dustSkipped[0]).toMatchObject({ digest: "grant", reason: "unpriced_coin" });
+  });
+
+  it("still skips an unpriced coin whose supply the chain does not report", () => {
+    const r = pickFundingTx(grantThenGas("10000000000"), TARGET, {
+      valueUsd,
+      coinOrigin: () => ({ totalSupply: null, publisher: DEPLOYER }),
+    });
+    expect(r.funding?.digest).toBe("gas");
+  });
+
+  describe("a grant bundled with sub-floor SUI in one transaction", () => {
+    const LATER = "0x1a7e";
+    const bundledThenLater = (grant: string) => [
+      tx("bundle", DEPLOYER, [
+        { address: DEPLOYER, amount: "-5000000", coinType: SUI },
+        { address: TARGET, amount: "5000000", coinType: SUI },
+        { address: DEPLOYER, amount: `-${grant}`, coinType: KONG },
+        { address: TARGET, amount: grant, coinType: KONG },
+      ]),
+      tx("later", LATER, [
+        { address: LATER, amount: "-3000000000", coinType: SUI },
+        { address: TARGET, amount: "3000000000", coinType: SUI },
+      ]),
+    ];
+
+    it("counts 10% of supply from the publisher although 0.005 SUI rode in the same transaction", () => {
+      const r = pickFundingTx(bundledThenLater("10000000000"), TARGET, {
+        valueUsd,
+        coinOrigin: (t) => (t === KONG ? { totalSupply: SUPPLY, publisher: DEPLOYER } : undefined),
+      });
+      expect(r.funding).toMatchObject({ digest: "bundle", funder: DEPLOYER, coinType: KONG });
+      expect(r.funding?.unpriced).toEqual({ share_of_supply: 0.1, from_publisher: true });
+      expect(r.dustSkipped).toEqual([{ digest: "bundle", amount: "5000000", coinType: SUI, reason: "below_sui_floor" }]);
+    });
+
+    it("lists both skipped coins of the transaction before the origin is read, so the caller knows to read it", () => {
+      const r = pickFundingTx(bundledThenLater("10000000000"), TARGET, { valueUsd });
+      expect(r.funding?.digest).toBe("later");
+      expect(r.dustSkipped).toEqual([
+        { digest: "bundle", amount: "5000000", coinType: SUI, reason: "below_sui_floor" },
+        { digest: "bundle", amount: "10000000000", coinType: KONG, reason: "unpriced_coin" },
+      ]);
+    });
+
+    it("still passes over a publisher's airdrop-sized share bundled with gas money", () => {
+      const r = pickFundingTx(bundledThenLater("10000000"), TARGET, {
+        valueUsd,
+        coinOrigin: () => ({ totalSupply: SUPPLY, publisher: DEPLOYER }),
+      });
+      expect(r.funding?.digest).toBe("later");
+    });
   });
 });
 

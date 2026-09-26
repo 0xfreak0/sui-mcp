@@ -155,7 +155,7 @@ const U64_MAX = 2n ** 64n - 1n;
  * version, a raw coin amount), returned trimmed. A whole JSON number is
  * accepted too, as `numArg` accepts a number's string form. Anything that is
  * not a whole number from 0 to 2^64-1 is refused: `BigInt(" ")` is 0, so a
- * blank or padded placeholder used to ask for epoch 0 or checkpoint 0.
+ * blank or padded placeholder would otherwise ask for epoch 0 or checkpoint 0.
  *
  * The JSON schema stays `{"type": "string"}`.
  */
@@ -251,9 +251,9 @@ function isMoveType(text: string, typeArgument: boolean): boolean {
 
 /**
  * A full Move coin or struct type (`0x2::sui::SUI`, `0x…::pool::Pool<A, B>`),
- * returned trimmed. A malformed type used to reach the chain as a filter that
- * matched nothing, so `0x2::a::b::c` read as "no deny list" and a trace
- * restricted to it read as "no flows".
+ * returned trimmed. A malformed type sent to the chain as a filter matches
+ * nothing, so `0x2::a::b::c` would read as "no deny list" and a trace
+ * restricted to it as "no flows".
  *
  * The JSON schema stays `{"type": "string"}`.
  */
@@ -438,8 +438,8 @@ function lenientField(schema: z.ZodTypeAny): z.ZodTypeAny {
  * The object a tool's arguments are parsed with.
  *
  * Unknown keys are refused. A plain `z.object` strips them, so a misspelt
- * argument (`module` for `module_name`) was dropped and the tool answered a
- * different question as if nothing were wrong. The refusal names the
+ * argument (`module` for `module_name`) would be dropped and the tool would
+ * answer a different question as if nothing were wrong. The refusal names the
  * arguments the tool takes and the closest match. The advertised JSON schema
  * already says `additionalProperties: false`, so this makes the server do
  * what it publishes.

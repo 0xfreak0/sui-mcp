@@ -8,12 +8,11 @@
  * - CCTP interface (the live path): Allbridge burns through Circle CCTP in the
  *   same transaction, with the same nonce. `recipient` is the CCTP mint
  *   recipient; `recipient_wallet_address` is the end user. On Solana they
- *   differ: USDC is minted into the wallet's token account (AyApNXU7…). The
- *   wallet is the beneficiary, so the CCTP leg is reported as Allbridge's
- *   carrier rather than as a second beneficiary. Verified on 9fB7PTQV… (to
- *   Arbitrum) and AyApNXU7… (to Solana).
- * - Pool bridge (deprecated after the July 2026 incident): `recipient` is the
- *   user, `messenger` names the messaging layer. Verified on FmxxWhRo….
+ *   differ: USDC is minted into the wallet's token account. The wallet is the
+ *   beneficiary, so the CCTP leg is reported as Allbridge's carrier rather
+ *   than as a second beneficiary.
+ * - Pool bridge (deprecated): `recipient` is the user, `messenger` names the
+ *   messaging layer.
  */
 
 import { ETHEREUM, SOLANA_MAINNET, SUI_MAINNET, chainDisplayName, type ChainId } from "../chain-id.js";
@@ -29,8 +28,8 @@ export const ALLBRIDGE_POOL_EVENT = `${ALLBRIDGE_POOL_PACKAGE}::events::TokensSe
 
 /**
  * Allbridge chain ids → CAIP-2, from Allbridge's own token-info API
- * (api.core.allbridge.io/token-info, `chainId` per chain symbol). Id 6 is
- * confirmed on chain: 9fB7PTQV… pairs it with CCTP domain 3, Arbitrum.
+ * (api.core.allbridge.io/token-info, `chainId` per chain symbol). On chain,
+ * id 6 is paired with CCTP domain 3, Arbitrum.
  */
 const ALLBRIDGE_TO_CAIP2: Record<number, ChainId> = {
   1: ETHEREUM,

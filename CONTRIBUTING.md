@@ -83,6 +83,11 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
    name. `test/tool-annotations.test.ts` fails when a tool that writes is
    marked read-only.
 9. Add tests in `test/` for any non-trivial logic.
+10. Give the tool a live check: a call in one of the `scripts/probe/` scripts
+    that compares its answer with a raw chain read, or a check in a case in
+    `cases/incidents/`. `test/live-coverage.test.ts` fails, naming the tool,
+    until one exists. `adversarial.mjs` does not count toward it, since it
+    tests input handling and not answers.
 
 ## Guidelines
 
@@ -96,6 +101,41 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
 - Measuring something new? Write a throwaway script and delete it. Record the
   number in a commit message or `CLAUDE.md`. A script kept to rediscover a
   number you already wrote down just rots against live mainnet.
+
+## Running a blind investigation
+
+A blind investigation tests the tools the way a user meets them: a real
+incident, worked with the MCP tools alone, every answer graded against a
+published post-mortem. Each one leaves a case file in `cases/incidents/` that
+`npm run verify:live` replays from then on. `scripts/probe/blind-investigation.md`
+is the brief to hand a person or an agent, with the full rules.
+
+1. **Pick an incident** with a published post-mortem that names Sui addresses,
+   digests or coin types: the victim's own report, a security firm's analysis,
+   or an official or exchange statement. Prefer one old enough that its facts
+   cannot drift.
+2. **Investigate with the MCP tools only.** Do not read `src/`, `test/` or
+   `scripts/`. Raw GraphQL or an explorer may verify an answer after a tool
+   gave it, and may not be used to find it first.
+3. **Grade every answer** against the post-mortem and the chain: `CORRECT`,
+   `WRONG`, `MISSING`, `MISLEADING`, `UNUSABLE`, or `GAP` when no tool answers
+   the question. Keep the exact call and an excerpt of the output.
+4. **Write the case file** in the format `cases/README.md` defines, with 8 to
+   20 checks. Each pins a fact from the post-mortem or the chain. A check on
+   an answer the tool gets wrong keeps the correct expected value and gets a
+   `known_defect` line. Run it, then copy it into `cases/incidents/`:
+
+   ```bash
+   npm run build
+   SUI_CASES_DIR=<dir> node scripts/probe/case-pass.mjs --case <slug>
+   ```
+
+5. **Turn each wrong answer into a fix, a regression test and a check.** Fix
+   the tool in `src/`. Add a test in `test/` built from the real response
+   shape (see "Mocks must be shapes the service can actually produce") that
+   fails without the fix. Remove the check's `known_defect`: until you do,
+   `case-pass` reports it as `FIXED` and fails the run. A `GAP` becomes an
+   issue or a new tool, and a new tool needs its own check.
 
 ## Pull requests
 
@@ -129,6 +169,25 @@ Lineage resolution is a lookup, not a guarantee of freshness: a protocol that
 *redeploys* rather than upgrades mints an unrelated root that no lineage walk
 will find, so `find-unknown-packages` below is still how new lineages get
 discovered.
+
+## Keeping the coin symbol index current
+
+`src/data/coin-symbols.json` lists every mainnet coin by symbol, so
+`analyze_token` and `search_token` can answer a symbol that several coins use
+(30 coins use `KONG`) without a live scan that cannot reach them. It goes stale
+as coins launch: a coin published after the sync is found only by the bounded
+live scan, and tools say which date the index has. Regenerate it before a
+release:
+
+```bash
+npm run sync:coin-symbols                  # rewrites src/data/coin-symbols.json, about 13 minutes
+```
+
+The script walks every `CoinMetadata` and coin registry `Currency` object. It
+refuses to write when the walk returns fewer coins than the shipped file holds,
+which means it was cut short, and when the file would exceed the size budget
+stated at the top of the script. Raise the budget on purpose if the chain has
+outgrown it; the tarball carries the file.
 
 ## Mocks must be shapes the service can actually produce
 

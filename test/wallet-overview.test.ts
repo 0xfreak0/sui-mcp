@@ -15,10 +15,8 @@ registerWorkflowTools({
 
 /**
  * The portfolio total sums `value_usd`, and an unpriced holding contributes
- * nothing. Measured on three mainnet wallets: 1 of 3, 46 of 50 and 5 of 15
- * holdings had no price. The middle one reported $1.86 for a wallet holding
- * fifty coins — a number that reads as a portfolio value rather than as four
- * coins out of fifty.
+ * nothing. A wallet whose holdings are mostly unpriced reports a small total
+ * that reads as a portfolio value rather than as a few coins out of many.
  *
  * These pin the arithmetic and the wording independently of the network.
  */

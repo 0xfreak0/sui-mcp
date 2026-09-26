@@ -1,6 +1,13 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ClientError, GraphQLClient } from "graphql-request";
-import { type SuiNetwork, GRAPHQL_TRANSPORT, getNetwork, getNetworkConfig } from "../config.js";
+import {
+  type SuiNetwork,
+  GRAPHQL_TRANSPORT,
+  RATE_WINDOW_MS,
+  getNetwork,
+  getNetworkConfig,
+  rateLimitFor,
+} from "../config.js";
 
 /** Connection failures worth another try: the request never got an answer. */
 const RETRYABLE_CODES = new Set([
@@ -22,6 +29,13 @@ export interface GraphqlTransportOptions {
   concurrency: number;
   /** How to wait between attempts. A seam for tests; defaults to a real timer. */
   sleep?: (ms: number) => Promise<unknown>;
+  /** Clock for the rate window. A seam for tests; defaults to `Date.now`. */
+  now?: () => number;
+  /**
+   * Requests per {@link RATE_WINDOW_MS} window for this host; null for none.
+   * Defaults to {@link rateLimitFor} the endpoint's host.
+   */
+  rateLimit?: number | null;
   /** Names the service in a timeout or connection error (default "GraphQL"). */
   service?: string;
 }
@@ -47,6 +61,49 @@ class Limiter {
     if (next) next();
     else this.active--;
   }
+}
+
+/** At most `limit` request starts in any window of `windowMs`, in arrival order. */
+export class RateWindow {
+  private readonly starts: number[] = [];
+  private tail: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+    private readonly now: () => number = () => performance.now(),
+    private readonly wait: (ms: number) => Promise<unknown> = sleep,
+  ) {}
+
+  /** Resolves when a request may start; callers are served first come, first served. */
+  acquire(): Promise<void> {
+    const turn = this.tail.then(() => this.take());
+    this.tail = turn.catch(() => {});
+    return turn;
+  }
+
+  private async take(): Promise<void> {
+    for (;;) {
+      const t = this.now();
+      while (this.starts.length && this.starts[0] <= t - this.windowMs) this.starts.shift();
+      if (this.starts.length < this.limit) {
+        this.starts.push(t);
+        return;
+      }
+      await this.wait(this.starts[0] + this.windowMs - t + 1);
+    }
+  }
+}
+
+/** One window per host, shared by every client that talks to it. */
+const hostWindows = new Map<string, RateWindow>();
+
+function windowFor(hostname: string, limit: number, options: GraphqlTransportOptions): RateWindow {
+  if (options.now || options.sleep) return new RateWindow(limit, RATE_WINDOW_MS, options.now, options.sleep);
+  const key = `${hostname}|${limit}`;
+  let w = hostWindows.get(key);
+  if (!w) hostWindows.set(key, (w = new RateWindow(limit, RATE_WINDOW_MS)));
+  return w;
 }
 
 /** Milliseconds a `Retry-After` header asks for (seconds or an HTTP date), or null. */
@@ -78,7 +135,10 @@ export function retryingFetch(
   options: GraphqlTransportOptions = GRAPHQL_TRANSPORT,
 ): typeof fetch {
   const limiter = new Limiter(options.concurrency);
-  const host = new URL(endpoint).host;
+  const url = new URL(endpoint);
+  const host = url.host;
+  const limit = options.rateLimit === undefined ? rateLimitFor(url.hostname) : options.rateLimit;
+  const window = limit ? windowFor(url.hostname, limit, options) : null;
   const wait = options.sleep ?? sleep;
   const service = options.service ?? "GraphQL";
 
@@ -91,6 +151,7 @@ export function retryingFetch(
       );
 
       await limiter.acquire();
+      if (window) await window.acquire();
       let response: Response;
       try {
         const timeout = AbortSignal.timeout(options.timeoutMs);

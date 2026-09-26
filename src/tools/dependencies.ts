@@ -26,8 +26,8 @@ interface PackageNode {
  * The linkage table is the package's complete dependency list, each entry
  * pinned to the version it was built against. Reading dependencies off
  * function signatures instead misses every package used only inside function
- * bodies or struct fields: Nemo v1 calls `0x3` that way, and a math library
- * with no struct types in its signatures came out with no dependencies at all.
+ * bodies or struct fields, and shows a library with no struct types in its
+ * signatures as having no dependencies at all.
  */
 async function readPackage(id: string): Promise<Omit<PackageNode, "package_id"> | null> {
   const { response } = await sui.ledgerService.getObject({

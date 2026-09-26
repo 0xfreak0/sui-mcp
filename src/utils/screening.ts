@@ -1,14 +1,17 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
-import { detectBridges, type CallSite } from "./bridge/detect.js";
+import { detectBridges, exitCarrier, type CallSite } from "./bridge/detect.js";
 import { readBridgeEvents } from "./bridge/exits.js";
 import { fetchEventJson } from "./event-json.js";
 import { disclosedLabelSources, getLabel, labelProvenance, type LabelCategory } from "./labels.js";
 import { sanctions } from "./sanctions.js";
 import { pricesForRanking } from "./price-providers.js";
-import { decimalsForCoinType, displayCoin, toHumanAmount, usdValue } from "./valuation.js";
+import { decimalsForCoinType, displayCoin, prefetchCoinScale, toHumanAmount, usdValue } from "./valuation.js";
 import { isSponsorGasChange } from "./sponsor-gas.js";
+import { splitBridgeOutflow, type FlowChange } from "./address-flows.js";
+import { withoutGas, coinKey } from "./trace-hop.js";
+import { netGas as gqlNetGas, type GqlGasSummary } from "./trace-read.js";
 
 /**
  * Exposure screening: is this address, directly or within a few hops, connected
@@ -40,7 +43,11 @@ export interface ScreenTx {
   digest: string;
   timestamp: string | null;
   sender: string | null;
+  /** "success" or "failure", lowercased. Null when not read (never for a real transaction). */
+  status: string | null;
   gasSponsor: string | null;
+  /** Computation + storage - rebate, charged to the gas payer. Null when not read. */
+  netGas: bigint | null;
   changes: ScreenChange[];
   calls: CallSite[];
   /** Event types, read for `sent` windows only: bridge exits need them, inflows do not. */
@@ -113,22 +120,63 @@ export function timeConsistent(dir: Direction, legs: Leg[], previous: Leg[] | nu
   });
 }
 
-/** Bridge exits `address` itself sent, from curated call and event markers only. */
-export function bridgeExitsOf(address: string, txs: ScreenTx[]) {
-  const out: Array<{ tx: ScreenTx; protocol: string; resolution: string }> = [];
+/** One bridge exit a screened address sent, under the protocol that carried it. */
+export interface ScreenExit {
+  tx: ScreenTx;
+  protocol: string;
+  /** The carrier's settlement legs in the same transaction. */
+  route: string[];
+  /** Other bridges used in the same transaction, each a transfer of its own. */
+  alsoExited: string[];
+  resolution: string;
+}
+
+/**
+ * Bridge exits `address` itself sent, from curated call and event markers
+ * only, one per transaction under the protocol that carried it
+ * (`exitCarrier`): the carrier's settlement legs are its `route`, and any
+ * other bridge whose markers fired is in `alsoExited`. A failed transaction
+ * is never an exit: its only balance change is gas, and a bridge call in its
+ * PTB is what it attempted, not what happened.
+ */
+export function bridgeExitsOf(address: string, txs: ScreenTx[]): ScreenExit[] {
+  const out: ScreenExit[] = [];
   for (const tx of txs) {
-    if (tx.sender !== address) continue;
+    if (tx.sender !== address || tx.status === "failure") continue;
     // Markers only. The registry tier fires on any call into a bridge-typed
     // package, which includes a lending protocol verifying a Wormhole price
     // VAA; a screen that called that bridge exposure would be wrong. Event
     // markers count: they are exit events (a Wormhole message, a CCTP burn),
     // and a wrapper such as Mayan's bridge_with_fee puts no marker call in
     // the PTB, so its exit is visible only as events.
-    for (const hit of detectBridges(tx.calls, tx.eventTypes).filter((h) => h.matched === "call" || h.matched === "event")) {
-      out.push({ tx, protocol: hit.protocol, resolution: hit.resolution });
-    }
+    const exit = exitCarrier(detectBridges(tx.calls, tx.eventTypes).filter((h) => h.matched === "call" || h.matched === "event"));
+    if (exit) out.push({ tx, protocol: exit.carrier.protocol, route: exit.route, alsoExited: exit.alsoExited, resolution: exit.carrier.resolution });
   }
   return out;
+}
+
+/**
+ * What a bridge-exit transaction's sender actually sent off Sui, per coin:
+ * the sender's own outflow minus whatever another Sui address was credited
+ * in the same coin (a bridge fee, a relayer payment). See
+ * {@link splitBridgeOutflow}, which this shares with `summarize_address_flows`
+ * so the two tools do not drift apart on what "sent" means.
+ */
+export function bridgeSentPerCoin(tx: ScreenTx): Map<string, bigint> {
+  const hop = withoutGas(
+    tx.changes.map((c) => ({ address: c.owner, coin_type: c.coinType, amount: c.amount.toString() })),
+    { payer: tx.gasSponsor ?? tx.sender, net: tx.netGas },
+  );
+  const own = new Map<string, bigint>();
+  const others: FlowChange[] = [];
+  for (const c of hop) {
+    if (isSponsorGasChange(c.address, c.coin_type, tx.sender, tx.gasSponsor)) continue;
+    const coin = coinKey(c.coin_type);
+    const amount = BigInt(c.amount);
+    if (c.address === tx.sender) own.set(coin, (own.get(coin) ?? 0n) + amount);
+    else others.push({ owner: c.address, coinType: coin, amount });
+  }
+  return splitBridgeOutflow(own, others).bridged;
 }
 
 export interface Hit {
@@ -174,7 +222,9 @@ const WINDOW_QUERY = `query ($filter: TransactionFilter!, $last: Int!, $before: 
       sender { address }
       gasInput { gasSponsor { address } }
       effects {
+        status
         timestamp
+        gasEffects { gasSummary { computationCost storageCost storageRebate } }
         balanceChanges(first: 50) { nodes { amount owner { address } coinType { repr } } }
         events(first: 50) @include(if: $events) { pageInfo { hasNextPage } nodes { contents { type { repr } } } }
       }
@@ -197,7 +247,9 @@ interface WindowResult {
       sender?: { address?: string } | null;
       gasInput?: { gasSponsor?: { address?: string } | null } | null;
       effects?: {
+        status?: string | null;
         timestamp?: string | null;
+        gasEffects?: { gasSummary?: GqlGasSummary | null } | null;
         balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string } | null; coinType?: { repr: string } }> };
         events?: { pageInfo?: { hasNextPage?: boolean }; nodes: Array<{ contents?: { type?: { repr?: string } } | null }> };
       } | null;
@@ -242,7 +294,12 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
       digest: n.digest,
       timestamp: n.effects?.timestamp ?? null,
       sender: n.sender?.address ?? null,
+      status: n.effects?.status ? n.effects.status.toLowerCase() : null,
       gasSponsor: n.gasInput?.gasSponsor?.address ?? null,
+      netGas: (() => {
+        const g = gqlNetGas(n.effects?.gasEffects?.gasSummary);
+        return g === null ? null : BigInt(g);
+      })(),
       changes: (n.effects?.balanceChanges?.nodes ?? [])
         .filter((c) => c.owner?.address && c.coinType?.repr && c.amount !== undefined)
         .map((c) => ({ owner: c.owner!.address!, coinType: c.coinType!.repr, amount: BigInt(c.amount!) })),
@@ -356,7 +413,16 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     const fresh = !windows.has(key);
     if (fresh) {
       const limit = address === subject ? options.subjectTransactions : options.hopTransactions;
-      windows.set(key, fetchWindow(address, kind, limit));
+      // Amounts in legs and exits are formatted, and ranked by value, at each
+      // coin's own decimals: a coin in no curated list is read from its
+      // CoinMetadata here.
+      windows.set(
+        key,
+        fetchWindow(address, kind, limit).then(async (w) => {
+          await prefetchCoinScale(w.txs.flatMap((t) => t.changes.map((c) => c.coinType)));
+          return w;
+        }),
+      );
     }
     const win = await windows.get(key)!;
     if (fresh) windowReport.push({ address, kind, scanned: win.txs.length, truncated: win.truncated });
@@ -364,7 +430,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
   };
 
   const exposures: Exposure[] = [];
-  const exits: Array<{ tx: ScreenTx; protocol: string; resolution: string; hops: number; path: string[]; legs: Leg[][] }> = [];
+  const exits: Array<ScreenExit & { hops: number; path: string[]; legs: Leg[][] }> = [];
   let unexpanded = 0;
   const exitsScanned = new Set<string>();
 
@@ -429,21 +495,20 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     }
   }
 
-  // Bridge exits, grouped per protocol and path so sixty CCTP burns read as
-  // one exposure with sixty digests. Destinations are read from chain events
-  // for every protocol that writes one on Sui, up to maxBridgeLookups
-  // transactions. One transaction can exit through several protocols (Mayan
-  // over CCTP), so its events are read once and each beneficiary goes to the
-  // protocol that names it.
-  const destinationsOf = new Map<string, Promise<Awaited<ReturnType<typeof bridgeDestinations>> | null>>();
+  // Bridge exits, one per transaction under the protocol that carried it,
+  // grouped per protocol and path so sixty CCTP burns read as one exposure
+  // with sixty digests. A group's `route` names the bridges its exits
+  // settled over (a Mayan order's Wormhole and CCTP legs); `also_exited`
+  // names other bridges used in the same transactions.
   const groups = new Map<string, {
     entry: Exposure;
-    digests: string[];
+    exits: typeof exits;
     sent: Map<string, bigint>;
     times: string[];
+    route: Set<string>;
+    alsoExited: Set<string>;
     destinations: Map<string, Record<string, unknown>>;
   }>();
-  const viaBridge = new Map<string, Exposure & { digests: string[] }>();
   for (const e of exits) {
     const key = `${e.protocol}|${e.path.join(">")}`;
     let g = groups.get(key);
@@ -458,27 +523,42 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
           legs: e.legs.map(summarizeLegs),
           evidence: "bridge call or event marker in a transaction the address sent",
         },
-        digests: [],
+        exits: [],
         sent: new Map(),
         times: [],
+        route: new Set(),
+        alsoExited: new Set(),
         destinations: new Map(),
       };
       groups.set(key, g);
     }
-    g.digests.push(e.tx.digest);
+    g.exits.push(e);
     if (e.tx.timestamp) g.times.push(e.tx.timestamp);
-    for (const c of e.tx.changes) {
-      if (c.owner === e.tx.sender && c.amount < 0n) g.sent.set(c.coinType, (g.sent.get(c.coinType) ?? 0n) - c.amount);
-    }
-
+    for (const p of e.route) g.route.add(p);
+    for (const p of e.alsoExited) g.alsoExited.add(p);
+    for (const [coin, amount] of bridgeSentPerCoin(e.tx)) g.sent.set(coin, (g.sent.get(coin) ?? 0n) + amount);
     if (e.resolution === "identifier") g.entry.next_step = "Run resolve_bridge_transfer on these digests for the destination.";
-    if (!destinationsOf.has(e.tx.digest)) {
-      if (destinationsOf.size >= options.maxBridgeLookups) continue;
-      destinationsOf.set(e.tx.digest, bridgeDestinations(e.tx.digest).catch(() => null));
+  }
+
+  // Destinations are read from chain events for every protocol that writes
+  // one on Sui, up to maxBridgeLookups transactions, taken from each group in
+  // turn, so one group with many exits cannot use up the reads and leave
+  // another group with no destination.
+  const groupList = [...groups.values()];
+  const toRead: Array<{ g: (typeof groupList)[number]; e: (typeof exits)[number] }> = [];
+  const deepest = Math.max(0, ...groupList.map((g) => g.exits.length));
+  for (let i = 0; i < deepest && toRead.length < options.maxBridgeLookups; i++) {
+    for (const g of groupList) {
+      if (i < g.exits.length && toRead.length < options.maxBridgeLookups) toRead.push({ g, e: g.exits[i] });
     }
-    const dests = (await destinationsOf.get(e.tx.digest))?.filter(
-      (d) => d.protocol === e.protocol || d.protocol.startsWith(`${e.protocol} `),
-    );
+  }
+  const viaBridge = new Map<string, Exposure & { digests: string[] }>();
+  for (const { g, e } of toRead) {
+    // Every beneficiary the transaction's events name is a destination, the
+    // carrier's and any bridge in also_exited alike. readBridgeEvents already
+    // leaves out a settlement leg's recipient (the CCTP mint to Mayan's
+    // contract, the burn that carries an Allbridge transfer).
+    const dests = await bridgeDestinations(e.tx.digest).catch(() => null);
     for (const d of dests ?? []) {
       g.destinations.set(d.account ?? d.raw ?? d.chain_label, { ...d, tier: "chain-derived" });
       if (!d.account) continue;
@@ -486,7 +566,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
         const vKey = `${d.account}|${h.category}|${e.path.join(">")}`;
         const existing = viaBridge.get(vKey);
         if (existing) {
-          existing.digests.push(e.tx.digest);
+          if (!existing.digests.includes(e.tx.digest)) existing.digests.push(e.tx.digest);
           continue;
         }
         viaBridge.set(vKey, {
@@ -503,16 +583,19 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     }
   }
 
-  const bridgeExposures = [...groups.values()].map((g): Exposure => {
+  const bridgeExposures = groupList.map((g): Exposure => {
     const times = g.times.sort();
+    const digests = g.exits.map((e) => e.tx.digest);
     return {
       ...g.entry,
-      exit_count: g.digests.length,
+      exit_count: digests.length,
+      ...(g.route.size ? { route: [...g.route] } : {}),
+      ...(g.alsoExited.size ? { also_exited: [...g.alsoExited] } : {}),
       sent: [...g.sent].map(([coin, raw]) => fmt(raw, coin)).join(" + ") || null,
       first_at: times[0] ?? null,
       last_at: times.at(-1) ?? null,
-      digests: g.digests.slice(0, 20),
-      ...(g.digests.length > 20 ? { more_digests: g.digests.length - 20 } : {}),
+      digests: digests.slice(0, 20),
+      ...(digests.length > 20 ? { more_digests: digests.length - 20 } : {}),
       ...(g.destinations.size ? { destinations: [...g.destinations.values()] } : {}),
     };
   });
@@ -522,7 +605,7 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
     windows: windowReport,
     unexpanded_counterparties: unexpanded,
     bridge_exits_seen: exits.length,
-    bridge_exits_with_destination_read: destinationsOf.size,
+    bridge_exits_with_destination_read: toRead.length,
   };
 }
 

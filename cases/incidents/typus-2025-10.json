@@ -1,0 +1,323 @@
+{
+  "slug": "typus-2025-10",
+  "kind": "laundering",
+  "title": "Typus Finance TLP exploit and CCTP cash-out, 15 October 2025",
+  "network": "mainnet",
+  "summary": "On 15 October 2025 an attacker used a missing authority check in the Typus oracle to set prices and drain the TLP pool in ten transactions (588,357.9 SUI, 1,604,034.7 USDC, 0.6 xBTC, 32.227 suiETH). The attacker swapped the non-USDC proceeds to USDC on Sui and moved 3,430,717 USDC to Ethereum 0xeb8a15d2 in 14 Circle CCTP burns, plus 120.72 SUI through Mayan MCTP, all within 42 minutes. SlowMist ties a second Sui wallet, funded partly from Bybit, to the same operator through Ethereum; on Sui the two wallets share no edge.",
+  "sources": [
+    { "url": "https://medium.com/@TypusFinance/typus-finance-tlp-oracle-exploit-post-mortem-report-response-plan-ce2d0800808b", "publisher": "Typus", "kind": "victim-postmortem" },
+    { "url": "https://slowmist.medium.com/is-the-move-language-secure-the-typus-permission-validation-vulnerability-755a5175f7c3", "publisher": "SlowMist", "kind": "security-firm" },
+    { "url": "https://forums.sui.io/t/how-a-missing-assert-drained-3-44m-from-typus-finance-and-why-the-code-looked-correct/49420", "publisher": "Sui Developer Forum", "kind": "news" }
+  ],
+  "subjects": {
+    "attacker": "0xc99ac031ff19e9bff0b5b3f5b870c82402db99c30dfec2d406eb2088be6c2194",
+    "second_wallet": "0x840ed9288595e684e42606073d7a7d5aae35ecf1571943d8bf2d67e283db8466",
+    "exploit_tx": "6KJvWtmrZDi5MxUPkJfDNZTLf2DFGKhQA2WuVAdSRUgH",
+    "eth_destination": "eip155:1:0xeb8a15d28dd54231e7e950f5720bc3d7af77b443",
+    "eth_destination_raw": "0xeb8a15d28dd54231e7e950f5720bc3d7af77b443",
+    "second_eth_destination": "eip155:1:0x04586599bbe44cb9f0d8faa96567670f93d873e3",
+    "attacker_funder": "0xff1070d40277a3d748a3222b44eab08ed588b256094ecdc2090badf0f9f5e9f4",
+    "second_wallet_funder": "0xdfd1903006d5b5179dbbc80312c1e1d57b8f83ab4739329af121392fcac35e1c",
+    "bybit_reserve": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
+    "mayan_exit_tx": "62MTsGpC8t9TosVErGxMfUNc1LnR2hJdLBNmDM8yBXrT",
+    "cctp_exit_400k_tx": "7ehoqkiBm3WxmYzUPirH6a9TePErt8ESavNpJdVDw2Vs",
+    "failed_mayan_tx": "izg6h1ErRAXD4LTopsT7CMkTfCvQ5kD2uDYuPgjq4ik",
+    "eth_swap_tx": "22hwJmHjhVZdgttwp8qf3reXoGnLq4BgXatkcrwD2vaX"
+  },
+  "checks": [
+    {
+      "id": "losses-per-asset",
+      "question": "What did the ten exploit transactions take, per asset?",
+      "tool": "summarize_incident_losses",
+      "args": { "digests": ["6KJvWtmrZDi5MxUPkJfDNZTLf2DFGKhQA2WuVAdSRUgH", "6MiW2qDDPoz5S2wCu8NXjmDJYvT34pgjeH2m1yHTup2w", "3T6vwNJ6T6B42fWe27cAQqKG6xuJBnJMTMqCHVmdt495", "3TXgrEGcuwHgWeQVx5Ax9dK97cKVR1k1bqxrZ85mzNwg", "GywSeeEKaCs1buJxXd4ncicc2VcBbCQQVZ6Wgv3jh4c", "8stTi5mYWFtwoKNW1YiHRnhkXe48qPjgZHTHgXUzm9ZV", "GRZhkCfcFCkRfGtRET9TTZqod8cqj62M2hu51J5zWLkL", "3ckxDeenjf4GXUyJr4rjJ9M77agkFn2nM7GPunrq7HZj", "2HhTX28hc9TzR71k4HSejW8nRsFA8JsgdXgXuz7YAX17", "C78jP4SqneKaaUEvHr6oDhSBwLdTTHGuv3CeC4fghvkW"] },
+      "expect": [
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "1604034699990" },
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "588357855281299" },
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "3222700000" },
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "60000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Typus post-mortem lists 588,357.9 SUI, 1,604,034.7 USDC, 0.6 xBTC and 32.227 suiETH. The chain gives the SUI figure net of the attacker's gas.",
+      "timeout_s": 240
+    },
+    {
+      "id": "tlp-pool-loss-decoded",
+      "question": "Which pool lost the funds, by its own events?",
+      "tool": "summarize_incident_losses",
+      "args": { "digests": ["6KJvWtmrZDi5MxUPkJfDNZTLf2DFGKhQA2WuVAdSRUgH", "6MiW2qDDPoz5S2wCu8NXjmDJYvT34pgjeH2m1yHTup2w", "3T6vwNJ6T6B42fWe27cAQqKG6xuJBnJMTMqCHVmdt495", "3TXgrEGcuwHgWeQVx5Ax9dK97cKVR1k1bqxrZ85mzNwg", "GywSeeEKaCs1buJxXd4ncicc2VcBbCQQVZ6Wgv3jh4c", "8stTi5mYWFtwoKNW1YiHRnhkXe48qPjgZHTHgXUzm9ZV", "GRZhkCfcFCkRfGtRET9TTZqod8cqj62M2hu51J5zWLkL", "3ckxDeenjf4GXUyJr4rjJ9M77agkFn2nM7GPunrq7HZj", "2HhTX28hc9TzR71k4HSejW8nRsFA8JsgdXgXuz7YAX17", "C78jP4SqneKaaUEvHr6oDhSBwLdTTHGuv3CeC4fghvkW"] },
+      "expect": [
+        { "path": "groups", "op": "count_gte", "value": 1 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Typus post-mortem: the TLP pool was drained. On chain every exploit transaction calls lp_pool::swap on @typus/perpetuals.",
+      "timeout_s": 240
+    },
+    {
+      "id": "first-exploit-profit",
+      "question": "What did the first exploit transaction pay the attacker?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{attacker}" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "861585499999" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "3222700000" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "60000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Balance changes of the first attack transaction on chain, which SlowMist and Typus both cite."
+    },
+    {
+      "id": "attacker-bridge-exits",
+      "question": "How did the attacker take the proceeds off Sui, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2025-10-15T00:00:00Z", "to": "2025-10-17T00:00:00Z" },
+      "expect": [
+        { "path": "coverage.complete", "op": "equals", "value": true },
+        { "path": "bridge_exits.transaction_count", "op": "equals", "value": 15 },
+        { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Mayan MCTP" },
+        { "path": "bridge_exits.by_bridge[*].transactions", "op": "includes", "value": 14 },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].account", "op": "includes", "value": "{eth_destination}" },
+        { "path": "bridge_exits.transactions[*].beneficiaries[*].amount", "op": "includes", "value": "349965000000" }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: 3,430,717 USDC in 14 CCTP transactions and 120.7242 SUI through Mayan, all to 0xeb8a15d2 on Ethereum. The 14 burn events on chain sum to 3,430,717.019869 USDC."
+    },
+    {
+      "id": "attacker-bridge-sent-amounts",
+      "question": "How much crossed each bridge to 0xeb8a15d2?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2025-10-15T00:00:00Z", "to": "2025-10-17T00:00:00Z" },
+      "expect": [
+        { "path": "bridge_exits.by_bridge[*].destinations[*].sent[*].amount", "op": "excludes", "value": 3431060.12588 },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].sent[*].amount", "op": "excludes", "value": 8.340177397 },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].sent[*].amount", "op": "excludes", "value": 120.845101473 }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist gives 3,430,717 USDC and 120.7242 SUI. On chain each exit also paid a fee to 0xbfa1240e (40 USDC per 400,000, 0.1208 SUI on the Mayan leg) and SUI to 0xfa922d7f, which stay on Sui."
+    },
+    {
+      "id": "attacker-flow-graph-exit",
+      "question": "Where did all of the attacker's value go, and how much reached each exit?",
+      "tool": "trace_flow_graph",
+      "args": { "address": "{attacker}", "direction": "forward", "from": "2025-10-15T13:00:00Z", "to": "2025-10-16T00:00:00Z" },
+      "expect": [
+        { "path": "terminals[*].reason", "op": "includes", "value": "bridge_exit" },
+        { "path": "nodes[*].beneficiaries[*].account", "op": "includes", "value": "{eth_destination}" },
+        { "path": "nodes[*].beneficiaries[*].amount", "op": "includes", "value": "3430717019869" },
+        { "path": "terminals[0].usd", "op": "lte", "value": 3500000 }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: about 3,430,717 USDC plus 120.7242 SUI reached 0xeb8a15d2. The 14 CCTP burn events on chain sum to 3,430,717.019869 USDC.",
+      "timeout_s": 240
+    },
+    {
+      "id": "attacker-path-to-ethereum",
+      "question": "Is there a path from the Sui attacker to Ethereum 0xeb8a15d2, and how much went along it?",
+      "tool": "find_flow_path",
+      "args": { "from": "{attacker}", "to": "{eth_destination}", "window_start": "2025-10-15T13:00:00Z", "window_end": "2025-10-16T00:00:00Z" },
+      "expect": [
+        { "path": "found", "op": "equals", "value": true },
+        { "path": "paths[*].steps[*].beneficiaries[*].amount", "op": "includes", "value": "3430717019869" },
+        { "path": "paths[*].steps[*].digest_count", "op": "includes", "value": 14 },
+        { "path": "paths[*].steps[*].amount", "op": "includes", "value": "120724256369" }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: 3,430,717 USDC over 14 CCTP transfers and 120.7242 SUI through Mayan Finance to 0xeb8a15d2.",
+      "timeout_s": 240
+    },
+    {
+      "id": "forward-trace-from-exploit",
+      "question": "Following the first exploit transaction forward, where does the value leave Sui?",
+      "tool": "trace_funds",
+      "args": { "digest": "{exploit_tx}", "direction": "forward", "hops": 6 },
+      "expect": [
+        { "path": "stop_reason", "op": "contains", "value": "Circle CCTP" },
+        { "path": "hops[0].sender", "op": "iequals", "value": "{attacker}" },
+        { "path": "hops[0].balance_changes[*].amount", "op": "includes", "value": "861585499999" },
+        { "path": "bridge_exits[*].next_tool", "op": "includes", "value": "resolve_bridge_transfer" }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: the proceeds left Sui through Circle CCTP. The chain shows the first exit, 23PJh2Gc, 102 seconds after the first exploit transaction."
+    },
+    {
+      "id": "backward-trace-from-exit",
+      "question": "Where did the USDC in the 400,000 USDC CCTP burn come from?",
+      "tool": "trace_funds",
+      "args": { "digest": "{cctp_exit_400k_tx}", "direction": "backward", "hops": 5, "coin_type": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC" },
+      "expect": [
+        { "path": "hops[*].digest", "op": "includes", "value": "3T6vwNJ6T6B42fWe27cAQqKG6xuJBnJMTMqCHVmdt495" },
+        { "path": "stop_reason", "op": "contains", "value": "@typus/perpetuals" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 3T6vwNJ6 is the third of the ten exploit transactions (update_v2 then lp_pool::swap), 2 minutes before this burn."
+    },
+    {
+      "id": "attacker-first-funder",
+      "question": "Who first funded the attacker's Sui wallet?",
+      "tool": "find_funding_source",
+      "args": { "address": "{attacker}" },
+      "expect": [
+        { "path": "chain[0].funded_by", "op": "iequals", "value": "{attacker_funder}" },
+        { "path": "chain[0].funding_tx", "op": "equals", "value": "4q9AR9AkLAFB8y8VDiJaZd3DX4dYRJ2f7VLgZpQyjxu3" },
+        { "path": "origin_popularity.popular", "op": "equals", "value": true }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 41.89 SUI from 0xff1070d4 at 09:25 UTC, 3h40m before the exploit. 0xff1070d4 paid more than 50 distinct addresses, so the walk must stop there."
+    },
+    {
+      "id": "batch-funders-stop-at-hubs",
+      "question": "Do the attacker and the second wallet share a funder, and does the walk stop at the service hubs?",
+      "tool": "find_funding_sources",
+      "args": { "addresses": ["{attacker}", "{second_wallet}"] },
+      "expect": [
+        { "path": "results[*].origin", "op": "includes", "value": "{attacker_funder}" },
+        { "path": "results[*].origin", "op": "includes", "value": "{second_wallet_funder}" },
+        { "path": "results[*].origin", "op": "excludes", "value": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd" },
+        { "path": "shared_funders", "op": "count_lte", "value": 0 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: both first funders paid more than 50 distinct addresses (find_funding_source measures 72 and 68). One run walked past 0xff1070d4 to a Binance reserve wallet when its popularity read came back as 0 recipients with scan_complete false.",
+      "timeout_s": 240
+    },
+    {
+      "id": "second-wallet-flows",
+      "question": "What did the second Sui wallet receive, from whom, and where did it send it?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{second_wallet}", "from": "2025-10-01T00:00:00Z", "to": "2025-10-31T00:00:00Z" },
+      "expect": [
+        { "path": "coins[0].in", "op": "approx", "value": 207.6, "tolerance": 0.001 },
+        { "path": "inflow_sources[*].address", "op": "includes", "value": "{bybit_reserve}" },
+        { "path": "inflow_sources[*].label", "op": "includes", "value": "Bybit reserve wallet" },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].account", "op": "includes", "value": "{second_eth_destination}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: 0x840ed928 received 207.6 SUI, 41.68 of it from Bybit, and bridged it out; the ETH arrived at 0x04586599 through Mayan Finance."
+    },
+    {
+      "id": "second-wallet-exit-count",
+      "question": "How many times did the second wallet move value off Sui?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{second_wallet}", "from": "2025-10-01T00:00:00Z", "to": "2025-10-31T00:00:00Z" },
+      "expect": [
+        { "path": "bridge_exits.transaction_count", "op": "equals", "value": 1 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: of the three Mayan MCTP transactions 0x840ed928 sent, izg6h1Er and CmanYP7Y failed with InsufficientCoinBalance and moved nothing; only GuAeghD8 succeeded."
+    },
+    {
+      "id": "failed-exit-not-a-departure",
+      "question": "Did the failed Mayan transaction izg6h1Er move funds off Sui?",
+      "tool": "resolve_bridge_transfer",
+      "args": { "digest": "{failed_mayan_tx}" },
+      "expect": [
+        { "path": "note", "op": "matches", "value": "^(?![\\s\\S]*funds did leave)" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: izg6h1Er aborted with InsufficientCoinBalance in command 0. Its only balance change is 0.00137 SUI of gas."
+    },
+    {
+      "id": "mayan-exit-beneficiary",
+      "question": "Who received the attacker's Mayan transfer on Ethereum?",
+      "tool": "resolve_bridge_transfer",
+      "args": { "digest": "{mayan_exit_tx}" },
+      "expect": [
+        { "path": "beneficiaries[*].account", "op": "includes", "value": "{eth_destination}" },
+        { "path": "circle_cctp[*].role", "op": "includes", "value": "settlement_intermediate" },
+        { "path": "beneficiaries[*].account", "op": "excludes", "value": "eip155:1:0x875d6d37ec55c8cf220b9e5080717549d8aa8eca" }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: 120.7242 SUI bridged via Mayan Finance reached 0xeb8a15d2. On chain the CCTP leg of the same transaction mints to Mayan's contract 0x875d6d37."
+    },
+    {
+      "id": "mayan-order-one-transfer",
+      "question": "Is the Mayan order one transfer, with its Wormhole message a settlement leg?",
+      "tool": "resolve_bridge_transfer",
+      "args": { "digest": "{mayan_exit_tx}" },
+      "expect": [
+        { "path": "carried_by", "op": "equals", "value": "Mayan MCTP" },
+        { "path": "settled_over", "op": "includes", "value": "Wormhole" },
+        { "path": "settled_over", "op": "includes", "value": "Circle CCTP" },
+        { "path": "also_exited", "op": "absent" },
+        { "path": "wormhole_messages[*].role", "op": "includes", "value": "settlement_message" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 62MTsGpC emits InitMctpLogged and OrderCreated from Mayan's package, a CCTP DepositForBurn minting to Mayan's contract 0x875d6d37, and a WormholeMessage from Mayan's emitter whose payload names no recipient, and no other bridge's event. SlowMist: the order reached 0xeb8a15d2."
+    },
+    {
+      "id": "second-wallet-screen",
+      "question": "Is the second wallet exposed to an exchange, and where did it bridge?",
+      "tool": "screen_address",
+      "args": { "address": "{second_wallet}" },
+      "expect": [
+        { "path": "exposures[*].label", "op": "includes", "value": "Bybit reserve wallet" },
+        { "path": "exposures[*].destinations[*].account", "op": "includes", "value": "{second_eth_destination}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: 41.68 SUI of the wallet's funding came from Bybit, and its funds went to 0x04586599 on Ethereum through Mayan."
+    },
+    {
+      "id": "second-wallet-screen-exit-count",
+      "question": "How many bridge exits does screening count for the second wallet?",
+      "tool": "screen_address",
+      "args": { "address": "{second_wallet}" },
+      "expect": [
+        { "path": "exposures[*].exit_count", "op": "excludes", "value": 3 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: one successful Mayan MCTP exit (GuAeghD8); izg6h1Er and CmanYP7Y failed."
+    },
+    {
+      "id": "attacker-screen-exits-once",
+      "question": "Does screening count the Mayan order once, under Mayan, with its destination?",
+      "tool": "screen_address",
+      "args": { "address": "{attacker}" },
+      "expect": [
+        { "path": "exposures[*].label", "op": "excludes", "value": "Wormhole" },
+        { "path": "exposures[*].route[*]", "op": "includes", "value": "Circle CCTP" },
+        { "path": "exposures[*].destinations[*].protocol", "op": "includes", "value": "Mayan MCTP" },
+        { "path": "exposures[*].exit_count", "op": "excludes", "value": 15 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 15 exits, 14 CCTP burns and one Mayan MCTP order (62MTsGpC) whose own Wormhole message and CCTP burn settle it; its OrderCreated event names 0xeb8a15d2 on Ethereum. SlowMist: 3,430,717 USDC via CCTP and 120.7242 SUI via Mayan."
+    },
+    {
+      "id": "swap-direction-label",
+      "question": "Which way did the attacker's ETH swap go?",
+      "tool": "get_transaction",
+      "args": { "digest": "{eth_swap_tx}" },
+      "expect": [
+        { "path": "actions", "op": "includes", "value": "Swap ETH → USDC on Cetus" },
+        { "path": "actions", "op": "excludes", "value": "Swap USDC → ETH on Cetus" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the attacker's balance changes are -32.227 ETH and +130,233.55 USDC; the Cetus pool is Pool<USDC, ETH> and its SwapEvent has atob false (ETH in, USDC out)."
+    },
+    {
+      "id": "no-sui-path-between-wallets",
+      "question": "Does the second wallet's value reach 0xeb8a15d2 on Sui?",
+      "tool": "find_flow_path",
+      "args": { "from": "{second_wallet}", "to": "{eth_destination}", "window_start": "2025-10-15T09:00:00Z", "window_end": "2025-10-16T00:00:00Z" },
+      "expect": [
+        { "path": "found", "op": "equals", "value": false }
+      ],
+      "tier": "chain-derived",
+      "basis": "SlowMist: the two wallets meet only on Ethereum, where 0x4502cf2b received from 0xeb8a15d2 and from 0x04586599. On chain 0x840ed928 sent everything to 0x04586599 in one Mayan exit.",
+      "timeout_s": 240
+    },
+    {
+      "id": "no-sui-edge-between-wallets",
+      "question": "Do the two Sui wallets share an operator by Sui evidence alone?",
+      "tool": "build_wallet_edges",
+      "args": { "addresses": ["{attacker}", "{second_wallet}"], "expand": false },
+      "expect": [
+        { "path": "edge_count", "op": "equals", "value": 0 },
+        { "path": "excluded_intermediaries[*].address", "op": "includes", "value": "{attacker_funder}" },
+        { "path": "excluded_intermediaries[*].address", "op": "includes", "value": "{second_wallet_funder}" },
+        { "path": "evidence_tier", "op": "equals", "value": "heuristic" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the wallets have different first funders, both service-scale, and never transact with each other. SlowMist links them only through Ethereum.",
+      "timeout_s": 240
+    }
+  ]
+}

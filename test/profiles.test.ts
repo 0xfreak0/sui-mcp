@@ -63,11 +63,10 @@ describe("profile definitions", () => {
   });
 
   it("lists a tool in two profiles only when that is declared", () => {
-    // Overlap used to be banned outright, on the reasoning that disabling one
-    // profile could silently keep a tool alive through another. Profiles are
-    // additive — nothing ever removes one — so that cannot happen, and a tool
-    // two jobs both need is only ever easier to reach. Declared overlap is
-    // allowed; undeclared overlap is still an accident and still fails.
+    // Profiles are additive (nothing ever removes one), so disabling one
+    // profile cannot keep a tool alive through another, and a tool two jobs
+    // both need is only easier to reach. Declared overlap is allowed;
+    // undeclared overlap is an accident and fails.
     const shared = new Set<string>(SHARED_TOOLS);
     const seen = new Map<string, string>();
     const dupes: string[] = [];

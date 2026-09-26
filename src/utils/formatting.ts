@@ -106,8 +106,7 @@ export interface FailureDetail {
  *
  * `formatStatus` answers "did it work". This answers "why not", which is the
  * question an investigation actually asks and which the status string cannot
- * carry. The data is already in `effects` — no extra request — and previously
- * all of it except the command index was discarded.
+ * carry. The data is already in `effects`, so it costs no extra request.
  *
  * Returns undefined for a successful or absent status, so a caller can spread
  * it in without branching.
@@ -228,6 +227,28 @@ const MESSAGE_KINDS: Array<[RegExp, string]> = [
 ];
 
 /**
+ * GraphQL prefixes a command-level failure's message with `Error in Nth
+ * command, `, 1-based, e.g. "Error in 1st command, Insufficient coin balance
+ * for operation." for a transaction gRPC names INSUFFICIENT_COIN_BALANCE.
+ * Every {@link MESSAGE_KINDS} pattern anchors at `^` against sui-types' own
+ * display text, which does not carry that prefix, so a prefixed message
+ * matches none of them until the prefix is removed. Stripped here rather than
+ * loosened in each pattern, so the same regexes stay written against
+ * sui-types' text.
+ */
+const GRAPHQL_COMMAND_PREFIX = /^Error in (\d+)\w{2} command, /i;
+
+/**
+ * The 0-based PTB command index a GraphQL failure message names, matching
+ * gRPC's `err.command`. Undefined when the message carries no command
+ * prefix. A whole-transaction failure (out of gas) is not attributed to one.
+ */
+export function commandIndexFromGraphqlMessage(message: string | null | undefined): number | undefined {
+  const m = GRAPHQL_COMMAND_PREFIX.exec((message ?? "").trim());
+  return m ? Number(m[1]) - 1 : undefined;
+}
+
+/**
  * The failure kind of a GraphQL `ExecutionError`, named as gRPC names it.
  *
  * A non-null `abortCode` is what makes a failure a Move abort; the message of
@@ -237,7 +258,7 @@ const MESSAGE_KINDS: Array<[RegExp, string]> = [
  */
 export function failureKindFromGraphql(message: string | null | undefined, abortCode: unknown): string {
   if (abortCode !== null && abortCode !== undefined) return "MOVE_ABORT";
-  const text = (message ?? "").trim();
+  const text = (message ?? "").trim().replace(GRAPHQL_COMMAND_PREFIX, "");
   return MESSAGE_KINDS.find(([pattern]) => pattern.test(text))?.[1] ?? "unknown";
 }
 
@@ -253,9 +274,9 @@ export function timestampToIso(ts?: { seconds: bigint; nanos: number }): string 
 
 /**
  * Each distinct entry once, in first-seen order, with ` ×N` after one that
- * occurred N > 1 times. A PTB repeats the same call hundreds of times: one Nemo
- * exploit transaction decoded to 46k characters of actions in a single history
- * row. `get_transaction` keeps every command in order.
+ * occurred N > 1 times. A PTB can repeat the same call hundreds of times, which
+ * would fill a single history row. `get_transaction` keeps every command in
+ * order.
  */
 export function foldRepeats(items: string[]): string[] {
   const counts = new Map<string, number>();

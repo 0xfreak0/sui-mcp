@@ -155,8 +155,8 @@ export function registerWorkflowTools(server: McpServer) {
         const base: Record<string, unknown> = {
           coin_type: b.coinType,
           symbol,
-          // The symbol is whatever the minter chose; 8,008 mainnet coins share
-          // one with another. Marked here for the same reason a trace marks it.
+          // The symbol is whatever the minter chose; many coins share one with
+          // another. Marked here for the same reason a trace marks it.
           verified: known.verified,
           balance: b.balance,
           // `balance` is the total. A holding with no Coin<T> objects sits
@@ -223,10 +223,9 @@ export function registerWorkflowTools(server: McpServer) {
 
       if (include_prices) {
         // A holding with no price contributes 0, so the total silently covers
-        // only what could be priced. Measured on three mainnet wallets: 1 of 3,
-        // 46 of 50 and 5 of 15 holdings had no price. The middle one reported
-        // $1.86 for a wallet holding fifty coins, which reads as a portfolio
-        // value rather than as four coins out of fifty.
+        // only what could be priced. A wallet whose holdings are mostly
+        // unpriced reports a small total that reads as a portfolio value
+        // rather than as a few coins out of many.
         const priced = holdings.filter((h) => h.value_usd != null);
         const unpriced = holdings.length - priced.length;
         result.total_value_usd =

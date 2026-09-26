@@ -7,13 +7,15 @@ import { getNetwork, suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
 import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
-import { describeAddresses, heldNamesNote, type AddressIdentity, type AliasSet } from "../utils/identity.js";
+import { aliasScanAsOfClause, describeAddresses, heldNamesNote, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { objectAddressBalanceFields } from "../utils/address-balance.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getLabel, isSinkCategory, labelProvenance } from "../utils/labels.js";
 import { guardiansFlagsForObjectType, guardiansFlagsForPackage, type GuardiansFlag } from "../utils/guardians.js";
+import { baseType } from "../utils/object-flow.js";
+import { KIOSK_TYPE, resolveKioskCapHolder, unresolvedCapHolderNote } from "../utils/kiosk.js";
 
 /**
  * The address's label with its provenance, spread into every case's result.
@@ -251,6 +253,17 @@ export function registerIdentifyTools(server: McpServer) {
         // as an ordinary shared object.
         const held = await objectAddressBalanceFields(address);
         const holdsFunds = Array.isArray(held.address_balances) && held.address_balances.length > 0;
+        // `Kiosk.owner` above is a self-declared field. The framework does
+        // not update it when the `KioskOwnerCap` that controls the kiosk is
+        // transferred, so it can name a former owner. `kiosk_cap_holder`
+        // names the cap's current holder.
+        const kiosk =
+          baseType(objectType) === KIOSK_TYPE
+            ? await resolveKioskCapHolder(address).catch((err) => ({
+                status: "lookup_failed" as const,
+                message: describeError(err, getNetwork()),
+              }))
+            : null;
 
         return {
           content: [{
@@ -264,6 +277,27 @@ export function registerIdentifyTools(server: McpServer) {
               owner,
               version: obj.version?.toString(),
               ...held,
+              ...(kiosk
+                ? {
+                    kiosk_owner_field_caveat:
+                      "The `owner` above is self-declared: it is set when the kiosk is created or by `set_owner`, and does not follow the KioskOwnerCap when the cap is transferred, so it can name a former owner. `kiosk_cap_holder` is who actually controls this kiosk, read from the cap's own current owner.",
+                    ...(kiosk.status === "resolved"
+                      ? {
+                          kiosk_cap_holder: kiosk.result.holder,
+                          kiosk_cap_id: kiosk.result.cap_id,
+                          ...(kiosk.result.wrapped_in ? { kiosk_cap_wrapped_in: kiosk.result.wrapped_in } : {}),
+                          ...(kiosk.result.holder ? {} : { kiosk_cap_holder_note: unresolvedCapHolderNote(kiosk.result) }),
+                        }
+                      : {
+                          kiosk_cap_holder_note:
+                            kiosk.status === "creation_unreachable"
+                              ? "The kiosk's creation transaction could not be read, so its KioskOwnerCap could not be found."
+                              : kiosk.status === "cap_not_found"
+                                ? `No KioskOwnerCap naming this kiosk was found in its creation transaction (scanned ${kiosk.scanned_pages} page(s)${kiosk.truncated ? ", truncated before reaching the end" : ""}).`
+                                : `The KioskOwnerCap lookup failed and was skipped: ${kiosk.message}`,
+                        }),
+                  }
+                : {}),
               hint:
                 (isShared
                   ? "This is a shared object (e.g. a pool, registry, or protocol state). Use get_object for its fields."
@@ -318,7 +352,7 @@ export function registerIdentifyTools(server: McpServer) {
         // `0x2::address_alias`, a committee being unable to rotate no longer
         // means the committee is the only way to move the funds.
         // A failed lookup must not render as "never sent a transaction".
-        describeAddresses([address], { expandMembers: true, aliases: true }).catch(
+        describeAddresses([address], { expandMembers: true, aliases: true, checkAliasSignatures: true }).catch(
           () =>
             new Map<string, AddressIdentity>([
               [address, { address, kind: "wallet", authentication_unavailable: true, aliases_unavailable: true }],
@@ -337,6 +371,9 @@ export function registerIdentifyTools(server: McpServer) {
       const aliases = identities.get(address)?.aliases;
       const identity = identities.get(address);
       const namesNote = identity ? heldNamesNote(identity) : undefined;
+      // Every caveat below that rests on the reverse alias scan says when that
+      // (cached) scan was read.
+      const aliasAsOf = identity?.alias_scan_as_of ? ` ${aliasScanAsOfClause(identity.alias_scan_as_of)}` : "";
 
       // No live object and no signature, yet a transaction recorded this id as
       // an object: the UID of something wrapped or deleted, such as a zkSend
@@ -394,7 +431,14 @@ export function registerIdentifyTools(server: McpServer) {
             // letting the silence be read as one.
             authentication: auth ?? null,
             ...(auth
-              ? {}
+              ? identity?.signed_as_alias_for
+                ? {
+                    // A real scheme, but not read from a transaction this
+                    // address sent: say where it came from so the reader does
+                    // not mistake it for an ordinary sent-transaction match.
+                    authentication_caveat: `This address has never sent a transaction of its own. The scheme above is read from ${identity.signed_as_alias_for.digest}, which its key signed as an address alias for ${identity.signed_as_alias_for.owner} (0x2::address_alias): a real signature, not a guess.${identity.alias_scan_unavailable ? " The reverse scan behind it did not fully complete (a request failed, or the on-chain scan was capped), so alias_delegate_for may be missing owners it did not reach." : ""}${aliasAsOf}`,
+                  }
+                : {}
               : {
                   // Only one of three readings is "never sent": the lookup can
                   // fail, and a sent transaction can be signed by someone else.
@@ -402,9 +446,16 @@ export function registerIdentifyTools(server: McpServer) {
                     ? "The lookup that reads this address's signatures failed, so how it authenticates, and whether it has sent anything, is unknown. Retry rather than reading this as a never-used address."
                     : identity?.foreign_authorization
                       ? `This address has sent transactions, but none of the ${identity.foreign_authorization.transactions_examined} examined carries its own signature: ${identity.foreign_authorization.digest} was authorized by ${identity.foreign_authorization.authorized_by.join(", ")}, acting for it through an address alias or a protocol-level substitution. How the address itself authenticates is unknown.`
-                      : "This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.",
+                      : identity?.alias_scan_unavailable
+                        ? `This address has never sent a transaction of its own, and the reverse scan that checks whether it signed as an address alias for someone else could not fully complete (a request failed, or the on-chain scan was capped). Whether it authenticates that way is unknown, not ruled out — retry rather than reading this as a fresh personal wallet.${aliasAsOf}`
+                        : identity?.alias_delegate_for?.length
+                          ? `This address has never sent a transaction of its own, but its key is named as a delegate in ${identity.alias_delegate_for.length === 1 ? "one owner's" : `${identity.alias_delegate_for.length} owners'`} 0x2::address_alias set (${identity.alias_delegate_for.join(", ")}); none of the sampled sent transactions of ${identity.alias_delegate_for.length === 1 ? "that owner" : "those owners"} carried its signature, which does not rule out an authorization that has simply never been used to sign.${aliasAsOf}`
+                          : `This address has never sent a transaction, so how it authenticates is unknown. It may be a multisig, a zkLogin account or a single key — a receive-only treasury multisig is indistinguishable from a fresh personal wallet until it spends.${aliasAsOf}`,
                 }),
             ...(identity?.foreign_authorization ? { foreign_authorization: identity.foreign_authorization } : {}),
+            ...(identity?.signed_as_alias_for ? { signed_as_alias_for: identity.signed_as_alias_for } : {}),
+            ...(identity?.alias_delegate_for?.length ? { alias_delegate_for: identity.alias_delegate_for } : {}),
+            ...(identity?.alias_scan_as_of ? { alias_scan_as_of: identity.alias_scan_as_of } : {}),
             ...(committee ? { committee_members: committee } : {}),
             // Absent means no AddressAliases object exists. Most wallets have
             // never enabled the feature, so the field is omitted rather than

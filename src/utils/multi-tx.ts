@@ -3,32 +3,31 @@
  *
  * `get_transaction` answers one digest and, for depth, is the right tool: it
  * pages events to completion and decodes commands from gRPC. But an
- * investigation routinely holds a handful of digests at once — the outputs of a
- * fan-out, the evidence on a cluster edge, a set of hops someone wants compared
- * — and reading them one at a time costs a round trip *and a model turn* each.
- * Measured on ten digests: 0.80s sequential, 0.10s as a single `multiGetTransactions`.
- * The latency is the smaller half; ten tool calls becoming one is the point.
+ * investigation routinely holds a handful of digests at once (the outputs of a
+ * fan-out, the evidence on a cluster edge, a set of hops someone wants
+ * compared), and reading them one at a time costs a round trip *and a model
+ * turn* each. One `multiGetTransactions` request reads them all in a single
+ * tool call.
  *
  * One query carries everything needed: sender, status, timing, balance changes,
  * Move call targets, and events with their decoded fields.
  *
- * `multiGetTransactions` reads the fullnode only, and mainnet prunes
- * continuously — digests sampled 200k checkpoints back disappeared mid-test.
- * Anything the batch misses is therefore retried one at a time through the same
- * archive path `get_transaction` uses, because a batch tool that quietly knows
- * less than the single tool is a trap: the caller reached for it to save round
+ * `multiGetTransactions` reads the fullnode only, and the fullnode prunes
+ * continuously. Anything the batch misses is therefore retried one at a time
+ * through the same archive path `get_transaction` uses, so the batch tool
+ * knows as much as the single tool: the caller reached for it to save round
  * trips, not to accept a worse answer.
  *
- * The archive cannot decode event fields — gRPC carries no parsed JSON and the
- * pruned transaction is gone from GraphQL — so recovered events arrive typed
+ * The archive cannot decode event fields (gRPC carries no parsed JSON and the
+ * pruned transaction is gone from GraphQL), so recovered events arrive typed
  * but unparsed, and say so. That is the one thing `get_transaction` also cannot
  * do for a pruned digest, so the two remain equally capable.
  *
  * Events are the one place this trades depth for breadth. The connection is
  * asked for a page and reports whether more exist, rather than being paged to
- * exhaustion for every transaction in a batch — that would put a batch of fifty
- * back into dozens of requests. A transaction with more events says so and
- * names `get_transaction` as the way to read all of them, so the limit is
+ * exhaustion for every transaction in a batch, which would put a batch of
+ * fifty back into dozens of requests. A transaction with more events says so
+ * and names `get_transaction` as the way to read all of them, so the limit is
  * visible rather than a silent truncation.
  */
 
@@ -42,6 +41,7 @@ import {
   bigintToString,
   timestampToIso,
   failureKindFromGraphql,
+  commandIndexFromGraphqlMessage,
   KIND_NOTES,
   type FailureDetail,
 } from "./formatting.js";
@@ -52,10 +52,9 @@ import type { GqlBalanceChangeNode, GqlCommandNode } from "./gql-adapters.js";
 /**
  * The null address, which is what a system transaction's sender is.
  *
- * GraphQL reports that as `sender: null` while gRPC reports the address, so the
- * batch tool and `get_transaction` disagreed on 15 of 24 real digests until this
- * was normalised. Two tools describing one transaction differently is worse
- * than either description alone.
+ * GraphQL reports that as `sender: null` while gRPC reports the address. It is
+ * normalised here so the batch tool and `get_transaction` describe one
+ * transaction the same way.
  */
 const SYSTEM_SENDER = `0x${"0".repeat(64)}`;
 
@@ -76,9 +75,9 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
       }
       # A distinct type from ProgrammableTransaction, and easy to miss: it
       # carries real Move calls (framework settlement, randomness) that a
-      # fragment on ProgrammableTransaction alone never sees. Omitting it made
-      # this tool report no protocols where get_transaction reported "Sui
-      # Framework", on 7 of 24 cross-checked digests.
+      # fragment on ProgrammableTransaction alone never sees. Without it this
+      # tool would report no protocols where get_transaction reports "Sui
+      # Framework".
       ... on ProgrammableSystemTransaction {
         ${COMMANDS_SELECTION}
       }
@@ -86,9 +85,9 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
     effects {
       status
       # Why it failed. GraphQL exposes less than gRPC does: no clever-error
-      # constant name, and sourceLineNumber / identifier came back null on every
-      # mainnet failure sampled. The abort code, module and function are all
-      # here though, which is what makes an abort readable.
+      # constant name, and sourceLineNumber / identifier can come back null.
+      # The abort code, module and function are all here though, which is what
+      # makes an abort readable.
       executionError {
         abortCode
         instructionOffset
@@ -132,7 +131,7 @@ interface RawTx {
   } | null;
 }
 
-interface GqlExecutionError {
+export interface GqlExecutionError {
   abortCode?: string | null;
   instructionOffset?: number | null;
   identifier?: string | null;
@@ -153,10 +152,15 @@ interface GqlExecutionError {
  * the kind directly, along with details GraphQL does not expose — the same
  * breadth-here-depth-there boundary this file applies to events.
  */
-function failureFromGraphql(e: GqlExecutionError): FailureDetail {
+export function failureFromGraphql(e: GqlExecutionError): FailureDetail {
   const kind = failureKindFromGraphql(e.message, e.abortCode);
   const out: FailureDetail = { kind };
-  if (e.abortCode != null) out.abort_code = String(e.abortCode);
+  if (e.abortCode != null) {
+    out.abort_code = String(e.abortCode);
+  } else {
+    const command = commandIndexFromGraphqlMessage(e.message);
+    if (command !== undefined) out.command = command;
+  }
   if (e.message) out.description = e.message;
   if (KIND_NOTES[kind]) out.note = KIND_NOTES[kind];
   const pkg = e.module?.package?.address;
@@ -168,8 +172,8 @@ function failureFromGraphql(e: GqlExecutionError): FailureDetail {
       ...(e.instructionOffset != null ? { instruction: e.instructionOffset } : {}),
     };
   }
-  // Null on every mainnet failure sampled, but populated for a package built
-  // with clever errors — carried through rather than assumed absent.
+  // Populated only for a package built with clever errors, and carried
+  // through rather than assumed absent.
   if (e.constant || e.identifier || e.sourceLineNumber != null) {
     out.clever_error = {
       ...(e.constant ? { constant_name: e.constant } : {}),
@@ -221,9 +225,9 @@ export interface MultiTxResult {
 /**
  * A digest must be Base58 that decodes to exactly 32 bytes.
  *
- * Checked before the request, because the server rejects the WHOLE batch on one
- * malformed key — a single typo among fifty digests returned nothing at all.
- * See {@link isDigest}.
+ * Checked before the request, because the server rejects the whole batch on
+ * one malformed key, so a single typo among fifty digests would return
+ * nothing at all. See {@link isDigest}.
  */
 
 /** Map one gRPC transaction into the batch shape. */

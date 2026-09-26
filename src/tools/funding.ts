@@ -6,19 +6,20 @@ import { batchResolveNames } from "../utils/names.js";
 import { classifyHeldNames, describeAddresses, identityNote } from "../utils/identity.js";
 import { describeLabel, getLabel } from "../utils/labels.js";
 import { classifyDepositAddress } from "../utils/deposit.js";
-import {
-  coinScale,
-  decimalsForCoinType,
-  displayCoin,
-  toHumanAmount,
-  usdValue,
-} from "../utils/valuation.js";
-import { pickFundingTx, type FundingAssessment, type FundingTx, type GasSponsor } from "../utils/funding.js";
-import { pricesForRanking } from "../utils/price-providers.js";
+import { coinScale, displayCoin, prefetchCoinScale, toHumanAmount } from "../utils/valuation.js";
+import type { FundingAssessment, FundingTx, GasSponsor, UnpricedFunding } from "../utils/funding.js";
 import { measureFanout, type FanoutResult } from "../utils/fanout.js";
 import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
 import { detectFundingBursts, detectSubjectLinks } from "../utils/funding-signals.js";
-import { Budget, countPaidAddresses, DEFAULT_POPULARITY_LIMIT, probeRecipients, type TxParties } from "../utils/edge-probe.js";
+import {
+  assessFunding,
+  Budget,
+  countPaidAddresses,
+  DEFAULT_POPULARITY_LIMIT,
+  probeRecipients,
+  type TxParties,
+  type UnmeasuredReason,
+} from "../utils/edge-probe.js";
 import {
   BALANCE_CHANGES_SELECTION,
   completeTxConnections,
@@ -124,10 +125,10 @@ async function fetchEarliestTxs(address: string): Promise<{ txs: FundingTx[]; in
 /**
  * Human amount with its symbol, marked when nothing vouches for the coin.
  *
- * The `(unverified)` is not decoration. The symbol is whatever the minter
- * chose — 585 mainnet coins end `::SUI` — and the scale used to render the
+ * The symbol is whatever the minter chose, and the scale used to render the
  * number is a guess for any coin the registry does not know. An amount that
- * might be 10^9 out must not read the same as one that cannot be.
+ * might be 10^9 out must not read the same as one that cannot be, so the
+ * `(unverified)` mark carries that doubt.
  */
 function formatAmount(rawAmount: string, coinType: string): string {
   const scale = coinScale(coinType);
@@ -153,8 +154,12 @@ interface FunderPopularity {
   scan_complete: boolean;
   /** Narrow off an incomplete scan: not measured far enough to rule out a service. */
   provisional?: true;
-  /** The per-call query budget ran out before this funder was probed. */
-  unmeasured?: true;
+  /**
+   * Set when the probe gave no verdict: the per-call query budget was spent
+   * before its first page (`budget`), or one of its reads failed
+   * (`read_failed`), on any page. `observed_recipients` is what it saw first.
+   */
+  unmeasured?: UnmeasuredReason;
 }
 
 interface ChainStep {
@@ -164,6 +169,8 @@ interface ChainStep {
   funding_tx: string;
   timestamp: string | null;
   amount: string;
+  /** The coin has no price and counted for its share of supply; see UNPRICED_FUNDING_NOTE. */
+  unpriced_funding?: UnpricedFunding;
   funder_popularity?: FunderPopularity;
 }
 
@@ -173,6 +180,10 @@ interface FundingStep {
   txs: FundingTx[];
   /** Digests whose balance changes could not all be read. */
   incomplete: string[];
+  /** No coin price could be read while a non-SUI inflow was among the candidates. */
+  pricesUnavailable: boolean;
+  /** See `FundingJudgement.originUnread`. */
+  originUnread: string[];
 }
 
 /**
@@ -199,22 +210,30 @@ interface WalkContext {
 const SINGLE_POPULARITY_BUDGET = 60;
 const BATCH_POPULARITY_BUDGET = 400;
 
+/** Beside `prices_unavailable_at`: the hops judged under the outage fallback. */
+const PRICES_UNAVAILABLE_NOTE =
+  "Coin prices could not be read when these addresses' inflows were judged, so a non-SUI inflow there was accepted " +
+  "as funding at any value instead of being checked against the $0.10 dust floor, and an unpriced spam token can " +
+  "then pass as a funder. Rerun once prices load before relying on a non-SUI funding hop.";
+
+/** Beside a chain step's `unpriced_funding`: why a coin nobody prices counted. */
+const UNPRICED_FUNDING_NOTE =
+  "No price source quotes the coin of a hop marked unpriced_funding, which usually marks spam, but that inflow was at " +
+  "least 1% of the coin's current supply, or 0.1% sent by the coin's own publisher. No airdrop can give each of " +
+  "thousands of wallets that much, so it is read as an allocation, typically a deployer's grant to an insider.";
+
+/** Beside `origin_unread_at`: the hops where an unpriced coin was judged without its supply or publisher. */
+const ORIGIN_UNREAD_NOTE =
+  "The supply or publisher of a coin nobody prices could not be read at these hops (the read failed after retries), " +
+  "so an inflow of it was skipped as spam without the check that counts 1% of supply, or 0.1% from the coin's " +
+  "publisher, as funding. The funding named at that hop may be a later inflow; rerun before relying on it.";
+
 async function loadFundingStep(address: string): Promise<FundingStep> {
   const { txs, incomplete } = await fetchEarliestTxs(address);
-  // Price the coins these candidate inflows are denominated in, so dust and
-  // unpriced scam tokens can be told from real funding. Best-effort: with no
-  // prices the SUI floor still applies and non-SUI inflows are accepted
-  // rather than discarded on a missing dependency.
-  const coinTypes = [...new Set(txs.flatMap((t) => t.changes.map((c) => c.coinType)))];
-  const prices = await pricesForRanking(coinTypes).catch(
-    () => new Map<string, { price: number }>(),
-  );
-  const valueUsd = (coinType: string, raw: bigint) => {
-    const price = prices.get(coinType)?.price;
-    if (price == null) return null;
-    return usdValue(raw, decimalsForCoinType(coinType), price);
-  };
-  return { assessment: pickFundingTx(txs, address, { valueUsd }), txs, incomplete };
+  // Judged the one way build_wallet_edges judges the same candidates: priced,
+  // outage fallback included, and an unpriced coin weighed by its supply.
+  const { assessment, pricesUnavailable, originUnread } = await assessFunding(txs, address);
+  return { assessment, txs, incomplete, pricesUnavailable, originUnread };
 }
 
 function fundingStep(address: string, ctx: WalkContext): Promise<FundingStep> {
@@ -227,10 +246,11 @@ function fundingStep(address: string, ctx: WalkContext): Promise<FundingStep> {
 }
 
 async function probePopularity(address: string, budget: Budget): Promise<FunderPopularity> {
-  const before = budget.used;
   const p = await probeRecipients(address, DEFAULT_POPULARITY_LIMIT, budget);
   const base = { observed_recipients: p.observed, limit: DEFAULT_POPULARITY_LIMIT };
-  if (budget.used === before) return { popular: false, ...base, scan_complete: false, unmeasured: true };
+  // Covers a budget spent before the first page and a read that threw after
+  // retries (a 429 or 5xx) on any page. Neither settles the verdict.
+  if (p.unmeasured) return { popular: false, ...base, scan_complete: false, unmeasured: p.unmeasured };
   if (p.popular) return { popular: true, ...base, scan_complete: true };
   return { popular: false, ...base, scan_complete: p.complete, ...(p.complete ? {} : { provisional: true as const }) };
 }
@@ -249,12 +269,21 @@ interface Walk {
   origin: string;
   stopReason: string;
   dustSkipped: Array<Record<string, unknown>>;
-  /** Gas sponsors of the address where the walk found no qualifying funding. */
+  /**
+   * Gas sponsors of every hop the walk read, each entry naming the hop's
+   * address. Reported whether or not that hop also found funding.
+   */
   sponsoredBy: Array<GasSponsor & { address: string }>;
+  /** The address where no inflow qualified as funding, when the walk ended that way. */
+  deadEnd: string | null;
   /** The walk stopped because the last funder is a service-scale distributor. */
   stoppedAtHub: boolean;
   /** Funding transactions whose balance changes could not all be read. */
   incompleteReads: string[];
+  /** Hops whose inflows were judged with no coin price available. */
+  unpricedHops: string[];
+  /** Hops where an unpriced coin's supply or publisher read failed, and which coins. */
+  originUnread: Array<{ address: string; coin_types: string[] }>;
 }
 
 /** Walk one address back through funding hops. Shared by both funding tools. */
@@ -266,16 +295,29 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
   const dustSkipped: Array<Record<string, unknown>> = [];
   const sponsoredBy: Walk["sponsoredBy"] = [];
   const incompleteReads: string[] = [];
+  const unpricedHops: string[] = [];
+  const originUnread: Walk["originUnread"] = [];
   const visited = new Set<string>([address]);
   let current = address;
   let origin = address;
   let stopReason = "";
   let stoppedAtHub = false;
+  let deadEnd: string | null = null;
 
   for (let i = 0; i < maxHops; i++) {
-    const { assessment, txs, incomplete } = await fundingStep(current, ctx);
+    const { assessment, txs, incomplete, pricesUnavailable, originUnread: unreadHere } = await fundingStep(current, ctx);
+    if (pricesUnavailable) unpricedHops.push(current);
+    if (unreadHere.length) originUnread.push({ address: current, coin_types: unreadHere });
     for (const d of assessment.dustSkipped) {
       dustSkipped.push({ address: current, ...d, amount: formatAmount(d.amount, d.coinType) });
+    }
+    // A gas sponsor is evidence of control whether or not this hop also found
+    // a qualifying inflow. An address-poisoning lookalike's only inflow
+    // clearing the funding floor can be its victim's payment, while the
+    // address that created and runs it never sends enough to clear a dust
+    // floor and shows up only here.
+    if (assessment.sponsors.length) {
+      sponsoredBy.push(...assessment.sponsors.map((s) => ({ address: current, ...s })));
     }
     const funding = assessment.funding;
     // Only the transactions up to the pick could have changed it.
@@ -287,9 +329,9 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
           ? "reached a dead end (no qualifying inflow in its whole history)"
           : `reached a dead end (no qualifying inflow in its earliest ${EARLIEST_TXS} transactions)`;
       if (assessment.sponsors.length) {
-        sponsoredBy.push(...assessment.sponsors.map((s) => ({ address: current, ...s })));
         stopReason += "; its gas was paid by a sponsor, see sponsored_by";
       }
+      deadEnd = current;
       break;
     }
 
@@ -300,6 +342,7 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
       funding_tx: funding.digest,
       timestamp: funding.timestamp,
       amount: formatAmount(funding.amount, funding.coinType),
+      ...(funding.unpriced ? { unpriced_funding: funding.unpriced } : {}),
     };
     chain.push(step);
 
@@ -316,10 +359,25 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
     // who funded the subject.
     const pop = await funderPopularity(funder, ctx);
     step.funder_popularity = pop;
+    if (pop.unmeasured) {
+      // No verdict could be read about this funder, either because the
+      // popularity budget was spent or because a read itself failed.
+      // Continuing past it would treat silence as "measured narrow" and can
+      // carry the walk past a hub, so the walk stops and says which.
+      stopReason =
+        pop.unmeasured === "budget"
+          ? "could not measure whether the funder is a high-fanout distributor (popularity query budget exhausted); " +
+            "stopping here rather than treating an unread popularity as narrow"
+          : "could not measure whether the funder is a high-fanout distributor (the popularity read failed after retries" +
+            (pop.observed_recipients > 0 ? `, with ${pop.observed_recipients} distinct recipients seen before it did` : "") +
+            "); stopping here rather than treating an unread popularity as narrow. A rerun may get through";
+      stoppedAtHub = true;
+      break;
+    }
     if (pop.popular) {
       stopReason =
-        `reached a high-fanout distributor (paid more than ${pop.limit} distinct addresses), likely an exchange ` +
-        "or service; ancestry beyond it carries no attribution";
+        `reached a high-fanout distributor (paid more than ${pop.limit} distinct addresses) — an exchange, ` +
+        "a sybil-funding operator or another service that pays many addresses; ancestry beyond it carries no attribution";
       stoppedAtHub = true;
       break;
     }
@@ -328,7 +386,33 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
     if (i === maxHops - 1) stopReason = `hit max_hops (${maxHops})`;
   }
 
-  return { chain, origin, stopReason, dustSkipped, sponsoredBy, stoppedAtHub, incompleteReads };
+  return { chain, origin, stopReason, dustSkipped, sponsoredBy, deadEnd, stoppedAtHub, incompleteReads, unpricedHops, originUnread };
+}
+
+/**
+ * `sponsored_by_note`, worded from where each sponsor was seen. A sponsor of
+ * the dead-end hop is the closest thing to a funder the chain records; a
+ * sponsor of a hop that found funding is a separate fact about who operates
+ * it. "No inflow qualified" is said only of the dead-end hop, since every
+ * other hop has a chain step naming its funding.
+ */
+function sponsoredByNote(sponsoredBy: Walk["sponsoredBy"], deadEnd: string | null): string {
+  const parts: string[] = [];
+  if (sponsoredBy.some((s) => s.address !== deadEnd)) {
+    parts.push(
+      "A sponsor listed for an address whose funding was found paid gas for transactions that address sent. That is " +
+        "evidence of who operates the wallet independent of the inflow its chain step names: a poisoning lookalike's " +
+        "only qualifying inflow can be its victim's payment while its operator appears only here.",
+    );
+  }
+  if (deadEnd !== null && sponsoredBy.some((s) => s.address === deadEnd)) {
+    parts.push(
+      `At ${deadEnd} no inflow qualified as funding, but another party paid gas for transactions it sent. Gas can be ` +
+        "paid from an address balance, so a wallet can operate with no SUI of its own; the sponsor is then the " +
+        "closest thing to a funder the chain records.",
+    );
+  }
+  return parts.join(" ");
 }
 
 /**
@@ -337,10 +421,13 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
  * When the popularity probe found more than `limit` recipients, the
  * bidirectional count over a short window can still classify the address
  * `narrow`, and "narrow, worth investigating" is the reading that makes an
- * exchange look like a common origin. The probe's verdict takes precedence in
- * the interpretation; the measured numbers are kept.
+ * exchange look like a common origin. The probe's verdict then sets the
+ * classification as well as the interpretation, so the two agree. A `hub`
+ * keeps its own, stronger reading. The counts are reported unchanged.
  */
 function fanoutView(f: FanoutResult, pop: FunderPopularity | undefined) {
+  const probeDecides = pop?.popular === true && f.classification !== "hub";
+  const raised = probeDecides && f.classification === "narrow";
   return {
     recipient_count: f.recipient_count,
     sender_count: f.sender_count,
@@ -350,12 +437,20 @@ function fanoutView(f: FanoutResult, pop: FunderPopularity | undefined) {
     flow_shape: f.flow_shape,
     scanned_transactions: f.scanned_transactions,
     truncated: f.truncated,
-    classification: f.classification,
+    classification: probeDecides ? ("distributor" as const) : f.classification,
+    ...(raised
+      ? {
+          classification_basis:
+            `funder_popularity saw more than ${pop.limit} recipients; the ${f.counterparty_count} counterparties ` +
+            `counted here would read narrow, and the probe decides.`,
+        }
+      : {}),
     ...(f.classification_provisional ? { classification_provisional: true } : {}),
-    interpretation: pop?.popular
+    interpretation: probeDecides
       ? `Paid more than ${pop.limit} distinct addresses in its recent outgoing transactions, the limit build_wallet_edges ` +
-        "uses to discard an intermediary as an exchange or service. Shared funding through it is weak on its own: compare " +
-        "the rate against a control group, and read flow_shape, since a disperser paid by few can still be one operator's payout wallet."
+        "uses to discard an intermediary as an exchange or service, so it is classed a distributor. Shared funding through " +
+        "it is weak on its own: compare the rate against a control group, and read flow_shape, since a disperser paid by few " +
+        "can still be one operator's payout wallet."
       : f.interpretation,
   };
 }
@@ -487,12 +582,13 @@ export function registerFundingTools(server: McpServer) {
 
         // Sequential on purpose: the memo only pays off if earlier walks have
         // finished populating it before later ones start.
+        let anyUnpriced = false;
+        let anyOriginUnread = false;
         for (const addr of addresses) {
-          const { chain, origin, stopReason, dustSkipped, sponsoredBy, incompleteReads } = await walkFunding(
-            addr,
-            maxHops,
-            ctx,
-          );
+          const { chain, origin, stopReason, dustSkipped, sponsoredBy, incompleteReads, unpricedHops, originUnread } =
+            await walkFunding(addr, maxHops, ctx);
+          if (unpricedHops.length) anyUnpriced = true;
+          if (originUnread.length) anyOriginUnread = true;
           results.push({
             address: addr,
             origin,
@@ -503,6 +599,8 @@ export function registerFundingTools(server: McpServer) {
             ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
             ...(sponsoredBy.length ? { sponsored_by: sponsoredBy } : {}),
             ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
+            ...(unpricedHops.length ? { prices_unavailable_at: unpricedHops } : {}),
+            ...(originUnread.length ? { origin_unread_at: originUnread } : {}),
             chain,
           });
         }
@@ -641,6 +739,7 @@ export function registerFundingTools(server: McpServer) {
             note: `More than ${MAX_PAIRWISE_SUBJECTS} subjects, so pairs were not queried one by one and later payments are not covered. Split the batch to check every pair.`,
           };
         }
+        await prefetchCoinScale(subjectPayments.flatMap((p) => p.received.map((r) => r.coinType)));
         const firstFundingKeys = new Set(subjectLinks.map((l) => `${l.funder}>${l.funded}>${l.funding_tx}`));
 
         // Timing survives where co-funding does not. A wide payout says little,
@@ -738,6 +837,11 @@ export function registerFundingTools(server: McpServer) {
                     : {}),
                   max_hops: maxHops,
                   addresses_resolved: results.filter((r) => r.hops > 0).length,
+                  ...(anyUnpriced ? { prices_unavailable_note: PRICES_UNAVAILABLE_NOTE } : {}),
+                  ...(anyOriginUnread ? { origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
+                  ...(results.some((r) => r.chain.some((s) => s.unpriced_funding))
+                    ? { unpriced_funding_note: UNPRICED_FUNDING_NOTE }
+                    : {}),
                   ...(coFunded.length
                     ? {
                         co_funding_group_count: coFunded.length,
@@ -845,7 +949,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_source",
-    "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a funder that paid more than 50 distinct addresses (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. At a dead end, inflows skipped as dust are listed in dust_skipped, and parties that paid the address's gas are listed in sponsored_by, since a wallet paying gas from an address balance can run with no SUI inflow at all. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
+    "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a funder that paid more than 50 distinct addresses (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),
@@ -863,15 +967,15 @@ export function registerFundingTools(server: McpServer) {
           popularity: new Map(),
           budget: new Budget(SINGLE_POPULARITY_BUDGET),
         };
-        const { chain, origin, stopReason, dustSkipped, sponsoredBy, stoppedAtHub, incompleteReads } =
+        const { chain, origin, stopReason, dustSkipped, sponsoredBy, deadEnd, stoppedAtHub, incompleteReads, unpricedHops, originUnread } =
           await walkFunding(address, maxHops, ctx);
         const originPopularity = chain.at(-1)?.funder_popularity;
 
         // Fan-out on the origin, because the origin is what gets over-read.
-        // A chain ending at an address with 29,000 recipients has not found a
-        // link; it has found an exchange. A walk that stopped at a hub has
-        // already measured that, and a bidirectional count over a short window
-        // could call the same address narrow.
+        // A chain that ends at an address paying thousands of recipients has
+        // found an exchange. A walk that stopped at a hub has already measured
+        // that, and a bidirectional count over a short window could call the
+        // same address narrow.
         let originFanout: FanoutResult | null = null;
         if (measure_fanout !== false && origin !== address && !stoppedAtHub) {
           try {
@@ -935,15 +1039,14 @@ export function registerFundingTools(server: McpServer) {
                   stop_reason: stopReason,
                   ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
                   ...(sponsoredBy.length
-                    ? {
-                        sponsored_by: sponsoredBy,
-                        sponsored_by_note:
-                          "No inflow qualified as funding, but another party paid gas for transactions this address sent. " +
-                          "Gas can be paid from an address balance, so a wallet can operate with no SUI of its own; the " +
-                          "sponsor is then the closest thing to a funder the chain records.",
-                      }
+                    ? { sponsored_by: sponsoredBy, sponsored_by_note: sponsoredByNote(sponsoredBy, deadEnd) }
                     : {}),
                   ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
+                  ...(unpricedHops.length
+                    ? { prices_unavailable_at: unpricedHops, prices_unavailable_note: PRICES_UNAVAILABLE_NOTE }
+                    : {}),
+                  ...(originUnread.length ? { origin_unread_at: originUnread, origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
+                  ...(chain.some((s) => s.unpriced_funding) ? { unpriced_funding_note: UNPRICED_FUNDING_NOTE } : {}),
                   ...(stoppedAtHub && originPopularity ? { origin_popularity: originPopularity } : {}),
                   ...(originFanout
                     ? {

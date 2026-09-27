@@ -59,7 +59,8 @@ export function summarizeLineage(entries: LineageEntry[]): LineageSummary {
     guidance =
       "Every version of this package is silent in the probe window. Either the protocol is genuinely inactive, " +
       "or it moved to a package outside this upgrade lineage — a redeploy rather than an upgrade mints an " +
-      "unrelated ID that no amount of version-walking will find. Widen the window before concluding it is dead.";
+      "unrelated ID that no amount of version-walking will find. Widen the window before concluding it is dead, " +
+      "and run get_upgrade_history with find_redeploys to look for a copy among the lineages its publisher or cap holder controls.";
   } else if (emitting.length === 1) {
     guidance =
       `One version is active: ${emitting[0].address}. Use it as the \`module\` filter for aggregate_events.`;

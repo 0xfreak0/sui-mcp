@@ -137,6 +137,52 @@ is the brief to hand a person or an agent, with the full rules.
    `case-pass` reports it as `FIXED` and fails the run. A `GAP` becomes an
    issue or a new tool, and a new tool needs its own check.
 
+6. **Label its attack transactions.** Add the exploit, drain or drainer
+   transactions to `cases/detectors.json` as positives, under the incident
+   and case they belong to, with `"split": "holdout"` when no rule was
+   written or tuned while looking at the incident. `detector-pass.mjs` then
+   scores every detector on them; a holdout incident is the only evidence
+   that a rule generalises.
+
+## Changing an anomaly detector
+
+A rule written from one incident catches that incident by construction, so its
+own case passing proves little. The same holds for negatives: a rule whose
+exclusions were added to clear a set of ordinary transactions passes that set
+by construction. `cases/detectors.json` therefore splits its negatives into
+`tuning`, which rule authors look at, and `holdout`, which they do not.
+
+```bash
+npm run build
+node scripts/probe/detector-pass.mjs --split tuning           # while you iterate
+node scripts/probe/detector-pass.mjs --json > before.json     # once, on the base commit
+node scripts/probe/detector-pass.mjs --json > after.json      # once, when done
+```
+
+- **A detector change is judged on the holdout split**: its false-positive rate
+  there, and the incidents it detects that are in neither its `incidents` nor
+  its `tuned_with`. The tuning figures show only that the rule fits what it
+  was fitted to.
+- **Iterate on tuning only.** Do not read the holdout digests or their flags
+  while you change a rule. `--split tuning` leaves the holdout positives out
+  too. If you change a rule to catch a holdout incident, move its positives
+  to `tuning` and record it in the rule's origins in the same commit.
+- **Rotate the holdout when it has been tuned against.** If you changed a rule
+  after reading holdout flags, move those negatives to `tuning` and draw as
+  many fresh ones with `node scripts/probe/sample-negatives.mjs`.
+- **Record what the rule saw.** Put the incidents it was designed from in
+  `detector_origins[code].incidents`, and every incident labelled while you
+  set its thresholds, grades or exclusions in `tuned_with`.
+- A new medium or high flag on a tuning negative fails the run until the flag
+  is fixed or listed in `accepted_fps` with a reason.
+- **Holdout is gated by rate, not by entry.** `holdout_ceilings` records, per
+  tool and code, how many holdout negatives get a medium or high flag. Any
+  change fails the run. When a count falls, lower its ceiling with
+  `--write-ceilings`. When it rises, fix the rule, or raise the ceiling
+  with a commit that says why the new flags are worth their cost.
+
+Prefer invariants and data-flow rules over names, protocols and thresholds.
+
 ## Pull requests
 
 - One feature or fix per PR.

@@ -99,13 +99,14 @@ describe("trace_funds — address poisoning across hops", () => {
     expect(summary).toMatch(/close enough to be mistaken for one another/i);
   });
 
-  it("omits the field entirely when nothing collides", async () => {
+  it("reports the comparison with no pairs when nothing collides", async () => {
     mockGqlQuery.mockImplementation((q: string) => {
       if (String(q).includes("transactions(")) return Promise.resolve(candidates([]));
       return Promise.resolve(gqlTx(tx("hop1", PAYER, [[PAYER, "-1000000000"], [MIDDLE, "1000000000"]])));
     });
     const { data, summary } = await run({ digest: "hop1", direction: "forward", hops: 4 });
-    expect(data.address_poisoning).toBeUndefined();
-    expect(summary).not.toMatch(/render identically/i);
+    expect(data.address_poisoning.pairs).toEqual([]);
+    expect(data.address_poisoning.addresses_compared).toBeGreaterThan(0);
+    expect(summary).not.toMatch(/close enough to be mistaken/i);
   });
 });

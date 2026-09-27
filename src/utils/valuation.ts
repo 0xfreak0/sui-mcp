@@ -3,6 +3,7 @@ import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
 import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 import { sui } from "../clients/grpc.js";
+import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork } from "../config.js";
 import { isNotFound } from "./errors.js";
 
@@ -85,6 +86,79 @@ const liveDecimals = new Map<string, number | null>();
 const liveDecimalsInFlight = new Map<string, Promise<void>>();
 
 /**
+ * One GraphQL request's share of coins: the service answers at most 21
+ * lookups that each read the store in one request, and refuses a body over
+ * 5,000 bytes, so coin types go inline and a batch stops at whichever limit
+ * it meets first.
+ */
+const METADATA_BATCH_COINS = 20;
+const METADATA_BATCH_BYTES = 4_500;
+
+/**
+ * Unread coins from which one GraphQL request per batch replaces one gRPC
+ * read per coin. An ordinary transaction or wallet page touches a handful of
+ * coins, which read as fast either way; a meme-coin drain touches hundreds,
+ * and under a request rate limit the number of requests is the latency.
+ */
+const METADATA_BATCH_MIN = 10;
+
+/** One aliased `coinMetadata` field, the coin type inline as a string literal. */
+const metadataField = (index: number, coinType: string) => `c${index}:coinMetadata(coinType:${JSON.stringify(coinType)}){decimals}`;
+
+/** Coin types split into GraphQL requests within {@link METADATA_BATCH_COINS} and {@link METADATA_BATCH_BYTES}. */
+function metadataBatches(coinTypes: string[]): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let bytes = 0;
+  for (const coinType of coinTypes) {
+    const size = JSON.stringify(metadataField(batch.length, coinType)).length;
+    if (batch.length > 0 && (batch.length >= METADATA_BATCH_COINS || bytes + size > METADATA_BATCH_BYTES)) {
+      batches.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(coinType);
+    bytes += size;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+/** One gRPC `CoinMetadata` read into the cache. */
+function readDecimalsGrpc(key: string, coinType: string): Promise<void> {
+  return sui.stateService
+    .getCoinInfo({ coinType })
+    .then(({ response }) => {
+      const decimals = response.metadata?.decimals;
+      liveDecimals.set(key, decimals ?? null);
+    })
+    .catch((err) => {
+      if (isNotFound(err)) liveDecimals.set(key, null);
+      // Else: transient. Leave uncached so the next prefetch retries it.
+    });
+}
+
+/**
+ * Read one batch of coins' decimals in one GraphQL request. A coin the
+ * service answers null for has no metadata, the answer gRPC gives as
+ * NOT_FOUND, and is cached as such. Every coin of a request that failed is
+ * read over gRPC instead.
+ */
+async function readDecimalsBatch(network: string, coinTypes: string[]): Promise<void> {
+  let data: Record<string, { decimals?: number | null } | null>;
+  try {
+    data = await gqlQuery(`{ ${coinTypes.map((t, i) => metadataField(i, t)).join(" ")} }`);
+  } catch {
+    await Promise.all(coinTypes.map((coinType) => readDecimalsGrpc(`${network}:${coinType}`, coinType)));
+    return;
+  }
+  coinTypes.forEach((coinType, i) => {
+    const decimals = data[`c${i}`]?.decimals;
+    liveDecimals.set(`${network}:${coinType}`, typeof decimals === "number" ? decimals : null);
+  });
+}
+
+/**
  * Warm {@link coinScale}'s live-metadata tier for these coin types, so the
  * synchronous calls that follow resolve a coin's real decimals instead of
  * guessing 9.
@@ -107,32 +181,21 @@ const liveDecimalsInFlight = new Map<string, Promise<void>>();
  */
 export async function prefetchCoinScale(coinTypes: Iterable<string>): Promise<void> {
   const network = getNetwork();
-  const toFetch = [...new Set(coinTypes)].filter(
-    (t) => !verifiedCoin(t) && !liveDecimals.has(`${network}:${t}`),
-  );
-  await Promise.all(
-    toFetch.map((coinType) => {
-      const key = `${network}:${coinType}`;
-      let pending = liveDecimalsInFlight.get(key);
-      if (!pending) {
-        pending = sui.stateService
-          .getCoinInfo({ coinType })
-          .then(({ response }) => {
-            const decimals = response.metadata?.decimals;
-            liveDecimals.set(key, decimals ?? null);
-          })
-          .catch((err) => {
-            if (isNotFound(err)) liveDecimals.set(key, null);
-            // Else: transient. Leave uncached so the next prefetch retries it.
-          })
-          .finally(() => {
-            liveDecimalsInFlight.delete(key);
-          });
-        liveDecimalsInFlight.set(key, pending);
-      }
-      return pending;
-    }),
-  );
+  const unique = [...new Set(coinTypes)].filter((t) => !verifiedCoin(t) && !liveDecimals.has(`${network}:${t}`));
+  const pending = unique.map((t) => liveDecimalsInFlight.get(`${network}:${t}`)).filter((p): p is Promise<void> => p !== undefined);
+  const toFetch = unique.filter((t) => !liveDecimalsInFlight.has(`${network}:${t}`));
+  const reads: Array<{ coins: string[]; read: Promise<void> }> =
+    toFetch.length >= METADATA_BATCH_MIN
+      ? metadataBatches(toFetch).map((coins) => ({ coins, read: readDecimalsBatch(network, coins) }))
+      : toFetch.map((coinType) => ({ coins: [coinType], read: readDecimalsGrpc(`${network}:${coinType}`, coinType) }));
+  for (const { coins, read } of reads) {
+    const done = read.finally(() => {
+      for (const coinType of coins) liveDecimalsInFlight.delete(`${network}:${coinType}`);
+    });
+    for (const coinType of coins) liveDecimalsInFlight.set(`${network}:${coinType}`, done);
+    pending.push(done);
+  }
+  await Promise.all(pending);
 }
 
 /** Tests only: forget every live-read decimals value. */
@@ -279,6 +342,8 @@ export interface PricePoint {
   confidence?: number;
   /** Decimals the price is per, when the provider reports them. */
   decimals?: number;
+  /** Provider id of the asset priced, when it is not the coin itself (a Sui Bridge token priced as its Ethereum asset). */
+  priced_as?: string;
 }
 
 /** A coin that has no price, and why. A missing price is never a zero. */
@@ -396,6 +461,7 @@ export async function priceUsdAtTime(
           source: "defillama",
           ...(q.confidence !== undefined ? { confidence: q.confidence } : {}),
           ...(q.decimals !== undefined ? { decimals: q.decimals } : {}),
+          ...(q.priced_as ? { priced_as: q.priced_as } : {}),
         });
       }
     }

@@ -146,10 +146,10 @@ describe("gas-only is decided from the sender's own coins, not the netted USD", 
     expect(payload.attacker_defaulted_from_sender).toBeUndefined();
   });
 
-  it("summarize_incident_losses: a drain netted against a later forward is not gas-only", async () => {
+  it("summarize_incident_losses: a drain followed by a forward is not gas-only, and the forward is not a loss", async () => {
     // Two transactions from the same sender A: tx1 drains 1,000 USDC from a
-    // vault, tx2 forwards the same 1,000 USDC to D. `agg.totals` nets A to
-    // $0 across both, but A moved real USDC in tx1 alone.
+    // vault, tx2 forwards the same 1,000 USDC to D. A moved real USDC in tx1,
+    // and tx2 only moved it on between addresses.
     mockReadAttackTransactions.mockResolvedValue(
       emptyRead([
         tx(DIGEST1, A, true, [bc(VAULT, USDC, "-1000000000"), bc(A, USDC, "1000000000")]),
@@ -163,7 +163,37 @@ describe("gas-only is decided from the sender's own coins, not the netted USD", 
 
     expect(payload.attacker).toBe("each transaction's sender");
     expect(payload.attacker_defaulted_from_sender).toBeUndefined();
-    expect(Math.abs(payload.totals.usd_net)).toBeLessThan(0.01);
+    expect(payload.totals.usd_net).toBe(1000);
+    expect(payload.transfers_out).toEqual([
+      expect.objectContaining({ to: [{ address: canonicalId(D), amount: "1000000000" }], amount_raw: "1000000000", usd: 1000, transactions: [DIGEST2] }),
+    ]);
+  });
+
+  it("summarize_incident_losses: a coin some object took in or paid out is not a transfer", async () => {
+    // A pays 1,000 USDC: 600 to D and 400 into an object (no address gains
+    // it), so USDC did not move only between addresses and the whole outflow
+    // stays in the totals.
+    mockReadAttackTransactions.mockResolvedValue(
+      emptyRead([tx(DIGEST1, A, true, [bc(A, USDC, "-1000000000"), bc(D, USDC, "600000000")])]),
+    );
+    priceMapRef.current = { [USDC]: { price: 1, decimals: 6 } };
+
+    const payload = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1] }));
+
+    expect(payload.totals.usd_net).toBe(-1000);
+    expect(payload.transfers_out).toBeUndefined();
+  });
+
+  it("summarize_incident_losses: a SUI transfer keeps the sender's gas in the totals", async () => {
+    // A sends 5 SUI to D and pays 0.01 SUI of gas: only the 5 SUI moved on.
+    const t = { ...tx(DIGEST1, A, true, [bc(A, SUI, "-5010000000"), bc(D, SUI, "5000000000")]), gas: { payer: A, net: 10_000_000n } };
+    mockReadAttackTransactions.mockResolvedValue(emptyRead([t]));
+    priceMapRef.current = { [SUI]: { price: 2, decimals: 9 } };
+
+    const payload = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1], attacker: A }));
+
+    expect(payload.priced_coins[0].attacker_net_raw).toBe("-10000000");
+    expect(payload.transfers_out[0]).toMatchObject({ amount_raw: "5000000000", usd: 10 });
   });
 });
 

@@ -10,7 +10,7 @@
  * `flow-engine.ts`; nothing here touches the chain.
  */
 
-import { coinKey, isSwapHop, sameCoin, withoutGas, type GasCharge, type HopChange } from "./trace-hop.js";
+import { coinKey, sameCoin, withoutGas, type GasCharge, type HopChange } from "./trace-hop.js";
 
 /** How a branch received its share. */
 export type FlowBasis =
@@ -25,7 +25,9 @@ export type FlowBasis =
   /** Paid the tracked coin in (backward). */
   | "inflow"
   /** Value that went into a bridge, a protocol object or a burn. */
-  | "consumed";
+  | "consumed"
+  /** Value a conversion's counterparty kept: proceeds worth under a tenth of it, and no claim. */
+  | "retained";
 
 export interface Branch {
   address: string;
@@ -46,6 +48,14 @@ export interface Branch {
 export interface Split {
   /** The coin the split was measured in: the tracked one, or the one picked when none was. */
   coin_type: string | null;
+  /**
+   * Part of `unallocated` a conversion's counterparty kept: its proceeds were
+   * worth less than {@link DUST_RETURN_RATIO} of what went in at market
+   * prices, and the holder received no object it could claim the rest with.
+   * A sale into a pool whose liquidity the seller controls moves value this
+   * way. Zero when there was no such conversion.
+   */
+  retained: number;
   /** Forward: the holder's outflow of the coin. Backward: the recipient's inflow. */
   total: bigint;
   branches: Branch[];
@@ -240,19 +250,13 @@ function conversionWeights(side: Part[], other: Part[], valueUsd: ValueUsd, draw
 
 /**
  * Below this ratio of one side of a conversion to the other, both at market
- * prices, a readable transaction is not a swap. Forward, proceeds this small
- * are change or dust, and the rest of the outflow went into a contract.
- * Backward, inputs this small are a fee, and the rest of the inflow came out
- * of a contract. Forward, a transaction that swaps without depositing is a
- * sale at whatever price the pool gave, however far below the market price,
- * and converts in full.
+ * prices, the smaller side does not carry the larger. Forward, proceeds this
+ * small carry only the part of the outflow they are worth, whatever the calls
+ * are named: the rest stayed in the contract, as a deposit the holder has a
+ * claim on or as value the counterparty kept (`retained`). Backward, inputs
+ * this small are a fee, and the rest of the inflow came out of a contract.
  */
 const DUST_RETURN_RATIO = 0.1;
-
-/** A call that puts value into a contract: a deposit, stake, loan, lock or liquidity add. */
-function isDepositHop(actions: string[]): boolean {
-  return actions.some((a) => /(^|[^a-z])(deposit|supply|stake|lend|lock|add_liquidity)/i.test(a));
-}
 
 /** What `part` is worth as a fraction of `whole`, at most 1; 1 when either has a part with no price. */
 function worthRatio(whole: Part[], part: Part[], valueUsd: ValueUsd): number {
@@ -308,12 +312,17 @@ function unpaidPayments(cs: HopChange[], include: (address: string) => boolean):
  * sent the transaction and what other addresses took out beyond what the
  * holder paid them in the same coin. On a bridge exit the remainder is always
  * the exit. Gas is removed first: the payer's SUI change includes it.
+ *
+ * Proceeds worth under {@link DUST_RETURN_RATIO} of the inputs carry only
+ * what they are worth, whatever the calls are named. The rest is `retained`
+ * by the counterparty unless the holder received an object to claim it with
+ * (`holderGotClaim`), when it stays `unallocated`: a deposit. The holder's
+ * own gains are the `swap-follow` side of the conversion, named or not.
  */
 export function splitSpend(params: {
   sender: string | null;
   holder: string;
   changes: HopChange[];
-  actions: string[];
   trackedCoin: string | null;
   gas?: GasCharge;
   valueUsd?: ValueUsd;
@@ -334,13 +343,19 @@ export function splitSpend(params: {
   capToProceeds?: boolean;
   /** Prices that also value a coin with no market price at a rate drawn from an earlier conversion; defaults to `valueUsd`. */
   drawnUsd?: ValueUsd;
+  /**
+   * Whether the holder received a non-coin object in the transaction: a
+   * receipt, share or position it can claim what it put in with. Undefined
+   * when the object changes were not read, and then nothing is `retained`.
+   */
+  holderGotClaim?: boolean;
 }): Split {
   const valueUsd = params.valueUsd ?? (() => null);
   const drawn = params.drawnUsd ?? valueUsd;
   const { holder, sender } = params;
   const cs = withoutGas(params.changes, params.gas);
   const coin = params.trackedCoin ?? dominantCoin(cs, holder, -1, valueUsd);
-  const empty: Split = { coin_type: coin, total: 0n, branches: [], unallocated: 0, weighting: "raw" };
+  const empty: Split = { coin_type: coin, retained: 0, total: 0n, branches: [], unallocated: 0, weighting: "raw" };
   if (!coin) return empty;
   const net = netOf(cs, holder, coin);
   if (net >= 0n) return empty;
@@ -358,6 +373,7 @@ export function splitSpend(params: {
   }));
   let weighting: Weighting = "raw";
   let unallocated = received >= spent ? 0 : ratio(spent - received, spent);
+  let retained = 0;
 
   if (unallocated > 0 && !params.bridgeExit) {
     const gains: Part[] =
@@ -373,10 +389,9 @@ export function splitSpend(params: {
       const inputShare = conversionWeights(inputs, into, valueUsd, drawn).weights[inputs.findIndex((p) => sameCoin(p.coin_type, coin))];
       const w = conversionWeights(into, inputs, valueUsd, drawn);
       weighting = w.weighting;
-      const swap = isSwapHop(params.actions);
       const cover = params.capToProceeds ? worthRatio(inputs, into, drawn) : worthRatio(inputs, into, valueUsd);
-      const dust = cover < DUST_RETURN_RATIO && (!swap || isDepositHop(params.actions));
-      const converted = unallocated * (params.capToProceeds || dust ? cover : 1);
+      const low = cover < DUST_RETURN_RATIO;
+      const converted = unallocated * (params.capToProceeds || low ? cover : 1);
       into.forEach((c, i) => {
         if (w.weights[i] <= 0) return;
         branches.push({
@@ -384,13 +399,15 @@ export function splitSpend(params: {
           coin_type: c.coin_type,
           amount: scaleAmount(c.amount, inputShare),
           weight: converted * w.weights[i],
-          basis: swap && c.address === holder ? "swap-follow" : "conversion",
+          // The holder spent the tracked coin and kept another: a swap by its values.
+          basis: c.address === holder ? "swap-follow" : "conversion",
         });
       });
       unallocated -= converted;
+      if (low && params.holderGotClaim === false) retained = unallocated;
     }
   }
-  return { coin_type: coin, total: spent, branches, unallocated, weighting };
+  return { coin_type: coin, retained, total: spent, branches, unallocated, weighting };
 }
 
 /**
@@ -411,6 +428,7 @@ export function splitOrigin(params: {
   const w = valueWeights(cs.map((c) => ({ amount: BigInt(c.amount), coin_type: c.coin_type })), valueUsd);
   return {
     coin_type: params.trackedCoin,
+    retained: 0,
     total: cs.reduce((s, c) => s + BigInt(c.amount), 0n),
     branches: cs
       .map((c, i): Branch => ({
@@ -443,6 +461,7 @@ export function splitOriginBackward(params: {
   const w = valueWeights(cs.map((c) => ({ amount: BigInt(c.amount), coin_type: c.coin_type })), valueUsd);
   return {
     coin_type: params.trackedCoin,
+    retained: 0,
     total: cs.reduce((s, c) => s - BigInt(c.amount), 0n),
     branches: cs
       .map((c, i): Branch => ({
@@ -480,7 +499,6 @@ export function splitInflow(params: {
   sender: string | null;
   recipient: string;
   changes: HopChange[];
-  actions: string[];
   trackedCoin: string | null;
   isPassThrough: (address: string) => boolean;
   gas?: GasCharge;
@@ -493,7 +511,7 @@ export function splitInflow(params: {
   const { recipient, sender } = params;
   const cs = withoutGas(params.changes, params.gas);
   const coin = params.trackedCoin ?? dominantCoin(cs, recipient, 1, valueUsd);
-  const empty: Split = { coin_type: coin, total: 0n, branches: [], unallocated: 0, weighting: "raw" };
+  const empty: Split = { coin_type: coin, retained: 0, total: 0n, branches: [], unallocated: 0, weighting: "raw" };
   if (!coin) return empty;
   const net = netOf(cs, recipient, coin);
   if (net <= 0n) return empty;
@@ -534,7 +552,6 @@ export function splitInflow(params: {
     ];
     const w = conversionWeights(sources, outputs, valueUsd, drawn);
     weighting = w.weighting;
-    const swap = isSwapHop(params.actions);
     // Inputs worth this little beside the outputs are a fee; the rest came out of a contract.
     const cover = worthRatio(outputs, sources, valueUsd);
     const converted = unallocated * (cover < DUST_RETURN_RATIO ? cover : 1);
@@ -545,12 +562,13 @@ export function splitInflow(params: {
         coin_type: c.coin_type,
         amount: scaleAmount(c.amount, outputShare),
         weight: converted * w.weights[i],
-        basis: swap && c.address === recipient ? "swap-follow" : "conversion",
+        // The recipient paid another coin in for the tracked one: a swap by its values.
+        basis: c.address === recipient ? "swap-follow" : "conversion",
       });
     });
     unallocated -= converted;
   }
-  return { coin_type: coin, total: net, branches, unallocated, weighting };
+  return { coin_type: coin, retained: 0, total: net, branches, unallocated, weighting };
 }
 
 /**
@@ -596,6 +614,7 @@ export type StopCode =
   | "hub"
   | "unspent"
   | "consumed"
+  | "retained"
   | "protocol"
   | "source"
   | "bridge_entry"
@@ -610,9 +629,10 @@ export type StopCode =
 export const STOP_MEANING: Record<StopCode, string> = {
   sink: "Reached an address with a sink label (an exchange, mixer or burn address).",
   bridge_exit: "Left Sui through a bridge. Each exit names the far-side beneficiary where the transaction states one.",
-  hub: "Reached an address with 100+ counterparties in its last 200 transactions. It pools other parties' money, so its next moves are not a continuation of these funds.",
+  hub: "Reached an address with 100+ counterparties in its last 200 transactions that pools other parties' money, so its next moves are not a continuation of these funds. Forward, only an address with 100+ distinct senders pools; one paid by fewer senders is followed.",
   unspent: "Still held: the address has not moved this coin since receiving it.",
   consumed: "Went into a protocol object, or was burned, with no address receiving it. The holder has the claim (a receipt, share or position).",
+  retained: "Kept by the counterparty of a conversion: the proceeds were worth under a tenth of it at market prices and the holder received no receipt or position. The node names the shared objects the transaction wrote. A sale into a pool the seller controls moves value this way.",
   protocol: "Paid to a curated protocol or pool address, a shared contract whose later moves belong to its other users.",
   source: "Backward: no address paid it in. It was minted, withdrawn from a protocol, or claimed.",
   bridge_entry: "Backward: it arrived on Sui through a bridge.",
@@ -692,28 +712,45 @@ export interface PathStep {
 }
 
 /**
- * The chain of first-arrival edges from a root to `node`.
+ * The fewest edges from a root to `node`, in the direction the money moved.
  *
- * `parentOf` maps a node to the edge that first reached it and that edge's
- * source. The first arrival is the earliest, so the path it gives is one the
- * money can actually have taken in time order.
+ * Forward, edges run from the root outward; backward, the root is the
+ * recipient and edges point payer to recipient, so the walk runs from each
+ * edge's target to its source and the steps come out payer first. Ties go
+ * to the edge found first. A node is often first reached through a heavier
+ * but longer route, so the first-arrival chain can exceed a path search's
+ * hop limit while a shorter explored route exists.
  */
-export function pathTo(
+export function shortestPath(
   node: string,
-  parentOf: ReadonlyMap<string, { edge: string; from: string }>,
-  maxSteps = 64,
+  edges: Iterable<{ id: string; from: string; to: string }>,
+  roots: readonly string[],
+  direction: "forward" | "backward",
 ): PathStep[] {
-  const steps: PathStep[] = [];
-  const seen = new Set<string>([node]);
-  let at = node;
-  for (let i = 0; i < maxSteps; i++) {
-    const p = parentOf.get(at);
-    if (!p || seen.has(p.from)) break;
-    steps.unshift({ from: p.from, to: at, edge: p.edge });
-    seen.add(p.from);
-    at = p.from;
+  const out = new Map<string, Array<{ id: string; from: string; to: string }>>();
+  for (const e of edges) {
+    const at = direction === "forward" ? e.from : e.to;
+    const list = out.get(at) ?? [];
+    list.push(e);
+    out.set(at, list);
   }
-  return steps;
+  const via = new Map<string, { id: string; from: string; to: string } | null>(roots.map((r) => [r, null]));
+  const queue = [...roots];
+  for (let i = 0; i < queue.length && !via.has(node); i++) {
+    for (const e of out.get(queue[i]) ?? []) {
+      const next = direction === "forward" ? e.to : e.from;
+      if (via.has(next)) continue;
+      via.set(next, e);
+      queue.push(next);
+    }
+  }
+  if (!via.has(node)) return [];
+  const steps: PathStep[] = [];
+  for (let at = node, e = via.get(at); e; e = via.get(at)) {
+    steps.push({ from: e.from, to: e.to, edge: e.id });
+    at = direction === "forward" ? e.from : e.to;
+  }
+  return direction === "forward" ? steps.reverse() : steps;
 }
 
 /**

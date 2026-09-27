@@ -1,0 +1,1434 @@
+// Move bytecode v7
+module 2.allowance {
+use 0000000000000000000000000000000000000000000000000000000000000001::internal;
+use 0000000000000000000000000000000000000000000000000000000000000001::option;
+use 0000000000000000000000000000000000000000000000000000000000000001::string;
+use 0000000000000000000000000000000000000000000000000000000000000001::type_name;
+use 0000000000000000000000000000000000000000000000000000000000000001::u64;
+use 0000000000000000000000000000000000000000000000000000000000000002::balance;
+use 0000000000000000000000000000000000000000000000000000000000000002::clock;
+use 0000000000000000000000000000000000000000000000000000000000000002::funds_accumulator;
+use 0000000000000000000000000000000000000000000000000000000000000002::object;
+use 0000000000000000000000000000000000000000000000000000000000000002::protocol_config;
+use 0000000000000000000000000000000000000000000000000000000000000002::transfer;
+use 0000000000000000000000000000000000000000000000000000000000000002::tx_context;
+
+struct AllowanceWithdrawal<phantom Ty0: store> has drop {
+	allowance: ID,
+	is_sponsor: bool,
+	inner: Withdrawal<Ty0>
+}
+
+struct Allowance<phantom Ty0> has key {
+	id: UID,
+	settings: Settings,
+	current_spend: u256
+}
+
+struct Settings has drop, store {
+	funder: address,
+	spender: Option<address>,
+	app: Option<TypeName>,
+	lifetime_cap: Option<u256>,
+	start_timestamp_ms: Option<u64>,
+	expiration_timestamp_ms: Option<u64>,
+	rate_limit: Option<RateLimit>,
+	name: String
+}
+
+struct AllowanceCap<phantom Ty0> has key {
+	id: UID,
+	allowance: ID
+}
+
+struct AllowanceProposal<phantom Ty0> has drop {
+	pos0: Settings
+}
+
+struct SpendPermit<phantom Ty0> has drop {
+	dummy_field: bool
+}
+
+struct SettingsPermit<phantom Ty0> has drop {
+	dummy_field: bool
+}
+
+enum RateLimit has copy, drop, store {
+	Windowed { limit: u256, spent: u256, anchor_ms: Option<u64>, index: u64, window: Window }
+}
+
+enum Window has copy, drop, store {
+	PeriodicMs { pos0: u64 },
+	CalendarMonths { pos0: u8 }
+}
+
+public spend_permit<Ty0>(Arg0: Permit<Ty0>): SpendPermit<Ty0> {
+B0:
+	0: LdFalse
+	1: PackGeneric[0](SpendPermit<Ty0>)
+	2: Ret
+}
+
+public settings_permit<Ty0>(Arg0: Permit<Ty0>): SettingsPermit<Ty0> {
+B0:
+	0: LdFalse
+	1: PackGeneric[1](SettingsPermit<Ty0>)
+	2: Ret
+}
+
+public periodic_rate_limit(Arg0: u64, Arg1: u256): RateLimit {
+L2:	loc0: bool
+B0:
+	0: CopyLoc[0](Arg0: u64)
+	1: LdU64(0)
+	2: Gt
+	3: BrFalse(9)
+B1:
+	4: CopyLoc[1](Arg1: u256)
+	5: LdU256(0)
+	6: Gt
+	7: StLoc[2](loc0: bool)
+	8: Branch(11)
+B2:
+	9: LdFalse
+	10: StLoc[2](loc0: bool)
+B3:
+	11: MoveLoc[2](loc0: bool)
+	12: BrFalse(14)
+B4:
+	13: Branch(16)
+B5:
+	14: LdU64(13837029148919201807)
+	15: Abort
+B6:
+	16: MoveLoc[1](Arg1: u256)
+	17: MoveLoc[0](Arg0: u64)
+	18: PackVariant(VariantHandleIndex(0))
+	19: Call new_rate_limit(u256, Window): RateLimit
+	20: Ret
+}
+
+public calendar_rate_limit(Arg0: u8, Arg1: u256): RateLimit {
+L2:	loc0: bool
+B0:
+	0: CopyLoc[0](Arg0: u8)
+	1: LdU8(0)
+	2: Gt
+	3: BrFalse(9)
+B1:
+	4: CopyLoc[1](Arg1: u256)
+	5: LdU256(0)
+	6: Gt
+	7: StLoc[2](loc0: bool)
+	8: Branch(11)
+B2:
+	9: LdFalse
+	10: StLoc[2](loc0: bool)
+B3:
+	11: MoveLoc[2](loc0: bool)
+	12: BrFalse(14)
+B4:
+	13: Branch(16)
+B5:
+	14: LdU64(13837029183278940175)
+	15: Abort
+B6:
+	16: MoveLoc[1](Arg1: u256)
+	17: MoveLoc[0](Arg0: u8)
+	18: PackVariant(VariantHandleIndex(1))
+	19: Call new_rate_limit(u256, Window): RateLimit
+	20: Ret
+}
+
+public monthly_rate_limit(Arg0: u256): RateLimit {
+B0:
+	0: LdU8(1)
+	1: MoveLoc[0](Arg0: u256)
+	2: Call calendar_rate_limit(u8, u256): RateLimit
+	3: Ret
+}
+
+public quarterly_rate_limit(Arg0: u256): RateLimit {
+B0:
+	0: LdU8(3)
+	1: MoveLoc[0](Arg0: u256)
+	2: Call calendar_rate_limit(u8, u256): RateLimit
+	3: Ret
+}
+
+public yearly_rate_limit(Arg0: u256): RateLimit {
+B0:
+	0: LdU8(12)
+	1: MoveLoc[0](Arg0: u256)
+	2: Call calendar_rate_limit(u8, u256): RateLimit
+	3: Ret
+}
+
+entry new<Ty0>(Arg0: String, Arg1: address, Arg2: Option<u256>, Arg3: Option<u64>, Arg4: Option<u64>, Arg5: Option<RateLimit>, Arg6: &mut TxContext) {
+B0:
+	0: CopyLoc[6](Arg6: &mut TxContext)
+	1: FreezeRef
+	2: Call tx_context::sender(&TxContext): address
+	3: MoveLoc[1](Arg1: address)
+	4: Call option::none<TypeName>(): Option<TypeName>
+	5: MoveLoc[2](Arg2: Option<u256>)
+	6: MoveLoc[3](Arg3: Option<u64>)
+	7: MoveLoc[4](Arg4: Option<u64>)
+	8: MoveLoc[5](Arg5: Option<RateLimit>)
+	9: MoveLoc[0](Arg0: String)
+	10: Call new_settings(address, address, Option<TypeName>, Option<u256>, Option<u64>, Option<u64>, Option<RateLimit>, String): Settings
+	11: MoveLoc[6](Arg6: &mut TxContext)
+	12: Call share_new<Ty0>(Settings, &mut TxContext)
+	13: Ret
+}
+
+entry propose_for_app<Ty0, Ty1>(Arg0: String, Arg1: address, Arg2: Option<u256>, Arg3: Option<u64>, Arg4: Option<u64>, Arg5: Option<RateLimit>, Arg6: &TxContext): AllowanceProposal<Ty0> {
+B0:
+	0: MoveLoc[6](Arg6: &TxContext)
+	1: Call tx_context::sender(&TxContext): address
+	2: MoveLoc[1](Arg1: address)
+	3: Call type_name::with_defining_ids<Ty1>(): TypeName
+	4: Call option::some<TypeName>(TypeName): Option<TypeName>
+	5: MoveLoc[2](Arg2: Option<u256>)
+	6: MoveLoc[3](Arg3: Option<u64>)
+	7: MoveLoc[4](Arg4: Option<u64>)
+	8: MoveLoc[5](Arg5: Option<RateLimit>)
+	9: MoveLoc[0](Arg0: String)
+	10: Call new_settings(address, address, Option<TypeName>, Option<u256>, Option<u64>, Option<u64>, Option<RateLimit>, String): Settings
+	11: PackGeneric[2](AllowanceProposal<Ty0>)
+	12: Ret
+}
+
+public issue<Ty0, Ty1>(Arg0: AllowanceProposal<Ty0>, Arg1: SettingsPermit<Ty1>, Arg2: &mut TxContext) {
+L3:	loc0: TypeName
+L4:	loc1: &Option<TypeName>
+L5:	loc2: Settings
+B0:
+	0: MoveLoc[0](Arg0: AllowanceProposal<Ty0>)
+	1: UnpackGeneric[2](AllowanceProposal<Ty0>)
+	2: StLoc[5](loc2: Settings)
+	3: ImmBorrowLoc[5](loc2: Settings)
+	4: ImmBorrowField[0](Settings.app: Option<TypeName>)
+	5: StLoc[4](loc1: &Option<TypeName>)
+	6: Call type_name::with_defining_ids<Ty1>(): TypeName
+	7: StLoc[3](loc0: TypeName)
+	8: MoveLoc[4](loc1: &Option<TypeName>)
+	9: ImmBorrowLoc[3](loc0: TypeName)
+	10: Call option::contains<TypeName>(&Option<TypeName>, &TypeName): bool
+	11: BrFalse(13)
+B1:
+	12: Branch(17)
+B2:
+	13: MoveLoc[2](Arg2: &mut TxContext)
+	14: Pop
+	15: LdU64(13835340616885731331)
+	16: Abort
+B3:
+	17: MoveLoc[5](loc2: Settings)
+	18: MoveLoc[2](Arg2: &mut TxContext)
+	19: Call share_new<Ty0>(Settings, &mut TxContext)
+	20: Ret
+}
+
+public balance_spend<Ty0>(Arg0: &mut Allowance<Balance<Ty0>>, Arg1: AllowanceWithdrawal<Balance<Ty0>>, Arg2: &Clock, Arg3: &TxContext): Balance<Ty0> {
+B0:
+	0: CopyLoc[0](Arg0: &mut Allowance<Balance<Ty0>>)
+	1: ImmBorrowFieldGeneric[0](Allowance.settings: Settings)
+	2: ImmBorrowField[0](Settings.app: Option<TypeName>)
+	3: Call option::is_none<TypeName>(&Option<TypeName>): bool
+	4: BrFalse(6)
+B1:
+	5: Branch(14)
+B2:
+	6: MoveLoc[0](Arg0: &mut Allowance<Balance<Ty0>>)
+	7: Pop
+	8: MoveLoc[3](Arg3: &TxContext)
+	9: Pop
+	10: MoveLoc[2](Arg2: &Clock)
+	11: Pop
+	12: LdU64(13837592472535040019)
+	13: Abort
+B3:
+	14: MoveLoc[0](Arg0: &mut Allowance<Balance<Ty0>>)
+	15: MoveLoc[1](Arg1: AllowanceWithdrawal<Balance<Ty0>>)
+	16: MoveLoc[2](Arg2: &Clock)
+	17: MoveLoc[3](Arg3: &TxContext)
+	18: Call consume<Balance<Ty0>>(&mut Allowance<Balance<Ty0>>, AllowanceWithdrawal<Balance<Ty0>>, &Clock, &TxContext): Withdrawal<Balance<Ty0>>
+	19: Call balance::redeem_funds<Ty0>(Withdrawal<Balance<Ty0>>): Balance<Ty0>
+	20: Ret
+}
+
+public app_balance_spend<Ty0, Ty1>(Arg0: &mut Allowance<Balance<Ty0>>, Arg1: SpendPermit<Ty1>, Arg2: AllowanceWithdrawal<Balance<Ty0>>, Arg3: &Clock, Arg4: &TxContext): Balance<Ty0> {
+B0:
+	0: CopyLoc[0](Arg0: &mut Allowance<Balance<Ty0>>)
+	1: FreezeRef
+	2: Call assert_app<Balance<Ty0>, Ty1>(&Allowance<Balance<Ty0>>)
+	3: MoveLoc[0](Arg0: &mut Allowance<Balance<Ty0>>)
+	4: MoveLoc[2](Arg2: AllowanceWithdrawal<Balance<Ty0>>)
+	5: MoveLoc[3](Arg3: &Clock)
+	6: MoveLoc[4](Arg4: &TxContext)
+	7: Call consume<Balance<Ty0>>(&mut Allowance<Balance<Ty0>>, AllowanceWithdrawal<Balance<Ty0>>, &Clock, &TxContext): Withdrawal<Balance<Ty0>>
+	8: Call balance::redeem_funds<Ty0>(Withdrawal<Balance<Ty0>>): Balance<Ty0>
+	9: Ret
+}
+
+public revoke<Ty0>(Arg0: AllowanceCap<Ty0>, Arg1: Allowance<Ty0>) {
+L2:	loc0: ID
+L3:	loc1: UID
+B0:
+	0: MoveLoc[0](Arg0: AllowanceCap<Ty0>)
+	1: UnpackGeneric[3](AllowanceCap<Ty0>)
+	2: StLoc[2](loc0: ID)
+	3: StLoc[3](loc1: UID)
+	4: MoveLoc[2](loc0: ID)
+	5: ImmBorrowLoc[1](Arg1: Allowance<Ty0>)
+	6: ImmBorrowFieldGeneric[1](Allowance.id: UID)
+	7: Call object::uid_to_inner(&UID): ID
+	8: Eq
+	9: BrFalse(11)
+B1:
+	10: Branch(13)
+B2:
+	11: LdU64(13838155508388069399)
+	12: Abort
+B3:
+	13: MoveLoc[1](Arg1: Allowance<Ty0>)
+	14: UnpackGeneric[4](Allowance<Ty0>)
+	15: Pop
+	16: Pop
+	17: Call object::delete(UID)
+	18: MoveLoc[3](loc1: UID)
+	19: Call object::delete(UID)
+	20: Ret
+}
+
+public rotate_spender<Ty0, Ty1>(Arg0: &mut Allowance<Ty0>, Arg1: SettingsPermit<Ty1>, Arg2: address) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	1: FreezeRef
+	2: Call assert_app<Ty0, Ty1>(&Allowance<Ty0>)
+	3: MoveLoc[2](Arg2: address)
+	4: Call option::some<address>(address): Option<address>
+	5: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	6: MutBorrowFieldGeneric[2](Allowance.settings: Settings)
+	7: MutBorrowField[3](Settings.spender: Option<address>)
+	8: WriteRef
+	9: Ret
+}
+
+public allowance_settings<Ty0>(Arg0: &Allowance<Ty0>): &Settings {
+B0:
+	0: MoveLoc[0](Arg0: &Allowance<Ty0>)
+	1: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	2: Ret
+}
+
+public allowance_current_spend<Ty0>(Arg0: &Allowance<Ty0>): u256 {
+B0:
+	0: MoveLoc[0](Arg0: &Allowance<Ty0>)
+	1: ImmBorrowFieldGeneric[3](Allowance.current_spend: u256)
+	2: ReadRef
+	3: Ret
+}
+
+public allowance_cap_allowance<Ty0>(Arg0: &AllowanceCap<Ty0>): ID {
+B0:
+	0: MoveLoc[0](Arg0: &AllowanceCap<Ty0>)
+	1: ImmBorrowFieldGeneric[4](AllowanceCap.allowance: ID)
+	2: ReadRef
+	3: Ret
+}
+
+public allowance_proposal_settings<Ty0>(Arg0: &AllowanceProposal<Ty0>): &Settings {
+B0:
+	0: MoveLoc[0](Arg0: &AllowanceProposal<Ty0>)
+	1: ImmBorrowFieldGeneric[5](AllowanceProposal.pos0: Settings)
+	2: Ret
+}
+
+public funder(Arg0: &Settings): address {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[7](Settings.funder: address)
+	2: ReadRef
+	3: Ret
+}
+
+public spender(Arg0: &Settings): Option<address> {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[3](Settings.spender: Option<address>)
+	2: ReadRef
+	3: Ret
+}
+
+public app(Arg0: &Settings): Option<TypeName> {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[0](Settings.app: Option<TypeName>)
+	2: ReadRef
+	3: Ret
+}
+
+public lifetime_cap(Arg0: &Settings): Option<u256> {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[8](Settings.lifetime_cap: Option<u256>)
+	2: ReadRef
+	3: Ret
+}
+
+public start_timestamp_ms(Arg0: &Settings): Option<u64> {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[9](Settings.start_timestamp_ms: Option<u64>)
+	2: ReadRef
+	3: Ret
+}
+
+public expiration_timestamp_ms(Arg0: &Settings): Option<u64> {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[10](Settings.expiration_timestamp_ms: Option<u64>)
+	2: ReadRef
+	3: Ret
+}
+
+public rate_limit(Arg0: &Settings): Option<RateLimit> {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[11](Settings.rate_limit: Option<RateLimit>)
+	2: ReadRef
+	3: Ret
+}
+
+public name(Arg0: &Settings): &String {
+B0:
+	0: MoveLoc[0](Arg0: &Settings)
+	1: ImmBorrowField[12](Settings.name: String)
+	2: Ret
+}
+
+public rate_limit_limit(Arg0: &RateLimit): u256 {
+L1:	loc0: &RateLimit
+L2:	loc1: &RateLimit
+B0:
+	0: MoveLoc[0](Arg0: &RateLimit)
+	1: StLoc[2](loc1: &RateLimit)
+	2: CopyLoc[2](loc1: &RateLimit)
+	3: StLoc[1](loc0: &RateLimit)
+	4: CopyLoc[1](loc0: &RateLimit)
+	5: VariantSwitch(VariantJumpTableIndex(0))
+B1:
+	6: MoveLoc[1](loc0: &RateLimit)
+	7: UnpackVariantImmRef(VariantHandleIndex(2))
+	8: Pop
+	9: Pop
+	10: Pop
+	11: Pop
+	12: Pop
+	13: MoveLoc[2](loc1: &RateLimit)
+	14: UnpackVariantImmRef(VariantHandleIndex(2))
+	15: Pop
+	16: Pop
+	17: Pop
+	18: Pop
+	19: ReadRef
+	20: Ret
+Jump tables:
+[0]:	variant_switch RateLimit {
+		Variant0 => jump 6
+	}
+}
+
+public rate_limit_spent(Arg0: &RateLimit): u256 {
+L1:	loc0: &RateLimit
+L2:	loc1: &u256
+L3:	loc2: &RateLimit
+B0:
+	0: MoveLoc[0](Arg0: &RateLimit)
+	1: StLoc[3](loc2: &RateLimit)
+	2: CopyLoc[3](loc2: &RateLimit)
+	3: StLoc[1](loc0: &RateLimit)
+	4: CopyLoc[1](loc0: &RateLimit)
+	5: VariantSwitch(VariantJumpTableIndex(0))
+B1:
+	6: MoveLoc[1](loc0: &RateLimit)
+	7: UnpackVariantImmRef(VariantHandleIndex(2))
+	8: Pop
+	9: Pop
+	10: Pop
+	11: Pop
+	12: Pop
+	13: MoveLoc[3](loc2: &RateLimit)
+	14: UnpackVariantImmRef(VariantHandleIndex(2))
+	15: Pop
+	16: Pop
+	17: Pop
+	18: StLoc[2](loc1: &u256)
+	19: Pop
+	20: MoveLoc[2](loc1: &u256)
+	21: ReadRef
+	22: Ret
+Jump tables:
+[0]:	variant_switch RateLimit {
+		Variant0 => jump 6
+	}
+}
+
+public rate_limit_window(Arg0: &RateLimit): Window {
+L1:	loc0: &RateLimit
+L2:	loc1: &RateLimit
+L3:	loc2: &Window
+B0:
+	0: MoveLoc[0](Arg0: &RateLimit)
+	1: StLoc[2](loc1: &RateLimit)
+	2: CopyLoc[2](loc1: &RateLimit)
+	3: StLoc[1](loc0: &RateLimit)
+	4: CopyLoc[1](loc0: &RateLimit)
+	5: VariantSwitch(VariantJumpTableIndex(0))
+B1:
+	6: MoveLoc[1](loc0: &RateLimit)
+	7: UnpackVariantImmRef(VariantHandleIndex(2))
+	8: Pop
+	9: Pop
+	10: Pop
+	11: Pop
+	12: Pop
+	13: MoveLoc[2](loc1: &RateLimit)
+	14: UnpackVariantImmRef(VariantHandleIndex(2))
+	15: StLoc[3](loc2: &Window)
+	16: Pop
+	17: Pop
+	18: Pop
+	19: Pop
+	20: MoveLoc[3](loc2: &Window)
+	21: ReadRef
+	22: Ret
+Jump tables:
+[0]:	variant_switch RateLimit {
+		Variant0 => jump 6
+	}
+}
+
+public(friend) civil_from_ms(Arg0: u64): u64 * u64 * u64 {
+L1:	loc0: u64
+L2:	loc1: u64
+L3:	loc2: u64
+L4:	loc3: u64
+L5:	loc4: u64
+L6:	loc5: u64
+L7:	loc6: u64
+L8:	loc7: u64
+L9:	loc8: u64
+B0:
+	0: MoveLoc[0](Arg0: u64)
+	1: LdConst[37](u64: 8640..)
+	2: Div
+	3: LdU64(719468)
+	4: Add
+	5: StLoc[9](loc8: u64)
+	6: CopyLoc[9](loc8: u64)
+	7: LdU64(146097)
+	8: Div
+	9: StLoc[6](loc5: u64)
+	10: MoveLoc[9](loc8: u64)
+	11: LdU64(146097)
+	12: Mod
+	13: StLoc[4](loc3: u64)
+	14: CopyLoc[4](loc3: u64)
+	15: CopyLoc[4](loc3: u64)
+	16: LdU64(1460)
+	17: Div
+	18: Sub
+	19: CopyLoc[4](loc3: u64)
+	20: LdU64(36524)
+	21: Div
+	22: Add
+	23: CopyLoc[4](loc3: u64)
+	24: LdU64(146096)
+	25: Div
+	26: Sub
+	27: LdU64(365)
+	28: Div
+	29: StLoc[8](loc7: u64)
+	30: MoveLoc[4](loc3: u64)
+	31: LdU64(365)
+	32: CopyLoc[8](loc7: u64)
+	33: Mul
+	34: CopyLoc[8](loc7: u64)
+	35: LdU64(4)
+	36: Div
+	37: Add
+	38: CopyLoc[8](loc7: u64)
+	39: LdU64(100)
+	40: Div
+	41: Sub
+	42: Sub
+	43: StLoc[5](loc4: u64)
+	44: LdU64(5)
+	45: CopyLoc[5](loc4: u64)
+	46: Mul
+	47: LdU64(2)
+	48: Add
+	49: LdU64(153)
+	50: Div
+	51: StLoc[7](loc6: u64)
+	52: MoveLoc[5](loc4: u64)
+	53: LdU64(153)
+	54: CopyLoc[7](loc6: u64)
+	55: Mul
+	56: LdU64(2)
+	57: Add
+	58: LdU64(5)
+	59: Div
+	60: Sub
+	61: LdU64(1)
+	62: Add
+	63: StLoc[3](loc2: u64)
+	64: CopyLoc[7](loc6: u64)
+	65: LdU64(10)
+	66: Lt
+	67: BrFalse(79)
+B1:
+	68: MoveLoc[6](loc5: u64)
+	69: LdU64(400)
+	70: Mul
+	71: MoveLoc[8](loc7: u64)
+	72: Add
+	73: MoveLoc[7](loc6: u64)
+	74: LdU64(3)
+	75: Add
+	76: StLoc[2](loc1: u64)
+	77: StLoc[1](loc0: u64)
+	78: Branch(91)
+B2:
+	79: MoveLoc[6](loc5: u64)
+	80: LdU64(400)
+	81: Mul
+	82: MoveLoc[8](loc7: u64)
+	83: Add
+	84: LdU64(1)
+	85: Add
+	86: MoveLoc[7](loc6: u64)
+	87: LdU64(9)
+	88: Sub
+	89: StLoc[2](loc1: u64)
+	90: StLoc[1](loc0: u64)
+B3:
+	91: MoveLoc[1](loc0: u64)
+	92: MoveLoc[2](loc1: u64)
+	93: MoveLoc[3](loc2: u64)
+	94: Ret
+}
+
+public(friend) days_in_month(Arg0: u64, Arg1: u64): u64 {
+L2:	loc0: u64
+L3:	loc1: u64
+L4:	loc2: u64
+L5:	loc3: u64
+L6:	loc4: u64
+L7:	loc5: u64
+L8:	loc6: &u64
+L9:	loc7: u64
+B0:
+	0: MoveLoc[1](Arg1: u64)
+	1: StLoc[9](loc7: u64)
+	2: ImmBorrowLoc[9](loc7: u64)
+	3: StLoc[8](loc6: &u64)
+	4: CopyLoc[8](loc6: &u64)
+	5: ReadRef
+	6: LdU64(2)
+	7: Eq
+	8: BrFalse(22)
+B1:
+	9: MoveLoc[8](loc6: &u64)
+	10: Pop
+	11: MoveLoc[0](Arg0: u64)
+	12: Call is_leap_year(u64): bool
+	13: BrFalse(17)
+B2:
+	14: LdU64(29)
+	15: StLoc[2](loc0: u64)
+	16: Branch(19)
+B3:
+	17: LdU64(28)
+	18: StLoc[2](loc0: u64)
+B4:
+	19: MoveLoc[2](loc0: u64)
+	20: StLoc[7](loc5: u64)
+	21: Branch(70)
+B5:
+	22: CopyLoc[8](loc6: &u64)
+	23: ReadRef
+	24: LdU64(4)
+	25: Eq
+	26: BrFalse(32)
+B6:
+	27: MoveLoc[8](loc6: &u64)
+	28: Pop
+	29: LdU64(30)
+	30: StLoc[6](loc4: u64)
+	31: Branch(68)
+B7:
+	32: CopyLoc[8](loc6: &u64)
+	33: ReadRef
+	34: LdU64(6)
+	35: Eq
+	36: BrFalse(42)
+B8:
+	37: MoveLoc[8](loc6: &u64)
+	38: Pop
+	39: LdU64(30)
+	40: StLoc[5](loc3: u64)
+	41: Branch(66)
+B9:
+	42: CopyLoc[8](loc6: &u64)
+	43: ReadRef
+	44: LdU64(9)
+	45: Eq
+	46: BrFalse(52)
+B10:
+	47: MoveLoc[8](loc6: &u64)
+	48: Pop
+	49: LdU64(30)
+	50: StLoc[4](loc2: u64)
+	51: Branch(64)
+B11:
+	52: MoveLoc[8](loc6: &u64)
+	53: ReadRef
+	54: LdU64(11)
+	55: Eq
+	56: BrFalse(60)
+B12:
+	57: LdU64(30)
+	58: StLoc[3](loc1: u64)
+	59: Branch(62)
+B13:
+	60: LdU64(31)
+	61: StLoc[3](loc1: u64)
+B14:
+	62: MoveLoc[3](loc1: u64)
+	63: StLoc[4](loc2: u64)
+B15:
+	64: MoveLoc[4](loc2: u64)
+	65: StLoc[5](loc3: u64)
+B16:
+	66: MoveLoc[5](loc3: u64)
+	67: StLoc[6](loc4: u64)
+B17:
+	68: MoveLoc[6](loc4: u64)
+	69: StLoc[7](loc5: u64)
+B18:
+	70: MoveLoc[7](loc5: u64)
+	71: Ret
+}
+
+assert_app<Ty0, Ty1>(Arg0: &Allowance<Ty0>) {
+L1:	loc0: TypeName
+B0:
+	0: Call type_name::with_defining_ids<Ty1>(): TypeName
+	1: StLoc[1](loc0: TypeName)
+	2: MoveLoc[0](Arg0: &Allowance<Ty0>)
+	3: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	4: ImmBorrowField[0](Settings.app: Option<TypeName>)
+	5: ImmBorrowLoc[1](loc0: TypeName)
+	6: Call option::contains<TypeName>(&Option<TypeName>, &TypeName): bool
+	7: BrFalse(9)
+B1:
+	8: Branch(11)
+B2:
+	9: LdU64(13835341183821414403)
+	10: Abort
+B3:
+	11: Ret
+}
+
+consume<Ty0: store>(Arg0: &mut Allowance<Ty0>, Arg1: AllowanceWithdrawal<Ty0>, Arg2: &Clock, Arg3: &TxContext): Withdrawal<Ty0> {
+L4:	loc0: address
+L5:	loc1: &Option<address>
+L6:	loc2: ID
+L7:	loc3: u256
+L8:	loc4: &u64
+L9:	loc5: Withdrawal<Ty0>
+L10:	loc6: bool
+L11:	loc7: &u256
+L12:	loc8: u64
+L13:	loc9: &Option<u64>
+L14:	loc10: &Option<u64>
+L15:	loc11: &Option<u256>
+L16:	loc12: &mut Option<RateLimit>
+L17:	loc13: &u64
+B0:
+	0: MoveLoc[1](Arg1: AllowanceWithdrawal<Ty0>)
+	1: UnpackGeneric[5](AllowanceWithdrawal<Ty0>)
+	2: StLoc[9](loc5: Withdrawal<Ty0>)
+	3: StLoc[10](loc6: bool)
+	4: StLoc[6](loc2: ID)
+	5: MoveLoc[10](loc6: bool)
+	6: Not
+	7: BrFalse(9)
+B1:
+	8: Branch(17)
+B2:
+	9: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	10: Pop
+	11: MoveLoc[3](Arg3: &TxContext)
+	12: Pop
+	13: MoveLoc[2](Arg2: &Clock)
+	14: Pop
+	15: LdU64(13839844834990489635)
+	16: Abort
+B3:
+	17: MoveLoc[6](loc2: ID)
+	18: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	19: ImmBorrowFieldGeneric[1](Allowance.id: UID)
+	20: Call object::uid_to_inner(&UID): ID
+	21: Eq
+	22: BrFalse(24)
+B4:
+	23: Branch(32)
+B5:
+	24: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	25: Pop
+	26: MoveLoc[3](Arg3: &TxContext)
+	27: Pop
+	28: MoveLoc[2](Arg2: &Clock)
+	29: Pop
+	30: LdU64(13836748614540197901)
+	31: Abort
+B6:
+	32: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	33: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	34: ImmBorrowField[3](Settings.spender: Option<address>)
+	35: StLoc[5](loc1: &Option<address>)
+	36: MoveLoc[3](Arg3: &TxContext)
+	37: Call tx_context::sender(&TxContext): address
+	38: StLoc[4](loc0: address)
+	39: MoveLoc[5](loc1: &Option<address>)
+	40: ImmBorrowLoc[4](loc0: address)
+	41: Call option::contains<address>(&Option<address>, &address): bool
+	42: BrFalse(44)
+B7:
+	43: Branch(50)
+B8:
+	44: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	45: Pop
+	46: MoveLoc[2](Arg2: &Clock)
+	47: Pop
+	48: LdU64(13835059768974114817)
+	49: Abort
+B9:
+	50: ImmBorrowLoc[9](loc5: Withdrawal<Ty0>)
+	51: Call funds_accumulator::withdrawal_owner<Ty0>(&Withdrawal<Ty0>): address
+	52: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	53: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	54: ImmBorrowField[7](Settings.funder: address)
+	55: ReadRef
+	56: Eq
+	57: BrFalse(59)
+B10:
+	58: Branch(65)
+B11:
+	59: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	60: Pop
+	61: MoveLoc[2](Arg2: &Clock)
+	62: Pop
+	63: LdU64(13837874527332466709)
+	64: Abort
+B12:
+	65: ImmBorrowLoc[9](loc5: Withdrawal<Ty0>)
+	66: Call funds_accumulator::withdrawal_limit<Ty0>(&Withdrawal<Ty0>): u256
+	67: StLoc[7](loc3: u256)
+	68: MoveLoc[2](Arg2: &Clock)
+	69: Call clock::timestamp_ms(&Clock): u64
+	70: StLoc[12](loc8: u64)
+	71: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	72: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	73: ImmBorrowField[9](Settings.start_timestamp_ms: Option<u64>)
+	74: StLoc[13](loc9: &Option<u64>)
+	75: CopyLoc[13](loc9: &Option<u64>)
+	76: Call option::is_some<u64>(&Option<u64>): bool
+	77: BrFalse(91)
+B13:
+	78: MoveLoc[13](loc9: &Option<u64>)
+	79: Call option::borrow<u64>(&Option<u64>): &u64
+	80: StLoc[17](loc13: &u64)
+	81: CopyLoc[12](loc8: u64)
+	82: MoveLoc[17](loc13: &u64)
+	83: ReadRef
+	84: Ge
+	85: BrFalse(87)
+B14:
+	86: Branch(93)
+B15:
+	87: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	88: Pop
+	89: LdU64(13837311598853619729)
+	90: Abort
+B16:
+	91: MoveLoc[13](loc9: &Option<u64>)
+	92: Pop
+B17:
+	93: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	94: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	95: ImmBorrowField[10](Settings.expiration_timestamp_ms: Option<u64>)
+	96: StLoc[14](loc10: &Option<u64>)
+	97: CopyLoc[14](loc10: &Option<u64>)
+	98: Call option::is_some<u64>(&Option<u64>): bool
+	99: BrFalse(113)
+B18:
+	100: MoveLoc[14](loc10: &Option<u64>)
+	101: Call option::borrow<u64>(&Option<u64>): &u64
+	102: StLoc[8](loc4: &u64)
+	103: CopyLoc[12](loc8: u64)
+	104: MoveLoc[8](loc4: &u64)
+	105: ReadRef
+	106: Lt
+	107: BrFalse(109)
+B19:
+	108: Branch(115)
+B20:
+	109: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	110: Pop
+	111: LdU64(13835622766172438533)
+	112: Abort
+B21:
+	113: MoveLoc[14](loc10: &Option<u64>)
+	114: Pop
+B22:
+	115: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	116: ImmBorrowFieldGeneric[3](Allowance.current_spend: u256)
+	117: ReadRef
+	118: CopyLoc[7](loc3: u256)
+	119: Add
+	120: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	121: MutBorrowFieldGeneric[3](Allowance.current_spend: u256)
+	122: WriteRef
+	123: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	124: ImmBorrowFieldGeneric[2](Allowance.settings: Settings)
+	125: ImmBorrowField[8](Settings.lifetime_cap: Option<u256>)
+	126: StLoc[15](loc11: &Option<u256>)
+	127: CopyLoc[15](loc11: &Option<u256>)
+	128: Call option::is_some<u256>(&Option<u256>): bool
+	129: BrFalse(145)
+B23:
+	130: MoveLoc[15](loc11: &Option<u256>)
+	131: Call option::borrow<u256>(&Option<u256>): &u256
+	132: StLoc[11](loc7: &u256)
+	133: CopyLoc[0](Arg0: &mut Allowance<Ty0>)
+	134: ImmBorrowFieldGeneric[3](Allowance.current_spend: u256)
+	135: ReadRef
+	136: MoveLoc[11](loc7: &u256)
+	137: ReadRef
+	138: Le
+	139: BrFalse(141)
+B24:
+	140: Branch(147)
+B25:
+	141: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	142: Pop
+	143: LdU64(13835904262624116743)
+	144: Abort
+B26:
+	145: MoveLoc[15](loc11: &Option<u256>)
+	146: Pop
+B27:
+	147: MoveLoc[0](Arg0: &mut Allowance<Ty0>)
+	148: MutBorrowFieldGeneric[2](Allowance.settings: Settings)
+	149: MutBorrowField[11](Settings.rate_limit: Option<RateLimit>)
+	150: StLoc[16](loc12: &mut Option<RateLimit>)
+	151: CopyLoc[16](loc12: &mut Option<RateLimit>)
+	152: FreezeRef
+	153: Call option::is_some<RateLimit>(&Option<RateLimit>): bool
+	154: BrFalse(161)
+B28:
+	155: MoveLoc[16](loc12: &mut Option<RateLimit>)
+	156: Call option::borrow_mut<RateLimit>(&mut Option<RateLimit>): &mut RateLimit
+	157: MoveLoc[7](loc3: u256)
+	158: MoveLoc[12](loc8: u64)
+	159: Call charge(&mut RateLimit, u256, u64)
+	160: Branch(163)
+B29:
+	161: MoveLoc[16](loc12: &mut Option<RateLimit>)
+	162: Pop
+B30:
+	163: MoveLoc[9](loc5: Withdrawal<Ty0>)
+	164: Ret
+}
+
+new_rate_limit(Arg0: u256, Arg1: Window): RateLimit {
+B0:
+	0: MoveLoc[0](Arg0: u256)
+	1: LdU256(0)
+	2: Call option::none<u64>(): Option<u64>
+	3: LdU64(0)
+	4: MoveLoc[1](Arg1: Window)
+	5: PackVariant(VariantHandleIndex(2))
+	6: Ret
+}
+
+charge(Arg0: &mut RateLimit, Arg1: u256, Arg2: u64) {
+L3:	loc0: &mut Option<u64>
+L4:	loc1: &mut u64
+L5:	loc2: &RateLimit
+L6:	loc3: &mut u256
+L7:	loc4: &mut RateLimit
+L8:	loc5: &mut Window
+L9:	loc6: &mut Option<u64>
+L10:	loc7: u64
+L11:	loc8: &mut u64
+L12:	loc9: &mut u256
+L13:	loc10: &mut u256
+L14:	loc11: &mut Window
+B0:
+	0: MoveLoc[0](Arg0: &mut RateLimit)
+	1: StLoc[7](loc4: &mut RateLimit)
+	2: CopyLoc[7](loc4: &mut RateLimit)
+	3: FreezeRef
+	4: StLoc[5](loc2: &RateLimit)
+	5: CopyLoc[5](loc2: &RateLimit)
+	6: VariantSwitch(VariantJumpTableIndex(0))
+B1:
+	7: MoveLoc[5](loc2: &RateLimit)
+	8: UnpackVariantImmRef(VariantHandleIndex(2))
+	9: Pop
+	10: Pop
+	11: Pop
+	12: Pop
+	13: Pop
+	14: MoveLoc[7](loc4: &mut RateLimit)
+	15: UnpackVariantMutRef(VariantHandleIndex(2))
+	16: StLoc[8](loc5: &mut Window)
+	17: StLoc[4](loc1: &mut u64)
+	18: StLoc[3](loc0: &mut Option<u64>)
+	19: StLoc[6](loc3: &mut u256)
+	20: StLoc[12](loc9: &mut u256)
+	21: MoveLoc[6](loc3: &mut u256)
+	22: StLoc[13](loc10: &mut u256)
+	23: MoveLoc[3](loc0: &mut Option<u64>)
+	24: StLoc[9](loc6: &mut Option<u64>)
+	25: MoveLoc[4](loc1: &mut u64)
+	26: StLoc[11](loc8: &mut u64)
+	27: MoveLoc[8](loc5: &mut Window)
+	28: StLoc[14](loc11: &mut Window)
+	29: CopyLoc[9](loc6: &mut Option<u64>)
+	30: FreezeRef
+	31: Call option::is_some<u64>(&Option<u64>): bool
+	32: BrFalse(57)
+B2:
+	33: MoveLoc[14](loc11: &mut Window)
+	34: FreezeRef
+	35: MoveLoc[9](loc6: &mut Option<u64>)
+	36: FreezeRef
+	37: Call option::borrow<u64>(&Option<u64>): &u64
+	38: ReadRef
+	39: MoveLoc[2](Arg2: u64)
+	40: Call index_at(&Window, u64, u64): u64
+	41: StLoc[10](loc7: u64)
+	42: CopyLoc[10](loc7: u64)
+	43: CopyLoc[11](loc8: &mut u64)
+	44: ReadRef
+	45: Gt
+	46: BrFalse(54)
+B3:
+	47: MoveLoc[10](loc7: u64)
+	48: MoveLoc[11](loc8: &mut u64)
+	49: WriteRef
+	50: LdU256(0)
+	51: CopyLoc[13](loc10: &mut u256)
+	52: WriteRef
+	53: Branch(65)
+B4:
+	54: MoveLoc[11](loc8: &mut u64)
+	55: Pop
+	56: Branch(65)
+B5:
+	57: MoveLoc[14](loc11: &mut Window)
+	58: Pop
+	59: MoveLoc[11](loc8: &mut u64)
+	60: Pop
+	61: MoveLoc[2](Arg2: u64)
+	62: Call option::some<u64>(u64): Option<u64>
+	63: MoveLoc[9](loc6: &mut Option<u64>)
+	64: WriteRef
+B6:
+	65: CopyLoc[13](loc10: &mut u256)
+	66: ReadRef
+	67: MoveLoc[1](Arg1: u256)
+	68: Add
+	69: CopyLoc[13](loc10: &mut u256)
+	70: WriteRef
+	71: MoveLoc[13](loc10: &mut u256)
+	72: ReadRef
+	73: MoveLoc[12](loc9: &mut u256)
+	74: ReadRef
+	75: Le
+	76: BrFalse(78)
+B7:
+	77: Branch(80)
+B8:
+	78: LdU64(13836185853565075465)
+	79: Abort
+B9:
+	80: Ret
+Jump tables:
+[0]:	variant_switch RateLimit {
+		Variant0 => jump 7
+	}
+}
+
+index_at(Arg0: &Window, Arg1: u64, Arg2: u64): u64 {
+L3:	loc0: u64
+L4:	loc1: &Window
+L5:	loc2: &Window
+L6:	loc3: &u8
+L7:	loc4: &u64
+B0:
+	0: MoveLoc[0](Arg0: &Window)
+	1: StLoc[5](loc2: &Window)
+	2: CopyLoc[5](loc2: &Window)
+	3: StLoc[4](loc1: &Window)
+	4: CopyLoc[4](loc1: &Window)
+	5: VariantSwitch(VariantJumpTableIndex(0))
+B1:
+	6: MoveLoc[4](loc1: &Window)
+	7: UnpackVariantImmRef(VariantHandleIndex(0))
+	8: Pop
+	9: MoveLoc[5](loc2: &Window)
+	10: UnpackVariantImmRef(VariantHandleIndex(0))
+	11: StLoc[7](loc4: &u64)
+	12: MoveLoc[2](Arg2: u64)
+	13: MoveLoc[1](Arg1: u64)
+	14: Sub
+	15: MoveLoc[7](loc4: &u64)
+	16: ReadRef
+	17: Div
+	18: StLoc[3](loc0: u64)
+	19: Branch(32)
+B2:
+	20: MoveLoc[4](loc1: &Window)
+	21: UnpackVariantImmRef(VariantHandleIndex(1))
+	22: Pop
+	23: MoveLoc[5](loc2: &Window)
+	24: UnpackVariantImmRef(VariantHandleIndex(1))
+	25: StLoc[6](loc3: &u8)
+	26: MoveLoc[1](Arg1: u64)
+	27: MoveLoc[2](Arg2: u64)
+	28: MoveLoc[6](loc3: &u8)
+	29: ReadRef
+	30: Call elapsed_windows(u64, u64, u8): u64
+	31: StLoc[3](loc0: u64)
+B3:
+	32: MoveLoc[3](loc0: u64)
+	33: Ret
+Jump tables:
+[0]:	variant_switch Window {
+		Variant0 => jump 6
+		Variant1 => jump 20
+	}
+}
+
+elapsed_windows(Arg0: u64, Arg1: u64, Arg2: u8): u64 {
+L3:	loc0: bool
+L4:	loc1: u64
+L5:	loc2: u64
+L6:	loc3: u64
+L7:	loc4: u64
+L8:	loc5: u64
+L9:	loc6: u64
+L10:	loc7: u64
+B0:
+	0: MoveLoc[0](Arg0: u64)
+	1: Call civil_from_ms(u64): u64 * u64 * u64
+	2: StLoc[4](loc1: u64)
+	3: StLoc[5](loc2: u64)
+	4: StLoc[6](loc3: u64)
+	5: MoveLoc[1](Arg1: u64)
+	6: Call civil_from_ms(u64): u64 * u64 * u64
+	7: StLoc[7](loc4: u64)
+	8: StLoc[9](loc6: u64)
+	9: StLoc[10](loc7: u64)
+	10: CopyLoc[10](loc7: u64)
+	11: LdU64(12)
+	12: Mul
+	13: CopyLoc[9](loc6: u64)
+	14: Add
+	15: MoveLoc[6](loc3: u64)
+	16: LdU64(12)
+	17: Mul
+	18: MoveLoc[5](loc2: u64)
+	19: Add
+	20: Sub
+	21: StLoc[8](loc5: u64)
+	22: CopyLoc[8](loc5: u64)
+	23: LdU64(0)
+	24: Gt
+	25: BrFalse(35)
+B1:
+	26: MoveLoc[7](loc4: u64)
+	27: MoveLoc[4](loc1: u64)
+	28: MoveLoc[10](loc7: u64)
+	29: MoveLoc[9](loc6: u64)
+	30: Call days_in_month(u64, u64): u64
+	31: Call u64::min(u64, u64): u64
+	32: Lt
+	33: StLoc[3](loc0: bool)
+	34: Branch(37)
+B2:
+	35: LdFalse
+	36: StLoc[3](loc0: bool)
+B3:
+	37: MoveLoc[3](loc0: bool)
+	38: BrFalse(43)
+B4:
+	39: MoveLoc[8](loc5: u64)
+	40: LdU64(1)
+	41: Sub
+	42: StLoc[8](loc5: u64)
+B5:
+	43: MoveLoc[8](loc5: u64)
+	44: MoveLoc[2](Arg2: u8)
+	45: CastU64
+	46: Div
+	47: Ret
+}
+
+is_leap_year(Arg0: u64): bool {
+L1:	loc0: bool
+L2:	loc1: bool
+B0:
+	0: CopyLoc[0](Arg0: u64)
+	1: LdU64(4)
+	2: Mod
+	3: LdU64(0)
+	4: Eq
+	5: BrFalse(24)
+B1:
+	6: CopyLoc[0](Arg0: u64)
+	7: LdU64(100)
+	8: Mod
+	9: LdU64(0)
+	10: Neq
+	11: BrFalse(15)
+B2:
+	12: LdTrue
+	13: StLoc[2](loc1: bool)
+	14: Branch(21)
+B3:
+	15: MoveLoc[0](Arg0: u64)
+	16: LdU64(400)
+	17: Mod
+	18: LdU64(0)
+	19: Eq
+	20: StLoc[2](loc1: bool)
+B4:
+	21: MoveLoc[2](loc1: bool)
+	22: StLoc[1](loc0: bool)
+	23: Branch(26)
+B5:
+	24: LdFalse
+	25: StLoc[1](loc0: bool)
+B6:
+	26: MoveLoc[1](loc0: bool)
+	27: Ret
+}
+
+new_settings(Arg0: address, Arg1: address, Arg2: Option<TypeName>, Arg3: Option<u256>, Arg4: Option<u64>, Arg5: Option<u64>, Arg6: Option<RateLimit>, Arg7: String): Settings {
+L8:	loc0: bool
+L9:	loc1: bool
+L10:	loc2: bool
+L11:	loc3: &Option<u256>
+B0:
+	0: LdConst[38](vector<u8>: "ena..)
+	1: Call protocol_config::is_feature_enabled(vector<u8>): bool
+	2: BrFalse(4)
+B1:
+	3: Branch(6)
+B2:
+	4: LdU64(13839563729380835361)
+	5: Abort
+B3:
+	6: ImmBorrowLoc[3](Arg3: Option<u256>)
+	7: Call option::is_some<u256>(&Option<u256>): bool
+	8: BrFalse(12)
+B4:
+	9: LdTrue
+	10: StLoc[8](loc0: bool)
+	11: Branch(15)
+B5:
+	12: ImmBorrowLoc[6](Arg6: Option<RateLimit>)
+	13: Call option::is_some<RateLimit>(&Option<RateLimit>): bool
+	14: StLoc[8](loc0: bool)
+B6:
+	15: MoveLoc[8](loc0: bool)
+	16: BrFalse(18)
+B7:
+	17: Branch(20)
+B8:
+	18: LdU64(13836467508930543627)
+	19: Abort
+B9:
+	20: ImmBorrowLoc[5](Arg5: Option<u64>)
+	21: Call option::is_some<u64>(&Option<u64>): bool
+	22: BrFalse(26)
+B10:
+	23: LdTrue
+	24: StLoc[9](loc1: bool)
+	25: Branch(29)
+B11:
+	26: ImmBorrowLoc[6](Arg6: Option<RateLimit>)
+	27: Call option::is_some<RateLimit>(&Option<RateLimit>): bool
+	28: StLoc[9](loc1: bool)
+B12:
+	29: MoveLoc[9](loc1: bool)
+	30: BrFalse(32)
+B13:
+	31: Branch(34)
+B14:
+	32: LdU64(13839282262993928223)
+	33: Abort
+B15:
+	34: ImmBorrowLoc[7](Arg7: String)
+	35: Call string::length(&String): u64
+	36: LdConst[36](u64: 128)
+	37: Le
+	38: BrFalse(40)
+B16:
+	39: Branch(42)
+B17:
+	40: LdU64(13838437842358370329)
+	41: Abort
+B18:
+	42: ImmBorrowLoc[3](Arg3: Option<u256>)
+	43: StLoc[11](loc3: &Option<u256>)
+	44: CopyLoc[11](loc3: &Option<u256>)
+	45: Call option::is_some<u256>(&Option<u256>): bool
+	46: BrFalse(56)
+B19:
+	47: MoveLoc[11](loc3: &Option<u256>)
+	48: Call option::borrow<u256>(&Option<u256>): &u256
+	49: ReadRef
+	50: LdU256(0)
+	51: Gt
+	52: BrFalse(54)
+B20:
+	53: Branch(58)
+B21:
+	54: LdU64(13838719321630179355)
+	55: Abort
+B22:
+	56: MoveLoc[11](loc3: &Option<u256>)
+	57: Pop
+B23:
+	58: ImmBorrowLoc[4](Arg4: Option<u64>)
+	59: Call option::is_some<u64>(&Option<u64>): bool
+	60: BrFalse(65)
+B24:
+	61: ImmBorrowLoc[5](Arg5: Option<u64>)
+	62: Call option::is_some<u64>(&Option<u64>): bool
+	63: StLoc[10](loc2: bool)
+	64: Branch(67)
+B25:
+	65: LdFalse
+	66: StLoc[10](loc2: bool)
+B26:
+	67: MoveLoc[10](loc2: bool)
+	68: BrFalse(80)
+B27:
+	69: ImmBorrowLoc[4](Arg4: Option<u64>)
+	70: Call option::borrow<u64>(&Option<u64>): &u64
+	71: ReadRef
+	72: ImmBorrowLoc[5](Arg5: Option<u64>)
+	73: Call option::borrow<u64>(&Option<u64>): &u64
+	74: ReadRef
+	75: Lt
+	76: BrFalse(78)
+B28:
+	77: Branch(80)
+B29:
+	78: LdU64(13839000809491922973)
+	79: Abort
+B30:
+	80: MoveLoc[0](Arg0: address)
+	81: MoveLoc[1](Arg1: address)
+	82: Call option::some<address>(address): Option<address>
+	83: MoveLoc[2](Arg2: Option<TypeName>)
+	84: MoveLoc[3](Arg3: Option<u256>)
+	85: MoveLoc[4](Arg4: Option<u64>)
+	86: MoveLoc[5](Arg5: Option<u64>)
+	87: MoveLoc[6](Arg6: Option<RateLimit>)
+	88: MoveLoc[7](Arg7: String)
+	89: Pack[2](Settings)
+	90: Ret
+}
+
+share_new<Ty0>(Arg0: Settings, Arg1: &mut TxContext) {
+L2:	loc0: Allowance<Ty0>
+L3:	loc1: address
+B0:
+	0: ImmBorrowLoc[0](Arg0: Settings)
+	1: ImmBorrowField[7](Settings.funder: address)
+	2: ReadRef
+	3: StLoc[3](loc1: address)
+	4: CopyLoc[1](Arg1: &mut TxContext)
+	5: Call object::new(&mut TxContext): UID
+	6: MoveLoc[0](Arg0: Settings)
+	7: LdU256(0)
+	8: PackGeneric[4](Allowance<Ty0>)
+	9: StLoc[2](loc0: Allowance<Ty0>)
+	10: MoveLoc[1](Arg1: &mut TxContext)
+	11: Call object::new(&mut TxContext): UID
+	12: ImmBorrowLoc[2](loc0: Allowance<Ty0>)
+	13: ImmBorrowFieldGeneric[1](Allowance.id: UID)
+	14: Call object::uid_to_inner(&UID): ID
+	15: PackGeneric[3](AllowanceCap<Ty0>)
+	16: MoveLoc[3](loc1: address)
+	17: Call transfer::transfer<AllowanceCap<Ty0>>(AllowanceCap<Ty0>, address)
+	18: MoveLoc[2](loc0: Allowance<Ty0>)
+	19: Call transfer::share_object<Allowance<Ty0>>(Allowance<Ty0>)
+	20: Ret
+}
+
+Constants [
+	0 => vector<u8>: "ENotSpender" // interpreted as UTF8 string
+	1 => vector<u8>: "Transaction sender is not this allowance's spender" // interpreted as UTF8 string
+	2 => vector<u8>: "EWrongApp" // interpreted as UTF8 string
+	3 => vector<u8>: "Allowance is not bound to this app" // interpreted as UTF8 string
+	4 => vector<u8>: "EExpired" // interpreted as UTF8 string
+	5 => vector<u8>: "Allowance has expired" // interpreted as UTF8 string
+	6 => vector<u8>: "EExceedsLifetimeCap" // interpreted as UTF8 string
+	7 => vector<u8>: "Spend would exceed the lifetime cap" // interpreted as UTF8 string
+	8 => vector<u8>: "EExceedsRateLimit" // interpreted as UTF8 string
+	9 => vector<u8>: "Spend would exceed the current rate-limit window" // interpreted as UTF8 string
+	10 => vector<u8>: "ENoLimit" // interpreted as UTF8 string
+	11 => vector<u8>: "Allowance must have a lifetime cap or a rate limit" // interpreted as UTF8 string
+	12 => vector<u8>: "EWrongAllowance" // interpreted as UTF8 string
+	13 => vector<u8>: "Withdrawal was issued for a different allowance" // interpreted as UTF8 string
+	14 => vector<u8>: "EBadRateLimit" // interpreted as UTF8 string
+	15 => vector<u8>: "Rate limit needs a positive period and limit" // interpreted as UTF8 string
+	16 => vector<u8>: "ENotStarted" // interpreted as UTF8 string
+	17 => vector<u8>: "Allowance is not active yet; it has a future start timestamp" // interpreted as UTF8 string
+	18 => vector<u8>: "EHasApp" // interpreted as UTF8 string
+	19 => vector<u8>: "App-bound allowance: spend through `app_balance_spend`" // interpreted as UTF8 string
+	20 => vector<u8>: "EWrongFunder" // interpreted as UTF8 string
+	21 => vector<u8>: "Withdrawal debits a different address than this allowance's funder" // interpreted as UTF8 string
+	22 => vector<u8>: "EWrongCap" // interpreted as UTF8 string
+	23 => vector<u8>: "Cap does not match this allowance" // interpreted as UTF8 string
+	24 => vector<u8>: "ENameTooLong" // interpreted as UTF8 string
+	25 => vector<u8>: "Name exceeds the 128-byte limit" // interpreted as UTF8 string
+	26 => vector<u8>: "EZeroLifetimeCap" // interpreted as UTF8 string
+	27 => vector<u8>: "Lifetime cap must be greater than zero" // interpreted as UTF8 string
+	28 => vector<u8>: "EBadTimeWindow" // interpreted as UTF8 string
+	29 => vector<u8>: "Expiration must be after the start time" // interpreted as UTF8 string
+	30 => vector<u8>: "ENoExpiration" // interpreted as UTF8 string
+	31 => vector<u8>: "Allowance must have an expiration or a rate limit" // interpreted as UTF8 string
+	32 => vector<u8>: "ENotEnabled" // interpreted as UTF8 string
+	33 => vector<u8>: "Allowances are not enabled" // interpreted as UTF8 string
+	34 => vector<u8>: "ESponsorWithdrawalNotEnabled" // interpreted as UTF8 string
+	35 => vector<u8>: "Sponsor allowance withdrawals are not enabled" // interpreted as UTF8 string
+	36 => u64: 128
+	37 => u64: 86400000
+	38 => vector<u8>: "enable_allowances" // interpreted as UTF8 string
+]
+}

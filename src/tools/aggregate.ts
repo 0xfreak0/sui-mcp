@@ -16,6 +16,7 @@ import { coinValuer, roundUsd } from "../utils/address-flows.js";
 import { prefetchCoinScale, priceUsdAtTime } from "../utils/valuation.js";
 import { getLabel } from "../utils/labels.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const PAGE_QUERY = `query ($filter: EventFilter, $first: Int, $after: String) {
@@ -115,6 +116,10 @@ export function registerAggregateTools(server: McpServer) {
         .max(2000)
         .optional()
         .describe(`Distinct transactions read for group_pnl, oldest first (default ${DEFAULT_PNL_TRANSACTIONS}). Check pnl.truncated.`),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): each P&L sender lists the coins that fit about 1.5k characters, largest USD first, and pnl.unpriced_coins what fits 3k; totals cover every coin, and `omitted` states the rest with the call that returns it. 'full': every coin."),
     },
     async ({
       event_type,
@@ -130,6 +135,7 @@ export function registerAggregateTools(server: McpServer) {
       max_events,
       group_pnl,
       pnl_max_transactions,
+      detail,
     }) => {
       try {
         if (!event_type && !module && !sender) {
@@ -249,86 +255,107 @@ export function registerAggregateTools(server: McpServer) {
             })
           : null;
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  filter: {
-                    ...(event_type ? { event_type } : {}),
-                    ...(module ? { module } : {}),
-                    ...(sender ? { sender } : {}),
-                  },
-                  window: describeWindow(from, to, window),
-                  ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
-                  ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
-                  group_by: group_by ?? "sender",
-                  events_scanned: events.length,
-                  pages_fetched: pages,
-                  truncated,
-                  ...(truncated
+        const payload = {
+          filter: {
+            ...(event_type ? { event_type } : {}),
+            ...(module ? { module } : {}),
+            ...(sender ? { sender } : {}),
+          },
+          window: describeWindow(from, to, window),
+          ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
+          ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
+          group_by: group_by ?? "sender",
+          events_scanned: events.length,
+          pages_fetched: pages,
+          truncated,
+          ...(truncated
+            ? {
+                truncation_warning:
+                  `Hit the ${budget}-event budget with more available. This ranking is INCOMPLETE — ` +
+                  "narrow from/to or raise max_events before drawing conclusions.",
+              }
+            : {}),
+          ...(events.length === 0
+            ? {
+                no_results_hint: [
+                  "No events matched.",
+                  ...(event_type
+                    ? [
+                        "`event_type` filters on the struct's DEFINING package, which for many protocols differs from the package you call, so try `module` with the same address instead.",
+                      ]
+                    : []),
+                  ...(moduleFilter?.resolution?.other_version_ids
+                    ? [
+                        "From the relocate_event_module cutover on, a `module` filter matches calls through one package version only; query the ids in module_scope.other_version_ids for the rest.",
+                      ]
+                    : []),
+                  "Also check the window: bounds are checkpoints, and GraphQL retains only recent history.",
+                ].join(" "),
+              }
+            : {}),
+          distinct_keys: result.distinct_keys,
+          sort_order: sort_order ?? "desc",
+          // Computed over every group, not the returned page: a top-20
+          // view says nothing about the shape of the other 900.
+          distribution: result.distribution,
+          ...(result.ungrouped_count
+            ? { ungrouped_events: result.ungrouped_count }
+            : {}),
+          ...(value_field
+            ? { value_field, value_scale: value_scale ?? 1 }
+            : {
+                // Discovery, per event type — this is what replaces a
+                // per-protocol schema registry. Ordered by frequency so
+                // the noisy bookkeeping events are visible as such.
+                event_types: [...countsByType.entries()]
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 15)
+                  .map(([type, count]) => ({
+                    type,
+                    count,
+                    numeric_fields: suggestValueFields(samplesByType.get(type)),
+                    sample: samplesByType.get(type),
+                  })),
+                hint:
+                  "Pick the event type that represents the action you care about (user actions are " +
+                  "usually rarer than bookkeeping events), then re-run with event_type set to it and " +
+                  "value_field set to one of its numeric_fields.",
+              }),
+          groups: result.groups,
+          ...(pnl
+            ? {
+                pnl: {
+                  ...pnl,
+                  ...(moduleFilter?.resolution?.other_version_ids
                     ? {
-                        truncation_warning:
-                          `Hit the ${budget}-event budget with more available. This ranking is INCOMPLETE — ` +
-                          "narrow from/to or raise max_events before drawing conclusions.",
+                        scope_note:
+                          "Only transactions whose events the filter matched are read. Calls through the lineage's other versions (module_scope.other_version_ids) emit under those ids and are not in this P&L, so a sender whose payout ran through another version shows its costs here without the payout. Re-run with module set to each other id, or read the sender with summarize_address_flows.",
                       }
                     : {}),
-                  ...(events.length === 0
-                    ? {
-                        no_results_hint: [
-                          "No events matched.",
-                          ...(event_type
-                            ? [
-                                "`event_type` filters on the struct's DEFINING package, which for many protocols differs from the package you call, so try `module` with the same address instead.",
-                              ]
-                            : []),
-                          ...(moduleFilter?.resolution?.other_version_ids
-                            ? [
-                                "From the relocate_event_module cutover on, a `module` filter matches calls through one package version only; query the ids in module_scope.other_version_ids for the rest.",
-                              ]
-                            : []),
-                          "Also check the window: bounds are checkpoints, and GraphQL retains only recent history.",
-                        ].join(" "),
-                      }
-                    : {}),
-                  distinct_keys: result.distinct_keys,
-                  sort_order: sort_order ?? "desc",
-                  // Computed over every group, not the returned page: a top-20
-                  // view says nothing about the shape of the other 900.
-                  distribution: result.distribution,
-                  ...(result.ungrouped_count
-                    ? { ungrouped_events: result.ungrouped_count }
-                    : {}),
-                  ...(value_field
-                    ? { value_field, value_scale: value_scale ?? 1 }
-                    : {
-                        // Discovery, per event type — this is what replaces a
-                        // per-protocol schema registry. Ordered by frequency so
-                        // the noisy bookkeeping events are visible as such.
-                        event_types: [...countsByType.entries()]
-                          .sort((a, b) => b[1] - a[1])
-                          .slice(0, 15)
-                          .map(([type, count]) => ({
-                            type,
-                            count,
-                            numeric_fields: suggestValueFields(samplesByType.get(type)),
-                            sample: samplesByType.get(type),
-                          })),
-                        hint:
-                          "Pick the event type that represents the action you care about (user actions are " +
-                          "usually rarer than bookkeeping events), then re-run with event_type set to it and " +
-                          "value_field set to one of its numeric_fields.",
-                      }),
-                  groups: result.groups,
-                  ...(pnl ? { pnl } : {}),
                 },
-                null,
-                2,
-              ),
-            },
-          ],
+              }
+            : {}),
         };
+
+        // Each P&L sender's coins and the unpriced list fit their budgets,
+        // largest USD first; totals are computed over every coin above.
+        type Coin = { usd?: number };
+        const coinCap: ListCap<Coin> = {
+          budget: 1_500,
+          rank: (a, b) => Math.abs(b.usd ?? -1) - Math.abs(a.usd ?? -1),
+          usd: (c) => (c.usd === undefined ? null : Math.abs(c.usd)),
+        };
+        const { payload: out } = capPayload(
+          "aggregate_events",
+          { event_type, module, sender, from, to, group_by, value_field, value_scale, top, sort_order, max_events, group_pnl, pnl_max_transactions },
+          payload,
+          {
+            ...Object.fromEntries((pnl?.senders ?? []).map((_, i) => [`pnl.senders.${i}.net`, coinCap])),
+            "pnl.unpriced_coins": { budget: 3_000, keepOrder: true },
+          },
+          { full: detail === "full", next_call: { tool: "aggregate_events", repeat_with: { detail: "full" } } },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -397,7 +424,9 @@ async function senderPnl(
           meaning: "Each coin priced once, at the median transaction time (DefiLlama, or Pyth for verified coins when PYTH_API_KEY is set). Coins with no price are listed and left out of usd_net.",
         }
       : null,
-    ...(prices.unpriced.length ? { unpriced_coins: prices.unpriced.map((u) => ({ coin_type: u.coin_type, code: u.code })) } : {}),
+    ...(prices.unpriced.length
+      ? { unpriced_coin_count: prices.unpriced.length, unpriced_coins: prices.unpriced.map((u) => ({ coin_type: u.coin_type, code: u.code })) }
+      : {}),
     meaning:
       "Each sender's own balance changes summed over the matched transactions, gas included. A transaction marked multi-leg also called packages outside the filtered one, so its P&L may have been made there.",
     senders: ranked.slice(0, opts.top).map(({ r, net, gained, lost }) => {
@@ -409,6 +438,7 @@ async function senderPnl(
         usd_net: roundUsd(net),
         usd_gained: roundUsd(gained),
         usd_lost: roundUsd(lost),
+        coin_count: r.net.size,
         net: v.amounts(r.net),
         ...(r.multiLeg.length
           ? {

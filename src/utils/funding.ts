@@ -5,6 +5,8 @@
  * without the chain.
  */
 
+import { isSuiCoinType } from "./sponsor-gas.js";
+
 export interface FundingChange {
   address: string;
   amount: string; // signed raw
@@ -47,6 +49,34 @@ export interface UnpricedFunding {
   share_of_supply: number;
   /** The coin's own publisher sent it. */
   from_publisher: boolean;
+  /**
+   * `supply_share`: the share alone clears {@link UNPRICED_SUPPLY_SHARE}, or
+   * {@link UNPRICED_PUBLISHER_SHARE} from the publisher. `targeted_send`: a
+   * smaller share, sent in the shape of a grant (see {@link SendShape}).
+   */
+  basis: "supply_share" | "targeted_send";
+  /** How the funder sent the coin, when it was read. */
+  send_shape?: SendShape;
+}
+
+/**
+ * How a funder sent one unpriced coin around the inflow being judged. A mass
+ * send pays many addresses at once, or in a burst, or the same amount each;
+ * a grant pays one or a few, in amounts of their own.
+ */
+export interface SendShape {
+  /** Distinct addresses other than the funder the inflow's own transaction paid in the coin. */
+  recipients_in_tx: number;
+  /**
+   * Distinct addresses the funder paid in the coin across the transactions it
+   * sent within {@link SEND_BURST_CHECKPOINTS} either side of the inflow, the
+   * inflow's own included. A lower bound when `burst_truncated`.
+   */
+  burst_recipients: number;
+  /** The window held more sends, or a send more balance changes, than one read returns. */
+  burst_truncated?: true;
+  /** At least three of those payments, all of one amount: a list send. */
+  even_amounts: boolean;
 }
 
 /**
@@ -64,11 +94,38 @@ export const UNPRICED_SUPPLY_SHARE = 0.01;
  */
 export const UNPRICED_PUBLISHER_SHARE = 0.001;
 
+/**
+ * The share below which an unpriced inflow is spam whatever its shape. Above
+ * it and below the two shares above, the send decides: a grant to one or a
+ * few insiders counts, a list or burst send does not. A spammer paying
+ * 10,000 wallets this much one at a time, slowly enough to pass as a grant,
+ * would take months per coin.
+ */
+export const UNPRICED_TARGETED_SHARE = 0.0001;
+
+/** Most distinct recipients a send may have, in its transaction and its burst, and read as a grant. */
+export const GRANT_MAX_RECIPIENTS = 5;
+
+/** Checkpoints either side of an inflow searched for the funder's other sends of the coin: about ten minutes. */
+export const SEND_BURST_CHECKPOINTS = 2400;
+
+/** Whether a send reads as a grant to one or a few addresses rather than a mass send. */
+export function isTargetedSend(shape: SendShape): boolean {
+  return (
+    !shape.burst_truncated &&
+    shape.recipients_in_tx <= GRANT_MAX_RECIPIENTS &&
+    shape.burst_recipients <= GRANT_MAX_RECIPIENTS &&
+    !shape.even_amounts
+  );
+}
+
 /** How a candidate inflow was judged, so a skip is never silent. */
 export interface SkippedInflow {
   digest: string;
   amount: string;
   coinType: string;
+  /** Who sent it, by the rule the funding pick applies. */
+  funder: string;
   reason: "below_sui_floor" | "below_usd_floor" | "unpriced_coin";
 }
 
@@ -126,15 +183,22 @@ export interface FundingOptions {
    * grant of it to an insider is how that insider was set up. An inflow of
    * {@link UNPRICED_SUPPLY_SHARE} of the supply, or
    * {@link UNPRICED_PUBLISHER_SHARE} from the publisher, counts as funding;
-   * anything smaller, or of a coin whose supply is unknown, stays spam.
+   * anything smaller counts only as a grant (`sendShape`), and a coin whose
+   * supply is unknown stays spam.
    */
   coinOrigin?: (coinType: string) => CoinOrigin | undefined;
+  /**
+   * How the funder sent an unpriced coin, when the caller read it, by the
+   * inflow's digest and coin. An inflow of at least
+   * {@link UNPRICED_TARGETED_SHARE} of the supply counts as funding when the
+   * send reads as a grant ({@link isTargetedSend}).
+   */
+  sendShape?: (digest: string, coinType: string) => SendShape | undefined;
 }
 
 export const DEFAULT_MIN_SUI_MIST = 10_000_000n; // 0.01 SUI
 export const DEFAULT_MIN_USD = 0.1;
 
-const SUI_TYPE_SUFFIX = "::sui::SUI";
 
 /**
  * From a list of the address's earliest transactions (ascending), pick the
@@ -206,9 +270,9 @@ export function pickFundingTx(
     // sub-floor coin in the same transaction cannot hide one that counts.
     for (const { coin, amt } of ranked) {
       const funder = findFunder(tx, address, coin);
-      const judged = classifyInflow(coin, amt, funder, minSui, minUsd, opts);
+      const judged = classifyInflow(tx.digest, coin, amt, funder, minSui, minUsd, opts);
       if ("skip" in judged) {
-        dustSkipped.push({ digest: tx.digest, amount: amt.toString(), coinType: coin, reason: judged.skip });
+        dustSkipped.push({ digest: tx.digest, amount: amt.toString(), coinType: coin, funder, reason: judged.skip });
         continue;
       }
       return {
@@ -247,8 +311,30 @@ function gasSponsorsOf(txs: FundingTx[], address: string): GasSponsor[] {
   return [...bySponsor.values()].sort((a, b) => b.transactions - a.transactions);
 }
 
+/**
+ * Whether a payment clears the dust floors funding is judged by: `minSui` for
+ * SUI, `minUsd` for a priced coin. Null for a coin no price source quotes,
+ * which a floor cannot judge. With no `valueUsd` (no price could be read at
+ * all) any non-SUI amount clears, so evidence is not discarded on a missing
+ * dependency.
+ */
+export function clearsDustFloor(
+  coinType: string,
+  amount: bigint,
+  valueUsd?: (coinType: string, rawAmount: bigint) => number | null,
+  minSui: bigint = DEFAULT_MIN_SUI_MIST,
+  minUsd: number = DEFAULT_MIN_USD,
+): boolean | null {
+  // The exact type: any package can name a coin `sui::SUI`.
+  if (isSuiCoinType(coinType)) return amount >= minSui;
+  if (!valueUsd) return true;
+  const usd = valueUsd(coinType, amount);
+  return usd === null ? null : usd >= minUsd;
+}
+
 /** Why the inflow does not count, or, when it counts unpriced, on what grounds. */
 function classifyInflow(
+  digest: string,
   coinType: string,
   amount: bigint,
   funder: string,
@@ -256,22 +342,23 @@ function classifyInflow(
   minUsd: number,
   opts: FundingOptions,
 ): { skip: SkippedInflow["reason"] } | { unpriced?: UnpricedFunding } {
-  if (coinType.endsWith(SUI_TYPE_SUFFIX)) {
-    return amount < minSui ? { skip: "below_sui_floor" } : {};
-  }
-  // Without a price oracle there is nothing to judge a non-SUI coin by, so
-  // accept it rather than discard evidence on a missing dependency.
-  if (!opts.valueUsd) return {};
-  const usd = opts.valueUsd(coinType, amount);
-  if (usd !== null) return usd < minUsd ? { skip: "below_usd_floor" } : {};
+  const clears = clearsDustFloor(coinType, amount, opts.valueUsd, minSui, minUsd);
+  if (clears === true) return {};
+  if (clears === false) return { skip: isSuiCoinType(coinType) ? "below_sui_floor" : "below_usd_floor" };
   // No market. Spam, unless the inflow is a share of the supply that no mass
-  // send could give each of its recipients.
+  // send could give each of its recipients, or a smaller share sent as a
+  // grant to one or a few addresses rather than as a list or burst send.
   const origin = opts.coinOrigin?.(coinType);
   if (!origin?.totalSupply || origin.totalSupply <= 0n) return { skip: "unpriced_coin" };
   const share = Number((amount * 1_000_000n) / origin.totalSupply) / 1_000_000;
   const fromPublisher = origin.publisher !== null && origin.publisher === funder;
+  const shape = opts.sendShape?.(digest, coinType);
+  const shaped = shape ? { send_shape: shape } : {};
   if (share >= UNPRICED_SUPPLY_SHARE || (fromPublisher && share >= UNPRICED_PUBLISHER_SHARE)) {
-    return { unpriced: { share_of_supply: share, from_publisher: fromPublisher } };
+    return { unpriced: { share_of_supply: share, from_publisher: fromPublisher, basis: "supply_share", ...shaped } };
+  }
+  if (share >= UNPRICED_TARGETED_SHARE && shape && isTargetedSend(shape)) {
+    return { unpriced: { share_of_supply: share, from_publisher: fromPublisher, basis: "targeted_send", send_shape: shape } };
   }
   return { skip: "unpriced_coin" };
 }

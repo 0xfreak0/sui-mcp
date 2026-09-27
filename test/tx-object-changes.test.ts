@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   custodyChanges,
+  listObjectChanges,
   mutatedCapabilities,
   readGrpcObjectChanges,
   summarizeObjectChanges,
@@ -208,5 +209,41 @@ describe("mutatedCapabilities — the capability a call used, not just what chan
       outputOwner: { kind: 1, address: OWNER_A },
     });
     expect(mutatedCapabilities([kiosk])).toHaveLength(0);
+  });
+});
+
+describe("listObjectChanges: every changed object's id, grouped by what happened to it", () => {
+  const INPUT_DOES_NOT_EXIST = 1;
+  const OUTPUT_DOES_NOT_EXIST = 1;
+  const OUTPUT_OBJECT_WRITE = 2;
+  const OUTPUT_ACCUMULATOR_WRITE = 4;
+  const id = (n: number) => `0x${n.toString(16).padStart(64, "0")}`;
+  const changes = [
+    change({ objectId: id(1), idOperation: ID_CREATED, inputState: INPUT_DOES_NOT_EXIST, outputState: OUTPUT_OBJECT_WRITE, outputVersion: 20n }),
+    change({ objectId: id(2), outputState: OUTPUT_OBJECT_WRITE, inputVersion: 10n, outputVersion: 20n }),
+    change({ objectId: id(3), outputState: OUTPUT_DOES_NOT_EXIST, inputVersion: 11n, outputVersion: 20n }),
+    change({ objectId: id(4), inputState: INPUT_DOES_NOT_EXIST, outputState: OUTPUT_OBJECT_WRITE, outputVersion: 20n }),
+    change({ objectId: id(5), idOperation: ID_DELETED, outputState: OUTPUT_DOES_NOT_EXIST, inputVersion: 12n, outputVersion: 20n }),
+    change({ objectId: id(6), outputState: OUTPUT_ACCUMULATOR_WRITE, accumulatorWrite: { address: OWNER_A } }),
+  ];
+
+  it("names created, mutated, wrapped, unwrapped and deleted objects with the version each ended or was read at", () => {
+    const byKind = listObjectChanges(changes);
+    const ids = Object.fromEntries(Object.entries(byKind).map(([k, v]) => [k, v!.map((o) => [o.object_id, o.version])]));
+    expect(ids).toEqual({
+      created: [[id(1), "20"]],
+      mutated: [[id(2), "20"]],
+      wrapped: [[id(3), "11"]],
+      unwrapped: [[id(4), "20"]],
+      deleted: [[id(5), "12"]],
+    });
+  });
+
+  it("partitions exactly what summarizeObjectChanges counts", () => {
+    const byKind = listObjectChanges(changes);
+    const summary = summarizeObjectChanges(changes);
+    expect(Object.values(byKind).flat()).toHaveLength(summary.changed);
+    expect(byKind.created).toHaveLength(summary.created);
+    expect(byKind.deleted).toHaveLength(summary.deleted);
   });
 });

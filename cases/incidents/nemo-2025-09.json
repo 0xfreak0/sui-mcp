@@ -68,12 +68,14 @@
       "args": { "digest": "{exploit_tx}", "direction": "forward", "hops": 10 },
       "expect": [
         { "path": "hops[0].digest", "op": "equals", "value": "{exploit_tx}" },
-        { "path": "hops[1].digest", "op": "equals", "value": "JBoU5bTgXeD6WDcxYZtdfSjkvwwTdhYCAqw5znPi7DaG" },
-        { "path": "hops[2].digest", "op": "equals", "value": "9ZzZ6C8mhdoxex6GdRTk2ukNeXT2jEtGPwXRYzenat7N" },
+        { "path": "_text", "op": "contains", "value": "JBoU5bTgXeD6WDcxYZtdfSjkvwwTdhYCAqw5znPi7DaG" },
+        { "path": "_text", "op": "contains", "value": "fnNgeeLsLncFwgepfoUcSKGYMH2qmsFWHhSUFetS6TZ" },
+        { "path": "_text", "op": "contains", "value": "9ZzZ6C8mhdoxex6GdRTk2ukNeXT2jEtGPwXRYzenat7N" },
+        { "path": "_text", "op": "contains", "value": "689CfJB4No341imW1ZYaGFJ8NtBPzNaMS6kipuFoCbBg" },
         { "path": "stop_reason", "op": "contains", "value": "Circle CCTP" }
       ],
       "tier": "chain-derived",
-      "basis": "Read on chain: the attacker's next SUI debit after the exploit is the swap JBoU5b…, and its next USDC debit is the CCTP burn 9ZzZ6C…."
+      "basis": "Read on chain: after the exploit the attacker swapped SUI to USDC in JBoU5b… (40,000 SUI) and fnNgee… (64,750 SUI), then burned USDC over CCTP in 9ZzZ6C… (100,000) and 689CfJB4… (200,000). The trace follows one of each pair and lists the other, so each must appear in the result."
     },
     {
       "id": "first-funder",
@@ -114,6 +116,384 @@
       ],
       "tier": "chain-derived",
       "basis": "The UpgradeCap's owner changes and the package's versions, read on chain."
+    },
+    {
+      "id": "mech-exploit-calls",
+      "question": "Which Move calls did the attacker make through the flawed function, in which package version, and in how many transactions?",
+      "tool": "query_transactions",
+      "args": {
+        "function": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f::py::get_sy_amount_in_for_exact_py_out",
+        "after_checkpoint": 187410000,
+        "before_checkpoint": 187420000,
+        "limit": 50,
+        "include_functions": true
+      },
+      "expect": [
+        {
+          "path": "function_scope.version",
+          "op": "equals",
+          "value": 10
+        },
+        {
+          "path": "transactions[*].digest",
+          "op": "includes",
+          "value": "{exploit_tx}"
+        },
+        {
+          "path": "transactions[*].digest",
+          "op": "count_gte",
+          "value": 8
+        },
+        {
+          "path": "transactions[*].digest",
+          "op": "count_lte",
+          "value": 8
+        },
+        {
+          "path": "transactions[*].sender",
+          "op": "includes",
+          "value": "{attacker}"
+        },
+        {
+          "path": "transactions[*].matched_calls",
+          "op": "includes",
+          "value": 1
+        },
+        {
+          "path": "transactions[*].move_calls[*]",
+          "op": "includes",
+          "value": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f::py::borrow_pt_amount"
+        },
+        {
+          "path": "transactions[*].move_calls[*]",
+          "op": "includes",
+          "value": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f::yield_factory::mint_py"
+        },
+        {
+          "path": "transactions[*].move_calls[*]",
+          "op": "includes",
+          "value": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f::py::repay_pt_amount"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Nemo's report V1.1 names get_sy_amount_in_for_exact_py_out and the public flash loan (borrow_pt_amount, repay_pt_amount) as the exploited functions; on chain the attacker called them through package v10 0x0f286ad0… in eight transactions between 16:03:02 and 16:06:09 UTC."
+    },
+    {
+      "id": "mech-mint-outcome",
+      "question": "What did the manipulated mint compute in the exploit transaction?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{exploit_tx}"
+      },
+      "expect": [
+        {
+          "path": "actions",
+          "op": "includes",
+          "value": "Call py::get_sy_amount_in_for_exact_py_out on Nemo"
+        },
+        {
+          "path": "actions",
+          "op": "includes",
+          "value": "Call yield_factory::mint_py on Nemo"
+        },
+        {
+          "path": "events[*].parsed.share_in",
+          "op": "includes",
+          "value": "8000000000"
+        },
+        {
+          "path": "events[*].parsed.amount_pt",
+          "op": "includes",
+          "value": "240000000000000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "The exploit transaction's MintPyEvent on chain: 8 SY (8000000000 raw sSUI) minted 240,000 PT and 240,000 YT, a py index of 30000, right after the get_sy_amount_in_for_exact_py_out call Nemo's report V1.1 names."
+    },
+    {
+      "id": "mech-caller-built-index",
+      "question": "Which value did the exploit pass as the index to get_sy_amount_in_for_exact_py_out, and where did it come from?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{exploit_tx}",
+        "detail": "full",
+        "commands": [203, 204]
+      },
+      "expect": [
+        {
+          "path": "commands[0].index",
+          "op": "equals",
+          "value": 203
+        },
+        {
+          "path": "commands[0].target",
+          "op": "matches",
+          "value": "::fixed_point64::create_from_raw_value$"
+        },
+        {
+          "path": "commands[0].arguments[0].value_type",
+          "op": "equals",
+          "value": "u128"
+        },
+        {
+          "path": "commands[0].arguments[0].value",
+          "op": "equals",
+          "value": "553402322211286548480000"
+        },
+        {
+          "path": "commands[0].returns[0]",
+          "op": "matches",
+          "value": "::fixed_point64::FixedPoint64$"
+        },
+        {
+          "path": "commands[1].target",
+          "op": "iequals",
+          "value": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f::py::get_sy_amount_in_for_exact_py_out"
+        },
+        {
+          "path": "commands[1].arguments[1].type",
+          "op": "equals",
+          "value": "Result"
+        },
+        {
+          "path": "commands[1].arguments[1].index",
+          "op": "equals",
+          "value": 203
+        },
+        {
+          "path": "commands_omitted",
+          "op": "absent"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: command 203 of the exploit PTB builds a FixedPoint64 from the pure u128 553402322211286548480000 (30000 x 2^64), and command 204 passes that Result to get_sy_amount_in_for_exact_py_out, which the MintPyEvent's py index of 30000 then reflects. All 214 commands fit in one response.",
+      "timeout_s": 180
+    },
+    {
+      "id": "mech-flawed-query-writes-index",
+      "question": "What does get_sy_amount_in_for_exact_py_out do in the version the exploit called, and what checks does it run?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f",
+        "module_name": "py"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "public get_sy_amount_in_for_exact_py_out<Ty0: drop>\\(Arg0: u64, Arg1: FixedPoint64, Arg2: &mut PyState<Ty0>, Arg3: &Clock\\): u64 \\{(?:(?!assert_current_version|has_role|Abort)[^}])*Call current_py_index<Ty0>\\(FixedPoint64, &mut PyState<Ty0>, &Clock\\)(?:(?!assert_current_version|has_role|Abort)[^}])*\\}"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "public\\(friend\\) current_py_index<Ty0: drop>\\(Arg0: FixedPoint64, Arg1: &mut PyState<Ty0>, Arg2: &Clock\\): FixedPoint64 \\{[^}]*Call fixed_point64::max\\(FixedPoint64, FixedPoint64\\)[^}]*MutBorrowFieldGeneric\\[\\d+\\]\\(PyState\\.py_index_stored: FixedPoint64\\)\\n\\t\\d+: WriteRef"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Nemo's report V1.1: a query function, get_sy_amount_in_for_exact_py_out, could modify internal state. Read in v10's py bytecode on chain: it is public, passes the caller's FixedPoint64 and &mut PyState straight to current_py_index with no version check, ACL or abort, and current_py_index writes max(argument, py_index_stored) into py_index_stored."
+    },
+    {
+      "id": "mech-mint-reads-stored-index",
+      "question": "How does the inflated stored index reach the amount mint_py pays out?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f",
+        "module_name": "yield_factory"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "public mint_py<Ty0: drop>\\([^)]*\\): u64 \\{[^}]*Call oracle_voucher::get_price<Ty0>[^}]*Call fixed_point64::create_from_raw_value\\(u128\\): FixedPoint64[^}]*Call mint_py_internal<Ty0>"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "public\\(friend\\) mint_py_internal<Ty0: drop>\\([^)]*\\): u64 \\{[^}]*Call py::current_py_index<Ty0>\\(FixedPoint64, &mut PyState<Ty0>, &Clock\\)[^}]*Call sy::sy_to_asset\\(FixedPoint64, FixedPoint64\\)[^}]*Call py::mint_py<Ty0>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Nemo's report V1.1 says the manipulated state culminated in a call to mint_py. Read in v10's yield_factory bytecode on chain: mint_py passes the oracle price to mint_py_internal, which takes current_py_index (the stored maximum) and pays sy_to_asset(index, SY in) as PT and YT."
+    },
+    {
+      "id": "mech-flash-mint-public",
+      "question": "Is the PT flash loan callable by anyone, and what does it ask for?",
+      "tool": "get_move_function",
+      "args": {
+        "package_id": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f",
+        "module_name": "py",
+        "function_name": "borrow_pt_amount"
+      },
+      "expect": [
+        {
+          "path": "visibility",
+          "op": "equals",
+          "value": "public"
+        },
+        {
+          "path": "parameters",
+          "op": "count_lte",
+          "value": 4
+        },
+        {
+          "path": "parameters",
+          "op": "excludes",
+          "value": "&0xe02f3a5e3f585b445a1b6af49361d813af747deef95e587db81caa1ff71ce914::version::Version"
+        },
+        {
+          "path": "returns",
+          "op": "includes",
+          "value": "0x2b71664477755b90f9fb71c9c944d5d0d3832fec969260e3f18efc7d855f57c4::py::FlashLoanPosition<T0>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Nemo's report V1.1: a flash_loan function intended for internal use was exposed as public. v10's signature on chain: public borrow_pt_amount(&mut PyPosition, u64, &mut PyState, &Clock) returns a FlashLoanPosition, with no coin, fee or Version argument."
+    },
+    {
+      "id": "mech-flaw-origin",
+      "question": "Which deployed version first carried the public flash loan next to the state-writing query?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "0x84d66b2822b810cbacc482490b2b00aa2fa9ba51186fae2bf8c2f2d2b1d3abe0",
+        "from_version": 2,
+        "to_version": 3
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "equals",
+          "value": "0xcf34697ad898bb0f96b2750653208150d89ead6bf224549bebc2b6654e5c5204"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "borrow_pt_amount"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "repay_pt_amount"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "excludes",
+          "value": "get_sy_amount_in_for_exact_py_out"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Nemo's report V1.1 names 0xcf34697a… as the version with the unaudited features, deployed by 0xf55cc609. On chain it is v3 of an earlier lineage rooted at 0x84d66b28… (2025-01-04); the diff from its v2 adds the public borrow_pt_amount and repay_pt_amount, while get_sy_amount_in_for_exact_py_out was already in v1. Its py module matches v1 of the exploited lineage apart from addresses."
+    },
+    {
+      "id": "mech-no-py-change-v9-to-v12",
+      "question": "Did the live version v10, or any upgrade after the exploit, change the flawed py module?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{nemo_package}",
+        "from_version": 9,
+        "to_version": 12
+      },
+      "expect": [
+        {
+          "path": "from.version",
+          "op": "equals",
+          "value": 9
+        },
+        {
+          "path": "to.version",
+          "op": "equals",
+          "value": 12
+        },
+        {
+          "path": "diff.changed_modules[*].module",
+          "op": "excludes",
+          "value": "py"
+        },
+        {
+          "path": "diff.changed_modules[*].module",
+          "op": "includes",
+          "value": "sy"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Read on chain: v10, the single-key upgrade, changed only sy; v11 (2025-09-07T16:58Z) and v12 (2025-12-03) changed yield_factory, router, market and sy. py, which holds both flawed functions, is unchanged from v9 to v12, although Nemo's report V1.1 says the query was patched to be read-only."
+    },
+    {
+      "id": "mech-v8-py-flaw-only-renumbered",
+      "question": "Did upgrade 8 change the logic of the flawed current_py_index?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{nemo_package}",
+        "from_version": 7,
+        "to_version": 8
+      },
+      "expect": [
+        {
+          "path": "diff.changed_modules[*].renumbering_only_functions[*]",
+          "op": "includes",
+          "value": "current_py_index"
+        },
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "excludes",
+          "value": "current_py_index"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: between versions 7 and 8 current_py_index differs only in PyState field-handle indices, so the unguarded write to py_index_stored is unchanged. Nemo V1.1 describes the same function as the one exploited."
+    },
+    {
+      "id": "mech-second-public-writer",
+      "question": "Is there another public path to the py_index_stored write, and when did it open?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{nemo_package}",
+        "from_version": 8,
+        "to_version": 9
+      },
+      "expect": [
+        {
+          "path": "diff.visibility_changes[*].function",
+          "op": "includes",
+          "value": "get_market_state_cache"
+        },
+        {
+          "path": "diff.visibility_changes[*].to",
+          "op": "includes",
+          "value": "public"
+        },
+        {
+          "path": "diff.visibility_changes[*].widened",
+          "op": "includes",
+          "value": true
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Nemo's report V1.1 quotes Asymptotic's finding C-2: get_market_state_cache is publicly callable and can modify py_index_stored. On chain v9 widened market::get_market_state_cache from public(friend) to public; in v10 it takes a caller FixedPoint64 and &mut PyState and reaches py::current_py_index through get_market_state."
+    },
+    {
+      "id": "mech-scan-flags-caller-index-write",
+      "question": "Does a scan of the package find the public function that writes a caller's index into PyState?",
+      "tool": "analyze_package",
+      "args": { "package_id": "{nemo_package}", "audit_capabilities": false },
+      "expect": [
+        { "path": "findings[*].code", "op": "includes", "value": "unchecked-state-write" },
+        { "path": "_text", "op": "contains", "value": "py::get_sy_amount_in_for_exact_py_out" },
+        { "path": "_text", "op": "contains", "value": "py::current_py_index: 9: WriteRef" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x2b716644 bytecode, version 1): get_sy_amount_in_for_exact_py_out passes its FixedPoint64 argument to current_py_index, which writes the larger of it and PyState.py_index_stored back at instruction 9 with no branch, and the package shares PyState. Nemo's report V1.1 names the same write."
+    },
+    {
+      "id": "mech-scan-flags-second-writer",
+      "question": "Does a scan of the exploited version also find get_market_state_cache, the second public path to the same write?",
+      "tool": "analyze_package",
+      "args": { "package_id": "0x0f286ad004ea93ea6ad3a953b5d4f3c7306378b0dcc354c3f4ebb1d506d3b47f", "audit_capabilities": false },
+      "expect": [
+        { "path": "findings[*].leads[*].function", "op": "includes", "value": "py::get_sy_amount_in_for_exact_py_out" },
+        { "path": "findings[*].leads[*].function", "op": "includes", "value": "market::get_market_state_cache" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x0f286ad0 bytecode, version 10): get_market_state_cache is public, passes its FixedPoint64 argument through get_market_state to py::current_py_index, which writes it into the shared PyState at instruction 9. The only later check on it, log_proportion's assert that a figure computed from the index and the market's totals is not one, compares nothing with stored state. Nemo's report cites Asymptotic's C-2 on this path."
     }
   ]
 }

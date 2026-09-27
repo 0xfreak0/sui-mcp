@@ -12,6 +12,7 @@ vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 vi.mock("../src/utils/store.js", () => ({
   getCachedFirstFunder: () => null,
   saveFirstFunder: mockSaveFirstFunder,
+  loadLabels: () => [],
 }));
 // firstFunderOf prices candidate inflows the same way find_funding_source
 // does; mocked here so the test suite stays offline and deterministic.
@@ -163,6 +164,67 @@ describe("probeRecipients — the bound, not the count", () => {
   });
 });
 
+describe("probeRecipients counts recipients above the dust floor", () => {
+  /** One transaction from 0xF paying `to` `amount` of `coin`. */
+  const pay = (digest: string, to: string, amount: string, coin = SUI) => ({
+    digest,
+    sender: { address: "0xF" },
+    gasInput: { gasSponsor: { address: "0xF" } },
+    effects: {
+      balanceChanges: {
+        nodes: [
+          { owner: { address: "0xF" }, amount: `-${amount}`, coinType: { repr: coin } },
+          { owner: { address: to }, amount, coinType: { repr: coin } },
+        ],
+      },
+    },
+  });
+  const USDC = `0x${"d".repeat(64)}::usdc::USDC`;
+  const SPAM = `0x${"e".repeat(64)}::spam::SPAM`;
+
+  it("does not let sub-floor sends make a funder popular", async () => {
+    mockGqlQuery.mockImplementation(async () =>
+      page([
+        ...Array.from({ length: 60 }, (_, i) => pay(`0xdust${i}`, `0xr${i}`, "9999999")),
+        pay("0xreal", "0xa", "10000000"),
+      ]),
+    );
+    const r = await probeRecipients("0xF", 50, new Budget(100));
+    expect(r.popular).toBe(false);
+    expect([...r.members.keys()]).toEqual(["0xa"]);
+    expect(r.belowFloor).toBe(60);
+  });
+
+  it("judges other coins by the $0.10 floor and leaves a coin nobody prices out", async () => {
+    coinDecimals[USDC] = 6;
+    mockPrices.mockImplementation(aftermathUp({ [USDC]: 1 }));
+    mockGqlQuery.mockImplementation(async () =>
+      page([pay("0x1", "0xa", "100000", USDC), pay("0x2", "0xb", "99999", USDC), pay("0x3", "0xc", "1000000000000", SPAM)]),
+    );
+    const r = await probeRecipients("0xF", 50, new Budget(100));
+    expect([...r.members.keys()]).toEqual(["0xa"]);
+    expect(r.belowFloor).toBe(2);
+  });
+
+  it("does not count a coin named sui::SUI from another package by the SUI floor", async () => {
+    const IMPOSTOR = `0x${"b".repeat(64)}::sui::SUI`;
+    mockGqlQuery.mockImplementation(async () =>
+      page(Array.from({ length: 60 }, (_, i) => pay(`0xfake${i}`, `0xr${i}`, "10000000", IMPOSTOR))),
+    );
+    const r = await probeRecipients("0xF", 50, new Budget(100));
+    expect(r.popular).toBe(false);
+    expect(r.belowFloor).toBe(60);
+  });
+
+  it("counts other coins at any amount when no price can be read", async () => {
+    mockPrices.mockImplementation(async () => new Map());
+    mockGqlQuery.mockImplementation(async () => page([pay("0x1", "0xa", "1", USDC), pay("0x2", "0xb", "1", SUI)]));
+    const r = await probeRecipients("0xF", 50, new Budget(100));
+    expect([...r.members.keys()]).toEqual(["0xa"]);
+    expect(r.belowFloor).toBe(1);
+  });
+});
+
 describe("countPaidAddresses", () => {
   const change = (owner: string, amount: string, coin = SUI) => ({ owner: { address: owner }, amount, coinType: { repr: coin } });
 
@@ -211,10 +273,10 @@ describe("a narrow verdict off an incomplete scan is provisional", () => {
 describe("probeRecipients reads whole balance-change lists", () => {
   it("finds recipients past a transaction's first page of 50, and charges the follow-up reads", async () => {
     const changes = [
-      { owner: { address: "0xF" }, amount: "-60", coinType: { repr: SUI } },
+      { owner: { address: "0xF" }, amount: `-${60n * BigInt(ONE_SUI)}`, coinType: { repr: SUI } },
       ...Array.from({ length: 60 }, (_, i) => ({
         owner: { address: `0x${(i + 1).toString(16).padStart(64, "0")}` },
-        amount: "1",
+        amount: ONE_SUI,
         coinType: { repr: SUI },
       })),
     ];
@@ -845,13 +907,57 @@ describe("a coin nobody prices counts as funding when no airdrop could send that
     expect(mockSaveFirstFunder).not.toHaveBeenCalled();
   });
 
+  /** The deployer's other sends of KONG around the inflow, as the window read returns them. */
+  const windowOf = (sends: Array<{ to: string; amount: string }>) => ({
+    transactions: {
+      pageInfo: { hasNextPage: false },
+      nodes: sends.map((p, i) => ({
+        digest: `burst${i}`,
+        effects: {
+          balanceChanges: {
+            nodes: [
+              { owner: { address: DEPLOYER }, amount: `-${p.amount}`, coinType: { repr: KONG } },
+              { owner: { address: p.to }, amount: p.amount, coinType: { repr: KONG } },
+            ],
+          },
+        },
+      })),
+    },
+  });
+  const withWindow = (window: unknown, rest: ReturnType<typeof router>) => async (q: string, v: Record<string, string> = {}) =>
+    String(q).includes("TransactionFilter") ? window : rest(q, v);
+
   it("still skips a publisher's spam airdrop of the same coin", async () => {
-    // 0.01% of supply to this wallet: a share ten thousand wallets could get.
+    // 0.01% of supply to this wallet, sent the same amount to 30 wallets in a burst.
     const airdrop = transfer("SpamDrop", DEPLOYER, KONG, "10000000", "2024-09-26T05:56:22.186Z");
     mockGqlQuery.mockImplementation(
-      router({
-        earliest: (addr) => (addr === INSIDER ? page([airdrop, gas]) : page([])),
-      }),
+      withWindow(
+        windowOf(Array.from({ length: 30 }, (_, i) => ({ to: `0xd${i}`, amount: "10000000" }))),
+        router({ earliest: (addr) => (addr === INSIDER ? page([airdrop, gas]) : page([])) }),
+      ),
+    );
+    const r = await buildWalletEdges([DEPLOYER, INSIDER], { expand: false });
+    const fe = r.edges.find((e) => e.signal_types.includes("funding_edge"));
+    expect(fe!.signals[0].digests).toEqual([gas.digest]);
+  });
+
+  it("names a 0.01% grant sent to this wallet alone as its first funding", async () => {
+    const small = transfer("SmallGrant", DEPLOYER, KONG, "10000000", "2024-09-26T05:56:22.186Z");
+    mockGqlQuery.mockImplementation(
+      withWindow(windowOf([]), router({ earliest: (addr) => (addr === INSIDER ? page([small, gas]) : page([])) })),
+    );
+    const r = await buildWalletEdges([DEPLOYER, INSIDER], { expand: false });
+    const fe = r.edges.find((e) => e.signal_types.includes("funding_edge"));
+    expect(fe!.signals[0].digests).toEqual([small.digest]);
+  });
+
+  it("keeps a 0.01% send spam when the same amount went to several wallets", async () => {
+    const small = transfer("EvenList", DEPLOYER, KONG, "10000000", "2024-09-26T05:56:22.186Z");
+    mockGqlQuery.mockImplementation(
+      withWindow(
+        windowOf([{ to: "0xd1", amount: "10000000" }, { to: "0xd2", amount: "10000000" }]),
+        router({ earliest: (addr) => (addr === INSIDER ? page([small, gas]) : page([])) }),
+      ),
     );
     const r = await buildWalletEdges([DEPLOYER, INSIDER], { expand: false });
     const fe = r.edges.find((e) => e.signal_types.includes("funding_edge"));
@@ -1062,10 +1168,10 @@ describe("a popularity read that fails after its first page gives no verdict", (
 
   it("marks a probe unmeasured when a transaction's balance-change continuation fails", async () => {
     const changes = [
-      { owner: { address: "0xF" }, amount: "-60", coinType: { repr: SUI } },
+      { owner: { address: "0xF" }, amount: `-${60n * BigInt(ONE_SUI)}`, coinType: { repr: SUI } },
       ...Array.from({ length: 60 }, (_, i) => ({
         owner: { address: `0x${(i + 1).toString(16).padStart(64, "0")}` },
-        amount: "1",
+        amount: ONE_SUI,
         coinType: { repr: SUI },
       })),
     ];
@@ -1245,5 +1351,73 @@ describe("a public gas station's gas row does not make it an operator", () => {
     expect(r.first_funders[S2]).toBe(PAYER2);
     // Measured and correctly excluded as a wide public relayer.
     expect(r.excluded_intermediaries.some((e) => e.address === GAS_STATION)).toBe(true);
+  });
+});
+
+describe("a sponsor and a funder serving the same wallets from two addresses", () => {
+  const W1 = "0xa01";
+  const W2 = "0xa02";
+  const FUNDER = "0xf0f";
+  const SPONSOR = "0x5b0";
+  const others = Array.from({ length: 58 }, (_, i) => `0xc${i.toString(16).padStart(2, "0")}`);
+  /** A transaction `sender` sent with SPONSOR paying its gas. */
+  const sponsored = (digest: string, sender: string) => ({
+    digest,
+    sender: { address: sender },
+    gasInput: { gasSponsor: { address: SPONSOR } },
+    effects: { balanceChanges: { nodes: [] } },
+  });
+
+  /**
+   * FUNDER first funds both seeds, and pays 8 addresses (narrow) or 60 (an
+   * exchange hot wallet). SPONSOR pays gas for 60 wallets and funds none.
+   */
+  function chain(firstFunderOfOther: (i: number) => string, funderPays = 8) {
+    return router({
+      earliest: (addr) => {
+        if (addr === W1 || addr === W2) return page([payment(`0xfund${addr}`, FUNDER, addr)]);
+        const i = others.indexOf(addr);
+        return i >= 0 ? page([payment(`0xfund${addr}`, firstFunderOfOther(i), addr)]) : page([]);
+      },
+      recent: (addr) => {
+        if (addr === W1 || addr === W2) return page([sponsored(`0xgas${addr}`, addr)]);
+        if (addr === SPONSOR) return page([...others, W1, W2].map((a) => sponsored(`0xgas${a}`, a)), true);
+        return page([]);
+      },
+      sent: (addr) =>
+        addr === FUNDER
+          ? page(Array.from({ length: funderPays }, (_, i) => payment(`0xpay${i}`, FUNDER, `0xe${i}`)), funderPays > 50)
+          : page([]),
+    });
+  }
+
+  it("links the sponsor to the seeds and their funder when the wallets it serves share that funder", async () => {
+    mockGqlQuery.mockImplementation(chain(() => FUNDER));
+    const r = await buildWalletEdges([W1, W2], { expand: false });
+    const pair = (a: string, b: string) => r.edges.find((e) => [e.wallet_a, e.wallet_b].sort().join() === [a, b].sort().join());
+    expect(pair(SPONSOR, FUNDER)?.weight).toBe(1);
+    expect(pair(SPONSOR, W1)?.weight).toBe(1);
+    expect(pair(SPONSOR, W2)?.weight).toBe(1);
+    const used = r.used_intermediaries.find((u) => u.address === SPONSOR);
+    expect(used?.role_split).toMatchObject({ funder: FUNDER, wallets_checked: 6, first_funded_by_funder: 6, linked: true });
+    expect(r.excluded_intermediaries.map((e) => e.address)).not.toContain(SPONSOR);
+  });
+
+  it("keeps two users of an exchange-funded, relayer-sponsored wallet unlinked", async () => {
+    // Every wallet the relayer serves withdrew first from the same exchange hot wallet.
+    mockGqlQuery.mockImplementation(chain(() => FUNDER, 60));
+    const r = await buildWalletEdges([W1, W2], { expand: false });
+    expect(r.edges.filter((e) => e.weight >= 1)).toEqual([]);
+    const excluded = r.excluded_intermediaries.find((e) => e.address === SPONSOR);
+    expect(excluded?.role_split).toMatchObject({ funder: FUNDER, wallets_checked: 0, linked: false });
+    expect(excluded?.role_split?.not_checked).toBeTruthy();
+  });
+
+  it("keeps a relayer whose users were funded by others out, and says what it measured", async () => {
+    mockGqlQuery.mockImplementation(chain((i) => (i < 1 ? FUNDER : `0xd${i.toString(16).padStart(2, "0")}`)));
+    const r = await buildWalletEdges([W1, W2], { expand: false });
+    expect(r.edges.some((e) => e.signals.some((s) => s.weight >= 1 && (e.wallet_a === SPONSOR || e.wallet_b === SPONSOR)))).toBe(false);
+    const excluded = r.excluded_intermediaries.find((e) => e.address === SPONSOR);
+    expect(excluded?.role_split).toMatchObject({ funder: FUNDER, wallets_checked: 6, first_funded_by_funder: 1, linked: false });
   });
 });

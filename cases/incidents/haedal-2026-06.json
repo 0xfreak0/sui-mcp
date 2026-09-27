@@ -1,0 +1,740 @@
+{
+  "slug": "haedal-2026-06",
+  "kind": "protocol-exploit",
+  "title": "Haedal Vault LP-share inflation through the superseded v1 package, 8-9 June 2026",
+  "network": "mainnet",
+  "summary": "From 18:04 UTC on 8 June 2026 two wallets, each first funded minutes earlier by the same address, which fills Orbiter Finance bridge orders (inferred from its OrbiterRouter-memo swaps), deposited into six Haedal vaults through version 1 of the vault package (0xfbc91f75) and redeemed through version 3 (0x4893ee66): the shared Versioned object still read 1, so v1 passed its version check, and v1's calculate_aum counts the DLMM market and the buffer but not the CLMM market v3 added, so v1 deposits minted up to 99.9% of a vault's LP against an understated AUM. The exploit transactions netted about $924K at the time (Haedal: ~$915,179), which left for Ethereum through Mayan MCTP and Orbiter. Haedal's upgrade key paused every version at 03:13 UTC on 9 June by setting Versioned to 1844674407370955161 and shipped v4 with vault deprecation on 17 June.",
+  "sources": [
+    {
+      "url": "https://x.com/HaedalProtocol/status/2064337754969055568",
+      "publisher": "Haedal",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://hacked.slowmist.io/",
+      "publisher": "SlowMist Hacked",
+      "kind": "security-firm"
+    },
+    {
+      "url": "https://www.bitget.com/news/detail/12560605450570",
+      "publisher": "Bitget News / ChainCatcher",
+      "kind": "news"
+    },
+    {
+      "url": "https://www.bitget.com/news/detail/12560605466093",
+      "publisher": "Bitget News / Foresight News",
+      "kind": "news"
+    }
+  ],
+  "subjects": {
+    "attacker_a": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
+    "attacker_b": "0xbcec4942fe70bbadc211137c617517fcb1d28fba023b78a7e352152b1fd8438e",
+    "orbiter_maker": "0xb4a3550dbf381f2e1c10be840b685f81c2d070d158cab20dc2fb9e0383885d3a",
+    "vault_v1": "0xfbc91f75397ce25b3b1b01cab2bf494d2e3f9b9e89c97545d88bd616cbbfcc37",
+    "vault_v3": "0x4893ee6665ad7b1a83810c16e0151b9500a7296bba85f2571ba9e79115ce1a83",
+    "vault_v4": "0xaad8908baec7f667c253a0f6abc050e7e7a4e6921b9e306cb9a2dec3a321f607",
+    "versioned": "0x70bea2f242b057cda9994e9fecee121cb35ee914c360cc86f061268110b6d9ec",
+    "lbtc_sui_vault": "0x8c7bab37d84bcb047e0d8fe410ab53cd16efa8d25ad532be63e1e4c4cc595507",
+    "sui_usdc_vault": "0x19d8d74a350f2baa415908b7a4bf03ffefd1a14b63af3875380229f8a64b3f61",
+    "inflating_deposit_tx": "CjanwTd75usUs5gf4d2CR2DDQb77MGM7qqCA4VhXiF1r",
+    "funding_a_tx": "5rbAiX2u9He9ETN5zcRvmqKqZr7CEebGktqf1j7vcs62",
+    "funding_b_tx": "Hdv7UpcJeGnxN34B9jYgeU3FNkjp2u9EhejRiLiPNHB3",
+    "orbiter_exit_tx": "7sYWMrP6Gz4UQjCUgVxLXP25nARsaWHnQY1WTWj3ESX1",
+    "pause_tx": "9wkaED1Q8T5UqmpbtBxJ4hB5Dwz1T9Cmwh7WveHHChBR",
+    "v1_publish_tx": "8JzL5e9ugKWZM4Q3d5wmz3zEzPyX9jG3dC6KnY2kqqqN",
+    "eth_a": "eip155:1:0x99a8aa2ae13da715b59f9949a0f35100ecdf9591",
+    "eth_b1": "eip155:1:0xd8b541a686a12c7a7035d1405cb8246d33e96cf8",
+    "eth_b2": "eip155:1:0xc82c6a8be79ff9ebed09336149f1bdc1c1f1e007"
+  },
+  "checks": [
+    {
+      "id": "deposit-runs-stale-v1-and-inflates-lp",
+      "question": "What did the deposit that took 99.9% of the LBTC-SUI vault's LP run, and what did it change?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{inflating_deposit_tx}"
+      },
+      "expect": [
+        {
+          "path": "profit.address",
+          "op": "iequals",
+          "value": "{attacker_a}"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "stale-package-version"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "shared-state-jump"
+        },
+        {
+          "path": "state_deltas.jumps[*].field",
+          "op": "includes",
+          "value": "last_aum"
+        },
+        {
+          "path": "state_deltas.jumps[*].field",
+          "op": "includes",
+          "value": "lp_token_treasury.total_supply.value"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "{vault_v1}::vault::deposit"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "v3 {vault_v3} was already published"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the transaction calls v1 calculate_aum and deposit while v3 (2025-12-23) was the newest version; the LBTC-SUI vault's LP supply went from 25,865,437,586,547 to 26,876,536,092,401,957 for 577,605 DEEP and 0.62 USDC. Haedal: excess LP was minted through an old deposit path."
+    },
+    {
+      "id": "deposit-coins-and-versioned-read",
+      "question": "Which coins did the v1 deposit take, and which version of the Versioned object did it check?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{inflating_deposit_tx}",
+        "commands": [
+          22
+        ]
+      },
+      "expect": [
+        {
+          "path": "commands[0].target",
+          "op": "iequals",
+          "value": "{vault_v1}::vault::deposit"
+        },
+        {
+          "path": "commands[0].type_arguments",
+          "op": "includes",
+          "value": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
+        },
+        {
+          "path": "commands[0].type_arguments",
+          "op": "includes",
+          "value": "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP"
+        },
+        {
+          "path": "inputs[*].object_id",
+          "op": "includes",
+          "value": "{versioned}"
+        },
+        {
+          "path": "inputs[*].version",
+          "op": "includes",
+          "value": "669858312"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: v1 vault::deposit<USDC, DEEP, LPCOIN> on the LBTC-SUI vault, reading Versioned at its creation version 669858312."
+    },
+    {
+      "id": "lbtc-vault-pair",
+      "question": "Which coin pair does the vault the attacker paid in USDC and DEEP hold?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{lbtc_sui_vault}",
+        "version": 911872384
+      },
+      "expect": [
+        {
+          "path": "content.coin_type_a",
+          "op": "equals",
+          "value": "3e8e9423d80e1774a7ca128fccd8bf5f1f7753be658c5e645929037f7c819040::lbtc::LBTC"
+        },
+        {
+          "path": "content.coin_type_b",
+          "op": "equals",
+          "value": "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+        },
+        {
+          "path": "content.markets.size",
+          "op": "equals",
+          "value": "1"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the vault read by the inflating deposit is LBTC-SUI with one market. Haedal lists LBTC-SUI among the deprecated vaults."
+    },
+    {
+      "id": "versioned-still-1",
+      "question": "What did the shared Versioned object hold when the exploit ran?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{versioned}",
+        "version": 669858312
+      },
+      "expect": [
+        {
+          "path": "content.version",
+          "op": "equals",
+          "value": "1"
+        },
+        {
+          "path": "previous_transaction",
+          "op": "equals",
+          "value": "{v1_publish_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: Versioned was created at 1 by the v1 publish (2025-11-12) and was not written again until the pause on 2026-06-09, so the v2 and v3 upgrades never raised it. Haedal: the upgrade did not force the old entrypoints out."
+    },
+    {
+      "id": "v1-gate-accepts-1",
+      "question": "What stored version does v1's check_version accept?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{vault_v1}",
+        "module_name": "versioned",
+        "function_name": "check_version"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "ImmBorrowField\\[0\\]\\(Versioned\\.version: u64\\)\\n\\t2: ReadRef\\n\\t3: LdConst\\[0\\]\\(u64: 1\\)\\n\\t4: Le\\n\\t5: BrFalse"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xfbc91f75 bytecode): check_version aborts with EVersionDeprecated unless Versioned.version <= 1, so a stored 1 lets every v1 entrypoint run."
+    },
+    {
+      "id": "v3-gate-constant-3",
+      "question": "What version constant did the version in force at the exploit carry?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{vault_v3}",
+        "module_name": "versioned",
+        "function_name": "check_version"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "3: LdConst\\[0\\]\\(u64: 3\\)\\n\\t4: Le"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x4893ee66 bytecode): v3 accepts Versioned.version <= 3. Raising the object to 3 would have closed v1 (<= 1); it stayed at 1. Haedal: old entrypoints were left callable instead of forcing the upgrade."
+    },
+    {
+      "id": "v1-aum-ignores-clmm",
+      "question": "Which holdings does v1's calculate_aum count before writing last_aum?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{vault_v1}",
+        "module_name": "vault",
+        "function_name": "calculate_aum"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^(?![\\s\\S]*CLMM)[\\s\\S]*\"DLMM_MARKET\"[\\s\\S]*market_dlmm::last_amounts[\\s\\S]*Vault\\.buffer_assets[\\s\\S]*Call calculate_tvl_base_on_quote\\([^\\n]*\\n\\t\\d+: CopyLoc\\[0\\]\\(Arg0: &mut Vault<Ty0>\\)\\n\\t\\d+: MutBorrowFieldGeneric\\[\\d+\\]\\(Vault\\.last_aum: u128\\)\\n\\t\\d+: WriteRef"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xfbc91f75 bytecode): calculate_aum sums the DLMM_MARKET's last_amounts and the buffer_assets balances, prices them and writes Vault.last_aum; it has no CLMM branch. Haedal: excess LP minted through the old deposit path."
+    },
+    {
+      "id": "v3-aum-counts-clmm",
+      "question": "Does the version in force at the exploit count the CLMM market in AUM?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{vault_v3}",
+        "module_name": "vault",
+        "function_name": "calculate_aum"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "\"CLMM_MARKET\""
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "market_clmm::last_amounts(&CLMMMarket, &TxContext)"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x4893ee66 bytecode): v3 calculate_aum adds the CLMM_MARKET's last_amounts to the DLMM and buffer totals, so v1 and v3 price the same vault against different AUMs."
+    },
+    {
+      "id": "v1-deposit-no-pair-check",
+      "question": "How does v1 deposit size the LP it mints, and does it check the coins against the vault's pair?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{vault_v1}",
+        "module_name": "vault",
+        "function_name": "deposit"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^(?![\\s\\S]*coin_type_a)[\\s\\S]*Call calculate_tvl_base_on_quote\\([\\s\\S]*ImmBorrowFieldGeneric\\[\\d+\\]\\(Vault\\.last_aum: u128\\)\\n\\t\\d+: ReadRef\\n\\t\\d+: Call get_lp_amount_by_tvl\\(u64, u128, u128\\): u128"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "Call coin::mint<Ty2>[\\s\\S]*Call balance_bag::join<Ty0>[\\s\\S]*Call balance_bag::join<Ty1>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xfbc91f75 bytecode): deposit prices the two coins by their own types, mints get_lp_amount_by_tvl(supply, tvl, Vault.last_aum) and joins any coin type into buffer_assets; it never reads coin_type_a or coin_type_b. Haedal: excess LP shares minted through an old deposit path."
+    },
+    {
+      "id": "v3-deposit-pair-and-margin",
+      "question": "What does the newer deposit check that v1's lacks?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{vault_v3}",
+        "module_name": "vault",
+        "function_name": "deposit"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "EInvalidDepositCoinPair"
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "get_aum_safety_margin_bps"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x4893ee66 bytecode): v3 deposit compares the coin types with Vault.coin_type_a/coin_type_b (abort 36) and scales last_aum by an AUM safety margin before sizing LP; v1 has neither."
+    },
+    {
+      "id": "v3-adds-clmm-market",
+      "question": "What did the upgrade in force at the exploit change?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{vault_v1}",
+        "from_version": 2,
+        "to_version": 3
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "{vault_v3}"
+        },
+        {
+          "path": "diff.added_modules",
+          "op": "includes",
+          "value": "market_clmm"
+        },
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "includes",
+          "value": "calculate_aum"
+        },
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "includes",
+          "value": "deposit"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: v3 (2025-12-23 09:23 UTC) adds the market_clmm module and changes calculate_aum and deposit. Haedal: a Vault upgrade deployed late 2025."
+    },
+    {
+      "id": "pause-maxes-versioned",
+      "question": "How and when did Haedal stop the old and new entrypoints?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{versioned}",
+        "version": 860715666
+      },
+      "expect": [
+        {
+          "path": "content.version",
+          "op": "equals",
+          "value": "1844674407370955161"
+        },
+        {
+          "path": "previous_transaction",
+          "op": "equals",
+          "value": "{pause_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: config::emergency_pause, sent by the package's upgrade key 0x2ff8829b at 2026-06-09T03:13:37Z, set Versioned to 1844674407370955161, above every version's constant. Haedal: abnormal liquidity detected on 9 June."
+    },
+    {
+      "id": "v4-deprecates-vaults",
+      "question": "What did Haedal's next upgrade add?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{vault_v1}",
+        "from_version": 3,
+        "to_version": 4
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "{vault_v4}"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "recover_deprecated_vault_buffer_asset"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "is_deprecated_vault"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: v4 (2026-06-17) adds is_deprecated_vault, vault_has_no_open_positions and recover_deprecated_vault_buffer_asset and raises the version constant to 4. Haedal: the affected vaults were deprecated and replaced."
+    },
+    {
+      "id": "exploit-net-gain",
+      "question": "How much did the two wallets net across their v1-deposit and v3-withdraw transactions?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "DkDmwtpVaQVQtMFNa6TnSUgwQnBtQVpiD6f56z6vkGe1",
+          "7P5BwhDMHEVhoN9YsogR8Mkj5ciUyA99S742PckG9kkd",
+          "BcFoitdC2CtjjP3RzyaCF9eTdE2ajmhDk92y6WqSKnpQ",
+          "DvStPv6Wq33rQYV9XaJk2937mmuDghdiyHG4AxCwkti4",
+          "Ds51kdQtwfnaHbJj83pDu7cx39iUX1xY4HKtNgRrs7dx",
+          "CWHf7eu5n1Vn4PAS5sT1ubWRm1dPs9Kzgc4sK8MvNQQ",
+          "CZUqfkCCQvp55XrkmtYv6BfFQL3TCn7wW725CEUmt3oR",
+          "5rmQBbJVxNMdFq2qwGXW5NEUJE3dxyEUQMy1HrGrfbNd",
+          "6KKHwDLY1ykRojKvmFfUMRPuCNQFwUoLDejs6d7VSLVS",
+          "BwhdSTtiYyUFj5Jp7e3ywRXc3vmjjZiYqvVtLYcTp3mG",
+          "HeiA5DFnQz74NgBiEW8gY7M5jAxhpZGyE97ppUg3wg7W",
+          "BNcgocnGtNf3MCp7FBjMbrj7FHwAjy3yGrwj91F5TYUF",
+          "CBJXr9RPJBsvrEp7esdCZDgLsCw3pfnGtiLHGnGXmqkX",
+          "6Mwx4HrhRPEoy7d8Ri6iAprKhhkkx2X6LcUGNMQJaPYU",
+          "H3EwMT5MKfeg4ZdQqNVPdTAPGXsHDpF4Uzspwib555g2",
+          "CVy4xZFMGtXvn6VsgmCeyYvGgv6JToCcHDGJ9Poi22AX",
+          "fdppbEDpo4PvMmxF7RVSU9XJwdshzB8GyKsJcZCAT9X",
+          "Fey2uz24FGbjRhW64EM9WxaqvYrHp2strJBRUk18R4X7",
+          "DspXiN18QDgD5YCka9n3KrLoTYSdLhHR2pNRBpdLHLj1",
+          "6VGejwTwA167EZGdrdghUvBM15JAMfBFkziLJrEitPRX",
+          "AAbVay5yFTnZ4BL9bBk7pjYbchqbwoZP9EHZRtJ6xiFi",
+          "BoG7S7Mw8caRVxCgpHtb1xqNb98ogeHTt2xqqsWUy8jo",
+          "cBJ9Vb7fjpRtJ6XnApvxcnbutdxjH2KGVDQyutJ4kYU",
+          "7SMeGQri6Y27ZHdHSz6hiFcKF1ssG79gBCzpzrRSGqED",
+          "4guCiSztEtr1z4msg7GXCEnWw6SFe2xa8Wn9romPGtep",
+          "5vWwnWsUKSndhMu2fNPjBVZGVPutpfpee1KATdz3u2Br",
+          "F3xKmqEcrQdDvXDbwStbokM1wAEtKXgACUbZDTcHmKk6",
+          "9BPyhAswhDJR9GK3wbFHf6e1PUEHVNaFSeBbfoFtKWJk",
+          "4AH6MNMEt1FJmywG5q53ZSiWRJLbw51gjrXV8Cf4pH1s",
+          "663Xoqtxxd3G6XtZPpAWLXYv1tzFZHbaT7gZKDHzCP9T",
+          "55BzHGY94P7XzEUSfPTxrCyEw2JWqJGbNedeF4g7w6gW",
+          "ARBSYQajPmgbaCzjL7QvcoQ1yaHs98Bvympj2JaVdci6",
+          "BBBt8VaAdTNqcfPKMPcC1LWDx6yeedA48Z4A5irPSge3",
+          "3kqro7LCB8thBwf98XSRJszFPzGR65X5YFPGm5eKtQZz",
+          "GQSdyAq1kC3usx3xdrRe6sbwWX6EyF7npaQJmSceh87N",
+          "vpuDrpMy48hQX2HYjELrweN28sZEWrqeJj8MZ674rdn",
+          "q33VsTstH1Lrr4c5tcmLNPtPq2vMse5mHZGkaBZ2nZM",
+          "Fj3hg5N8oMmNuABYVNu5VKDmpgxcp6o6sdihff4d3PpZ",
+          "EvyrqnhJaUmE7B7YhpnGDSYwUiiK87afMGmnR7wytCkT",
+          "EYyKwa2ahzKdbnjwVmJMNk5gF5BVvFgeDo4j6AZacChi",
+          "EdYZ7h4rMfB8ehQ4N3hNWjhAhqxD4sv9UbfcBxTLDiMK",
+          "4QeWoeNpJb2Fh5iat7MMxYjNYczuuH576zeGnCFHBAxK",
+          "AnAvVWzWjP7DK5ymiT3eZD7CZ4kVUfVjk7E4hoeTP9vo",
+          "AqGJG561J5JBKpW6C9erxe6stYbBaqtD85gwbrX2Z1Pa",
+          "FDQ86b6CRmA39VRZzJZtoZYYS6xtt13Y17tP6BoPJggH",
+          "7qprnLJRwo9xBESFadJztDpe1uMLydUR2BpyY8qCc4wU",
+          "BtQdTSSVu7GSWwanVMHFrzvR7dzwkWSsxZR1wfDbzd9t",
+          "452qN5pfcTQ6gWquAoo9Jfc7gf7EWxA5cHvmbSLNDQ5D",
+          "EDiyKiachMN9kA4Y47xs5bcyTfnTDfFFZEMKjraKW9nN",
+          "Hte9rRZCREJxXPWNetw9Pu8QNeb64YUDYL9zRHB42yAw",
+          "5YhihHT4kCT1oUW8DVCGEvPXYxFATgU2V5BxLh7YGnAG",
+          "CcRgVUpsWpSe6GXkvsKVrDcr6xzR4EFn55qrsy6WPRUR",
+          "9bghhm7euYHny4FCssSCnJzCpDMj25jbydHPCtRyN7gC",
+          "JA48hcTo3cJogocBe7Zu84LD54FqiqERCPufz8uKGnaz",
+          "E5E3RCLeoW5di2gbMWKgiVHLcKvD9fbihaZGa5beaMqa",
+          "J8TrUumrVzvpD5sVoS5PK5KK3A6b9TogBJG7tkVRgkAC",
+          "24foxhMBCrXquFn1YcKnDkX5J38B9WufmcJgNd59v4zr",
+          "HTuA5t8UY17XawWAC4yWapLFEx7X7EA8fMvsSVgwAEMA",
+          "HEiWmsmYmiwt1YMgu3E8KA162GwnCvb66CdwXkiBcffG",
+          "J2UoMW7J4TzSBTiUwosxRVaRDkvktV2QMCMy3b1gRhP1",
+          "G5j44NXvTKZ63rJZGZM2EGThNsSYxaEtqqg7Kc82A35J",
+          "Hi2LUmPQ2RWdWw3Pd1RKodbYr5th3xvWjvgf137iyF3g",
+          "Mp8at81wdTtb6Yhd1KVK1tVH51hjpfMvV1mhUn5FTnv",
+          "2EYM9gKmPipiR7oQM1RYQNYcU2jTDAHfmQbfjpVW2KuW",
+          "75QWMn83wqKUAsC3BqEfBuXqpS3oNr1ZrGoiPdq4T5Vq",
+          "22VGK6iji6wZ4owA4Ui81bjmAYvy1UAZjE5461XoMmym",
+          "3MyBP5Juwm3WdrWFEeL3L8CPv4ZzkL1FSMnRGaM818XM",
+          "BFD7vxg7a7fFbQfCNpQcn5niV6f72NP9bG6a8roa9M3G",
+          "FQtHZDs7AFboumTo5ERWd4CM5Ez4oFe2FHzCv5QZAKHg",
+          "51djvCmBqX1tnLBVohigBJri9dG7DJB8kTRAFsJT7gy",
+          "CjanwTd75usUs5gf4d2CR2DDQb77MGM7qqCA4VhXiF1r",
+          "7MckPTbBViQwSX1ckea2NvgHSmDfHAw5Z589dZexKgRy",
+          "EV3h3Kjiv5vMYeXyNDsd7Wh8iJFHdU1r1JepMj8rkFBV",
+          "4KgRmUQPfEKKB7GNUJ6RCYJcDTzb49BRQLZaQy36RpnP",
+          "GPH8ifjmHg72gdw17HxCeRXoZLC68zCGfXJxFrfcySCE",
+          "53dpZyjHNJbtKFgvbK5PHgCN1MfERfQebHjNNYfwSjbN",
+          "6PS8dJg9MGFyjeycb5N3jj41zf9Fm2m48jCbLDzJn6eJ",
+          "4bt84KRaRZTLjmHNBEs7AkDNHKPbZuZTNYNQVtddvdQ3",
+          "82CzXrvXAktyCueQVX8j8L2HVhEkcturSNvux5eTFWTE",
+          "FUF8zPbErKwUnCKdcExbLwvywSn66i67tUX3cqd9cs7k",
+          "CA1mNd5DdZ975NWkvkzVMtX3GrnBSWhqR8ULeiuuFnsC",
+          "F4je2NcdqwJ6vsnP5seMxiePRzLG54JHMvuFqvPKcx9u",
+          "9P7RPJP3USgG6xjsZjrcGLvs18xnVCN1TGKKPMWNQY8L",
+          "GdTopfg4DhydN1RuED1JwfwKTnnZzEUW73yDvqak6BdU",
+          "2ZgPgBNR16Q3LHPiHUSN2jzxLViaxqCGNrqjn9Ah2eEz",
+          "CvuQEasgETkJfuabUHLEQ4ZZp4xAoweXfSCDrP68BNwU",
+          "7qfEtXumTKiDXUo9WLnFsJqGm4Bs2zkYT7B98A2kzU38",
+          "9wQr64XoVHxiNpZZWTRob91xoyU3579BbUox3VWTHXLv",
+          "4Yfb4o4NzKzWjQ9nViVkL5hUvPN4zoiX1k2CtgJQwkV1",
+          "3SaxGztERXegBz8vpCCbBriSiySsRh9b5ndD8Jya6Nhk",
+          "76NxBgiLEDLTuV62uJ6jjoiSbZ3qmswTuU62m1Jf6zck",
+          "27PbuuQLvw4eiKdxzjrnCnb9zVsWw3fzQ2SFaad2KSrK",
+          "2jGNtvMgp1AZaBMrWvQ7j7KsuWmD73VR1tf4xQG5Qc7S",
+          "KcdG3sVqoRFnhJ7uTMA8vmw9Pw6w8U3QFKYkvM9SBeH",
+          "H28LQmscP9szWdGBH2n4gW3RsydM1fHFEmRixGBitDcc",
+          "CVWZ4z4a7v8gp2UTG2wnw2q2q3zg7h61eQBoQWFGDX8c",
+          "6YL29AA8pSEuTiyMyDsUSTipTyoiMhg8jWamucwVogHn",
+          "2rUiJvxT9aMBBViNBBcsC3voM48DKHntSmgYvr6S7a2G",
+          "xiAQu3JkBWopvQbCxAfeo3NKgH5jxz31dsg7eLkrokN",
+          "4NR14WP5h3CDN97yTQGw8mvwDSjT3Av3M5LM9bgAFaRd",
+          "FKwVFEutwquF5nGZP9neTFq7yj5Mn8dqCujzHizgxWnN",
+          "y1HFxpB4BWa2E99fHvoVRXBnT5qKVFnpFFTiWvUwCgB",
+          "9uYQGPFcqhL8oZCPTiqV1UGMVBWhLTVk13ECwgYYc8Js",
+          "H47hVZ1L46BX3onzWMksUdrYc6t9t1SoiaZ9EfPeG8vh",
+          "EU489cnGmSAgpYNCCJBqz2E6qdFLE5qGMz5LNkSzwczV",
+          "GSAwXSepNongaaWtLMyrChW5RYQRCe7Xxsd6bNNDjrjq",
+          "ACuoycaKBo8HcC5tRqrUFaLivJufZddkKg8TpMKCZWPx",
+          "38ULy1awkw8TnGhiKpYNz1ReQpqqGzgye2zcyRUbUgER",
+          "GnPEYYxcyaDW9LypD5qmPcJeVizc927qYaT4JbjZb5DW",
+          "T8qoi8yBxHamyVaDACCjd9MNf6ZXuAbeMH3uXn8Qb7N",
+          "5f4hA6K3to6wY4pYU9Z536X3sdkHN9xK8DpBfzx4nSSJ",
+          "C457vuJShwheRTAZ2Xi8zj7b6w12621KskXUQtQQ2S4o",
+          "Ff33E17jvtxfyziADSJ3FJiGL5WM5rRwG2ZGUEMiQ7Te",
+          "EcHsSjeEz2r49iWPXS1E8fX9zZMQWqkqJ4i4ewJfhq8H",
+          "H5xLX24HV5TNQWs4PFBPQVdZEaTLeAdJPuGe7uVmsZja",
+          "J77JPUf4LqA8RjZhrEq9mG84aPh6XJrF12my77A2zQeb",
+          "9SmKoKjnyRibT8a177j3hfDj1S2cLHj2FC4cKpkK9cNW",
+          "GrYT9gr9GQrpUnDgAdj6xEmwhrgruzm117ufqJAxpUsQ",
+          "ED4BWUwuCAG3Rp3bWzjmMcfQxfM8RTqww8588JpeLwnk",
+          "EpTeZT8nmC93FvFeXesN8DrVWpwu47kgZnvXQ9aetRjZ",
+          "FbDUny61mZM2MVdyupPAoooWiEyNHaytfRdhLpNkgWHf",
+          "24o6nuMJ5KnFWpaLD8Gg7FDdeEqrjLvrtYLpxFdMTtPD",
+          "FFjGWo29aTykcs56JLLYJ6e2E5XnaFsSjgDt9HDKuzgV",
+          "DTg1q8ZrU6B33NQ1gC8Q1v3kpVQkJXBEeyg5FuWzSN4X",
+          "FNRzz3VsV8c959bpqcKSEd6LqtTtxRm7RDdAqGRiGSi1",
+          "7Uwv5cKfdDijVmpa4tBCDEjy3diZvSjXhXbdAx1G7uV7",
+          "9wcH53SVu2RK3pxEMULQMwE7CuPfiW4FjJmUcE3UTnW9",
+          "7jBQjdjTqFTt6L8Yqn26hhZpAYNZMc6uVowUak4pmsUk",
+          "HEkucp5HBhSmSyyAhJM2UNouwM3mTrZtqxweVJV6kc3h",
+          "8ke61RuW7Zug26mNW1YG5hF7iwE6rpFNxCuYjxcK7s51",
+          "3HpSjJq8xq4FsRaMyoombutn1jFvHsbSRkTekpEAbget",
+          "GHHWgaeBq1bMV4HCimBr3D9vw4mXT8BFxSrEwwYuy42w",
+          "Bc2fnnTNRrt5TC4qLHLnveXSP5wyMYX4nEUQ2FKDnvVt",
+          "33iSctUM9CNGs7r3gRR7MdxfBv5wZ6BuMgSzucp2NWtT",
+          "7PGTyxdnMADETHzLVFmP2S8xDDCd97B83hHVR9ZqsZhf",
+          "AzEoFU2nYCnHwjurELU23KTBvrYqisvBxhPRrFDG4yxC",
+          "8MZD5giRpCxwQzSNhg4XV5rKefVoU5P2KvshzvhEohdZ",
+          "FCsbNnywCB94AGtrUMNXXt5FrcxEsqXvoPTXhf59UFqM",
+          "ESnk86i1jYzDjDHa9NBoXXVhNCikCHdXizmFTGweqqL2",
+          "FJc7h3bWe5KsHBJYJzn7Fh9JWchipGndphVgoVYtfF9N",
+          "Ab5s5P3knnDjTUhCNuj1rsTzZ84paPrTjmJ1AFSxrS6j",
+          "GKc1NYQDb4qBUitozbkv9wejmtGzDaFBJyHnc4kRqy3r",
+          "FsWAT5eKQD6iVgY7TBT9fyXPhpdkFJ6GVZvtJfPJdf7N",
+          "BnubDhSPjEZgaSESAtnvUpouvdDwJDXjXDaDWQaKQL2T",
+          "46wBcpDUQT8dDehD86kQWnER6CaCeig6iVtxFzVqxEXk",
+          "GNV2BmR7eQPWyReUJHne9HtwtotvEFsLMvVPVXMpETPs"
+        ]
+      },
+      "expect": [
+        {
+          "path": "totals.usd_gained",
+          "op": "approx",
+          "value": 915179,
+          "tolerance": 0.03
+        },
+        {
+          "path": "senders",
+          "op": "includes",
+          "value": "{attacker_a}"
+        },
+        {
+          "path": "senders",
+          "op": "includes",
+          "value": "{attacker_b}"
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Haedal: about $915,179. Chain: 146 deposit and withdrawal transactions on the six vaults net 406,519 USDC, 510,053 SUI, 2.14M CETUS, 2.19M DEEP, 865,572 WAL, 0.211 LBTC and 1.915 ETH, $923.7K at 18:04 UTC.",
+      "timeout_s": 300
+    },
+    {
+      "id": "sender-window-total",
+      "question": "How much did attacker_a take between its funding and its last swap?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "sender": "{attacker_a}",
+        "start": "2026-06-08T17:50:00Z",
+        "end": "2026-06-08T21:30:00Z"
+      },
+      "expect": [
+        {
+          "path": "totals.usd_gained",
+          "op": "gte",
+          "value": 300000
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain: attacker_a's deposit and withdrawal transactions on five vaults net about $342K; the same window also holds its swaps and six bridge exits.",
+      "known_defect": "sender mode nets the wallet's own swaps and bridge exits against the exploit, so usd_gained reads $1.02 for a $342K take",
+      "timeout_s": 300
+    },
+    {
+      "id": "shared-orbiter-funder",
+      "question": "Who funded each exploiter wallet, and when?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "{attacker_a}",
+          "{attacker_b}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "shared_funders[*].funder",
+          "op": "includes",
+          "value": "{orbiter_maker}"
+        },
+        {
+          "path": "results[*].first_hop.funding_tx",
+          "op": "includes",
+          "value": "{funding_a_tx}"
+        },
+        {
+          "path": "results[*].first_hop.funding_tx",
+          "op": "includes",
+          "value": "{funding_b_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 0xb4a3550d paid 160.43 SUI to attacker_a at 17:47:59 and 216.02 SUI to attacker_b at 23:13:34 UTC, each about two minutes before the wallet's first transaction. The same address receives attacker_a's OrbiterRouter-memo swaps, so it is inferred to be Orbiter's maker, a service."
+    },
+    {
+      "id": "attacker-b-mayan-exits",
+      "question": "Where did attacker_b's proceeds leave Sui?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{attacker_b}",
+        "from": "2026-06-08T23:00:00Z",
+        "to": "2026-06-10T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "bridge_exits.by_bridge[*].bridge",
+          "op": "includes",
+          "value": "Mayan MCTP"
+        },
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].account",
+          "op": "includes",
+          "value": "{eth_b1}"
+        },
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].account",
+          "op": "includes",
+          "value": "{eth_b2}"
+        },
+        {
+          "path": "bridge_exits.transaction_count",
+          "op": "gte",
+          "value": 10
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: ten Mayan MCTP orders from 23:25 to 23:44 UTC sent 407,828 USDC and 225,374 SUI to Ethereum, nine to 0xd8b5…6cf8 and one (49,950 USDC) to 0xc82c…e007.",
+      "timeout_s": 240
+    },
+    {
+      "id": "attacker-a-mayan-exits",
+      "question": "Where did attacker_a's proceeds leave Sui through Mayan?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{attacker_a}",
+        "from": "2026-06-08T17:40:00Z",
+        "to": "2026-06-10T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].account",
+          "op": "includes",
+          "value": "{eth_a}"
+        },
+        {
+          "path": "bridge_exits.transaction_count",
+          "op": "gte",
+          "value": 4
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: four Mayan MCTP orders sent 314,256 SUI to Ethereum 0x99a8…9591.",
+      "timeout_s": 240
+    },
+    {
+      "id": "orbiter-exit-destination",
+      "question": "Where did attacker_a's Orbiter swap send 65,600 SUI?",
+      "tool": "resolve_bridge_transfer",
+      "args": {
+        "digest": "{orbiter_exit_tx}"
+      },
+      "expect": [
+        {
+          "path": "beneficiaries[*].account",
+          "op": "includes",
+          "value": "{eth_a}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the transaction swaps 65,600 SUI to 50,002.79 USDC paid to Orbiter's maker and emits OrbiterRouter::MessageTakenEvent whose msg decodes to t=0x99a8aA2Ae13Da715b59F9949a0f35100EcDF9591&c=1, the same Ethereum address as the Mayan exits.",
+      "known_defect": "Orbiter Finance is not a recognised bridge and its ASCII memo is not read as a cross-chain lead"
+    },
+    {
+      "id": "v1-path-callers",
+      "question": "Who called the v1 vault module in the five weeks before the pause?",
+      "tool": "aggregate_events",
+      "args": {
+        "module": "{vault_v1}::vault",
+        "from": "2026-05-01T00:00:00Z",
+        "to": "2026-06-09T04:00:00Z",
+        "group_by": "sender"
+      },
+      "expect": [
+        {
+          "path": "groups[*].key",
+          "op": "includes",
+          "value": "{attacker_a}"
+        },
+        {
+          "path": "groups[*].key",
+          "op": "includes",
+          "value": "{attacker_b}"
+        },
+        {
+          "path": "groups",
+          "op": "count_lte",
+          "value": 2
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 294 events through v1 vault from 1 May to the pause, all from the two exploiter wallets (79 DepositEvent, 215 WithdrawBufferAssetEvent).",
+      "timeout_s": 180
+    }
+  ]
+}

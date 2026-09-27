@@ -19,6 +19,7 @@ const TOOLS = "Which tool answers what";
 const REFUSE = "Conclusions to refuse";
 const DONE = "When you are done";
 const REPORT = "Reporting";
+const MECHANISM = "Finding the flaw in the code";
 
 interface PromptSpec {
   title: string;
@@ -68,6 +69,7 @@ export const PROMPTS: Record<string, PromptSpec> = {
       "Exploit transactions and incident losses",
       "Opening a case",
       "Packages: who deployed it, and who can change it",
+      MECHANISM,
       "What a balance change does not show",
       TOOLS,
       "Traps in the data itself",
@@ -84,8 +86,9 @@ export const PROMPTS: Record<string, PromptSpec> = {
         "3. manage_labels for the exchanges and bridges already known, so traces stop at them.",
         "4. summarize_address_flows on the attacker over the incident window for what left Sui and to whom, then trace_flow_graph from an attack transaction for every branch. Follow bridge exits with resolve_bridge_transfer, and note every unfollowed branch.",
         "5. find_funding_source on the attacker to see who paid for the attack, get_address_fanout on that funder, and classify_deposit_address if it looks like an exchange.",
-        "6. If a protocol's own code was exploited: get_upgrade_history with as_of set to the attack time for who could upgrade and which version was live, then diff_package_upgrade on the version that introduced the bug.",
-        `7. ${caseLine(case_name)}`,
+        "6. If a protocol's own code was exploited, find the flaw from the exploit, not from the upgrade list: decode_ptb with digest for each call's arguments (commands: [i, j] for the calls analyze_attack_tx flags; get_transaction with detail 'full' is several times larger); get_upgrade_history with as_of the attack time for the version live then and who could upgrade; get_move_function, then disassemble_module with function_name, on each called function at the address the transaction called; the dependency version it linked, since the flaw can sit in one: the note on each dependency's use line in disassemble_module, or get_package dependencies, gives the ID to read (get_package_dependency_graph for dependencies of dependencies). Then diff_package_upgrade on the fix (a later version or a relink) and on the version that introduced the code, if either exists. Say what you read in the code and what you inferred.",
+        "7. If the calls ran an older version of a lineage (stale-package-version), read that version's gate with disassemble_module function_name: older versions stay callable against the shared objects newer ones manage unless they check a version number. For each shared object the exploit changed, query_transactions with affected_object lists the transactions that touched it, setup included, and get_object with version reads its state before and between steps (each transaction's object_changes in get_transaction detail 'full' give the version it left the object at).",
+        `8. ${caseLine(case_name)}`,
         "",
         "Say which evidence tier each claim rests on. The method follows.",
       ].join("\n"),

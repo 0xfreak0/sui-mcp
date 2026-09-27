@@ -81,7 +81,7 @@ export function canonicalType(moveType: string): string {
 }
 
 /** Split `A, B<C, D>` on the commas that are not inside brackets. */
-function splitTypeArgs(inner: string): string[] {
+export function splitTypeArgs(inner: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let start = 0;

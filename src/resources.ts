@@ -3,7 +3,8 @@ import { sui } from "./clients/grpc.js";
 import { formatOwner } from "./utils/formatting.js";
 import { DEFAULT_NETWORK, isSuiNetwork, runWithNetwork, type SuiNetwork } from "./config.js";
 import { renderCaseReport } from "./utils/case-report.js";
-import { listCases, loadFindings, storeStatus } from "./utils/store.js";
+import { listCases, listResults, loadFindings, storeStatus } from "./utils/store.js";
+import { readStoredResult } from "./utils/output-cap.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Resource URI variables arrive as string | string[] | undefined.
@@ -169,6 +170,19 @@ async function caseReport(uri: URL, vars: Vars): Promise<ResourceResult> {
   };
 }
 
+/**
+ * A capped tool response's full result, by the id in its `omitted.result`.
+ * The query pages one list: `?path=inflow_sources&offset=20&limit=50&match=0xab`.
+ * The template matches the id with its query attached, so both are read from
+ * the URL itself.
+ */
+async function storedResult(uri: URL): Promise<ResourceResult> {
+  const id = decodeURIComponent(uri.pathname.replace(/^\/+/, "").split("/")[0] ?? "");
+  const q = uri.searchParams;
+  const body = readStoredResult(id, { path: q.get("path"), omitted: q.get("omitted"), offset: q.get("offset"), limit: q.get("limit"), match: q.get("match") });
+  return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(body) }] };
+}
+
 export function registerAllResources(server: McpServer) {
   // Each resource is reachable as `sui://<path>` (default network) or
   // `sui://<network>/<path>` (mainnet | testnet | devnet).
@@ -210,5 +224,24 @@ export function registerAllResources(server: McpServer) {
     }),
     { description: "A recorded investigation case as a Markdown report, as export_case renders it", mimeType: "text/markdown" },
     (uri, vars) => caseReport(uri, vars as Vars),
+  );
+  server.resource(
+    "result",
+    new ResourceTemplate("sui://results/{id}", {
+      list: async () => ({
+        resources: listResults().map((r) => ({
+          uri: `sui://results/${r.id}`,
+          name: `${r.tool} ${r.id}`,
+          description: `Full result of a capped ${r.tool} call on ${r.network}, ${new Date(r.created_at).toISOString()}`,
+          mimeType: "application/json",
+        })),
+      }),
+    }),
+    {
+      description:
+        "The full result behind a capped tool response. Query ?path=<list>&omitted=1&offset=&limit=&match= pages one list of it; omitted=1 leaves out the rows the capped response listed",
+      mimeType: "application/json",
+    },
+    (uri) => storedResult(uri),
   );
 }

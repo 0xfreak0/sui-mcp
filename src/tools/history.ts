@@ -25,6 +25,7 @@ import {
 } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { foldRepeats } from "../utils/formatting.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 
 /**
  * Counterparties listed per row. A mass payout names every recipient as a
@@ -71,7 +72,7 @@ const HISTORY_QUERY = `
 export function registerHistoryTools(server: McpServer) {
   server.tool(
     "get_transaction_history",
-    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet: protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI') and token flow for each transaction. Newest first by default; `order: 'oldest'` starts from the address's first transaction instead. Each page reports its `order` and the `oldest_shown`/`newest_shown` timestamps; pass `next_cursor` back as `cursor` with the same `order` to continue. Rows are decoded from each transaction's complete balance changes and commands. `address_poisoning` is checked over the page shown, so the default page covers recent activity. Each row's `subject_flow` is the queried address's own signed balance change per coin, with formatted amounts and coin_verified; `token_flow` is the transaction sender's, so on a transfer this address received it shows the sender's outflow. `counterparties` names up to 25 addresses that received value in the row, with `counterparty_count` when there were more. Prefer this over query_transactions when exploring what a wallet has been doing. `signed_as_alias`, when present, lists transactions this address signed as an 0x2::address_alias delegate for another wallet; the page above cannot show them, because their sender is the other wallet. Which wallets name this address comes from a scan reused for up to five minutes, and `alias_scan_as_of` says when it read the chain. `signed_as_alias_unavailable` marks a scan that did not finish, including beside rows it did find.",
+    "(Recommended for wallet activity) Get decoded transaction history for a Sui wallet: protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI') and token flow for each transaction. Newest first by default; `order: 'oldest'` starts from the address's first transaction instead. Each page reports its `order` and the `oldest_shown`/`newest_shown` timestamps; pass `next_cursor` back as `cursor` with the same `order` to continue. Rows are decoded from each transaction's complete balance changes and commands. `address_poisoning` is always present, with `addresses_compared` and the lookalike `pairs` found over the page shown, so the default page covers recent activity and an empty `pairs` clears nothing older. Each row's `subject_flow` is the queried address's own signed balance change per coin, with formatted amounts and coin_verified; `token_flow` is the transaction sender's, so on a transfer this address received it shows the sender's outflow; a row this address sent carries subject_flow alone, since the two are the same side. The page lists the rows that fit about 35k characters, keeping every failed row and every row a lookalike address took part in, and `omitted` states the rest; detail: 'full' lists every row. `counterparties` names up to 25 addresses that received value in the row, with `counterparty_count` when there were more. Prefer this over query_transactions when exploring what a wallet has been doing. `signed_as_alias`, when present, lists transactions this address signed as an 0x2::address_alias delegate for another wallet; the page above cannot show them, because their sender is the other wallet. Which wallets name this address comes from a scan reused for up to five minutes, and `alias_scan_as_of` says when it read the chain. `signed_as_alias_unavailable` marks a scan that did not finish, including beside rows it did find.",
     {
       address: addressArg().describe("Sui wallet address (0x...)"),
       limit: numArg()
@@ -88,8 +89,12 @@ export function registerHistoryTools(server: McpServer) {
         .string()
         .optional()
         .describe("`next_cursor` from the previous page. Continues in the same direction; pass the same `order`."),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): the rows that fit about 35k characters, in page order, keeping every failed row and every row a lookalike address took part in; `omitted` states the rest. 'full': every row of the page."),
     },
-    async ({ address, limit, order, cursor }) => {
+    async ({ address, limit, order, cursor, detail }) => {
       const direction = order ?? "newest";
       const variables: Record<string, unknown> = {
         address,
@@ -194,9 +199,11 @@ export function registerHistoryTools(server: McpServer) {
           : (node.effects?.status?.toLowerCase() ?? "unknown"),
         protocols: decoded.protocols,
         actions: foldRepeats(decoded.actions),
-        token_flow: decoded.token_flow,
-        // token_flow is the sender's. This is the queried address's own side,
-        // which is what a row in its history is about.
+        // token_flow is the sender's side; on a row the queried address sent
+        // it is subject_flow's amounts again, and only subject_flow is kept.
+        ...(sender === address ? {} : { token_flow: decoded.token_flow }),
+        // The queried address's own side, which is what a row in its
+        // history is about.
         subject_flow: addressFlow(adaptBalanceChanges(balanceChanges), address),
         counterparties: counterpartyAddrs.map((addr) => ({
           address: addr,
@@ -252,7 +259,7 @@ export function registerHistoryTools(server: McpServer) {
                 "These rows were decoded from a partial list of balance changes or commands because a follow-up read failed. Read them with get_transaction before relying on them.",
             }
           : {}),
-        ...(poisoning ? { address_poisoning: poisoning } : {}),
+        address_poisoning: poisoning,
         ...(aliasSignedRows.length > 0
           ? {
               signed_as_alias: aliasSignedRows.map((a) => ({
@@ -277,8 +284,27 @@ export function registerHistoryTools(server: McpServer) {
         next_cursor: page.next_cursor,
       };
 
+      // A page's rows fit the budget in page order; a failed row and a row a
+      // lookalike address took part in survive it.
+      const suspects = new Set(poisoning.pairs.flatMap((p) => [p.suspect.toLowerCase(), p.established.toLowerCase()]));
+      type Row = (typeof transactions)[number];
+      const { payload } = capPayload(
+        "get_transaction_history",
+        { address, limit, order, cursor },
+        result,
+        {
+          transactions: {
+            budget: 35_000,
+            keepOrder: true,
+            keep: (r: Row) =>
+              r.status !== "success" || suspects.has((r.sender ?? "").toLowerCase()) || r.counterparties.some((c) => suspects.has(c.address.toLowerCase())),
+            brief: (r: Row) => ({ digest: r.digest, timestamp: r.timestamp, actions: r.actions.slice(0, 3) }),
+          } satisfies ListCap<Row>,
+        },
+        { full: detail === "full", next_call: { tool: "get_transaction_history", repeat_with: { detail: "full" } } },
+      );
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(payload) }],
       };
     }
   );

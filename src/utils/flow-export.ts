@@ -18,6 +18,7 @@ export type ExportNodeKind =
   | "hub"
   | "protocol"
   | "consumed"
+  | "retained"
   | "source"
   | "object"
   | "unspent"
@@ -86,6 +87,7 @@ const SHAPES: Record<ExportNodeKind, [string, string]> = {
   hub: ["[[", "]]"],
   protocol: ["[[", "]]"],
   consumed: ["[(", ")]"],
+  retained: ["[(", ")]"],
   source: ["[(", ")]"],
   object: ["[", "]"],
   unspent: ["(", ")"],
@@ -105,6 +107,7 @@ const STYLES: Partial<Record<ExportNodeKind, string>> = {
   target: "fill:#d4edda,stroke:#2e7d32",
   protocol: "fill:#eeeeee,stroke:#757575",
   consumed: "fill:#eeeeee,stroke:#757575",
+  retained: "fill:#fff3cd,stroke:#b8860b",
   source: "fill:#eeeeee,stroke:#757575",
   unspent: "fill:#e3f2fd,stroke:#1565c0",
   budget: "fill:#ffffff,stroke:#9e9e9e,stroke-dasharray:4 3",

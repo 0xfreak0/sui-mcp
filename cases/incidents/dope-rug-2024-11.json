@@ -1,0 +1,466 @@
+{
+  "slug": "dope-rug-2024-11",
+  "kind": "token-rug",
+  "title": "D.O.P.E (DOPE) liquidity pull, 14 November 2024",
+  "network": "mainnet",
+  "summary": "Chain-only case: no public source names it. At 23:17:00 UTC on 13 November 2024 hub wallet 0xf8856c07 sent 2,680 SUI to fresh wallet 0xca9aa6a2, which published DOPE (1B supply, TreasuryCap to 0x0) three seconds later, opened a full-range Cetus position with 2,546.03 SUI and 680M DOPE four seconds after that, and at 23:17:08 sent the remaining 288M DOPE (28.8%) back to the hub. At 23:18:08 the hub paid 56.8 SUI to each of 100 wallets, at least one of which it had also used to trade its earlier tokens (MAGOAT, APTRUMP). At 02:11:57 on 14 November the deployer removed all of the position's liquidity (4,287.10 SUI from the pool, 4,299.68 with fees) and 47 seconds later sent 4,433.45 SUI to the hub. The pool took in 1,753.6 SUI more than the deployer deposited; how much of that came from the hub's own wallets is unresolved. Over the next two days the hub funded at least seven more fresh wallets with 2,688 to 2,799 SUI each, and each put about 2,555 SUI into a new Cetus position.",
+  "sources": [
+    {
+      "url": "https://suivision.xyz/txblock/G5dWmR2ncp36Vhczz8XurjVc3SY5qtpDNnDX95Xq2eqZ",
+      "publisher": "chain",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "coin": "0xd4291701a1cd588e622fa56087caf1a2e7740556d407280694dfce8796c533b5::dope::DOPE",
+    "package": "0xd4291701a1cd588e622fa56087caf1a2e7740556d407280694dfce8796c533b5",
+    "deployer": "0xca9aa6a2c809a866d7ac31e9c879fe097eedbf440d6c14524dc4b391857fb416",
+    "hub": "0xf8856c07e5993098d923a59bb23d66e3debf4d9b1aa8247aaf75df8339cbdd44",
+    "next_deployer": "0xe6fdc27a62e6d0eac1de7c060440c804868c7052f9fb0c2d709933993cce022e",
+    "zero": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "pool": "0xd975e6969fb2dfe71da362453409c89cf74ffa94de70421c960b5dae5fbf25eb",
+    "position": "0xdaf9e7de8e5beebe095ddd4522bb14e9cfa8d953bb144917b5e65b714dbf9e08",
+    "funding_tx": "EQHEs1p1HXiEbSLTDZJti5hPMCPaGLrSLzotYhDyEYFM",
+    "publish_tx": "Aws2TK1RRwRacpDY5rcqPLRVc6fMya2qjmQEPy5SiuvC",
+    "pool_create_tx": "8R4UUHyzus6PH8LHAphZq4TfNrDE7TZJMy1MgMYJexJV",
+    "insider_tx": "JBfKchwerwKnXfQ8T9ujeGr6H6e6xu37ybeaX42oXa3T",
+    "wallet_funding_tx": "8qEuYJyhs7keaegFTmDPqE24A2uUD3f4AS1tiBptRPU6",
+    "pull_tx": "G5dWmR2ncp36Vhczz8XurjVc3SY5qtpDNnDX95Xq2eqZ",
+    "exit_tx": "FLpHVEPhBL66yohDze5DJsEMvnR6vHtRbfA5dJrpfveA",
+    "next_funding_tx": "HLiShaFQ5Es6Sjp6omyoAmDbXw14sCTiGeUNGCKFbysG",
+    "next_pool_tx": "C5WC21i5xGjJVUqapCUnDDU71UYxMQZtiHaMQpxEfZVr"
+  },
+  "checks": [
+    {
+      "id": "publisher-and-time",
+      "question": "Who published DOPE, and when?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "root_publisher.publish_tx",
+          "op": "equals",
+          "value": "{publish_tx}"
+        },
+        {
+          "path": "root_publisher.published_at",
+          "op": "equals",
+          "value": "2024-11-13T23:17:03.558Z"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: publish transaction Aws2TK1R, three seconds after the deployer's funding and four seconds before the pool."
+    },
+    {
+      "id": "mint-renounced",
+      "question": "Could the deployer mint more DOPE?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "capabilities.capabilities[*].owner_address",
+          "op": "includes",
+          "value": "{zero}"
+        },
+        {
+          "path": "capabilities.capabilities[*].holder_status",
+          "op": "includes",
+          "value": "publisher"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the TreasuryCap went to 0x0 at publish; the UpgradeCap stayed with the deployer. The pull needed neither."
+    },
+    {
+      "id": "token-metadata",
+      "question": "What is DOPE, and is it vouched for?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{coin}",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "name",
+          "op": "equals",
+          "value": "D.O.P.E"
+        },
+        {
+          "path": "total_supply",
+          "op": "equals",
+          "value": "1000000000000000000"
+        },
+        {
+          "path": "verified",
+          "op": "equals",
+          "value": false
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: CoinMetadata name D.O.P.E, 9 decimals, 1B minted to the deployer at publish."
+    },
+    {
+      "id": "token-names-its-pool",
+      "question": "Does the token analysis show where DOPE's liquidity sits and who can pull it?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{coin}",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "{pool}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: all of DOPE's liquidity was one Cetus position the deployer held in its own wallet for its whole life.",
+      "known_defect": "analyze_token names no pool, no liquidity and no LP holder, so the unlocked position in the deployer's wallet is invisible."
+    },
+    {
+      "id": "find-pool",
+      "question": "Which pool pairs DOPE with SUI?",
+      "tool": "find_pools",
+      "args": {
+        "token_a": "{coin}",
+        "token_b": "0x2::sui::SUI"
+      },
+      "expect": [
+        {
+          "path": "pools[*].pool_id",
+          "op": "includes",
+          "value": "{pool}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: pool created in 8R4UUHyz by pool_script_v2::create_pool_with_liquidity."
+    },
+    {
+      "id": "position-owned-unlocked",
+      "question": "Who held the liquidity position, and was it ever moved to a locker?",
+      "tool": "trace_object_history",
+      "args": {
+        "object_id": "{position}"
+      },
+      "expect": [
+        {
+          "path": "created.tx",
+          "op": "equals",
+          "value": "{pool_create_tx}"
+        },
+        {
+          "path": "created.owner.address",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "owner_change_count",
+          "op": "equals",
+          "value": 0
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the Position object was created in the deployer's wallet and never changed owner; remove_liquidity emptied it without deleting it."
+    },
+    {
+      "id": "deployer-funded-by-hub",
+      "question": "Who funded the deployer?",
+      "tool": "find_funding_source",
+      "args": {
+        "address": "{deployer}"
+      },
+      "expect": [
+        {
+          "path": "origin.address",
+          "op": "iequals",
+          "value": "{hub}"
+        },
+        {
+          "path": "chain[0].funding_tx",
+          "op": "equals",
+          "value": "{funding_tx}"
+        },
+        {
+          "path": "chain[0].amount",
+          "op": "equals",
+          "value": "2680 SUI"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: EQHEs1p1 at 23:17:00, the deployer's first transaction. The hub pays more than 50 addresses, so the walk stops there."
+    },
+    {
+      "id": "insider-allocation",
+      "question": "Where did the supply the deployer did not pool go?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{insider_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "balance_changes[*].address",
+          "op": "includes",
+          "value": "{hub}"
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "287999926151892393"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 287,999,926 DOPE (28.8% of supply) to the hub one second after the pool opened."
+    },
+    {
+      "id": "hub-funds-100-wallets",
+      "question": "Did the hub fund a set of trading wallets right after launch?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{wallet_funding_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{hub}"
+        },
+        {
+          "path": "balance_change_count",
+          "op": "equals",
+          "value": 101
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "56800000000"
+        },
+        {
+          "path": "token_flow[0].amount",
+          "op": "equals",
+          "value": "-5680099559880"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 8qEuYJ at 23:18:08 pays 56.8 SUI to each of 100 addresses (5,680 SUI plus gas). One of them, read with get_transaction_history, had received MAGOAT, APTRUMP, APETRUMP and APPTRUMP from the hub in 100-recipient transfers on 7 and 8 November and traded them on Cetus."
+    },
+    {
+      "id": "pull-read",
+      "question": "What did the pull transaction remove?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "actions",
+          "op": "includes",
+          "value": "Call pool_script::remove_liquidity on Cetus"
+        },
+        {
+          "path": "events[*].parsed.after_liquidity",
+          "op": "includes",
+          "value": "0"
+        },
+        {
+          "path": "events[*].parsed.amount_b",
+          "op": "includes",
+          "value": "4287098006300"
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "4299675332726"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: RemoveLiquidityEvent on the full-range position (liquidity 1315781295587443) with after_liquidity 0; collect_fee in the same PTB brings the SUI gain to 4,299.68."
+    },
+    {
+      "id": "pull-attack-view",
+      "question": "Does the incident breakdown attribute the pool's loss to the deployer?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "profit.address",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "pool_flows[*].pool",
+          "op": "includes",
+          "value": "{pool}"
+        },
+        {
+          "path": "pool_flows[*].deltas[*].amount",
+          "op": "includes",
+          "value": "-4299673477978"
+        },
+        {
+          "path": "state_deltas.drops[*].holder",
+          "op": "includes",
+          "value": "{pool}"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "shared-state-jump"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the pool's SUI and DOPE balances fell by more than 100x in this transaction, paid to the deployer."
+    },
+    {
+      "id": "deployer-flows",
+      "question": "What did the deployer take in and pay out, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{deployer}",
+        "from": "2024-11-13T23:00:00Z",
+        "to": "2024-11-14T03:00:00Z",
+        "top": 10
+      },
+      "expect": [
+        {
+          "path": "coverage.complete",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{hub}"
+        },
+        {
+          "path": "unattributed_inflows[*].digests[*]",
+          "op": "includes",
+          "value": "{pull_tx}"
+        },
+        {
+          "path": "top_recipients[*].address",
+          "op": "includes",
+          "value": "{hub}"
+        },
+        {
+          "path": "top_recipients[*].digests[*]",
+          "op": "includes",
+          "value": "{exit_tx}"
+        },
+        {
+          "path": "top_recipients[*].digests[*]",
+          "op": "includes",
+          "value": "{insider_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 2,680 SUI in from the hub, 4,299.67 SUI from the pull, 4,433.45 SUI and 288M DOPE out to the hub."
+    },
+    {
+      "id": "history-inbound-sign",
+      "question": "Does the deployer's history show its funding as money received?",
+      "tool": "get_transaction_history",
+      "args": {
+        "address": "{deployer}",
+        "limit": 5,
+        "order": "oldest"
+      },
+      "expect": [
+        {
+          "path": "transactions[0].digest",
+          "op": "equals",
+          "value": "{funding_tx}"
+        },
+        {
+          "path": "transactions[0].token_flow[0].amount",
+          "op": "equals",
+          "value": "2680000000000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: EQHEs1p1 credits the deployer +2680000000000 MIST.",
+      "known_defect": "token_flow on a transaction the address did not send shows the sender's flow (-2679.95382 SUI), so an inbound funding reads as an outflow."
+    },
+    {
+      "id": "proceeds-to-hub",
+      "question": "Where did the pull proceeds go first?",
+      "tool": "trace_flow_graph",
+      "args": {
+        "digest": "{exit_tx}",
+        "direction": "forward",
+        "coin_type": "0x2::sui::SUI",
+        "max_depth": 4,
+        "max_nodes": 60
+      },
+      "expect": [
+        {
+          "path": "terminals[0].reason",
+          "op": "equals",
+          "value": "hub"
+        },
+        {
+          "path": "terminals[0].entries[*].node",
+          "op": "includes",
+          "value": "{hub}|0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: FLpHVEPh sends 4,433.45 SUI to the hub, which paid more than 50 addresses, so the trace stops there. The hub is the operator's own wallet, not a service."
+    },
+    {
+      "id": "hub-funds-next-pools",
+      "question": "What did the hub do with the money after the pull?",
+      "tool": "trace_flow_graph",
+      "args": {
+        "address": "{hub}",
+        "direction": "forward",
+        "from": "2024-11-14T02:12:00Z",
+        "to": "2024-11-16T00:00:00Z",
+        "coin_type": "0x2::sui::SUI",
+        "max_depth": 4,
+        "max_nodes": 60
+      },
+      "expect": [
+        {
+          "path": "edges[*].digests[*]",
+          "op": "includes",
+          "value": "{next_funding_tx}"
+        },
+        {
+          "path": "edges[*].digests[*]",
+          "op": "includes",
+          "value": "{next_pool_tx}"
+        },
+        {
+          "path": "terminals[*].reason",
+          "op": "includes",
+          "value": "consumed"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: HLiShaFQ pays 2,699 SUI to fresh wallet 0xe6fdc27a, which puts 2,564.05 SUI into Cetus in C5WC21i5; at least six more fresh wallets got 2,688 to 2,799 SUI each from the hub in the same window and did the same.",
+      "timeout_s": 300
+    }
+  ]
+}

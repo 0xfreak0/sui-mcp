@@ -36,6 +36,7 @@ import {
   type NativeBridgeTransfer,
 } from "./sui-native.js";
 import { celerBurns, type CelerBurn } from "./celer.js";
+import { crossChainLeads, type CrossChainLead } from "./cross-chain.js";
 import { layerZeroTransfers, type LayerZeroTransfer } from "./layerzero.js";
 import { tokenBridgeRedemptions, type WormholeInbound } from "./wormhole-inbound.js";
 import { extractWormholeMessages, type SuiEventNode, type WormholeMessage } from "./wormhole.js";
@@ -61,6 +62,8 @@ export interface BridgeEventReading {
   wormholeInbound: WormholeInbound[];
   /** Every far-side recipient read from chain data. */
   beneficiaries: Beneficiary[];
+  /** Events no curated reader covers that carry a cross-chain message's shape. Heuristic; see `cross-chain.ts`. */
+  crossChainLeads: CrossChainLead[];
 }
 
 /** Case-insensitive for hex, exact for base58. */
@@ -186,5 +189,9 @@ export function readBridgeEvents(events: SuiEventNode[], qualify: boolean): Brid
     celer,
     wormholeInbound: tokenBridgeRedemptions(events, qualify),
     beneficiaries,
+    crossChainLeads: crossChainLeads(
+      events,
+      beneficiaries.flatMap((b) => [b.address_raw, b.address ?? ""].filter((a) => a.startsWith("0x"))),
+    ),
   };
 }

@@ -26,6 +26,8 @@ interface PriceResult {
   price_usd: number | null;
   price_change_24h_percent: number | null;
   source: string;
+  /** Provider id of the asset priced, when the price is not the coin's own. */
+  priced_as?: string;
   note?: string;
 }
 
@@ -135,6 +137,7 @@ export function registerPriceTools(server: McpServer) {
             verified: coin.verified,
             price_usd: p.price,
             source: p.source,
+            ...(p.priced_as ? { priced_as: p.priced_as } : {}),
             ...(p.confidence !== undefined ? { confidence: p.confidence } : {}),
             price_time: new Date(p.publishTime * 1000).toISOString(),
             // Signed: negative means the sample predates the moment asked for.
@@ -209,6 +212,8 @@ export function registerPriceTools(server: McpServer) {
           price_change_24h_percent: change24h,
           source,
         };
+        const llamaAsset = aftermathPrice == null ? llama?.quotes.get(ct)?.priced_as : undefined;
+        if (llamaAsset) result.priced_as = llamaAsset;
 
         if (priceUsd == null) {
           result.note = llama?.unanswered.has(ct)

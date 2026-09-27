@@ -172,6 +172,20 @@ describe("FlowEngine forward", () => {
     expect([...e.nodes.values()].some((n) => n.address === D)).toBe(false);
   });
 
+  it("expands a wide address that few senders pay into, since it passes on what they sent", async () => {
+    mockFanout.mockImplementation(async (address: string) =>
+      address === C
+        ? { classification: "distributor", sender_classification: "narrow", sender_count: 13, counterparty_count: 181, scanned_transactions: 200, truncated: true }
+        : { classification: "narrow", counterparty_count: 3, scanned_transactions: 10, truncated: false },
+    );
+    const e = engine();
+    await e.startFromDigest("0xexploit");
+    await e.run();
+    const byCode = Object.fromEntries(e.ledger.summary().map((g) => [g.code, g.share]));
+    expect(byCode.hub).toBeUndefined();
+    expect([...e.nodes.values()].find((n) => n.address === D)?.share).toBeCloseTo(0.4);
+  });
+
   it("reports a node limit as budget, never as the money stopping", async () => {
     const e = new FlowEngine({ ...engine().opts, maxNodes: 1 });
     await e.startFromDigest("0xexploit");
@@ -296,10 +310,10 @@ describe("FlowEngine forward", () => {
   });
 
   it("reports held funds as unspent, not cycle, when a same-node arrival finds only drained spends", async () => {
-    // Exploit credits ATTACKER 1000 SUI, ATTACKER pays A 400 and B 600, B
-    // pays A 600 (a second arrival at the same node A|SUI), and A's only
-    // spend is 400 to C. A never spent the 600 SUI B routed to it, so it is
-    // still held.
+    // Exploit credits ATTACKER 1000 SUI, ATTACKER pays A 600 and B 400, B
+    // pays A 400 (a second arrival at the same node A|SUI, after A, the
+    // heavier branch, was expanded), and A's only spend is 600 to C. A never
+    // spent the 400 SUI B routed to it, so it is still held.
     const A = `0xa5${"a".repeat(62)}`;
     const Bh = `0xb6${"b".repeat(62)}`;
     const Ch = `0xc7${"c".repeat(62)}`;
@@ -308,19 +322,19 @@ describe("FlowEngine forward", () => {
       digest: "0xsplit2",
       sender: ATTACKER,
       checkpoint: CP + 1,
-      changes: [[ATTACKER, "-1000"], [A, "400"], [Bh, "600"]],
+      changes: [[ATTACKER, "-1000"], [A, "600"], [Bh, "400"]],
     };
     const bPaysA: HopSpec = {
       digest: "0xbpaysa",
       sender: Bh,
       checkpoint: CP + 2,
-      changes: [[Bh, "-600"], [A, "600"]],
+      changes: [[Bh, "-400"], [A, "400"]],
     };
     const aPaysC: HopSpec = {
       digest: "0xapaysc",
       sender: A,
       checkpoint: CP + 3,
-      changes: [[A, "-400"], [Ch, "400"]],
+      changes: [[A, "-600"], [Ch, "600"]],
     };
     const all = new Map([exploit2, split2, bPaysA, aPaysC].map((h) => [h.digest, h]));
     const sent: Record<string, HopSpec[]> = { [ATTACKER]: [exploit2, split2], [Bh]: [bPaysA], [A]: [aPaysC] };
@@ -344,8 +358,8 @@ describe("FlowEngine forward", () => {
     expect(e.ledger.total()).toBeCloseTo(1);
 
     const aNode = [...e.nodes.values()].find((n) => n.address === A)!;
-    expect(aNode.unspent).toBe(600n);
-    // A's one later spend moved 400 SUI to C: the stop must say it is already
+    expect(aNode.unspent).toBe(400n);
+    // A's one later spend moved 600 SUI to C: the stop must say it is already
     // counted, not that A sent nothing that moved SUI.
     const aEntries = e.ledger.summary().flatMap((g) => g.entries).filter((x) => x.node === aNode.id);
     expect(aEntries.map((x) => x.detail)).toEqual([
@@ -584,16 +598,16 @@ describe("FlowEngine forward", () => {
   });
 
   it("backward: says a same-node arrival's inflows already explain its other arrival, not that none paid in", async () => {
-    // Z receives 400 from A and 600 from B in one transaction; B got its 600
-    // from A; A's only inflow is 400 from P. A's first arrival draws that
-    // inflow, so its second finds it drained.
+    // Z receives 600 from A and 400 from B in one transaction; B got its 400
+    // from A; A's only inflow is 600 from P. A's first arrival (the heavier
+    // branch, expanded first) draws that inflow, so its second finds it drained.
     const A = `0xa9${"a".repeat(62)}`;
     const Bh = `0xba${"b".repeat(62)}`;
     const Ph = `0xcd${"c".repeat(62)}`;
     const Z = `0xde${"d".repeat(62)}`;
-    const pToA: HopSpec = { digest: "0xptoa", sender: Ph, checkpoint: CP + 1, changes: [[Ph, "-400"], [A, "400"]] };
-    const aToB: HopSpec = { digest: "0xatob", sender: A, checkpoint: CP + 2, changes: [[A, "-600"], [Bh, "600"]] };
-    const toZ: HopSpec = { digest: "0xtoz", sender: A, checkpoint: CP + 3, changes: [[A, "-400"], [Bh, "-600"], [Z, "1000"]] };
+    const pToA: HopSpec = { digest: "0xptoa", sender: Ph, checkpoint: CP + 1, changes: [[Ph, "-600"], [A, "600"]] };
+    const aToB: HopSpec = { digest: "0xatob", sender: A, checkpoint: CP + 2, changes: [[A, "-400"], [Bh, "400"]] };
+    const toZ: HopSpec = { digest: "0xtoz", sender: A, checkpoint: CP + 3, changes: [[A, "-600"], [Bh, "-400"], [Z, "1000"]] };
     const hops = [pToA, aToB, toZ];
     const all = new Map(hops.map((h) => [h.digest, h]));
     const affects = (addr: string) => hops.filter((h) => h.changes.some(([a]) => a === addr));
@@ -1043,11 +1057,13 @@ describe("FlowEngine address-start root", () => {
     });
 
     it("backward: ends a payer whose cap stopped inside its only page as budget, not source", async () => {
-      // X paid A 100 SUI, and its 25 one-SUI inflows sit in one page; a node reads 20.
+      // X paid A 100 SUI, and its 25 one-SUI inflows sit in one page; a node
+      // reads 20. D paid A another 100, so X carries half and is not the trunk.
       const X = `0xd6${"b".repeat(62)}`;
       const ins = Array.from({ length: 25 }, (_, i): HopSpec => ({ digest: `0xxi${i}`, sender: C, checkpoint: CP + 1 + i, changes: [[C, "-1000000000", SUI], [X, "1000000000", SUI]] }));
       const pay: HopSpec = { digest: "0xxpay", sender: X, checkpoint: CP + 40, changes: [[X, "-100000000000", SUI], [A, "100000000000", SUI]] };
-      serve([...ins, pay]);
+      const pay2: HopSpec = { digest: "0xxpay2", sender: D, checkpoint: CP + 41, changes: [[D, "-100000000000", SUI], [A, "100000000000", SUI]] };
+      serve([...ins, pay, pay2]);
       const e = new FlowEngine({ ...engine().opts, direction: "backward", maxTxReads: 400 });
       e.startFromAddress(A);
       await e.run();
@@ -1127,9 +1143,12 @@ describe("FlowEngine address-start root", () => {
   describe("a readable deposit that returns dust", () => {
     const C = `0xdc${"5".repeat(62)}`;
 
+    /** The receipt a deposit hands its depositor, the claim on what it put in. */
+    const receipt = (owner: string) => [{ id: `0x${"7e".repeat(32)}`, type: "0xabc::vault::Receipt", owner }];
+
     it("forward: reports the deposit as consumed and follows only the dust into the start address's later spend", async () => {
-      // A deposits 1,000 SUI into a contract that returns 0.01 USDC to A, then pays B 5,000 USDC.
-      const deposit: HopSpec = { digest: "0xdd1", sender: A, checkpoint: CP + 1, changes: [[A, "-1000000000000", SUI], [A, "10000", USDC]] };
+      // A deposits 1,000 SUI into a contract that returns 0.01 USDC and a receipt to A, then pays B 5,000 USDC.
+      const deposit: HopSpec = { digest: "0xdd1", sender: A, checkpoint: CP + 1, changes: [[A, "-1000000000000", SUI], [A, "10000", USDC]], objects: receipt(A) };
       const pay: HopSpec = { digest: "0xdd2", sender: A, checkpoint: CP + 2, changes: [[A, "-5000000000", USDC], [Bh, "5000000000", USDC]] };
       serve([deposit, pay]);
       const e = engine();
@@ -1141,7 +1160,7 @@ describe("FlowEngine address-start root", () => {
     });
 
     it("forward: gives another address the dust a deposit returned to it, not the deposit", async () => {
-      const deposit: HopSpec = { digest: "0xdd3", sender: A, checkpoint: CP + 1, changes: [[A, "-1000000000000", SUI], [C, "10000", USDC]] };
+      const deposit: HopSpec = { digest: "0xdd3", sender: A, checkpoint: CP + 1, changes: [[A, "-1000000000000", SUI], [C, "10000", USDC]], objects: receipt(A) };
       serve([deposit]);
       const e = new FlowEngine({ ...engine().opts, minShare: 0 });
       e.startFromAddress(A);
@@ -1163,20 +1182,80 @@ describe("FlowEngine address-start root", () => {
       expect(nodeAt(e, C, USDC)!.share).toBeCloseTo(1);
     });
 
-    it("forward: converts a swap in full however far below the market price it sold", async () => {
-      // A dumps 30,000 USDC ($30,000) through a pool swap for 100 SUI ($300), paid to C.
-      const dump: HopSpec = { digest: "0xdd5", sender: A, checkpoint: CP + 1, calls: [["0xabc", "pool", "swap"]], changes: [[A, "-30000000000", USDC], [C, "100000000000", SUI]] };
+    it("forward: follows a sale far below the market price only for its proceeds, and leaves the rest with the pool", async () => {
+      // A dumps 30,000 USDC ($30,000) through a pool swap for 100 SUI ($300), paid to C, and gets no receipt.
+      const POOL = `0x${"9a".repeat(32)}`;
+      const dump: HopSpec = {
+        digest: "0xdd5",
+        sender: A,
+        checkpoint: CP + 1,
+        calls: [["0xabc", "pool", "swap"]],
+        changes: [[A, "-30000000000", USDC], [C, "100000000000", SUI]],
+        objects: [{ id: POOL, type: "0xabc::pool::Pool<USDC, SUI>", shared: true }],
+      };
       serve([dump]);
-      const e = engine();
+      const e = new FlowEngine({ ...engine().opts, minShare: 0 });
       e.startFromAddress(A);
       await e.run();
 
       expect(byCode(e).consumed).toBeUndefined();
-      expect(nodeAt(e, C, SUI)!.share).toBeCloseTo(1);
+      expect(nodeAt(e, C, SUI)!.share).toBeCloseTo(0.01, 4);
+      expect(byCode(e).retained).toBeCloseTo(0.99, 4);
+      const kept = [...e.nodes.values()].find((n) => n.kind === "retained")!;
+      expect(kept.shared_objects?.map((o) => o.object_id)).toEqual([POOL]);
+    });
+
+    it("forward: leaves a sale far below the market price with the pool whatever its calls are named", async () => {
+      const dump: HopSpec = { digest: "0xdd7", sender: A, checkpoint: CP + 1, calls: [["0xabc", "router", "route"]], changes: [[A, "-30000000000", USDC], [A, "100000000000", SUI]] };
+      serve([dump]);
+      const e = new FlowEngine({ ...engine().opts, minShare: 0 });
+      e.startFromAddress(A);
+      await e.run();
+
+      expect(byCode(e).retained).toBeCloseTo(0.99, 4);
+      // A kept the proceeds of an unnamed conversion: a swap by its values.
+      expect([...e.edges.values()].find((x) => x.coin_type === SUI)?.basis).toBe("swap-follow");
+    });
+
+    it("forward: keeps a deposit into an existing position, or a table keyed by address, consumed", async () => {
+      // 1,000 SUI of collateral into A's existing obligation, or into a vault's per-address table, with a
+      // 100 USDC borrow: no new object reaches A, and A can still withdraw.
+      const VAULT = `0x${"8b".repeat(32)}`;
+      for (const objects of [
+        [{ id: `0x${"7e".repeat(32)}`, type: "0xabc::lending::Obligation", owner: A, mutated: true as const }],
+        [
+          { id: VAULT, type: "0xabc::vault::Vault", shared: true as const },
+          { id: `0x${"1e".repeat(32)}`, type: "0x0000000000000000000000000000000000000000000000000000000000000002::dynamic_field::Field<address, u64>", parent: VAULT },
+        ],
+      ]) {
+        const deposit: HopSpec = { digest: "0xdd8", sender: A, checkpoint: CP + 1, changes: [[A, "-1000000000000", SUI], [A, "100000000", USDC]], objects };
+        serve([deposit]);
+        const e = new FlowEngine({ ...engine().opts, minShare: 0 });
+        e.startFromAddress(A);
+        await e.run();
+        expect(byCode(e).retained).toBeUndefined();
+        expect(byCode(e).consumed).toBeCloseTo(29 / 30, 4);
+      }
+    });
+
+    it("forward: carries a cross-chain lead onto the value a counterparty kept", async () => {
+      const dump: HopSpec = {
+        digest: "0xdd9",
+        sender: A,
+        checkpoint: CP + 1,
+        changes: [[A, "-30000000000", USDC], [A, "100000000000", SUI]],
+        events: ["0x7a1e0000000000000000000000000000000000000000000000000000000000aa::gateway::Sent"],
+      };
+      serve([dump]);
+      const e = new FlowEngine({ ...engine().opts, minShare: 0 });
+      e.startFromAddress(A);
+      await e.run();
+      const kept = [...e.nodes.values()].find((n) => n.kind === "retained")!;
+      expect(kept.cross_chain_leads?.map((l) => l.digest)).toEqual(["0xdd9"]);
     });
 
     it("forward: still reports a deposit that also swaps and returns dust as consumed", async () => {
-      const both: HopSpec = { digest: "0xdd6", sender: A, checkpoint: CP + 1, calls: [["0xabc", "pool", "swap"], ["0xdef", "lending", "deposit"]], changes: [[A, "-30000000000", USDC], [C, "100000", SUI]] };
+      const both: HopSpec = { digest: "0xdd6", sender: A, checkpoint: CP + 1, calls: [["0xabc", "pool", "swap"], ["0xdef", "lending", "deposit"]], changes: [[A, "-30000000000", USDC], [C, "100000", SUI]], objects: receipt(A) };
       serve([both]);
       const e = new FlowEngine({ ...engine().opts, minShare: 0 });
       e.startFromAddress(A);
@@ -1482,5 +1561,92 @@ describe("FlowEngine lookalike protection", () => {
     // renders alike, so every branch is pruned.
     expect(e.pruned).toHaveLength(3000);
     expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+describe("FlowEngine trunk budget", () => {
+  it("reads past the per-node limit at a node carrying most of the traced value", async () => {
+    // B takes 90% and pays it out in 25 equal lots; the 20-move cap would
+    // leave five of them, 18% of the value, unread.
+    const lots = Array.from({ length: 25 }, (_, i) => `0xe${i.toString(16).padStart(63, "0")}`);
+    const toB: HopSpec = { digest: "0xsplit90", sender: ATTACKER, checkpoint: CP + 1, changes: [[ATTACKER, "-1000000000000"], [B, "900000000000"], [C, "100000000000"]] };
+    const payouts: HopSpec[] = lots.map((r, i) => ({ digest: `0xlot${i}`, sender: B, checkpoint: CP + 2 + i, changes: [[B, "-36000000000"], [r, "36000000000"]] }));
+    const all = new Map([exploit, toB, ...payouts].map((h) => [h.digest, h]));
+    const sent: Record<string, HopSpec[]> = { [ATTACKER]: [exploit, toB], [B]: payouts };
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      const q = String(query);
+      if (q.includes("transactions(")) {
+        return candidates(q.includes("sentAddress") ? (sent[String(vars.address)] ?? []) : [], q.includes("last:") ? "backward" : "forward");
+      }
+      const h = all.get(String(vars.digest));
+      return h ? gqlTx(h) : { transaction: null };
+    });
+    const e = engine();
+    await e.startFromDigest("0xexploit");
+    await e.run();
+    const byCode = Object.fromEntries(e.ledger.summary().map((g) => [g.code, g.share]));
+    expect(byCode.budget).toBeUndefined();
+    expect([...e.edges.values()].filter((x) => e.nodes.get(x.from)?.address === B)).toHaveLength(25);
+  });
+});
+
+describe("FlowEngine expansion order", () => {
+  it("merges five branches at their common wallet before expanding it", async () => {
+    // S pays W1..W5 30/25/20/15/10 SUI, each passes it all to M, and M pays X.
+    const S = `0xe3${"5".repeat(62)}`;
+    const M = `0xe4${"6".repeat(62)}`;
+    const X = `0xe5${"7".repeat(62)}`;
+    const ws = Array.from({ length: 5 }, (_, i) => `0xe6${i.toString(16)}${"8".repeat(61)}`);
+    const parts = [30, 25, 20, 15, 10].map((p) => `${p}000000000`);
+    const fan: HopSpec = { digest: "0xs5", sender: S, checkpoint: CP, changes: [[S, "-100000000000"], ...ws.map((w, i): [string, string] => [w, parts[i]])] };
+    const toM = ws.map((w, i): HopSpec => ({ digest: `0xw${i}m`, sender: w, checkpoint: CP + 1 + i, changes: [[w, `-${parts[i]}`], [M, parts[i]]] }));
+    const out: HopSpec = { digest: "0xmx", sender: M, checkpoint: CP + 10, changes: [[M, "-100000000000"], [X, "100000000000"]] };
+    const sent: Record<string, HopSpec[]> = { [S]: [fan], [M]: [out], ...Object.fromEntries(ws.map((w, i) => [w, [toM[i]]])) };
+    const all = new Map([fan, out, ...toM].map((h) => [h.digest, h]));
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      const q = String(query);
+      if (q.includes("transactions(")) return candidates(q.includes("sentAddress") ? (sent[String(vars.address)] ?? []) : [], q.includes("last:") ? "backward" : "forward");
+      const h = all.get(String(vars.digest));
+      return h ? gqlTx(h) : { transaction: null };
+    });
+    const e = new FlowEngine({ ...engine().opts, coin: SUI });
+    e.startFromAddress(S);
+    await e.run();
+    const byCode = Object.fromEntries(e.ledger.summary().map((g) => [g.code, g.share]));
+    expect(byCode).toEqual({ unspent: expect.closeTo(1) });
+    expect(e.truncated).toBe(false);
+  });
+
+  it("spends the node limit on the heaviest branch, not on a shallower level's light ones", async () => {
+    // ATTACKER pays H 900 and five wallets 20 each; each light wallet pays on,
+    // and H passes its 900 to H2, which bridges it out. Three nodes are
+    // enough to reach the exit only when the heaviest branch goes first.
+    const H = `0xe1${"1".repeat(62)}`;
+    const H2 = `0xe2${"2".repeat(62)}`;
+    const lights = Array.from({ length: 5 }, (_, i) => `0xf${i}${"3".repeat(62)}`);
+    const fan: HopSpec = { digest: "0xfan", sender: ATTACKER, checkpoint: CP + 1, changes: [[ATTACKER, "-1000"], [H, "900"], ...lights.map((l): [string, string] => [l, "20"])] };
+    const toH2: HopSpec = { digest: "0xtoh2", sender: H, checkpoint: CP + 2, changes: [[H, "-900"], [H2, "900"]] };
+    const exitH2: HopSpec = { digest: "0xexith2", sender: H2, checkpoint: CP + 3, changes: [[H2, "-900"]], events: [SUI_BRIDGE_DEPOSIT] };
+    const onward = lights.map((l, i): HopSpec => ({ digest: `0xlight${i}`, sender: l, checkpoint: CP + 4 + i, changes: [[l, "-20"], [`0xd${i}${"4".repeat(62)}`, "20"]] }));
+    const all = new Map([exploit, fan, toH2, exitH2, ...onward].map((h) => [h.digest, h]));
+    const sent: Record<string, HopSpec[]> = { [ATTACKER]: [exploit, fan], [H]: [toH2], [H2]: [exitH2], ...Object.fromEntries(lights.map((l, i) => [l, [onward[i]]])) };
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      const q = String(query);
+      if (q.includes("transactions(")) {
+        return candidates(q.includes("sentAddress") ? (sent[String(vars.address)] ?? []) : [], q.includes("last:") ? "backward" : "forward");
+      }
+      if (q.includes("json")) {
+        const h = all.get(String(vars.digest));
+        return { transaction: { effects: { events: gqlPage((h?.events ?? []).map((repr) => ({ contents: { type: { repr }, json: REAL_DEPOSIT } }))) } } };
+      }
+      const h = all.get(String(vars.digest));
+      return h ? gqlTx(h) : { transaction: null };
+    });
+    const e = new FlowEngine({ ...engine().opts, maxNodes: 3 });
+    e.startFromAddress(ATTACKER);
+    await e.run();
+    const byCode = Object.fromEntries(e.ledger.summary().map((g) => [g.code, g.share]));
+    expect(byCode.bridge_exit).toBeCloseTo(0.9);
+    expect(byCode.budget).toBeCloseTo(0.1);
   });
 });

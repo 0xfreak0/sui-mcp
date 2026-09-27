@@ -336,3 +336,47 @@ describe("list_nfts — kiosk discovery", () => {
     await expect(handler({ address: OWNER, cursor: "not-base64-json" })).rejects.toThrow(/invalid cursor/);
   });
 });
+
+describe("list_nfts — summary view and cursor", () => {
+  const KIOSKS = [STD_KIOSK_ID, PERSONAL_KIOSK_ID];
+  beforeEach(() => {
+    mockGql.mockReset();
+    mockGql.mockImplementation((query: string, vars: Record<string, unknown>) => {
+      if (query.includes("0x2::kiosk::KioskOwnerCap")) {
+        return Promise.resolve({
+          address: { objects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: KIOSKS.map((k) => ({ contents: { json: { for: k } } })) } },
+        });
+      }
+      if (query.includes("personal_kiosk::PersonalKioskCap")) return Promise.resolve({ address: { objects: emptyPage } });
+      if (query.includes("dynamicFields")) {
+        const kioskId = vars.kioskId as string;
+        return Promise.resolve({
+          object: { dynamicFields: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [kioskItemNode(kioskId, 1, nftCollection("A"))] } },
+        });
+      }
+      return Promise.resolve({ address: { objects: emptyDirect } });
+    });
+  });
+
+  it("counts the raw contents it leaves out, and returns them with detail full", async () => {
+    const handler = tools.get("list_nfts")!;
+    const summary = JSON.parse((await handler({ address: OWNER })).content[0].text);
+    expect(summary.nfts.every((n: Record<string, unknown>) => !("content" in n))).toBe(true);
+    expect(summary.omitted.content.count).toBe(summary.nfts.length);
+    expect(summary.omitted.next_call).toEqual({ tool: "list_nfts", repeat_with: { detail: "full" } });
+
+    const full = JSON.parse((await handler({ address: OWNER, detail: "full" })).content[0].text);
+    expect(full.nfts.map((n: { content: unknown }) => n.content)).toEqual(summary.nfts.map((n: { name: string }) => ({ name: n.name, image_url: expect.any(String) })));
+    expect(full.omitted).toBeUndefined();
+  });
+
+  it("keeps the kiosk count whole on a resumed page", async () => {
+    const handler = tools.get("list_nfts")!;
+    const first = JSON.parse((await handler({ address: OWNER, limit: 1 })).content[0].text);
+    expect(first.kiosk_count).toBe(2);
+    const second = JSON.parse((await handler({ address: OWNER, limit: 5, cursor: first.next_cursor })).content[0].text);
+    expect(second.kiosk_count).toBe(2);
+    expect(second.nfts.map((n: { kiosk_id: string }) => n.kiosk_id)).toEqual([PERSONAL_KIOSK_ID]);
+    expect(second.next_cursor).toBeUndefined();
+  });
+});

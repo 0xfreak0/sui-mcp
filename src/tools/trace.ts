@@ -7,8 +7,10 @@ import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/de
 import {
   chooseNextHop,
   coinKey,
+  claimCoinsKept,
   nonGasAmount,
   sameCoin,
+  type CandidateTx,
   type GasCharge,
   type HopBasis,
   type RemainingEntry,
@@ -23,7 +25,9 @@ import {
   forwardDeadEnd,
   HUB_SCAN_TRANSACTIONS,
   isPassThroughAddress,
+  MOVES_PER_NODE,
   OBJECT_CHANGE_PAGES,
+  stopsAsHub,
   type BalanceChangeInfo,
   type FetchedTx,
 } from "../utils/trace-read.js";
@@ -102,6 +106,20 @@ interface HopResult {
    * remainder, so it is neither "moved" nor "stopped" from this hop's view.
    */
   residual?: { coin_type: string; amount: string; received: string; moved: string; note: string };
+  /**
+   * Forward: the holder's other spends of the tracked coin, read after the
+   * previous hop until they covered what it delivered. This hop is the
+   * largest of them; these are the rest, in order.
+   */
+  unfollowed_spends?: Array<{ digest: string; amount: string; coin_type: string }>;
+  /**
+   * Forward: transactions before this hop in which the holder put the tracked
+   * coin into a pool or deposit and kept a claim on it (a share or receipt
+   * coin typed over it). The value stayed the holder's, so they are not hops.
+   */
+  kept_as_claim?: Array<{ digest: string; amount: string; coin_type: string }>;
+  /** What `kept_as_claim` left out past its first MOVES_PER_NODE rows, and where to read them. */
+  kept_as_claim_omitted?: { count: number; amount: string; next_call: { tool: string; args: Record<string, unknown> } };
   actions: string[];
   token_flow: { coin: string; amount: string; raw_type: string }[];
   /**
@@ -409,7 +427,7 @@ function traceCsv(direction: "forward" | "backward", followed: FollowedHop[], ho
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "(Advanced — multi-hop) Trace fund flow from a transaction. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers, burn addresses — see manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and backward at high-fanout hubs, and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
+    "(Advanced — multi-hop) Trace fund flow from a transaction. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers, burn addresses — see manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and at high-fanout hubs (forward, only at one that 100+ distinct senders pay into; an address paid by fewer passes on what it received and is followed), and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z
@@ -468,6 +486,9 @@ export function registerTraceTools(server: McpServer) {
       // Forward: what the followed address received on the previous hop, so a
       // larger outflow can be flagged as mixed with other funds.
       let delivered: { address: string; coin: string; amount: bigint } | null = null;
+      // Forward: what the search for the current hop read besides the hop it
+      // chose, reported on that hop.
+      let spendContext: Pick<HopResult, "unfollowed_spends" | "kept_as_claim" | "kept_as_claim_omitted"> = {};
       // Hops the fullnode had pruned. Worth reporting: it tells a reader the
       // trace reached back past the fullnode's retention, which is usually the
       // interesting part of an old case.
@@ -601,7 +622,9 @@ export function registerTraceTools(server: McpServer) {
           ...(tx.balanceChangesTruncated ? { balance_changes_truncated: true as const } : {}),
           ...(tx.commandsTruncated ? { commands_truncated: true as const } : {}),
           ...(tx.eventsIncomplete ? { events_incomplete: true as const } : {}),
+          ...spendContext,
         };
+        spendContext = {};
 
         // The two ways a hop's own spend can diverge from what the previous
         // hop delivered: spending more means other funds are mixed in;
@@ -640,7 +663,10 @@ export function registerTraceTools(server: McpServer) {
               note:
                 `${holder} received ${formatAmount(delivered.amount.toString(), delivered.coin).slice(1)} before this hop but moved only ` +
                 `${formatAmount(moved.toString(), delivered.coin).slice(1)} of it here (${pctHeld}% held back). The remaining ` +
-                `${formatAmount(heldBack.toString(), delivered.coin).slice(1)} stayed at ${holder} and is not followed by this trace.`,
+                `${formatAmount(heldBack.toString(), delivered.coin).slice(1)} stayed at ${holder} and is not followed by this trace` +
+                (hopResult.unfollowed_spends?.length || hopResult.kept_as_claim?.length
+                  ? "; its other spends and kept claims since the previous hop are listed in unfollowed_spends and kept_as_claim."
+                  : "."),
             };
           }
         }
@@ -821,21 +847,34 @@ export function registerTraceTools(server: McpServer) {
 
         // A hub pools many parties' money. Backward, its earlier inflows are
         // strangers' deposits, so walking past it names one of them as the
-        // source. Forward, its next outflow is someone's withdrawal: an
-        // exchange hot wallet's next SUI payment is not the traced SUI. Not
-        // asked when the trace keeps following the same actor, who is the
-        // subject rather than a new party.
+        // source. Forward, its next outflow is someone's withdrawal when many
+        // parties pay into it: an exchange hot wallet's next SUI payment is not
+        // the traced SUI. An address paid by few that pays many (an operator's
+        // disperser) passes on what it received, and is followed. Not asked
+        // when the trace keeps following the same actor, who is the subject
+        // rather than a new party.
         if (direction === "backward" || nextAddress !== actor) {
           const fanout = await measureFanout(nextAddress, HUB_SCAN_TRANSACTIONS).catch(() => null);
-          if (fanout && fanout.classification !== "narrow") {
+          if (fanout && stopsAsHub(nextAddress, fanout, direction)) {
             terminationReason =
               `${nextAddress} is a ${fanout.classification}: ${fanout.counterparty_count}${fanout.truncated ? "+" : ""} ` +
               `counterparties in its last ${fanout.scanned_transactions} transactions. ` +
               (direction === "backward"
                 ? "Its earlier inflows are other parties' money, so the transaction before this one does not say where these funds came from. "
-                : "Funds it receives are pooled with other parties' money, so its next outflow is not a continuation of these funds. ") +
+                : `${fanout.sender_count >= 0 ? `${fanout.sender_count}${fanout.truncated ? "+" : ""}` : "Many"} distinct senders pay into it, so funds it receives are pooled with other parties' money and its next outflow is not a continuation of these funds. `) +
               "Stopping here: attribute this address (manage_labels, get_address_fanout) rather than walking past it.";
             break;
+          }
+          if (fanout && fanout.classification !== "narrow") {
+            hopResult.note = [
+              hopResult.note,
+              `${nextAddress} has ${fanout.counterparty_count}${fanout.truncated ? "+" : ""} counterparties but ` +
+                (getLabel(nextAddress)?.category === "malicious"
+                  ? "is labelled malicious, so its outflows are followed as the subject's."
+                  : `only ${fanout.sender_count} distinct sender(s) pay into it, so its outflows carry what those senders paid in and are followed.`),
+            ]
+              .filter(Boolean)
+              .join(" ");
           }
         }
 
@@ -848,11 +887,45 @@ export function registerTraceTools(server: McpServer) {
 
         if (direction === "forward") {
           delivered = trackedCoin && movedHere > 0n ? { address: nextAddress, coin: trackedCoin, amount: movedHere } : null;
-          const step = await findNextForward(nextAddress, checkpointNum, trackedCoin, EMPTY_REMAINING, currentDigest, visitedDigests);
+          const coin = trackedCoin;
+          const step = await findNextForward(nextAddress, checkpointNum, coin, EMPTY_REMAINING, currentDigest, visitedDigests, {
+            ...(delivered ? { need: delivered.amount } : {}),
+            ...(coin ? { passOver: (t: CandidateTx) => claimCoinsKept(t, nextAddress, coin) } : {}),
+          });
+          const listed = (rows: Array<{ digest: string; spent: bigint }>) =>
+            rows.map((r) => ({ digest: r.digest, amount: r.spent.toString(), coin_type: coin ?? "" }));
+          // An exploiter's attack batches can leave hundreds; the first ones
+          // are listed and the rest counted, with the call that lists them.
+          const kept = (rows: Array<{ digest: string; spent: bigint }>): Pick<HopResult, "kept_as_claim" | "kept_as_claim_omitted"> => {
+            if (!rows.length) return {};
+            const rest = rows.slice(MOVES_PER_NODE);
+            return {
+              kept_as_claim: listed(rows.slice(0, MOVES_PER_NODE)),
+              ...(rest.length
+                ? {
+                    kept_as_claim_omitted: {
+                      count: rest.length,
+                      amount: rest.reduce((t, r) => t + r.spent, 0n).toString(),
+                      next_call: { tool: "query_transactions", args: { sender: nextAddress, ...(checkpointNum !== undefined ? { after_checkpoint: String(checkpointNum) } : {}) } },
+                    },
+                  }
+                : {}),
+            };
+          };
           if (step.digest === null) {
             terminationReason = step.reason;
+            if (step.keptClaims.length) {
+              Object.assign(hopResult, kept(step.keptClaims));
+              terminationReason +=
+                ` ${nextAddress} also put the coin into ${step.keptClaims.length} transaction(s) that left it a share or receipt coin ` +
+                "typed over it (kept_as_claim); that value is still its own, held as the claim.";
+            }
             break;
           }
+          spendContext = {
+            ...(step.others.length ? { unfollowed_spends: listed(step.others) } : {}),
+            ...kept(step.keptClaims),
+          };
           holder = nextAddress;
           reachedVia = step.via === "released-from-object" ? step.via : undefined;
           // Only meaningful for a transaction the followed address sent. An
@@ -1015,6 +1088,7 @@ export function registerTraceTools(server: McpServer) {
             // sampled, so the valuation is auditable.
             price_usd: price != null ? Number(price.toFixed(price < 1 ? 6 : 4)) : null,
             price_source: pp?.source ?? null,
+            ...(pp?.priced_as ? { priced_as: pp.priced_as } : {}),
             ...(pp?.confidence !== undefined ? { price_confidence: pp.confidence } : {}),
             priced_at: pp ? new Date(pp.publishTime * 1000).toISOString() : null,
             price_age_sec: ageSec,
@@ -1149,7 +1223,7 @@ export function registerTraceTools(server: McpServer) {
         lines.push("  A reduction in risk, not a warning: nobody can exercise these rights again.");
         parts.push(lines.join("\n"));
       }
-      if (poisoning) {
+      if (poisoning.pairs.length > 0) {
         // In the summary as well as the payload, for the same reason the bridge
         // exits are: the prose is what gets read, and a lookalike that only
         // appears in JSON is a warning nobody sees before they copy an address.
@@ -1195,7 +1269,7 @@ export function registerTraceTools(server: McpServer) {
             ? { unpriced: [...unpricedCoins].map(([coin_type, reason]) => ({ coin_type, reason })) }
             : {}),
         },
-        ...(poisoning ? { address_poisoning: poisoning } : {}),
+        address_poisoning: poisoning,
         // The hop already carries these records in `object_transfers`; the
         // trace-level block repeats the digest-level view, so it names them by
         // id rather than serialising each one a second time.

@@ -18,6 +18,10 @@ import { gqlPage } from "./helpers/service-shapes.js";
  *      ends as read_failed with the value it moved, and leaves the graph
  *      truncated. A coin with no price carries the value of the conversion it
  *      came out of (forward) or went into (backward), and none otherwise.
+ *      Forward, a sale whose proceeds are worth under a tenth of its input
+ *      carries only what they are worth, whatever its calls are named, and
+ *      the rest ends `retained` with the pool, or `consumed` when the start
+ *      address received a receipt for it.
  *   4. A priced terminal's USD is its share of the value, and no `source`
  *      terminal sits on a transaction that paid something in that no address
  *      took, unless what it paid in is worth less than a tenth of what came
@@ -26,7 +30,9 @@ import { gqlPage } from "./helpers/service-shapes.js";
  *   6. The graph is truncated exactly when a move is unreadable or the start
  *      node's search stopped at its move limit, and says why in the second
  *      case. Past that limit, value paid back to the start address ends where
- *      it went next.
+ *      it went next. Five or more branches that reconverge on one wallet
+ *      reach it before it is expanded, so its expansion limit never cuts
+ *      them off.
  *
  * Prices are fixed and swaps are fair, so every conversion keeps value.
  */
@@ -66,6 +72,14 @@ const DEPOSIT = {
 const START = `0xa0${"a".repeat(62)}`;
 const OTHERS = ["b1", "c2", "d3", "e4"].map((p) => `0x${p}${p[1].repeat(62)}`);
 const RELAYER = `0xf5${"5".repeat(62)}`;
+/** Wallets that split the value and pass it all to one merge wallet. */
+const BRANCHES = Array.from({ length: 8 }, (_, i) => `0x6${i}${"6".repeat(62)}`);
+const MERGE = `0x8e${"8".repeat(62)}`;
+/** A deposit's receipt, and the pool a sale below the market price leaves its value in. */
+const RECEIPT = `0x7e${"7".repeat(62)}`;
+const POOL = `0x9a${"9".repeat(62)}`;
+/** An account entry a vault keeps in a table keyed by address. */
+const LEDGER = `0x1e${"d".repeat(62)}`;
 const DEEP = "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP";
 const EMOJI = "0x07ab9ba99abd9af0d687ae55079601192be5a12d1a21c8c4cd9f1a17519111e0::emoji::EMOJI";
 const UPS = "0x0292295126a70b16516108f708e31f2d54ba67db42d7441416a735a340e7ad2b::ups::UPS";
@@ -176,12 +190,25 @@ function forwardLedger(rand: () => number): Ledger {
     const { X, Y, Z, P: R, Q: S, v } = draw();
     const x = rawFor(X, v);
     const digest = `0xf${i}`;
-    const kinds = ["pay", "multiPay", "swapHold", "consolidateSend", "swapPartSend", "swapIntoPay", "twoIn", "twoOut", "bridgeExit", "deposit", "chain", "rateSale", "bridgeDust", "depositDust"];
+    const kinds = ["pay", "multiPay", "swapHold", "consolidateSend", "swapPartSend", "swapIntoPay", "twoIn", "twoOut", "bridgeExit", "deposit", "chain", "rateSale", "bridgeDust", "depositDust", "dumpSale", "reconverge"];
     if (receipts.length > 0) kinds.push("relay", "relay");
     let h: HopSpec;
     let legs: OracleLeg[] = [];
     let spendLast: { coin: Coin; amount: bigint } | null = null;
     switch (pick(kinds)) {
+      case "reconverge": {
+        // X split across five to eight wallets, each passing its part to one merge wallet, which pays R.
+        const ws = BRANCHES.slice(0, 5 + Math.floor(rand() * 4));
+        const parts = ws.map(() => rawFor(X, 10 + Math.floor(rand() * 4000)));
+        const total = parts.reduce((t, p) => t + p, 0n);
+        add(
+          { digest, sender: START, changes: [[START, `-${total}`, X.type], ...ws.map((w, k): [string, string, string] => [w, `${parts[k]}`, X.type])] },
+          [leg(X.type, total, X.priced, ws.map((w, k) => to(w, X.type, usdOf(X.type, parts[k]))))],
+        );
+        ws.forEach((w, k) => add({ digest: `${digest}w${k}`, sender: w, changes: [[w, `-${parts[k]}`, X.type], [MERGE, `${parts[k]}`, X.type]] }));
+        add({ digest: `${digest}m`, sender: MERGE, changes: [[MERGE, `-${total}`, X.type], [R, `${total}`, X.type]] });
+        continue;
+      }
       case "rateSale": {
         // UPS bought at one rate and sold for a priced coin at another.
         const X0 = pick(COINS.filter((c) => c.priced));
@@ -215,18 +242,50 @@ function forwardLedger(rand: () => number): Ledger {
         continue;
       }
       case "depositDust": {
-        // A readable deposit of X into a contract that returns a little of Y to the start address, which a
-        // later payment spends, or to R.
+        // A readable deposit of X into a contract that returns a receipt and a little of Y to the start address,
+        // which a later payment spends, or the Y to R.
         const [Xp, Yp] = COINS.filter((c) => c.priced).sort(() => rand() - 0.5);
         const xp = rawFor(Xp, v);
         const dust = rawFor(Yp, 0.01);
         const d = usdOf(Yp.type, dust);
+        // The claim is a new receipt, the start address's existing position written in place, or an entry in a
+        // table the vault keeps by address; none of them is a new object for the depositor in the last two.
+        const objects = pick([
+          [{ id: RECEIPT, type: "0xabc::vault::Receipt", owner: START }],
+          [{ id: RECEIPT, type: "0xabc::lending::Obligation", owner: START, mutated: true as const }],
+          [
+            { id: POOL, type: "0xabc::vault::Vault", shared: true as const },
+            { id: LEDGER, type: "0x0000000000000000000000000000000000000000000000000000000000000002::dynamic_field::Field<address, u64>", parent: POOL },
+          ],
+        ]);
         if (rand() < 0.5) {
-          h = { digest, sender: START, changes: [[START, `-${xp}`, Xp.type], [R, `${dust}`, Yp.type]] };
+          h = { digest, sender: START, changes: [[START, `-${xp}`, Xp.type], [R, `${dust}`, Yp.type]], objects };
           legs = [leg(Xp.type, xp, true, [{ key: "consumed", usd: v - d }, to(R, Yp.type, d)])];
           break;
         }
-        add({ digest: `${digest}a`, sender: START, changes: [[START, `-${xp}`, Xp.type], [START, `${dust}`, Yp.type]] }, [leg(Xp.type, xp, true, [{ key: "consumed", usd: v - d }, held(Yp.type, dust, d)])], false);
+        add({ digest: `${digest}a`, sender: START, changes: [[START, `-${xp}`, Xp.type], [START, `${dust}`, Yp.type]], objects }, [leg(Xp.type, xp, true, [{ key: "consumed", usd: v - d }, held(Yp.type, dust, d)])], false);
+        const vw = 10 + Math.floor(rand() * 4990);
+        const w = rawFor(Yp, vw);
+        h = { digest, sender: START, changes: [[START, `-${w}`, Yp.type], [R, `${w}`, Yp.type]] };
+        legs = [leg(Yp.type, w, true, [to(R, Yp.type, vw)])];
+        add(h, legs, false);
+        continue;
+      }
+      case "dumpSale": {
+        // A readable sale of X for a few percent of its value in Y, into a pool the start address gets no receipt
+        // from, half the time through a call named swap. The Y goes to R, or stays for a later payment to spend.
+        const [Xp, Yp] = COINS.filter((c) => c.priced).sort(() => rand() - 0.5);
+        const xp = rawFor(Xp, v);
+        const y = rawFor(Yp, v * (0.01 + 0.08 * rand()));
+        const d = usdOf(Yp.type, y);
+        const objects = [{ id: POOL, type: "0xabc::pool::Pool", shared: true as const }];
+        const calls: Array<[string, string, string]> = rand() < 0.5 ? [["0xabc", "pool", "swap"]] : [];
+        if (rand() < 0.5) {
+          h = { digest, sender: START, changes: [[START, `-${xp}`, Xp.type], [R, `${y}`, Yp.type]], objects, calls };
+          legs = [leg(Xp.type, xp, true, [{ key: "retained", usd: v - d }, to(R, Yp.type, d)])];
+          break;
+        }
+        add({ digest: `${digest}a`, sender: START, changes: [[START, `-${xp}`, Xp.type], [START, `${y}`, Yp.type]], objects, calls }, [leg(Xp.type, xp, true, [{ key: "retained", usd: v - d }, held(Yp.type, y, d)])], false);
         const vw = 10 + Math.floor(rand() * 4990);
         const w = rawFor(Yp, vw);
         h = { digest, sender: START, changes: [[START, `-${w}`, Yp.type], [R, `${w}`, Yp.type]] };
@@ -356,7 +415,19 @@ function backwardLedger(rand: () => number): Ledger {
     const digest = `0xb${i}`;
     let h: HopSpec;
     let legs: OracleLeg[] = [];
-    switch (pick(["receive", "receive", "multiReceive", "swapHold", "consolidateReceive", "swapPartSend", "payerSwap", "twoIn", "twoOut", "bridgeKeep", "credit", "withdraw", "payOut", "returnReceive", "chain", "rateBuy", "withdrawFee"])) {
+    switch (pick(["receive", "receive", "multiReceive", "swapHold", "consolidateReceive", "swapPartSend", "payerSwap", "twoIn", "twoOut", "bridgeKeep", "credit", "withdraw", "payOut", "returnReceive", "chain", "rateBuy", "withdrawFee", "reconverge"])) {
+      case "reconverge": {
+        // Q funds a merge wallet, which pays five to eight wallets that each pay their part to the start address.
+        const ws = BRANCHES.slice(0, 5 + Math.floor(rand() * 4));
+        const parts = ws.map(() => rawFor(X, 10 + Math.floor(rand() * 4000)));
+        const total = parts.reduce((t, p) => t + p, 0n);
+        add({ digest: `${digest}q`, sender: Q, changes: [[Q, `-${total}`, X.type], [MERGE, `${total}`, X.type]] });
+        add({ digest: `${digest}m`, sender: MERGE, changes: [[MERGE, `-${total}`, X.type], ...ws.map((w, k): [string, string, string] => [w, `${parts[k]}`, X.type])] });
+        ws.forEach((w, k) =>
+          add({ digest: `${digest}w${k}`, sender: w, changes: [[w, `-${parts[k]}`, X.type], [START, `${parts[k]}`, X.type]] }, [leg(X.type, parts[k], X.priced, [to(w, X.type, usdOf(X.type, parts[k]))])]),
+        );
+        continue;
+      }
       case "withdrawFee": {
         // A readable withdrawal of X that pays a little of Y no address takes, by the start address or by P, who
         // passes the X to it.
@@ -632,6 +703,7 @@ function rootAttribution(e: InstanceType<typeof FlowEngine>, forward: boolean): 
     } else if (n.kind === "address") add(`to:${n.address}|${n.coin_type}`, edge.share);
     else if (n.kind === "bridge_exit") add("bridge_exit", edge.share);
     else if (n.kind === "consumed") add("consumed", edge.share);
+    else if (n.kind === "retained") add("retained", edge.share);
     else add(n.id.startsWith("entry:") ? "bridge_entry" : "source", edge.share);
   }
   for (const g of e.ledger.summary()) for (const x of g.entries) if (g.code === "read_failed" && x.node === root) add("read_failed", x.share);

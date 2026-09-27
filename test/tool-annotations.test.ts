@@ -1,14 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import { unknownToolsIn } from "./helpers/tool-names.js";
+import { leadsWithBinaryTool, unknownToolsIn } from "./helpers/tool-names.js";
 import { registerAllTools } from "../src/tools/index.js";
 import { registerAllResources } from "../src/resources.js";
-import { registerAllPrompts } from "../src/prompts.js";
+import { PROMPTS, SKILL_URL, registerAllPrompts } from "../src/prompts.js";
 import { serverInstructions } from "../src/tools/toolset.js";
 
 /**
@@ -59,6 +59,28 @@ function rows(table: string): number {
   } finally {
     db.close();
   }
+}
+
+/**
+ * The address and digest prefixes the incident cases name, as guidance would
+ * abbreviate them (`0x1234abcd…`, `use 1234abcd…`, `AbCd1234…`). A verified
+ * coin's package and a system address are shared infrastructure, not a fact
+ * of one case.
+ */
+function caseIdentifierPrefixes(): string[] {
+  const dir = new URL("../cases/incidents/", import.meta.url);
+  const text = readdirSync(dir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => readFileSync(new URL(f, dir), "utf8"))
+    .join("\n");
+  const coins = JSON.parse(readFileSync(new URL("../src/data/coins.json", import.meta.url), "utf8")) as { coins: { coin_type: string }[] };
+  const shared = new Set(coins.coins.map((c) => c.coin_type.split("::")[0].toLowerCase()));
+  const addresses = (text.match(/0x(?:[0-9a-f]{64}|[0-9a-f]{40})(?![0-9a-f])/gi) ?? [])
+    .map((a) => a.toLowerCase())
+    .filter((a) => !shared.has(a) && !a.startsWith("0x00000000"))
+    .map((a) => a.slice(0, 10));
+  const digests = (text.match(/(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{43,44}(?![1-9A-HJ-NP-Za-km-z])/g) ?? []).map((d) => d.slice(0, 8));
+  return [...new Set([...addresses, ...digests])];
 }
 
 let client: Client;
@@ -176,6 +198,14 @@ describe("server instructions", () => {
     expect(text.length).toBeLessThanOrEqual(2048);
     expect(unknownToolsIn(text, new Set([...tools, ...prompts].map((t) => t.name)))).toEqual([]);
   });
+
+  it("lead an exploit's mechanism to tools every install has", () => {
+    const text = client.getInstructions() ?? "";
+    for (const tool of ["decode_ptb", "get_move_function", "disassemble_module", "get_package", "get_object", "diff_package_upgrade"]) {
+      expect(text, tool).toMatch(new RegExp(`\\b${tool}\\b`));
+    }
+    expect(leadsWithBinaryTool(text)).toBe(false);
+  });
 });
 
 describe("prompts", () => {
@@ -190,6 +220,55 @@ describe("prompts", () => {
     expect(text).toContain(`Investigate the Sui address ${ADDR}`);
     expect(text).toContain("## Conclusions to refuse");
     expect(text).toContain("network: 'mainnet'");
+  });
+
+  it("name only tools that exist, and no binary-only tool ahead of one every install has", async () => {
+    const names = new Set(tools.map((t) => t.name));
+    for (const name of Object.keys(PROMPTS)) {
+      const res = await client.getPrompt({ name, arguments: { [PROMPTS[name].subject.name]: ADDR } });
+      const content = res.messages[0].content;
+      const text = content.type === "text" ? content.text : "";
+      expect(unknownToolsIn(text, names), name).toEqual([]);
+      expect(leadsWithBinaryTool(text), name).toBe(false);
+    }
+    expect(leadsWithBinaryTool(readFileSync(SKILL_URL, "utf8"))).toBe(false);
+  });
+
+  // The flaw is found by reading the code the exploit ran, and a fixing or
+  // introducing upgrade need not exist, so the steps read code before diffing.
+  // The calls' arguments come from decode_ptb, a fraction of get_transaction's
+  // full detail.
+  it("walks trace_incident from the exploit's calls to the code that ran, then its dependencies, then diffs", () => {
+    const steps = PROMPTS.trace_incident.task({ subject: ADDR });
+    const at = (tool: string) => steps.search(new RegExp(`\\b${tool}\\b`));
+    for (const tool of ["decode_ptb", "get_upgrade_history", "get_move_function", "disassemble_module", "get_package", "diff_package_upgrade", "get_object"]) {
+      expect(at(tool), tool).toBeGreaterThanOrEqual(0);
+    }
+    const full = at("get_transaction");
+    expect(full < 0 || at("decode_ptb") < full).toBe(true);
+    expect(at("disassemble_module")).toBeLessThan(at("get_package"));
+    expect(at("get_package")).toBeLessThan(at("diff_package_upgrade"));
+    expect(steps).not.toMatch(/\bdecompile_module\b/);
+  });
+
+  // Held-out rounds measure whether the method finds a mechanism it was never
+  // shown, so the guidance a client receives names no case's addresses or
+  // digests, in full or abbreviated.
+  it("carry no address or digest from an incident case", async () => {
+    const served = [client.getInstructions() ?? "", readFileSync(SKILL_URL, "utf8")];
+    for (const name of Object.keys(PROMPTS)) {
+      const res = await client.getPrompt({ name, arguments: { [PROMPTS[name].subject.name]: ADDR } });
+      const content = res.messages[0].content;
+      served.push(content.type === "text" ? content.text : "");
+    }
+    for (const t of tools) served.push(t.description ?? "", JSON.stringify(t.inputSchema));
+    const text = served.join("\n");
+    const found = caseIdentifierPrefixes().filter((p) =>
+      p.startsWith("0x")
+        ? new RegExp(`(?<![0-9a-z])(?:0x)?${p.slice(2)}`, "i").test(text)
+        : new RegExp(`(?<![1-9A-HJ-NP-Za-km-z])${p}`).test(text),
+    );
+    expect(found).toEqual([]);
   });
 });
 

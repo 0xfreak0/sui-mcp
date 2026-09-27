@@ -4,6 +4,8 @@ import {
   allocate,
   exitCandidates,
   groupExits,
+  leadCandidates,
+  LEAD_READ_LIMIT,
   readExit,
   summarizeFlows,
   type FlowTx,
@@ -300,5 +302,33 @@ describe("bridge exits", () => {
     expect(e.bridge).toBe("Sui Bridge");
     expect(screened.protocol).toBe(e.bridge);
     expect(e.beneficiaries.map((b) => b.protocol).sort()).toEqual(["Circle CCTP", "Sui Bridge"]);
+  });
+});
+
+describe("leadCandidates", () => {
+  const pool = (digest: string, over: Partial<FlowTx> = {}) =>
+    tx({ digest, changes: [{ owner: ME, coinType: USDC, amount: -5_000_000n }], ...over });
+
+  it("reads only the subject's own successful sends where value reached no address", () => {
+    const paid = tx({
+      digest: "paid",
+      changes: [
+        { owner: ME, coinType: USDC, amount: -5_000_000n },
+        { owner: FUNDER, coinType: USDC, amount: 5_000_000n },
+      ],
+    });
+    const failed = pool("failed", { status: "failure" });
+    const theirs = pool("theirs", { sender: FUNDER });
+    const txs = [pool("gone"), paid, failed, theirs];
+    const r = leadCandidates(ME, txs, summarizeFlows(ME, txs), []);
+    expect(r.txs.map((t) => t.digest)).toEqual(["gone"]);
+  });
+
+  it("leaves out a transaction already read as a marked exit, and counts past the limit", () => {
+    const txs = Array.from({ length: LEAD_READ_LIMIT + 3 }, (_, i) => pool(`d${i}`));
+    const r = leadCandidates(ME, txs, summarizeFlows(ME, txs), [txs[0]]);
+    expect(r.txs.map((t) => t.digest)).not.toContain("d0");
+    expect(r.txs).toHaveLength(LEAD_READ_LIMIT);
+    expect(r.skipped).toBe(2);
   });
 });

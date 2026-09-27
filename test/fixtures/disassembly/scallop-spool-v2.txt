@@ -1,0 +1,301 @@
+// Move bytecode v6
+module e87f1b2d498106a2c61421cec75b7b5c5e348512b0dc263949a0e7a3c256571a.spool {
+use e87f1b2d498106a2c61421cec75b7b5c5e348512b0dc263949a0e7a3c256571a::u64;
+use 0000000000000000000000000000000000000000000000000000000000000001::type_name;
+use 0000000000000000000000000000000000000000000000000000000000000002::clock;
+use 0000000000000000000000000000000000000000000000000000000000000002::math;
+use 0000000000000000000000000000000000000000000000000000000000000002::object;
+use 0000000000000000000000000000000000000000000000000000000000000002::tx_context;
+
+struct Spool has store, key {
+	id: UID,
+	stake_type: TypeName,
+	distributed_point_per_period: u64,
+	point_distribution_time: u64,
+	distributed_point: u64,
+	max_distributed_point: u64,
+	max_stakes: u64,
+	index: u64,
+	stakes: u64,
+	last_update: u64,
+	created_at: u64
+}
+
+public base_index_rate(): u64 {
+B0:
+	0: LdConst[0](u64: 1000..)
+	1: Ret
+}
+
+public index(Arg0: &Spool): u64 {
+B0:
+	0: MoveLoc[0](Arg0: &Spool)
+	1: ImmBorrowField[0](Spool.index: u64)
+	2: ReadRef
+	3: Ret
+}
+
+public stakes(Arg0: &Spool): u64 {
+B0:
+	0: MoveLoc[0](Arg0: &Spool)
+	1: ImmBorrowField[1](Spool.stakes: u64)
+	2: ReadRef
+	3: Ret
+}
+
+public max_stakes(Arg0: &Spool): u64 {
+B0:
+	0: MoveLoc[0](Arg0: &Spool)
+	1: ImmBorrowField[2](Spool.max_stakes: u64)
+	2: ReadRef
+	3: Ret
+}
+
+public last_update(Arg0: &Spool): u64 {
+B0:
+	0: MoveLoc[0](Arg0: &Spool)
+	1: ImmBorrowField[3](Spool.last_update: u64)
+	2: ReadRef
+	3: Ret
+}
+
+public point_distribution_time(Arg0: &Spool): u64 {
+B0:
+	0: MoveLoc[0](Arg0: &Spool)
+	1: ImmBorrowField[4](Spool.point_distribution_time: u64)
+	2: ReadRef
+	3: Ret
+}
+
+public stake_type(Arg0: &Spool): TypeName {
+B0:
+	0: MoveLoc[0](Arg0: &Spool)
+	1: ImmBorrowField[5](Spool.stake_type: TypeName)
+	2: ReadRef
+	3: Ret
+}
+
+public(friend) new<Ty0>(Arg0: u64, Arg1: u64, Arg2: u64, Arg3: u64, Arg4: &Clock, Arg5: &mut TxContext): Spool {
+L6:	loc0: UID
+L7:	loc1: u64
+L8:	loc2: u64
+L9:	loc3: TypeName
+L10:	loc4: u64
+L11:	loc5: u64
+L12:	loc6: u64
+L13:	loc7: u64
+L14:	loc8: u64
+B0:
+	0: MoveLoc[4](Arg4: &Clock)
+	1: Call clock::timestamp_ms(&Clock): u64
+	2: LdU64(1000)
+	3: Div
+	4: StLoc[14](loc8: u64)
+	5: MoveLoc[5](Arg5: &mut TxContext)
+	6: Call object::new(&mut TxContext): UID
+	7: StLoc[6](loc0: UID)
+	8: Call type_name::get<Ty0>(): TypeName
+	9: StLoc[9](loc3: TypeName)
+	10: MoveLoc[0](Arg0: u64)
+	11: StLoc[10](loc4: u64)
+	12: MoveLoc[1](Arg1: u64)
+	13: StLoc[11](loc5: u64)
+	14: MoveLoc[2](Arg2: u64)
+	15: StLoc[12](loc6: u64)
+	16: MoveLoc[3](Arg3: u64)
+	17: StLoc[13](loc7: u64)
+	18: CopyLoc[14](loc8: u64)
+	19: StLoc[7](loc1: u64)
+	20: MoveLoc[14](loc8: u64)
+	21: StLoc[8](loc2: u64)
+	22: MoveLoc[6](loc0: UID)
+	23: MoveLoc[9](loc3: TypeName)
+	24: MoveLoc[10](loc4: u64)
+	25: MoveLoc[11](loc5: u64)
+	26: LdU64(0)
+	27: MoveLoc[12](loc6: u64)
+	28: MoveLoc[13](loc7: u64)
+	29: LdConst[0](u64: 1000..)
+	30: LdU64(0)
+	31: MoveLoc[7](loc1: u64)
+	32: MoveLoc[8](loc2: u64)
+	33: Pack[0](Spool)
+	34: Ret
+}
+
+public(friend) update_config(Arg0: &mut Spool, Arg1: u64, Arg2: u64, Arg3: u64, Arg4: u64) {
+B0:
+	0: MoveLoc[1](Arg1: u64)
+	1: CopyLoc[0](Arg0: &mut Spool)
+	2: MutBorrowField[6](Spool.distributed_point_per_period: u64)
+	3: WriteRef
+	4: MoveLoc[2](Arg2: u64)
+	5: CopyLoc[0](Arg0: &mut Spool)
+	6: MutBorrowField[4](Spool.point_distribution_time: u64)
+	7: WriteRef
+	8: MoveLoc[3](Arg3: u64)
+	9: CopyLoc[0](Arg0: &mut Spool)
+	10: MutBorrowField[7](Spool.max_distributed_point: u64)
+	11: WriteRef
+	12: MoveLoc[4](Arg4: u64)
+	13: MoveLoc[0](Arg0: &mut Spool)
+	14: MutBorrowField[2](Spool.max_stakes: u64)
+	15: WriteRef
+	16: Ret
+}
+
+public(friend) stake(Arg0: &mut Spool, Arg1: u64) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Spool)
+	1: ImmBorrowField[1](Spool.stakes: u64)
+	2: ReadRef
+	3: MoveLoc[1](Arg1: u64)
+	4: Add
+	5: MoveLoc[0](Arg0: &mut Spool)
+	6: MutBorrowField[1](Spool.stakes: u64)
+	7: WriteRef
+	8: Ret
+}
+
+public(friend) unstake(Arg0: &mut Spool, Arg1: u64) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Spool)
+	1: ImmBorrowField[1](Spool.stakes: u64)
+	2: ReadRef
+	3: MoveLoc[1](Arg1: u64)
+	4: Sub
+	5: MoveLoc[0](Arg0: &mut Spool)
+	6: MutBorrowField[1](Spool.stakes: u64)
+	7: WriteRef
+	8: Ret
+}
+
+public is_points_up_to_date(Arg0: &Spool, Arg1: &Clock): bool {
+B0:
+	0: MoveLoc[1](Arg1: &Clock)
+	1: Call clock::timestamp_ms(&Clock): u64
+	2: LdU64(1000)
+	3: Div
+	4: CopyLoc[0](Arg0: &Spool)
+	5: ImmBorrowField[3](Spool.last_update: u64)
+	6: ReadRef
+	7: Sub
+	8: MoveLoc[0](Arg0: &Spool)
+	9: ImmBorrowField[4](Spool.point_distribution_time: u64)
+	10: ReadRef
+	11: Lt
+	12: Ret
+}
+
+public(friend) accrue_points(Arg0: &mut Spool, Arg1: &Clock) {
+L2:	loc0: u64
+L3:	loc1: u64
+L4:	loc2: u64
+L5:	loc3: u64
+L6:	loc4: u64
+L7:	loc5: u64
+B0:
+	0: MoveLoc[1](Arg1: &Clock)
+	1: Call clock::timestamp_ms(&Clock): u64
+	2: LdU64(1000)
+	3: Div
+	4: StLoc[4](loc2: u64)
+	5: CopyLoc[0](Arg0: &mut Spool)
+	6: ImmBorrowField[1](Spool.stakes: u64)
+	7: ReadRef
+	8: LdU64(0)
+	9: Eq
+	10: BrFalse(16)
+B1:
+	11: MoveLoc[4](loc2: u64)
+	12: MoveLoc[0](Arg0: &mut Spool)
+	13: MutBorrowField[3](Spool.last_update: u64)
+	14: WriteRef
+	15: Ret
+B2:
+	16: CopyLoc[4](loc2: u64)
+	17: CopyLoc[0](Arg0: &mut Spool)
+	18: ImmBorrowField[3](Spool.last_update: u64)
+	19: ReadRef
+	20: Sub
+	21: StLoc[6](loc4: u64)
+	22: CopyLoc[6](loc4: u64)
+	23: CopyLoc[0](Arg0: &mut Spool)
+	24: ImmBorrowField[4](Spool.point_distribution_time: u64)
+	25: ReadRef
+	26: Div
+	27: StLoc[7](loc5: u64)
+	28: CopyLoc[7](loc5: u64)
+	29: LdU64(0)
+	30: Eq
+	31: BrFalse(35)
+B3:
+	32: MoveLoc[0](Arg0: &mut Spool)
+	33: Pop
+	34: Ret
+B4:
+	35: CopyLoc[0](Arg0: &mut Spool)
+	36: ImmBorrowField[7](Spool.max_distributed_point: u64)
+	37: ReadRef
+	38: CopyLoc[0](Arg0: &mut Spool)
+	39: ImmBorrowField[8](Spool.distributed_point: u64)
+	40: ReadRef
+	41: Sub
+	42: StLoc[5](loc3: u64)
+	43: CopyLoc[0](Arg0: &mut Spool)
+	44: ImmBorrowField[6](Spool.distributed_point_per_period: u64)
+	45: ReadRef
+	46: MoveLoc[7](loc5: u64)
+	47: Mul
+	48: MoveLoc[5](loc3: u64)
+	49: Call math::min(u64, u64): u64
+	50: StLoc[2](loc0: u64)
+	51: MoveLoc[4](loc2: u64)
+	52: MoveLoc[6](loc4: u64)
+	53: CopyLoc[0](Arg0: &mut Spool)
+	54: ImmBorrowField[4](Spool.point_distribution_time: u64)
+	55: ReadRef
+	56: Mod
+	57: Sub
+	58: CopyLoc[0](Arg0: &mut Spool)
+	59: MutBorrowField[3](Spool.last_update: u64)
+	60: WriteRef
+	61: CopyLoc[0](Arg0: &mut Spool)
+	62: ImmBorrowField[8](Spool.distributed_point: u64)
+	63: ReadRef
+	64: CopyLoc[2](loc0: u64)
+	65: Add
+	66: CopyLoc[0](Arg0: &mut Spool)
+	67: MutBorrowField[8](Spool.distributed_point: u64)
+	68: WriteRef
+	69: CopyLoc[2](loc0: u64)
+	70: LdU64(0)
+	71: Eq
+	72: BrFalse(76)
+B5:
+	73: MoveLoc[0](Arg0: &mut Spool)
+	74: Pop
+	75: Ret
+B6:
+	76: LdConst[0](u64: 1000..)
+	77: MoveLoc[2](loc0: u64)
+	78: CopyLoc[0](Arg0: &mut Spool)
+	79: ImmBorrowField[1](Spool.stakes: u64)
+	80: ReadRef
+	81: Call u64::mul_div(u64, u64, u64): u64
+	82: StLoc[3](loc1: u64)
+	83: CopyLoc[0](Arg0: &mut Spool)
+	84: ImmBorrowField[0](Spool.index: u64)
+	85: ReadRef
+	86: MoveLoc[3](loc1: u64)
+	87: Add
+	88: MoveLoc[0](Arg0: &mut Spool)
+	89: MutBorrowField[0](Spool.index: u64)
+	90: WriteRef
+	91: Ret
+}
+
+Constants [
+	0 => u64: 1000000000
+]
+}

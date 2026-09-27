@@ -44,7 +44,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerClusterTools(server: McpServer) {
   server.tool(
     "build_wallet_edges",
-    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address — the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference — each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
+    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address — the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together, unless most of the other wallets that sponsor pays gas for were first funded by the seeds' own funder, itself narrow and unlabelled (`role_split`), one operator funding from one address and sponsoring from another. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference — each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
     {
       addresses: addressListArg()
         .min(1)
@@ -67,7 +67,7 @@ export function registerClusterTools(server: McpServer) {
         .max(500)
         .optional()
         .describe(
-          "Distinct counterparties past which a funder or sponsor is treated as a service and discarded (default 50). Raise it only if you have a reason — this is the control that stops an exchange from linking the whole chain together.",
+          "Distinct counterparties past which a funder or sponsor is treated as a service and discarded (default 50). A funder's recipients count only when paid at least 0.01 SUI or $0.10. Raise it only if you have a reason — this is the control that stops an exchange from linking the whole chain together.",
         ),
       min_signal_types: numArg()
         .int()

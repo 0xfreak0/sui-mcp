@@ -258,6 +258,23 @@ export function exitCandidates(subject: string, txs: FlowTx[]): FlowTx[] {
   );
 }
 
+/** Transactions read for cross-chain message shapes in one summary, at most. */
+export const LEAD_READ_LIMIT = 20;
+
+/**
+ * Transactions the subject sent, and that succeeded, carrying no bridge
+ * marker, in which some of its value left with no address receiving it:
+ * where an exit through a bridge with no curated marker would sit. Newest
+ * first as the scan returned them, up to {@link LEAD_READ_LIMIT}; `skipped`
+ * counts the rest.
+ */
+export function leadCandidates(subject: string, txs: FlowTx[], summary: FlowSummary, exits: FlowTx[]): { txs: FlowTx[]; skipped: number } {
+  const unpaid = new Set([...summary.unattributedOut.values()].flatMap((u) => u.digests));
+  const marked = new Set(exits.map((t) => t.digest));
+  const all = txs.filter((tx) => tx.sender === subject && tx.status !== "failure" && unpaid.has(tx.digest) && !marked.has(tx.digest));
+  return { txs: all.slice(0, LEAD_READ_LIMIT), skipped: Math.max(0, all.length - LEAD_READ_LIMIT) };
+}
+
 /** Transactions that claimed value arriving on Sui through the native bridge. */
 export function entryCandidates(txs: FlowTx[]): FlowTx[] {
   return txs.filter((tx) => tx.eventTypes.some((t) => t.endsWith(CLAIM_EVENT_SUFFIX)));

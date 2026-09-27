@@ -5,12 +5,24 @@ import { getNetwork } from "../config.js";
 import { caip2ForSuiNetwork } from "../utils/chain-id.js";
 import { errorResult } from "../utils/errors.js";
 import { readBridgeEvents, sameForeignAddress } from "../utils/bridge/exits.js";
+import { CROSS_CHAIN_LEAD_MEANING } from "../utils/bridge/cross-chain.js";
 import { detectBridges, exitCarrier, type CallSite } from "../utils/bridge/detect.js";
+import { bridgeCarriers, carrierPackages, CARRIER_MEANING } from "../utils/bridge/carrier.js";
+import { inboundFulfilments, inputVaas, INBOUND_FULFIL_MEANING, type BalanceChangeRow } from "../utils/bridge/inbound-fulfil.js";
+import { nameBridgePackage } from "../utils/bridge/labeled-package.js";
+import { getPackageRoot, prefetchPackageRoots } from "../protocols/package-roots.js";
 import { layerZeroMessagesByTx, layerZeroScanAvailable, type LayerZeroScanMessage } from "../utils/bridge/layerzeroscan.js";
 import { nttRedemptions, type PureInputNode } from "../utils/bridge/wormhole-inbound.js";
 import { fetchEventJson } from "../utils/event-json.js";
-import type { GqlCommandNode } from "../utils/gql-adapters.js";
-import { COMMANDS_SELECTION, NESTED_PAGE_SIZE, readAllCommands, type GqlConnection } from "../utils/tx-connections.js";
+import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
+import {
+  BALANCE_CHANGES_SELECTION,
+  COMMANDS_SELECTION,
+  NESTED_PAGE_SIZE,
+  readAllBalanceChanges,
+  readAllCommands,
+  type GqlConnection,
+} from "../utils/tx-connections.js";
 import { failureFromGraphql, type GqlExecutionError } from "../utils/multi-tx.js";
 import {
   EVIDENCE_TIER_MEANING,
@@ -42,12 +54,14 @@ const TX_EVENTS_QUERY = `
   query($digest: String!) {
     transaction(digest: $digest) {
       digest
+      sender { address }
       effects {
         status
         executionError { abortCode message module { name package { address } } function { name } }
+        ${BALANCE_CHANGES_SELECTION}
         events(first: ${NESTED_PAGE_SIZE}) {
           pageInfo { hasNextPage }
-          nodes { contents { type { repr } json } }
+          nodes { contents { type { repr } json } transactionModule { fullyQualifiedName } }
         }
       }
       kind {
@@ -63,9 +77,11 @@ const TX_EVENTS_QUERY = `
 interface TxEventsResponse {
   transaction?: {
     digest?: string;
+    sender?: { address?: string } | null;
     effects?: {
       status?: string;
       executionError?: GqlExecutionError | null;
+      balanceChanges?: GqlConnection<GqlBalanceChangeNode> | null;
       events?: { pageInfo?: { hasNextPage?: boolean }; nodes?: SuiEventNode[] };
     };
     kind?: {
@@ -163,7 +179,7 @@ function unqualifiedNote(qualify: boolean): string {
 export function registerBridgeTools(server: McpServer) {
   server.tool(
     "resolve_bridge_transfer",
-    "(Incident investigation) Follow funds across a bridge. Given a Sui transaction, return where each bridge transfer in it went, read from chain data wherever the protocol writes it on Sui: Wormhole (the VAA identity — emitter chain, emitter address, sequence — plus, where Wormholescan has indexed a redemption, the destination transaction), Sui's native bridge, Circle CCTP, LayerZero V2 (destination endpoint, GUID and destination OApp, plus LayerZero Scan's delivery transaction), Axelar ITS, Allbridge Core and Celer cBridge. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan (MCTP and Swift), Circle CCTP, Sui's native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge; the contract a redemption or message was delivered to is reported separately (`redeemed_via_contract`, `destination_oapp`). Transfers ARRIVING on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) are reported as inbound with their origin identity. Meson is recognised but its destination is not in Sui data. This is what lets a trace continue past a bridge instead of stopping there: each identity is quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: chain-derived values come from Sui; delivery is asserted by an indexer and should be confirmed on the destination chain before being relied on.",
+    "(Incident investigation) Follow funds across a bridge. Given a Sui transaction, return where each bridge transfer in it went, read from chain data wherever the protocol writes it on Sui: Wormhole (the VAA identity — emitter chain, emitter address, sequence — plus, where Wormholescan has indexed a redemption, the destination transaction), Sui's native bridge, Circle CCTP, LayerZero V2 (destination endpoint, GUID and destination OApp, plus LayerZero Scan's delivery transaction), Axelar ITS, Allbridge Core and Celer cBridge. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan (MCTP and Swift), Circle CCTP, Sui's native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge; the contract a redemption or message was delivered to is reported separately (`redeemed_via_contract`, `destination_oapp`). Transfers ARRIVING on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) are reported as inbound with their origin identity, and so is any package's fulfilment whose events quote the cross-chain message it consumed (a CCTP source domain and nonce, or a VAA passed in) while the transaction credits an address (`fulfilment_inbound`: origin chain, the CCTP transfer id and VAA id, amounts, and the beneficiary credited exactly an amount the events state; the package is named from the registry or a bridge label on it or on an object it defines). A package outside a bridge's lineage whose PTB call emitted that bridge's event is named under `carriers` with its function and its own events (an adapter's order id). Meson is recognised but its destination is not in Sui data. An event from a package none of these covers that carries a chain field beside a foreign-address-sized byte string is listed in `cross_chain_leads`, tier heuristic: a possible exit through an unrecognised bridge, never an exit on its own. This is what lets a trace continue past a bridge instead of stopping there: each identity is quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: chain-derived values come from Sui; delivery is asserted by an indexer and should be confirmed on the destination chain before being relied on.",
     {
       digest: z.string().describe("Sui transaction digest (Base58) to inspect for a bridge transfer."),
       include_destination: boolArg()
@@ -220,8 +236,12 @@ export function registerBridgeTools(server: McpServer) {
       let eventsIncomplete = false;
       if (firstPage?.pageInfo?.hasNextPage) {
         const all = await fetchEventJson(digest);
-        if (all) events = all.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
-        else eventsIncomplete = true;
+        if (all) {
+          events = all.map((e) => ({
+            contents: { type: e.type ? { repr: e.type } : undefined, json: e.json },
+            ...(e.module ? { transactionModule: { fullyQualifiedName: e.module } } : {}),
+          }));
+        } else eventsIncomplete = true;
       }
       const commands = await readAllCommands(digest, data.transaction.kind?.commands);
       const calls: CallSite[] = commands.nodes.flatMap((c) =>
@@ -253,11 +273,43 @@ export function registerBridgeTools(server: McpServer) {
         celer,
         wormholeInbound: tokenBridgeInbound,
         beneficiaries,
+        crossChainLeads,
       } = readBridgeEvents(events, qualify);
       const wormholeInbound = [...tokenBridgeInbound, ...nttRedemptions(inputs?.nodes ?? [], qualify)];
       // Mayan has no section: its order event only names the beneficiary.
       const mayanProtocols = [...new Set(mayan.map((b) => b.protocol))];
       const otherBridges = hits.filter((h) => !Object.hasOwn(SECTIONED, h.protocol) && !mayanProtocols.includes(h.protocol));
+
+      // A bridge event sent under another package's module: that package
+      // made the bridge call. Lineage roots are read only when one exists.
+      const carrierPkgs = carrierPackages(events);
+      if (carrierPkgs.length) await prefetchPackageRoots(carrierPkgs);
+      const carriers = carrierPkgs.length ? bridgeCarriers(events, calls, getPackageRoot) : [];
+
+      // Value arriving through a package's own fulfilment of a cross-chain
+      // message. The balance changes past the first page are read only for
+      // a transaction that has one.
+      const toRows = (nodes: GqlBalanceChangeNode[]): BalanceChangeRow[] =>
+        nodes.flatMap((n) =>
+          n.owner?.address && n.coinType?.repr && n.amount ? [{ address: n.owner.address, coin_type: n.coinType.repr, amount: n.amount }] : [],
+        );
+      const fulfilInput = {
+        events,
+        vaas: inputVaas(inputs?.nodes ?? []),
+        reported: wormholeInbound.map((w) => w.vaa_id),
+        verifiedVaa: calls.some((c) => c.module === "vaa" && c.function === "parse_and_verify"),
+        sender: data.transaction.sender?.address ?? null,
+        qualify,
+      };
+      const firstChanges = data.transaction.effects?.balanceChanges;
+      let fulfils = inboundFulfilments({ ...fulfilInput, balanceChanges: toRows(firstChanges?.nodes ?? []) });
+      let balanceChangesIncomplete = false;
+      if (fulfils.length && firstChanges?.pageInfo?.hasNextPage) {
+        const all = await readAllBalanceChanges(digest, firstChanges);
+        balanceChangesIncomplete = all.truncated;
+        fulfils = inboundFulfilments({ ...fulfilInput, balanceChanges: toRows(all.nodes) });
+      }
+      const fulfilProtocols = await Promise.all(fulfils.map((f) => nameBridgePackage(f.package)));
 
       const wantDestination = include_destination !== false;
 
@@ -451,8 +503,20 @@ export function registerBridgeTools(server: McpServer) {
               },
             }
           : {}),
+        ...(fulfils.length
+          ? {
+              fulfilment_inbound: {
+                direction: "inbound" as const,
+                meaning: INBOUND_FULFIL_MEANING,
+                fulfilments: fulfils.map((f, i) => ({ protocol: fulfilProtocols[i], ...f })),
+                ...(balanceChangesIncomplete
+                  ? { balance_changes_incomplete: "This transaction has more balance changes than could be read, so paid_to and the beneficiary may be missing a credit." }
+                  : {}),
+              },
+            }
+          : {}),
         ...(inputs?.pageInfo?.hasNextPage
-          ? { inputs_incomplete: "This transaction has more inputs than were read, so an NTT redemption's VAA may be missing." }
+          ? { inputs_incomplete: "This transaction has more inputs than were read, so an NTT redemption's VAA, or a VAA a fulfilment consumed, may be missing." }
           : {}),
       };
 
@@ -528,13 +592,17 @@ export function registerBridgeTools(server: McpServer) {
         : settledExit?.carrier.protocol === "Allbridge Core" && settledExit.route.includes("Wormhole")
           ? ALLBRIDGE_MESSAGE_NOT_REDEEMED
           : null;
-      const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0;
+      const inbound = nativeInboundClaims.length > 0 || wormholeInbound.length > 0 || fulfils.length > 0;
+      // Who made the bridge call, named once after the exit note.
+      const carrierNote = carriers.length
+        ? ` The bridge call was made by ${carriers.map((c) => `${c.package}::${c.functions[0] ?? c.module}`).join(" and ")} on the sender's behalf (carriers).`
+        : "";
 
       return ok({
         digest,
         network,
         source_chain: caip2ForSuiNetwork(network),
-        ...(exits.length || inbound ? { evidence_tiers: EVIDENCE_TIER_MEANING } : {}),
+        ...(exits.length || inbound || crossChainLeads.length ? { evidence_tiers: EVIDENCE_TIER_MEANING } : {}),
         ...(eventsIncomplete ? { events_incomplete: EVENTS_INCOMPLETE } : {}),
         ...(commands.truncated ? { commands_incomplete: COMMANDS_INCOMPLETE } : {}),
         ...(allBeneficiaries.length ? { beneficiaries: allBeneficiaries } : {}),
@@ -598,6 +666,8 @@ export function registerBridgeTools(server: McpServer) {
           ...(op?.appIds.length ? { protocols: op.appIds } : {}),
         })),
         ...(otherBridges.length ? { other_bridge_activity: otherBridges } : {}),
+        ...(carriers.length ? { carriers, carriers_meaning: CARRIER_MEANING } : {}),
+        ...(crossChainLeads.length ? { cross_chain_leads: crossChainLeads, cross_chain_leads_meaning: CROSS_CHAIN_LEAD_MEANING } : {}),
         ...(settledExit
           ? {
               carried_by: settledExit.carrier.protocol,
@@ -607,11 +677,11 @@ export function registerBridgeTools(server: McpServer) {
           : {}),
         ...(exits.length
           ? {
-              note: !settledExit
+              note: (!settledExit
                 ? `This transaction exited through ${exits.join(", ")}.`
                 : settledExit.alsoExited.length
                   ? `This transaction made a transfer through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")}, and a separate transfer through ${settledExit.alsoExited.join(" and ")} (sections: ${exits.join(", ")}). The ${settledExit.route.join(" and ")} legs belong to the ${settledExit.carrier.protocol} transfer; each transfer's recipient is in beneficiaries.`
-                  : `This transaction made one transfer, through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")} in the same transaction (sections: ${exits.join(", ")}). Those legs belong to that transfer, whose recipient is in beneficiaries.`,
+                  : `This transaction made one transfer, through ${settledExit.carrier.protocol}, which settled over ${settledExit.route.join(" and ")} in the same transaction (sections: ${exits.join(", ")}). Those legs belong to that transfer, whose recipient is in beneficiaries.`) + carrierNote,
               next_step: allBeneficiaries.length
                 ? BENEFICIARY_NEXT_STEP
                 : "No recipient could be read for this transfer. Its identity above is still chain-derived: look it up on the destination chain to find where it was delivered.",
@@ -625,9 +695,13 @@ export function registerBridgeTools(server: McpServer) {
               ? {
                   note: "No outbound transfer here. This transaction received value ARRIVING on Sui — see the *_inbound sections for the origin chain and transfer identity.",
                 }
-              : {
-                  note: "No bridge transfer in this transaction: none of the bridges this server recognises appears in its events or Move calls.",
-                }),
+              : crossChainLeads.length
+                ? {
+                    note: "None of the bridges this server recognises appears in this transaction's events or Move calls, but cross_chain_leads lists events shaped like a cross-chain message. Read the emitting package before calling it an exit.",
+                  }
+                : {
+                    note: "None of the bridges this server recognises appears in this transaction's events or Move calls, and no event carries a chain field beside a foreign-address-sized byte string. A bridge that encodes its destination another way would not show here.",
+                  }),
       });
     },
   );

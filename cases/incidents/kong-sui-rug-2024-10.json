@@ -550,13 +550,8 @@
           "value": true
         },
         {
-          "path": "inflow_sources",
-          "op": "count_gte",
-          "value": 35
-        },
-        {
-          "path": "inflow_sources",
-          "op": "count_lte",
+          "path": "inflow_source_count",
+          "op": "equals",
           "value": 35
         },
         {

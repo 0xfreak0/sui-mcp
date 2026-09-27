@@ -424,10 +424,15 @@ interface ListNftsCursor {
   // GraphQL cursor for direct-owned objects pagination. Only consulted once
   // ki >= kiosks.length.
   dc: string | null;
+  // Kiosks the wallet had in total. The cursor carries only the kiosks not
+  // yet drained, so this keeps kiosk_count whole across pages.
+  n?: number;
 }
 
+/** Drained kiosks are dropped from the cursor; `ki` then restarts at the first kept one. */
 function encodeCursor(c: ListNftsCursor): string {
-  return Buffer.from(JSON.stringify(c)).toString("base64url");
+  const rest = { ...c, kiosks: c.kiosks.slice(c.ki), ki: 0, n: c.n ?? c.kiosks.length };
+  return Buffer.from(JSON.stringify(rest)).toString("base64url");
 }
 
 function decodeCursor(s: string): ListNftsCursor {
@@ -445,7 +450,7 @@ function decodeCursor(s: string): ListNftsCursor {
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns display metadata (name, description, image URL) and raw Move struct contents inline. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper count-only summary.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper count-only summary.",
     {
       address: addressArg().describe("Owner wallet address (0x...)"),
       limit: numArg()
@@ -458,9 +463,15 @@ export function registerNftTools(server: McpServer) {
         .string()
         .optional()
         .describe("Opaque pagination token from a prior response's `next_cursor`. Omit on first call."),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): display fields only, and `omitted` counts the NFTs whose raw contents were left out. 'full' adds each NFT's raw Move struct contents."),
     },
-    async ({ address, limit, cursor }) => {
+    async ({ address, limit, cursor, detail }) => {
       const target = clampPageSize(limit);
+      const buildResponse = (state: ListNftsCursor, nfts: NftEntry[], done: boolean) =>
+        nftPage(address, state, nfts, done, detail === "full");
 
       // Initialize state: either resume from cursor or discover kiosks fresh.
       let state: ListNftsCursor;
@@ -485,7 +496,7 @@ export function registerNftTools(server: McpServer) {
             // Hit the target mid-kiosk; pause here. The next call resumes
             // exactly where we left off.
             state.kc = nextInnerCursor;
-            return buildResponse(address, state, nfts, /*done*/ false);
+            return buildResponse(state, nfts, /*done*/ false);
           }
           // Kiosk drained — advance to the next one.
           state.ki += 1;
@@ -504,7 +515,7 @@ export function registerNftTools(server: McpServer) {
       // Unvisited kiosks mean more remains, so the page is not done, and no
       // extra query is needed to know it.
       if (state.ki < state.kiosks.length) {
-        return buildResponse(address, state, nfts, /*done*/ false);
+        return buildResponse(state, nfts, /*done*/ false);
       }
 
       // Phase 2: walk direct-owned objects. Only entered after every kiosk is
@@ -528,12 +539,12 @@ export function registerNftTools(server: McpServer) {
       if (!probing) nfts.push(...items);
       if (moreDirect) {
         if (!probing) state.dc = nextDc;
-        return buildResponse(address, state, nfts, /*done*/ false);
+        return buildResponse(state, nfts, /*done*/ false);
       }
       state.dc = null;
 
       // Both phases drained.
-      return buildResponse(address, state, nfts, /*done*/ true);
+      return buildResponse(state, nfts, /*done*/ true);
     },
   );
 
@@ -585,23 +596,43 @@ export function registerNftTools(server: McpServer) {
   );
 }
 
-function buildResponse(address: string, state: ListNftsCursor, nfts: NftEntry[], done: boolean) {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(
-          {
-            address,
-            nfts,
-            page_size: nfts.length,
-            kiosk_count: state.kiosks.length,
-            ...(done ? {} : { next_cursor: encodeCursor(state) }),
+/**
+ * One page of list_nfts. A row's `collection` is its struct type, and fields
+ * with no value are left out. The summary view leaves out raw contents and
+ * counts them under `omitted`, naming the same call with detail: 'full'.
+ */
+function nftPage(
+  address: string,
+  state: ListNftsCursor,
+  nfts: NftEntry[],
+  done: boolean,
+  full: boolean,
+) {
+  const withContent = nfts.filter((n) => n.content !== null).length;
+  const rows = nfts.map((n) => ({
+    object_id: n.object_id,
+    collection: n.collection,
+    ...(n.kiosk_id ? { kiosk_id: n.kiosk_id } : {}),
+    ...(n.name !== null ? { name: n.name } : {}),
+    ...(n.description !== null ? { description: n.description } : {}),
+    ...(n.image_url !== null ? { image_url: n.image_url } : {}),
+    ...(full && n.content !== null ? { content: n.content } : {}),
+  }));
+  const payload = {
+    ...(!full && withContent
+      ? {
+          truncated: true,
+          omitted: {
+            content: { count: withContent },
+            next_call: { tool: "list_nfts", repeat_with: { detail: "full" } },
           },
-          null,
-          2,
-        ),
-      },
-    ],
+        }
+      : {}),
+    address,
+    nfts: rows,
+    page_size: nfts.length,
+    kiosk_count: state.n ?? state.kiosks.length,
+    ...(done ? {} : { next_cursor: encodeCursor(state) }),
   };
+  return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
 }

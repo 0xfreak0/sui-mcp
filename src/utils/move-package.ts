@@ -142,6 +142,62 @@ export async function fetchModuleDisassembly(
   return pkg.module.disassembly ?? "";
 }
 
+interface LinkageResult {
+  linkage: LinkageEntry[] | null;
+}
+
+const LINKAGE_QUERY = `query ($p: SuiAddress!) {
+  object(address: $p) {
+    asMovePackage { linkage { originalId upgradedId version } }
+  }
+}`;
+
+/** The linkage table of exactly this package version: the version of each dependency it runs. */
+export async function fetchPackageLinkage(packageId: string): Promise<LinkageEntry[]> {
+  const data = await gqlQuery<ExactPackage<LinkageResult>>(LINKAGE_QUERY, { p: packageId });
+  return exactPackage(data, packageId).linkage ?? [];
+}
+
+interface DisassemblyPage {
+  modules: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: { name: string; disassembly: string | null }[];
+  };
+}
+
+/**
+ * Page size for whole-package disassembly. A module's disassembly runs to
+ * 250 KB, so pages stay well under the 50 the connection allows.
+ */
+const DISASSEMBLY_PAGE = 20;
+
+const ALL_DISASSEMBLY_QUERY = `query ($p: SuiAddress!, $after: String) {
+  object(address: $p) {
+    asMovePackage {
+      modules(first: ${DISASSEMBLY_PAGE}, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { name disassembly }
+      }
+    }
+  }
+}`;
+
+/** Every module's disassembly in exactly this package version, keyed by module name, in the package's order. */
+export async function fetchAllModuleDisassembly(packageId: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let after: string | null = null;
+  for (;;) {
+    const data = await gqlQuery<ExactPackage<DisassemblyPage>>(ALL_DISASSEMBLY_QUERY, { p: packageId, after });
+    const pkg: DisassemblyPage = exactPackage(data, packageId);
+    for (const n of pkg.modules.nodes) out.set(n.name, n.disassembly ?? "");
+    if (!pkg.modules.pageInfo.hasNextPage) break;
+    after = pkg.modules.pageInfo.endCursor;
+    // Same guard as fetchModuleNames: a page with no cursor would restart the walk.
+    if (!after) break;
+  }
+  return out;
+}
+
 interface PackageVersionResult {
   package: { version: number } | null;
 }

@@ -27,6 +27,7 @@ import {
   type GqlConnection,
 } from "../utils/tx-connections.js";
 import type { GqlBalanceChangeNode } from "../utils/gql-adapters.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 import { findSubjectPayments, MAX_PAIRWISE_SUBJECTS, paymentInTx, type SubjectPayment } from "../utils/subject-payments.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -145,10 +146,12 @@ function formatAmount(rawAmount: string, coinType: string): string {
  * cannot disagree about whether an address is a service.
  */
 interface FunderPopularity {
-  /** Paid more than `limit` distinct addresses in the outgoing transactions scanned. */
+  /** Paid more than `limit` distinct addresses at least the dust floor in the outgoing transactions scanned. */
   popular: boolean;
-  /** Distinct recipients seen before the scan stopped. A lower bound. */
+  /** Distinct recipients paid at least the dust floor before the scan stopped. A lower bound. */
   observed_recipients: number;
+  /** Distinct recipients paid only below the dust floor, which do not count toward `limit`. */
+  below_floor_recipients?: number;
   limit: number;
   /** The scan reached the end of the address's outgoing transactions. */
   scan_complete: boolean;
@@ -218,15 +221,19 @@ const PRICES_UNAVAILABLE_NOTE =
 
 /** Beside a chain step's `unpriced_funding`: why a coin nobody prices counted. */
 const UNPRICED_FUNDING_NOTE =
-  "No price source quotes the coin of a hop marked unpriced_funding, which usually marks spam, but that inflow was at " +
-  "least 1% of the coin's current supply, or 0.1% sent by the coin's own publisher. No airdrop can give each of " +
-  "thousands of wallets that much, so it is read as an allocation, typically a deployer's grant to an insider.";
+  "No price source quotes the coin of a hop marked unpriced_funding, which usually marks spam. It counted on the ground " +
+  "its basis names. supply_share: at least 1% of the coin's current supply, or 0.1% sent by the coin's own publisher, " +
+  "which no airdrop can give each of thousands of wallets. targeted_send: at least 0.01% of the supply, sent to at most " +
+  "5 addresses in its transaction and in the funder's sends of that coin within about ten minutes, in amounts not all " +
+  "equal (send_shape), where an airdrop pays many at once or in a burst. Either reads as an allocation, typically a " +
+  "deployer's grant to an insider.";
 
 /** Beside `origin_unread_at`: the hops where an unpriced coin was judged without its supply or publisher. */
 const ORIGIN_UNREAD_NOTE =
-  "The supply or publisher of a coin nobody prices could not be read at these hops (the read failed after retries), " +
-  "so an inflow of it was skipped as spam without the check that counts 1% of supply, or 0.1% from the coin's " +
-  "publisher, as funding. The funding named at that hop may be a later inflow; rerun before relying on it.";
+  "The supply, publisher or send shape of a coin nobody prices could not be read at these hops (the read failed after " +
+  "retries, or more candidate grants came first than one hop reads), so an inflow of it was skipped as spam without the " +
+  "check that counts 1% of supply, 0.1% from the coin's publisher, or 0.01% sent as a grant to a few addresses, as " +
+  "funding. The funding named at that hop may be a later inflow; rerun before relying on it.";
 
 async function loadFundingStep(address: string): Promise<FundingStep> {
   const { txs, incomplete } = await fetchEarliestTxs(address);
@@ -247,7 +254,11 @@ function fundingStep(address: string, ctx: WalkContext): Promise<FundingStep> {
 
 async function probePopularity(address: string, budget: Budget): Promise<FunderPopularity> {
   const p = await probeRecipients(address, DEFAULT_POPULARITY_LIMIT, budget);
-  const base = { observed_recipients: p.observed, limit: DEFAULT_POPULARITY_LIMIT };
+  const base = {
+    observed_recipients: p.observed,
+    ...(p.belowFloor ? { below_floor_recipients: p.belowFloor } : {}),
+    limit: DEFAULT_POPULARITY_LIMIT,
+  };
   // Covers a budget spent before the first page and a read that threw after
   // retries (a 429 or 5xx) on any page. Neither settles the verdict.
   if (p.unmeasured) return { popular: false, ...base, scan_complete: false, unmeasured: p.unmeasured };
@@ -306,6 +317,20 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
 
   for (let i = 0; i < maxHops; i++) {
     const { assessment, txs, incomplete, pricesUnavailable, originUnread: unreadHere } = await fundingStep(current, ctx);
+    // A funder that paid the previous address after its own earliest
+    // transactions (the window this walk reads as an address's funding) paid
+    // from a balance it had been using, so its funding is its own history,
+    // not the source of that payment: a victim's theft transfer, an
+    // operator's main wallet. Walking on would read its ancestry as the
+    // subject's.
+    const paid = chain.at(-1);
+    if (paid && txs.length >= EARLIEST_TXS && !txs.some((t) => t.digest === paid.funding_tx)) {
+      stopReason =
+        `reached an established wallet (${current} paid ${paid.address} after its own earliest ${EARLIEST_TXS} transactions, ` +
+        "from a balance it already held, so its funding describes it rather than where that payment came from; " +
+        "run find_funding_source on it to walk its own ancestry)";
+      break;
+    }
     if (pricesUnavailable) unpricedHops.push(current);
     if (unreadHere.length) originUnread.push({ address: current, coin_types: unreadHere });
     for (const d of assessment.dustSkipped) {
@@ -376,7 +401,7 @@ async function walkFunding(address: string, maxHops: number, ctx: WalkContext): 
     }
     if (pop.popular) {
       stopReason =
-        `reached a high-fanout distributor (paid more than ${pop.limit} distinct addresses) — an exchange, ` +
+        `reached a high-fanout distributor (paid more than ${pop.limit} distinct addresses at least 0.01 SUI or $0.10 each) — an exchange, ` +
         "a sybil-funding operator or another service that pays many addresses; ancestry beyond it carries no attribution";
       stoppedAtHub = true;
       break;
@@ -441,13 +466,13 @@ function fanoutView(f: FanoutResult, pop: FunderPopularity | undefined) {
     ...(raised
       ? {
           classification_basis:
-            `funder_popularity saw more than ${pop.limit} recipients; the ${f.counterparty_count} counterparties ` +
+            `funder_popularity saw more than ${pop.limit} recipients above the dust floor; the ${f.counterparty_count} counterparties ` +
             `counted here would read narrow, and the probe decides.`,
         }
       : {}),
     ...(f.classification_provisional ? { classification_provisional: true } : {}),
     interpretation: probeDecides
-      ? `Paid more than ${pop.limit} distinct addresses in its recent outgoing transactions, the limit build_wallet_edges ` +
+      ? `Paid more than ${pop.limit} distinct addresses at least 0.01 SUI or $0.10 each in its recent outgoing transactions, the limit build_wallet_edges ` +
         "uses to discard an intermediary as an exchange or service, so it is classed a distributor. Shared funding through " +
         "it is weak on its own: compare the rate against a control group, and read flow_shape, since a disperser paid by few " +
         "can still be one operator's payout wallet."
@@ -556,13 +581,15 @@ export function registerFundingTools(server: McpServer) {
       measure_fanout: boolArg()
         .optional()
         .describe("Measure fan-out for funders shared by 2+ addresses (default true)."),
-      include_chains: boolArg()
+      detail: z
+        .enum(["summary", "full"])
         .optional()
         .describe(
-          "Return every hop of each address's funding chain under results[].chain (default false: each result keeps its origin, first funder and first hop).",
+          "'summary' (default): each result keeps its origin, first funder and first hop and counts its dust_skipped rows, and results and subject_paid_subject list what fits about 20k characters, every result tied to a shared funder, subject link, co-funding, burst or payment first. 'full' returns every hop of each chain under results[].chain, every dust row and every row of each list.",
         ),
     },
-    async ({ addresses, max_hops, depth, measure_fanout, include_chains }) => {
+    async ({ addresses, max_hops, depth, measure_fanout, detail }) => {
+      const full = detail === "full";
       try {
         const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 5, 12);
         const ctx: WalkContext = {
@@ -806,141 +833,170 @@ export function registerFundingTools(server: McpServer) {
             ...(v.object_type ? { object_type: v.object_type } : {}),
           }));
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  address_count: addresses.length,
-                  depth: depth ?? "full",
-                  ...(formerNames.length
-                    ? {
-                        expired_suins_names: formerNames,
-                        expired_names_note:
-                          "These addresses hold SuiNS registrations that have EXPIRED and that they registered or used themselves: each one's last transaction was sent by the holder. Reverse lookup no longer returns these names, so they will not appear anywhere else, and older records may refer to the address by them. Names under expired_names_provenance_unread had no readable last transaction, so whether the address registered them or was sent them is unknown.",
-                      }
-                    : {}),
-                  ...(receivedNames.length
-                    ? {
-                        received_suins_names: receivedNames,
-                        received_names_note:
-                          "These registrations were sent to the address by another address (received_from, in received_in), and the holder has not transacted with them since. Anyone can send a SuiNS name to any address, so a received name is not attribution.",
-                      }
-                    : {}),
-                  ...(nonWalletOrigins.length
-                    ? {
-                        non_wallet_addresses: nonWalletOrigins,
-                        non_wallet_note:
-                          "These addresses in the funding chains are packages or objects, not wallets. Value associated with a package is protocol activity, and a shared object may be a pool many parties touch — neither reads as a person who funded someone.",
-                      }
-                    : {}),
-                  max_hops: maxHops,
-                  addresses_resolved: results.filter((r) => r.hops > 0).length,
-                  ...(anyUnpriced ? { prices_unavailable_note: PRICES_UNAVAILABLE_NOTE } : {}),
-                  ...(anyOriginUnread ? { origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
-                  ...(results.some((r) => r.chain.some((s) => s.unpriced_funding))
-                    ? { unpriced_funding_note: UNPRICED_FUNDING_NOTE }
-                    : {}),
-                  ...(coFunded.length
-                    ? {
-                        co_funding_group_count: coFunded.length,
-                        ...(coFunded.length > RECIPIENT_LOOKUP_CAP
-                          ? {
-                              co_funding_note:
-                                `${coFunded.length} co-funding groups were found; the payout size of the first ` +
-                                `${RECIPIENT_LOOKUP_CAP} was measured and the rest are reported without it. ` +
-                                "Groups are ordered widest-payout-first, so the unmeasured ones are the narrow " +
-                                "payouts — the stronger signal, not the weaker.",
-                            }
-                          : {}),
-                        co_funded_in_one_transaction: reportedCoFunding.map((g) => ({
-                          ...g,
-                          ...(nameMap.get(g.funder) ? { funder_name: nameMap.get(g.funder) } : {}),
-                        })),
-                        co_funding_note:
-                          "These addresses were paid by a single transaction, not merely by the same funder over time. " +
-                          "Read `strength` before concluding anything: a transaction paying only these addresses is " +
-                          "near-decisive, while one paying twenty of which two are yours is a batch distribution that an " +
-                          "unrelated address can land in by chance. `transaction_recipient_count` is the denominator.",
-                      }
-                    : {}),
-                  ...(subjectLinks.length
-                    ? {
-                        subject_funded_subject: subjectLinks.map((l) => ({
-                          ...l,
-                          ...(nameMap.get(l.funder) ? { funder_name: nameMap.get(l.funder) } : {}),
-                        })),
-                        subject_link_note:
-                          "One address under investigation funded another directly. Unlike shared ancestry this needs no " +
-                          "control to interpret — there is no base rate for money moving straight from one subject to another.",
-                      }
-                    : {}),
-                  ...(paymentScope
-                    ? {
-                        ...(subjectPayments.length
-                          ? {
-                              subject_paid_subject: subjectPayments.map((p) => ({
-                                payer: p.payer,
-                                payee: p.payee,
-                                digest: p.digest,
-                                timestamp: p.timestamp,
-                                received: p.received.map((r) => formatAmount(r.amount, r.coinType)),
-                                ...(firstFundingKeys.has(`${p.payer}>${p.payee}>${p.digest}`) ? { first_funding: true } : {}),
-                                ...(p.balance_changes_incomplete ? { balance_changes_incomplete: true } : {}),
-                              })),
-                              subject_payment_note:
-                                "Transactions one address under investigation signed that credited another, with the payee's net " +
-                                "gain per coin. Every payment is listed, not only first fundings, which carry first_funding. Each " +
-                                "digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
-                            }
-                          : {}),
-                        subject_payment_scope: paymentScope,
-                      }
-                    : {}),
-                  ...(bursts.length
-                    ? {
-                        funding_bursts: bursts,
-                        burst_note:
-                          "Addresses funded within " +
-                          "60s of each other, tightest first. Timing is the discriminator that survives when co-funding " +
-                          "does not: a wide payout proves little, but a set of wallets funded seconds apart did not arrive " +
-                          "there independently. Check the span — sub-second spans are scripted, minutes are not conclusive. " +
-                          "Ignore any entry with same_transaction true: that burst is a single payment, already reported " +
-                          "under co_funded_in_one_transaction, and counting it again would tally one fact as two.",
-                      }
-                    : {}),
-                  shared_funders: shared.map(([funder, addrs]) => ({
-                    funder,
-                    ...(nameMap.get(funder) ? { name: nameMap.get(funder) } : {}),
-                    ...(getLabel(funder) ? { label: getLabel(funder)!.label } : {}),
-                    funded_count: addrs.length,
-                    funded: addrs,
-                    ...(popularityOf[funder] ? { funder_popularity: popularityOf[funder] } : {}),
-                    // Shape, not just size. This is the tool that decides
-                    // whether shared funding means anything, and count alone
-                    // cannot: a custodial exchange and a sybil funder can have
-                    // near-identical counterparty counts while one runs
-                    // balanced and the other pays many and is paid by few.
-                    ...(fanouts[funder] ? { fanout: fanoutView(fanouts[funder], popularityOf[funder]) } : {}),
-                  })),
-                  // Shared funders, co-funding and payments above are
-                  // computed from every hop; only the per-address listing is
-                  // shortened.
-                  results: results.map(({ chain, first_hop, ...r }) => (include_chains ? { ...r, chain } : { ...r, first_hop })),
-                  ...(include_chains
-                    ? {}
-                    : {
-                        chains_note:
-                          "Each result lists its origin, first funder and first hop. Pass include_chains: true for every hop of each chain.",
-                      }),
-                },
-                null,
-                2,
-              ),
-            },
-          ],
+        const base = {
+          address_count: addresses.length,
+          depth: depth ?? "full",
+          ...(formerNames.length
+            ? {
+                expired_suins_names: formerNames,
+                expired_names_note:
+                  "These addresses hold SuiNS registrations that have EXPIRED and that they registered or used themselves: each one's last transaction was sent by the holder. Reverse lookup no longer returns these names, so they will not appear anywhere else, and older records may refer to the address by them. Names under expired_names_provenance_unread had no readable last transaction, so whether the address registered them or was sent them is unknown.",
+              }
+            : {}),
+          ...(receivedNames.length
+            ? {
+                received_suins_names: receivedNames,
+                received_names_note:
+                  "These registrations were sent to the address by another address (received_from, in received_in), and the holder has not transacted with them since. Anyone can send a SuiNS name to any address, so a received name is not attribution.",
+              }
+            : {}),
+          ...(nonWalletOrigins.length
+            ? {
+                non_wallet_addresses: nonWalletOrigins,
+                non_wallet_note:
+                  "These addresses in the funding chains are packages or objects, not wallets. Value associated with a package is protocol activity, and a shared object may be a pool many parties touch — neither reads as a person who funded someone.",
+              }
+            : {}),
+          max_hops: maxHops,
+          addresses_resolved: results.filter((r) => r.hops > 0).length,
+          ...(anyUnpriced ? { prices_unavailable_note: PRICES_UNAVAILABLE_NOTE } : {}),
+          ...(anyOriginUnread ? { origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
+          ...(results.some((r) => r.chain.some((s) => s.unpriced_funding))
+            ? { unpriced_funding_note: UNPRICED_FUNDING_NOTE }
+            : {}),
+          ...(coFunded.length
+            ? {
+                co_funding_group_count: coFunded.length,
+                ...(coFunded.length > RECIPIENT_LOOKUP_CAP
+                  ? {
+                      co_funding_note:
+                        `${coFunded.length} co-funding groups were found; the payout size of the first ` +
+                        `${RECIPIENT_LOOKUP_CAP} was measured and the rest are reported without it. ` +
+                        "Groups are ordered widest-payout-first, so the unmeasured ones are the narrow " +
+                        "payouts — the stronger signal, not the weaker.",
+                    }
+                  : {}),
+                co_funded_in_one_transaction: reportedCoFunding.map((g) => ({
+                  ...g,
+                  ...(nameMap.get(g.funder) ? { funder_name: nameMap.get(g.funder) } : {}),
+                })),
+                co_funding_note:
+                  "These addresses were paid by a single transaction, not merely by the same funder over time. " +
+                  "Read `strength` before concluding anything: a transaction paying only these addresses is " +
+                  "near-decisive, while one paying twenty of which two are yours is a batch distribution that an " +
+                  "unrelated address can land in by chance. `transaction_recipient_count` is the denominator.",
+              }
+            : {}),
+          ...(subjectLinks.length
+            ? {
+                subject_funded_subject: subjectLinks.map((l) => ({
+                  ...l,
+                  ...(nameMap.get(l.funder) ? { funder_name: nameMap.get(l.funder) } : {}),
+                })),
+                subject_link_note:
+                  "One address under investigation funded another directly. Unlike shared ancestry this needs no " +
+                  "control to interpret — there is no base rate for money moving straight from one subject to another.",
+              }
+            : {}),
+          ...(paymentScope
+            ? {
+                ...(subjectPayments.length
+                  ? {
+                      subject_paid_subject: subjectPayments.map((p) => ({
+                        payer: p.payer,
+                        payee: p.payee,
+                        digest: p.digest,
+                        timestamp: p.timestamp,
+                        received: p.received.map((r) => formatAmount(r.amount, r.coinType)),
+                        ...(firstFundingKeys.has(`${p.payer}>${p.payee}>${p.digest}`) ? { first_funding: true } : {}),
+                        ...(p.balance_changes_incomplete ? { balance_changes_incomplete: true } : {}),
+                      })),
+                      subject_payment_note:
+                        "Transactions one address under investigation signed that credited another, with the payee's net " +
+                        "gain per coin. Every payment is listed, not only first fundings, which carry first_funding. Each " +
+                        "digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
+                    }
+                  : {}),
+                subject_payment_scope: paymentScope,
+              }
+            : {}),
+          ...(bursts.length
+            ? {
+                funding_bursts: bursts,
+                burst_note:
+                  "Addresses funded within " +
+                  "60s of each other, tightest first. Timing is the discriminator that survives when co-funding " +
+                  "does not: a wide payout proves little, but a set of wallets funded seconds apart did not arrive " +
+                  "there independently. Check the span — sub-second spans are scripted, minutes are not conclusive. " +
+                  "Ignore any entry with same_transaction true: that burst is a single payment, already reported " +
+                  "under co_funded_in_one_transaction, and counting it again would tally one fact as two.",
+              }
+            : {}),
+          shared_funders: shared.map(([funder, addrs]) => ({
+            funder,
+            ...(nameMap.get(funder) ? { name: nameMap.get(funder) } : {}),
+            ...(getLabel(funder) ? { label: getLabel(funder)!.label } : {}),
+            funded_count: addrs.length,
+            funded: addrs,
+            ...(popularityOf[funder] ? { funder_popularity: popularityOf[funder] } : {}),
+            // Shape, not just size. This is the tool that decides
+            // whether shared funding means anything, and count alone
+            // cannot: a custodial exchange and a sybil funder can have
+            // near-identical counterparty counts while one runs
+            // balanced and the other pays many and is paid by few.
+            ...(fanouts[funder] ? { fanout: fanoutView(fanouts[funder], popularityOf[funder]) } : {}),
+          })),
         };
+
+        // Shared funders, co-funding and payments are computed from every
+        // hop above. The summary row drops the chain and names what its first
+        // hop repeats (the subject, its funder, hop 1); `full` keeps both.
+        const fullPayload = { ...base, results: results.map(({ first_hop, ...r }) => r) };
+        if (full) return { content: [{ type: "text" as const, text: JSON.stringify(fullPayload) }] };
+        const summaryRows = results.map(({ chain, first_hop, ...r }) => {
+          const { dust_skipped, ...rest } = r as typeof r & { dust_skipped?: unknown[] };
+          const hop = first_hop ? (({ hop: _h, address: _a, funded_by: _f, ...h }) => h)(first_hop) : null;
+          return { ...rest, ...(dust_skipped?.length ? { dust_skipped_count: dust_skipped.length } : {}), first_hop: hop };
+        });
+        const linked = new Set<string>([
+          ...shared.flatMap(([, addrs]) => addrs),
+          ...subjectLinks.flatMap((l) => [l.funder, l.funded]),
+          ...coFunded.flatMap((g) => g.addresses),
+          ...bursts.flatMap((b) => b.addresses),
+          ...subjectPayments.flatMap((p) => [p.payer, p.payee]),
+        ]);
+        type Result = (typeof summaryRows)[number] & { sponsored_by?: unknown; incomplete_balance_changes?: unknown; origin_unread_at?: unknown };
+        type Payment = { first_funding?: boolean };
+        const args = { addresses, max_hops, depth, measure_fanout };
+        const { payload } = capPayload(
+          "find_funding_sources",
+          args,
+          {
+            ...base,
+            results: summaryRows,
+            results_note:
+              "Each result lists its origin, first funder and first hop (whose subject, funder and hop number are the result's own), and counts the dust inflows its walk skipped. detail: 'full' returns every hop of each chain and every dust row.",
+          },
+          {
+            results: {
+              budget: 12_000,
+              keepOrder: true,
+              keep: (r: Result) =>
+                linked.has(r.address) ||
+                Boolean(r.sponsored_by || r.incomplete_balance_changes || r.origin_unread_at) ||
+                Boolean(getLabel(r.origin)) ||
+                (batchIds.get(r.origin)?.kind ?? "wallet") !== "wallet",
+              brief: (r: Result) => ({ address: r.address, origin: r.origin, first_funder: r.first_funder }),
+            } satisfies ListCap<Result>,
+            subject_paid_subject: {
+              budget: 4_000,
+              keepOrder: true,
+              keep: (p: Payment) => p.first_funding === true,
+            } satisfies ListCap<Payment>,
+          },
+          { full: false, stored: fullPayload, next_call: { tool: "find_funding_sources", repeat_with: { detail: "full" } } },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -949,7 +1005,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_source",
-    "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a funder that paid more than 50 distinct addresses (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
+    "(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a funder that paid more than 50 distinct addresses at least 0.01 SUI or $0.10 each (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution; addresses it paid only dust do not count), a funder that paid the previous address after its own earliest 12 transactions (an established wallet paying from a balance it held, such as a victim's transfer to a thief; its own funding describes it, not that payment), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),

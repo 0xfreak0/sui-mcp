@@ -34,7 +34,7 @@ registerHistoryTools({
 
 const run = async (a: Args) => JSON.parse((await handler(a)).content[0].text);
 
-const SUBJECT = `0x6b28df${"7".repeat(53)}04ac9`;
+const SUBJECT = `0xa11ce0${"7".repeat(53)}c0de5`;
 const REAL = `0x7a4c19${"8".repeat(53)}de50f`;
 const FAKE = `0x7a41c6${"9".repeat(53)}de50f`;
 
@@ -203,7 +203,7 @@ describe("get_transaction_history reads every balance change", () => {
     // computed (25 shown of 200 total), not a fixed phrase.
     expect(row.counterparties_note).toContain("25");
     expect(row.counterparties_note).toContain("200");
-    expect(row.token_flow.map((f: { amount: string }) => f.amount).sort()).toEqual(["-200000", "-288999560"]);
+    expect(row.subject_flow.map((f: { amount: string }) => f.amount).sort()).toEqual(["-200000", "-288999560"]);
     expect(r.incomplete_transactions).toBeUndefined();
   });
 
@@ -478,5 +478,33 @@ describe("get_transaction_history — alias-signed transactions", () => {
     const r = await run({ address: alias, limit: 10 });
     expect(r.signed_as_alias_note).toMatch(/every owner/);
     expect(r.signed_as_alias_unavailable).toBeUndefined();
+  });
+});
+
+describe("get_transaction_history size", () => {
+  it("lists the rows that fit in page order, keeps a row a lookalike sent past the budget, and counts the rest", async () => {
+    const coins = Array.from({ length: 12 }, (_, i) => `0x${(i + 16).toString(16).padStart(64, "0")}::c${i}::C${i}`);
+    const heavy = (digest: string, sender: string) => ({
+      ...tx(digest, "2025-09-07T16:00:00.000Z", sender, []),
+      effects: {
+        status: "SUCCESS",
+        timestamp: "2025-09-07T16:00:00.000Z",
+        balanceChanges: gqlPage(coins.map((c) => ({ coinType: { repr: c }, amount: "-1000", owner: { address: SUBJECT } }))),
+      },
+    });
+    const rows = Array.from({ length: 50 }, (_, i) => heavy(`r${String(i).padStart(2, "0")}`, SUBJECT));
+    // REAL is paid early on; FAKE, rendered alike, sends dust near the end.
+    rows[1] = tx("r01", "2025-09-07T16:00:00.000Z", SUBJECT, [[REAL, "5000000000"], [SUBJECT, "-5000000000"]]);
+    rows[48] = tx("r48", "2025-09-07T16:00:00.000Z", FAKE, [[SUBJECT, "1"], [FAKE, "-1"]]);
+    mockGqlQuery.mockImplementation(async (q: string) => (String(q).includes("transactions(filter: { affectedAddress") ? page(rows) : {}));
+
+    const r = await run({ address: SUBJECT, limit: 50, order: "oldest" });
+    const digests = r.transactions.map((t: { digest: string }) => t.digest);
+    expect(r.address_poisoning.pairs.length).toBeGreaterThan(0);
+    expect(digests[0]).toBe("r00");
+    expect(digests).toContain("r48");
+    expect(digests.length).toBeLessThan(50);
+    expect(r.omitted.lists.transactions.count).toBe(50 - digests.length);
+    expect(r.transactions[0].token_flow).toBeUndefined();
   });
 });

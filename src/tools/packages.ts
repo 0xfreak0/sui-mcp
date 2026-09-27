@@ -1,9 +1,13 @@
 import { z } from "zod";
 import { addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
-import { suivisionPackageUrl } from "../config.js";
+import { getNetwork, suivisionPackageUrl } from "../config.js";
+import { describeError } from "../utils/errors.js";
 import { GrpcTypes } from "@mysten/sui/grpc";
 import { selectModules, summarizeModule } from "../utils/package-summary.js";
+import { formatSdkSignatureBody } from "../utils/ptb-resolve.js";
+import type { SuiClientTypes } from "@mysten/sui/client";
+import { SYSTEM_PACKAGE } from "../utils/disassembly.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function formatVisibility(v?: GrpcTypes.FunctionDescriptor_Visibility): string {
@@ -101,7 +105,7 @@ export function formatDatatypeFields(
 export function registerPackageTools(server: McpServer) {
   server.tool(
     "get_package",
-    "(Developer) Get a Sui Move package by its ID. By default returns a per-module summary: function and struct counts, entry and public function names. Pass `modules: ['pool']` for those modules' structs (abilities + ordered fields in BCS declaration order) and function signatures by visibility (entry, public, friend, private), or `detail: 'full'` for every module.",
+    "(Developer) Get a Sui Move package by its ID. By default returns a per-module summary: function and struct counts, entry and public function names. Pass `modules: ['pool']` for those modules' structs (abilities + ordered fields in BCS declaration order) and function signatures by visibility (entry, public, friend, private), or `detail: 'full'` for every module. `dependencies` lists each non-framework package this version is linked against and the version it runs: `linked_id` is the ID to pass to disassemble_module to read the code that runs, since bytecode names a dependency by its original ID. get_package_dependency_graph reads the dependencies' own linkage.",
     {
       package_id: addressArg().describe("Package ID (0x...)"),
       detail: z
@@ -114,9 +118,14 @@ export function registerPackageTools(server: McpServer) {
         .describe("Module names to return in full, e.g. ['pool']. Others are left out."),
     },
     async ({ package_id, detail, modules: wantedModules }) => {
-      const { response: res } = await sui.movePackageService.getPackage({
-        packageId: package_id,
-      });
+      // MovePackageService leaves `linkage` empty; the package object carries it.
+      const [{ response: res }, linkage] = await Promise.all([
+        sui.movePackageService.getPackage({ packageId: package_id }),
+        sui.ledgerService.getObject({ objectId: package_id, readMask: { paths: ["package.linkage"] } }).then(
+          ({ response }) => ({ rows: response.object?.package?.linkage ?? [], error: null }),
+          (err: unknown) => ({ rows: [], error: describeError(err, getNetwork()) }),
+        ),
+      ]);
       const pkg = res.package;
 
       let totalEntryFns = 0;
@@ -191,6 +200,16 @@ export function registerPackageTools(server: McpServer) {
         }
       }
 
+      // Framework packages upgrade in place, so their linkage row names no
+      // version the package runs.
+      const dependencies = linkage.rows
+        .filter((l) => l.originalId && !SYSTEM_PACKAGE.test(l.originalId))
+        .map((l) => ({
+          original_id: l.originalId,
+          linked_id: l.upgradedId,
+          linked_version: l.upgradedVersion !== undefined ? Number(l.upgradedVersion) : null,
+        }));
+
       return {
         content: [
           {
@@ -201,6 +220,10 @@ export function registerPackageTools(server: McpServer) {
                 original_id: pkg?.originalId,
                 version: pkg?.version?.toString(),
                 suivision_url: suivisionPackageUrl(package_id),
+                ...(dependencies.length ? { dependencies } : {}),
+                ...(linkage.error
+                  ? { dependencies_unavailable: `The linkage table could not be read (${linkage.error}), so the dependency versions are unknown.` }
+                  : {}),
                 summary: {
                   module_count: allModules.length,
                   total_entry_functions: totalEntryFns,
@@ -279,25 +302,6 @@ export function registerPackageTools(server: McpServer) {
       };
     }
   );
-}
-
-import type { SuiClientTypes } from "@mysten/sui/client";
-
-function formatSdkSignatureBody(body: SuiClientTypes.OpenSignatureBody): string {
-  if ("vector" in body && body.$kind === "vector") {
-    return `vector<${formatSdkSignatureBody(body.vector)}>`;
-  }
-  if ("datatype" in body && body.$kind === "datatype") {
-    let name = body.datatype.typeName;
-    if (body.datatype.typeParameters.length > 0) {
-      name += `<${body.datatype.typeParameters.map(formatSdkSignatureBody).join(", ")}>`;
-    }
-    return name;
-  }
-  if (body.$kind === "typeParameter") {
-    return `T${body.index}`;
-  }
-  return body.$kind;
 }
 
 function formatSdkSignature(sig: SuiClientTypes.OpenSignature): string {

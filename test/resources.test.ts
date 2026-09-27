@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getNetwork } from "../src/config.js";
+import { capPayload } from "../src/utils/output-cap.js";
+import { resetStore } from "../src/utils/store.js";
 
 // Record the active network at the moment each client call runs, so we can
 // assert the resource handler executed in the right network context.
@@ -68,7 +73,31 @@ describe("resource registration", () => {
     expect(byName["wallet-nfts-net"]).toBe("sui://{network}/wallet/{address}/nfts");
     // Cases live in the local store, so they have no network-scoped variant.
     expect(byName["case"]).toBe("sui://case/{name}");
-    expect(regs).toHaveLength(9);
+    expect(byName["result"]).toBe("sui://results/{id}");
+    expect(regs).toHaveLength(10);
+  });
+});
+
+describe("stored results", () => {
+  it("reads the id and the page query from the URI a capped response names", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sui-results-"));
+    const backup = process.env.SUI_STORE_PATH;
+    process.env.SUI_STORE_PATH = join(dir, "store.db");
+    resetStore();
+    try {
+      const rows = Array.from({ length: 5 }, (_, i) => ({ i, pad: "x".repeat(50) }));
+      const { payload } = capPayload("t", {}, { rows }, { rows: { budget: 60 } }, { full: false, next_call: { tool: "t", repeat_with: { detail: "full" } } });
+      const page = (payload.omitted as { lists: { rows: { page: string } } }).lists.rows.page;
+      const result = await reg("result").handler(new URL(page));
+      const body = JSON.parse(result.contents[0].text);
+      expect(body.rows.map((r: { row: { i: number } }) => r.row.i)).toEqual([1, 2, 3, 4]);
+      expect(body.total).toBe(5);
+    } finally {
+      resetStore();
+      if (backup === undefined) delete process.env.SUI_STORE_PATH;
+      else process.env.SUI_STORE_PATH = backup;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

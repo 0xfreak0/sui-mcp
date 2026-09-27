@@ -6,6 +6,7 @@ import {
   firstSpend,
   inflowsNewestFirst,
   isSwapHop,
+  isSwapShape,
   type CandidateTx,
   type HopChange,
 } from "../src/utils/trace-hop.js";
@@ -118,6 +119,69 @@ describe("chooseNextHop — forward, value that no third party received", () => 
     // `_` is a word character, so /\bswap\b/ does not match swap_exact_*.
     expect(isSwapHop(["Call 0x1234…abcd::market::swap_exact_pt_for_sy"])).toBe(true);
     expect(isSwapHop(["Flash swap on Cetus"])).toBe(false);
+  });
+});
+
+describe("a swap by its values", () => {
+  const collector = "0xfeecollector";
+  /** The attacker sells 1,000 SUI into a pool object, pays a 3 SUI fee to a collector and keeps 2,900 USDC. */
+  const unnamed: HopChange[] = [
+    { address: attacker, amount: "-1003", coin_type: SUI },
+    { address: collector, amount: "3", coin_type: SUI },
+    { address: attacker, amount: "2900", coin_type: USDC },
+  ];
+
+  it("reads a coin-type change at the sender as a swap whatever the calls are named", () => {
+    expect(isSwapShape(unnamed, attacker, attacker, SUI)).toBe(true);
+    // Most of the SUI went to another address: a payment, with a coin received beside it.
+    expect(
+      isSwapShape(
+        [
+          { address: attacker, amount: "-1000", coin_type: SUI },
+          { address: victim, amount: "900", coin_type: SUI },
+          { address: attacker, amount: "5", coin_type: USDC },
+        ],
+        attacker,
+        attacker,
+        SUI,
+      ),
+    ).toBe(false);
+    // A flash swap nets to nothing in the other coin.
+    expect(isSwapShape([{ address: attacker, amount: "-5", coin_type: SUI }], attacker, attacker, SUI)).toBe(false);
+    // Another party's transaction is not the holder's swap.
+    expect(isSwapShape(unnamed, attacker, victim, SUI)).toBe(false);
+  });
+
+  it("follows the payee when the only gain beside a deposit is a reward worth next to nothing", () => {
+    const REWARD = "0xb::reward::REWARD";
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: [
+        { address: attacker, amount: "-1000", coin_type: SUI },
+        { address: victim, amount: "400", coin_type: SUI },
+        { address: attacker, amount: "1", coin_type: REWARD },
+      ],
+      actions: ["Call 0xabc…::lending::deposit_and_claim"],
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+      // SUI at $1 a unit, the reward at a millionth of that.
+      valueUsd: (c) => Number(c.amount) * (c.coin_type === SUI ? 1 : 1e-6),
+    });
+    expect(d).toMatchObject({ nextAddress: victim, isSwap: false });
+  });
+
+  it("follows the swapper, not the fee collector, when no action is named swap", () => {
+    const d = chooseNextHop({
+      sender: attacker,
+      changes: unnamed,
+      actions: ["Call 0xabc…::router::route"],
+      direction: "forward",
+      trackedCoin: SUI,
+      isPassThrough: noPools,
+    });
+    expect(d).toMatchObject({ nextAddress: attacker, nextCoinType: USDC, isSwap: true, basis: "swap-follow" });
+    expect(d.unfollowed.map((u) => u.address)).toEqual([collector]);
   });
 });
 

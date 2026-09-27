@@ -102,6 +102,13 @@ export interface FanoutResult {
    */
   classification_provisional?: boolean;
   /**
+   * The same cut applied to `sender_count` alone: how many parties pay into
+   * this address. Only a wide inflow side pools other parties' money; an
+   * address paid by few and paying many passes on what those few sent. Null
+   * when a cached row predates the sender count.
+   */
+  sender_classification: FanoutResult["classification"] | null;
+  /**
    * Distinct addresses this one paid gas FOR, over the sample.
    *
    * A separate question from value fan-out, and not answerable from it: a
@@ -125,9 +132,12 @@ export interface FanoutResult {
   /** Transactions in the sample where this address paid someone else's gas. */
   sponsored_transaction_count: number;
   /**
-   * Coarse reading of sponsorship. `relayer` means treat it as noise;
-   * `operator` means it funds most of the wallets it sponsors, and shared
-   * sponsorship through it is a link however many it sponsors.
+   * Coarse reading of sponsorship. `relayer` means breadth past the limit and
+   * few of its sponsored wallets paid from this address, which shared
+   * sponsorship alone cannot link through, though an operator funding from a
+   * second address reads the same; `operator` means it funds most of the
+   * wallets it sponsors, and shared sponsorship through it is a link however
+   * many it sponsors.
    */
   sponsor_shape: "operator" | "relayer" | "private_sponsor" | "not_a_sponsor";
   /** What that shape licenses. Absent when there is nothing worth saying. */
@@ -159,8 +169,9 @@ const HUB_THRESHOLD = 1_000;
  * Same logic as the funder popularity filter and the same reason: a link
  * through an intermediary is only worth something if the intermediary is
  * narrow. A private sponsor can pay gas often for only a handful of distinct
- * addresses. A public relayer pays for strangers, and shared sponsorship
- * through one says nothing about whether two wallets are related.
+ * addresses. A public relayer pays for strangers, and breadth alone cannot
+ * separate it from an operator that funds its wallets from another address,
+ * so past this limit shared sponsorship is not a link on its own.
  *
  * Deliberately below the funder limit of 50: sponsoring is an operational
  * relationship, so paying for dozens of strangers already reads as a service.
@@ -234,11 +245,13 @@ function interpretSponsor(
     return `Pays gas for ${count}${truncated ? "+" : ""} distinct address(es) and sent a coin to ${paid} of them in the window scanned. A public relayer pays gas for strangers and does not fund them, so this address runs the wallets it sponsors: build_wallet_edges links each address it both paid and sponsored as an operator relationship. Shared sponsorship through it links those wallets however many it sponsors.`;
   }
   if (shape === "relayer") {
-    const paidNote =
-      paid > 0
-        ? ` It also sent a coin to ${paid} of them, and build_wallet_edges links each of those to it as an operator relationship, so the noise reading holds only for the rest.`
-        : "";
-    return `Pays gas for ${count}+ distinct addresses, which is a relayer or paymaster. Two wallets sharing it as a sponsor is NOT evidence they are related — treat shared sponsorship through this address as noise, the same as a shared exchange.${paidNote}`;
+    const paidNote = paid > 0 ? ` build_wallet_edges links each of the ${paid} it paid to it as an operator relationship.` : "";
+    return (
+      `Pays gas for ${count}+ distinct addresses in the window scanned and sent a coin to ${paid} of them. That breadth fits a relayer or paymaster, ` +
+      "and it also fits an operator that funds its wallets from a second address, which this window cannot see. Shared sponsorship through " +
+      "it does not link two wallets on its own; build_wallet_edges reads the first funders of other wallets it sponsors to test for that split." +
+      paidNote
+    );
   }
   const base = `Pays gas for ${count} distinct address(es) in the window scanned. A narrow sponsor is an operational relationship worth following: whoever funds the gas usually runs the wallets. This can be true even when value fan-out looks unremarkable, since sponsoring moves no value of its own.`;
   return truncated
@@ -405,6 +418,7 @@ export async function measureFanout(
         address,
         recipient_count: cached.recipient_count,
         sender_count: cached.sender_count,
+        sender_classification: cached.sender_count >= 0 ? classifyFanout(cached.sender_count).classification : null,
         counterparty_count: cached.counterparty_count,
         coin_type_count: cached.coin_type_count,
         out_in_ratio: cached.out_in_ratio,
@@ -511,6 +525,7 @@ export async function measureFanout(
     address,
     recipient_count: recipients.size,
     sender_count: senders.size,
+    sender_classification: classifyFanout(senders.size).classification,
     counterparty_count: counterparties.size,
     coin_type_count: coinTypes.size,
     out_in_ratio: ratio === null ? null : Number(ratio.toFixed(2)),

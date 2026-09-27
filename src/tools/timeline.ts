@@ -27,6 +27,7 @@ import {
 } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { foldRepeats } from "../utils/formatting.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 
 interface TxNode {
   digest: string;
@@ -135,9 +136,10 @@ async function fetchAddressEntries(
         status: node.effects?.status?.toLowerCase() === "success" ? "success" : (node.effects?.status?.toLowerCase() ?? "unknown"),
         protocols: decoded.protocols,
         actions: foldRepeats(decoded.actions),
-        token_flow: decoded.token_flow,
+        // token_flow is the sender's side; a tracked sender's subject_flow
+        // entry is the same side, and only that is kept.
+        ...(sender && involved.has(sender) ? {} : { token_flow: decoded.token_flow }),
         involved: [...involved],
-        // token_flow is the sender's; this is each tracked address's own side.
         subject_flow: Object.fromEntries(
           [...involved].map((a) => [a, addressFlow(adaptBalanceChanges(bcNodes), a)]),
         ),
@@ -162,7 +164,7 @@ async function fetchAddressEntries(
 export function registerTimelineTools(server: McpServer) {
   server.tool(
     "build_timeline",
-    "(Incident investigation) Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. Use it to reconstruct what happened across a set of wallets/objects during an incident. Bound it with `from`/`to` (ISO 8601 or checkpoint numbers); a time is resolved to the checkpoints stamped inside the window and applied in the query. With `from`, each address is read forward from the window start; without it, each address's most recent `per_address` transactions (before `to`, if given) are read. `coverage` reports per address how many transactions were read, whether `per_address` stopped the walk early (`truncated`), the checkpoint it reached, and the `from`/`to` that continues it. Each entry's `subject_flow` holds every involved tracked address's own signed balance change per coin, keyed by address; `token_flow` is the transaction sender's.",
+    "(Incident investigation) Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. Use it to reconstruct what happened across a set of wallets/objects during an incident. Bound it with `from`/`to` (ISO 8601 or checkpoint numbers); a time is resolved to the checkpoints stamped inside the window and applied in the query. With `from`, each address is read forward from the window start; without it, each address's most recent `per_address` transactions (before `to`, if given) are read. `coverage` reports per address how many transactions were read, whether `per_address` stopped the walk early (`truncated`), the checkpoint it reached, and the `from`/`to` that continues it. Each entry's `subject_flow` holds every involved tracked address's own signed balance change per coin, keyed by address; `token_flow` is the transaction sender's, given only when the sender is not tracked (a tracked sender's side is its subject_flow entry). The timeline lists the entries that fit about 35k characters in order, keeping every failed entry and every entry two tracked addresses took part in, and `omitted` states the rest; detail: 'full' lists every entry.",
     {
       addresses: addressListArg().min(1).max(10).describe("Addresses to merge into one timeline (1-10)"),
       from: timePointArg().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
@@ -181,8 +183,12 @@ export function registerTimelineTools(server: McpServer) {
         .describe(
           "Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one — on Sui the common answer is 'flat, consistent with automation', which is itself a finding.",
         ),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): the entries that fit about 35k characters, in timeline order, keeping every failed entry and every entry two tracked addresses took part in; `omitted` states the rest. 'full': every entry up to `limit`."),
     },
-    async ({ addresses, from, to, limit, per_address, activity_hours }) => {
+    async ({ addresses, from, to, limit, per_address, activity_hours, detail }) => {
       try {
         const tracked = new Set(addresses);
         // Throws on a bound that is neither a time nor a checkpoint, so a typo
@@ -262,46 +268,53 @@ export function registerTimelineTools(server: McpServer) {
               .filter((x) => "histogram" in x)
           : undefined;
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  addresses: legend,
-                  window: describeWindow(from, to, window),
-                  read_from: direction === "oldest" ? "window start, forward" : to ? "window end, backward" : "latest, backward",
-                  coverage,
-                  ...(boundary != null
-                    ? {
-                        coverage_note:
-                          direction === "oldest"
-                            ? `per_address stopped some walks before the end of the window. After checkpoint ${boundary} the timeline is missing those addresses' activity; continue each with its continue_with, raise per_address, or narrow the window.`
-                            : `per_address stopped some walks before the start of the window. Before checkpoint ${boundary} the timeline is missing those addresses' activity; continue each with its continue_with, raise per_address, or set from.`,
-                      }
-                    : {}),
-                  entry_count: merged.length,
-                  ...(omitted
-                    ? {
-                        omitted_by_limit: omitted,
-                        limit_note: `limit kept the ${direction === "oldest" ? "earliest" : "latest"} ${merged.length} of ${merged.length + omitted} entries read. Raise limit to see the rest.`,
-                      }
-                    : {}),
-                  ...(activity?.length
-                    ? {
-                        activity_hours: activity,
-                        activity_hours_note:
-                          "Hour-of-day activity per address, in UTC. A shared quiet window across addresses is corroborating; opposite windows argue against common control and are the rarer, more useful result. Read `reading` before `utc_offset_estimate` — it is null unless sample size, span and depth support one, and even then it is a longitude rather than a country.",
-                      }
-                    : {}),
-                  timeline: merged,
-                },
-                null,
-                2,
-              ),
-            },
-          ],
+        const payload = {
+          addresses: legend,
+          window: describeWindow(from, to, window),
+          read_from: direction === "oldest" ? "window start, forward" : to ? "window end, backward" : "latest, backward",
+          coverage,
+          ...(boundary != null
+            ? {
+                coverage_note:
+                  direction === "oldest"
+                    ? `per_address stopped some walks before the end of the window. After checkpoint ${boundary} the timeline is missing those addresses' activity; continue each with its continue_with, raise per_address, or narrow the window.`
+                    : `per_address stopped some walks before the start of the window. Before checkpoint ${boundary} the timeline is missing those addresses' activity; continue each with its continue_with, raise per_address, or set from.`,
+              }
+            : {}),
+          entry_count: merged.length,
+          ...(omitted
+            ? {
+                omitted_by_limit: omitted,
+                limit_note: `limit kept the ${direction === "oldest" ? "earliest" : "latest"} ${merged.length} of ${merged.length + omitted} entries read. Raise limit to see the rest.`,
+              }
+            : {}),
+          ...(activity?.length
+            ? {
+                activity_hours: activity,
+                activity_hours_note:
+                  "Hour-of-day activity per address, in UTC. A shared quiet window across addresses is corroborating; opposite windows argue against common control and are the rarer, more useful result. Read `reading` before `utc_offset_estimate` — it is null unless sample size, span and depth support one, and even then it is a longitude rather than a country.",
+              }
+            : {}),
+          timeline: merged,
         };
+        // Entries fit the budget in timeline order; a failed entry and one
+        // two tracked addresses took part in survive it.
+        type Entry = (typeof merged)[number];
+        const { payload: out } = capPayload(
+          "build_timeline",
+          { addresses, from, to, limit, per_address, activity_hours },
+          payload,
+          {
+            timeline: {
+              budget: 35_000,
+              keepOrder: true,
+              keep: (e: Entry) => e.status !== "success" || e.involved.length > 1,
+              brief: (e: Entry) => ({ digest: e.digest, timestamp: e.timestamp, actions: e.actions.slice(0, 3) }),
+            } satisfies ListCap<Entry>,
+          },
+          { full: detail === "full", next_call: { tool: "build_timeline", repeat_with: { detail: "full" } } },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

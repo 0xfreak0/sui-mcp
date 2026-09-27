@@ -191,7 +191,7 @@ function expectRealScale(text: string) {
   expect(text).toContain(REAL);
   expect(text).not.toContain("0.000123456");
   expect(text).not.toContain("assumed scale");
-  expect(text).not.toMatch(/"(decimals_source|coin_scale)": "assumed"/);
+  expect(text).not.toMatch(/"(decimals_source|coin_scale)":\s*"assumed"/);
 }
 
 describe("amount-formatting tools read a coin's decimals before formatting it", () => {

@@ -29,6 +29,8 @@ import {
   readAuthentication,
   type Authentication,
 } from "./multisig.js";
+import { BALANCE_CHANGES_SELECTION, type GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 
 /** GraphQL page cap, and the natural chunk size for a keyed multi-get. */
 const CHUNK = 50;
@@ -331,8 +333,8 @@ export interface AddressIdentity {
   names_held?: HeldName[];
 }
 
-/** Classify addresses by what lives at them. Batched; never throws. */
-async function fetchKinds(addresses: string[]): Promise<Map<string, { kind: AddressKind; type?: string }>> {
+/** Classify addresses by what lives at them. Batched; never throws; an address left out could not be read. */
+export async function fetchKinds(addresses: string[]): Promise<Map<string, { kind: AddressKind; type?: string }>> {
   const out = new Map<string, { kind: AddressKind; type?: string }>();
   for (let i = 0; i < addresses.length; i += KINDS_BATCH_SIZE) {
     const chunk = addresses.slice(i, i + KINDS_BATCH_SIZE);
@@ -1156,4 +1158,66 @@ export function identityNote(id: AddressIdentity): string | undefined {
   if (known.length === 0) return base;
   const who = known.map((m) => `${m.address.slice(0, 10)}… (${m.label ?? m.name})`).join(", ");
   return `${base} Already attributable among its members: ${who}.`;
+}
+
+const FIRST_SEEN_QUERY = `query ($addr: SuiAddress!) {
+  transactions(filter: { affectedAddress: $addr }, first: 1) {
+    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+  }
+}`;
+
+interface FirstSeenResult {
+  transactions: {
+    nodes: Array<{
+      digest: string;
+      sender: { address: string } | null;
+      effects: {
+        timestamp: string | null;
+        checkpoint: { sequenceNumber: number | string } | null;
+        balanceChanges: GqlConnection<GqlBalanceChangeNode> | null;
+      } | null;
+    }>;
+  };
+}
+
+/** An address's oldest transaction, as `identify_address` reports it. */
+export interface FirstSeen {
+  digest: string;
+  timestamp: string | null;
+  checkpoint: string | null;
+  sender: string | null;
+  /** Coins the address gained in it, from the balance changes read. */
+  received: Array<{ coin_type: string; amount: string }>;
+  /**
+   * Another address sent it and this address gained coins in it, so it is
+   * the address's first inflow. Null when the balance-change list ran past
+   * one page without a gain for this address, so a gain may be unread.
+   */
+  first_inflow: boolean | null;
+}
+
+/**
+ * The oldest transaction affecting `address`, in one request: null when
+ * none does. Throws when the read fails, so a caller can say the age is
+ * unknown instead of omitting it.
+ */
+export async function readFirstSeen(address: string): Promise<FirstSeen | null> {
+  const data = await gqlQuery<FirstSeenResult>(FIRST_SEEN_QUERY, { addr: address });
+  const node = data.transactions.nodes[0];
+  if (!node) return null;
+  const self = normalizeSuiAddress(address);
+  const changes = node.effects?.balanceChanges;
+  const received = (changes?.nodes ?? [])
+    .filter((c) => c.owner?.address && normalizeSuiAddress(c.owner.address) === self && c.amount && BigInt(c.amount) > 0n)
+    .map((c) => ({ coin_type: c.coinType?.repr ?? "", amount: c.amount! }));
+  const sender = node.sender?.address ? normalizeSuiAddress(node.sender.address) : null;
+  const unreadRows = changes?.pageInfo?.hasNextPage === true;
+  return {
+    digest: node.digest,
+    timestamp: node.effects?.timestamp ?? null,
+    checkpoint: node.effects?.checkpoint?.sequenceNumber != null ? String(node.effects.checkpoint.sequenceNumber) : null,
+    sender,
+    received,
+    first_inflow: received.length > 0 ? sender !== self : unreadRows ? null : false,
+  };
 }

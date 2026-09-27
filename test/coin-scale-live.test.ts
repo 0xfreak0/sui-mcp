@@ -5,6 +5,8 @@ import { notFoundError, grpcError } from "./helpers/service-shapes.js";
 const mockSui = createMockClient();
 
 vi.mock("../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
+const mockGqlQuery = vi.fn();
+vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 
 const { coinScale, prefetchCoinScale, resetLiveCoinScale } = await import("../src/utils/valuation.js");
 
@@ -71,5 +73,39 @@ describe("coinScale live-metadata tier", () => {
 
     expect(coinScale(KONG)).toEqual({ decimals: 1, source: "coin_metadata" });
     expect(mockSui.stateService.getCoinInfo).toHaveBeenCalledTimes(2);
+  });
+
+  describe("many coins at once", () => {
+    // Coins no curated list knows: one GraphQL request reads up to 20.
+    const coins = Array.from({ length: 25 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}::meme::M${i}`);
+    const answer = (q: string) =>
+      Object.fromEntries(
+        [...q.matchAll(/(c\d+):coinMetadata\(coinType:"([^"]+)"\)/g)].map(([, alias, type]) => [alias, type.endsWith("::M3") ? null : { decimals: 6 }]),
+      );
+
+    it("reads them over GraphQL, 20 to a request, and caches a coin with no metadata as none", async () => {
+      mockGqlQuery.mockReset().mockImplementation(async (q: string) => answer(q));
+
+      await prefetchCoinScale(coins);
+
+      expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+      expect(mockSui.stateService.getCoinInfo).not.toHaveBeenCalled();
+      expect(coinScale(coins[0])).toEqual({ decimals: 6, source: "coin_metadata" });
+      expect(coinScale(coins[24])).toEqual({ decimals: 6, source: "coin_metadata" });
+      expect(coinScale(coins[3]).source).toBe("assumed");
+      await prefetchCoinScale(coins);
+      expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it("reads every coin of a failed request over gRPC instead", async () => {
+      mockGqlQuery.mockReset().mockRejectedValueOnce(new Error("GraphQL error: payload too large")).mockImplementation(async (q: string) => answer(q));
+      mockSui.stateService.getCoinInfo.mockResolvedValue({ response: { metadata: { decimals: 2 } } });
+
+      await prefetchCoinScale(coins);
+
+      expect(mockSui.stateService.getCoinInfo).toHaveBeenCalledTimes(20);
+      expect(coinScale(coins[0])).toEqual({ decimals: 2, source: "coin_metadata" });
+      expect(coinScale(coins[24])).toEqual({ decimals: 6, source: "coin_metadata" });
+    });
   });
 });

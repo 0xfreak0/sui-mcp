@@ -4,7 +4,11 @@ import { candidates, gqlTx, SUI, USDC, CETUS, type HopSpec } from "./helpers/tra
 
 const mockGqlQuery = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
-vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
+// A coin with no metadata, as the service answers for an unknown type.
+vi.mock("../src/clients/grpc.js", () => ({
+  sui: { stateService: { getCoinInfo: async () => Promise.reject(new Error("NOT_FOUND")) } },
+  archive: {},
+}));
 // Without these the tool reaches the network for prices and SuiNS names, which
 // makes the test depend on two live services and time out when either is slow.
 // Only the GraphQL query shape is under test here.
@@ -165,11 +169,91 @@ describe("findNextForward", () => {
   });
 
   it("stops at a hub instead of following its next withdrawal", async () => {
-    mockFanout.mockResolvedValue({ classification: "distributor", counterparty_count: 185, scanned_transactions: 200, truncated: true });
+    mockFanout.mockResolvedValue({ classification: "distributor", sender_classification: "distributor", sender_count: 120, counterparty_count: 185, scanned_transactions: 200, truncated: true });
     route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
     const data = await run({ digest: START, direction: "forward", hops: 3 });
     expect(data.hop_count).toBe(1);
     expect(data.stop_reason).toMatch(/is a distributor/);
+  });
+
+  it("follows an address paid by few senders that pays many: it passes on what it received", async () => {
+    // A theft wallet or an operator's disperser: three payers, 211 payees.
+    // Everything it pays out came from those three.
+    mockFanout.mockResolvedValue({ classification: "distributor", sender_classification: "narrow", sender_count: 3, counterparty_count: 214, scanned_transactions: 200, truncated: true });
+    route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 3 });
+    expect(data.hops.map((h: { digest: string }) => h.digest)).toEqual([START, "0xnext"]);
+  });
+
+  it("follows a wallet labelled malicious however many parties pay into it", async () => {
+    mockFanout.mockResolvedValue({ classification: "hub", sender_classification: "hub", sender_count: 1500, counterparty_count: 3000, scanned_transactions: 200, truncated: true });
+    addSessionLabel(RECIPIENT, { label: "Drainer collector", category: "malicious" }, false);
+    try {
+      route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
+      const data = await run({ digest: START, direction: "forward", hops: 3 });
+      expect(data.hops.map((h: { digest: string }) => h.digest)).toEqual([START, "0xnext"]);
+    } finally {
+      removeSessionLabel(RECIPIENT);
+    }
+  });
+
+  it("follows the largest of the spends that cover what arrived, listing the rest", async () => {
+    // A 10 SUI top-up goes out first; the 990 SUI payment is where the funds went.
+    const OTHER2 = `0xdd${"6".repeat(62)}`;
+    const topUp: HopSpec = { digest: "0xtopup", sender: RECIPIENT, checkpoint: CP + 1, changes: [[RECIPIENT, "-10000000000"], [OTHER, "10000000000"]] };
+    const bulk: HopSpec = { digest: "0xbulk", sender: RECIPIENT, checkpoint: CP + 2, changes: [[RECIPIENT, "-990000000000"], [OTHER2, "990000000000"]] };
+    const funded: HopSpec = { ...hop1, changes: [[ACTOR, "-1000000000000"], [RECIPIENT, "1000000000000"]] };
+    route([funded, topUp, bulk], (q, vars) => (q.includes("sentAddress") && vars.address === RECIPIENT ? [topUp, bulk] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 2 });
+    expect(data.hops[1].digest).toBe("0xbulk");
+    expect(data.hops[1].unfollowed_spends).toEqual([{ digest: "0xtopup", amount: "10000000000", coin_type: SUI }]);
+  });
+
+  it("follows the sweep that covered what arrived, not a later larger spend of other funds", async () => {
+    // RELAY gets 100 SUI and sweeps it on, paying 0.002 SUI gas, so the sweep
+    // moves 99.998. A later 5,000 SUI it forwards came from someone else.
+    const NEXT = `0xdd${"7".repeat(62)}`;
+    const LATER = `0xdd${"8".repeat(62)}`;
+    const funded: HopSpec = { ...hop1, changes: [[ACTOR, "-100000000000"], [RECIPIENT, "100000000000"]] };
+    const sweep: HopSpec = { digest: "0xsweep", sender: RECIPIENT, checkpoint: CP + 1, netGas: 2_000_000, changes: [[RECIPIENT, "-100000000000"], [NEXT, "99998000000"]] };
+    const reuse: HopSpec = { digest: "0xreuse", sender: RECIPIENT, checkpoint: CP + 400, changes: [[RECIPIENT, "-5000000000000"], [LATER, "5000000000000"]] };
+    route([funded, sweep, reuse], (q, vars) => (q.includes("sentAddress") && vars.address === RECIPIENT ? [sweep, reuse] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 2 });
+    expect(data.hops[1].digest).toBe("0xsweep");
+    expect(data.hops[1].unfollowed_spends).toBeUndefined();
+  });
+
+  it("does not follow a deposit that left the holder a share coin typed over what it put in", async () => {
+    // The exploit credits the actor; its next SUI spend adds liquidity for an
+    // LP<SUI, X> share and dust, and only then does it pay someone.
+    const X = `0x${"7".repeat(64)}::meme::MEME`;
+    const LP = `0x${"8".repeat(64)}::swap::LP<${SUI}, ${X}>`;
+    const exploit: HopSpec = { digest: START, sender: ACTOR, checkpoint: CP, changes: [[ACTOR, "1000000000000"]] };
+    const addLiquidity: HopSpec = {
+      digest: "0xadd",
+      sender: ACTOR,
+      checkpoint: CP + 1,
+      changes: [[ACTOR, "-1200000000000"], [ACTOR, "5000", X], [ACTOR, "900000000000", LP]],
+    };
+    const payout: HopSpec = { digest: "0xpayout", sender: ACTOR, checkpoint: CP + 2, changes: [[ACTOR, "-1500000000000"], [RECIPIENT, "1500000000000"]] };
+    route([exploit, addLiquidity, payout], (q, vars) => (q.includes("sentAddress") && vars.address === ACTOR ? [addLiquidity, payout] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 3, coin_type: SUI });
+    expect(data.hops[1].digest).toBe("0xpayout");
+    expect(data.hops[1].kept_as_claim.map((k: { digest: string }) => k.digest)).toEqual(["0xadd"]);
+  });
+
+  it("follows a deposit whose claim coin the holder later passed to another wallet", async () => {
+    // RECIPIENT deposits the 100 SUI for 95 MarketCoin<SUI>, then sends the
+    // MarketCoin to Y: the value left with the claim.
+    const Y = `0xdd${"9".repeat(62)}`;
+    const MARKET = `0x${"6".repeat(64)}::reserve::MarketCoin<${SUI}>`;
+    const funded: HopSpec = { ...hop1, changes: [[ACTOR, "-100000000000"], [RECIPIENT, "100000000000"]] };
+    const deposit: HopSpec = { digest: "0xdeposit", sender: RECIPIENT, checkpoint: CP + 1, changes: [[RECIPIENT, "-100000000000"], [RECIPIENT, "95000000000", MARKET]] };
+    const pass: HopSpec = { digest: "0xpass", sender: RECIPIENT, checkpoint: CP + 2, changes: [[RECIPIENT, "-95000000000", MARKET], [Y, "95000000000", MARKET]] };
+    route([funded, deposit, pass], (q, vars) => (q.includes("sentAddress") && vars.address === RECIPIENT ? [deposit, pass] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 4 });
+    expect(data.hops.map((h: { digest: string }) => h.digest)).toEqual([START, "0xdeposit", "0xpass"]);
+    expect(data.hops[1].kept_as_claim).toBeUndefined();
   });
 });
 

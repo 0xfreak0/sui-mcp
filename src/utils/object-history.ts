@@ -100,6 +100,12 @@ export interface TransitionSearch {
   transitions: OwnerTransitionPoint[];
   /** The budget ran out before every sub-range was resolved. */
   truncated: boolean;
+  /**
+   * Ranges the search stopped inside while their ends disagreed: each holds
+   * at least one owner change, from `lo.owner` to `hi.owner`, not yet pinned
+   * to a checkpoint. Empty unless `truncated`.
+   */
+  unresolved: { lo: CheckpointState; hi: CheckpointState }[];
 }
 
 /**
@@ -124,6 +130,10 @@ export interface TransitionSearch {
  * whose write changed it. Total reads are O(transitions x log(range))
  * rather than O(versions), cheap regardless of how hot the object is,
  * because what is being searched for is rare even when the object is busy.
+ * The two halves of a range are searched at once, so wall time grows with
+ * the depth of the search, about log(range) reads, rather than with the
+ * number of reads. A range the budget stops inside is returned in
+ * `unresolved`: it holds an owner change the search did not pin.
  * Callers must not report a bisected span as covering an object's full life:
  * only that no DISAGREEMENT was found at the checkpoints this search chose.
  *
@@ -131,15 +141,15 @@ export interface TransitionSearch {
  * from one: checkpoint granularity is the finest this can resolve.
  */
 export interface TransitionBudget {
-  /** Recursive calls remaining; each one halves a checkpoint range. */
+  /** Reads remaining, shared by every branch; each read halves a checkpoint range. */
   remaining: number;
   /** Wall-clock deadline (`Date.now()`-comparable); once passed, the search
    *  stops splitting and reports truncated, the same as running out of
-   *  `remaining`. These are sequential network calls with no per-call
-   *  timeout of their own, so `remaining` alone bounds call COUNT, not time
-   *  spent, and a slow endpoint can blow a client's deadline well before 80
-   *  calls complete. Optional so the many pure-logic tests that construct a
-   *  budget need not set it. */
+   *  `remaining`. These are network calls with no per-call timeout of their
+   *  own, so `remaining` alone bounds call COUNT, not time spent, and a slow
+   *  endpoint can blow a client's deadline before the reads run out.
+   *  Optional so the many pure-logic tests that construct a budget need not
+   *  set it. */
   deadlineMs?: number;
 }
 export async function findOwnerTransitions(
@@ -148,20 +158,46 @@ export async function findOwnerTransitions(
   fetchOwnerAt: (checkpoint: number) => Promise<OwnerDesc>,
   budget: TransitionBudget,
 ): Promise<TransitionSearch> {
-  if (ownerKey(lo.owner) === ownerKey(hi.owner)) return { transitions: [], truncated: false };
+  if (ownerKey(lo.owner) === ownerKey(hi.owner)) return { transitions: [], truncated: false, unresolved: [] };
   if (hi.checkpoint - lo.checkpoint <= 1) {
-    return { transitions: [{ checkpoint: hi.checkpoint, owner: hi.owner }], truncated: false };
+    return { transitions: [{ checkpoint: hi.checkpoint, owner: hi.owner }], truncated: false, unresolved: [] };
   }
   if (budget.remaining <= 0 || (budget.deadlineMs !== undefined && Date.now() >= budget.deadlineMs)) {
-    return { transitions: [], truncated: true };
+    return { transitions: [], truncated: true, unresolved: [{ lo, hi }] };
   }
   budget.remaining -= 1;
   const mid = Math.floor((lo.checkpoint + hi.checkpoint) / 2);
   const midState: CheckpointState = { checkpoint: mid, owner: await fetchOwnerAt(mid) };
-  const left = await findOwnerTransitions(lo, midState, fetchOwnerAt, budget);
-  const right = await findOwnerTransitions(midState, hi, fetchOwnerAt, budget);
+  const [left, right] = await Promise.all([
+    findOwnerTransitions(lo, midState, fetchOwnerAt, budget),
+    findOwnerTransitions(midState, hi, fetchOwnerAt, budget),
+  ]);
   return {
     transitions: [...left.transitions, ...right.transitions],
     truncated: left.truncated || right.truncated,
+    unresolved: [...left.unresolved, ...right.unresolved],
   };
+}
+
+/**
+ * {@link findOwnerTransitions} with one read first at the checkpoint before
+ * `hi`. The span's upper end is a write of the object (its latest version,
+ * or the version before a page), and a change made by that write would
+ * otherwise cost bisection about log2(range) reads to pin; this read
+ * settles it and leaves the rest of the span to bisection.
+ */
+export async function findOwnerTransitionsFromEnd(
+  lo: CheckpointState,
+  hi: CheckpointState,
+  fetchOwnerAt: (checkpoint: number) => Promise<OwnerDesc>,
+  budget: TransitionBudget,
+): Promise<TransitionSearch> {
+  if (ownerKey(lo.owner) === ownerKey(hi.owner) || hi.checkpoint - lo.checkpoint <= 2 || budget.remaining <= 0) {
+    return findOwnerTransitions(lo, hi, fetchOwnerAt, budget);
+  }
+  budget.remaining -= 1;
+  const before: CheckpointState = { checkpoint: hi.checkpoint - 1, owner: await fetchOwnerAt(hi.checkpoint - 1) };
+  const rest = await findOwnerTransitions(lo, before, fetchOwnerAt, budget);
+  const atEnd = ownerKey(before.owner) === ownerKey(hi.owner) ? [] : [{ checkpoint: hi.checkpoint, owner: hi.owner }];
+  return { ...rest, transitions: [...rest.transitions, ...atEnd] };
 }

@@ -3,7 +3,7 @@
   "kind": "nft-theft",
   "title": "Suisse NFT drainer: wallets and kiosks taken through signed drain transactions, April to June 2024",
   "network": "mainnet",
-  "summary": "A victim reported on GitHub that after interacting with an airdropped \"Suisse NFT\" a transaction emptied the wallet and took the Kriya LP and farm positions, and gave the drain digest 8pRzHLYa. On chain the same signed-PTB pattern sent the victims' coins and objects to one wallet, 0x5ecf90fa, which ended up holding 65 kiosks through their KioskOwnerCaps and 921 NFTs, among them a SuiFrens Bullshark whose cap it took from 0x2237921a on 21 May 2024. The wallet sent 31,175 SUI to 0x025be32e on 26 May 2024, which swapped it to USDC and bridged 33,670 USDC to Solana through Wormhole on 29 May 2024.",
+  "summary": "A victim reported on GitHub that after interacting with an airdropped \"Suisse NFT\" a transaction emptied the wallet and took the Kriya LP and farm positions, and gave the drain digest 8pRzHLYa. On chain the same signed-PTB pattern sent the victims' coins and objects to one wallet, 0x5ecf90fa, which ended up holding 65 kiosks through their KioskOwnerCaps and 921 NFTs, among them a SuiFrens Bullshark whose cap it took from its holder on 21 May 2024. The wallet sent 31,175 SUI to 0x025be32e on 26 May 2024, which swapped it to USDC and bridged 33,670 USDC to Solana through Wormhole on 29 May 2024. Victims' wallets are not recorded; the checks read the drain transactions and the drainer's side.",
   "sources": [
     {
       "url": "https://github.com/MystenLabs/sui/issues/17510",
@@ -12,7 +12,6 @@
     }
   ],
   "subjects": {
-    "victim": "0xecb58af86777cd758f4f1c7c3fb25880ab5aa22cd24eb77fa4871703d239b633",
     "drain_tx": "8pRzHLYa8kaW63WZVWrxrgnrDGLxy8D8TALpuP9R6zkf",
     "drainer": "0x5ecf90fa681d13629e91067782316d89893c5cede1b889d7e2ea4eabd0e54088",
     "fee_address": "0x0000daa77f7d845a8d3bac77b6821fb37f37960a214da6ac32e1d35d805d2cd6",
@@ -23,7 +22,6 @@
     "first_funding_tx": "DhRpeW1MWALaKbdX7xziJ6bCx6JjcDaNEziirGYXSuJb",
     "farm_position": "0x315e8896fcfc544f14fb09674dd2329a50a881122325435543732b26dac5f964",
     "farm_unstake_tx": "DbsAXVXkSyPZSh4mwtMsRG8CEwEAvUYacDpKwCZkb5UD",
-    "nft_victim": "0x2237921ac0071178d803f913ae9e487ee772a1a3d20bad6e430e88b29d8074b1",
     "nft_theft_tx": "PcryBvNTS77hPXEFgWXP9zaJKN4BA8DVM5WxpHrjZJF",
     "stolen_cap": "0x0785656e67232a0a5d9f895d980e7ab0dffc982fb83ac7c7e4d19d2068855fcc",
     "stolen_kiosk": "0x306b2b5bcec1a7d1a4e780dce1f418fba11f21081575f42c261d09de5eedfd90",
@@ -44,7 +42,6 @@
       "tool": "get_transaction",
       "args": { "digest": "{drain_tx}" },
       "expect": [
-        { "path": "sender", "op": "iequals", "value": "{victim}" },
         { "path": "object_transfers[*].object_id", "op": "includes", "value": "{suisse_nft}" },
         { "path": "object_transfers[*].object_id", "op": "includes", "value": "{farm_position}" },
         { "path": "object_transfers[*].object_id", "op": "count_gte", "value": 5 },
@@ -52,7 +49,7 @@
         { "path": "balance_changes[*].address", "op": "includes", "value": "{fee_address}" }
       ],
       "tier": "chain-derived",
-      "basis": "GitHub issue 17510 gives the victim and digest 8pRzHLYa. Chain: 5 non-coin objects (KriyaLPToken, two farm::StakedPosition, liquid::Suisses, liquid::Liquidpool) moved from 0xecb58af8 to 0x5ecf90fa; 0.00369243 SUI went to 0x0000daa7."
+      "basis": "GitHub issue 17510 gives the digest 8pRzHLYa. Chain: 5 non-coin objects (KriyaLPToken, two farm::StakedPosition, liquid::Suisses, liquid::Liquidpool) moved from the signer to 0x5ecf90fa; 0.00369243 SUI went to 0x0000daa7."
     },
     {
       "id": "phishing-nft-airdrop",
@@ -61,40 +58,49 @@
       "args": { "digest": "{airdrop_tx}" },
       "expect": [
         { "path": "sender", "op": "iequals", "value": "{airdropper}" },
-        { "path": "created_for[*].object_id", "op": "includes", "value": "{suisse_nft}" },
-        { "path": "created_for[*].to.address", "op": "includes", "value": "{victim}" },
-        { "path": "created_for[*].object_id", "op": "count_gte", "value": 400 }
+        { "path": "created_for_count", "op": "gte", "value": 400 }
       ],
       "tier": "chain-derived",
       "basis": "Chain: transaction 41LepGfA4b sent by 0x8b58ec74 called liquid::airdrop and created 400 liquid::Suisses objects for 400 addresses, one of them the GitHub issue 17510 victim."
     },
     {
+      "id": "phishing-nft-airdrop-victim",
+      "question": "Was the victim's Suisse NFT one of the airdropped objects?",
+      "tool": "get_transaction",
+      "args": { "digest": "{airdrop_tx}", "detail": "full" },
+      "expect": [
+        { "path": "created_for[*].object_id", "op": "includes", "value": "{suisse_nft}" },
+        { "path": "created_for[*].object_id", "op": "count_gte", "value": 400 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: transaction 41LepGfA4b created 0x6aabb72c for the GitHub issue 17510 victim among its 400 liquid::Suisses objects."
+    },
+    {
       "id": "kiosk-cap-theft",
-      "question": "Which objects, including kiosk control, did 0x2237921a lose on 21 May 2024?",
+      "question": "Which objects, including kiosk control, did the drain signed on 21 May 2024 take?",
       "tool": "get_transaction",
       "args": { "digest": "{nft_theft_tx}" },
       "expect": [
-        { "path": "sender", "op": "iequals", "value": "{nft_victim}" },
         { "path": "object_transfers[*].object_id", "op": "includes", "value": "{stolen_cap}" },
         { "path": "object_transfers[*].to.address", "op": "includes", "value": "{drainer}" },
         { "path": "object_transfers[*].object_id", "op": "count_gte", "value": 13 },
         { "path": "object_transfers[*].object_id", "op": "count_lte", "value": 13 }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: 13 non-coin objects changed owner from 0x2237921a to 0x5ecf90fa in PcryBvNTS77, including KioskOwnerCap 0x0785656e and a SuinsRegistration; the same managed::mint wrapper and 0x0000daa7 fee split as the GitHub issue 17510 drain."
+      "basis": "Chain: 13 non-coin objects changed owner from the signer to 0x5ecf90fa in PcryBvNTS77, including KioskOwnerCap 0x0785656e and a SuinsRegistration; the same managed::mint wrapper and 0x0000daa7 fee split as the GitHub issue 17510 drain."
     },
     {
       "id": "kiosk-cap-owner-history",
-      "question": "Who held the KioskOwnerCap for kiosk 0x306b2b5b, and when did it change hands?",
+      "question": "Where did the KioskOwnerCap for kiosk 0x306b2b5b come from, and when did it change hands?",
       "tool": "trace_object_history",
       "args": { "object_id": "{stolen_cap}" },
       "expect": [
-        { "path": "created.owner.address", "op": "iequals", "value": "{nft_victim}" },
+        { "path": "created.tx", "op": "equals", "value": "{bullshark_mint_tx}" },
         { "path": "owner_changes[*].tx", "op": "includes", "value": "{nft_theft_tx}" },
         { "path": "owner_changes[0].to.address", "op": "iequals", "value": "{drainer}" }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: the cap was created for 0x2237921a in 5cfiNwdF (2023-06-29) and its only owner change is to 0x5ecf90fa in PcryBvNTS77 (2024-05-21)."
+      "basis": "Chain: the cap was created in 5cfiNwdF (2023-06-29) for the wallet that later signed PcryBvNTS77, and its only owner change is to 0x5ecf90fa in PcryBvNTS77 (2024-05-21)."
     },
     {
       "id": "kiosk-cap-names-kiosk",
@@ -117,7 +123,7 @@
         { "path": "kiosk_cap_wrapped_in[*].object_id", "op": "includes", "value": "{personal_kiosk_wrapper}" }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: kiosk 0xb66a19b6 was created on 2023-07-31 by 0x664f99a1 (2yqAmi19). Its KioskOwnerCap 0x4601a3e4 is no longer a top-level object: the drainer wrapped it in PersonalKioskCap 0x0c42106c on 2024-06-05 (FfChVWPo), and that wrapper is owned by the drainer and has no transfer function."
+      "basis": "Chain: kiosk 0xb66a19b6 was created on 2023-07-31 (2yqAmi19). Its KioskOwnerCap 0x4601a3e4 is no longer a top-level object: the drainer wrapped it in PersonalKioskCap 0x0c42106c on 2024-06-05 (FfChVWPo), and that wrapper is owned by the drainer and has no transfer function."
     },
     {
       "id": "kiosk-nft-owner-kind",
@@ -195,7 +201,7 @@
         { "path": "object_flow.transfer_count", "op": "equals", "value": 13 }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: PcryBvNTS77 moved 13 non-coin objects from 0x2237921a to 0x5ecf90fa, one of them KioskOwnerCap 0x0785656e."
+      "basis": "Chain: PcryBvNTS77 moved 13 non-coin objects from the signer to 0x5ecf90fa, one of them KioskOwnerCap 0x0785656e."
     },
     {
       "id": "cashout-bridge-beneficiary",

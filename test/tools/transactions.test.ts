@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 import { pagedTxConnection } from "../helpers/service-shapes.js";
 import fixture from "../fixtures/address-balance-txs.json" with { type: "json" };
+import scallop from "../fixtures/scallop-exploit-ptb.json" with { type: "json" };
 
 /**
  * A real mainnet digest. get_transaction rejects a malformed one before making
@@ -26,6 +27,7 @@ vi.mock("../../src/clients/graphql.js", () => ({
 }));
 
 const { registerTransactionTools } = await import("../../src/tools/transactions.js");
+const { registerDecodeTools } = await import("../../src/tools/decode.js");
 
 const tools = new Map<string, Function>();
 const mockServer = {
@@ -35,6 +37,7 @@ const mockServer = {
 } as any;
 
 registerTransactionTools(mockServer);
+registerDecodeTools(mockServer);
 
 // Coin-scale prefetch runs before every decode. Tests that do not care
 // about decimals get a coin with no CoinMetadata, which takes the
@@ -129,6 +132,202 @@ describe("get_transaction", () => {
 
     expect(data.digest).toBe(ARCHIVED_DIGEST);
     expect(mockArchive.ledgerService.getTransaction).toHaveBeenCalled();
+  });
+});
+
+describe("get_transaction detail 'full' and decode_ptb by digest", () => {
+  /**
+   * The Scallop spool exploit, mainnet 6WNDjCX3…: update_points (command 5)
+   * received a dormant sWETH spool while stake (command 4) received the sSUI
+   * spool. No event names the spool update_points read, so the argument is
+   * the only place the donor shows.
+   */
+  const DONOR_SPOOL = "0xeec40beccb07c575bebd842eeaabb835f77cd3dab73add433477e57f583a6787";
+  const SSUI_SPOOL = "0x4f0ba970d3c11db05c8f40c64a15b6a33322db3702d634ced6536960ab6f3ee4";
+  const ATTACKER_ACCOUNT = "0x2a710b62bf4f905546489d6f9bc4428b0dfba92532a7c04be519e97cdc0fbda0";
+  const big = (v?: string) => (v === undefined ? undefined : BigInt(v));
+  const response = {
+    transaction: {
+      digest: scallop.digest,
+      transaction: {
+        sender: "0x27bc7a3c4f406cfa91551c32490ad7f5029414578c0649ab4ddbd232e76ef44e",
+        bcs: { name: "TransactionData", value: Buffer.from(scallop.transaction_bcs, "base64") },
+        kind: { data: { oneofKind: "programmableTransaction", programmableTransaction: { inputs: [], commands: [] } } },
+      },
+      effects: {
+        status: scallop.status,
+        changedObjects: scallop.changedObjects.map((c) => ({ ...c, inputVersion: big(c.inputVersion), outputVersion: big(c.outputVersion) })),
+        unchangedConsensusObjects: scallop.unchangedConsensusObjects.map((u) => ({ ...u, version: big(u.version) })),
+      },
+      events: { events: [] },
+      balanceChanges: [],
+    },
+  };
+  const functions = scallop.functions as Record<string, unknown>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSui.ledgerService.getTransaction.mockResolvedValue({ response });
+    mockSui.getMoveFunction.mockImplementation(async ({ packageId, moduleName, name }: Record<string, string>) => {
+      const f = functions[`${packageId}::${moduleName}::${name}`];
+      if (!f) throw new Error("function not found");
+      return { function: f };
+    });
+  });
+
+  it("shows the object each command received, and the changed objects' ids by kind", async () => {
+    const data = JSON.parse((await tools.get("get_transaction")!({ digest: scallop.digest, detail: "full" })).content[0].text);
+
+    expect(data.commands[5].target).toMatch(/::user::update_points$/);
+    expect(data.commands[5].arguments[0]).toEqual({
+      type: "Input",
+      index: 5,
+      object_id: DONOR_SPOOL,
+      version: "849862370",
+      object_type: "spool::Spool",
+    });
+    expect(data.commands[4].target).toMatch(/::user::stake$/);
+    expect(data.commands[4].arguments[0].object_id).toBe(SSUI_SPOOL);
+    // The account update_points wrote into is the one new_spool_account made.
+    expect(data.commands[5].arguments[1]).toMatchObject({ type: "NestedResult", result: 3, from: "user::new_spool_account" });
+    expect(data.commands[3].returns[0]).toMatch(/::spool_account::SpoolAccount</);
+    expect(data.commands[0].amounts[0]).toMatchObject({ value_type: "u64", value: "200000000" });
+
+    expect(data.inputs[5]).toMatchObject({
+      type: "SharedObject",
+      object_id: DONOR_SPOOL,
+      initial_shared_version: "73801626",
+      object_type: "0xe87f1b2d498106a2c61421cec75b7b5c5e348512b0dc263949a0e7a3c256571a::spool::Spool",
+    });
+
+    expect(data.object_changes).toMatchObject({ changed: 7, created: 3, deleted: 0 });
+    expect(data.object_changes.by_kind.created.map((o: { object_id: string }) => o.object_id)).toContain(ATTACKER_ACCOUNT);
+    expect(data.object_changes.by_kind.mutated).toContainEqual({
+      object_id: DONOR_SPOOL,
+      type: "0xe87f1b2d498106a2c61421cec75b7b5c5e348512b0dc263949a0e7a3c256571a::spool::Spool",
+      version: "856036007",
+    });
+  });
+
+  it("leaves inputs, commands and object ids out by default", async () => {
+    const data = JSON.parse((await tools.get("get_transaction")!({ digest: scallop.digest })).content[0].text);
+    expect(data.commands).toBeUndefined();
+    expect(data.inputs).toBeUndefined();
+    expect(data.object_changes).toEqual({ changed: 7, created: 3, deleted: 0 });
+  });
+
+  it("decode_ptb resolves an executed transaction's PTB the way get_transaction does", async () => {
+    const full = JSON.parse((await tools.get("get_transaction")!({ digest: scallop.digest, detail: "full" })).content[0].text);
+    const decoded = JSON.parse((await tools.get("decode_ptb")!({ digest: scallop.digest })).content[0].text);
+    expect(decoded.status).toBe("success");
+    expect(decoded.commands).toEqual(full.commands);
+    expect(decoded.inputs).toEqual(full.inputs);
+  });
+
+  it("narrows events, inputs and changed objects to the picked commands and counts the rest", async () => {
+    const MINT = "0xde5c09ad171544aa3724dc67216668c80e754860f419136a68d78504eb2e2805";
+    const SPOOL = "0xec1ac7f4d01c5bf178ff4e62e523e7df7721453d81d4904a42a0ffc2686c843d";
+    // Emission order: mint (command 1), two from the `user` module that
+    // commands 3 to 7 all call, then redeem (command 8).
+    const events = [
+      { packageId: MINT, module: "mint", eventType: `${MINT}::mint::MintEvent`, sender: response.transaction.transaction.sender },
+      { packageId: SPOOL, module: "user", eventType: `${SPOOL}::user::StakeEvent`, sender: response.transaction.transaction.sender },
+      { packageId: SPOOL, module: "user", eventType: `${SPOOL}::user::RedeemEvent`, sender: response.transaction.transaction.sender },
+      { packageId: MINT, module: "redeem", eventType: `${MINT}::redeem::RedeemEvent`, sender: response.transaction.transaction.sender },
+    ];
+    mockSui.ledgerService.getTransaction.mockResolvedValue({ response: { transaction: { ...response.transaction, events: { events } } } });
+    const run = async (commands: number[]) =>
+      JSON.parse((await tools.get("get_transaction")!({ digest: scallop.digest, detail: "full", commands })).content[0].text);
+
+    const ends = await run([1, 8]);
+    expect(ends.events.map((e: { command: number }) => e.command)).toEqual([1, 8]);
+    expect(ends.events_omitted).toMatchObject({ count: 2, from_commands: [3, 4, 5, 6, 7] });
+    expect(ends.events_omitted.next_call.args).toEqual({ digest: scallop.digest, detail: "full" });
+    expect(ends.truncated).toBe(true);
+
+    // The `user` events can have come from any of commands 3 to 7, so a pick
+    // of command 5 keeps both and names every command they can belong to.
+    const update = await run([5]);
+    expect(update.events.map((e: { commands: number[] }) => e.commands)).toEqual([
+      [3, 4, 5, 6, 7],
+      [3, 4, 5, 6, 7],
+    ]);
+    expect(update.events_omitted.count).toBe(2);
+    // update_points takes the donor spool (input 5) and the account command 3
+    // made; only its inputs are listed, each with its index.
+    expect(update.inputs.map((i: { index: number }) => i.index)).toContain(5);
+    expect(update.inputs.find((i: { index: number }) => i.index === 5).object_id).toBe(DONOR_SPOOL);
+    expect(update.inputs.length + update.inputs_omitted.count).toBe(ends.inputs.length + ends.inputs_omitted.count);
+    expect(update.object_changes.by_kind.mutated.map((o: { object_id: string }) => o.object_id)).toEqual([DONOR_SPOOL]);
+    expect(update.object_changes_omitted.count).toBeGreaterThan(0);
+  });
+
+  /**
+   * For random event counts per command and random event sizes, with the
+   * store off: following `events_page.next_call` from the first full call
+   * lists every event exactly once, including when one command's events alone
+   * pass the page budget, and with a `commands` pick every event those
+   * commands can have emitted.
+   */
+  it("pages full-view events by position so next_call reaches every event exactly once", async () => {
+    const MINT = "0xde5c09ad171544aa3724dc67216668c80e754860f419136a68d78504eb2e2805";
+    const SPOOL = "0xec1ac7f4d01c5bf178ff4e62e523e7df7721453d81d4904a42a0ffc2686c843d";
+    const sender = response.transaction.transaction.sender;
+    let seed = 7;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let round = 0; round < 25; round++) {
+      // Emission order: mint (command 1), then `user` (commands 3 to 7), then redeem (command 8).
+      const groups: Array<[string, string]> = [
+        [MINT, "mint"],
+        [SPOOL, "user"],
+        [MINT, "redeem"],
+      ];
+      const events: Array<{ packageId: string; module: string; eventType: string; sender: string; id: number; pad: string }> = [];
+      for (const [pkg, module] of groups) {
+        const n = Math.floor(rand() * (round % 5 === 0 ? 400 : 60));
+        for (let k = 0; k < n; k++) {
+          events.push({ packageId: pkg, module, eventType: `${pkg}::${module}::E`, sender, id: events.length, pad: "x".repeat(Math.floor(rand() * 1200)) });
+        }
+      }
+      mockSui.ledgerService.getTransaction.mockResolvedValue({
+        response: { transaction: { ...response.transaction, events: { events: events.map(({ id: _id, pad: _pad, ...e }) => e) } } },
+      });
+      mockGqlQuery.mockImplementation(async (q: string) =>
+        q.includes("events(first")
+          ? {
+              transaction: {
+                effects: {
+                  events: {
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: events.map((e) => ({ contents: { type: { repr: e.eventType }, json: { id: e.id, pad: e.pad } } })),
+                  },
+                },
+              },
+            }
+          : {},
+      );
+      const pick = rand() < 0.4 ? [1 + Math.floor(rand() * 8)] : undefined;
+      const expected = events
+        .filter((e) => !pick || (e.module === "mint" ? [1] : e.module === "user" ? [3, 4, 5, 6, 7] : [8]).includes(pick[0]))
+        .map((e) => e.id);
+
+      const seen: number[] = [];
+      let args: Record<string, unknown> | undefined = { digest: scallop.digest, detail: "full", ...(pick ? { commands: pick } : {}) };
+      for (let calls = 0; args && calls < 200; calls++) {
+        const data = JSON.parse((await tools.get("get_transaction")!(args)).content[0].text);
+        seen.push(...data.events.map((e: { parsed: { id: number } }) => e.parsed.id));
+        expect(JSON.stringify(data.events).length).toBeLessThan(45_000);
+        if (pick && data.events_omitted) expect(data.events_omitted.next_call.args.commands).toBeUndefined();
+        args = data.events_page?.next_call?.args;
+      }
+      expect(args).toBeUndefined();
+      expect(seen).toEqual(expected);
+    }
   });
 });
 
@@ -306,6 +505,35 @@ describe("query_transactions", () => {
     );
     expect(data.transactions[0].move_calls).toHaveLength(60);
     expect(data.transactions[0].matched_calls).toBe(55);
+  });
+
+  // A filter is matched at its own granularity: other calls into the same
+  // package are part of the PTB, not of the match.
+  it.each([
+    [`${V1}::m::f3`, 1],
+    [`${V1}::m`, 2],
+    [V1, 3],
+  ])("counts as matched only the calls the filter %s names", async (filter, matched) => {
+    const digest = "FujboNeQt8NbbxzodUkhnna23DNQshKybq6ADLiokv8p";
+    const call = (pkg: string, module: string, name: string) => ({
+      __typename: "MoveCallCommand",
+      function: { name, module: { name: module, package: { address: pkg } } },
+    });
+    const commands = [call(V1, "m", "f3"), call(V1, "m", "f4"), call(V1, "other", "f3"), call(V2, "m", "f3")];
+    const conn = pagedTxConnection(digest, commands, "commands");
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (q.includes("packageVersions")) return versionsPage([V1]);
+      return {
+        transactions: {
+          nodes: [{ ...qtx(digest, 100), kind: { commands: conn.first } }],
+          pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null },
+        },
+      };
+    });
+    const handler = tools.get("query_transactions")!;
+    const data = JSON.parse((await handler({ function: filter, include_functions: true })).content[0].text);
+    expect(data.transactions[0].total_calls).toBe(4);
+    expect(data.transactions[0].matched_calls).toBe(matched);
   });
 });
 

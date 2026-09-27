@@ -50,6 +50,11 @@ export interface PriceQuote {
   decimals?: number;
   /** The provider's symbol for the coin. A label, not an identification. */
   symbol?: string;
+  /**
+   * The provider id of the asset this price belongs to, when it is not the
+   * coin's own: a bridge token priced as the asset it is minted against.
+   */
+  priced_as?: string;
 }
 
 /** Why a price is missing, so a null is never read as a zero. */
@@ -210,6 +215,62 @@ export interface DefiLlamaResult {
 }
 
 /**
+ * Sui Bridge tokens, each minted 1:1 against an Ethereum asset the bridge
+ * locks (token ids 1, 2, 4 and 6 in `0xb::treasury::NewTokenEvent`), keyed to
+ * that asset's DefiLlama id. Used only for a bridge token DefiLlama has no
+ * price for under its own Sui type; the quote then names the asset in
+ * `priced_as`.
+ */
+const SUI_BRIDGE_ASSET: Record<string, string> = Object.fromEntries(
+  Object.entries({
+    "0xaafb102dd0902f5055cadecd687fb5b71ca82ef0e0285d90afde828ec58ca96b::btc::BTC": "coingecko:wrapped-bitcoin",
+    "0xd0e89b2af5e4910726fbcd8b8dd37bb79b29e5f83f7491bca830e94f7f226d29::eth::ETH": "coingecko:ethereum",
+    "0x375f70cf2ae4c00bf37117d0c85a2c71545e6ee05c4a5c7d282cd66a4504b068::usdt::USDT": "coingecko:tether",
+    "0xc6d1cb347faf61fb743d09cf91be7280960052374a3e894342ce947b2de3e56f::wlbtc::WLBTC": "coingecko:lombard-staked-btc",
+  }).map(([coinType, asset]) => [normalizeCoinType(coinType)!, asset]),
+);
+
+/**
+ * DefiLlama batches in flight at once. The endpoint is shared and public, so
+ * requests are few at a time, but more than one: a meme-coin drain prices
+ * hundreds of coins, and its batches one after another would be the call's
+ * latency.
+ */
+const DEFILLAMA_CONCURRENCY = 4;
+
+/**
+ * Ask DefiLlama for `keyToCoins`' keys in batches, adding each answer to
+ * `quotes` under every coin type its key stands for. A failed batch marks
+ * its coins `unanswered`.
+ */
+async function requestDefiLlama(
+  keyToCoins: Map<string, string[]>,
+  base: string,
+  quotes: Map<string, PriceQuote>,
+  unanswered: Set<string>,
+): Promise<void> {
+  const keys = [...keyToCoins.keys()];
+  const chunks: string[][] = [];
+  for (let i = 0; i < keys.length; i += DEFILLAMA_BATCH) chunks.push(keys.slice(i, i + DEFILLAMA_BATCH));
+  const request = async (chunk: string[]) => {
+    try {
+      const resp = await fetch(base + chunk.join(","), {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const chunkMap = new Map(chunk.map((k) => [k, keyToCoins.get(k)!]));
+      for (const [coinType, q] of parseDefiLlamaPrices(await resp.json(), chunkMap)) quotes.set(coinType, q);
+    } catch {
+      // Best-effort, but never silent: these coins are reported as unanswered,
+      // which is a different finding from "DefiLlama has no price".
+      for (const k of chunk) for (const coinType of keyToCoins.get(k)!) unanswered.add(coinType);
+    }
+  };
+  for (let i = 0; i < chunks.length; i += DEFILLAMA_CONCURRENCY) await Promise.all(chunks.slice(i, i + DEFILLAMA_CONCURRENCY).map(request));
+}
+
+/**
  * Prices from DefiLlama: current when `unixTs` is omitted, otherwise the
  * nearest point DefiLlama holds to that second.
  *
@@ -217,7 +278,8 @@ export interface DefiLlamaResult {
  * can sit on either side of the one asked for, so the caller can see how far
  * from block time a price is.
  *
- * Batches run in sequence because this is a shared public endpoint.
+ * A Sui Bridge token with no price of its own gets its Ethereum asset's
+ * ({@link SUI_BRIDGE_ASSET}), marked `priced_as`.
  */
 export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Promise<DefiLlamaResult> {
   const quotes = new Map<string, PriceQuote>();
@@ -232,25 +294,23 @@ export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Prom
     }
     keyToCoins.set(key, [...(keyToCoins.get(key) ?? []), coinType]);
   }
-  const keys = [...keyToCoins.keys()];
   const base = unixTs === undefined
     ? `${DEFILLAMA_PRICES_URL}/current/`
     : `${DEFILLAMA_PRICES_URL}/historical/${Math.floor(unixTs)}/`;
-  for (let i = 0; i < keys.length; i += DEFILLAMA_BATCH) {
-    const chunk = keys.slice(i, i + DEFILLAMA_BATCH);
-    try {
-      const resp = await fetch(base + chunk.join(","), {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const chunkMap = new Map(chunk.map((k) => [k, keyToCoins.get(k)!]));
-      for (const [coinType, q] of parseDefiLlamaPrices(await resp.json(), chunkMap)) quotes.set(coinType, q);
-    } catch {
-      // Best-effort, but never silent: these coins are reported as unanswered,
-      // which is a different finding from "DefiLlama has no price".
-      for (const k of chunk) for (const coinType of keyToCoins.get(k)!) unanswered.add(coinType);
+  await requestDefiLlama(keyToCoins, base, quotes, unanswered);
+
+  const assetToCoins = new Map<string, string[]>();
+  for (const coins of keyToCoins.values()) {
+    for (const coinType of coins) {
+      if (quotes.has(coinType) || unanswered.has(coinType)) continue;
+      const asset = SUI_BRIDGE_ASSET[normalizeCoinType(coinType) ?? ""];
+      if (asset) assetToCoins.set(asset, [...(assetToCoins.get(asset) ?? []), coinType]);
     }
+  }
+  if (assetToCoins.size > 0) {
+    const assetQuotes = new Map<string, PriceQuote>();
+    await requestDefiLlama(assetToCoins, base, assetQuotes, unanswered);
+    for (const [coinType, q] of assetQuotes) quotes.set(coinType, { ...q, priced_as: SUI_BRIDGE_ASSET[normalizeCoinType(coinType)!] });
   }
   return { quotes, unanswered, unsupported };
 }

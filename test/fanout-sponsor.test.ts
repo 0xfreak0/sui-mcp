@@ -158,7 +158,11 @@ describe("an operator that funds the wallets it sponsors is not a relayer", () =
     expect(r.sponsored_address_count).toBe(25);
     expect(r.sponsored_and_paid_count).toBe(0);
     expect(r.sponsor_shape).toBe("relayer");
-    expect(r.sponsor_interpretation).toMatch(/noise/);
+    // Breadth cannot tell a relayer from an operator funding its wallets from a
+    // second address, so the reading states what was measured and clears no link.
+    expect(r.sponsor_interpretation).toMatch(/25\+ distinct addresses/);
+    expect(r.sponsor_interpretation).toMatch(/sent a coin to 0 of them/);
+    expect(r.sponsor_interpretation).not.toMatch(/not evidence|noise/i);
   });
 
   it("reads the operator shape back from the store with the same interpretation", async () => {

@@ -69,16 +69,35 @@ cached reads persist between calls.
    the same operator controls.
 3. **Investigate.** Answer each question with the tools. Follow leads the way
    a real investigation would, and note the questions no tool answers.
-4. **Grade each answer**:
+4. **Find the mechanism**, for any incident that went through contract code
+   (an exploit, a drainer package, a rug's mint or upgrade path). Do this
+   before reading the post-mortem's root-cause section, so the tools, not the
+   write-up, lead you there:
+   - From the exploit transaction, name each Move call in order and what it
+     changed (`analyze_attack_tx`, `get_transaction`, `decode_ptb`).
+   - Read the functions it called: `get_move_function` for signatures and
+     visibility, `disassemble_module` for bytecode, `decompile_module` for
+     source-like output when `SUI_DECOMPILER_PATH` is set.
+     `diff_package_upgrade` shows what a later version changed, which often
+     is the fix.
+   - State the flaw as the code shows it: which function, in which package
+     version, lacks which check or computes what wrongly, and how the
+     attacker's arguments reached it. Say what you read and what you infer.
+   - Only then compare with the post-mortem, and grade the tools on whether
+     they let you find the flaw and whether their output was readable enough
+     to reason about.
+5. **Grade each answer**:
    - `CORRECT`: matches the post-mortem or the chain.
    - `WRONG`: states something false.
    - `MISSING`: a fact inside the tool's scope is absent.
    - `MISLEADING`: true in its parts, but leads to a wrong conclusion.
    - `UNUSABLE`: an error, a timeout, or a result too large or unclear to use.
    - `GAP`: no tool answers the question.
-5. **Write the case file** to `cases/README.md`'s format, named
+6. **Write the case file** to `cases/README.md`'s format, named
    `<slug>.json`, with 8 to 20 checks. Each check pins one fact that cannot
    drift, from the post-mortem or the chain, and its `basis` says which. A
+   mechanism fact read from a package's code (the function an exploit called,
+   the check it lacks, the version that fixed it) is tier `code-derived`. A
    check on an answer the tool gets wrong keeps the correct expected value and
    gets `"known_defect": "<one line>"`. Validate and run it:
 
@@ -88,10 +107,11 @@ cached reads persist between calls.
 
    Every check passes or is `known`. A `FAIL` means the expectation is wrong,
    or the tool is wrong and the check needs `known_defect`.
-6. **Write the report** (`report.md` in the output directory): the incident
+7. **Write the report** (`report.md` in the output directory): the incident
    and its sources, then one entry per finding with its grade, the tool, the
    exact call, an output excerpt, the ground truth and a severity, then the
-   questions no tool answers.
+   mechanism (the flaw as the code shows it, how you found it, and whether it
+   matches the post-mortem), then the questions no tool answers.
 
 ## Deliverables
 

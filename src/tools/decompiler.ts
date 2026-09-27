@@ -3,9 +3,11 @@ import { boolArg, addressArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { DECOMPILER_PATH, suivisionPackageUrl } from "../config.js";
 import { errorResult } from "../utils/errors.js";
+import { annotateSource, extractSourceFunction, sourceFunctionNames } from "../utils/move-source.js";
 import { execFile } from "node:child_process";
-import { writeFile, unlink, mkdtemp } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { access, stat, writeFile, unlink, mkdtemp } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -43,26 +45,58 @@ export function planModuleBatch<T>(modules: T[]): { selected: T[]; skipped: numb
 }
 
 /**
- * No decompiler binary at SUI_DECOMPILER_PATH or on PATH. Its own class so a
- * whole-package run stops at the first module instead of returning this
- * message as the "source" of every module. The wording avoids "not found",
- * which the error cleaner reads as an object missing on this network.
+ * No decompiler binary at SUI_DECOMPILER_PATH or on PATH, or the variable is
+ * set blank. Its own class so a whole-package run stops at the first module
+ * instead of returning this message as the "source" of every module. The
+ * wording avoids "not found", which the error cleaner reads as an object
+ * missing on this network.
  */
 export class MissingDecompiler extends Error {
   constructor() {
     super(
-      "No move-decompiler binary is installed. Build it from the repo " +
-        "(https://github.com/0xfreak0/sui-mcp — `npm run build:decompiler`) " +
-        "and set SUI_DECOMPILER_PATH to the resulting binary. " +
-        "For bytecode-level output with no binary, use disassemble_module.",
+      "No move-decompiler binary is configured, so this cannot be decompiled. The bytecode reads without it: " +
+        "disassemble_module (function_name for one function), get_move_function for a signature, and " +
+        "diff_package_upgrade for what an upgrade changed. To decompile as well, build the optional binary " +
+        "(https://github.com/0xfreak0/sui-mcp, `npm run build:decompiler`) and set SUI_DECOMPILER_PATH to it.",
     );
   }
 }
 
+/**
+ * Whether the decompiler can be started: the trimmed `path` as an executable
+ * regular file, or for a bare name, an executable file of that name in a
+ * `searchPath` directory, as execFile looks it up. A blank path is no
+ * decompiler.
+ */
+export async function decompilerAvailable(path = DECOMPILER_PATH, searchPath = process.env.PATH ?? ""): Promise<boolean> {
+  const bin = path.trim();
+  if (!bin) return false;
+  const candidates = /[\\/]/.test(bin)
+    ? [bin]
+    : searchPath
+        .split(delimiter)
+        .filter(Boolean)
+        .flatMap((dir) => (process.platform === "win32" ? [join(dir, bin), join(dir, `${bin}.exe`)] : [join(dir, bin)]));
+  for (const candidate of candidates) {
+    try {
+      // A directory passes the execute check too.
+      await access(candidate, constants.X_OK);
+      if ((await stat(candidate)).isFile()) return true;
+    } catch {
+      // Not here; try the next directory.
+    }
+  }
+  return false;
+}
+
 function runDecompiler(bytecodeFile: string): Promise<string> {
+  // The path decompilerAvailable checked. execFile throws synchronously on an
+  // empty file argument.
+  const bin = DECOMPILER_PATH.trim();
+  if (!bin) return Promise.reject(new MissingDecompiler());
   return new Promise((resolve, reject) => {
     execFile(
-      DECOMPILER_PATH,
+      bin,
       ["-b", bytecodeFile],
       {
         timeout: DECOMPILE_LIMITS.perModuleTimeoutMs,
@@ -133,30 +167,51 @@ async function decompileModule(
 export function registerDecompilerTools(server: McpServer) {
   server.tool(
     "decompile_module",
-    "(Developer) Decompile Move module(s) from a Sui package into readable source code. Requires external move-decompiler binary. If module_name is omitted, lists available modules. Set all_modules=true to decompile the entire package.",
+    "(Developer) Decompile Move module(s) from a Sui package into readable source code. Optional: requires an external move-decompiler binary (SUI_DECOMPILER_PATH). disassemble_module, get_move_function and diff_package_upgrade read the same bytecode with no binary. If module_name is omitted, lists available modules and says whether the binary is available. Pass function_name with module_name for one function's source plus the `use` lines and constants it refers to, when the decompiler prints them. Set all_modules=true to decompile the entire package. A line holding a large decimal literal carries a `//` note with its hex or shift form, as disassemble_module gives.",
     {
       package_id: addressArg().describe("Package ID (0x...)"),
       module_name: z
         .string()
         .optional()
         .describe("Module name to decompile. If omitted, lists available modules."),
+      function_name: z
+        .string()
+        .optional()
+        .describe("Return only this function of module_name (default: the whole module)."),
       all_modules: boolArg()
         .optional()
         .describe("Decompile all modules in the package (default: false)"),
     },
-    async ({ package_id, module_name, all_modules }) => {
+    async ({ package_id, module_name, function_name, all_modules }) => {
+      if (function_name && !module_name) {
+        return errorResult("function_name needs module_name: name the module that declares the function.");
+      }
+      if (function_name && all_modules) {
+        return errorResult("function_name reads one function of module_name; drop all_modules.");
+      }
       const pkg = await fetchPackageModules(package_id);
       if (!pkg) return errorResult("Package not found");
 
       // List modules if no target specified
       if (!module_name && !all_modules) {
         const modules = pkg.modules.map((m) => m.name);
+        const available = await decompilerAvailable();
         return {
           content: [
             {
               type: "text" as const,
               text: JSON.stringify(
-                { package_id: pkg.storageId, modules, suivision_url: suivisionPackageUrl(package_id) },
+                {
+                  package_id,
+                  modules,
+                  suivision_url: suivisionPackageUrl(package_id),
+                  decompiler_available: available,
+                  ...(available
+                    ? {}
+                    : {
+                        note: "No move-decompiler binary is configured, so decompiling these modules will fail. disassemble_module reads them with no binary (function_name for one function); SUI_DECOMPILER_PATH points the server at the optional decompiler.",
+                      }),
+                },
                 null,
                 2
               ),
@@ -210,13 +265,7 @@ export function registerDecompilerTools(server: McpServer) {
           }
 
           try {
-            let source: string;
-      try {
-        source = await decompileModule(mod, dir);
-      } catch (err) {
-        if (err instanceof MissingDecompiler) return errorResult(err.message);
-        throw err;
-      }
+            const source = annotateSource(await decompileModule(mod, dir));
             totalBytes += source.length;
             results.push({ module: mod.name!, source });
           } catch (err) {
@@ -234,7 +283,7 @@ export function registerDecompilerTools(server: McpServer) {
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  package_id: pkg.storageId,
+                  package_id,
                   module_count: results.length,
                   // Surfaced so a truncated result is never mistaken for the
                   // whole package.
@@ -280,18 +329,47 @@ export function registerDecompilerTools(server: McpServer) {
 
       let source: string;
       try {
-        source = await decompileModule(mod, dir);
+        source = annotateSource(await decompileModule(mod, dir));
       } catch (err) {
         if (err instanceof MissingDecompiler) return errorResult(err.message);
         throw err;
       }
 
+      if (!function_name) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { package_id, module: module_name, suivision_url: suivisionPackageUrl(package_id), source },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      const fn = extractSourceFunction(source, function_name);
+      if (!fn) {
+        return errorResult(
+          `Module '${module_name}' of ${package_id} declares no function '${function_name}'. It declares: ${sourceFunctionNames(source).join(", ")}.`,
+        );
+      }
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify(
-              { package_id: pkg.storageId, module: module_name, suivision_url: suivisionPackageUrl(package_id), source },
+              {
+                package_id,
+                module: module_name,
+                function: function_name,
+                suivision_url: suivisionPackageUrl(package_id),
+                source: fn.text,
+                ...(fn.uses.length ? { uses: fn.uses } : {}),
+                ...(fn.constants.length ? { constants: fn.constants } : {}),
+              },
               null,
               2
             ),

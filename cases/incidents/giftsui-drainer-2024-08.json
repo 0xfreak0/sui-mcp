@@ -1,0 +1,318 @@
+{
+  "slug": "giftsui-drainer-2024-08",
+  "kind": "wallet-drainer",
+  "title": "giftsui.net staked-SUI drainer, 10 August 2024",
+  "network": "mainnet",
+  "summary": "A wallet that connected to giftsui.net signed a PTB (661kmJN5, 00:16 UTC on 10 August 2024) that called srt::mint in package 0x9dfaaa9c to credit the signer 404.3 of a coin whose frozen metadata claims symbol SUI and name Sui, and in the same PTB transferred the signer's two StakedSui objects (1,020 and 1,959.5 SUI principal) to 0x2a6f4852. The collector unstaked both about three minutes later, swapped the SUI to USDC on 11 August and sent it through Wormhole to Ethereum 0x64a3db08. The mint function is an open entry over a shared TreasuryCap, so the fake coin only dresses the wallet preview; the theft is the plain TransferObjects the victim signed. The same package ran in 20 drain transactions from 27 July to 16 August 2024 paying two collectors: the second was first funded by the first, and both bridged to the same Ethereum address. The package's publisher also airdropped GiftSui voucher NFTs pointing at giftsui.com.",
+  "sources": [
+    {
+      "url": "https://forums.sui.io/t/45973",
+      "publisher": "Sui Developer Forum",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://github.com/MystenLabs/wallet_blocklist",
+      "publisher": "MystenLabs",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "drain_tx": "661kmJN5wf6UjjJ5yURQVuVaqq5nTF3FdB5rLe3Yui11",
+    "drainer_package": "0x9dfaaa9c382e379c6dd3b28228af0cf3200065ae4a567181b4fe69dfbc884b1a",
+    "fake_coin": "0x9dfaaa9c382e379c6dd3b28228af0cf3200065ae4a567181b4fe69dfbc884b1a::srt::SRT",
+    "publisher": "0x3b9c1c1f67ac428c979c57c69f700c37738231b937f394e716db8236e2409af9",
+    "publish_tx": "A8QBdHdsHFTHH8vQAhG1ZcKChWGSWNE3gBYutALF8JoU",
+    "publisher_funder": "0x13c075644dad21bf10cb12447b825b535c24ddae428e27abc5858d1511e24c6d",
+    "lure_package": "0x3f29377bca41c8bbcd50288e719ceafef023a19597577b221c1356d9a4577025",
+    "lure_airdrop_tx": "5pr8UtLa6H6QtnddTh6CcXDPLvrvHVTtHyD6wpTaeRbN",
+    "collector_1": "0x2a6f4852508f329bd2d81b15dd43260e5235fea7ed87e1285aaa52616eb05430",
+    "collector_2": "0xd908bf1686103339619153584fd4f81f191323fd383fdbd7e0b8b118c05557c4",
+    "operator_wallet_3": "0x2a2f3ed4ab9936c25f91df253e181594ea7bbc231a8ae551a765a01ba3a5b559",
+    "stolen_stake": "0xe9f88ab96cefe945243e84ba3e188545001c6961a478233ed73c0071117c8ffb",
+    "unstake_tx_1": "5vuZjVUVz5ZBvWwfcn7uizzsyj8VC3gLyjav5J4pXeUP",
+    "unstake_tx_2": "8DDEivFZGXSU2bsJ7wN52YJ2foXeWLgDY3DXXEfcdqdA",
+    "swap_tx": "8tXYGyQsokKT5A7y6kz9XYhuHYGPZwDH3TUeKy9JS2Zw",
+    "bridge_tx": "AMXiX7BAYH6zXb12ZT8dVZWi7Sn5BjUWuBDGgrBXZ7E1",
+    "eth_beneficiary": "eip155:1:0x64a3db0833d8e55f12bd3ffd4583b2e341554ad6",
+    "first_drain_tx": "D2gGeTNFPiqshjEuZTwwFkyNeh9RrsWwZu7bUppgBxsE",
+    "last_drain_tx": "FurLm2Fh24CjWAYqJA8mDzKCq1uQnvVRs8k8MJtHa4PH",
+    "collector_link_tx": "2tuTAUVLrLZmfz3hDowvv2RcqhouSVSuD2FZ377spj8D",
+    "collector_return_tx": "2SpCuTFnUF25bcf9pdoiJYFAQGZbMNRFtytogU7nPbrS"
+  },
+  "checks": [
+    {
+      "id": "drain-moves-two-stakes",
+      "question": "In the transaction the forum moderator named, what came in and what went out, and to whom?",
+      "tool": "get_transaction",
+      "args": { "digest": "{drain_tx}" },
+      "expect": [
+        { "path": "object_transfers[*].to.address", "op": "includes", "value": "{collector_1}" },
+        { "path": "object_transfers[*].type", "op": "includes", "value": "staking_pool::StakedSui" },
+        { "path": "object_transfers[*].object_id", "op": "count_gte", "value": 2 },
+        { "path": "object_transfers[*].object_id", "op": "count_lte", "value": 2 },
+        { "path": "balance_changes[*].coin_type", "op": "includes", "value": "{fake_coin}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum: the moderator names 661kmJN5 as the transaction in which fake SUI came in and the stake objects went out. On chain it transfers two StakedSui objects to 0x2a6f4852 and credits the signer 404.3 of 0x9dfaaa9c::srt::SRT."
+    },
+    {
+      "id": "drain-ptb-commands",
+      "question": "Which commands did the signed PTB run, with which arguments, and does pre-sign triage flag it?",
+      "tool": "decode_ptb",
+      "args": { "digest": "{drain_tx}" },
+      "expect": [
+        { "path": "commands[0].target", "op": "equals", "value": "{drainer_package}::srt::mint" },
+        { "path": "commands[0].arguments[1].value", "op": "equals", "value": "404300000000" },
+        { "path": "commands[1].type", "op": "equals", "value": "TransferObjects" },
+        { "path": "commands[1].address.address", "op": "iequals", "value": "{collector_1}" },
+        { "path": "anomalies[*].code", "op": "includes", "value": "blocklisted-package-call" },
+        { "path": "anomalies[*].code", "op": "includes", "value": "transfers-to-non-sender" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the PTB has two commands: MoveCall srt::mint(TreasuryAccess 0x424617e5, 404300000000, signer) and TransferObjects of two StakedSui inputs to the pure address 0x2a6f4852. MystenLabs wallet_blocklist package-list.json lists 0x9dfaaa9c."
+    },
+    {
+      "id": "fake-coin-claims-sui",
+      "question": "What does the coin credited to the victim call itself?",
+      "tool": "get_coin_info",
+      "args": { "coin_type": "{fake_coin}" },
+      "expect": [
+        { "path": "symbol", "op": "equals", "value": "SUI" },
+        { "path": "name", "op": "equals", "value": "Sui" },
+        { "path": "decimals", "op": "equals", "value": 9 }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the package's init creates the currency with symbol SUI, name Sui and 9 decimals and freezes the CoinMetadata. The Sui Developer Forum moderator calls it fake SUI."
+    },
+    {
+      "id": "drainer-package-origin",
+      "question": "Who published the drainer package, when, and is it a known scam package?",
+      "tool": "analyze_package",
+      "args": { "package_id": "{drainer_package}" },
+      "expect": [
+        { "path": "root_publisher.publisher", "op": "iequals", "value": "{publisher}" },
+        { "path": "root_publisher.publish_tx", "op": "equals", "value": "{publish_tx}" },
+        { "path": "flagged_by[*].list", "op": "includes", "value": "MystenLabs/wallet_blocklist" },
+        { "path": "overview.modules[0].entry_functions", "op": "includes", "value": "mint" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x3b9c1c1f sent publish tx A8QBdHds on 2024-07-26. MystenLabs wallet_blocklist package-list.json lists 0x9dfaaa9c and coin-list.json lists its srt::SRT."
+    },
+    {
+      "id": "mint-is-open",
+      "question": "Can anyone call the mint the PTB used?",
+      "tool": "get_move_function",
+      "args": { "package_id": "{drainer_package}", "module_name": "srt", "function_name": "mint" },
+      "expect": [
+        { "path": "is_entry", "op": "equals", "value": true },
+        { "path": "visibility", "op": "equals", "value": "public" },
+        { "path": "parameters[0]", "op": "contains", "value": "srt::TreasuryAccess" },
+        { "path": "parameters[2]", "op": "equals", "value": "address" }
+      ],
+      "tier": "code-derived",
+      "basis": "Read from the package on chain: srt::mint is a public entry taking &mut TreasuryAccess, a u64 amount and a recipient address, with no capability or sender argument."
+    },
+    {
+      "id": "srt-module-code",
+      "question": "What does the srt module's code do with the treasury and the mint?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{drainer_package}", "module_name": "srt" },
+      "expect": [
+        { "path": "disassembly", "op": "contains", "value": "Call transfer::share_object<TreasuryAccess>(TreasuryAccess)" },
+        { "path": "disassembly", "op": "contains", "value": "Call coin::mint_and_transfer<SRT>(&mut TreasuryCap<SRT>, u64, address, &mut TxContext)" },
+        { "path": "disassembly", "op": "contains", "value": "Call transfer::public_freeze_object<CoinMetadata<SRT>>(CoinMetadata<SRT>)" },
+        { "path": "disassembly", "op": "contains", "value": "0 => vector<u8>: \"SUI\"" }
+      ],
+      "tier": "code-derived",
+      "basis": "Read from the bytecode on chain: init wraps TreasuryCap<SRT> in TreasuryAccess and shares it, and freezes metadata with symbol SUI; mint borrows the cap and calls coin::mint_and_transfer with the caller's amount and address, with no check before it."
+    },
+    {
+      "id": "campaign-drain-calls",
+      "question": "How many transactions called the drainer's mint, from the first to the last?",
+      "tool": "query_transactions",
+      "args": { "function": "{drainer_package}::srt::mint", "order": "oldest", "limit": 20 },
+      "expect": [
+        { "path": "transactions[0].digest", "op": "equals", "value": "{first_drain_tx}" },
+        { "path": "transactions[19].digest", "op": "equals", "value": "{last_drain_tx}" },
+        { "path": "transactions[*].digest", "op": "includes", "value": "{drain_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain srt::mint was called 20 times, all successful, from 2024-07-27 (D2gGeTNF, a NAVI withdrawal paid to 0x2a6f4852) to 2024-08-16 (FurLm2Fh, paid to 0xd908bf16), each by a different signer except one wallet signed twice."
+    },
+    {
+      "id": "unstake-principals",
+      "question": "How much SUI did the collector get by unstaking the two stolen stakes?",
+      "tool": "get_transactions",
+      "args": { "digests": ["{unstake_tx_1}", "{unstake_tx_2}"] },
+      "expect": [
+        { "path": "transactions[*].sender", "op": "includes", "value": "{collector_1}" },
+        { "path": "transactions[*].events[*].parsed.principal_amount", "op": "includes", "value": "1020000000000" },
+        { "path": "transactions[*].events[*].parsed.principal_amount", "op": "includes", "value": "1959500000000" },
+        { "path": "transactions[*].events[*].parsed.reward_amount", "op": "includes", "value": "317573347" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x2a6f4852 called request_withdraw_stake at 00:19:25 and 00:19:32 UTC on 2024-08-10, three minutes after the drain; the UnstakingRequestEvents give principals of 1,020 and 1,959.5 SUI and 0.317573347 SUI reward."
+    },
+    {
+      "id": "stolen-stake-history",
+      "question": "When did the larger stake change hands, and what became of it?",
+      "tool": "trace_object_history",
+      "args": { "object_id": "{stolen_stake}" },
+      "expect": [
+        { "path": "owner_changes[0].tx", "op": "equals", "value": "{drain_tx}" },
+        { "path": "owner_changes[0].to.address", "op": "iequals", "value": "{collector_1}" },
+        { "path": "end.kind", "op": "equals", "value": "deleted" },
+        { "path": "end.tx", "op": "equals", "value": "{unstake_tx_2}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain StakedSui 0xe9f88ab9 had one owner change, in 661kmJN5 to 0x2a6f4852, and was deleted by the unstake 8DDEivFZ."
+    },
+    {
+      "id": "unstake-proceeds-to-bridge",
+      "question": "Following the unstaked SUI forward, where did it leave Sui?",
+      "tool": "trace_flow_graph",
+      "args": { "digest": "{unstake_tx_2}", "max_depth": 5 },
+      "expect": [
+        { "path": "terminals[*].entries[*].node", "op": "includes", "value": "exit:Wormhole:{eth_beneficiary}" },
+        { "path": "edges[*].digests[*]", "op": "includes", "value": "{swap_tx}" },
+        { "path": "edges[*].digests[*]", "op": "includes", "value": "{bridge_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x2a6f4852's next SUI spends after the unstake are 10 SUI to 0xd908bf16 (2tuTAUVL) and a swap to 29,740.02 USDC (8tXYGyQs, 2024-08-11 01:46), followed by 29,865 USDC through the Wormhole Token Bridge to Ethereum 0x64a3db08 (AMXiX7BA). The per-hop share is the tool's first-in first-out convention.",
+      "timeout_s": 300
+    },
+    {
+      "id": "bridge-beneficiary",
+      "question": "Who received the Wormhole transfer on Ethereum, and how much?",
+      "tool": "resolve_bridge_transfer",
+      "args": { "digest": "{bridge_tx}" },
+      "expect": [
+        { "path": "beneficiaries[0].account", "op": "equals", "value": "{eth_beneficiary}" },
+        { "path": "beneficiaries[0].amount", "op": "equals", "value": "29865000000" },
+        { "path": "wormhole_messages[0].vaa_id", "op": "equals", "value": "21/ccceeb29348f71bdd22ffef43a2a19c1f5b5e17c5cca5411529120182672ade5/146072" }
+      ],
+      "tier": "chain-derived",
+      "basis": "The Token Bridge payload in AMXiX7BA on chain names Ethereum 0x64a3db08…4ad6 and 29,865 USDC; Wormholescan reports it redeemed in Ethereum tx 0x996e5fd8 at 2024-08-11 01:49:59 UTC."
+    },
+    {
+      "id": "collector1-flows",
+      "question": "Over the campaign, what did collector 1 take in and how much left Sui, to where?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{collector_1}", "from": "2024-07-26T00:00:00Z", "to": "2024-08-20T00:00:00Z" },
+      "expect": [
+        { "path": "coverage.complete", "op": "equals", "value": true },
+        { "path": "bridge_exits.transaction_count", "op": "equals", "value": 4 },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].account", "op": "includes", "value": "{eth_beneficiary}" },
+        { "path": "coins[*].raw.out", "op": "includes", "value": "61803000000" },
+        { "path": "inflow_sources[*].address", "op": "includes", "value": "{collector_2}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x2a6f4852 sent 92 transactions in the window; four Wormhole Token Bridge transfers (7ty84pVq, APhpkoFh, j5ugiXVo, AMXiX7BA) carried 61,803 USDC to Ethereum 0x64a3db08, and 0xd908bf16 paid it 29,560 SUI in 2SpCuTFn.",
+      "timeout_s": 300
+    },
+    {
+      "id": "screen-collector-shared-exit",
+      "question": "Screening collector 1, which bridge exits do it and the wallets it paid reach?",
+      "tool": "screen_address",
+      "args": { "address": "{collector_1}" },
+      "expect": [
+        { "path": "exposures[*].destinations[*].account", "op": "includes", "value": "{eth_beneficiary}" },
+        { "path": "exposures[*].path[*]", "op": "includes", "value": "{collector_2}" },
+        { "path": "exposures[*].path[*]", "op": "includes", "value": "{operator_wallet_3}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x2a6f4852 bridged to Ethereum 0x64a3db08 through Wormhole from 2024-06-24; it paid 0xd908bf16 10 SUI (2tuTAUVL) and 0x2a2f3ed4 2.93 SUI (DbUE3v4H), and both later sent Wormhole transfers to the same 0x64a3db08.",
+      "timeout_s": 300
+    },
+    {
+      "id": "collectors-linked",
+      "question": "Who funded the publisher and the two collectors, and did they fund each other?",
+      "tool": "find_funding_sources",
+      "args": { "addresses": ["{publisher}", "{collector_1}", "{collector_2}"] },
+      "expect": [
+        { "path": "subject_funded_subject[*].funding_tx", "op": "includes", "value": "{collector_link_tx}" },
+        { "path": "subject_paid_subject[*].digest", "op": "includes", "value": "{collector_return_tx}" },
+        { "path": "results[*].first_funder", "op": "includes", "value": "{publisher_funder}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x2a6f4852 sent 0xd908bf16 its first 10 SUI (2tuTAUVL, 2024-08-11 01:11), 14 seconds after handing it a Scallop SpoolAccount (AhuhJaPF); 0xd908bf16 sent back 29,560 SUI at 01:40 (2SpCuTFn). The publisher's first funding was 97.22 SUI from the KuCoin proof-of-reserves wallet 0x13c07564 (Ha9M7mC7).",
+      "timeout_s": 300
+    },
+    {
+      "id": "attack-profit-names-signer",
+      "question": "Who profited from the drain transaction?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{drain_tx}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{collector_1}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the only party that gained anything of value is 0x2a6f4852, which received two StakedSui objects holding 2,979.5 SUI principal; the signer gained only 404.3 of the unpriced imitation coin.",
+      "known_defect": "Defaults the profit address to the signing victim, crediting it with the 404.3 fake SUI, because object transfers are not weighed."
+    },
+    {
+      "id": "attack-profit-omits-stakes",
+      "question": "With the collector named, what did it take in the drain transaction?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{drain_tx}", "attacker": "{collector_1}" },
+      "expect": [
+        { "path": "profit.gains", "op": "count_gte", "value": 1 }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x2a6f4852 received StakedSui 0x0e7245c7 (1,020 SUI principal) and 0xe9f88ab9 (1,959.5 SUI principal) in this transaction and nothing else; its profit should list them. The anomalies' evidence already names both objects.",
+      "known_defect": "With attacker set to the collector the profit is $0 with an empty gains list; the two StakedSui it received appear only in the anomaly evidence."
+    },
+    {
+      "id": "flow-graph-from-drain",
+      "question": "Following everything of value the drain moved, where did it end up?",
+      "tool": "trace_flow_graph",
+      "args": { "digest": "{drain_tx}", "max_depth": 5 },
+      "expect": [
+        { "path": "terminals[*].entries[*].node", "op": "includes", "value": "exit:Wormhole:{eth_beneficiary}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the two StakedSui went to 0x2a6f4852, which unstaked them (5vuZjVUV, 8DDEivFZ), swapped the SUI to USDC (8tXYGyQs) and bridged it to Ethereum 0x64a3db08 (AMXiX7BA).",
+      "known_defect": "Traces only the fake coin minted to the signer and reports 100% unspent there; the StakedSui sent to the collector are not followed.",
+      "timeout_s": 300
+    },
+    {
+      "id": "trace-funds-from-drain",
+      "question": "Tracing forward one branch from the drain, does the trace reach the collector?",
+      "tool": "trace_funds",
+      "args": { "digest": "{drain_tx}", "direction": "forward", "hops": 4 },
+      "expect": [
+        { "path": "hops[*].sender", "op": "includes", "value": "{collector_1}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the collector 0x2a6f4852 received the two StakedSui in the drain and sent the unstake 5vuZjVUV three minutes later.",
+      "known_defect": "Hop 1 lists the two StakedSui going to the collector yet notes that nobody but the sender received anything, then follows the fake coin at the signer and stops.",
+      "timeout_s": 300
+    },
+    {
+      "id": "batch-read-drain-objects",
+      "question": "Reading the drain in a batch, where did its objects go?",
+      "tool": "get_transactions",
+      "args": { "digests": ["{drain_tx}", "{last_drain_tx}"] },
+      "expect": [
+        { "path": "transactions[*].object_transfers[*].to.address", "op": "includes", "value": "{collector_1}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 661kmJN5 transferred two StakedSui to 0x2a6f4852; get_transaction on the same digest lists them under object_transfers.",
+      "known_defect": "get_transactions returns balance changes and events only, so a drain that moved StakedSui and no coin reads as a mint with no loss."
+    },
+    {
+      "id": "lure-package-same-publisher",
+      "question": "Who published the GiftSui voucher NFTs, and is the type a known scam object?",
+      "tool": "analyze_package",
+      "args": { "package_id": "{lure_package}" },
+      "expect": [
+        { "path": "root_publisher.publisher", "op": "iequals", "value": "{publisher}" },
+        { "path": "root_publisher.publish_tx", "op": "equals", "value": "HP5xLcH6kgDj3PYH8Di9uoqfAme33aj3VBVcHgwNf9Ja" },
+        { "path": "flagged_by[*].kind", "op": "includes", "value": "object-type-package" },
+        { "path": "overview.modules[0].entry_functions", "op": "includes", "value": "GiftFromSui" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain 0x3b9c1c1f published 0x3f29377b (HP5xLcH6) on 2024-07-26, four hours before the drainer package, and airdropped its GiftSui::GIFTSUI_VOUCHER NFTs, described as a 10,000 SUI gift to claim at giftsui.com, 350 per transaction (5pr8UtLa). MystenLabs wallet_blocklist object-list.json lists the voucher type and domain-list.json lists giftsui.com and giftsui.net."
+    }
+  ]
+}

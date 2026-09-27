@@ -24,6 +24,29 @@ export interface HopSpec {
   calls?: Array<[string, string, string]>;
   events?: string[];
   signatures?: string[];
+  /**
+   * Objects the transaction wrote: created for an owner, an owner's existing
+   * object written in place (`mutated`), a shared object, or a dynamic field
+   * under a parent object.
+   */
+  objects?: Array<
+    | { id: string; type: string; owner: string; mutated?: true }
+    | { id: string; type: string; shared: true }
+    | { id: string; type: string; parent: string }
+  >;
+}
+
+/** One object change as GraphQL returns it. */
+function objectChange(o: NonNullable<HopSpec["objects"]>[number]) {
+  const contents = { asMoveObject: { contents: { type: { repr: o.type } } } };
+  const state = (owner: unknown) => ({ ...contents, owner });
+  if ("shared" in o) return { address: o.id, idCreated: false, idDeleted: false, inputState: state({ __typename: "Shared" }), outputState: state({ __typename: "Shared" }) };
+  if ("parent" in o) {
+    const owner = { __typename: "ObjectOwner", address: { address: o.parent } };
+    return { address: o.id, idCreated: false, idDeleted: false, inputState: state(owner), outputState: state(owner) };
+  }
+  const owner = { __typename: "AddressOwner", address: { address: o.owner } };
+  return { address: o.id, idCreated: !o.mutated, idDeleted: false, inputState: o.mutated ? state(owner) : null, outputState: state(owner) };
 }
 
 const balanceNodes = (h: HopSpec) =>
@@ -46,7 +69,7 @@ export function gqlTx(h: HopSpec) {
         gasEffects: { gasSummary: gasSummary(h) },
         balanceChanges: gqlPage(balanceNodes(h)),
         events: gqlPage((h.events ?? []).map((repr) => ({ contents: { type: { repr } } }))),
-        objectChanges: gqlPage([]),
+        objectChanges: gqlPage((h.objects ?? []).map(objectChange)),
       },
       kind: {
         commands: gqlPage(

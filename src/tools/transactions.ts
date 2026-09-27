@@ -9,19 +9,33 @@ import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
 import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
-import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
+import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay, readProtocolCustody, type ProtocolCustodyRead } from "../protocols/registry.js";
+import { originIncomplete, protocolsSignedBy } from "../protocols/package-custody.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
-import { prefetchCoinScale } from "../utils/valuation.js";
+import { displayCoin, prefetchCoinScale } from "../utils/valuation.js";
 import { isSponsorGasChange } from "../utils/sponsor-gas.js";
 import { fetchTransactions, MAX_DIGESTS } from "../utils/multi-tx.js";
 import {
+  type ObjectChangesByKind,
   createdFor,
   custodyChanges,
+  listObjectChanges,
   mutatedCapabilities,
   readGrpcObjectChanges,
   summarizeObjectChanges,
   type ObjectMovement,
 } from "../utils/object-flow.js";
+import {
+  EXECUTED_OBJECT_PATHS,
+  commandsOmittedView,
+  executedObjects,
+  selectCommands,
+  ptbDataFromBcs,
+  resolvePtb,
+  type CommandsOmitted,
+  type ResolvedPtb,
+} from "../utils/ptb-resolve.js";
+import { commandInputIndices, eventCommands, objectMatcher } from "../utils/command-attribution.js";
 import { gasSource, readAddressBalanceOps, readFundsWithdrawals } from "../utils/address-balance.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
@@ -48,7 +62,52 @@ import {
   type VersionPage,
   type VersionStream,
 } from "../utils/version-fanout.js";
+import { capPayload, pageAt, resultUri, type ListCap } from "../utils/output-cap.js";
+import { EVENT_FOLD_BUDGET, foldEvents } from "../utils/event-fold.js";
+import { isPlumbingPackage } from "../utils/system-packages.js";
+import { signedFieldReadings } from "../utils/signed-int.js";
+import { getNetwork } from "../config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+/** Why a package whose publisher this call did not read may be unnamed. */
+const PROTOCOLS_UNCHECKED_NOTE =
+  "The publisher of these packages was not read, so they are not named after a curated protocol whose key published them. past_bound are beyond the per-call bound; read_failed are retried on the next call.";
+
+/** Characters of events one full-view page lists; `event_offset` continues from the next position. */
+const FULL_EVENT_BUDGET = 40_000;
+
+const DYNAMIC_FIELD = /^0x0*2::dynamic_field::Field</;
+
+/**
+ * Changed dynamic fields of one type and version folded into one row with
+ * every id. A table's entries share a type that names its key and value,
+ * and a PTB that walks a tick map or an order book touches hundreds of them.
+ * Every other row stays as is.
+ */
+function foldFieldChanges(byKind: ObjectChangesByKind): Record<string, unknown[]> {
+  return Object.fromEntries(
+    Object.entries(byKind).map(([kind, rows]) => {
+      const out: Array<(typeof rows)[number] | { type: string; version: string | null; count: number; object_ids: string[] }> = [];
+      const groups = new Map<string, { type: string; version: string | null; count: number; object_ids: string[] }>();
+      for (const r of rows) {
+        if (!r.type || !DYNAMIC_FIELD.test(r.type)) {
+          out.push(r);
+          continue;
+        }
+        const key = `${r.type} ${r.version}`;
+        let g = groups.get(key);
+        if (!g) {
+          g = { type: r.type, version: r.version, count: 0, object_ids: [] };
+          groups.set(key, g);
+          out.push(g);
+        }
+        g.count++;
+        g.object_ids.push(r.object_id);
+      }
+      return [kind, out.map((r) => ("count" in r && r.count === 1 ? { object_id: r.object_ids[0], type: r.type, version: r.version } : r))];
+    }),
+  );
+}
 
 
 /**
@@ -166,7 +225,7 @@ function movementOut(m: ObjectMovement) {
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. Funds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender; coins are never listed there, and when no other object moved `coins_delivered_to` names the addresses other than the sender that gained coins. `mutated_capabilities` lists a sender-owned capability the call mutated in place (a nonce, a rate limit) without changing its owner — the authorising capability itself, present even when nothing changed hands.",
+    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. An event field holding a number in the top half of the u256 range also gets its two's-complement reading under `signed_readings` (a signed fee or PnL stored unsigned), and with detail: 'full' a u64, u128 or u256 pure value with its top bit set carries `signed_value`Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. A package with no curated or Move Registry name is named after the curated protocol whose key published it (`protocols_unchecked` lists packages whose publisher was not read), and a `balance_changes` row whose address signed a curated protocol's packages carries `publisher_key_of`, which shows a fee paid to that team's keyFunds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender; coins are never listed there, and when no other object moved `coins_delivered_to` names the addresses other than the sender that gained coins. `mutated_capabilities` lists a sender-owned capability the call mutated in place (a nonce, a rate limit) without changing its owner — the authorising capability itself, present even when nothing changed hands. Pass detail: 'full' for the PTB's inputs, each command's arguments resolved (the object with its version and type, a pure value decoded with the called function's declared type, the command a Result came from) and the id and type of every changed object by kind.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -175,15 +234,32 @@ export function registerTransactionTools(server: McpServer) {
         .max(500_000)
         .optional()
         .describe(
-          "Optional byte cap on decoded event fields. UNSET BY DEFAULT: every event comes back with its fields, because an investigation must not be silently working from a subset. Set this only when you knowingly want to bound the payload — anything skipped is reported — or set 0 to skip decoding entirely.",
+          "Optional byte cap on decoded event fields. UNSET BY DEFAULT: every event is decoded. Past about 20k characters the summary view folds events that differ only in amounts into one row (count, emission indices, shared fields, and each varying field's total, min and max) and caps the rows, keeping every event a non-framework package the transaction called emitted; `omitted` says so, and detail: 'full' lists every event. Set this only when you knowingly want to bound the payload — anything skipped is reported — or set 0 to skip decoding entirely.",
         ),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe(
+          "'summary' (default): object_changes as counts, and no inputs or commands; created_for, object_transfers, balance_changes and coins_delivered_to list what fits about 20k characters, every capability, the sender's changes and each coin's largest credit and debit first, and `omitted` states the rest. 'full' lists every row and adds the PTB's `inputs` (object id, version read and type; pure values decoded with the type the called function declares), `commands` with every argument resolved (an input's object or value, the command a Result came from, the gas coin), paged at about 30k characters with Move calls into non-framework packages kept first, and object_changes.by_kind: every changed object's id, type and version, grouped as created, mutated, unwrapped, wrapped and deleted.",
+        ),
+      commands: z
+        .array(numArg().int().min(0))
+        .max(100)
+        .optional()
+        .describe("With detail: 'full', exact command indices to list, e.g. [3, 7], instead of the first page. Events and object changes narrow to those commands where the transaction attributes them (an event to the Move call that emitted it, an object to the commands that take it or return its type); `events_omitted` and `object_changes_omitted` state what was left out."),
+      event_offset: numArg()
+        .int()
+        .min(0)
+        .optional()
+        .describe("With detail: 'full', the position in the listed events (after any `commands` narrowing) to start the event page at. The full view lists about 40k characters of events per page, and `events_page.next_call` carries the next offset."),
     },
-    async ({ digest: rawDigest, max_event_field_bytes }) => {
+    async ({ digest: rawDigest, max_event_field_bytes, detail, commands: pick, event_offset }) => {
+      const full = detail === "full" || pick !== undefined;
       const digest = normalizeDigest(rawDigest);
-      // No default cap. A budget that silently omits decoded values would let
-      // an investigation draw a conclusion from a subset of the events without
-      // the reader having chosen that trade-off. Bounding the payload is the
-      // caller's call to make.
+      // Decoded fields are not rationed by default: every event is decoded,
+      // and the summary view folds and caps the list only past
+      // EVENT_FOLD_BUDGET, saying so under `omitted`. Rationing the fields
+      // themselves is the caller's call to make.
       const fieldBudget = max_event_field_bytes ?? Number.POSITIVE_INFINITY;
 
       // Checked here so a typo comes back as "that is not a digest" rather than
@@ -202,6 +278,8 @@ export function registerTransactionTools(server: McpServer) {
             // fixed, but WHICH members signed varies transaction to
             // transaction, and that is the question a treasury drain asks.
             "signatures",
+            // The type of an input the effects do not list (an immutable one).
+            ...(full ? EXECUTED_OBJECT_PATHS : []),
           ],
         },
       };
@@ -232,12 +310,30 @@ export function registerTransactionTools(server: McpServer) {
       let decoded;
       let commandCount: number | null = null;
       let kindUnreadable = false;
+      let calledPackages: string[] = [];
+      // Protocols the EVENTS implicate, which the call targets can miss
+      // entirely. Both the defining package of each event type and the emitting
+      // package are resolved: the definer is the informative one when a wrapper
+      // is in play, the emitter is worth naming when it happens to be known.
+      const eventPackages = [
+        ...new Set(
+          (tx?.events?.events ?? [])
+            .flatMap((e: GrpcTypes.Event) => [packageOfEventType(e.eventType), e.packageId ?? null])
+            .filter((p): p is string => Boolean(p)),
+        ),
+      ];
+      // Publishers of the called and event packages, in the same request, so a
+      // package a curated protocol's key published is named as in
+      // analyze_attack_tx and decode_ptb.
+      let publishers: ProtocolCustodyRead | null = null;
       if (kind?.data.oneofKind === "programmableTransaction") {
         const ptb = kind.data.programmableTransaction;
         commandCount = ptb.commands?.length ?? 0;
-        await prefetchProtocolNames(collectPackageIds(ptb.commands));
+        calledPackages = collectPackageIds(ptb.commands);
+        await prefetchProtocolNames([...calledPackages, ...eventPackages]);
+        publishers = await readProtocolCustody([...calledPackages, ...eventPackages]);
         await prefetchCoinScale((tx?.balanceChanges ?? []).map((bc) => bc.coinType).filter((t): t is string => !!t));
-        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender);
+        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender, { custodyFor: publishers.custodyFor });
       } else if (kind?.data.oneofKind) {
         decoded = {
           protocols: [] as string[],
@@ -303,6 +399,22 @@ export function registerTransactionTools(server: McpServer) {
         kind?.data.oneofKind === "programmableTransaction" && transaction?.gasPayment
           ? gasSource(transaction.gasPayment.objects ?? [])
           : null;
+
+      // The PTB with every argument resolved, read from the transaction's own
+      // BCS by the resolver decode_ptb uses, so the two tools describe a PTB
+      // the same way.
+      let resolved: ResolvedPtb | null = null;
+      let unresolvedReason: string | null = null;
+      if (full && kind?.data.oneofKind === "programmableTransaction") {
+        const bcsValue = transaction?.bcs?.value;
+        try {
+          const data = bcsValue ? ptbDataFromBcs(new Uint8Array(bcsValue)) : null;
+          if (data) resolved = await resolvePtb(data, executedObjects(tx));
+          else unresolvedReason = "The response carried no transaction bytes to decode the PTB from.";
+        } catch (err) {
+          unresolvedReason = `The transaction bytes did not decode: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
 
       // Who authorised this transaction. The gRPC `UserSignature` carries the
       // signature's own BCS, so the shared parser handles it and one code path
@@ -382,25 +494,17 @@ export function registerTransactionTools(server: McpServer) {
           return base;
         }
         spent += size;
-        return { ...base, parsed: json };
+        // A number in the top half of the u256 range is a signed value's two's
+        // complement far more often than an amount; its reading goes beside it.
+        const signed = signedFieldReadings(json);
+        return { ...base, parsed: json, ...(signed ? { signed_readings: signed } : {}) };
       });
 
-      // Protocols the EVENTS implicate, which the call targets can miss
-      // entirely. Both the defining package of each event type and the emitting
-      // package are resolved: the definer is the informative one when a wrapper
-      // is in play, the emitter is worth naming when it happens to be known.
-      const eventPackages = [
-        ...new Set(
-          rawEvents
-            .flatMap((e: GrpcTypes.Event) => [packageOfEventType(e.eventType), e.packageId ?? null])
-            .filter((p): p is string => Boolean(p)),
-        ),
-      ];
       if (eventPackages.length > 0) await prefetchProtocolNames(eventPackages);
       const fromEvents = [
         ...new Set(
           eventPackages
-            .map((p) => lookupProtocolDisplay(p)?.name)
+            .map((p) => lookupProtocolDisplay(p, { custody: publishers?.custodyFor.has(normalizeSuiAddress(p)) ?? false })?.name)
             .filter((n): n is string => Boolean(n)),
         ),
       ];
@@ -410,157 +514,365 @@ export function registerTransactionTools(server: McpServer) {
       // protocol is what a wrapper or router looks like.
       const onlyFromEvents = fromEvents.filter((n) => !decoded.protocols.includes(n));
       const allProtocols = [...new Set([...decoded.protocols, ...fromEvents])];
-      const balanceChanges = tx?.balanceChanges?.map((bc: GrpcTypes.BalanceChange) => ({
-        address: bc.address,
-        coin_type: bc.coinType,
-        amount: bc.amount,
-      }));
+      const balanceChanges = tx?.balanceChanges?.map((bc: GrpcTypes.BalanceChange) => {
+        const signed = bc.address ? protocolsSignedBy(bc.address) : [];
+        return {
+          address: bc.address,
+          coin_type: bc.coinType,
+          amount: bc.amount,
+          ...(signed.length ? { publisher_key_of: signed } : {}),
+        };
+      });
+      const custodyUnread = publishers ? originIncomplete(publishers.unread) : null;
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                digest: tx?.digest,
-                sender,
-                status: formatStatus(effects?.status),
-                // Why it failed, from data already in `effects`. Absent on
-                // success, so a reader never has to check a field that says
-                // nothing.
-                ...(describeFailure(effects?.status)
-                  ? { failure: describeFailure(effects?.status) }
-                  : {}),
-                timestamp: timestampToIso(tx?.timestamp),
-                protocols: allProtocols,
-                ...(onlyFromEvents.length
-                  ? {
-                      protocols_from_events_only: onlyFromEvents,
-                      protocol_attribution_note:
-                        "These protocols were identified from the transaction's EVENTS, not its Move calls — the calls alone did not name them. That gap is usually a wrapper or router package sitting in front of the real protocol, which is worth a look: a package chooses its own name, but the events it emits carry the type of whoever defined them.",
-                    }
-                  : {}),
-                actions: decoded.actions,
-                ...(commandCount !== null ? { command_count: commandCount } : {}),
-                // Stated outright, because an empty `actions` would
-                // otherwise cover this case, a decode failure and an
-                // unreadable kind alike.
-                ...(commandCount === 0
-                  ? {
-                      empty_transaction_note:
-                        "This transaction ran no commands, which is not a decode failure: it executed and committed, and its only on-chain effect is whatever object_changes and object_transfers report below. Read those before concluding nothing happened. An empty transaction is used to advance the version of whatever object paid for it, and to publish a sender's public key for the first time.",
-                    }
-                  : {}),
-                ...(kindUnreadable
-                  ? {
-                      kind_unreadable_note:
-                        "The transaction kind could not be read, so no actions could be derived. That is a failed read, NOT a transaction that did nothing — do not report it as inactivity.",
-                    }
-                  : {}),
-                token_flow: decoded.token_flow,
-                // Reported always, because "no coin moved" is only an absence
-                // of value when nothing else moved either. A balance change
-                // nets coins and address balances, so an NFT, a capability or
-                // a DeFi position changes hands without producing one.
-                object_changes: objectSummary,
-                // The two counts describe different universes and a reader
-                // comparing them would otherwise be misled. `changed` counts
-                // every object effect, including the coin that paid and any
-                // dynamic field the transaction walked; `object_transfers`
-                // keeps only what changed hands. Address-balance writes are
-                // not objects and are not counted.
-                ...(objectSummary.changed > 0 && custody.length === 0 && deliveredOnCreation.length === 0
-                  ? coinRecipients.length
-                    ? {
-                        coins_delivered_to: coinRecipients,
-                        object_changes_note:
-                          "No object other than a coin changed custody here (object_transfers and created_for are both empty, and coins are never listed there). Coins did: every address in coins_delivered_to, other than the sender, gained coins in this transaction, and balance_changes has the amounts. `changed` also counts the coin that paid for the transaction, any dynamic field it touched, and a capability mutated in place without changing hands (see mutated_capabilities below if present).",
-                      }
-                    : {
-                        object_changes_note:
-                          "No object changed custody here (object_transfers and created_for are both empty). `changed` counts every object effect, including the coin that paid for the transaction, any dynamic field it touched, and a capability mutated in place without changing hands (see mutated_capabilities below if present), so a non-zero count here is not by itself evidence that anything of value moved. Coins are tracked in balance_changes instead, not here.",
-                      }
-                  : {}),
-                ...(custody.length ? { object_transfers: custody.map(movementOut) } : {}),
-                ...(deliveredOnCreation.length
-                  ? {
-                      created_for: deliveredOnCreation.map(movementOut),
-                      created_for_note:
-                        "These objects were created in this transaction and handed to an owner other than the sender. A mint delivered to someone else moves no coin, so it produces no balance change. A newly created COIN delivered to someone else is not listed here: it is tracked in balance_changes instead, which covers every coin regardless of who receives it.",
-                    }
-                  : {}),
-                ...(mutatedCaps.length
-                  ? {
-                      mutated_capabilities: mutatedCaps.map(movementOut),
-                      mutated_capabilities_note:
-                        "These capabilities were mutated (version bumped) without changing owner, which is how a privileged call authorises itself without moving custody. They do not appear in object_transfers or created_for because custody did not change; this is the only place the transaction names which capability it used.",
-                    }
-                  : {}),
-                ...(addressBalanceOps.length ? { address_balance_ops: addressBalanceOps } : {}),
-                ...(fundsWithdrawals.length
-                  ? {
-                      funds_withdrawals: fundsWithdrawals,
-                      funds_withdrawals_note:
-                        "Each entry is an input authorising a withdrawal from the sender's or the gas sponsor's address balance, up to `amount`. What was actually withdrawn is in address_balance_ops and balance_changes.",
-                    }
-                  : {}),
-                ...(authorization.length ? { authorization } : {}),
-                ...(signers.signer_is_sender === false
-                  ? {
-                      signer_is_sender: false,
-                      authorized_by: signers.authorized_by,
-                      signer_note:
-                        "The sender's own key did not sign this transaction. It was authorized by the address(es) in authorized_by, acting for the sender through an address alias or a protocol-level substitution, so it is not evidence of what the sender's owner did.",
-                    }
-                  : {}),
-                ...(authorization.some((a) => a.multisig)
-                  ? {
-                      authorization_note:
-                        "This transaction was authorised by a multisig. `signed_by` is the set of keys that signed THIS transaction — the committee itself is fixed for the life of the address, so a member under `did_not_sign` is still authorised and may have signed others. Use analyze_multisig for which keys are live across the wallet's history.",
-                    }
-                  : {}),
-                gas: formatGas(effects?.gasUsed),
-                ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
-                epoch: bigintToString(effects?.epoch),
-                checkpoint: bigintToString(tx?.checkpoint),
-                event_count: events.length,
-                ...(fieldsOmitted
-                  ? {
-                      event_fields_omitted: fieldsOmitted,
-                      event_fields_budget_note: fieldBudget === 0
-                        ? `Decoded fields for all ${fieldsOmitted} event(s) were skipped because you set max_event_field_bytes=0. Their types and senders are still listed. Remove the cap to see them; this response is NOT the complete event data.`
-                        : `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
-                    }
-                  : {}),
-                ...(rawEvents.length > 0 && fieldBudget > 0 && !parsedUsable
-                  ? {
-                      event_fields_note:
-                        "Decoded event fields could not be attached — the parsed-contents lookup failed or returned a different number of events, and guessing the alignment would file one event's values under another's type. Event types and senders below are unaffected.",
-                    }
-                  : {}),
-                events,
-                balance_changes: balanceChanges,
+      const body: Record<string, unknown> = {
+        digest: tx?.digest,
+        sender,
+        status: formatStatus(effects?.status),
+        // Why it failed, from data already in `effects`. Absent on
+        // success, so a reader never has to check a field that says
+        // nothing.
+        ...(describeFailure(effects?.status)
+          ? { failure: describeFailure(effects?.status) }
+          : {}),
+        timestamp: timestampToIso(tx?.timestamp),
+        protocols: allProtocols,
+        ...(onlyFromEvents.length
+          ? {
+              protocols_from_events_only: onlyFromEvents,
+              protocol_attribution_note:
+                "These protocols were identified from the transaction's EVENTS, not its Move calls — the calls alone did not name them. That gap is usually a wrapper or router package sitting in front of the real protocol, which is worth a look: a package chooses its own name, but the events it emits carry the type of whoever defined them.",
+            }
+          : {}),
+        ...(custodyUnread
+          ? {
+              protocols_unchecked: {
+                ...custodyUnread,
+                note: PROTOCOLS_UNCHECKED_NOTE,
               },
-              null,
-              2
-            ),
-          },
-        ],
+            }
+          : {}),
+        ...(balanceChanges?.some((b) => "publisher_key_of" in b)
+          ? {
+              publisher_key_note:
+                "A balance_changes row with publisher_key_of belongs to an address that published or upgraded that curated protocol's packages, so the coins moved to or from that team's key. It says whose key it is, not why the coins moved.",
+            }
+          : {}),
+        actions: decoded.actions,
+        ...(commandCount !== null ? { command_count: commandCount } : {}),
+        ...(resolved
+          ? {
+              // Filled below, once the rest of the response is sized.
+              commands: [],
+              commands_omitted: undefined,
+              inputs: resolved.inputs,
+              ...(resolved.signatures_unavailable.length
+                ? {
+                    signatures_unavailable: resolved.signatures_unavailable,
+                    signatures_unavailable_note:
+                      "The signatures of these Move functions could not be read, so their pure arguments are shown as bytes and their results carry no declared type.",
+                  }
+                : {}),
+            }
+          : {}),
+        ...(unresolvedReason ? { inputs_unavailable: unresolvedReason } : {}),
+        // The default view moves inputs and object ids behind an
+        // argument; the response names it so nothing is silently absent.
+        ...(!full && commandCount
+          ? {
+              detail_note:
+                "Pass detail: 'full' for each command's resolved arguments, the PTB's inputs, and the id and type of every changed object that object_changes counts.",
+            }
+          : {}),
+        // Stated outright, because an empty `actions` would
+        // otherwise cover this case, a decode failure and an
+        // unreadable kind alike.
+        ...(commandCount === 0
+          ? {
+              empty_transaction_note:
+                "This transaction ran no commands, which is not a decode failure: it executed and committed, and its only on-chain effect is whatever object_changes and object_transfers report below. Read those before concluding nothing happened. An empty transaction is used to advance the version of whatever object paid for it, and to publish a sender's public key for the first time.",
+            }
+          : {}),
+        ...(kindUnreadable
+          ? {
+              kind_unreadable_note:
+                "The transaction kind could not be read, so no actions could be derived. That is a failed read, NOT a transaction that did nothing — do not report it as inactivity.",
+            }
+          : {}),
+        token_flow: decoded.token_flow,
+        // Reported always, because "no coin moved" is only an absence
+        // of value when nothing else moved either. A balance change
+        // nets coins and address balances, so an NFT, a capability or
+        // a DeFi position changes hands without producing one.
+        object_changes: full ? { ...objectSummary, by_kind: listObjectChanges(changedObjects) } : objectSummary,
+        // The two counts describe different universes and a reader
+        // comparing them would otherwise be misled. `changed` counts
+        // every object effect, including the coin that paid and any
+        // dynamic field the transaction walked; `object_transfers`
+        // keeps only what changed hands. Address-balance writes are
+        // not objects and are not counted.
+        ...(objectSummary.changed > 0 && custody.length === 0 && deliveredOnCreation.length === 0
+          ? coinRecipients.length
+            ? {
+                coins_delivered_to: coinRecipients,
+                object_changes_note:
+                  "No object other than a coin changed custody here (object_transfers and created_for are both empty, and coins are never listed there). Coins did: every address in coins_delivered_to, other than the sender, gained coins in this transaction, and balance_changes has the amounts. `changed` also counts the coin that paid for the transaction, any dynamic field it touched, and a capability mutated in place without changing hands (see mutated_capabilities below if present).",
+              }
+            : {
+                object_changes_note:
+                  "No object changed custody here (object_transfers and created_for are both empty). `changed` counts every object effect, including the coin that paid for the transaction, any dynamic field it touched, and a capability mutated in place without changing hands (see mutated_capabilities below if present), so a non-zero count here is not by itself evidence that anything of value moved. Coins are tracked in balance_changes instead, not here.",
+              }
+          : {}),
+        ...(custody.length ? { object_transfers: custody.map(movementOut) } : {}),
+        ...(deliveredOnCreation.length
+          ? {
+              created_for: deliveredOnCreation.map(movementOut),
+              created_for_note:
+                "These objects were created in this transaction and handed to an owner other than the sender. A mint delivered to someone else moves no coin, so it produces no balance change. A newly created COIN delivered to someone else is not listed here: it is tracked in balance_changes instead, which covers every coin regardless of who receives it.",
+            }
+          : {}),
+        ...(mutatedCaps.length
+          ? {
+              mutated_capabilities: mutatedCaps.map(movementOut),
+              mutated_capabilities_note:
+                "These capabilities were mutated (version bumped) without changing owner, which is how a privileged call authorises itself without moving custody. They do not appear in object_transfers or created_for because custody did not change; this is the only place the transaction names which capability it used.",
+            }
+          : {}),
+        ...(addressBalanceOps.length ? { address_balance_ops: addressBalanceOps } : {}),
+        ...(fundsWithdrawals.length
+          ? {
+              funds_withdrawals: fundsWithdrawals,
+              funds_withdrawals_note:
+                "Each entry is an input authorising a withdrawal from the sender's or the gas sponsor's address balance, up to `amount`. What was actually withdrawn is in address_balance_ops and balance_changes.",
+            }
+          : {}),
+        ...(authorization.length ? { authorization } : {}),
+        ...(signers.signer_is_sender === false
+          ? {
+              signer_is_sender: false,
+              authorized_by: signers.authorized_by,
+              signer_note:
+                "The sender's own key did not sign this transaction. It was authorized by the address(es) in authorized_by, acting for the sender through an address alias or a protocol-level substitution, so it is not evidence of what the sender's owner did.",
+            }
+          : {}),
+        ...(authorization.some((a) => a.multisig)
+          ? {
+              authorization_note:
+                "This transaction was authorised by a multisig. `signed_by` is the set of keys that signed THIS transaction — the committee itself is fixed for the life of the address, so a member under `did_not_sign` is still authorised and may have signed others. Use analyze_multisig for which keys are live across the wallet's history.",
+            }
+          : {}),
+        gas: formatGas(effects?.gasUsed),
+        ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
+        epoch: bigintToString(effects?.epoch),
+        checkpoint: bigintToString(tx?.checkpoint),
+        event_count: events.length,
+        ...(fieldsOmitted
+          ? {
+              event_fields_omitted: fieldsOmitted,
+              event_fields_budget_note: fieldBudget === 0
+                ? `Decoded fields for all ${fieldsOmitted} event(s) were skipped because you set max_event_field_bytes=0. Their types and senders are still listed. Remove the cap to see them; this response is NOT the complete event data.`
+                : `Decoded fields for ${fieldsOmitted} event(s) were omitted because you set max_event_field_bytes=${fieldBudget} and it was spent. Their types and senders are still listed. Remove the cap to see them — this response is NOT the complete event data.`,
+            }
+          : {}),
+        ...(rawEvents.length > 0 && fieldBudget > 0 && !parsedUsable
+          ? {
+              event_fields_note:
+                "Decoded event fields could not be attached — the parsed-contents lookup failed or returned a different number of events, and guessing the alignment would file one event's values under another's type. Event types and senders below are unaffected.",
+            }
+          : {}),
+        events,
+        balance_changes: balanceChanges,
       };
+      if (Array.isArray(body.created_for)) body.created_for_count = body.created_for.length;
+      if (balanceChanges?.length) body.balance_change_count = balanceChanges.length;
+
+      if (full) {
+        const stored: Record<string, unknown> = resolved ? { ...body, commands: resolved.commands } : { ...body };
+        const paged: Record<string, number[]> = {};
+        let chosen: Array<Record<string, unknown>> | null = null;
+        let commandsOmitted: CommandsOmitted | null = null;
+        if (resolved) {
+          const { page, omitted, missing } = selectCommands(resolved.commands, { indices: pick });
+          body.commands = page;
+          if (missing.length) body.commands_not_found = missing;
+          if (omitted || pick) paged.commands = page.map((c) => c.index as number);
+          if (pick) chosen = page;
+          commandsOmitted = omitted;
+        }
+
+        // Each event names the command that emitted it, or the commands it
+        // can have come from, and every changed object keeps its row.
+        const byCommand = resolved ? eventCommands(events, resolved.commands) : null;
+        const eventRows = byCommand
+          ? events.map((e, i) => ({ ...e, ...(byCommand[i].length === 1 ? { command: byCommand[i][0] } : { commands: byCommand[i] }) }))
+          : events;
+        const eventIndex = new Map<unknown, number>(eventRows.map((e, i) => [e, i]));
+        const allChanges = listObjectChanges(changedObjects);
+        stored.events = eventRows;
+        stored.object_changes = { ...objectSummary, by_kind: allChanges };
+
+        let shownEvents = eventRows;
+        let shownChanges = allChanges;
+        if (chosen) {
+          const picked = new Set(chosen.map((c) => c.index as number));
+          if (byCommand) {
+            shownEvents = eventRows.filter((_, i) => byCommand[i].some((c) => picked.has(c)));
+            const leftFrom = [...new Set(byCommand.filter((cs) => !cs.some((c) => picked.has(c))).flat())].sort((a, b) => a - b);
+            if (shownEvents.length < eventRows.length) {
+              paged.events = shownEvents.map((e) => eventIndex.get(e)!);
+              body.events_omitted = {
+                count: eventRows.length - shownEvents.length,
+                from_commands: leftFrom,
+                // Without `commands` every event is listed, paged by position.
+                next_call: { tool: "get_transaction", args: { digest, detail: "full" } },
+              };
+            }
+          } else if (eventRows.length) {
+            body.events_not_narrowed = "The events could not be matched to the commands in emission order, so every event is listed.";
+          }
+          // The PTB's inputs narrow to those the chosen commands take, each
+          // with its index.
+          const used = new Set(chosen.flatMap(commandInputIndices));
+          if (resolved && used.size < resolved.inputs.length) {
+            body.inputs = resolved.inputs.flatMap((input, index) => (used.has(index) ? [{ index, ...input }] : []));
+            paged.inputs = [...used].sort((a, b) => a - b);
+            body.inputs_omitted = { count: resolved.inputs.length - used.size, next_call: { tool: "get_transaction", args: { digest, detail: "full" } } };
+          }
+          const belongs = objectMatcher(chosen);
+          const left: Record<string, number> = {};
+          shownChanges = Object.fromEntries(
+            Object.entries(allChanges).map(([kind, rows]) => {
+              const kept = rows.filter((r) => belongs(r, kind));
+              if (kept.length < rows.length) {
+                left[kind] = rows.length - kept.length;
+                paged[`object_changes.by_kind.${kind}`] = rows.flatMap((r, i) => (kept.includes(r) ? [i] : []));
+              }
+              return [kind, kept];
+            }),
+          );
+          if (Object.keys(left).length) {
+            body.object_changes_omitted = {
+              count: Object.values(left).reduce((s, n) => s + n, 0),
+              by_kind: left,
+              note: "Changed objects none of these commands takes as an argument, and created objects of a type none of them returns. A dynamic field reached inside a call is never an argument, so it is listed only without `commands`.",
+              next_call: { tool: "get_transaction", args: { digest, detail: "full" } },
+            };
+          }
+        }
+        body.object_changes = { ...objectSummary, by_kind: foldFieldChanges(shownChanges) };
+
+        // Events page by position in the listed events, so every event is
+        // one call away however many a single command emitted, with or
+        // without the store.
+        const offset = event_offset ?? 0;
+        const eventPage = pageAt(shownEvents, offset, FULL_EVENT_BUDGET);
+        body.events = eventPage.rows;
+        const eventsPaged = offset > 0 || eventPage.next !== null;
+        if (eventsPaged) paged.events = eventPage.rows.map((e) => eventIndex.get(e)!);
+        const { payload, resultId } = capPayload(
+          "get_transaction",
+          { digest, detail: "full", ...(pick ? { commands: pick } : {}), ...(event_offset ? { event_offset } : {}) },
+          body,
+          {},
+          { full: false, stored, paged, next_call: { tool: "get_transaction", args: { digest, detail: "full" } } },
+        );
+        if (eventsPaged) {
+          payload.events_page = {
+            offset,
+            listed: eventPage.rows.length,
+            of: shownEvents.length,
+            ...(eventPage.next !== null
+              ? { next_call: { tool: "get_transaction", args: { digest, detail: "full", ...(pick ? { commands: pick } : {}), event_offset: eventPage.next } } }
+              : {}),
+            ...(resultId ? { page: resultUri(resultId, { path: "events", omitted: true }) } : {}),
+          };
+        }
+        const out: Record<string, unknown> = {
+          ...(commandsOmitted || body.events_omitted || body.object_changes_omitted || body.inputs_omitted || eventsPaged ? { truncated: true } : {}),
+          ...payload,
+          ...(commandsOmitted ? { commands_omitted: commandsOmittedView(commandsOmitted, digest, resultId) } : {}),
+        };
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
+      }
+
+      // The summary view caps the object and coin lists. Counts above cover
+      // every row. Capabilities survive any budget, and so do, in SUI and
+      // verified coins, the sender's changes and each coin's largest credit
+      // and debit: a coin an impostor can mint says nothing by its amount.
+      const extremes = new Set<unknown>();
+      const byCoin = new Map<string, { up?: { amount: bigint; row: unknown }; down?: { amount: bigint; row: unknown } }>();
+      for (const row of balanceChanges ?? []) {
+        const amount = BigInt(row.amount ?? "0");
+        const e = byCoin.get(row.coin_type ?? "") ?? {};
+        if (amount > 0n && (!e.up || amount > e.up.amount)) e.up = { amount, row };
+        if (amount < 0n && (!e.down || amount < e.down.amount)) e.down = { amount, row };
+        byCoin.set(row.coin_type ?? "", e);
+      }
+      for (const e of byCoin.values()) for (const x of [e.up, e.down]) if (x) extremes.add(x.row);
+      const trusted = (coinType: string | undefined) => Boolean(coinType) && displayCoin(coinType!).verified !== false;
+      type Moved = { category?: string };
+      type Change = { address?: string; coin_type?: string };
+      type FoldRow = { package_id?: string; index?: number; indices?: number[]; count?: number };
+      // Events past the budget fold by type and fields apart from amounts;
+      // the rows then fit the cap, keeping every event a non-framework package
+      // this transaction called emitted.
+      const called = new Set(calledPackages.map((p) => normalizeSuiAddress(p)).filter((p) => !isPlumbingPackage(p)));
+      const eventFold = JSON.stringify(events).length > EVENT_FOLD_BUDGET ? foldEvents(events) : null;
+      const shown = eventFold?.folded ? { ...body, events: eventFold.rows } : body;
+      const { payload } = capPayload(
+        "get_transaction",
+        { digest },
+        shown,
+        {
+          events: {
+            budget: EVENT_FOLD_BUDGET,
+            keepOrder: true,
+            keep: (e: FoldRow) => Boolean(e.package_id) && called.has(normalizeSuiAddress(e.package_id!)),
+            // A folded row stands for its member events in the stored, unfolded list.
+            ...(eventFold?.folded
+              ? { weight: (e: FoldRow) => e.count ?? 1, covers: (e: FoldRow) => e.indices ?? [e.index!] }
+              : {}),
+          } satisfies ListCap<FoldRow>,
+          created_for: { budget: 6_000, keepOrder: true, keep: (m: Moved) => m.category === "capability" } satisfies ListCap<Moved>,
+          object_transfers: { budget: 8_000, keepOrder: true, keep: (m: Moved) => m.category === "capability" } satisfies ListCap<Moved>,
+          token_flow: {
+            budget: 4_000,
+            keepOrder: true,
+            keep: (t: { raw_type: string }) => trusted(t.raw_type),
+          } satisfies ListCap<{ raw_type: string }>,
+          balance_changes: {
+            budget: 5_000,
+            keepOrder: true,
+            keep: (b: Change) => trusted(b.coin_type) && (b.address === sender || extremes.has(b)),
+          } satisfies ListCap<Change>,
+          coins_delivered_to: { budget: 2_000, keepOrder: true },
+        },
+        {
+          full: false,
+          stored: body,
+          next_call: { tool: "get_transaction", repeat_with: { detail: "full" } },
+          ...(eventFold?.folded ? { folded: { events: { entries: events.length, rows: eventFold.rows.length } } } : {}),
+        },
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     }
   );
 
   server.tool(
     "get_transactions",
-    "Read up to 50 Sui transactions in ONE call, given their digests. Returns sender, status, timing, balance changes, Move call targets and events WITH their decoded fields for each, plus the protocols involved. Use this whenever you hold several digests at once — the outputs of a fan-out, the evidence on a cluster edge, a set of hops to compare — instead of calling get_transaction repeatedly; ten digests go from ten round trips to one. Digests that could not be read come back in `not_found` rather than being dropped. For ONE transaction, or for a transaction with more than 50 events, prefer get_transaction: it pages events to the end.",
+    "Read up to 50 Sui transactions in ONE call, given their digests. Returns sender, status, timing, balance changes, Move call targets in order and events WITH their decoded fields for each, plus the protocols involved, named as get_transaction names them. Use this whenever you hold several digests at once — the outputs of a fan-out, the evidence on a cluster edge, a set of hops to compare — instead of calling get_transaction repeatedly; ten digests go from ten round trips to one. Digests that could not be read come back in `not_found` rather than being dropped. The default view lists each transaction's events, Move calls and balance changes up to its share of about 30k characters, keeping the sender's own balance changes; `event_count` and `move_call_count` count every one, and `omitted` states what each list left out, with detail: 'full' listing all. For ONE transaction, or for a transaction with more than 50 events, prefer get_transaction: it pages events to the end.",
     {
       digests: z
         .array(z.string())
         .min(1)
         .max(MAX_DIGESTS)
         .describe(`Transaction digests, Base58 (1-${MAX_DIGESTS}). Duplicates are collapsed.`),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): each transaction's events, Move calls and balance changes fit its share of about 30k characters. 'full': every one."),
     },
-    async ({ digests }) => {
+    async ({ digests, detail }) => {
       try {
         const { found, not_found, invalid, packages } = await fetchTransactions(digests);
         // With no well-formed digest there is nothing to report but the
@@ -574,51 +886,68 @@ export function registerTransactionTools(server: McpServer) {
         // One prefetch for the whole batch, then synchronous lookups. Protocols
         // come from the Move call targets AND the event types, since a
         // transaction calling an obfuscated wrapper is named only by its events.
+        // Publishers are read too, so a package a curated protocol's key
+        // published is named as get_transaction names it.
         if (packages.length > 0) await prefetchProtocolNames(packages);
+        const custody = await readProtocolCustody(packages);
+        const custodyUnread = originIncomplete(custody.unread);
+        const nameOf = (pkg: string) => lookupProtocolDisplay(pkg, { custody: custody.custodyFor.has(normalizeSuiAddress(pkg)) })?.name;
         const protocolsFor = (tx: (typeof found)[number]) => {
           const names = new Set<string>();
           for (const call of tx.move_calls) {
-            const n = lookupProtocolDisplay(call.split("::")[0])?.name;
+            const n = nameOf(call.split("::")[0]);
             if (n) names.add(n);
           }
           for (const ev of tx.events) {
             const pkg = packageOfEventType(ev.type);
-            const n = pkg ? lookupProtocolDisplay(pkg)?.name : undefined;
+            const n = pkg ? nameOf(pkg) : undefined;
             if (n) names.add(n);
           }
           return [...names];
         };
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  requested: digests.length,
-                  returned: found.length,
-                  ...(invalid.length
-                    ? {
-                        invalid_digests: invalid,
-                        invalid_note:
-                          "These are not Base58 and were never sent. They are reported rather than silently dropped, and rejecting them here is deliberate: the server refuses an entire batch over one malformed key, so a single typo would otherwise return nothing at all.",
-                      }
-                    : {}),
-                  ...(not_found.length
-                    ? {
-                        not_found,
-                        not_found_note:
-                          "These digests returned nothing from GraphQL. Do NOT read that as 'the transaction does not exist' — this batch path has no archive fallback, so a pruned transaction looks identical to a wrong digest. get_transaction DOES fall back to the archive and will often return these; retry each one there before concluding anything. Old digests are pruned continuously, so a digest that resolved minutes ago can land here.",
-                      }
-                    : {}),
-                  transactions: found.map((t) => ({ ...t, protocols: protocolsFor(t) })),
-                },
-                null,
-                2,
-              ),
-            },
-          ],
+        const payload = {
+          requested: digests.length,
+          returned: found.length,
+          ...(custodyUnread ? { protocols_unchecked: { ...custodyUnread, note: PROTOCOLS_UNCHECKED_NOTE } } : {}),
+          ...(invalid.length
+            ? {
+                invalid_digests: invalid,
+                invalid_note:
+                  "These are not Base58 and were never sent. They are reported rather than silently dropped, and rejecting them here is deliberate: the server refuses an entire batch over one malformed key, so a single typo would otherwise return nothing at all.",
+              }
+            : {}),
+          ...(not_found.length
+            ? {
+                not_found,
+                not_found_note:
+                  "These digests returned nothing from GraphQL. Do NOT read that as 'the transaction does not exist' — this batch path has no archive fallback, so a pruned transaction looks identical to a wrong digest. get_transaction DOES fall back to the archive and will often return these; retry each one there before concluding anything. Old digests are pruned continuously, so a digest that resolved minutes ago can land here.",
+              }
+            : {}),
+          transactions: found.map((t) => ({ ...t, move_call_count: t.move_calls.length, protocols: protocolsFor(t) })),
         };
+        // Each transaction's events, Move calls and balance changes share
+        // the budget evenly; the sender's own changes survive it.
+        const share = (total: number, floor: number) => Math.max(floor, Math.floor(total / Math.max(1, found.length)));
+        type Change = { address: string };
+        type Event = { type: string | null };
+        const { payload: out } = capPayload(
+          "get_transactions",
+          { digests },
+          payload,
+          Object.fromEntries(
+            found.flatMap((t, i) => [
+              [`transactions.${i}.events`, { budget: share(14_000, 700), keepOrder: true, brief: (e: Event) => e.type } satisfies ListCap<Event>],
+              [`transactions.${i}.move_calls`, { budget: share(10_000, 500), keepOrder: true } satisfies ListCap<never>],
+              [
+                `transactions.${i}.balance_changes`,
+                { budget: share(5_000, 300), keepOrder: true, keep: (b: Change) => b.address === t.sender } satisfies ListCap<Change>,
+              ],
+            ]),
+          ),
+          { full: detail === "full", next_call: { tool: "get_transactions", repeat_with: { detail: "full" } } },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -659,7 +988,7 @@ export function registerTransactionTools(server: McpServer) {
       include_functions: boolArg()
         .optional()
         .describe(
-          "Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB.",
+          "Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB. With `function`, each row adds `matched_calls` (the calls the filter names, at its own granularity: that function, that module or the whole package, through the named version or, with `all_versions`, any version) and `total_calls`.",
         ),
       all_versions: boolArg()
         .optional()
@@ -769,10 +1098,16 @@ export function registerTransactionTools(server: McpServer) {
         const commands = include_functions
           ? await completeTxConnections(nodes.map((n) => ({ digest: n.digest, commands: n.kind?.commands })))
           : null;
-        // Calls into any version of the filtered lineage count as matched.
+        // Calls into any version of the filtered lineage count as matched,
+        // narrowed to the module and function when the filter names them.
+        const [fnPackage, fnModule, fnName] = fn ? fn.split("::") : [];
         const lineage = new Set(
-          (versions ?? []).map((v) => normalizeSuiAddress(v.address)).concat(fn ? [normalizeSuiAddress(fn.split("::")[0])] : []),
+          (versions ?? []).map((v) => normalizeSuiAddress(v.address)).concat(fnPackage ? [normalizeSuiAddress(fnPackage)] : []),
         );
+        const matchesFilter = (c: GqlCommandNode) =>
+          lineage.has(normalizeSuiAddress(c.function!.module.package.address)) &&
+          (!fnModule || c.function!.module.name === fnModule) &&
+          (!fnName || c.function!.name === fnName);
 
         const transactions = nodes.map((n, i) => {
           const sponsor = n.gasInput?.gasSponsor?.address ?? null;
@@ -796,13 +1131,11 @@ export function registerTransactionTools(server: McpServer) {
               ? {
                   move_calls: foldRepeats(calls),
                   ...(commands?.[i].commandsTruncated ? { move_calls_truncated: true } : {}),
-                  // How much of this PTB belongs to the filtered package, so
+                  // How much of this PTB the filter accounts for, so
                   // over-attribution is visible instead of assumed.
                   ...(fn
                     ? {
-                        matched_calls: callNodes.filter((c) =>
-                          lineage.has(normalizeSuiAddress(c.function!.module.package.address)),
-                        ).length,
+                        matched_calls: callNodes.filter(matchesFilter).length,
                         total_calls: calls.length,
                       }
                     : {}),

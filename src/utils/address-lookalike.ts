@@ -509,19 +509,18 @@ export interface LookalikeReport {
 }
 
 /**
- * Wrap {@link findLookalikes} for a tool response, or return null when there is
- * nothing to say.
+ * Wrap {@link findLookalikes} for a tool response.
  *
- * Null rather than an empty report on purpose: an absent field is correct here.
- * A clean scan over one page of history is not a statement that an address has
- * never been poisoned, and a `address_poisoning: { pairs: [] }` block on every
- * response would read like one.
+ * Always a report, with `addresses_compared` and `pairs: []` when no pair
+ * matched, so an absent block cannot be mistaken for a check that never ran.
+ * The note says what an empty list covers: only the addresses in this result,
+ * which never clears the wallet's other counterparties.
  */
 export function lookalikeReport(
   addresses: Iterable<string>,
   activity?: Map<string, AddressActivity>,
   subject?: string,
-): LookalikeReport | null {
+): LookalikeReport {
   const list = [...addresses];
   const pairs = findLookalikes(list, activity);
 
@@ -536,8 +535,6 @@ export function lookalikeReport(
   const subjectHex = subject ? normalize(subject) : null;
   const subjectExcluded = subjectHex != null && lowEntropy(subjectHex);
 
-  if (pairs.length === 0 && !subjectExcluded) return null;
-
   const excludedNote = subjectExcluded
     ? `This address was itself left out of the comparison as structurally low-entropy — a vanity or zero-padded address, which collides with others of its kind by construction. A vanity address is a preferred poisoning target, so this is NOT a statement that it has not been targeted.`
     : null;
@@ -545,9 +542,12 @@ export function lookalikeReport(
   if (pairs.length === 0) {
     return {
       addresses_compared: compared.size,
-      subject_excluded: subject,
+      ...(subjectExcluded ? { subject_excluded: subject } : {}),
       pairs: [],
-      note: excludedNote!,
+      note:
+        `No two of the ${compared.size} addresses compared here render alike. Only the addresses in this result were ` +
+        "compared, so an empty list says nothing about the wallet's other counterparties or earlier history." +
+        (excludedNote ? ` ${excludedNote}` : ""),
     };
   }
 

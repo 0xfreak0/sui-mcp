@@ -6,6 +6,7 @@
  */
 
 import { normalizeCoinType } from "./coin-registry.js";
+import { splitTypeArgs } from "./nft-sales.js";
 
 export interface HopChange {
   address: string;
@@ -123,6 +124,54 @@ export function withoutGas(changes: HopChange[], gas?: GasCharge): HopChange[] {
   return out;
 }
 
+/** Whether `type` names `coin` among its type arguments, at any depth. */
+function genericOver(type: string, coin: string): boolean {
+  const open = type.indexOf("<");
+  if (open < 0 || !type.endsWith(">")) return false;
+  return splitTypeArgs(type.slice(open + 1, -1)).some((a) => sameCoin(a, coin) || genericOver(a, coin));
+}
+
+/**
+ * The claim coins `address` kept when it put `coin` into `tx`: it spent the
+ * coin, no other address gained anything, and it gained coins whose type is
+ * generic over the one it spent (a pool share such as `LP<SUI, X>`, a deposit
+ * receipt such as `MarketCoin<SUI>`). Empty when the transaction is not such
+ * a deposit. The value stays the holder's while it holds the claim.
+ */
+export function claimCoinsKept(tx: CandidateTx, address: string, coin: string): string[] {
+  let spent = false;
+  const claims: string[] = [];
+  for (const c of tx.changes) {
+    const amount = nonGasAmount(c, tx.gas);
+    if (c.address !== address) {
+      if (amount > 0n) return [];
+      continue;
+    }
+    if (sameCoin(c.coin_type, coin)) spent ||= amount < 0n;
+    else if (amount > 0n && genericOver(c.coin_type, coin)) claims.push(c.coin_type);
+  }
+  return spent ? claims : [];
+}
+
+/**
+ * Whether `tx` passes any of `claims` from `address` to another address: the
+ * holder's balance of the claim coin goes down and another's goes up. A claim
+ * redeemed or burned by its holder is not passed on.
+ */
+export function passesClaim(tx: CandidateTx, address: string, claims: readonly string[]): boolean {
+  return claims.some((claim) => {
+    let fromHolder = false;
+    let toOther = false;
+    for (const c of tx.changes) {
+      if (!sameCoin(c.coin_type, claim)) continue;
+      const amount = BigInt(c.amount);
+      if (c.address === address) fromHolder ||= amount < 0n;
+      else toOther ||= amount > 0n;
+    }
+    return fromHolder && toOther;
+  });
+}
+
 /**
  * Did this hop perform a swap the actor kept the proceeds of?
  *
@@ -137,6 +186,49 @@ export function withoutGas(changes: HopChange[], gas?: GasCharge): HopChange[] {
 export function isSwapHop(actions: string[]): boolean {
   return actions.some((a) => /(^|[^a-z])swap/i.test(a) && !/flash/i.test(a));
 }
+
+/**
+ * Did the actor turn the tracked coin into another it kept, by the values
+ * alone, whatever the calls are named? It sent the transaction, net spent the
+ * tracked coin, net gained a different one, and other addresses took less
+ * than half of what it spent in the tracked coin: the rest went into an
+ * object, the pool's side of a swap. When both sides are priced, the gains
+ * must be worth at least a tenth of the tracked coin no address received, the
+ * rule the flow graph applies: a reward claimed beside a deposit is not what
+ * the deposit bought. A flash swap nets to nothing and does not match. Gas
+ * must already be removed from `changes`.
+ */
+export function isSwapShape(
+  changes: HopChange[],
+  actor: string,
+  sender: string | null,
+  trackedCoin: string | null,
+  valueUsd: (change: HopChange) => number | null = () => null,
+): boolean {
+  if (!trackedCoin || actor !== sender) return false;
+  let spent = 0n;
+  let toOthers = 0n;
+  const gained = new Map<string, HopChange>();
+  for (const c of changes) {
+    const amount = BigInt(c.amount);
+    if (sameCoin(c.coin_type, trackedCoin)) {
+      if (c.address === actor) spent -= amount;
+      else if (amount > 0n) toOthers += amount;
+    } else if (c.address === actor) {
+      const g = gained.get(coinKey(c.coin_type));
+      gained.set(coinKey(c.coin_type), { ...c, amount: ((g ? BigInt(g.amount) : 0n) + amount).toString() });
+    }
+  }
+  const gains = [...gained.values()].filter((g) => BigInt(g.amount) > 0n);
+  if (spent <= 0n || gains.length === 0 || toOthers * 2n >= spent) return false;
+  const unpaid = valueUsd({ address: actor, coin_type: trackedCoin, amount: (spent - toOthers).toString() });
+  const worth = gains.map(valueUsd);
+  if (unpaid === null || worth.some((w) => w === null)) return true;
+  return worth.reduce<number>((t, w) => t + (w ?? 0), 0) >= unpaid * SWAP_MIN_RETURN;
+}
+
+/** The least the proceeds of a swap are worth beside what went in, at market prices. The flow graph's DUST_RETURN_RATIO. */
+const SWAP_MIN_RETURN = 0.1;
 
 /**
  * Rank two candidates.
@@ -246,14 +338,14 @@ export function chooseNextHop(params: {
       payers.filter((c) => !isPassThrough(c.address) && c.address !== actor).length === 0
     ) {
       const paid = actorPaidOther[0];
-      const swap = isSwapHop(actions);
+      // A coin-type change at the actor that sent it is a swap by its values, named or not.
       return {
         nextAddress: actor,
         nextCoinType: paid.coin_type,
-        isSwap: swap,
+        isSwap: true,
         unfollowed: [],
-        basis: swap ? "swap-follow" : "conversion",
-        note: `${swap ? "Swap" : "Conversion"} by the actor: it received the tracked asset for ${paid.coin_type}, so the trace keeps following it and switches to that asset.`,
+        basis: "swap-follow",
+        note: `Swap by the actor: it received the tracked asset for ${paid.coin_type}, so the trace keeps following it and switches to that asset.`,
       };
     }
 
@@ -311,8 +403,8 @@ export function chooseNextHop(params: {
   );
   const holderSpent = changes.some((c) => c.address === holder && neg(c) && tracked(c));
 
-  if (isSwapHop(actions) && holder === sender) {
-    const received = holderGains[0];
+  if ((isSwapHop(actions) || isSwapShape(changes, holder, sender, trackedCoin, valueUsd)) && holder === sender) {
+    const received = holderGains.find((g) => !tracked(g)) ?? holderGains[0];
     return {
       nextAddress: holder,
       nextCoinType: received?.coin_type ?? trackedCoin,

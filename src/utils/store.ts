@@ -26,6 +26,7 @@
  */
 
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -280,6 +281,21 @@ CREATE TABLE IF NOT EXISTS kiosk_owners (
   checkpoint      INTEGER NOT NULL,
   observed_at     INTEGER NOT NULL
 );
+
+-- A tool's full result, kept when its response was capped. Keyed by a
+-- content hash, so the same result stored twice is one row. Read back
+-- through the sui://results/{id} resource. shown is JSON, per capped list
+-- path, the indices of the rows the capped response already listed, so a
+-- page of the omitted rows repeats none of them.
+CREATE TABLE IF NOT EXISTS results (
+  id          TEXT PRIMARY KEY,
+  network     TEXT NOT NULL,
+  tool        TEXT NOT NULL,
+  args        TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  shown       TEXT,
+  created_at  INTEGER NOT NULL
+);
 `;
 
 /**
@@ -405,6 +421,14 @@ function migrateFindingAddresses(opened: DatabaseLike): void {
   }
 }
 
+/** Add `shown` to a results table created before it existed. */
+function migrateResultColumns(opened: DatabaseLike): void {
+  const columns = new Set(
+    (opened.prepare(`PRAGMA table_info(results)`).all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  if (!columns.has("shown")) opened.exec(`ALTER TABLE results ADD COLUMN shown TEXT`);
+}
+
 /**
  * Add the `evidence_tier` and `digests` columns to a findings table created
  * before they existed.
@@ -513,6 +537,7 @@ export function initStore(): void {
     migrateFindingAddresses(opened);
     migrateFindingColumns(opened);
     migrateFanoutCache(opened);
+    migrateResultColumns(opened);
     // Only now is every table in its final shape.
     opened.exec(INDEXES);
     db = opened;
@@ -895,6 +920,79 @@ export function getCachedTransaction<T>(network: string, digest: string): T | nu
   } catch {
     return null;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Full results behind a capped response
+ * ------------------------------------------------------------------ */
+
+export interface StoredResult {
+  id: string;
+  network: string;
+  tool: string;
+  args: unknown;
+  payload: unknown;
+  /** Per capped list path, the row indices the capped response listed. */
+  shown: Record<string, number[]>;
+  created_at: number;
+}
+
+/**
+ * Keep a tool's full result and return its id, or null when the store is off
+ * or the write failed. A cache write: the capped response stands without it,
+ * and the caller shows a handle only for an id this returned.
+ */
+export function saveResult(
+  network: string,
+  tool: string,
+  args: unknown,
+  payload: unknown,
+  shown: Record<string, number[]> = {},
+): string | null {
+  initStore();
+  if (!db) return null;
+  let argsText: string;
+  let text: string;
+  try {
+    argsText = JSON.stringify(args ?? {});
+    text = JSON.stringify(payload);
+  } catch {
+    return null;
+  }
+  const shownText = JSON.stringify(shown);
+  const id = createHash("sha256").update(`${network}\n${tool}\n${argsText}\n${text}\n${shownText}`).digest("hex").slice(0, 12);
+  return tryWrite("saveResult", null, (db) => {
+    db.prepare(
+      `INSERT INTO results (id, network, tool, args, payload, shown, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET created_at=excluded.created_at`,
+    ).run(id, network, tool, argsText, text, shownText, Date.now());
+    return id;
+  });
+}
+
+/** A stored full result, or null. Never throws on bad stored JSON. */
+export function loadResult(id: string): StoredResult | null {
+  initStore();
+  if (!db) return null;
+  const row = db.prepare(`SELECT id, network, tool, args, payload, shown, created_at FROM results WHERE id = ?`).get(id) as
+    | { id: string; network: string; tool: string; args: string; payload: string; shown: string | null; created_at: number }
+    | undefined;
+  if (!row) return null;
+  try {
+    return { ...row, args: JSON.parse(row.args), payload: JSON.parse(row.payload), shown: row.shown ? JSON.parse(row.shown) : {} };
+  } catch {
+    return null;
+  }
+}
+
+/** The most recent stored results, newest first, without their payloads. */
+export function listResults(limit = 20): Array<{ id: string; network: string; tool: string; created_at: number }> {
+  initStore();
+  if (!db) return [];
+  return db
+    .prepare(`SELECT id, network, tool, created_at FROM results ORDER BY created_at DESC LIMIT ?`)
+    .all(limit) as Array<{ id: string; network: string; tool: string; created_at: number }>;
 }
 
 /* ------------------------------------------------------------------ */

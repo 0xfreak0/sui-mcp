@@ -318,6 +318,475 @@
       "tier": "chain-derived",
       "basis": "Chain: the wallets have different first funders, both service-scale, and never transact with each other. SlowMist links them only through Ethereum.",
       "timeout_s": 240
+    },
+    {
+      "id": "exploit-writes-oracle-then-swaps",
+      "question": "Which calls did the first exploit transaction make, through which oracle version, and how did the attacker's price reach the swap?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{exploit_tx}"
+      },
+      "expect": [
+        {
+          "path": "actions",
+          "op": "includes",
+          "value": "Call oracle::update_v2 on @typus/oracle"
+        },
+        {
+          "path": "actions",
+          "op": "includes",
+          "value": "Call lp_pool::swap on @typus/perpetuals"
+        },
+        {
+          "path": "events[*].package_id",
+          "op": "includes",
+          "value": "0x4658a0fbd9a234dfc87726addcbe1a602f27ce4513ecc1ec99e6d973c7bfb101"
+        },
+        {
+          "path": "events[*].parsed.price",
+          "op": "includes",
+          "value": "651548270"
+        },
+        {
+          "path": "events[*].parsed.oracle_price_from_token",
+          "op": "includes",
+          "value": "651548270"
+        },
+        {
+          "path": "events[*].parsed.oracle_price_to_token",
+          "op": "includes",
+          "value": "1"
+        },
+        {
+          "path": "events[*].parsed.actual_to_amount",
+          "op": "includes",
+          "value": "60000000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 6KJvWtmr calls oracle::update_v2 twelve times through 0x4658a0fb (oracle version 9) and lp_pool::swap four times. The first PriceEvent writes 651548270 into the SUI oracle and the next writes 1 into the xBTC oracle; the first SwapEvent quotes those two prices and pays 0.6 xBTC for 1 raw SUI. SlowMist and the Sui Developer Forum cite the same prices."
+    },
+    {
+      "id": "exploit-oracle-call-inputs",
+      "question": "Which UpdateAuthority object and which prices did the exploit pass to oracle::update_v2, and which oracle did the swap then read?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{exploit_tx}"
+      },
+      "expect": [
+        {
+          "path": "status",
+          "op": "equals",
+          "value": "success"
+        },
+        {
+          "path": "commands[1].target",
+          "op": "iequals",
+          "value": "0x4658a0fbd9a234dfc87726addcbe1a602f27ce4513ecc1ec99e6d973c7bfb101::oracle::update_v2"
+        },
+        {
+          "path": "commands[1].arguments[1].object_id",
+          "op": "iequals",
+          "value": "0xef710183951f400bc1480bab662d793e7ff324192a2518d8bd036358d9f0fb85"
+        },
+        {
+          "path": "commands[1].arguments[1].object_type",
+          "op": "equals",
+          "value": "oracle::UpdateAuthority"
+        },
+        {
+          "path": "commands[1].arguments[2].value",
+          "op": "equals",
+          "value": "651548270"
+        },
+        {
+          "path": "commands[1].arguments[3].value",
+          "op": "equals",
+          "value": "651548270"
+        },
+        {
+          "path": "commands[2].arguments[2].value",
+          "op": "equals",
+          "value": "1"
+        },
+        {
+          "path": "inputs[5].object_type",
+          "op": "equals",
+          "value": "0xaf44818c67a878b9eba0c63186b00e80d9fc3d1e2ae02f00fa3993b0e683bff3::oracle::UpdateAuthority"
+        },
+        {
+          "path": "commands[3].arguments[3].object_id",
+          "op": "iequals",
+          "value": "0x0a318f26fcf35922a8671a2d843872a7a25ac10b678bdee52f10fbc77140c0d0"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 6KJvWtmr's first update_v2 passes the shared UpdateAuthority 0xef710183 (created by new_update_authority in Bmivc1sm, deleted by burn_update_authority in CiDwkkYv) with price and twap 651548270 for the SUI oracle 0x0a318f26; the second writes 1 and 1 into the xBTC oracle; lp_pool::swap then reads the SUI oracle it was just given."
+    },
+    {
+      "id": "update-authority-lifecycle-ids",
+      "question": "Which object did the Typus team's burn_update_authority delete?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "CiDwkkYvSwyz5jGrihU8g98viXTmAkUq8s5Fp7cCV4Zk",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "object_changes.deleted",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "object_changes.by_kind.deleted[0].object_id",
+          "op": "iequals",
+          "value": "0xef710183951f400bc1480bab662d793e7ff324192a2518d8bd036358d9f0fb85"
+        },
+        {
+          "path": "object_changes.by_kind.deleted[0].type",
+          "op": "contains",
+          "value": "::oracle::UpdateAuthority"
+        },
+        {
+          "path": "commands[0].arguments[0].object_id",
+          "op": "iequals",
+          "value": "0xef710183951f400bc1480bab662d793e7ff324192a2518d8bd036358d9f0fb85"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: CiDwkkYv calls oracle::burn_update_authority with the UpdateAuthority 0xef710183 and its effects delete that object; the exploit had passed the same object to update_v2."
+    },
+    {
+      "id": "oracle-version-live-at-exploit",
+      "question": "Which version of the Typus oracle was the newest when the exploit ran?",
+      "tool": "get_upgrade_history",
+      "args": {
+        "package": "0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a",
+        "as_of": "2025-10-15T13:05:14Z"
+      },
+      "expect": [
+        {
+          "path": "as_of.newest_version.version",
+          "op": "equals",
+          "value": 9
+        },
+        {
+          "path": "as_of.newest_version.package_id",
+          "op": "iequals",
+          "value": "0x4658a0fbd9a234dfc87726addcbe1a602f27ce4513ecc1ec99e6d973c7bfb101"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: oracle version 9 (0x4658a0fb) was published 2025-08-12 and version 10 on 2025-10-16 13:34 UTC, the day after the exploit, which called 0x4658a0fb."
+    },
+    {
+      "id": "update-v2-open-entry-with-shared-list",
+      "question": "Who can call the exploited oracle function, and what authorises the caller?",
+      "tool": "get_move_function",
+      "args": {
+        "package_id": "0x4658a0fbd9a234dfc87726addcbe1a602f27ce4513ecc1ec99e6d973c7bfb101",
+        "module_name": "oracle",
+        "function_name": "update_v2"
+      },
+      "expect": [
+        {
+          "path": "visibility",
+          "op": "equals",
+          "value": "public"
+        },
+        {
+          "path": "is_entry",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "parameters[0]",
+          "op": "contains",
+          "value": "&mut 0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a::oracle::Oracle"
+        },
+        {
+          "path": "parameters[1]",
+          "op": "contains",
+          "value": "&0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a::oracle::UpdateAuthority"
+        },
+        {
+          "path": "parameters[2]",
+          "op": "equals",
+          "value": "u64"
+        },
+        {
+          "path": "parameters[3]",
+          "op": "equals",
+          "value": "u64"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (package 0x4658a0fb): update_v2 is public entry and takes the caller's price and twap as u64 with an UpdateAuthority by shared reference, not an owned capability. Typus and SlowMist name update_v2 in the oracle module as the exploited function."
+    },
+    {
+      "id": "update-v2-discards-authority-check",
+      "question": "What does update_v2 do with its authority check in the exploited version?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "0x4658a0fbd9a234dfc87726addcbe1a602f27ce4513ecc1ec99e6d973c7bfb101",
+        "module_name": "oracle"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "entry public update_v2\\([^{]*\\{[^}]*Call tx_context::sender\\(&TxContext\\): address[^}]*Call vector::contains<address>\\(&vector<address>, &address\\): bool\\n\\t10: Pop\\n"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "entry public update_v2\\([^{]*\\{(?:(?!BrFalse|Abort)[^}])*Call update_\\(&mut Oracle, u64, u64, &Clock, &TxContext\\)\\n\\t\\d+: Ret\\n\\}"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "\\nupdate_\\(Arg0: &mut Oracle, Arg1: u64, Arg2: u64[^{]*\\{[^}]*MutBorrowField\\[\\d+\\]\\(Oracle\\.price: u64\\)"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x4658a0fb bytecode): update_v2 computes vector::contains(authority, sender) and pops the bool; the function has no branch or abort before calling update_, which writes Oracle.price. SlowMist, Typus and the Sui Developer Forum: the vector::contains result is never asserted."
+    },
+    {
+      "id": "flaw-shipped-in-oracle-v5",
+      "question": "Which upgrade introduced update_v2, and did it carry the discarded check from the start?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a",
+        "from_version": 4,
+        "to_version": 5,
+        "max_sample_lines": 200
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "0xaf44818c67a878b9eba0c63186b00e80d9fc3d1e2ae02f00fa3993b0e683bff3"
+        },
+        {
+          "path": "diff.added_functions[*].signature",
+          "op": "includes",
+          "value": "entry public update_v2(Arg0: &mut Oracle, Arg1: &UpdateAuthority, Arg2: u64, Arg3: u64, Arg4: &Clock, Arg5: &mut TxContext)"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "new_update_authority"
+        },
+        {
+          "path": "_text",
+          "op": "matches",
+          "value": "\\+ \\\\t9: Call vector::contains<address>\\(&vector<address>, &address\\): bool\",\\s*\"\\+ \\\\t10: Pop\""
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: oracle version 5 (0xaf44818c, 2024-11-13) adds update_v2 with the contains-then-Pop sequence; versions 6 to 9 keep it. The Sui Developer Forum names 0xaf44818c as the vulnerable package and says the module was live for eleven months."
+    },
+    {
+      "id": "fix-upgrade-replaces-update-authority",
+      "question": "What did the first upgrade after the exploit change in the oracle's authorisation?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a",
+        "from_version": 9,
+        "to_version": 10
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "0x1ead8a0d21d4eb446a75e9125c2e53e9c6505c863c05424c6e898ee3415efbe4"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "update_with_update_cap"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "burn_update_authority"
+        },
+        {
+          "path": "diff.removed_functions[*].function",
+          "op": "includes",
+          "value": "add_update_authority"
+        },
+        {
+          "path": "diff.removed_functions[*].function",
+          "op": "includes",
+          "value": "new_update_authority"
+        },
+        {
+          "path": "diff.visibility_changes[*].function",
+          "op": "includes",
+          "value": "update_v2"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: oracle version 10 (0x1ead8a0d, 2025-10-16 13:34 UTC) adds UpdateCap and update_with_update_cap, removes the UpdateAuthority management functions and drops entry from update_v2. The Sui Developer Forum describes the same UpdateCap redesign in commit 4e118f0."
+    },
+    {
+      "id": "fix-version-bytecode",
+      "question": "In the fixing version, what does update_v2 do, and does the replacement check its caller?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "0x1ead8a0d21d4eb446a75e9125c2e53e9c6505c863c05424c6e898ee3415efbe4",
+        "module_name": "oracle"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "\\npublic update_v2\\([^{]*\\{\\nB0:\\n\\t0: LdU64\\(0\\)\\n\\t1: Abort\\n\\}"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "public update_with_update_cap\\([^{]*\\{[^}]*ImmBorrowField\\[\\d+\\]\\(UpdateCap\\.for: address\\)[^}]*Call tx_context::sender\\(&TxContext\\): address\\n\\t\\d+: Eq\\n\\t\\d+: BrFalse\\(\\d+\\)[^}]*Abort[^}]*Call update_\\("
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "entry create_update_cap\\([^{]*\\{[^}]*Call transfer::share_object<UpdateCap>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x1ead8a0d bytecode): update_v2's body is LdU64(0); Abort, and update_with_update_cap aborts unless UpdateCap.for equals the sender before calling update_. The Sui Developer Forum quotes the same assert and notes the UpdateCap is shared."
+    },
+    {
+      "id": "fix-diff-names-rewritten-functions",
+      "question": "Which existing functions did the fix upgrade rewrite?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a",
+        "from_version": 9,
+        "to_version": 10
+      },
+      "expect": [
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "includes",
+          "value": "update_v2"
+        },
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "includes",
+          "value": "version_check"
+        },
+        {
+          "path": "summary",
+          "op": "contains",
+          "value": "oracle::update_v2"
+        },
+        {
+          "path": "summary",
+          "op": "contains",
+          "value": "oracle::version_check"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: oracle version 10 replaces update_v2's body with LdU64(0); Abort and removes version_check's Ret, so every path through version_check aborts. The Sui Developer Forum describes the same fix."
+    },
+    {
+      "id": "exploited-oracle-discards-check",
+      "question": "Does a scan of the exploited oracle version flag the discarded authority check?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "0x4658a0fbd9a234dfc87726addcbe1a602f27ce4513ecc1ec99e6d973c7bfb101",
+        "audit_capabilities": false
+      },
+      "expect": [
+        {
+          "path": "findings[*].code",
+          "op": "includes",
+          "value": "discarded-check"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "oracle::update_v2: 9: Call vector::contains<address>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x4658a0fb bytecode): update_v2 calls vector::contains on the authority list and the sender, then Pop. SlowMist, Typus and the Sui Developer Forum: the contains result is never asserted."
+    },
+    {
+      "id": "fixed-oracle-checks-its-caller",
+      "question": "Does the same scan stay quiet on the version that checks its caller?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "0xaa8f7eed055276651344e59936cfbf1b6ec079411c84d71fb6754a277fb7f58e",
+        "audit_capabilities": false
+      },
+      "expect": [
+        {
+          "path": "findings[*].code",
+          "op": "excludes",
+          "value": "discarded-check"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xaa8f7eed, oracle version 11): update_with_update_caps branches on vector::contains and aborts when it is false; update_v2 only aborts."
+    },
+    {
+      "id": "fix-version-check-abort-decoded",
+      "question": "What error does the fixed version_check abort with?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "0x1ead8a0d21d4eb446a75e9125c2e53e9c6505c863c05424c6e898ee3415efbe4",
+        "module_name": "oracle",
+        "function_name": "version_check"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^version_check\\(Arg0: &Oracle\\) \\{"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "LdU64\\(13906835703352197128\\)[^\\n]*EInvalidVersion[^\\n]*\\n\\t\\d+: Abort\\n\\}$"
+        },
+        {
+          "path": "constants[*]",
+          "op": "includes",
+          "value": "7 => vector<u8>: \"EInvalidVersion\" // interpreted as UTF8 string"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x1ead8a0d bytecode): version_check's last block loads clever abort code 0xc0ff016400070008, whose name index 7 and value index 8 are the constants EInvalidVersion and \"Invalid Version\", then aborts."
+    },
+    {
+      "id": "fix-diff-hunks-name-right-function",
+      "question": "Does the fix diff show each function's old body under that function's own hunk?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a",
+        "from_version": 9,
+        "to_version": 10,
+        "max_sample_lines": 2000
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "matches",
+          "value": "^(?![\\s\\S]*@@ -\\d+,\\d+ \\+\\d+,\\d+ @@ public update_v2\\([^\"]*\"(?:(?!@@)[\\s\\S]){0,600}?Oracle\\.time_interval)"
+        },
+        {
+          "path": "_text",
+          "op": "matches",
+          "value": "^(?![\\s\\S]*@@ -\\d+,\\d+ \\+\\d+,\\d+ @@ version_check\\(Arg0: &Oracle\\)\"(?:(?!@@)[\\s\\S]){0,600}?- \\\\t\\d+: Call version_check\\(&Oracle\\))"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: v9's update_v2 never touches Oracle.time_interval and version_check does not call itself; those removed lines are update_time_interval's and update_supra_oracle's bodies, which v10 moved. The hunks must not present them as update_v2's or version_check's old code.",
+      "timeout_s": 180
     }
   ]
 }

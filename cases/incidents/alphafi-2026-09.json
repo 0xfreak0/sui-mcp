@@ -1,0 +1,751 @@
+{
+  "slug": "alphafi-2026-09",
+  "kind": "other",
+  "title": "AlphaLend ALPHA oracle misconfiguration and bad debt, announced 25 September 2026",
+  "network": "mainnet",
+  "summary": "Sui and AlphaFi announced on 25 September 2026 that a misconfigured ALPHA oracle on AlphaLend had left ALPHA-collateralised loans undercollateralised, that the bad debt was covered and that AlphaFi would wind down; no source names an id. On chain, AlphaLend's oracle has no ALPHA feed: since 9 December 2025 ALPHA has been mapped, by a change the admin 2-of-3 multisig sent, to the price slot of 0x3a5143bb::coin::COIN (Wormhole APT), which reads the Pyth and Pyth Lazer AVAX/USD feeds, so at 17:00 on 6 September 2026 ALPHA (about $0.72 on the market) was valued at $7.6335. On 6 September the multisig set the ALPHA market's safe collateral ratio from 0 to 94 at 16:41:09, 0xee5360c5 borrowed 1,012,240 USDC at 16:41:52 and 5,695,574 USDC and 23.8 xBTC in all by 17:12:01 against 3.26M ALPHA, the ratio was set back to 0 at 17:22:00, and on 20 September a 3-of-4 multisig repaid the loans of the four positions holding ALPHA collateral with alpha_lending::loan_bailout.",
+  "sources": [
+    {
+      "url": "https://www.tronweekly.com/sui-network-faces-alphafi-shutdown-as-sui-price/",
+      "publisher": "TronWeekly",
+      "kind": "news"
+    },
+    {
+      "url": "https://panews.io/articles/01a0db60-e833-74ea-9e1c-b9a3e32c0b6c",
+      "publisher": "PANews",
+      "kind": "news"
+    },
+    {
+      "url": "https://en.coin-turk.com/alphafi-shuts-down-alphalend-after-alpha-oracle-failure-sui-foundation-covers-losses/",
+      "publisher": "CoinTurk",
+      "kind": "news"
+    }
+  ],
+  "subjects": {
+    "alpha": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA",
+    "proxy_coin": "0x3a5143bb1196e3bcdfab6203d1683ae29edd26294fc8bfeafe4aaa9d2704df37::coin::COIN",
+    "oracle_v4": "0x7671937b899c7756644da64feb8674a04dfc335059874919a863fb8da6f19fd4",
+    "oracle_v5": "0x869b2d44bd927c03303a3305ca489ee5c9bd9deee4e4118c8331420ea0d72d25",
+    "oracle": "0xce4ca140eb264bdc5b03f3268eeb013495f04561e38473aadcf654fb0db6b096",
+    "alt_map_field": "0x8f186515b8ec84d4dc07e6738411e85aab65f7a9ff6fb7cfa571c4ebb137a0e7",
+    "pyth_map_field": "0xa668651520bc663f77488c0308477175918b99dde93dd69e2657653470628260",
+    "admin_multisig": "0xa1eb94d1700652aa85b417b46fa6775575b8b98d3352d864fb5146eb45d335fb",
+    "core_v15": "0xe48b33ef41d56e04fc42bf558e4d54d7cae8a363da9054a6c24bafc2c53a4f33",
+    "alpha_market": "0xc5d441478600daabc69af15a2f96e7bbbedd6c4cec486d18633d24f1e5cb71d9",
+    "alpha_market_cap": "0x00799e2ccd98fe0906bf00240a973764853474844d060473e5c411f9a0d15ac7",
+    "map_tx": "878x4fCEKAvES5b6WjJxRBvxzHmcTbNuwRfUmT1i454v",
+    "first_map_tx": "FigVarLxwwAp6k4pwr7A5gBNJQyCxrz6ep4Q4ECM6k87",
+    "unmap_tx": "2cMcmPtydVi3UJG8yew4s5qmk5FsnaCwvm2W2KSpmPJw",
+    "lazer_tx": "3kpwLDxt867wEczzp6nsHm1n4qFtzGqT2EbwBaBRQzuk",
+    "ltv_on_tx": "4rRPWMVsjsvDRe2yMvXwGHbKgiE4zrJd2yJ98xQXVPdu",
+    "ltv_off_tx": "97mGkCmppsbsPNyHsjkYyoZ9t4dHz9aqHHq3akEmUEEn",
+    "limiter_tx_usdc": "2sFGN3iHSn3jpG8RN1Ux8m9tYznnUS5vHgJmvR8eAmTg",
+    "borrower": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
+    "cap_recipient": "0x5f81363f48573dd002e09f34217ed00976afa748731bce61ea03e155f918d475",
+    "position_creator": "0xdfe220ae0e20b1cfbe94800d957564ec3d6b444467a33825b790ef3e4a90a2de",
+    "dec_borrower": "0x1d1c10469d6571d6a5b433b41a31a9b3e7fbe7b610e0b86603a7b3021f890af6",
+    "borrow_usdc_1": "FeM4bX5EWLEJBd3EqpCCHyTNciYv5ntQcmuJDe1hPMJx",
+    "borrow_xbtc_1": "GAqcErjPk7M9WHKjdh3C3zqoKwWu3VViFsr539M7GojX",
+    "borrow_xbtc_2": "BLuEqxTwR37NfnUgUJxZxzdCboEjsrw1idLH1akdbx3o",
+    "borrow_tx": "AUHp6aWyN5dCpumZttoty3CkgEZPLFT44czTtmbq5UTJ",
+    "borrow_usdc_3": "Ho75AfHe4JE9fpqFweBvdd59wgxvHcNVnTeALUAALxnN",
+    "borrow_xbtc_3": "9FZ7sbAESmNKcH7qwnx6ay5tpeFpkprVEG6AW8zsKKkc",
+    "borrow_xbtc_4": "6bAJNaiZDm4N9k28YEz1fW96L7Ro7ZgBb4V7eUhn9uEj",
+    "dec_open_tx": "3Zghi1qLjmvc7d2MNLr8w65BYmarVb9Ms5RtdxwvxzwA",
+    "dec_borrow_tx": "AxkLVeVkF1RXQVk6p2kWCH4cgDNeykzUj9qGpGAnCeZV",
+    "core_v10": "0x5209a18e1ae6ac994dd5a188a2d8deb17b2bbab29f63a7b5457bdfe040f69f61",
+    "alpha_position": "0x74d35b4159acb6c48cb0581c4bcaeb0fe5bd347f59ec11cd6255027bca6a9a2d",
+    "alpha_position_field": "0x58003d2176da3e58be1198ed9705fcf4e2e1f081e102bd73178218df8dc2e038",
+    "position_b": "0xf0a41462670462e55eaed66a76a43eeba979f27167bdd77f971e40891db25b94",
+    "position_c": "0x9e9d0f9c2de84c68855d753d3bfbd2afe5e6a624b23ab1c0763e0cb3e8820de0",
+    "position_d": "0xd439d8da50cc30791939a3af05e1d0723c01a8e545ed16c61a276d8408adf288",
+    "bailout_tx": "FK6jAgAPEK7eEKbGJDZo9YweNBFyMvw47wxnBjbQWewf",
+    "bailout_payer": "0x3c2830dc5e138e9eb15b69e5e10a187f2898ab98a9f62ae2838b545d4f787a07",
+    "admin_signer_a": "0xe25b5d16ca31ddfdc31a7219c90f88bdfc56b606c13df6619aef22515580e293",
+    "admin_signer_b": "0x33dcff7c593da0f4714ae03e300467121978340d4adc7659830deaeb7b518c5a"
+  },
+  "checks": [
+    {
+      "id": "alpha-priced-as-proxy",
+      "question": "Where does AlphaLend's oracle take ALPHA's price from?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{alt_map_field}",
+        "version": "713635232"
+      },
+      "expect": [
+        {
+          "path": "previous_transaction",
+          "op": "equals",
+          "value": "{map_tx}"
+        },
+        {
+          "path": "content.value.contents[*].key",
+          "op": "includes",
+          "value": "fe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA"
+        },
+        {
+          "path": "content.value.contents[*].value",
+          "op": "includes",
+          "value": "3a5143bb1196e3bcdfab6203d1683ae29edd26294fc8bfeafe4aaa9d2704df37::coin::COIN"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the Oracle's AlternatePriceIdentifier VecMap, as 878x4fCE left it on 2025-12-09 and as it still stood in September 2026, maps ALPHA to 0x3a5143bb::coin::COIN. TronWeekly and PANews report only that the ALPHA oracle was misconfigured."
+    },
+    {
+      "id": "mapping-history",
+      "question": "When was ALPHA's alternate price identifier set and reset?",
+      "tool": "trace_object_history",
+      "args": {
+        "object_id": "{alt_map_field}",
+        "limit": 50
+      },
+      "expect": [
+        {
+          "path": "history[*].tx",
+          "op": "includes",
+          "value": "{first_map_tx}"
+        },
+        {
+          "path": "history[*].tx",
+          "op": "includes",
+          "value": "{unmap_tx}"
+        },
+        {
+          "path": "history[*].tx",
+          "op": "includes",
+          "value": "{map_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the AlternatePriceIdentifier field changed in FigVarLx (2025-11-23, ALPHA to 0x3a51 COIN), 2cMcmPty (2025-12-07, ALPHA entry removed) and 878x4fCE (2025-12-09, ALPHA to 0x3a51 COIN again)."
+    },
+    {
+      "id": "mapping-set-by-admin",
+      "question": "Who mapped ALPHA to the 0x3a51 COIN price, with which call?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{map_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{admin_multisig}"
+        },
+        {
+          "path": "commands[0].type_arguments[0]",
+          "op": "iequals",
+          "value": "{alpha}"
+        },
+        {
+          "path": "commands[1].type_arguments[0]",
+          "op": "iequals",
+          "value": "{proxy_coin}"
+        },
+        {
+          "path": "commands[2].target",
+          "op": "iequals",
+          "value": "{oracle_v4}::oracle::add_alternate_price_identifier"
+        },
+        {
+          "path": "commands[2].arguments[2].index",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "commands[2].arguments[3].index",
+          "op": "equals",
+          "value": 1
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 878x4fCE, sent by the AlphaLend admin 2-of-3 multisig that holds the oracle AdminCap, calls oracle v4's add_alternate_price_identifier with ALPHA as the coin and 0x3a51 COIN as its alternate."
+    },
+    {
+      "id": "mapping-signers",
+      "question": "Which of the admin multisig's signers signed the mapping?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{map_tx}"
+      },
+      "expect": [
+        {
+          "path": "authorization[0].multisig.shape",
+          "op": "equals",
+          "value": "2-of-3"
+        },
+        {
+          "path": "authorization[0].multisig.signed_by[*].address",
+          "op": "includes",
+          "value": "{admin_signer_a}"
+        },
+        {
+          "path": "authorization[0].multisig.signed_by[*].address",
+          "op": "includes",
+          "value": "{admin_signer_b}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the multisig signature on 878x4fCE carries two of the three signers of the admin multisig 0xa1eb94d1."
+    },
+    {
+      "id": "proxy-slot-reads-avax",
+      "question": "Which Pyth feed does the 0x3a51 COIN slot read?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{pyth_map_field}",
+        "version": "970093439"
+      },
+      "expect": [
+        {
+          "path": "content.value.coin_to_identifier.contents[*].key",
+          "op": "includes",
+          "value": "3a5143bb1196e3bcdfab6203d1683ae29edd26294fc8bfeafe4aaa9d2704df37::coin::COIN"
+        },
+        {
+          "path": "content.value.coin_to_identifier.contents[*].value[*].bytes",
+          "op": "includes",
+          "value": "k9ozUvnx0QX9/klxz6gOndd3v8XQ9oPrtuEpS5ITe7c="
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the OraclePyth map binds 0x3a51 COIN to feed id 0x93da3352...137bb7 (base64 above), which Pyth's feed list names Crypto.AVAX/USD. BbvwEdmG set it when it created the slot on 2025-11-23."
+    },
+    {
+      "id": "proxy-slot-lazer-avax",
+      "question": "Which Pyth Lazer feed was the 0x3a51 COIN slot given in August 2026?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{lazer_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{admin_multisig}"
+        },
+        {
+          "path": "commands[0].type_arguments[0]",
+          "op": "iequals",
+          "value": "{proxy_coin}"
+        },
+        {
+          "path": "commands[1].target",
+          "op": "iequals",
+          "value": "{oracle_v5}::oracle::add_coin_to_lazer"
+        },
+        {
+          "path": "commands[1].arguments[3].value",
+          "op": "equals",
+          "value": 18
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 3kpwLDxt (2026-08-26) binds 0x3a51 COIN to Pyth Lazer feed 18, which Pyth Lazer's symbol list names Crypto.AVAX/USD."
+    },
+    {
+      "id": "market-price-vs-oracle",
+      "question": "What were ALPHA and the 0x3a51 COIN worth on the market when the borrows ran?",
+      "tool": "get_token_prices",
+      "args": {
+        "coin_types": [
+          "{alpha}",
+          "{proxy_coin}"
+        ],
+        "at": "2026-09-06T17:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "prices[0].coin_type",
+          "op": "iequals",
+          "value": "{alpha}"
+        },
+        {
+          "path": "prices[0].price_usd",
+          "op": "approx",
+          "value": 0.72,
+          "tolerance": 0.15
+        },
+        {
+          "path": "prices[1].price_usd",
+          "op": "approx",
+          "value": 0.62,
+          "tolerance": 0.15
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "chain against DefiLlama: the oracle slot ALPHA read held $7.6335 at 17:00 on 2026-09-06 (check borrow-priced-at-avax); DefiLlama prices ALPHA at $0.72 and 0x3a51 COIN at $0.62 at that minute."
+    },
+    {
+      "id": "borrow-priced-at-avax",
+      "question": "What price did the $3.55M USDC borrow use for its ALPHA collateral, and against which position?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{borrow_tx}",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "events[*].parsed.coin_type",
+          "op": "includes",
+          "value": "3a5143bb1196e3bcdfab6203d1683ae29edd26294fc8bfeafe4aaa9d2704df37::coin::COIN"
+        },
+        {
+          "path": "events[*].parsed.feed_id",
+          "op": "includes",
+          "value": 18
+        },
+        {
+          "path": "events[*].parsed.price.value",
+          "op": "includes",
+          "value": "7633500000000000000"
+        },
+        {
+          "path": "events[*].parsed.event.borrow_amount",
+          "op": "includes",
+          "value": "3551828054816"
+        },
+        {
+          "path": "events[*].parsed.event.position_id",
+          "op": "includes",
+          "value": "{alpha_position}"
+        },
+        {
+          "path": "events[*].parsed.event.total_loan_usd.value",
+          "op": "includes",
+          "value": "8119043834281713090200000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: AUHp6aWy ingests Lazer feed 18 at 7.6335 into the 0x3a51 slot, refreshes ALPHA's price from it, then borrows 3,551,828.054816 USDC on position 0x74d35b41, whose loan rises to $8.12M against $24.9M of ALPHA collateral (3,261,823.8 ALPHA at 7.6335)."
+    },
+    {
+      "id": "ltv-94",
+      "question": "Who changed the ALPHA market's collateral ratios on 6 September, and to what?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{ltv_on_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{admin_multisig}"
+        },
+        {
+          "path": "commands[0].target",
+          "op": "iequals",
+          "value": "{core_v15}::alpha_lending::update_market_collateral_ratios"
+        },
+        {
+          "path": "commands[0].arguments[1].object_id",
+          "op": "iequals",
+          "value": "{alpha_market_cap}"
+        },
+        {
+          "path": "commands[0].arguments[2].value",
+          "op": "equals",
+          "value": 94
+        },
+        {
+          "path": "commands[0].arguments[3].value",
+          "op": "equals",
+          "value": 99
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 4rRPWMVs (2026-09-06 16:41:09) sets the ALPHA market's safe collateral ratio to 94 and liquidation threshold to 99 with the ALPHA MarketCap; 97mGkCmp sets it back to 0 at 17:22:00."
+    },
+    {
+      "id": "alpha-market-at-94",
+      "question": "What did the ALPHA market hold and how was it priced while the ratio was 94?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{alpha_market}",
+        "version": "991547207"
+      },
+      "expect": [
+        {
+          "path": "previous_transaction",
+          "op": "equals",
+          "value": "{ltv_on_tx}"
+        },
+        {
+          "path": "content.value.config.safe_collateral_ratio",
+          "op": "equals",
+          "value": 94
+        },
+        {
+          "path": "content.value.price_identifier.coin_type",
+          "op": "equals",
+          "value": "fe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA"
+        },
+        {
+          "path": "content.value.market_cap_id",
+          "op": "iequals",
+          "value": "{alpha_market_cap}"
+        },
+        {
+          "path": "content.value.balance_holding",
+          "op": "equals",
+          "value": "8938929299895559"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: market 12 after 4rRPWMVs, with 8,938,929.3 ALPHA deposited and its price looked up under ALPHA's own type, which the oracle resolves to the 0x3a51 COIN slot."
+    },
+    {
+      "id": "sep6-sequence",
+      "question": "In what order did the admin multisig and 0xee5360c5 send transactions between 16:35 and 17:25 on 6 September?",
+      "tool": "build_timeline",
+      "args": {
+        "addresses": [
+          "{admin_multisig}",
+          "{borrower}"
+        ],
+        "from": "2026-09-06T16:35:00Z",
+        "to": "2026-09-06T17:25:00Z"
+      },
+      "expect": [
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{ltv_on_tx}"
+        },
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{borrow_usdc_1}"
+        },
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{borrow_xbtc_1}"
+        },
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{limiter_tx_usdc}"
+        },
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{borrow_tx}"
+        },
+        {
+          "path": "timeline[*].digest",
+          "op": "includes",
+          "value": "{ltv_off_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the multisig sets the ALPHA ratio to 94 at 16:41:09; the first borrow is at 16:41:52; each later borrow comes 24 to 34 seconds after a multisig transaction that raises a market limit or flow limiter; the multisig sets the ratio to 0 at 17:22:00.",
+      "known_defect": "39 rows for a 50-minute window of two addresses come to about 67k characters, over build_timeline's 50k budget, at the default limit of 60 rows."
+    },
+    {
+      "id": "sep6-borrow-totals",
+      "question": "How much did the 6 September borrows take out of AlphaLend?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{borrow_usdc_1}",
+          "{borrow_xbtc_1}",
+          "{borrow_xbtc_2}",
+          "{borrow_tx}",
+          "{borrow_usdc_3}",
+          "{borrow_xbtc_3}",
+          "{borrow_xbtc_4}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "senders",
+          "op": "includes",
+          "value": "{borrower}"
+        },
+        {
+          "path": "priced_coins[*].attacker_net_raw",
+          "op": "includes",
+          "value": "5695574054816"
+        },
+        {
+          "path": "priced_coins[*].attacker_net_raw",
+          "op": "includes",
+          "value": "2381652517"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the seven borrows credit 0xee5360c5 with 1,012,240 + 3,551,828.054816 + 1,131,506 USDC and 6.314 + 3.80882099 + 8.46112418 + 5.23258 xBTC."
+    },
+    {
+      "id": "sep6-borrow-markets",
+      "question": "Which AlphaLend markets did the 6 September borrows draw down?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{borrow_usdc_1}",
+          "{borrow_xbtc_1}",
+          "{borrow_xbtc_2}",
+          "{borrow_tx}",
+          "{borrow_usdc_3}",
+          "{borrow_xbtc_3}",
+          "{borrow_xbtc_4}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "groups",
+          "op": "count_gte",
+          "value": 1
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: every borrow emits BorrowEvent and MarketDataUpdateEvent naming market 6 (USDC) or 16 (xBTC) and changes that market's Treasury dynamic field under the LendingProtocol."
+    },
+    {
+      "id": "borrow-oracle-price-named",
+      "question": "Does the attack breakdown say which coin the PTB priced and at what price?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{borrow_tx}"
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "alpha::ALPHA"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: commands 2 to 4 of AUHp6aWy refresh ALPHA's price through oracle::get_price_info, and a LazerPriceUpdationEvent writes 7.6335 into the 0x3a51 COIN slot ALPHA resolves to.",
+      "known_defect": "oracle_activity counts the calls and 19 LazerPriceUpdationEvents but names neither the coins priced nor the prices written, so ALPHA collateral valued at the AVAX feed never appears."
+    },
+    {
+      "id": "first-funding-of-position-holders",
+      "question": "Which address sent the first funding to three other wallets that held ALPHA-collateral positions?",
+      "tool": "find_funding_sources",
+      "args": {
+        "addresses": [
+          "{cap_recipient}",
+          "{position_creator}",
+          "{dec_borrower}"
+        ],
+        "depth": "first_hop"
+      },
+      "expect": [
+        {
+          "path": "shared_funders[0].funder",
+          "op": "iequals",
+          "value": "{borrower}"
+        },
+        {
+          "path": "shared_funders[0].funded_count",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "results[*].first_hop.funding_tx",
+          "op": "includes",
+          "value": "7u9ffUXgH3PtKLXrUtqa6NqgueUY7X5MEL2fVVFei2ar"
+        },
+        {
+          "path": "results[*].first_hop.funding_tx",
+          "op": "includes",
+          "value": "2xpHngAfdywiDVoyVbj28qdUA4CUzh3Vyo6U5icECzEU"
+        },
+        {
+          "path": "results[*].first_hop.funding_tx",
+          "op": "includes",
+          "value": "Eh3QkG1kQrgJPBUKZQWapVVA6Jxuu3cJfG7y7NzoLSmq"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 0xee5360c5 sent the first SUI to 0xdfe220ae (2025-06-25, 29 minutes before it opened position 0x74d35b41), 0x1d1c1046 (2025-11-30) and 0x5f81363f (2026-09-07, 27 minutes before 0x74d35b41's PositionCap reached it)."
+    },
+    {
+      "id": "dec-2025-borrow",
+      "question": "What did position 0xf0a41462 deposit and borrow on 3 December 2025?",
+      "tool": "get_transactions",
+      "args": {
+        "digests": [
+          "{dec_open_tx}",
+          "{dec_borrow_tx}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "transactions[0].move_calls",
+          "op": "includes",
+          "value": "{core_v10}::alpha_lending::create_position"
+        },
+        {
+          "path": "transactions[0].balance_changes[*].amount",
+          "op": "includes",
+          "value": "-2236291304778767"
+        },
+        {
+          "path": "transactions[1].move_calls",
+          "op": "includes",
+          "value": "{core_v10}::alpha_lending::borrow"
+        },
+        {
+          "path": "transactions[1].balance_changes[*].amount",
+          "op": "includes",
+          "value": "999999979576579"
+        },
+        {
+          "path": "transactions[1].timestamp",
+          "op": "matches",
+          "value": "^2025-12-03T22:04"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 0x1d1c1046 opens position 0xf0a41462 with 2,236,291.3 ALPHA at 21:52 on 2025-12-03; the multisig sets the ALPHA ratio to 94 at 21:55 (HsZ9LyTx), and 999,999.98 SUI is borrowed at 22:04, followed that evening by SUI, WAL, DEEP and USDC borrows."
+    },
+    {
+      "id": "bailout",
+      "question": "Who repaid the loans of the ALPHA-collateral positions, on which positions, and with which call?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{bailout_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{bailout_payer}"
+        },
+        {
+          "path": "authorization[0].multisig.shape",
+          "op": "equals",
+          "value": "3-of-4"
+        },
+        {
+          "path": "events[*].parsed.event.position_id",
+          "op": "includes",
+          "value": "{alpha_position}"
+        },
+        {
+          "path": "events[*].parsed.event.position_id",
+          "op": "includes",
+          "value": "{position_b}"
+        },
+        {
+          "path": "events[*].parsed.event.position_id",
+          "op": "includes",
+          "value": "{position_c}"
+        },
+        {
+          "path": "events[*].parsed.event.position_id",
+          "op": "includes",
+          "value": "{position_d}"
+        },
+        {
+          "path": "events[*].parsed.event.repay_amount",
+          "op": "includes",
+          "value": "4342663233210"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: FK6jAgAP (2026-09-20) calls loan_bailout nine times from a 3-of-4 multisig on the four positions holding ALPHA in market 12. PANews and CoinTurk report that the bad debt was fully covered; no source names the payer's address."
+    },
+    {
+      "id": "bailout-amounts",
+      "question": "How much did the 3-of-4 multisig pay into loan_bailout, per coin?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{bailout_payer}",
+        "from": "2026-09-14T00:00:00Z",
+        "to": "2026-09-21T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "coins[*].raw.out",
+          "op": "includes",
+          "value": "8299474871306"
+        },
+        {
+          "path": "coins[*].raw.out",
+          "op": "includes",
+          "value": "1059668682721"
+        },
+        {
+          "path": "coins[*].raw.out",
+          "op": "includes",
+          "value": "9486212136"
+        },
+        {
+          "path": "coins[*].raw.out",
+          "op": "includes",
+          "value": "4630459836752"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the multisig paid 8,299,474.871306 USDC, 1,059,668.682721 USDT, 94.86212136 xBTC and 4,630,459.836752 DEEP into loan_bailout, which AlphaLend's RepayEvents value at $17.13M."
+    },
+    {
+      "id": "position-cleared-collateral-kept",
+      "question": "What did position 0x74d35b41 hold after the loan_bailout transaction?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{alpha_position_field}",
+        "version": "1009072513"
+      },
+      "expect": [
+        {
+          "path": "previous_transaction",
+          "op": "equals",
+          "value": "{bailout_tx}"
+        },
+        {
+          "path": "content.value.loans",
+          "op": "count_lte",
+          "value": 0
+        },
+        {
+          "path": "content.value.collaterals.contents[*].key",
+          "op": "includes",
+          "value": "12"
+        },
+        {
+          "path": "content.value.collaterals.contents[*].value",
+          "op": "includes",
+          "value": "3261823817951668"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: after FK6jAgAP position 0x74d35b41 has no loans and still holds 3,261,823.8 ALPHA in market 12; 0x5f81363f withdrew that ALPHA in 9bExSPCj on 2026-09-25, 48 seconds after the multisig raised the ALPHA flow limiter."
+    },
+    {
+      "id": "oracle-alternate-code",
+      "question": "What does the oracle do when a coin has an alternate price identifier?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{oracle_v5}",
+        "module_name": "oracle",
+        "function_name": "get_price_info"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "Call dynamic_field::borrow<AlternatePriceIdentifier, VecMap<TypeName, TypeName>>"
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "Call vec_map::get<TypeName, TypeName>"
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "MutBorrowField[10](PriceInfo.coin_type: TypeName)"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "chain: oracle v5 get_price_info returns the alternate coin's PriceInfo whole (price, ema, conf, last_updated) and overwrites only its coin_type with the requested coin; nothing compares the two assets or their decimals."
+    }
+  ]
+}

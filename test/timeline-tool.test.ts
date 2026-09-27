@@ -174,3 +174,31 @@ describe("build_timeline window", () => {
     expect(out).not.toContain("assumed scale");
   });
 });
+
+describe("build_timeline size", () => {
+  it("lists the entries that fit in order, keeps a failed one past the budget, and counts the rest", async () => {
+    const nodes = Array.from({ length: 200 }, (_, i) => txAt(`d${String(i).padStart(3, "0")}`, 500_001 + i));
+    nodes[190].effects.status = "FAILURE";
+    let served = 0;
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+      const cp = chain(q, v);
+      if (cp) return cp;
+      const page = nodes.slice(served, served + 50);
+      served += page.length;
+      return txPage(page, { next: served < nodes.length });
+    });
+
+    const { body } = await run({ addresses: [ADDR], from: "500000", per_address: 200, limit: 200 });
+    const digests = body.timeline.map((e: { digest: string }) => e.digest);
+    expect(body.entry_count).toBe(200);
+    expect(digests[0]).toBe("d000");
+    expect(digests).toContain("d190");
+    expect(digests.length).toBeLessThan(200);
+    expect(body.omitted.lists.timeline.count).toBe(200 - digests.length);
+    expect(body.omitted.next_call).toEqual({ tool: "build_timeline", repeat_with: { detail: "full" } });
+
+    served = 0;
+    const full = await run({ addresses: [ADDR], from: "500000", per_address: 200, limit: 200, detail: "full" } as Args);
+    expect(full.body.timeline).toHaveLength(200);
+  });
+});

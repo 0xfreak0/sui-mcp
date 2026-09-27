@@ -1,5 +1,155 @@
 # Changelog
 
+## Unreleased
+
+Investigations now ask how an exploit worked, not only where its funds went.
+Across Typus, Nemo, Cetus, Scallop, Aftermath Perpetuals, BlueMove, Haedal,
+Full Sail and AlphaFi, the tools found the flaw in the Move code with the
+decompiler switched off, including two incidents no public source gave an
+address for. An audit checked every detection rule against incidents it was
+not written from and against ordinary mainnet traffic. Rules keyed to one
+incident's names or thresholds were replaced with rules on data flow, state
+and value, and a scoring harness keeps detectors honest on transactions
+their authors never saw. The case library grows from 8 to 19 incidents.
+
+### Added
+- **An executed transaction's inputs and argument wiring.** `get_transaction`
+  takes `detail: "full"` to add the PTB's `inputs`, every command with its
+  arguments resolved (an object's id, version and type; a pure value decoded
+  as the parameter type the called function declares; the command a result
+  came from), and `object_changes.by_kind` with the id, type and version of
+  each created, mutated, wrapped, unwrapped and deleted object. `decode_ptb`
+  takes `digest` as an alternative to bytes and decodes an executed PTB the
+  same way. Both page commands with `command_offset` and list exactly the
+  ones named in `commands: [i, j]`.
+- **Reading one function's bytecode.** `disassemble_module` takes
+  `function_name`. Its output notes what the text leaves raw: a clever abort
+  code's error name, message and source line, a large integer's hex form, and
+  on each dependency's `use` line the version the package's linkage table
+  runs. `get_package` and `get_upgrade_history` list the dependency versions a
+  package runs.
+- **Upgrade diffs by declaration.** `diff_package_upgrade` matches functions,
+  structs and constants by name, lists `changed_functions`, and counts lines
+  that only renumber offsets, locals or indices apart from real changes. A
+  test mutates real disassemblies one instruction at a time and checks that
+  no semantic change reads as renumbering.
+- **Code checks that use no names.** `analyze_package` traces data flow
+  through each function and reports graded leads: `discarded-check` (a
+  check's result that never reaches a branch or abort), `sibling-guard-gap`
+  (a public function that mutates an object without a check its siblings
+  make on that type) and `unchecked-state-write` (a caller's value written
+  into shared state with no comparison against stored state). They find the
+  Typus, Scallop and Nemo flaws and raise a strong lead on 1 of 138 clean
+  package versions. `bytecode_scan` names the checks run and says a function
+  with no lead is not cleared.
+- **State and value invariants in `analyze_attack_tx`.** It reads each
+  changed shared object at the transaction's input and output versions
+  (`state_deltas`) and flags `shared-state-jump`: a stored value that moved
+  100x or more, a holding drained to zero, or a value copied from an object
+  other than the one referenced. `caller-value-used` follows a caller's pure
+  value into shared state and a later read, including a set, use and restore.
+  `value_reconciliation` compares what reached addresses with what decoded
+  events and read balances paid out. With `get_upgrade_history`'s
+  `find_redeploys`, other lineages carrying the same module code are found.
+- **Output caps that keep every fact reachable.** `summarize_address_flows`,
+  `find_funding_sources`, `list_nfts`, `get_transaction`, `decode_ptb` and
+  `analyze_attack_tx` list what fits about 20k characters. Totals, counts and
+  verdicts cover every row, flagged rows are always listed, `omitted` states
+  what was left out, and `next_call` names the call that returns it. With
+  `SUI_STORE_PATH` set, the full result is stored and paged through the MCP
+  resource `sui://results/{id}`. `get_transaction` folds events that differ
+  only in amounts once they pass the budget. The largest result in the case
+  replays fell from 273k to 35k characters.
+- **Detector scoring.** `cases/detectors.json` labels exploit transactions
+  from seven incidents and 251 ordinary mainnet transactions in a tuning set
+  and a held-out set. `scripts/probe/detector-pass.mjs`, run by
+  `verify:live`, reports each anomaly's detections and false-positive rate
+  per split, and which incidents a rule catches beyond the one it came from.
+  The held-out set gates on rates, so a rule change is judged on transactions
+  its author never saw.
+- **Eleven new cases.** Protocol exploits: `cetus-2025-05`,
+  `scallop-2026-04`, `aftermath-2026-04`, `bluemove-2026-07`, `haedal-2026-06`,
+  `fullsail-2026-08` and `alphafi-2026-09`. Drainers:
+  `scallop-pass-drainer-2024-05` and `giftsui-drainer-2024-08`, pinned on the
+  drainer side only. LP-pull rugs found on chain: `gobble-rug-2024-10` and
+  `dope-rug-2024-11`. Typus and Nemo gain mechanism checks. Each pins the
+  exploited function, the flaw as the bytecode shows it and the fixing
+  version where there is one, and no case check calls `decompile_module`.
+- **Cross-version checks.** `analyze_package` raises `ungated-older-version`
+  when an older version of a lineage mutates a shared type without the check
+  the newest version makes, since old versions stay callable against the same
+  objects. `get_upgrade_history` with `find_redeploys` dates each function on
+  its own (`function_origins`).
+- **Reading more code in fewer calls.** `decompile_module` takes
+  `function_name`, `disassemble_module` notes that `Shl` and `Shr` drop
+  shifted-out bits without aborting, `diff_package_upgrade` shows every changed
+  function before a second hunk of any, and `trace_object_history` pages
+  newest first.
+- **Signed values.** A u64, u128 or u256 with its top bit set carries its
+  two's-complement reading (`signed_value`, `signed_readings`).
+- **Pre-sign context.** `decode_ptb` on unsigned bytes states each sent coin's
+  share of the sender's balance and each recipient's first transaction.
+- The investigation brief asks for the mechanism, and a case check can carry
+  the tier `code-derived`.
+- `case-pass` reports characters and estimated tokens per call and per case,
+  and fails a call over its tool's size budget.
+
+### Changed
+- **Guidance for finding a flaw.** The `trace_incident` prompt, the server
+  instructions and the forensics skill read the calls and their arguments,
+  then the called functions in the version live at the exploit and its linked
+  dependencies, and only then diff the fix and the introduction. They lead
+  with tools that need no decompiler; `decompile_module` is an optional aid.
+- **Anomalies are leads, and silence clears nothing.** `analyze_attack_tx`
+  and `decode_ptb` return `checks_run`, state that a check that matched
+  nothing clears nothing, and `analyze_attack_tx` prints every anomaly.
+  `analyze_attack_tx` now runs the payout and blocklist checks, and reads
+  payouts through any function from the transaction's effects.
+- **Trust apart from naming.** `unverified-package-call` is decided by the
+  curated registry and a curated protocol's own publishing keys, never by a
+  Move Registry name or an UpgradeCap's holder, which anyone can send a cap
+  to. On an executed transaction it reads medium only when value through the
+  package went one way or another lead fires. New
+  `stale-package-version` and `unregistered-package-lineage` anomalies.
+- **Rules replaced for generality.** `oracle-set-then-used` became
+  `caller-value-used`, and `outsized-mint` bounds liquidity by the event's own
+  tick range with no protocol-specific ratio. Events are attributed to the
+  changed object whose id they carry, whatever the field is called.
+- `trace_flow_graph` and `find_flow_path` expand the branch carrying the most
+  value first, so the node limit goes to the heaviest branches.
+  `resolve_bridge_transfer` recognises inbound fulfils and names a package
+  that deposits into a bridge for a user as its carrier. `trace_funds` no
+  longer stops at a theft address it calls a distributor, or switches to a
+  dust coin.
+- `summarize_incident_losses`, `aggregate_events`, `get_transactions`,
+  `build_timeline` and `get_transaction_history` keep their answers within
+  budget with `omitted` and `next_call`, and window-mode loss totals no longer
+  net laundering transfers into the loss.
+- `address_poisoning` is always present in history, flow and trace results,
+  with `addresses_compared` and an empty `pairs` when nothing matched.
+- A funder's popularity counts only recipients paid above dust, so dusting
+  addresses cannot end a funding walk. `build_wallet_edges` links a sponsor to
+  the seeds' first funder when the roles are split across two addresses and
+  the funder is narrow. An unpriced grant counts by the shape of its send.
+- `trace_flow_graph` carries a below-market sale's lost value as `retained`
+  or `consumed` and reads swaps from values as well as names.
+  `cross_chain_leads` lists events that look like a bridge exit through a
+  package no bridge reader covers.
+- `query_transactions` counts `matched_calls` at the filter's granularity.
+- Output of the capped tools is compact JSON, and they no longer repeat it as
+  structured content.
+
+### Fixed
+- A Sui Bridge token with no DefiLlama price under its Sui type is priced as
+  its Ethereum asset (`priced_as`); the Cetus incident total rises from
+  $193.7M to $213.1M.
+- `get_transaction` no longer lists Cetus's pay-amount getters as liquidity
+  adds of their own.
+- `analyze_attack_tx` decodes swaps whose events name their coins.
+- `decompile_module` treats an empty `SUI_DECOMPILER_PATH` as no decompiler
+  and names the tools that read bytecode without one.
+- The Sui Bridge package `0xb` and DeepBook v1 count as system packages.
+
 ## 1.21.0 (2026-09-26)
 
 Seven blind investigations of real Sui incidents ran through the server using

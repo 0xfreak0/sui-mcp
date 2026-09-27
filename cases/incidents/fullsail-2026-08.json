@@ -1,0 +1,796 @@
+{
+  "slug": "fullsail-2026-08",
+  "kind": "protocol-exploit",
+  "title": "Full Sail vaults drained through a Switchboard oracle key swap, 29 August 2026",
+  "network": "mainnet",
+  "summary": "On 29 August 2026 an attacker created three guardian oracles on Switchboard's guardian queue and used them to attest its own signing key onto a live Switchboard oracle; Switchboard v4's attestation check read the wrong oracle's expiry and accepted a guardian with an empty key. With that key it signed prices 100x below market into feeds Full Sail's vaults (ports) read, deposited, restored the price and withdrew, 63 times across three ports, for about $91,000. Switchboard shipped a fix at 06:37 UTC and Full Sail paused its ports from 05:29 UTC.",
+  "sources": [
+    {
+      "url": "https://x.com/FullSailFi/status/2094895938846261466",
+      "publisher": "Full Sail",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://cointelegraph.com/news/full-sail-sui-wind-down-switchboard-incident",
+      "publisher": "Cointelegraph",
+      "kind": "news"
+    },
+    {
+      "url": "https://www.cryptotimes.io/2026/08/30/full-sail-confirms-sui-vault-losses-as-switchboard-halts-4-chains/",
+      "publisher": "The Crypto Times",
+      "kind": "news"
+    },
+    {
+      "url": "https://x.com/DeepSafe_AI/status/2095482734026359225",
+      "publisher": "DeepSafe (citing MoveBit)",
+      "kind": "security-firm"
+    }
+  ],
+  "subjects": {
+    "attacker": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
+    "key_swap_tx": "H6d13yy4JdQKn764uhMSAHFC6dRAwuoYo1ccp5r81pEQ",
+    "compromised_oracle": "0x0f307cb2c7e1fe98587f7022ed327e2b5e8372bfa17b8a7a5f1ce6f56f911b81",
+    "oracle_queue": "0x6e43354b8ea2dfad98eadb33db94dcc9b1175e70ee82e42abc605f6b7de9e910",
+    "guardian_queue": "0x662f5642dc730289b5c8084b67e4e092428e825a97071c5cb5c691dfb2cc88f7",
+    "attacker_guardian": "0x5c5069264b5250b7c4f9bdfdeac6fdfd65f171c2fd07a197eb5d6668177c6b73",
+    "switchboard_root": "0xc3c7e6eb7202e9fb0389a2f7542b91cc40e4f7a33c02554fec11c4c92f938ea3",
+    "switchboard_v4": "0xa81086572822d67a1559942f23481de9a60c7709c08defafbb1ca8dffc44e210",
+    "switchboard_v5": "0x1d5a2e826bdab3cce5cb2493aa36dcf058aa0017c4118738e6967df8821060bf",
+    "switchboard_authority": "0x697998fab24bb575840bc66c4d176a63e7db1830c7c9494cbe9a807752cf00a5",
+    "sui_aggregator": "0x404d204a5d2475d020b5909c42cbe452f030066adb1938acad2d11d7fce89fda",
+    "port_v6": "0x097dcf7758c789fc0394972cd182096088cd6fd3250fa33f32bfd6402606d01c",
+    "port_sui_usdc": "0x9787a95e76530f80ff8e8dd4a851a2a266b3eadcca4e6503c6d6fa18d8129ccc",
+    "port_ika_sui": "0x8c8a0203bb4ecb49b7ea3b96822826408eb7a5d27a232f630dc04f08f6bc45c3",
+    "port_eth_usdc": "0x320ca75b93419d306bfc5db266952e52fb5c81b5ad05372039123a7822b1d0ea",
+    "deposit_tx": "H83xf84aufu1q5A2kU3axtWsxpcynzkNAk1amojqMkfp",
+    "first_funding_tx": "5J8LTSiG3c46bRkTMEgbBseZRi2bTVgvPRcotJJo8dQF",
+    "binance_reserve": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
+    "collector": "0x4f5222267f3d7c74d7613580eab2de77d113e953a268b4280cf46d53baf0768d"
+  },
+  "checks": [
+    {
+      "id": "key-swap-resolved",
+      "question": "Which transaction put a new signing key on a live Switchboard oracle around the incident, and who sent it?",
+      "tool": "query_events",
+      "args": {
+        "event_type": "{switchboard_root}::oracle_attest_action::AttestationResolved",
+        "after_checkpoint": "2026-08-01T00:00:00Z",
+        "before_checkpoint": "2026-09-10T00:00:00Z",
+        "limit": 50
+      },
+      "expect": [
+        {
+          "path": "events",
+          "op": "count_lte",
+          "value": 1
+        },
+        {
+          "path": "events[*].tx_digest",
+          "op": "includes",
+          "value": "{key_swap_tx}"
+        },
+        {
+          "path": "events[*].sender",
+          "op": "includes",
+          "value": "{attacker}"
+        },
+        {
+          "path": "events[*].data.oracle_id",
+          "op": "includes",
+          "value": "{compromised_oracle}"
+        },
+        {
+          "path": "events[*].data.secp256k1_key",
+          "op": "includes",
+          "value": "ew8qAZ2l0XKeoZOgTUaKplCWUn0Q6SdB2tSWf8Ug2aGjLtiQVB156rp77MsD0LRQrxUcV8VX+RyqhvkGtVGRJA=="
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Full Sail says the attacker added a key it controlled to a live oracle; on chain the only AttestationResolved event from 1 Aug to 10 Sep 2026 is the attacker's, on oracle 0x0f307cb2."
+    },
+    {
+      "id": "attacker-made-its-guardians",
+      "question": "Who created the guardians that attested the new key, and on which queue?",
+      "tool": "get_transactions",
+      "args": {
+        "digests": [
+          "C6qrKqP7cWxvHQTVhytzLN29dTEgbA81irXVqzQqoDrh",
+          "ApmhrrM2xX9dbSykeMHYP4wiuK68XieFhvUYjA7XWqQX",
+          "6NFxo3jbcHUfmDkpaHTeHRwz6Kb1xqPFbv4iXuhf6mWf",
+          "UsP84xhW6xs7u1hHAqGxSHYUkaSRDFZnx5cKerXsK9z",
+          "Cd2iRJsJ2u5iZ3Ed4J6mbJvF2tAkQMfsuRo5EufJGU86",
+          "{key_swap_tx}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "transactions[*].sender",
+          "op": "includes",
+          "value": "{attacker}"
+        },
+        {
+          "path": "transactions[*].sender",
+          "op": "excludes",
+          "value": "{switchboard_authority}"
+        },
+        {
+          "path": "transactions[*].events[*].type",
+          "op": "includes",
+          "value": "{switchboard_root}::oracle_init_action::OracleCreated"
+        },
+        {
+          "path": "transactions[*].events[*].parsed.queue_id",
+          "op": "includes",
+          "value": "{guardian_queue}"
+        },
+        {
+          "path": "transactions[*].events[*].parsed.oracle_id",
+          "op": "includes",
+          "value": "{attacker_guardian}"
+        },
+        {
+          "path": "transactions[*].events[*].parsed.guardian_id",
+          "op": "includes",
+          "value": "{attacker_guardian}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the attacker's three oracle_init_action::run calls at 01:32:33-01:32:42 UTC created guardians on the Mainnet Guardian Queue, and its three oracle_attest_action::run calls at 01:32:47-01:32:55 used them."
+    },
+    {
+      "id": "guardian-has-no-key",
+      "question": "What key and validity did an attacker-created guardian hold when it attested?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{attacker_guardian}",
+        "version": "982435195"
+      },
+      "expect": [
+        {
+          "path": "content.secp256k1_key",
+          "op": "equals",
+          "value": ""
+        },
+        {
+          "path": "content.expiration_time_ms",
+          "op": "equals",
+          "value": "0"
+        },
+        {
+          "path": "content.queue",
+          "op": "equals",
+          "value": "{guardian_queue}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the guardian's first version, created by 6NFxo3jb and read by the attest transaction H6d13yy4, has an empty secp256k1_key and expiration 0."
+    },
+    {
+      "id": "oracle-key-replaced",
+      "question": "What did the live oracle hold after the third attestation?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{compromised_oracle}",
+        "version": "982435198"
+      },
+      "expect": [
+        {
+          "path": "content.secp256k1_key",
+          "op": "equals",
+          "value": "ew8qAZ2l0XKeoZOgTUaKplCWUn0Q6SdB2tSWf8Ug2aGjLtiQVB156rp77MsD0LRQrxUcV8VX+RyqhvkGtVGRJA=="
+        },
+        {
+          "path": "content.expiration_time_ms",
+          "op": "equals",
+          "value": "1788571974951"
+        },
+        {
+          "path": "content.queue",
+          "op": "equals",
+          "value": "{oracle_queue}"
+        },
+        {
+          "path": "content.valid_attestations[*].guardian_id",
+          "op": "includes",
+          "value": "{attacker_guardian}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: version 982435198, written by H6d13yy4, carries the attacker's key and a validity 7 days out; the version before carried a different key expiring in 2031."
+    },
+    {
+      "id": "oracle-users",
+      "question": "Which transactions used the compromised oracle after its key was swapped?",
+      "tool": "query_transactions",
+      "args": {
+        "affected_object": "{compromised_oracle}",
+        "after_checkpoint": "2026-08-29T01:00:00Z",
+        "before_checkpoint": "2026-08-29T06:00:00Z",
+        "limit": 50,
+        "order": "oldest"
+      },
+      "expect": [
+        {
+          "path": "transactions[*].digest",
+          "op": "includes",
+          "value": "{key_swap_tx}"
+        },
+        {
+          "path": "transactions[*].digest",
+          "op": "includes",
+          "value": "{deposit_tx}"
+        },
+        {
+          "path": "transactions",
+          "op": "count_gte",
+          "value": 50
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 126 successful attacker transactions from 02:33 to 05:28 UTC pass oracle 0x0f307cb2 to aggregator_submit_result_action::run, deposit H83xf84 among them.",
+      "known_defect": "affected_object returns only the 3 attestations that changed the oracle, not the transactions that passed it as an immutable input."
+    },
+    {
+      "id": "attest-checks-wrong-oracle",
+      "question": "Which object does Switchboard v4's attestation check read to decide whether the guardian is valid?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{switchboard_v4}",
+        "module_name": "oracle_attest_action",
+        "function_name": "validate"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "64: CopyLoc\\[0\\]\\(Arg0: &mut Oracle\\)\\s+65: FreezeRef\\s+66: Call oracle::expiration_time_ms\\(&Oracle\\): u64[\\s\\S]*Guardian is invalid"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "Call oracle::secp256k1_key\\(&Oracle\\): vector<u8>[\\s\\S]*Call hash::check_subvec"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (v4 bytecode, read with disassemble_module): the 'Guardian is invalid' check in validate reads expiration_time_ms of Arg0, the oracle being attested, not Arg2, the guardian; v5 changes instruction 64 to CopyLoc[2]. DeepSafe (citing MoveBit) describes a possible key-rotation authorisation bypass."
+    },
+    {
+      "id": "empty-key-matches",
+      "question": "Does v4's key comparison reject a guardian with no key?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{switchboard_v4}",
+        "module_name": "hash",
+        "function_name": "check_subvec"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^(?![\\s\\S]*is_empty)[\\s\\S]*CopyLoc\\[1\\]\\(Arg1: &vector<u8>\\)\\s+15: VecLen\\(16\\)\\s+16: StLoc\\[4\\][\\s\\S]*53: LdTrue\\s+54: Ret"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (v4 bytecode, read with disassemble_module): check_subvec loops over the length of its second argument and returns true when the loop ends, so an empty guardian key matches any recovered public key; v5 adds a vector::is_empty check that returns false."
+    },
+    {
+      "id": "init-needs-no-capability",
+      "question": "Can anyone add an oracle to a Switchboard queue in v4?",
+      "tool": "get_move_function",
+      "args": {
+        "package_id": "{switchboard_v4}",
+        "module_name": "oracle_init_action",
+        "function_name": "run"
+      },
+      "expect": [
+        {
+          "path": "visibility",
+          "op": "equals",
+          "value": "public"
+        },
+        {
+          "path": "is_entry",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "parameters",
+          "op": "count_lte",
+          "value": 3
+        },
+        {
+          "path": "parameters[0]",
+          "op": "equals",
+          "value": "vector<u8>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (v4 bytecode): oracle_init_action::run(vector<u8>, &mut Queue, &mut TxContext) is entry public and takes no capability; its validate checks only the queue version and that the key is new."
+    },
+    {
+      "id": "switchboard-fix-version",
+      "question": "What did Switchboard's upgrade after the exploit change?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{switchboard_root}",
+        "from_version": 4,
+        "to_version": 5
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "equals",
+          "value": "{switchboard_v5}"
+        },
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "includes",
+          "value": "check_subvec"
+        },
+        {
+          "path": "summary",
+          "op": "contains",
+          "value": "oracle_attest_action::validate"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "disable_oracle"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (v5 bytecode, 29 Aug 2026 06:37 UTC): v5 rewrites oracle_attest_action::validate and hash::check_subvec and adds emergency_action::disable_oracle."
+    },
+    {
+      "id": "switchboard-version-at-exploit",
+      "question": "Which Switchboard version was newest when the key was swapped, and when did the next one ship?",
+      "tool": "get_upgrade_history",
+      "args": {
+        "package": "{switchboard_root}",
+        "as_of": "2026-08-29T01:30:00Z"
+      },
+      "expect": [
+        {
+          "path": "as_of.newest_version.package_id",
+          "op": "equals",
+          "value": "{switchboard_v4}"
+        },
+        {
+          "path": "versions[4].package_id",
+          "op": "equals",
+          "value": "{switchboard_v5}"
+        },
+        {
+          "path": "versions[4].timestamp",
+          "op": "matches",
+          "value": "^2026-08-29T06:37"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the upgrade list of lineage 0xc3c7e6eb; v4 was published 27 Oct 2025 and v5 on 29 Aug 2026 at 06:37 UTC."
+    },
+    {
+      "id": "aggregator-one-sample",
+      "question": "How many oracle samples did the SUI/USD feed Full Sail read need at the time?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{sui_aggregator}",
+        "version": "982873910"
+      },
+      "expect": [
+        {
+          "path": "content.min_sample_size",
+          "op": "equals",
+          "value": "1"
+        },
+        {
+          "path": "content.queue",
+          "op": "equals",
+          "value": "{oracle_queue}"
+        },
+        {
+          "path": "content.update_state.results[*].oracle",
+          "op": "includes",
+          "value": "{compromised_oracle}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the aggregator version read by deposit H83xf84 has min_sample_size 1 and holds results from oracle 0x0f307cb2."
+    },
+    {
+      "id": "deposit-ptb-sequence",
+      "question": "In one deposit, what price did the attacker submit before and after depositing?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{deposit_tx}",
+        "commands": [
+          3,
+          12,
+          14
+        ]
+      },
+      "expect": [
+        {
+          "path": "commands[*].target",
+          "op": "includes",
+          "value": "{switchboard_v4}::aggregator_submit_result_action::run"
+        },
+        {
+          "path": "commands[*].target",
+          "op": "includes",
+          "value": "{port_v6}::port::deposit"
+        },
+        {
+          "path": "commands[*].arguments[*].value",
+          "op": "includes",
+          "value": "7405000000000000"
+        },
+        {
+          "path": "commands[*].arguments[*].value",
+          "op": "includes",
+          "value": "740500000000000000"
+        },
+        {
+          "path": "commands[*].arguments[*].object_id",
+          "op": "includes",
+          "value": "{compromised_oracle}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Full Sail says prices were pushed ~100x below market, deposits made, then prices restored; chain: command 3 submits SUI at 0.007405, command 12 deposits into the SUI/USDC port, command 14 submits 0.7405."
+    },
+    {
+      "id": "deposit-set-use-restore",
+      "question": "Does the breakdown of that deposit flag the caller-set price the deposit used?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{deposit_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "caller-value-used"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: the SUI/USD aggregator is set to 0.007405 by a caller value (command 3), read by port_oracle (command 4) before the deposit, then set back to 0.7405, a 100x span inside one PTB.",
+      "known_defect": "analyze_attack_tx raises no caller-value-used on the set-use-restore deposit; only an info unverified-package-call fires."
+    },
+    {
+      "id": "attacker-pnl-on-ports",
+      "question": "How much did each sender make on Full Sail's port module during the attack?",
+      "tool": "aggregate_events",
+      "args": {
+        "module": "{port_v6}::port",
+        "from": "2026-08-29T01:30:00Z",
+        "to": "2026-08-29T05:35:00Z",
+        "group_pnl": true
+      },
+      "expect": [
+        {
+          "path": "pnl.senders[0].sender",
+          "op": "equals",
+          "value": "{attacker}"
+        },
+        {
+          "path": "pnl.senders[0].transactions",
+          "op": "equals",
+          "value": 126
+        },
+        {
+          "path": "pnl.senders[0].usd_net",
+          "op": "approx",
+          "value": 91000,
+          "tolerance": 0.03
+        },
+        {
+          "path": "pnl.senders[0].net[*].amount",
+          "op": "includes",
+          "value": 3310237.387089246
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Full Sail says about $91,000 left three vaults; chain: 126 successful deposit and withdraw_v2 transactions by the attacker.",
+      "timeout_s": 300
+    },
+    {
+      "id": "losses-grouped-per-port",
+      "question": "How much did the SUI/USDC port lose, from the exploit digests?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "7so7R3S4PWVbNb2q5ZLtVCJwZdtXkWkuP3kdqcLhqPfs",
+          "CLcc5sdQnwyAPSe2JZZcg1hr5xJdDMeE94hVHTAgxiY",
+          "EU5RbrKrqcPaafCApKD8TSpN6rA3PkQy5ag9t7MHXogN",
+          "HeDFCgtJUxrLkR5Ew3mxsFZwV94sz4YXPsyPTTmVmaHu",
+          "3rhZzQYirXBrJ149b7YNqH7W5z4J2eB9tNPwWmEvQbDZ",
+          "ByQgf9936qgCW9z3svgUjTCStHNfQdeUpuMT2xk9ao36",
+          "2jGugRF2GrmUs9tErUQKhhcnBJdpY5vEkCUxozky78Tm",
+          "HDZJcgJFSPYo9mhUZ6aN1TpMknXMyEtYu8CVmFjvXjSX",
+          "HnMQD1avcpNCzkRMQqX7Pjj2Y9NUvLZ1DigyVL1uDvLr",
+          "51v26CfmRxu3uCWRBhizcWeNSMqJcpj1dTywbZ1CaFGf",
+          "BFuj1xRDDzGY9P4hafB7A8F4NfMc192vfPGHCRDKNQtM",
+          "CQTpuyVnQrokV3ELT98B7PFqgjFEgGHWHNRjwGgvZYbJ",
+          "2GfKYvd2uvPKWcMb629KgFhdC9o24CmeauobHwnk4ZYL",
+          "9P913ekbrwvAgV3Gpkug4e6JFzQy5Twxiw4dh5Y1N3YY",
+          "6UksPFem7b9tKZ4aXKUUbAgCsM4AsoK7aZ64LdFf9cNf",
+          "ABD9R6CE7ToXGw9BEU1kK2ByFeZgZ9jWw2WBgD477csJ",
+          "5HuRxqZriZfA8vpLJCYn2EQhWCV1HR5Eq76VfmYt8Brk",
+          "8aAJB4g6zPNdG3hf4iEWRzbacpNxkxH7aanMyC1txeVa",
+          "4ngKxDqzkveyrMt7ZQ6CGKsjyBqMfsHzksuuFqK7hbGL",
+          "6hryq5ceSE3apNGtn2iP79Bp6XT9FtiYKxZrt2HjZ6b5",
+          "C57a5E7cF7AWkKHACjXor4n1sGCqtWecn2LUpNRNoX1H",
+          "DNwUDXENUCCujnkG5YQaSTe2osYRoCawdnDF2BKNbhzP",
+          "2ASpeM7wVXHX7J6ecuLJDpVcfzoVCuTnnShMBnKieeBn",
+          "9ERX9eFASrU6P1aJh3edhuQqDQq5vUukGUozr7z5Bp71",
+          "8J5b55S5xjPrU4M1dUThdzUawn24dxK96is4wrRoFfLW",
+          "DbXSF2Gw1gGmMcAZ9rzjHVvFmfGRRB2QHxhMEKcc2jVV",
+          "6PypQxUjLj66xkMT7eT8QSYgkjBLzWA3WNuhRqXQuoT3",
+          "5wiqadYK6D6XBDmg1dqD2wwEAe49HbgMYWu9sh5Rm5Py",
+          "3Fmbu7Pp25iU6TeYrC3padgoYJ2tPaWa8joaZMdHBf1B",
+          "DqYwPUhqjgw5Gz4nU3k5SaJaCbioGPcgbA7dCr6qDoLV",
+          "41kBf8kfV4DWGsgPNh7i2M7wGnfhuVrCacnQSudx2BM5",
+          "BSZdLEBh7pBi2TMDjXVWUWHtbPMGZL2MtEqFBanHJhL8",
+          "4PfqfW4T5K7NqpUCfo11KE6SPi5pms1omyZna6MHdXG5",
+          "2wowKX7XTPx9yndTcHpDMX7FmVceWXRkoh6AU2cuh9ym",
+          "GrsDbyp1nTd41rCBim6ejf7keSgA9gK7u87rzQssfHFj",
+          "97sSJzpCmcFoDkZt1aewDDMxpwzdaSQpYhKfUmH93P72",
+          "BvrLVTyzWdzK7btCGKi7PzsC58fC4xYYYoeg8dLaJ9nM",
+          "BjKjpdNz6YRARdjUgnpQJRo2FaBvPnoCJT7qr34MyWJX",
+          "H83xf84aufu1q5A2kU3axtWsxpcynzkNAk1amojqMkfp",
+          "92dorWBdSTHQAHKk99r1Mv2jNDjZedNC5jd9ZvUiCSsm",
+          "E5YAjVcfNFLwGPKeVmoqF8EN3ninJerLq4hRpiL1dpHM",
+          "Go9MXVoqanAZihJFTJye1hv3jMADk5CQDTNAUckod1gx",
+          "3bp982k4UF67iXCNh8kB6CDmDpgyBHfTWsmkj6MMtuPD",
+          "C8Lz9ygB1RsXxmoN6UGcjEezVUKyrR7tiJyqM7m1qF5B",
+          "EWTDxkZHyj8sSJKSq2V5cwpFTuvXSvbJsT4dY6P9yN2M",
+          "2BMydyrraUBH4howGGftWPr4w3gR9Ca47kzEVJKB1TnG",
+          "3YDnZGxJFCiNduLTr4tNhSTnSxpJNjXh1uB3gKWjcoKH",
+          "3JmgNZqVLsUhquC2MFNXb2ViD3iR2Ddt7W22N1Bh4aAC",
+          "9uXgKmsyzSGajPQz8N98xC5RYJRj4sm4JVKHiQSBTqwZ",
+          "7WWoKQqSqvS99jo5nT3cqZkbVefDihh18RgX3kxsDVQh",
+          "BmvBwTpVhBNdGmYcqoRjjkHZnSUZWmNooXK8Pt2aWUHj",
+          "BrmTcdkqbtW4Z5yc5X2nXBxWqTvLMG44aACfr2afW9S2",
+          "BKo2v5pm2hZZphrw7JFWVLqq4HppeNJUVxG68ytpQFji",
+          "4kBbjqQTduBSxBrTwqHuKfwBbJDszti71ZLBW9nBqEuu",
+          "7sZnb52Do4Ri2EhzBGwXCMJ7Z9Qspz5AbYUWLiwKnF87",
+          "DECa44NjL4G38dDd2rB2bgyf9CgexUbxbXoNJjDpiETN",
+          "HLRSB9n8kyhacCKCyjZzpnjYgDNrobso6Z7ZbikdhL9N",
+          "7DRGvoFj3tk9p7SseYeZ2LkGbPYqEuRaoyRy9LYfNxUZ",
+          "B6DJnC75pvPNBWjQQt4UacMHDUwtjwEc4DGZJagVRegM",
+          "2r1xwDC6AECm4fzzZCYv2aRHekQS4t4BvFAc4TxrVQWx",
+          "9Vaw2Kupqexg7jYGMvw2stxQpi9jDG56cJfucvKDouaA",
+          "BUXaAGYfWrW7TnarNvwTFHeFNCbewDQJJnvWGc8dFco7",
+          "EUcJWv6ZpMA1C3WmyrbrTbRQ8DRXj1TyqCrqJUVRoenJ",
+          "6PRjXF7J3NJHsZDgrGHsqiH5R1CvxvVyzD5M1taodFWx",
+          "3ugGVMB9tJ856JCdjXxsFJ6KUyJJZRGKkrfoeNURu9KH",
+          "2NYsYuojaKXz9zG7zFUzg3j4AQRFEH4nQxXmxXpHxVm4",
+          "7XvxeTDCaopGxRSApd9K2wQCu6iqaKjGx92RxjU4RYHR",
+          "BCJPsfWsLf8pf5A9HRw2FgMU6azW1MHp7QionQnTz4ga",
+          "8bJia2PtAFihKYfo2cYP9NrVLhNwjpJ6nkejTg2q6YYq",
+          "5oRjDPGNNEjwyX64MzWP4vZfJcxAoKBPziNUQLKZ9xCU",
+          "4TJgorAQv1fotwF24XGETuqBVTKDR1j6SKuhaHdRZViv",
+          "5bnGMMUmV9Cku9Hpf5qa8NaEMvr3mfhfTzx2waVnqdHi",
+          "FRpYEqSDDSitzu7yiWgGr5UWHpNGUYYoLWgwi2JPXDff",
+          "9My2umnGBYniEyWQXJVhFHmQgD9bEbvNakyfexgSF6Zz",
+          "2dkfgre2CmkwZVuTFfu8ERKPBSuv9RmTk6xCKCFNm1Qk",
+          "HHpYL7G4qXXGTKRGzMyyAYERj4Ks2E5mZqcY1jGsNf16",
+          "H31e22FVzRsP4e8VrmHZidSfv27ByaswNaFUPrHTLqr1",
+          "9bZNWVWTgmYhp1kj8AyzNYyWuEHnPiE4H7frHaxSvb2v",
+          "8hfemuD1rAgfdpc7ePq9xaqFghEWkTyqJoRotpSnx9gY",
+          "D6xXbpExFiiKBHgkgoSTEZfHRXxjzrHoMD1cWS96xHmE",
+          "F19Yhn1eaRepdhnRe5VAThJAb37Aw3ugwTwtL4RaELEy",
+          "F2LkQkBVWomzTudePvcFp77yg6TiJw4qMnF7YxMrGU2x",
+          "BdB9kb6Sa26p11nqV9h8Mut9AmnPkW8w3H1urBW6yYrq",
+          "9bEEPwLqfYvSAbsbWczVR5TGdMZSiwnS5VfsEeSGfuF9",
+          "23yoeRqjj9Uh8yUhVumTsX4GuGDE5r6vg1xpkfWeUkKv",
+          "6uXy5RdMXrzXgqmfQG7xRSU9ujgXjfkXZe6g15TRMe7p",
+          "7NeCdAgHK6FHg45D9k46H6hnCHnJEM7yEd7PPR5E7Rxx",
+          "23HnC6dQfdQwL7CkGmhRf3mEvMpvXvP7mqqAGReFxxkc",
+          "8g8nCTYGKEBj5eurCETrTRkVcQtMNoSYSc7WQpfAmuYZ",
+          "5gDCcyZygAQU74BiaFeSnkXtafxfiW8P1yu9s8irPqZt",
+          "DMQyK7KE3wGLHLQpvf7H31xekSsK2mrNNNkY7VY4ZKtZ",
+          "CMnkFhXvkNjUjvHMiMUSwLnm3XWfhpNF6iGEpsEygWVQ",
+          "CqLgiyEPTMAMSBXzSsj3Hs7aCcH9R4459WuEVXoQiFek",
+          "HPs47Rp4twsPzv6voN1my26zLzZFEuKh4523xL1NTjq9",
+          "usGpfxuGHytyymxYgjJbY2tw8Q5sx1VnNKr6cJqFBCE",
+          "Dbwq7VYFjVSYMg2xr8W44VepZzK8YJHxEsSkfLHpc4XL",
+          "9dafb2pQVti2YMHkhQ3Y7ofcRTh1KeNsWE23Agrguir5",
+          "2yEmoLjc7uLWKkCTyL8SVs2ZJfcEY1jqRjRTCYwHUBE1",
+          "3KTgDmVDaJyGxiQgqftkkGBp4iAy25Tai5uzdnk6LinA",
+          "CKMQWxYR2waCVwqR47HnDhGd2dcjALkbEntmoHbg6VFa",
+          "CrzrJJQY4zVorDXbTMFjdspyN4ekck1uAPJAzjxfC5Qi",
+          "HSYTgjMhDvptRgKAYHjozQoXnirUBodq6yCGxY3geKPj",
+          "3hRXqcu1gjtGXKukjdWMjDNh8WZvxNzubsUG4urnn1rY",
+          "HP9haotvV2Uz1SeZ6adD7MdohNq4amp13NUUAuCzHjkz",
+          "6pSjs2dBsCJ3BSPqutaPFd1sU3xvYD3E7sJUVaoJydpT",
+          "N1az9FLp1eXvqkRinCp3npawJ3AXDPUGqLnKLckRW8R",
+          "Hbd8t1XmF1fLQTowuH13C7SF111nh1S68ZTh9r2uJKfc",
+          "GoiYCrXfMV5joMctnPLWrWJUUgUvMoJL76EFzKmuUR4j",
+          "8wx7tX6LBZuKFQqk3hd7j6m4c4jx9U1bRE2sLg4irsce",
+          "6uW1RfQAj9kVTyxjd7T2RUXHtRWPbf15NpQQyVBd41RB",
+          "DiLX3wTPq5TrwqpKjSi3cyD5UmTy2AZXCwRhLgy3ZUE2",
+          "BNrPbriXS2VcHisV4eHgNgWRWQLrAqQhZ7WsTbms7y28",
+          "g2hFT4tetbDwjfFLUM64ru4KHdQLGY5gqeYR8T4cemu",
+          "SthNgUzrbaxgWHMP7T8r6BEHkZXCursN4Y5SqX4363D",
+          "HHFMQqRUCHR1fUz2hhKhiwCuayr2aszxoBde9ias6wtH",
+          "CodQ5hMnN2eqXqC28YAzBFPK7aw76SRXsVgCpvMamyZM",
+          "7v1hwkt4nhpb3ktuB46pMqAGoEF8xMDKR2ozt5uQMr6M",
+          "9vNvhTz94tusUWHB3UsxSdntSuH3pRPmmywsnfzAb2ge",
+          "7cojAZrSsgLg7r3zpr6pM1mu7PVPyAsmZGQjVfyCuwaG",
+          "HNtMiSsf6GupzssbBtgXkLGi6uh1ewVye5PqRywEfTgw",
+          "Fdv2UfUZY8pAo4BN6WWmB6jmsoy2UGmCnkbTCy2AqNoW",
+          "CcGk5JJFEFvrho5CSGxCvZEpAyNzgq1sjrZaq3ooKZb5",
+          "D5jzVwJMgeZQghMhgMNQomA78QezMgGbH1iGGpbNsxa7",
+          "9R4yXorEVhTQxauwcEj9bzQZJygGRcvkL2pqMiBGU2UL",
+          "7LhpaidhgEANfosg2jVpofSg67VnNGuUsoB2P61yNZyx",
+          "8QazbfR1LT2tub4ksUiakaR7RrV33zqMhfjrYNWHTir"
+        ]
+      },
+      "expect": [
+        {
+          "path": "totals.usd_gained",
+          "op": "approx",
+          "value": 91000,
+          "tolerance": 0.03
+        },
+        {
+          "path": "groups[0].pools",
+          "op": "includes",
+          "value": "{port_sui_usdc}"
+        },
+        {
+          "path": "groups[0].attacker_usd",
+          "op": "approx",
+          "value": 82500,
+          "tolerance": 0.05
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Full Sail says about $91,000; chain: the attacker netted 112,677.16 SUI and -820.92 USDC on the SUI/USDC port over 43 deposit and withdraw pairs.",
+      "known_defect": "A port's deposit and withdraw legs touch different object sets, so they land in separate groups (+$308.1K and -$225.7K for the SUI/USDC port)."
+    },
+    {
+      "id": "attacker-funding",
+      "question": "Who funded the attacker?",
+      "tool": "find_funding_source",
+      "args": {
+        "address": "{attacker}"
+      },
+      "expect": [
+        {
+          "path": "origin.address",
+          "op": "equals",
+          "value": "{binance_reserve}"
+        },
+        {
+          "path": "origin.label",
+          "op": "equals",
+          "value": "Binance reserve wallet"
+        },
+        {
+          "path": "chain[0].funding_tx",
+          "op": "equals",
+          "value": "{first_funding_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the attacker's first inflow, 457.78 SUI on 28 Aug 2026 21:51 UTC, came from an address Binance lists in its proof of reserves."
+    },
+    {
+      "id": "attacker-cashout",
+      "question": "Where did the attacker send the proceeds on the day?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{attacker}",
+        "from": "2026-08-28T12:00:00Z",
+        "to": "2026-08-29T06:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "top_recipients[0].address",
+          "op": "equals",
+          "value": "{collector}"
+        },
+        {
+          "path": "top_recipients[0].coins[0].amount",
+          "op": "approx",
+          "value": 104579,
+          "tolerance": 0.001
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{binance_reserve}"
+        },
+        {
+          "path": "bridge_exits.transaction_count",
+          "op": "equals",
+          "value": 0
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 11 transfers from 04:50 to 05:42 UTC on 29 Aug sent 104,579 SUI to 0x4f522226, which split it in round amounts across 13 addresses."
+    },
+    {
+      "id": "attest-lead",
+      "question": "Does the package scan point at the attestation path?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{switchboard_v4}"
+      },
+      "expect": [
+        {
+          "path": "findings[*].leads[*].function",
+          "op": "includes",
+          "value": "oracle_attest_action::run"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain (v4 bytecode): oracle_attest_action::run writes the attested key into the shared Oracle through enable_oracle, and the flaw sits in its validate."
+    },
+    {
+      "id": "full-sail-paused-ports",
+      "question": "When did Full Sail pause its vaults, and which?",
+      "tool": "query_events",
+      "args": {
+        "event_type": "0x4ddf9276519dee634ec187b09dedc5d6627f8c578cbacb3c91bbca7dd73aab50::port::PauseEvent",
+        "after_checkpoint": "2026-08-29T05:00:00Z",
+        "before_checkpoint": "2026-08-29T06:00:00Z",
+        "limit": 50
+      },
+      "expect": [
+        {
+          "path": "events",
+          "op": "count_lte",
+          "value": 6
+        },
+        {
+          "path": "events[*].data.port_id",
+          "op": "includes",
+          "value": "{port_sui_usdc}"
+        },
+        {
+          "path": "events[*].data.port_id",
+          "op": "includes",
+          "value": "{port_ika_sui}"
+        },
+        {
+          "path": "events[*].data.port_id",
+          "op": "includes",
+          "value": "{port_eth_usdc}"
+        },
+        {
+          "path": "oldest_shown",
+          "op": "matches",
+          "value": "^2026-08-29T05:29:47"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Full Sail says it paused the affected products; chain: six port::pause calls from 05:29:47 to 05:32:52 UTC, 100 s after the attacker's last withdrawal at 05:28:07."
+    },
+    {
+      "id": "switchboard-protocol-name",
+      "question": "Which protocol is the oracle package the exploit called?",
+      "tool": "identify_address",
+      "args": {
+        "address": "{switchboard_v4}"
+      },
+      "expect": [
+        {
+          "path": "protocol",
+          "op": "exists"
+        },
+        {
+          "path": "lineage.root_package_id",
+          "op": "equals",
+          "value": "{switchboard_root}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: lineage 0xc3c7e6eb defines aggregator::Aggregator, oracle::Oracle and queue::Queue and its queue 0x662f5642 is named 'Mainnet Guardian Queue'; the incident reports name the oracle Switchboard.",
+      "known_defect": "identify_address returns protocol null for Switchboard's on-demand package."
+    }
+  ]
+}

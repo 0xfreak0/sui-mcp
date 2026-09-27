@@ -92,7 +92,6 @@ describe("build_timeline subject_flow", () => {
       { coin: "SUI", amount: "1847", formatted: "0.000001847 SUI", raw_type: SUI, coin_verified: true },
     ]);
     expect(row.subject_flow[SENDER][0].amount).toBe("-101847");
-    expect(row.token_flow[0].amount).toBe("-101847");
   });
 
   it("shows only the tracked address when the sender is not tracked", async () => {
@@ -100,5 +99,6 @@ describe("build_timeline subject_flow", () => {
     const [row] = (await run("build_timeline", { addresses: [RECEIVER] })).timeline;
     expect(Object.keys(row.subject_flow)).toEqual([RECEIVER]);
     expect(row.subject_flow[RECEIVER][0].amount).toBe("1847");
+    expect(row.token_flow[0].amount).toBe("-101847");
   });
 });

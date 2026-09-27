@@ -1,16 +1,19 @@
 import { z } from "zod";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
-import { numArg, timePointArg } from "./args.js";
+import { boolArg, numArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { resolvePackageId } from "../utils/move-package.js";
 import { resolvePublisher } from "../utils/publisher.js";
+import { findRedeploys, REDEPLOY_CAP_PAGES, REDEPLOY_MAX_PACKAGE_READS, type FunctionOrigin } from "../utils/redeploys.js";
 import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
 import { describeSignatures, readAuthentication, type Authentication } from "../utils/multisig.js";
 import { ownerDesc, type OwnerDesc } from "../utils/object-history.js";
 import { diffLinkage, type LinkageEntry } from "../utils/package-diff.js";
+import { SYSTEM_PACKAGE } from "../utils/disassembly.js";
 import {
   capExcursions,
   capHolderAtPublish,
@@ -32,6 +35,9 @@ const UPGRADE_CAP_TYPE = "0x0000000000000000000000000000000000000000000000000000
 
 /** Pages of 50. A lineage or a cap history past this is reported as incomplete. */
 const MAX_PAGES = 20;
+
+/** Characters of compact JSON the function_origins groups may take in a summary. */
+const FUNCTION_ORIGINS_BUDGET = 6_000;
 
 const TX_FIELDS = `digest sender { address } effects { timestamp checkpoint { sequenceNumber } } signatures { signatureBytes }`;
 
@@ -315,10 +321,20 @@ function signerView(signer: Authentication | null, senderAuth: Authentication | 
   };
 }
 
+/**
+ * The dependency versions a package version runs: its linkage table without
+ * framework rows, which upgrade in place and pin nothing.
+ */
+function linkedDependencies(linkage: LinkageEntry[]) {
+  return linkage
+    .filter((l) => !SYSTEM_PACKAGE.test(l.originalId))
+    .map((l) => ({ original_id: l.originalId, linked_id: l.upgradedId, linked_version: l.version }));
+}
+
 export function registerUpgradeHistoryTools(server: McpServer) {
   server.tool(
     "get_upgrade_history",
-    "(Incident investigation) Upgrade governance across a package's whole lineage. For every version: package id, publish/upgrade transaction, time, sender, the sender's signing scheme (single key, zkLogin, passkey, or multisig with its threshold and which members signed), and who held the UpgradeCap at that moment. Flags an UpgradeCap round trip (it leaves its usual holder, an upgrade ships, and it returns within `round_trip_hours`), an upgrade signed by a single key while the cap is usually multisig-held, an upgrade-policy change, and a cap that was destroyed (package made immutable), wrapped, frozen, shared or sent to an unspendable address. Pass `as_of` to ask who held upgrade authority at a moment and which version was the newest then. Also lists non-framework dependency relinks per version. Accepts any version's 0x id or an MVR name (@org/app).",
+    "(Incident investigation) Upgrade governance across a package's whole lineage. For every version: package id, publish/upgrade transaction, time, sender, the sender's signing scheme (single key, zkLogin, passkey, or multisig with its threshold and which members signed), and who held the UpgradeCap at that moment. Flags an UpgradeCap round trip (it leaves its usual holder, an upgrade ships, and it returns within `round_trip_hours`), an upgrade signed by a single key while the cap is usually multisig-held, an upgrade-policy change, and a cap that was destroyed (package made immutable), wrapped, frozen, shared or sent to an unspendable address. Pass `as_of` to ask who held upgrade authority at a moment and which version was the newest then. Also lists non-framework dependency relinks per version, and for the latest version and the one newest at `as_of`, `dependencies`: the version of each non-framework dependency that code runs (`linked_id` is the ID to read with disassemble_module; bytecode names a dependency by its original ID). Older versions stay callable after an upgrade; this tool reads no code for that, and analyze_package on any version compares the versions' code and names older versions whose public functions skip a check the newest version makes (`ungated-older-version`). Accepts any version's 0x id or an MVR name (@org/app).",
     {
       package: z.string().describe("Any version's package ID (0x...) or an MVR name (@org/app)"),
       as_of: timePointArg()
@@ -329,8 +345,19 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         .max(720)
         .optional()
         .describe("A cap that leaves its usual holder and returns within this many hours around an upgrade is flagged (default 24)"),
+      find_redeploys: boolArg()
+        .optional()
+        .describe(
+          `Also search for other lineages carrying this lineage's module code, a redeploy rather than an upgrade (default false). Candidates are the lineages whose UpgradeCap the root's publisher or the current cap holder still holds (up to ${REDEPLOY_CAP_PAGES * 50} caps each); those sharing at least half the module names have every version compared, ignoring addresses, nearest-published first within ${REDEPLOY_MAX_PACKAGE_READS} package reads. Returns module_origins (per module, the earliest version carrying the shared code, this lineage included), function_origins (functions whose code, compared function by function with table indices resolved, appears earlier than their module's origin, or whose module no compared lineage carries whole, grouped by module and origin version) and related_lineages.`,
+        ),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe(
+          `'summary' (default) lists the function_origins groups that fit about ${FUNCTION_ORIGINS_BUDGET / 1000}k characters, those whose code most predates their module's origin first, and \`omitted\` states how many groups and functions were left out. 'full' lists every group. Only find_redeploys output is capped.`,
+        ),
     },
-    async ({ package: ref, as_of, round_trip_hours }) => {
+    async ({ package: ref, as_of, round_trip_hours, find_redeploys, detail }) => {
       try {
         const at = as_of !== undefined && as_of.trim() !== "" ? parseAsOf(as_of) : null;
         const windowHours = round_trip_hours ?? 24;
@@ -424,9 +451,12 @@ export function registerUpgradeHistoryTools(server: McpServer) {
                       package_id: asOfState.latest_version.package_id,
                       published_at: asOfState.latest_version.timestamp,
                       sender: asOfState.latest_version.sender,
+                      dependencies: linkedDependencies(
+                        versions.find((v) => v.version === asOfState.latest_version!.version)?.linkage ?? [],
+                      ),
                     }
                   : null,
-                note: "Older versions stay callable after an upgrade unless the package itself checks a version number, so the newest version is not necessarily the only live code.",
+                note: "Older versions stay callable after an upgrade unless the package itself checks a version number, so the newest version is not necessarily the only live code. analyze_package on any version names older versions whose public functions skip a check the newest version makes (`ungated-older-version`).",
                 ...(asOfState.unordered
                   ? {
                       unordered: `${asOfState.unordered} event(s) lacked the ${"checkpoint" in at ? "checkpoint" : "timestamp"} needed to place them against as_of and were left out.`,
@@ -447,11 +477,26 @@ export function registerUpgradeHistoryTools(server: McpServer) {
           return Number.isNaN(a) || Number.isNaN(b) ? null : Math.round(((b - a) / 3_600_000) * 1000) / 1000;
         };
 
+        // A redeploy mints an unrelated root, so no version walk reaches it;
+        // the search starts from who could have published it.
+        const holderNow = !end && current && (current.owner.kind === "address" || current.owner.kind === "consensus") ? current.owner.address : null;
+        const searchFrom = [root.sender, holderNow].filter((a): a is string => !!a && !/^0x0+$/.test(a));
+        const redeploys =
+          find_redeploys && !systemPackage && searchFrom.length > 0 ? await findRedeploys(
+                root.package_id,
+                versions.map((v) => ({ version: v.version, package_id: v.package_id, published_at: v.timestamp ?? null })),
+                searchFrom,
+              ) : null;
+
         const result = {
           package: ref,
           root_package_id: root.package_id,
           version_count: versions.length,
-          latest: { version: versions[versions.length - 1].version, package_id: versions[versions.length - 1].package_id },
+          latest: {
+            version: versions[versions.length - 1].version,
+            package_id: versions[versions.length - 1].package_id,
+            dependencies: linkedDependencies(versions[versions.length - 1].linkage),
+          },
           ...(lineage.complete ? {} : { lineage_truncated: `Only the first ${versions.length} versions were read.` }),
           upgrade_cap: capId
             ? {
@@ -524,9 +569,44 @@ export function registerUpgradeHistoryTools(server: McpServer) {
             round_trip: x.round_trip,
           })),
           ...(end ? { cap_end: end } : {}),
+          ...(redeploys
+            ? {
+                module_origins: redeploys.module_origins,
+                functions_older_than_module: redeploys.functions_older_than_module,
+                functions_dated_by_module: redeploys.functions_dated_by_module,
+                function_origins: redeploys.function_origins,
+                related_lineages: redeploys.related,
+                ...(redeploys.related_omitted ? { related_lineages_omitted: redeploys.related_omitted } : {}),
+                related_lineages_search: {
+                  searched_addresses: redeploys.searched_addresses,
+                  caps_read: redeploys.caps_read,
+                  ...(redeploys.caps_truncated ? { caps_truncated: true } : {}),
+                  lineages_found: redeploys.lineages_found,
+                  candidates: redeploys.candidates,
+                  lineages_compared: redeploys.lineages_compared,
+                  package_reads: redeploys.package_reads,
+                  note: "A lineage is a candidate only while the root's publisher or this cap's current holder still holds its UpgradeCap, and it shares at least half this lineage's module names. One whose cap was destroyed or moved elsewhere is not found, so an empty list says only that these caps name no copy. Code is compared with every address blanked. In identical_modules, here is the earliest version of this lineage with the code and there the earliest version of the other with it; module_origins gives, per module, the earliest-published version carrying the shared code, in this lineage (queried_lineage: true) or a compared one. function_origins compares each function on its own (its signature and instructions, with calls, types, fields and constants resolved to names and addresses blanked), so a function keeps its match when other code in its module changed. Each row groups the functions of one module whose earliest carrier, chosen as for modules, is one version published before that module's origin; module_origin is null when no compared lineage carries the whole module. functions_older_than_module counts those functions and functions_dated_by_module the shared functions module_origins already dates. declared_changes lists functions the origin declared with another visibility or entry flag than this lineage does now.",
+                },
+              }
+            : find_redeploys
+              ? { related_lineages_search: { note: "No publisher or current cap holder to start from (a framework package, or neither could be read), so nothing was searched." } }
+              : {}),
         };
 
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        const { payload } = capPayload(
+          "get_upgrade_history",
+          { package: ref, as_of, round_trip_hours, find_redeploys },
+          result,
+          {
+            function_origins: {
+              budget: FUNCTION_ORIGINS_BUDGET,
+              weight: (f: FunctionOrigin) => f.functions.length,
+              brief: (f: FunctionOrigin) => ({ module: f.module, functions: f.functions.length, root_package_id: f.root_package_id, published_at: f.published_at }),
+            } satisfies ListCap<FunctionOrigin>,
+          },
+          { full: detail === "full", next_call: { tool: "get_upgrade_history", repeat_with: { detail: "full" } } },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

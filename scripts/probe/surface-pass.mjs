@@ -349,6 +349,14 @@ try {
     return d.target === target && args.join() === dargs.join();
   });
   ck("decode_ptb on the Cetus exploit's BCS = raw sender, inputs and commands", decoded.sender === rawTx.sender.address && decoded.input_count === rawTx.kind.inputs.nodes.length && decoded.gas_budget === String(rawTx.gasInput.gasBudget) && cmdsMatch, `${decoded.command_count} cmds`);
+  const ptbByDigest = await call("decode_ptb", { digest: CETUS_EXPLOIT });
+  const ptbWiring = (cmds) => (cmds ?? []).map((c) => `${c.target ?? c.type}(${(c.arguments ?? []).map((a) => `${a.type}${a.index ?? a.result}`).join()})`).join(";");
+  const ptbObjectArgs = (ptbByDigest.commands ?? []).flatMap((c) => (c.arguments ?? []).filter((a) => a.object_id));
+  ck(
+    "decode_ptb by digest = the same PTB as its BCS, each object argument with its version and type",
+    ptbWiring(ptbByDigest.commands) === ptbWiring(decoded.commands) && ptbObjectArgs.length > 0 && ptbObjectArgs.every((a) => a.version && a.object_type),
+    `${ptbByDigest.command_count} cmds, ${ptbObjectArgs.length} object args`,
+  );
 
   const AMOUNT = 1_000_000_000n;
   const built = await call("build_transfer", { sender: NEMO_FUNDER, recipient: BINANCE_HOT, amount: AMOUNT.toString() });

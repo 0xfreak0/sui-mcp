@@ -11,6 +11,11 @@
  * generated file keeps identifying a protocol across upgrades that nobody has
  * curated yet.
  *
+ * It also records, per root, every address that signed a publish or upgrade
+ * of the lineage (`custody.signers`). `src/protocols/package-custody.ts`
+ * reads a called package's own publisher against these: only the holder of
+ * such a key can publish a version under it.
+ *
  *   npm run sync:protocol-roots [-- --network mainnet]
  *
  * Re-run it after adding entries to protocols.json. It refuses to write when two
@@ -62,6 +67,43 @@ async function rootsFor(ids) {
   return ids.map((id, i) => [id, body.data[`p${i}`]?.nodes?.[0]?.address ?? null]);
 }
 
+async function gql(query, variables) {
+  const res = await fetch(GRAPHQL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  const body = await res.json();
+  if (body.errors) throw new Error(`GraphQL: ${body.errors.map((e) => e.message).join("; ")}`);
+  return body.data;
+}
+
+/**
+ * Every address that signed a version of the lineage: the publish of the root
+ * and each upgrade. The current UpgradeCap holder is not recorded, because
+ * anyone can send a cap to it; a signature needs the key.
+ */
+async function custodyOf(root) {
+  const signers = new Set();
+  let after = null;
+  // A lineage past 500 versions does not exist; the cap guards the cursor loop.
+  for (let page = 0; page < 10; page++) {
+    const data = await gql(
+      `query ($a: SuiAddress!, $after: String) { packageVersions(address: $a, first: 50, after: $after) { nodes { previousTransaction { sender { address } } } pageInfo { hasNextPage endCursor } } }`,
+      { a: root, after },
+    );
+    const conn = data.packageVersions;
+    for (const n of conn?.nodes ?? []) {
+      const sender = n.previousTransaction?.sender?.address;
+      // System packages are written by the protocol, with no sender.
+      if (sender && !/^0x0*$/.test(sender)) signers.add(normalize(sender));
+    }
+    if (!conn?.pageInfo?.hasNextPage) break;
+    after = conn.pageInfo.endCursor;
+  }
+  return { signers: [...signers].sort() };
+}
+
 const ids = Object.keys(protocols);
 const roots = new Map(); // root -> { name, type }
 const conflicts = [];
@@ -111,6 +153,18 @@ const sorted = [...roots.entries()].sort(
   ([ra, a], [rb, b]) => a.name.localeCompare(b.name) || ra.localeCompare(rb),
 );
 
+// One root at a time, against a shared public endpoint.
+const custody = [];
+for (const [i, [root]] of sorted.entries()) {
+  process.stderr.write(`custody ${i + 1} of ${sorted.length}\r`);
+  try {
+    custody.push([root, await custodyOf(root)]);
+  } catch (err) {
+    console.warn(`\ncustody of ${root} not read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+process.stderr.write("\n");
+
 writeFileSync(
   OUT,
   JSON.stringify(
@@ -118,10 +172,11 @@ writeFileSync(
       _generated: "npm run sync:protocol-roots — do not hand-edit; add entries to protocols.json",
       network: NETWORK,
       roots: Object.fromEntries(sorted),
+      custody: Object.fromEntries(custody),
     },
     null,
     2,
   ) + "\n",
 );
 
-console.log(`\nWrote ${sorted.length} lineages from ${ids.length} curated ids → ${OUT}`);
+console.log(`\nWrote ${sorted.length} lineages (${custody.length} with custody) from ${ids.length} curated ids → ${OUT}`);

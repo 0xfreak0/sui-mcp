@@ -9,8 +9,9 @@ import { BALANCE_CHANGES_SELECTION, COMMANDS_SELECTION, completeTxConnections, t
 import type { GqlBalanceChangeNode, GqlCommandNode } from "../utils/gql-adapters.js";
 import { fetchEventJson } from "../utils/event-json.js";
 import { readBridgeEvents } from "../utils/bridge/exits.js";
+import { CROSS_CHAIN_LEAD_MEANING, crossChainLeads } from "../utils/bridge/cross-chain.js";
 import { EVIDENCE_TIER_MEANING, type SuiEventNode } from "../utils/bridge/wormhole.js";
-import { describeAddresses, identityNote, type AddressIdentity } from "../utils/identity.js";
+import { describeAddresses, fetchKinds, identityNote, type AddressIdentity } from "../utils/identity.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
 import { displayCoin, prefetchCoinScale, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
 import { coinKey } from "../utils/trace-hop.js";
@@ -21,6 +22,7 @@ import {
   roundUsd as round,
   entryCandidates,
   exitCandidates,
+  leadCandidates,
   groupExits,
   readExit,
   summarizeFlows,
@@ -28,6 +30,7 @@ import {
   type ExitRecord,
   type FlowTx,
 } from "../utils/address-flows.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 
 /**
  * Everything one scan needs: balance changes and commands (both completed past
@@ -169,7 +172,7 @@ function who(address: string, identity: AddressIdentity | undefined) {
 export function registerFlowTools(server: McpServer) {
   server.tool(
     "summarize_address_flows",
-    "(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. `address_poisoning` warns when two addresses seen in the scan (as a source, a recipient, or dust the subject received) render alike enough to be mistaken for one another. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.",
+    "(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Up to 20 other sends in which its value reached no address are read for the shape of a cross-chain message from an unrecognised bridge (`cross_chain_leads`, tier heuristic, a lead and never an exit). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. `address_poisoning` is always present: `addresses_compared` and the `pairs` of addresses seen in the scan (as a source, a recipient, or dust the subject received) that render alike enough to be mistaken for one another. An empty `pairs` covers only this window's addresses. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.",
     {
       address: addressArg().describe("Address to summarise (0x... or a SuiNS name)."),
       from: timePointArg()
@@ -191,8 +194,14 @@ export function registerFlowTools(server: McpServer) {
         .max(50)
         .optional()
         .describe(`Recipients to list, and counterparties to identify in each direction (default ${DEFAULT_TOP}).`),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe(
+          "'summary' (default) lists the counterparties, coins and unattributed rows that fit about 20k characters: the top ranked by value, plus every labelled or non-wallet address and every lookalike, always. Totals and counts cover every row, and `omitted` states what each list left out. 'full' lists every row.",
+        ),
     },
-    async ({ address, from, to, coin_type, max_transactions, top }) => {
+    async ({ address, from, to, coin_type, max_transactions, top, detail }) => {
       try {
         const window = await resolveWindow(from, to);
         const budget = max_transactions ?? DEFAULT_MAX_TRANSACTIONS;
@@ -245,7 +254,11 @@ export function registerFlowTools(server: McpServer) {
         const qualify = getNetwork() === "mainnet";
         const candidates = exitCandidates(address, txs);
         const entries = entryCandidates(txs);
-        const events = await readEvents([...new Set([...candidates, ...entries].map((t) => t.digest))]);
+        const leadTxs = leadCandidates(address, txs, summary, candidates);
+        const events = await readEvents([...new Set([...candidates, ...entries, ...leadTxs.txs].map((t) => t.digest))]);
+        const leads = leadTxs.txs.flatMap((tx) =>
+          crossChainLeads(events.get(tx.digest) ?? []).map((l) => ({ digest: tx.digest, timestamp: tx.timestamp, ...l })),
+        );
         const exits = candidates
           .map((tx) => readExit(address, tx, events.get(tx.digest) ?? null, qualify))
           .filter((e): e is ExitRecord => e !== null);
@@ -290,14 +303,29 @@ export function registerFlowTools(server: McpServer) {
         const sponsoredBy = [...summary.sponsoredBy.values()].sort((a, b) => b.digests.length - a.digests.length);
         const sponsored = [...summary.sponsored.values()].sort((a, b) => b.digests.length - a.digests.length);
 
-        const identities = await describeAddresses([
+        const identified = [
           ...sources.slice(0, topN).map((s) => s.c.address),
           ...recipients.slice(0, topN).map((s) => s.c.address),
           ...sponsoredBy.slice(0, topN).map((s) => s.address),
-        ]);
+        ];
+        // Every other counterparty is classified too, so a package or object
+        // ranked below `top` is flagged and survives the cap. An address whose
+        // read failed carries kind_unread and is kept as well.
+        const shown = new Set(identified);
+        const rest = [
+          ...new Set([...sources.map((s) => s.c.address), ...recipients.map((s) => s.c.address), ...sponsoredBy.map((s) => s.address)]),
+        ].filter((a) => !shown.has(a));
+        const [identities, kinds] = await Promise.all([describeAddresses(identified), fetchKinds(rest)]);
+        const kindOf = (addr: string) => {
+          if (shown.has(addr)) return {};
+          const k = kinds.get(addr);
+          if (!k) return { kind_unread: true };
+          return k.kind === "wallet" ? {} : { kind: k.kind, ...(k.type ? { object_type: k.type } : {}) };
+        };
 
         const counterpartyRow = ({ c, usd }: { c: Counterparty; usd: number | null }, identify: boolean) => ({
           ...who(c.address, identify ? identities.get(c.address) : undefined),
+          ...(identify ? {} : kindOf(c.address)),
           usd: usd === null ? null : round(usd),
           coins: v.amounts(c.coins),
           transactions: c.digests.length,
@@ -327,6 +355,7 @@ export function registerFlowTools(server: McpServer) {
                 ? {
                     price_usd: p.price,
                     price_source: p.source,
+                    ...(p.priced_as ? { priced_as: p.priced_as } : {}),
                     ...(offset !== null ? { price_offset_sec: offset } : {}),
                     ...(offset !== null && Math.abs(offset) > PRICE_STALE_THRESHOLD_SEC ? { price_stale: true } : {}),
                     usd: {
@@ -335,7 +364,7 @@ export function registerFlowTools(server: McpServer) {
                       net: round(v.usd(f.coinType, net)!),
                     },
                   }
-                : { usd: null, ...(unpriced ? { unpriced: { code: unpriced.code, reason: unpriced.reason } } : {}) }),
+                : { usd: null, ...(unpriced ? { unpriced: unpriced.code } : {}) }),
             };
           })
           .sort((a, b) => Math.abs(b.usd?.net ?? 0) - Math.abs(a.usd?.net ?? 0) || b.transactions_in + b.transactions_out - (a.transactions_in + a.transactions_out));
@@ -362,6 +391,22 @@ export function registerFlowTools(server: McpServer) {
         const spanDays = oldestMs !== null && newestMs !== null ? (newestMs - oldestMs) / 86_400_000 : 0;
         const bridgeGroups = groupExits(exits);
         const unresolvedVaas = exits.flatMap((e) => e.unresolvedVaas);
+        // An exit's beneficiary drops what the output already says once: its
+        // evidence tier (bridge_exits.evidence), an account that is
+        // chain:address, raw bytes that are the address zero-padded, and its
+        // amount note, named per source in amount_notes.
+        const amountNotes: Record<string, string> = {};
+        const exitBeneficiaries = exits.map((e) =>
+          e.beneficiaries.map(({ evidence: _tier, amount_note, address_raw, account, ...b }) => {
+            if (amount_note) amountNotes[b.source] = amount_note;
+            const padded = b.address?.startsWith("0x") ? `0x${b.address.slice(2).toLowerCase().padStart(64, "0")}` : null;
+            return {
+              ...b,
+              ...(address_raw !== padded ? { address_raw } : {}),
+              ...(account && account !== `${b.chain}:${b.address}` ? { account } : {}),
+            };
+          }),
+        );
 
         const payload = {
           address,
@@ -385,7 +430,7 @@ export function registerFlowTools(server: McpServer) {
                 }
               : {}),
           },
-          ...(poisoning ? { address_poisoning: poisoning } : {}),
+          address_poisoning: poisoning,
           usd_basis:
             atSec !== null
               ? {
@@ -395,6 +440,9 @@ export function registerFlowTools(server: McpServer) {
                 }
               : { kind: "none", meaning: "No transaction in the window, so nothing was priced." },
           coins,
+          ...(prices.unpriced.length
+            ? { unpriced_reasons: Object.fromEntries(prices.unpriced.map((u) => [u.code, u.reason])) }
+            : {}),
           totals_usd: {
             in: round(pricedCoins.reduce((s, c) => s + (c.usd?.in ?? 0), 0)),
             out: round(pricedCoins.reduce((s, c) => s + (c.usd?.out ?? 0), 0)),
@@ -408,24 +456,18 @@ export function registerFlowTools(server: McpServer) {
             ...(summary.gasUnread ? { transactions_gas_unread: summary.gasUnread } : {}),
             note: "Net gas this address paid as gas payer (computation + storage - rebate). It is excluded from the SUI totals above.",
           },
+          inflow_source_count: sources.length,
           inflow_sources: sources.map((s, i) => counterpartyRow(s, i < topN)),
           unattributed_inflows: unattributedRows(summary.unattributedIn),
           recipient_count: recipients.length,
-          top_recipients: recipients.slice(0, topN).map((s) => counterpartyRow(s, true)),
-          ...(recipients.length > topN
-            ? {
-                other_recipients: {
-                  count: recipients.length - topN,
-                  usd: round(recipients.slice(topN).reduce((s, r) => s + (r.usd ?? 0), 0)),
-                },
-              }
-            : {}),
+          top_recipients: recipients.map((s, i) => counterpartyRow(s, i < topN)),
           unattributed_outflows: unattributedRows(summary.unattributedOut),
           unattributed_meaning:
             "Value that arrived or left without another address's balance moving the other way: swap proceeds and inputs, protocol deposits and withdrawals, exploits, mints, burns and bridge exits. The digests say which.",
           gas_sponsorship: {
             sponsored_by: sponsoredBy.map((s, i) => ({
               ...who(s.address, i < topN ? identities.get(s.address) : undefined),
+              ...(i < topN ? {} : kindOf(s.address)),
               transactions: s.digests.length,
               ...digestList(s.digests),
             })),
@@ -433,10 +475,15 @@ export function registerFlowTools(server: McpServer) {
           },
           bridge_exits: {
             transaction_count: exits.length,
-            scope: "Transactions this address sent that carry a bridge marker, read from their events.",
+            scope:
+              `Transactions this address sent that carry a bridge marker, read from their events. ${leadTxs.txs.length} other ` +
+              "transaction(s) it sent in which value left with no address receiving it were read for the shape of a cross-chain " +
+              "message from a bridge with no marker here (cross_chain_leads)" +
+              (leadTxs.skipped ? `; ${leadTxs.skipped} more such transaction(s) were not read.` : "."),
             evidence: EVIDENCE_TIER_MEANING["chain-derived"],
             sent_meaning:
               "What actually crossed the bridge: the subject's own outflow minus whatever another Sui address was credited in the same coin in the same transaction (a bridge fee, a relayer payment, a referrer cut). Those legs are reported separately, in retained_on_sui, wherever they are non-zero.",
+            ...(Object.keys(amountNotes).length ? { amount_notes: amountNotes } : {}),
             by_bridge: bridgeGroups.map((g) => ({
               bridge: g.bridge,
               transactions: g.digests.length,
@@ -460,14 +507,14 @@ export function registerFlowTools(server: McpServer) {
               })),
               ...(g.unresolvedDigests.length ? { no_recipient_read: g.unresolvedDigests } : {}),
             })),
-            transactions: exits.map((e) => ({
+            transactions: exits.map((e, i) => ({
               digest: e.digest,
               timestamp: e.timestamp,
               bridge: e.bridge,
               protocols: e.protocols,
               sent: v.amounts(e.sent),
               ...(e.retained.size ? { retained_on_sui: v.amounts(e.retained) } : {}),
-              beneficiaries: e.beneficiaries,
+              beneficiaries: exitBeneficiaries[i],
               ...(e.unresolvedVaas.length ? { unresolved_vaas: e.unresolvedVaas } : {}),
               ...(e.eventsIncomplete ? { events_incomplete: true } : {}),
               ...(e.beneficiaries.length === 0
@@ -481,9 +528,71 @@ export function registerFlowTools(server: McpServer) {
               : {}),
           },
           ...(inbound.length ? { bridge_entries: inbound } : {}),
+          ...(leads.length ? { cross_chain_leads: leads, cross_chain_leads_meaning: CROSS_CHAIN_LEAD_MEANING } : {}),
         };
 
-        return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
+        // Every list is ranked above; the cap keeps the identified top rows,
+        // flagged rows and whatever else fits, and states the rest.
+        const topSources = new Set(sources.slice(0, topN).map((s) => s.c.address));
+        const topRecipients = new Set(recipients.slice(0, topN).map((s) => s.c.address));
+        const lookalikes = new Set(poisoning.pairs.flatMap((p) => [p.suspect, p.established]));
+        type Row = { address: string; label?: string; kind?: string; kind_unread?: boolean; usd: number | null };
+        type CoinRow = (typeof coins)[number];
+        type Unattributed = { usd: number | null; transactions: number };
+        const flagged = (r: Row) => Boolean(r.label || r.kind || r.kind_unread) || lookalikes.has(r.address);
+        // Priced rows worth $1 or more first, then unpriced rows, then priced
+        // dust: an unpriced coin can be the loot, and $0.01 of a priced one
+        // cannot.
+        const tier = (usd: number | null) => (usd === null ? 1 : usd >= 1 ? 0 : 2);
+        const coinUsd = (c: CoinRow) => (c.usd === null ? null : c.usd.in + c.usd.out);
+        const coinTx = (c: CoinRow) => c.transactions_in + c.transactions_out;
+        const brief = (r: Row & { transactions?: number }) => ({ address: r.address, usd: r.usd, transactions: r.transactions });
+        const args = { address, from, to, coin_type, max_transactions, top };
+        const { payload: out } = capPayload(
+          "summarize_address_flows",
+          args,
+          payload,
+          {
+            inflow_sources: {
+              budget: 8_000,
+              keep: (r: Row) => flagged(r) || topSources.has(r.address),
+              usd: (r: Row) => r.usd,
+              brief,
+            } satisfies ListCap<Row>,
+            top_recipients: {
+              budget: Infinity,
+              limit: 0,
+              keep: (r: Row) => flagged(r) || topRecipients.has(r.address),
+              usd: (r: Row) => r.usd,
+              brief,
+            } satisfies ListCap<Row>,
+            coins: {
+              budget: 5_000,
+              keepOrder: true,
+              keep: (c: CoinRow) => c.coin_type === sui || c.coin_verified === true || (coinUsd(c) ?? 0) >= 1,
+              rank: (a: CoinRow, b: CoinRow) => tier(coinUsd(a)) - tier(coinUsd(b)) || coinTx(b) - coinTx(a),
+              usd: coinUsd,
+              brief: (c: CoinRow) => ({ coin_type: c.coin_type, symbol: c.symbol, in: c.in, out: c.out, transactions: coinTx(c) }),
+            } satisfies ListCap<CoinRow>,
+            unattributed_inflows: {
+              budget: 2_500,
+              keepOrder: true,
+              rank: (a: Unattributed, b: Unattributed) => tier(a.usd) - tier(b.usd) || (b.usd ?? 0) - (a.usd ?? 0) || b.transactions - a.transactions,
+              usd: (u: Unattributed) => u.usd,
+            } satisfies ListCap<Unattributed>,
+            unattributed_outflows: {
+              budget: 2_500,
+              keepOrder: true,
+              rank: (a: Unattributed, b: Unattributed) => tier(a.usd) - tier(b.usd) || (b.usd ?? 0) - (a.usd ?? 0) || b.transactions - a.transactions,
+              usd: (u: Unattributed) => u.usd,
+            } satisfies ListCap<Unattributed>,
+            "gas_sponsorship.sponsored_by": { budget: 1_500, keep: (r: Row) => Boolean(r.label || r.kind || r.kind_unread) },
+            "gas_sponsorship.sponsored": { budget: 1_500 },
+          },
+          { full: detail === "full", next_call: { tool: "summarize_address_flows", repeat_with: { detail: "full" } } },
+        );
+
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

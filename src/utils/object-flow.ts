@@ -385,6 +385,8 @@ export interface GrpcChangedObject {
   outputOwner?: GrpcOwner | null;
   /** `sui.rpc.v2.ChangedObject.OutputObjectState` */
   outputState?: number;
+  inputVersion?: bigint;
+  outputVersion?: bigint;
   /** Present when `outputState` is ACCUMULATOR_WRITE: an address-balance write. */
   accumulatorWrite?: {
     address?: string;
@@ -412,13 +414,71 @@ export function readGrpcOwner(owner: GrpcOwner | null | undefined): OwnerRef | n
   };
 }
 
+/** A shared object a transaction wrote: a pool, a vault, a market. */
+export interface SharedWrite {
+  object_id: string;
+  type: string | null;
+}
+
+/**
+ * What a transaction's object changes say about where value it took from its
+ * sender without paying any address can sit, and whether the sender can have
+ * a claim on it.
+ */
+export interface WrittenObjects {
+  /** Shared objects written: a pool, a vault, a market. */
+  shared: SharedWrite[];
+  /**
+   * Addresses left owning a non-coin object the transaction created,
+   * transferred to them or wrote in place: a receipt, a share, a position.
+   */
+  owners: string[];
+  /**
+   * A dynamic field was written. A protocol that keeps accounts in a table
+   * keyed by address stores a depositor's claim this way, and the key is not
+   * in the object changes, so whose it is cannot be read. Address-balance
+   * accumulator writes are not counted.
+   */
+  ledger: boolean;
+}
+
+const DYNAMIC_FIELD_PREFIX = `${ADDR2}::dynamic_field::Field<`;
+
+/** A dynamic field other than an address-balance accumulator entry. */
+const isLedgerField = (type: string | null | undefined) =>
+  Boolean(type?.startsWith(DYNAMIC_FIELD_PREFIX)) && !type!.includes("::accumulator::");
+
+/** Read {@link WrittenObjects} from either transport's object changes. */
+export function writtenObjects(changes: { gql?: GqlObjectChange[]; grpc?: GrpcChangedObject[] }): WrittenObjects {
+  const shared: SharedWrite[] = [];
+  const owners = new Set<string>();
+  let ledger = false;
+  const note = (id: string | undefined, type: string | null, owner: OwnerRef | null) => {
+    if (!id) return;
+    if (owner?.kind === "shared") shared.push({ object_id: id, type });
+    if (isLedgerField(type)) ledger = true;
+    const base = type?.split("<")[0];
+    if (owner?.kind === "address" && owner.address && base !== COIN_TYPE && !isLedgerField(type)) owners.add(owner.address);
+  };
+  for (const c of changes.gql ?? []) {
+    if (c.idDeleted || !c.outputState) continue;
+    note(c.address, c.outputState.asMoveObject?.contents?.type?.repr ?? null, readOwner(c.outputState.owner));
+  }
+  for (const c of changes.grpc ?? []) {
+    if (c.outputState === OUTPUT_ACCUMULATOR_WRITE || c.outputState === OUTPUT_DOES_NOT_EXIST || c.idOperation === ID_DELETED) continue;
+    note(c.objectId, c.objectType ?? null, readGrpcOwner(c.outputOwner));
+  }
+  return { shared, owners: [...owners], ledger };
+}
+
 /** `sui.rpc.v2.ChangedObject.InputObjectState` */
 const INPUT_DOES_NOT_EXIST = 1;
 const INPUT_EXISTS = 2;
 /** `sui.rpc.v2.ChangedObject.IdOperation` */
 const ID_CREATED = 2;
 const ID_DELETED = 3;
-/** `sui.rpc.v2.ChangedObject.OutputObjectState.ACCUMULATOR_WRITE` */
+/** `sui.rpc.v2.ChangedObject.OutputObjectState` */
+const OUTPUT_DOES_NOT_EXIST = 1;
 const OUTPUT_ACCUMULATOR_WRITE = 4;
 
 /** Counts of what a transaction's effects touched. */
@@ -450,6 +510,49 @@ export function summarizeObjectChanges(changes: GrpcChangedObject[]): ObjectChan
     created: objects.filter((c) => c.idOperation === ID_CREATED).length,
     deleted: objects.filter((c) => c.idOperation === ID_DELETED).length,
   };
+}
+
+/** One changed object: its id, type, and the version it ended at (or, if it no longer exists, the version it was read at). */
+export interface ObjectChangeEntry {
+  object_id: string;
+  type: string | null;
+  version: string | null;
+}
+
+/** A transaction's changed objects by what happened to each. */
+export type ObjectChangesByKind = Partial<Record<"created" | "mutated" | "unwrapped" | "wrapped" | "deleted", ObjectChangeEntry[]>>;
+
+/**
+ * Every changed object's id and type, grouped by kind. The groups partition
+ * what {@link summarizeObjectChanges} counts: `created` and `deleted` match
+ * its counts and all groups together match `changed`. An object with no
+ * output that was not deleted went into another object (`wrapped`); one with
+ * no input that was not created came out of one (`unwrapped`). Empty groups
+ * are left out.
+ */
+export function listObjectChanges(changes: GrpcChangedObject[]): ObjectChangesByKind {
+  const out: ObjectChangesByKind = {};
+  for (const c of changes) {
+    if (c.outputState === OUTPUT_ACCUMULATOR_WRITE) continue;
+    const outputGone = c.outputState === OUTPUT_DOES_NOT_EXIST;
+    const kind =
+      c.idOperation === ID_CREATED
+        ? "created"
+        : c.idOperation === ID_DELETED
+          ? "deleted"
+          : outputGone
+            ? "wrapped"
+            : c.inputState === INPUT_DOES_NOT_EXIST
+              ? "unwrapped"
+              : "mutated";
+    const version = outputGone || c.idOperation === ID_DELETED ? c.inputVersion : c.outputVersion;
+    (out[kind] ??= []).push({
+      object_id: c.objectId ?? "",
+      type: c.objectType ?? null,
+      version: version !== undefined ? version.toString() : null,
+    });
+  }
+  return out;
 }
 
 export function readGrpcObjectChanges(

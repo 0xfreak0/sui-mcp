@@ -19,7 +19,9 @@ import { getNetworkConfig } from "../config.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { protoValueToJson } from "./proto.js";
 import { fetchEventJson } from "./event-json.js";
-import type { AttackCall, AttackTx } from "./attack-analysis.js";
+import type { ArgRef, AttackCall, AttackInput, AttackTx, PureArg } from "./attack-analysis.js";
+import { readGrpcObjectChanges } from "./object-flow.js";
+import { gasPaidOf } from "./payouts.js";
 
 const READ_MASK = {
   paths: ["digest", "transaction", "effects", "events", "timestamp", "checkpoint", "balance_changes"],
@@ -38,8 +40,70 @@ const COMMAND_KIND: Record<string, string> = {
   upgrade: "Upgrade",
 };
 
-/** The gRPC argument kind for "an input of this PTB". */
+/** gRPC argument kinds. */
+const ARGUMENT_GAS = 1;
 const ARGUMENT_INPUT = 2;
+const ARGUMENT_RESULT = 3;
+
+/** gRPC `Owner.kind` of a consensus object, and of an object owned by another object. */
+const OWNER_SHARED = 3;
+const OWNER_OBJECT = 2;
+const OWNER_CONSENSUS_ADDRESS = 5;
+
+/** gRPC `ChangedObject` input and output states. */
+const INPUT_EXISTS = 2;
+const OUTPUT_OBJECT_WRITE = 2;
+
+/** gRPC `Input.kind` of a shared object input. */
+const INPUT_SHARED = 3;
+
+/** Byte lengths a Move unsigned integer takes in BCS: u8 through u256. */
+const UINT_WIDTHS = new Set([1, 2, 4, 8, 16, 32]);
+
+/**
+ * A pure input as the caller sent it: its length, and its value read as a
+ * little-endian unsigned integer when the length is one an integer can have.
+ * The Move type is not known here, so a 32-byte address reads as a u256 too;
+ * callers compare these values against numbers, never display them as such.
+ */
+export function readPureArg(bytes: Uint8Array): PureArg {
+  if (!UINT_WIDTHS.has(bytes.length)) return { bytes: bytes.length, uint: null };
+  let v = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+  return { bytes: bytes.length, uint: v.toString() };
+}
+
+/**
+ * The unsigned integers a pure input can carry. A length that is an integer
+ * width reads as one value; a ULEB128 length followed by exactly that many
+ * 8- or 16-byte words reads as a `vector<u64>` or `vector<u128>`. A pure of any
+ * other length (an address list, a string, a signature) carries none.
+ */
+export function pureValues(bytes: Uint8Array): string[] {
+  const whole = readPureArg(bytes).uint;
+  let n = 0;
+  let pos = 0;
+  while (pos < bytes.length && pos < 5) {
+    const b = bytes[pos];
+    n += (b & 0x7f) * 2 ** (7 * pos);
+    pos++;
+    if ((b & 0x80) === 0) break;
+  }
+  const rest = bytes.length - pos;
+  const out = whole !== null ? [whole] : [];
+  for (const width of [8, 16]) {
+    if (n === 0 || rest !== n * width) continue;
+    for (let i = 0; i < n; i++) out.push(readPureArg(bytes.subarray(pos + i * width, pos + (i + 1) * width)).uint!);
+  }
+  return out;
+}
+
+function argRef(a: GrpcTypes.Argument): ArgRef | null {
+  if (a.kind === ARGUMENT_INPUT && a.input !== undefined) return { input: a.input };
+  if (a.kind === ARGUMENT_RESULT && a.result !== undefined) return { result: a.result };
+  if (a.kind === ARGUMENT_GAS) return { gas: true };
+  return null;
+}
 
 /**
  * An `ExecutedTransaction` in the shape `attack-analysis.ts` reads. Pure, so
@@ -49,17 +113,26 @@ export function fromGrpcTransaction(t: GrpcTypes.ExecutedTransaction): AttackTx 
   const data = t.transaction?.kind?.data;
   const ptb = data?.oneofKind === "programmableTransaction" ? data.programmableTransaction : null;
   const inputs = ptb?.inputs ?? [];
+  // A shared input taken mutably, for effects that do not carry the input owner.
+  const sharedInputs = new Set(inputs.filter((i) => i.kind === INPUT_SHARED && i.mutable && i.objectId).map((i) => i.objectId!));
   const commandKinds: string[] = [];
   const calls: AttackCall[] = [];
+  const vectors: NonNullable<AttackTx["vectors"]> = [];
   (ptb?.commands ?? []).forEach((cmd, i) => {
     const kind = cmd.command.oneofKind;
     commandKinds.push(kind ? (COMMAND_KIND[kind] ?? kind) : "Unknown");
+    if (kind === "makeMoveVector") {
+      vectors.push({ command: i, elements: (cmd.command.makeMoveVector.elements ?? []).flatMap((a) => argRef(a) ?? []) });
+      return;
+    }
     if (kind !== "moveCall") return;
     const mc = cmd.command.moveCall;
-    const objectArgs = (mc.arguments ?? [])
+    const inputArgs = (mc.arguments ?? [])
       .filter((a) => a.kind === ARGUMENT_INPUT && a.input !== undefined)
-      .map((a) => inputs[a.input!]?.objectId)
-      .filter((id): id is string => Boolean(id));
+      .map((a) => inputs[a.input!])
+      .filter((inp): inp is GrpcTypes.Input => inp !== undefined);
+    const objectArgs = inputArgs.map((inp) => inp.objectId).filter((id): id is string => Boolean(id));
+    const pureArgs = inputArgs.flatMap((inp) => (inp.pure ? [readPureArg(inp.pure)] : []));
     calls.push({
       command: i,
       package: mc.package ?? "",
@@ -67,6 +140,8 @@ export function fromGrpcTransaction(t: GrpcTypes.ExecutedTransaction): AttackTx 
       function: mc.function ?? "",
       typeArguments: mc.typeArguments ?? [],
       objectArgs: [...new Set(objectArgs)],
+      pureArgs,
+      args: (mc.arguments ?? []).flatMap((a) => argRef(a) ?? []),
     });
   });
   const ts = t.timestamp;
@@ -77,6 +152,9 @@ export function fromGrpcTransaction(t: GrpcTypes.ExecutedTransaction): AttackTx 
     timestampMs: ts ? Number(ts.seconds) * 1000 + Math.floor(ts.nanos / 1_000_000) : null,
     checkpoint: t.checkpoint !== undefined ? t.checkpoint.toString() : null,
     commandKinds,
+    bcs: t.transaction?.bcs?.value ?? null,
+    movements: readGrpcObjectChanges(t.effects?.changedObjects ?? []),
+    gas: gasPaidOf(t.effects?.gasUsed, t.transaction?.gasPayment?.owner),
     calls,
     events: (t.events?.events ?? []).map((e, index) => ({
       index,
@@ -88,10 +166,27 @@ export function fromGrpcTransaction(t: GrpcTypes.ExecutedTransaction): AttackTx 
       coinType: b.coinType ?? "",
       amount: b.amount ?? "0",
     })),
-    objects: (t.effects?.changedObjects ?? []).map((o) => ({
-      objectId: o.objectId ?? "",
-      objectType: o.objectType ?? null,
+    objects: (t.effects?.changedObjects ?? []).map((o) => {
+      const kind = o.inputOwner?.kind ?? o.outputOwner?.kind;
+      const parent = kind === OWNER_OBJECT ? (o.inputOwner?.address ?? o.outputOwner?.address ?? null) : null;
+      return {
+        objectId: o.objectId ?? "",
+        objectType: o.objectType ?? null,
+        shared:
+          o.inputOwner?.kind === OWNER_SHARED ||
+          o.inputOwner?.kind === OWNER_CONSENSUS_ADDRESS ||
+          (o.objectId !== undefined && sharedInputs.has(o.objectId)),
+        parent,
+        inputVersion: o.inputState === INPUT_EXISTS && o.inputVersion !== undefined ? o.inputVersion.toString() : null,
+        outputVersion: o.outputState === OUTPUT_OBJECT_WRITE && o.outputVersion !== undefined ? o.outputVersion.toString() : null,
+      };
+    }),
+    inputs: inputs.map((inp): AttackInput => ({
+      objectId: inp.objectId ?? null,
+      bytes: inp.pure?.length ?? 0,
+      values: inp.pure ? pureValues(inp.pure) : [],
     })),
+    vectors,
   };
 }
 

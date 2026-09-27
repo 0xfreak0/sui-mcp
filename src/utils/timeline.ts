@@ -14,8 +14,8 @@ export interface TimelineEntry {
   status: string;
   protocols: string[];
   actions: string[];
-  /** The SENDER's balance changes, whichever tracked address the row is for. */
-  token_flow: DecodedTransaction["token_flow"];
+  /** The SENDER's balance changes, when the sender is not tracked: a tracked sender's are its `subject_flow` entry. */
+  token_flow?: DecodedTransaction["token_flow"];
   /** Tracked addresses involved in this tx. */
   involved: string[];
   /**

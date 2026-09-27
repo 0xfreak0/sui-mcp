@@ -17,7 +17,7 @@ vi.mock("../../src/clients/graphql.js", () => ({
 
 // Loaded after the mocks above: both import the grpc/graphql clients.
 const { registerIdentifyTools } = await import("../../src/tools/identify.js");
-const { registeredTools, unknownToolsIn } = await import("../helpers/tool-names.js");
+const { registeredTools, unknownToolsIn, leadsWithBinaryTool } = await import("../helpers/tool-names.js");
 
 const tools = new Map<string, Function>();
 const mockServer = {
@@ -60,6 +60,9 @@ describe("identify_address", () => {
     expect(data.module_count).toBe(2);
     expect(data.modules).toContain("module_a");
     expect(data.modules).toContain("module_b");
+    // The decompiler is an optional binary; the hint leads with what every install has.
+    expect(leadsWithBinaryTool(data.hint)).toBe(false);
+    expect(unknownToolsIn(data.hint, new Set(registeredTools().map((t) => t.name)))).toEqual([]);
   });
 
   it("names the protocol behind an upgraded package via its lineage", async () => {

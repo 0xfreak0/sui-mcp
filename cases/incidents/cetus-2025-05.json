@@ -1,0 +1,352 @@
+{
+  "slug": "cetus-2025-05",
+  "kind": "protocol-exploit",
+  "title": "Cetus CLMM exploit, 22 May 2025",
+  "network": "mainnet",
+  "summary": "Between 10:30:50 and 10:45:38 UTC on 22 May 2025 one wallet sent 287 transactions against Cetus CLMM version 10 (265 succeeded) and drained about $223M from the pools. Each one called the public pool::add_liquidity with a huge liquidity amount on a far-above-price tick range; clmm_math::get_delta_a computed the token-A cost through integer-mate v3's math_u256::checked_shlw, whose bound 0xffffffffffffffff << 192 (with >) lets values between 2^192 and that bound through, so the 64-bit left shift wrapped and the attacker paid 1 unit. Integer-mate v4 and v5 fixed the bound (1 << 192, >=) the same day and CLMM v11 relinked to v5 at 18:15:28. About $60M left Sui to Ethereum 0x89012a55 through Mayan, CCTP, Sui Bridge and Wormhole; validators froze the two Sui wallets and a governance-authorised transaction moved the frozen funds on 30 May 2025.",
+  "sources": [
+    { "url": "https://cetusprotocol.notion.site/Cetus-Incident-Report-May-22-2025-Attack-Disclosure-1ff1dbf3ac8680d7a98de6158597d416", "publisher": "Cetus", "kind": "victim-postmortem" },
+    { "url": "https://dedaub.com/blog/the-cetus-amm-200m-hack-how-a-flawed-overflow-check-led-to-catastrophic-loss/", "publisher": "Dedaub", "kind": "security-firm" }
+  ],
+  "subjects": {
+    "attacker": "0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06",
+    "frozen_wallet_1": "0xcd8962dad278d8b50fa0f9eb0186bfa4cbdecc6d59377214c88d0286a0ac9562",
+    "exploit_tx": "DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x",
+    "funding_tx": "EKHNUkpyzuzBg85rFXxpvXiR4kYU9quRXDCZNUmqYnuh",
+    "attacker_funder": "0xff1070d40277a3d748a3222b44eab08ed588b256094ecdc2090badf0f9f5e9f4",
+    "hasui_sui_pool": "0x871d8a227114f375170f149f7e9d45be822dd003eba225e83c05ac80828596bc",
+    "eth_wallet_2": "eip155:1:0x89012a55cd6b88e407c9d4ae9b3425f55924919b",
+    "clmm_original": "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb",
+    "clmm_v10": "0xc6faf3703b0e8ba9ed06b7851134bbbe7565eb35ff823fd78432baa4cbeaa12e",
+    "clmm_v11": "0x687e4b27fd88de55f2d7023dc7a3ec07ccd28b6a45a35ac88e95b6c387a3e338",
+    "integer_mate_original": "0x714a63a0dba6da4f017b42d5d0fb78867f18bcde904868e51d951a5a6f5b7f57",
+    "integer_mate_v3": "0xe2b515f0052c0b3f83c23db045d49dbe1732818ccfc5d4596c9482f7f2e76a85",
+    "integer_mate_v5": "0x991a8ab5ccc7af04c5d1327aaff520a074e1444bf7fcde2fcfcb0ad58b9c2af4",
+    "sui_bridge_usdt": "0x375f70cf2ae4c00bf37117d0c85a2c71545e6ee05c4a5c7d282cd66a4504b068::usdt::USDT",
+    "recovery_tx": "J4QqSAgp7VrQtQpMy5wDX4QGsCSEZu3U5KuDAkbESAge",
+    "recovery_recipient": "0xa165cf7f150f34375b3943ccc66edd52de8561191ec7d663ec32fb836f078544",
+    "recovery_signer": "0x0b2da327ba6a4cacbe75dddd50e6e8bbf81d6496e92d66af9154c61c77f7332f"
+  },
+  "checks": [
+    {
+      "id": "attacker-funder",
+      "question": "Who paid for the attacker's wallet, and can the trail go further?",
+      "tool": "find_funding_source",
+      "args": { "address": "{attacker}" },
+      "expect": [
+        { "path": "chain[0].funded_by", "op": "iequals", "value": "{attacker_funder}" },
+        { "path": "chain[0].funding_tx", "op": "equals", "value": "{funding_tx}" },
+        { "path": "origin_popularity.popular", "op": "equals", "value": true }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the attacker's first transaction is 9.98 SUI from 0xff1070d4 on 19 May 2025, a wallet that paid more than 50 addresses. Neither Cetus nor Dedaub names a funder."
+    },
+    {
+      "id": "first-exploit-tx",
+      "question": "Which of the attacker's transactions is the first exploit, and what came before it?",
+      "tool": "get_transaction_history",
+      "args": { "address": "{attacker}", "order": "oldest", "limit": 5 },
+      "expect": [
+        { "path": "transactions[0].digest", "op": "equals", "value": "{funding_tx}" },
+        { "path": "transactions[1].status", "op": "equals", "value": "failure" },
+        { "path": "transactions[2].digest", "op": "equals", "value": "{exploit_tx}" },
+        { "path": "transactions[2].timestamp", "op": "equals", "value": "2025-05-22T10:30:50.476Z" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus timeline: the exploit began at 10:30:50 UTC. Dedaub cites DVMG3B2k as an attack transaction. On chain a failed out-of-gas transaction at 07:26 precedes it."
+    },
+    {
+      "id": "first-exploit-profit",
+      "question": "What did the first exploit transaction take, from which pool, and how?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{attacker}" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "10024321275017081" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "5765124463062928" },
+        { "path": "flash_legs[*].kind", "op": "includes", "value": "flash_swap" },
+        { "path": "pool_flows[*].pool", "op": "includes", "value": "{hasui_sui_pool}" },
+        { "path": "swaps[0].price_change_pct", "op": "lte", "value": -99.99 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Dedaub: the attacker kept about 5.7 million SUI after a flash swap on the haSUI/SUI pool. Balance changes on chain: +10,024,321.275017081 haSUI and +5,765,124.463062928 SUI; the SwapEvent moves the sqrt price from 18956530795606879104 to 18425720184762886."
+    },
+    {
+      "id": "incident-losses",
+      "question": "How many exploit transactions were there, and what did they take in total?",
+      "tool": "summarize_incident_losses",
+      "args": { "sender": "{attacker}", "start": "2025-05-22T10:30:00Z", "end": "2025-05-22T10:46:00Z", "max_groups": 15 },
+      "expect": [
+        { "path": "transactions_read", "op": "equals", "value": 287 },
+        { "path": "failed_transactions", "op": "count_gte", "value": 22 },
+        { "path": "failed_transactions", "op": "count_lte", "value": 22 },
+        { "path": "groups[0].pools[0]", "op": "equals", "value": "{hasui_sui_pool}" },
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "55429398247450" },
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "10138247832730473" },
+        { "path": "totals.lower_bound", "op": "equals", "value": true }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus: exploit from 10:30:50 UTC, pools disabled from 10:57:47. On chain the attacker sent 287 transactions between 10:30:50 and 10:45:38, 265 successful, netting 55,429,398.24745 USDC and 10,138,247.83 haSUI among 195 coins.",
+      "timeout_s": 300
+    },
+    {
+      "id": "incident-losses-usdt-priced",
+      "question": "Is the 19.0M Sui Bridge USDT the attacker took counted in the USD total?",
+      "tool": "summarize_incident_losses",
+      "args": { "sender": "{attacker}", "start": "2025-05-22T10:30:00Z", "end": "2025-05-22T10:46:00Z", "max_groups": 1 },
+      "expect": [
+        { "path": "unpriced_remainder[*].coin_type", "op": "excludes", "value": "{sui_bridge_usdt}" },
+        { "path": "totals.usd_gained", "op": "gte", "value": 210000000 }
+      ],
+      "tier": "price-provider",
+      "basis": "Cetus puts the loss at about $223M ($60M bridged, $162M frozen). On chain the attacker netted 19,013,239.615614 of the verified Sui Bridge USDT, a dollar stablecoin.",
+      "timeout_s": 300
+    },
+    {
+      "id": "bridge-exits",
+      "question": "How did the attacker take value off Sui, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2025-05-22T10:46:00Z", "to": "2025-05-23T00:00:00Z" },
+      "expect": [
+        { "path": "coverage.complete", "op": "equals", "value": true },
+        { "path": "bridge_exits.transaction_count", "op": "equals", "value": 76 },
+        { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Mayan MCTP" },
+        { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Circle CCTP" },
+        { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Sui Bridge" },
+        { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Wormhole" },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].account", "op": "includes", "value": "{eth_wallet_2}" },
+        { "path": "bridge_exits.by_bridge[*].destinations[*].account", "op": "count_lte", "value": 5 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus: the rest of the funds were bridged to Ethereum and sit in 0x0251536b and 0x89012a55. On chain every one of the 76 bridge exits names 0x89012a55 (55 Mayan MCTP legs for 54,429,398.25 USDC, 7 CCTP burns for 6,885,703.59 USDC, 10 Sui Bridge sends, 4 Wormhole transfers)."
+    },
+    {
+      "id": "sent-to-frozen-wallet-1",
+      "question": "Where did the SUI the attacker kept on Sui go?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2025-05-22T10:46:00Z", "to": "2025-05-23T00:00:00Z" },
+      "expect": [
+        { "path": "top_recipients[0].address", "op": "iequals", "value": "{frozen_wallet_1}" },
+        { "path": "top_recipients[0].coins[*].amount", "op": "includes", "value": 24022895.1732351 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus names 0xcd8962da as Attacker Sui Wallet 1 (Frozen). On chain the attacker sent it 24,022,895.17 SUI after the exploit."
+    },
+    {
+      "id": "frozen-funds-recovery",
+      "question": "How did the frozen funds leave the attacker's wallet, and who authorised it?",
+      "tool": "get_transaction",
+      "args": { "digest": "{recovery_tx}", "max_event_field_bytes": 0 },
+      "expect": [
+        { "path": "sender", "op": "iequals", "value": "{attacker}" },
+        { "path": "timestamp", "op": "equals", "value": "2025-05-30T20:46:40.092Z" },
+        { "path": "authorization[*].role", "op": "includes", "value": "acting_for_sender" },
+        { "path": "authorization[*].address", "op": "includes", "value": "{recovery_signer}" },
+        { "path": "balance_changes[*].address", "op": "includes", "value": "{recovery_recipient}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus asked validators to back an on-chain vote that would return the frozen assets. On chain a transaction sent as the attacker, signed by multisig 0x0b2da327 acting for the sender and calling governance_voting::assert_can_be_executed, moved 193 coin types to multisig 0xa165cf7f on 30 May 2025."
+    },
+    {
+      "id": "mech-exploit-calls",
+      "question": "Which Move functions did the exploit transaction call, in which CLMM version?",
+      "tool": "get_transactions",
+      "args": { "digests": ["{exploit_tx}"] },
+      "expect": [
+        { "path": "transactions[0].move_calls[0]", "op": "equals", "value": "{clmm_v10}::pool::flash_swap" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{clmm_v10}::pool::open_position" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{clmm_v10}::pool::add_liquidity" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{clmm_v10}::pool::remove_liquidity" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{clmm_v10}::pool::repay_add_liquidity" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{clmm_v10}::clmm_math::get_liquidity_from_a" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus: flash_swap, open a position at a higher tick range, add_liquidity with an overflowed check, repeated remove_liquidity. Dedaub: the attacker computed amounts with get_liquidity_from_a. The PTB's commands on chain call package 0xc6faf370."
+    },
+    {
+      "id": "mech-one-unit-for-huge-liquidity",
+      "question": "What liquidity did the attacker add, on which ticks, and what did it pay?",
+      "tool": "get_transaction",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "events[*].parsed.liquidity", "op": "includes", "value": "10365647984364446732462244378333008" },
+        { "path": "events[*].parsed.tick_lower.bits", "op": "includes", "value": 300000 },
+        { "path": "events[*].parsed.tick_upper.bits", "op": "includes", "value": 300200 },
+        { "path": "events[2].parsed.amount_a", "op": "equals", "value": "1" },
+        { "path": "events[2].parsed.amount_b", "op": "equals", "value": "0" },
+        { "path": "events[3].parsed.amount_a", "op": "equals", "value": "10024321275017082" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Dedaub: position [300000, 300200], liquidity 10,365,647,984,364,446,732,462,244,378,333,008 added for 1 unit of token A. On chain AddLiquidityEvent carries those values and the next RemoveLiquidityEvent pays out 10,024,321,275,017,082 raw haSUI."
+    },
+    {
+      "id": "mech-add-liquidity-arguments",
+      "question": "Which liquidity and ticks did the exploit pass as arguments, and into which position and pool?",
+      "tool": "decode_ptb",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "commands[10].target", "op": "iequals", "value": "{clmm_v10}::pool::open_position" },
+        { "path": "commands[10].arguments[2].value", "op": "equals", "value": 300000 },
+        { "path": "commands[10].arguments[3].value", "op": "equals", "value": 300200 },
+        { "path": "commands[11].target", "op": "iequals", "value": "{clmm_v10}::pool::add_liquidity" },
+        { "path": "commands[11].arguments[1].object_id", "op": "iequals", "value": "{hasui_sui_pool}" },
+        { "path": "commands[11].arguments[2].index", "op": "equals", "value": 10 },
+        { "path": "commands[11].arguments[3].value_type", "op": "equals", "value": "u128" },
+        { "path": "commands[11].arguments[3].value", "op": "equals", "value": "10365647984364446732462244378333008" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Dedaub: the attacker opened [300000, 300200] and added liquidity 10,365,647,984,364,446,732,462,244,378,333,008. On chain the PTB passes those as pure u32 and u128 inputs to open_position and add_liquidity on the haSUI/SUI pool, with the new Position flowing from command 10 into command 11."
+    },
+    {
+      "id": "mech-live-version-and-patch",
+      "question": "Which CLMM version was live at the attack, and when and how was it patched?",
+      "tool": "get_upgrade_history",
+      "args": { "package": "{clmm_v10}", "as_of": "2025-05-22T10:30:50Z" },
+      "expect": [
+        { "path": "as_of.newest_version.package_id", "op": "iequals", "value": "{clmm_v10}" },
+        { "path": "as_of.newest_version.version", "op": "equals", "value": 10 },
+        { "path": "versions[10].package_id", "op": "iequals", "value": "{clmm_v11}" },
+        { "path": "versions[10].timestamp", "op": "equals", "value": "2025-05-22T18:15:28.733Z" },
+        { "path": "versions[10].linkage_changes[*].from.address", "op": "includes", "value": "{integer_mate_v3}" },
+        { "path": "versions[10].linkage_changes[*].to.address", "op": "includes", "value": "{integer_mate_v5}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Cetus timeline: 18:15:28 UTC, vulnerable contract patched and upgraded. On chain CLMM v11 was published at 18:15:28.733 and relinked integer-mate from v3 (0xe2b515f0) to v5 (0x991a8ab5)."
+    },
+    {
+      "id": "mech-clmm-links-integer-mate-v3",
+      "question": "Which integer-mate code did CLMM v10 actually run?",
+      "tool": "get_package_dependency_graph",
+      "args": { "package_id": "{clmm_v10}" },
+      "expect": [
+        { "path": "graph[0].version", "op": "equals", "value": "10" },
+        { "path": "graph[0].dependencies[*].package_id", "op": "includes", "value": "{integer_mate_v3}" },
+        { "path": "graph[0].dependencies[*].original_id", "op": "includes", "value": "{integer_mate_original}" }
+      ],
+      "tier": "code-derived",
+      "basis": "Cetus: the flaw is in the integer-mate library the CLMM depends on. CLMM v10's linkage table on chain maps integer-mate 0x714a63a0 to its v3 at 0xe2b515f0."
+    },
+    {
+      "id": "mech-add-liquidity-caller-sets-liquidity",
+      "question": "Can a caller choose the liquidity amount and let the pool compute what it owes?",
+      "tool": "get_move_function",
+      "args": { "package_id": "{clmm_v10}", "module_name": "pool", "function_name": "add_liquidity" },
+      "expect": [
+        { "path": "visibility", "op": "equals", "value": "public" },
+        { "path": "parameters[3]", "op": "equals", "value": "u128" },
+        { "path": "returns[0]", "op": "contains", "value": "::pool::AddLiquidityReceipt<T0, T1>" }
+      ],
+      "tier": "code-derived",
+      "basis": "Dedaub: a user opens a position by specifying a liquidity parameter and supplying the corresponding tokens. In v10 pool::add_liquidity is public, takes the liquidity as a u128 and returns a receipt of the amounts to pay."
+    },
+    {
+      "id": "mech-get-delta-a-uses-checked-shlw",
+      "question": "How does CLMM v10 compute the token-A cost of liquidity?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{clmm_v10}", "module_name": "clmm_math" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "public get_delta_a\\([^)]*\\): u64 \\{(?:(?!\\n}\\n)[\\s\\S])*?Call full_math_u128::full_mul\\(u128, u128\\): u256\\n\\t\\d+: Call math_u256::checked_shlw\\(u256\\): u256 \\* bool\\n(?:(?!\\n}\\n)[\\s\\S])*?Abort" }
+      ],
+      "tier": "code-derived",
+      "basis": "Dedaub: get_delta_a in clmm_math multiplies liquidity by the sqrt price difference and passes the product to math_u256::checked_shlw, aborting only on its overflow flag. The v10 bytecode shows full_mul followed by checked_shlw and an abort branch."
+    },
+    {
+      "id": "mech-checked-shlw-wrong-bound",
+      "question": "What overflow bound does the linked checked_shlw use before shifting left 64 bits?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{integer_mate_v3}", "module_name": "math_u256" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "public checked_shlw\\(Arg0: u256\\): u256 \\* bool \\{(?:(?!\\n}\\n)[\\s\\S])*?LdU256\\(115792089237316195417293883273301227089434195242432897623355228563449095127040\\)[^\\n]*\\n\\t2: Gt\\n(?:(?!\\n}\\n)[\\s\\S])*?LdU8\\(64\\)\\n\\t\\d+: Shl" }
+      ],
+      "tier": "code-derived",
+      "basis": "Cetus and Dedaub: checked_shlw tests n > 0xffffffffffffffff << 192 instead of n >= 1 << 192, so a product just above 2^192 is shifted and loses its top bits. In integer-mate v3 the constant is 115792089237316195417293883273301227089434195242432897623355228563449095127040 (0xffffffffffffffff << 192), compared with Gt before Shl by 64."
+    },
+    {
+      "id": "mech-get-package-names-linked-integer-mate",
+      "question": "Which integer-mate version does the exploited CLMM version run, as get_package reports it?",
+      "tool": "get_package",
+      "args": {
+        "package_id": "{clmm_v10}"
+      },
+      "expect": [
+        {
+          "path": "dependencies[*].linked_id",
+          "op": "includes",
+          "value": "{integer_mate_v3}"
+        },
+        {
+          "path": "dependencies[*].original_id",
+          "op": "includes",
+          "value": "{integer_mate_original}"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: CLMM v10's linkage table pins integer-mate at version 3, the version whose checked_shlw Cetus and Dedaub describe."
+    },
+    {
+      "id": "mech-get-delta-a-reads-linked-math",
+      "question": "Which integer-mate version does get_delta_a's call to checked_shlw run, and what is the bound?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{clmm_v10}",
+        "module_name": "clmm_math",
+        "function_name": "get_delta_a"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^public get_delta_a\\("
+        },
+        {
+          "path": "uses[*]",
+          "op": "count_gte",
+          "value": 1
+        },
+        {
+          "path": "_text",
+          "op": "matches",
+          "value": "::math_u256;[^\"]*{integer_mate_v3}"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: clmm_math::get_delta_a calls math_u256::checked_shlw, and CLMM v10's linkage resolves integer-mate to version 3."
+    },
+    {
+      "id": "mech-checked-shlw-bound-is-shifted-mask",
+      "question": "What is checked_shlw's bound, written in hex?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{integer_mate_v3}",
+        "module_name": "math_u256",
+        "function_name": "checked_shlw"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "LdU256\\(115792089237316195417293883273301227089434195242432897623355228563449095127040\\)[^\\n]*0xffffffffffffffff << 192\\n\\t2: Gt"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: the constant is 0xffffffffffffffff << 192; Cetus's post-mortem calls it the mask the check should not have compared against, where the correct bound is 1 << 192."
+    },
+    {
+      "id": "mech-fix-in-integer-mate",
+      "question": "What did the fixing integer-mate upgrade change?",
+      "tool": "diff_package_upgrade",
+      "args": { "package": "{integer_mate_original}", "from_version": 3, "to_version": 5 },
+      "expect": [
+        { "path": "to.address", "op": "iequals", "value": "{integer_mate_v5}" },
+        { "path": "diff.changed_modules", "op": "count_lte", "value": 1 },
+        { "path": "diff.changed_modules[*].module", "op": "includes", "value": "math_u256" },
+        { "path": "diff.changed_modules[0].sample", "op": "includes", "value": "- \t2: Gt" },
+        { "path": "diff.changed_modules[0].sample", "op": "includes", "value": "+ \t2: Ge" },
+        { "path": "_text", "op": "contains", "value": "LdU256(115792089237316195417293883273301227089434195242432897623355228563449095127040)" },
+        { "path": "_text", "op": "contains", "value": "LdU256(6277101735386680763835789423207666416102355444464034512896)" }
+      ],
+      "tier": "code-derived",
+      "basis": "Cetus: the correct check is n >= 1 << 192. Integer-mate v5 (0x991a8ab5, 22 May 2025 16:00 UTC), which CLMM v11 links, changes only checked_shlw: the bound becomes 6277101735386680763835789423207666416102355444464034512896 (1 << 192) and Gt becomes Ge."
+    }
+  ]
+}

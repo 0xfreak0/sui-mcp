@@ -30,7 +30,7 @@ registerHistoryTools({
 
 const run = async (a: Args) => JSON.parse((await handler(a)).content[0].text);
 
-const VICTIM = `0x6b28df${"7".repeat(53)}04ac9`;
+const VICTIM = `0xa11ce0${"7".repeat(53)}c0de5`;
 /** The address the lookalike imitates: 3 leading, 4 trailing. */
 const REAL = `0x7a4c19${"8".repeat(53)}de50f`;
 const FAKE = `0x7a41c6${"9".repeat(53)}de50f`;
@@ -120,7 +120,7 @@ describe("get_transaction_history — address poisoning", () => {
    * itself — the case that targets transfers between someone's own wallets.
    */
   it("compares the subject address itself", async () => {
-    const twin = `0x6b28df${"1".repeat(53)}04ac9`;
+    const twin = `0xa11ce0${"1".repeat(53)}c0de5`;
     mockGqlQuery.mockResolvedValue(
       page([node("dust", twin, [[VICTIM, "1000000"], [twin, "-2097880"]])]),
     );
@@ -129,25 +129,25 @@ describe("get_transaction_history — address poisoning", () => {
     expect(r.address_poisoning.pairs[0].established).toBe(VICTIM);
   });
 
-  it("omits the field when nothing collides", async () => {
+  it("reports the comparison with no pairs when nothing collides", async () => {
     mockGqlQuery.mockResolvedValue(
       page([node("plain", REAL, [[VICTIM, "5000000000"], [REAL, "-5002000000"]])]),
     );
     const r = await run({ address: VICTIM });
-    expect(r.address_poisoning).toBeUndefined();
+    expect(r.address_poisoning).toMatchObject({ addresses_compared: 2, pairs: [] });
   });
 
   it("survives a page with no balance changes at all", async () => {
     mockGqlQuery.mockResolvedValue(page([node("empty", REAL, [])]));
     const r = await run({ address: VICTIM });
-    expect(r.address_poisoning).toBeUndefined();
+    expect(r.address_poisoning.pairs).toEqual([]);
     expect(r.transactions).toHaveLength(1);
   });
 });
 
 describe("get_transaction_history — which one existed first decides only the poisoning shape", () => {
-  // Mainnet addresses: victim V, real recipient R and its lookalike L.
-  const V = "0x5e455d9536112e97a185affcb7ab5887c080f340883526487844d964babe0b93";
+  // A synthetic victim V; the mainnet real recipient R and its lookalike L.
+  const V = `0xa11ce0${"2".repeat(58)}`;
   const R = "0x6b74e92cfc7890b7a4a48c933bb8da38bb2897f3962f33af20f5f7101d2d93cf";
   const L = "0x6b745225460cf4aeebe5edb4e381474a58abf206aa34dd838eb6570edd67b3cf";
   const OPERATOR = "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf";

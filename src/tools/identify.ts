@@ -5,9 +5,10 @@ import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { getNetwork, suivisionPackageUrl } from "../config.js";
 import { formatOwner } from "../utils/formatting.js";
-import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
+import { isCuratedProtocol, lookupProtocolDisplay, prefetchProtocolCustody, prefetchProtocolNames } from "../protocols/registry.js";
 import { notePackageRoot } from "../protocols/package-roots.js";
-import { aliasScanAsOfClause, describeAddresses, heldNamesNote, type AddressIdentity, type AliasSet } from "../utils/identity.js";
+import { getPackageCustody } from "../protocols/package-custody.js";
+import { aliasScanAsOfClause, describeAddresses, heldNamesNote, readFirstSeen, type AddressIdentity, type AliasSet } from "../utils/identity.js";
 import { resolvePublisher } from "../utils/publisher.js";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { objectAddressBalanceFields } from "../utils/address-balance.js";
@@ -16,6 +17,8 @@ import { getLabel, isSinkCategory, labelProvenance } from "../utils/labels.js";
 import { guardiansFlagsForObjectType, guardiansFlagsForPackage, type GuardiansFlag } from "../utils/guardians.js";
 import { baseType } from "../utils/object-flow.js";
 import { KIOSK_TYPE, resolveKioskCapHolder, unresolvedCapHolderNote } from "../utils/kiosk.js";
+import { bridgeExitCalls, fetchModuleBytes } from "../utils/bridge/carrier.js";
+import { bridgeLabeledObjectsOf } from "../utils/bridge/labeled-package.js";
 
 /**
  * The address's label with its provenance, spread into every case's result.
@@ -134,10 +137,16 @@ function aliasHint(aliases?: AliasSet): string {
     : " Its alias set does NOT include this address, so the committee can no longer authorize for it at all and only the addresses in delegated_to can move these funds.";
 }
 
+const BRIDGE_CARRIER_ROLE =
+  "This package's bytecode calls a curated bridge's exit entry (calls), so it can send that bridge's transfer on a caller's behalf: a bridge adapter, aggregator or router. resolve_bridge_transfer on one of its transactions names it under carriers with the event it emitted.";
+
+const BRIDGE_CARRIER_UNREAD =
+  "The package's module bytes could not be read, so whether it calls a bridge's exit entry was not checked.";
+
 export function registerIdentifyTools(server: McpServer) {
   server.tool(
     "identify_address",
-    "(Recommended first step) Identify what a Sui address is: wallet, package, validator, or object. Returns a type classification with contextual summary (e.g. balance + SuiNS for wallets, module list for packages, stake info for validators). Use this before deciding which other tools to call.",
+    "(Recommended first step) Identify what a Sui address is: wallet, package, validator, or object. Returns a type classification with contextual summary (e.g. balance + SuiNS for wallets, module list for packages, stake info for validators). Use this before deciding which other tools to call. For a package, `protocol` falls back to the entity of a bridge label on an object whose type the package defines (`identified_via: labeled-object`), and `bridge_carrier` lists its bytecode's calls into a curated bridge's exit entry: an adapter or aggregator that can send that bridge's transfers. A wallet's `first_seen` is the oldest transaction the GraphQL service returns with it as sender or affected party (digest, timestamp, checkpoint, sender, the coins it `received`), with `first_inflow` true when another address sent it and the wallet gained coins in it (its first funding) and null when the balance changes were not all read; `first_seen_unavailable` says the read failed. find_funding_sources names the funder when the first transaction is not funding.",
     {
       address: addressArg().describe("Sui address or object ID (0x...)"),
     },
@@ -198,25 +207,45 @@ export function registerIdentifyTools(server: McpServer) {
 
         // Identification, cheapest tier first. The lineage root is already
         // cached by describeLineage, so a package belonging to a curated
-        // protocol resolves without another call — and only a package no
-        // lineage claims falls through to an MVR lookup.
+        // protocol resolves without another call. Only a package no lineage
+        // claims falls through to an MVR lookup, and only one with no MVR
+        // name either is named after the curated protocol whose key
+        // published this version.
         await prefetchProtocolNames([address]);
-        const shown = lookupProtocolDisplay(address);
+        await prefetchProtocolCustody([address]);
+        const shown = lookupProtocolDisplay(address, { custody: true });
+        const custody = shown?.source === "publisher" ? getPackageCustody(address) : null;
         const protocol = shown
           ? {
               name: shown.name,
               type: shown.type,
               // How much the name is worth: "registry" and "lineage" are curated
-              // and carry a verified category; "mvr" is a string its owner
-              // registered. Anyone judging a package deserves to know which of
-              // the three they got.
-              identified_via: shown.source === "mvr"
-                ? "mvr"
-                : isCuratedProtocol(address)
-                  ? "registry"
-                  : "lineage",
+              // and carry a verified category; "publisher" ties the package to
+              // a curated protocol by the key that deployed it, with no
+              // category; "mvr" is a string its owner registered. Anyone
+              // judging a package deserves to know which they got.
+              identified_via: shown.source ?? (isCuratedProtocol(address) ? "registry" : "lineage"),
+              ...(custody
+                ? {
+                    shared_address: custody.address,
+                    shared_with_package: custody.shared_with,
+                    identified_via_note: `This package version was published by ${custody.address}, which also published or upgraded ${custody.protocol}'s lineage ${custody.shared_with}. That ties it to whoever holds that key; the category is not known.`,
+                  }
+                : {}),
             }
           : null;
+        // No curated name: a bridge label on an object whose type this
+        // lineage defines names the operator.
+        const labeledObjects = protocol
+          ? []
+          : await bridgeLabeledObjectsOf([address, ...(lineage.root_package_id ? [lineage.root_package_id] : []), ...(originalId ? [originalId] : [])]);
+        const named = protocol ?? (labeledObjects.length
+          ? { name: labeledObjects[0].entity ?? labeledObjects[0].label, type: "bridge", identified_via: "labeled-object", labeled_objects: labeledObjects }
+          : null);
+
+        // Calls into a curated bridge's exit entry, read from the bytecode.
+        const moduleBytes = await fetchModuleBytes(address);
+        const exits = moduleBytes ? await bridgeExitCalls(moduleBytes) : null;
 
         return {
           content: [{
@@ -226,7 +255,12 @@ export function registerIdentifyTools(server: McpServer) {
               type: "package",
               ...labelFields(address),
               ...flaggedFields(guardiansFlagsForPackage(address)),
-              protocol,
+              protocol: named,
+              ...(exits?.calls.length
+                ? { bridge_carrier: { evidence: "chain-derived", role: BRIDGE_CARRIER_ROLE, calls: exits.calls } }
+                : {}),
+              ...(exits?.unreadable.length ? { bridge_carrier_unreadable_modules: exits.unreadable } : {}),
+              ...(!moduleBytes ? { bridge_carrier_check: BRIDGE_CARRIER_UNREAD } : {}),
               lineage,
               publisher,
               module_count: modules.length,
@@ -236,7 +270,7 @@ export function registerIdentifyTools(server: McpServer) {
               hint:
                 lineage.is_latest === false
                   ? `This is version ${lineage.version} of ${lineage.latest_version}; the current package is ${lineage.latest_package_id}. Older versions can still be live — use resolve_protocol_packages to see which versions emit events.`
-                  : "Use get_package for full module details, or decompile_module for source code.",
+                  : "Use get_package for module details and the dependency versions it runs, and disassemble_module (function_name for one function) to read the bytecode. decompile_module renders Move source when its optional binary is installed.",
             }, null, 2),
           }],
         };
@@ -330,7 +364,7 @@ export function registerIdentifyTools(server: McpServer) {
       }
 
       // CASE 4: Treat as a wallet address — fetch summary data in parallel
-      const [balanceRes, nameRes, ownedRes, identities] = await Promise.all([
+      const [balanceRes, nameRes, ownedRes, identities, firstSeenRes] = await Promise.all([
         // Each read reports its own failure: a failed balance read is not a
         // zero balance, and a failed name lookup is not the absence of a name.
         sui.getBalance({ owner: address }).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
@@ -358,6 +392,9 @@ export function registerIdentifyTools(server: McpServer) {
               [address, { address, kind: "wallet", authentication_unavailable: true, aliases_unavailable: true }],
             ]),
         ),
+        // How old the address is, so "is this address fresh" needs no
+        // history call. A failed read is reported, never shown as no history.
+        readFirstSeen(address).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
       ]);
 
       const balanceFailed = "failed" in balanceRes ? balanceRes.failed : null;
@@ -370,6 +407,8 @@ export function registerIdentifyTools(server: McpServer) {
       const committee = identities.get(address)?.committee_members;
       const aliases = identities.get(address)?.aliases;
       const identity = identities.get(address);
+      const firstSeenFailed = firstSeenRes !== null && "failed" in firstSeenRes ? firstSeenRes.failed : null;
+      const firstSeen = firstSeenRes !== null && "failed" in firstSeenRes ? null : firstSeenRes;
       const namesNote = identity ? heldNamesNote(identity) : undefined;
       // Every caveat below that rests on the reverse alias scan says when that
       // (cached) scan was read.
@@ -425,6 +464,12 @@ export function registerIdentifyTools(server: McpServer) {
             ...(tokensFailed
               ? { token_count_unavailable: `The balance list read failed (${tokensFailed}), so how many tokens this address holds is unknown.` }
               : {}),
+            first_seen: firstSeen,
+            ...(firstSeenFailed
+              ? { first_seen_unavailable: `The earliest-transaction read failed (${firstSeenFailed}), so how old this address is is unknown.` }
+              : firstSeen
+                ? {}
+                : { first_seen_note: "The GraphQL service returns no transaction with this address as sender or affected party." }),
             // Absent means this address has never SENT a transaction, so it
             // has produced no signature to read. That is not the same as an
             // ordinary single-key wallet, and the caveat says so rather than

@@ -112,8 +112,19 @@ describe("pickFundingTx — dust is not funding", () => {
     expect(r.funding?.funder).toBe(CEX);
     // Skipped, not hidden — silent filtering is how a reader loses evidence.
     expect(r.dustSkipped).toEqual([
-      { digest: "dust", amount: "1", coinType: SUI, reason: "below_sui_floor" },
+      { digest: "dust", amount: "1", coinType: SUI, funder: "0xspammer", reason: "below_sui_floor" },
     ]);
+  });
+
+  it("judges a coin named sui::SUI from another package as unpriced, not by the SUI floor", () => {
+    const IMPOSTOR = `0x${"b".repeat(64)}::sui::SUI`;
+    const txs = [
+      tx("fake", "0xspammer", [{ address: TARGET, amount: "5000000000", coinType: IMPOSTOR }]),
+      tx("real", CEX, [{ address: TARGET, amount: "5000000000", coinType: SUI }]),
+    ];
+    const r = pickFundingTx(txs, TARGET, { valueUsd: (coinType) => (coinType === SUI ? 3.5 : null) });
+    expect(r.funding?.digest).toBe("real");
+    expect(r.dustSkipped).toEqual([expect.objectContaining({ digest: "fake", reason: "unpriced_coin" })]);
   });
 
   it("treats an unpriced coin as spam regardless of how large the number is", () => {
@@ -178,7 +189,7 @@ describe("pickFundingTx — an unpriced coin that no airdrop could send counts",
       coinOrigin: () => ({ totalSupply: SUPPLY, publisher: DEPLOYER }),
     });
     expect(r.funding).toMatchObject({ digest: "grant", funder: "0xstranger" });
-    expect(r.funding?.unpriced).toEqual({ share_of_supply: 0.1, from_publisher: false });
+    expect(r.funding?.unpriced).toEqual({ share_of_supply: 0.1, from_publisher: false, basis: "supply_share" });
     expect(r.dustSkipped).toEqual([]);
   });
 
@@ -211,6 +222,41 @@ describe("pickFundingTx — an unpriced coin that no airdrop could send counts",
     expect(r.funding?.digest).toBe("gas");
   });
 
+  describe("a share below the supply rules, judged by the shape of the send", () => {
+    const origin = () => ({ totalSupply: SUPPLY, publisher: DEPLOYER });
+    const grantShape = { recipients_in_tx: 1, burst_recipients: 1, even_amounts: false };
+    // 0.05% of supply from someone other than the publisher.
+    const small = "50000000";
+
+    it("counts a send to this wallet alone as a grant", () => {
+      const r = pickFundingTx(grantThenGas(small, "0xstranger"), TARGET, { valueUsd, coinOrigin: origin, sendShape: () => grantShape });
+      expect(r.funding?.digest).toBe("grant");
+      expect(r.funding?.unpriced).toMatchObject({ basis: "targeted_send", share_of_supply: 0.0005, send_shape: grantShape });
+    });
+
+    it("keeps a burst, a list of even amounts or an unread window spam", () => {
+      for (const shape of [
+        { ...grantShape, burst_recipients: 6 },
+        { ...grantShape, burst_recipients: 3, even_amounts: true },
+        { ...grantShape, burst_truncated: true as const },
+      ]) {
+        const r = pickFundingTx(grantThenGas(small, "0xstranger"), TARGET, { valueUsd, coinOrigin: origin, sendShape: () => shape });
+        expect(r.funding?.digest).toBe("gas");
+      }
+    });
+
+    it("keeps a share under a hundredth of a percent spam whatever its shape", () => {
+      const r = pickFundingTx(grantThenGas("9000000", "0xstranger"), TARGET, { valueUsd, coinOrigin: origin, sendShape: () => grantShape });
+      expect(r.funding?.digest).toBe("gas");
+    });
+
+    it("keeps the supply rule where it holds, whatever the shape", () => {
+      const massShape = { recipients_in_tx: 40, burst_recipients: 40, even_amounts: true };
+      const r = pickFundingTx(grantThenGas("10000000000", "0xstranger"), TARGET, { valueUsd, coinOrigin: origin, sendShape: () => massShape });
+      expect(r.funding?.unpriced).toMatchObject({ basis: "supply_share", share_of_supply: 0.1 });
+    });
+  });
+
   describe("a grant bundled with sub-floor SUI in one transaction", () => {
     const LATER = "0x1a7e";
     const bundledThenLater = (grant: string) => [
@@ -232,16 +278,16 @@ describe("pickFundingTx — an unpriced coin that no airdrop could send counts",
         coinOrigin: (t) => (t === KONG ? { totalSupply: SUPPLY, publisher: DEPLOYER } : undefined),
       });
       expect(r.funding).toMatchObject({ digest: "bundle", funder: DEPLOYER, coinType: KONG });
-      expect(r.funding?.unpriced).toEqual({ share_of_supply: 0.1, from_publisher: true });
-      expect(r.dustSkipped).toEqual([{ digest: "bundle", amount: "5000000", coinType: SUI, reason: "below_sui_floor" }]);
+      expect(r.funding?.unpriced).toEqual({ share_of_supply: 0.1, from_publisher: true, basis: "supply_share" });
+      expect(r.dustSkipped).toEqual([{ digest: "bundle", amount: "5000000", coinType: SUI, funder: DEPLOYER, reason: "below_sui_floor" }]);
     });
 
     it("lists both skipped coins of the transaction before the origin is read, so the caller knows to read it", () => {
       const r = pickFundingTx(bundledThenLater("10000000000"), TARGET, { valueUsd });
       expect(r.funding?.digest).toBe("later");
       expect(r.dustSkipped).toEqual([
-        { digest: "bundle", amount: "5000000", coinType: SUI, reason: "below_sui_floor" },
-        { digest: "bundle", amount: "10000000000", coinType: KONG, reason: "unpriced_coin" },
+        { digest: "bundle", amount: "5000000", coinType: SUI, funder: DEPLOYER, reason: "below_sui_floor" },
+        { digest: "bundle", amount: "10000000000", coinType: KONG, funder: DEPLOYER, reason: "unpriced_coin" },
       ]);
     });
 

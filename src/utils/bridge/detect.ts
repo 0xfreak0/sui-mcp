@@ -17,9 +17,11 @@
  * investigator; a trace that simply ends is not, because it reads as "the
  * money stopped here".
  *
- * There is deliberately no heuristic tier. A "looks bridge-shaped" guess over
- * unknown packages would manufacture exactly the unverifiable attribution this
- * project refuses to ship.
+ * Detection has deliberately no heuristic tier. A "looks bridge-shaped" guess
+ * over unknown packages would manufacture exactly the unverifiable attribution
+ * this project refuses to ship. The shape of a cross-chain message from an
+ * unknown package is reported apart, as a heuristic lead (`cross-chain.ts`),
+ * and never becomes a hit here.
  */
 
 import { lookupProtocol } from "../../protocols/registry.js";
@@ -234,6 +236,23 @@ function matchesCall(marker: string, signature: string): boolean {
   // Prefix, so `deposit_for_burn::deposit_for_burn` also catches the
   // `_with_caller_with_package_auth` variants seen on mainnet.
   return signature === marker || signature.startsWith(marker);
+}
+
+/**
+ * The curated bridge whose exit entry `module::function` is, or null. Only a
+ * marker naming a function counts: a marker ending in `::` names a whole
+ * module (a fee calculator) that identifies the protocol, and a call into it
+ * sends nothing.
+ */
+export function bridgeExitEntry(module: string, fn: string): BridgeProtocol | null {
+  const signature = `${module}::${fn}`;
+  return (
+    BRIDGE_PROTOCOLS.find(
+      (p) =>
+        p.callMarkers.some((m) => !m.endsWith("::") && matchesCall(m, signature)) ||
+        (p.exactCallMarkers ?? []).includes(signature),
+    ) ?? null
+  );
 }
 
 /**

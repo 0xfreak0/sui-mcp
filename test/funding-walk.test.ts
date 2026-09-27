@@ -29,7 +29,7 @@ vi.mock("../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 vi.mock("../src/utils/price-providers.js", () => ({ pricesForRanking }));
 vi.mock("../src/utils/fanout.js", () => ({ measureFanout }));
 vi.mock("../src/utils/labels.js", () => ({ getLabel: () => null, isSink: () => false }));
-vi.mock("../src/utils/store.js", () => ({ getCachedFirstFunder: () => null, saveFirstFunder: () => false }));
+vi.mock("../src/utils/store.js", () => ({ getCachedFirstFunder: () => null, saveFirstFunder: () => false, saveResult: () => null }));
 vi.mock("../src/utils/identity.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   describeAddresses: async (addrs: string[]) =>
@@ -74,6 +74,8 @@ let earliest: Record<string, unknown[]>;
 let paid: Record<string, string[]>;
 /** Transactions `payer` sent that affected `payee`, keyed `payer>payee`. */
 let pairs: Record<string, unknown[]>;
+/** Raw SUI each payment in an address's outgoing transactions carried; 1 SUI unless set. */
+let paidAmount: Record<string, string>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -108,6 +110,7 @@ beforeEach(() => {
   };
   paid = { [DISTRIBUTOR]: Array.from({ length: 261 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}`) };
   pairs = {};
+  paidAmount = {};
   measureFanout.mockImplementation(async (address: string) => ({
     address,
     recipient_count: 3,
@@ -136,11 +139,12 @@ beforeEach(() => {
     if (query.includes("sentAddress")) {
       // Popularity probe: one page, newest first, one recipient per transaction.
       const recipients = paid[vars.addr as string] ?? [];
+      const amount = paidAmount[vars.addr as string] ?? "1000000000";
       return {
         transactions: {
           nodes: recipients.map((r, i) => ({
             digest: `sent${i}`,
-            effects: { balanceChanges: conn([bc(vars.addr as string, "-1000000000"), bc(r, "1000000000")]) },
+            effects: { balanceChanges: conn([bc(vars.addr as string, `-${amount}`), bc(r, amount)]) },
           })),
           pageInfo: { hasPreviousPage: false, startCursor: null },
         },
@@ -176,10 +180,50 @@ describe("find_funding_source stops at a service-scale funder", () => {
     expect(d.origin_popularity).toMatchObject({ popular: true });
   });
 
+  it("walks on past a funder whose many payments were all dust", async () => {
+    // 261 sends of 1,000 MIST cost a fraction of a SUI; counted, they would
+    // make any funder a service and end the walk before its own funder.
+    paidAmount[DISTRIBUTOR] = "1000";
+    const d = await run("find_funding_source", { address: ATTACKER, max_hops: 2 });
+    expect(d.chain.map((s: { funded_by: string }) => s.funded_by)).toEqual([DISTRIBUTOR, ANCESTOR]);
+    expect(d.chain[0].funder_popularity).toMatchObject({ popular: false, observed_recipients: 0, below_floor_recipients: 261 });
+  });
+
   it("walks on through a narrow funder and says how far its probe got", async () => {
     const d = await run("find_funding_source", { address: DISTRIBUTOR, max_hops: 2 });
     expect(d.chain.map((s: { funded_by: string }) => s.funded_by)).toEqual([ANCESTOR, ANCESTOR2]);
     expect(d.chain[0].funder_popularity).toMatchObject({ popular: false, observed_recipients: 0, scan_complete: true });
+  });
+});
+
+describe("find_funding_source stops at an established funder", () => {
+  const RECEIVER = `0x${"a1".repeat(32)}`;
+  const HOLDER = `0x${"b2".repeat(32)}`;
+  const HOLDER_FUNDER = `0x${"c3".repeat(32)}`;
+  const OTHERS = Array.from({ length: 11 }, (_, i) => `0x${(i + 1).toString(16).padStart(2, "0").repeat(32)}`);
+  const holderHistory = [
+    fundingTx("HolderFnd", HOLDER_FUNDER, HOLDER, "600000000000000", "2024-01-01T00:00:00.000Z"),
+    ...OTHERS.map((o, i) => fundingTx(`HolderPay${i}`, HOLDER, o, "1000000000", `2024-01-0${(i % 9) + 2}T00:00:00.000Z`)),
+  ];
+
+  it("ends at a funder that paid the subject from a balance it had long held", async () => {
+    // HOLDER's earliest 12 transactions are its own funding and its own
+    // payments; the payment to RECEIVER came months later.
+    earliest[RECEIVER] = [fundingTx("LaterPay", HOLDER, RECEIVER, "500000000000000", "2024-06-01T00:00:00.000Z")];
+    earliest[HOLDER] = holderHistory;
+    earliest[HOLDER_FUNDER] = [];
+    const d = await run("find_funding_source", { address: RECEIVER });
+    expect(d.origin.address).toBe(HOLDER);
+    expect(d.hops).toBe(1);
+    expect(JSON.stringify(d.chain)).not.toContain(HOLDER_FUNDER);
+  });
+
+  it("walks on when the payment is among the funder's earliest transactions", async () => {
+    earliest[RECEIVER] = [fundingTx("HolderPay3", HOLDER, RECEIVER, "1000000000", "2024-01-05T00:00:00.000Z")];
+    earliest[HOLDER] = holderHistory.map((t, i) => (i === 4 ? earliest[RECEIVER][0] : t));
+    earliest[HOLDER_FUNDER] = [];
+    const d = await run("find_funding_source", { address: RECEIVER, max_hops: 2 });
+    expect(d.chain.map((s: { funded_by: string }) => s.funded_by)).toEqual([HOLDER, HOLDER_FUNDER]);
   });
 });
 
@@ -324,7 +368,7 @@ describe("find_funding_source reports a gas sponsor even when funding was found"
   // this wallet, is still reported although an unrelated inflow qualified.
   const LOOKALIKE = "0x6b745225460cf4aeebe5edb4e381474a58abf206aa34dd838eb6570edd67b3cf";
   const OPERATOR = "0x7c8e2ceb0839680a3b1f7aa1021d45670405d92f3c88e79aa1d3aa8a600bbdbf";
-  const VICTIM = "0x5e455d9536112e97a185affcb7ab5887c080f340883526487844d964babe0b93";
+  const VICTIM = `0xa11ce0${"3".repeat(58)}`;
 
   it("still lists the sponsor in sponsored_by", async () => {
     earliest[LOOKALIKE] = [
@@ -628,7 +672,7 @@ describe("find_funding_source counts a coin nobody prices when no airdrop could 
     const d = await run("find_funding_source", { address: INSIDER, max_hops: 1, measure_fanout: false });
     expect(d.chain[0].funding_tx).toBe("7SumEFmUMbBRv47a5A3MaMFeV31eoTxBrvET7uAhuicw");
     expect(d.chain[0].amount).toMatch(/^1,?000,?000,?000 KONG/);
-    expect(d.chain[0].unpriced_funding).toEqual({ share_of_supply: 0.1, from_publisher: true });
+    expect(d.chain[0].unpriced_funding).toEqual({ share_of_supply: 0.1, from_publisher: true, basis: "supply_share" });
     expect(d.unpriced_funding_note).toMatch(/1% of the coin's current supply/);
     expect(d.dust_skipped).toBeUndefined();
     expect(d.origin_unread_at).toBeUndefined();
@@ -693,7 +737,30 @@ describe("find_funding_source counts a coin nobody prices when no airdrop could 
     earliest[INSIDER] = [bundle, gas];
     const d = await run("find_funding_source", { address: INSIDER, max_hops: 1, measure_fanout: false });
     expect(d.chain[0].funding_tx).toBe("7SumEFmUMbBRv47a5A3MaMFeV31eoTxBrvET7uAhuicw");
-    expect(d.chain[0].unpriced_funding).toEqual({ share_of_supply: 0.1, from_publisher: true });
+    expect(d.chain[0].unpriced_funding).toEqual({ share_of_supply: 0.1, from_publisher: true, basis: "supply_share" });
     expect(d.dust_skipped).toEqual([expect.objectContaining({ coinType: SUI, reason: "below_sui_floor" })]);
+  });
+});
+
+describe("find_funding_sources caps its listing without losing a linked subject", () => {
+  it("keeps every result tied to a shared funder past the budget, counts the rest, and lists all with detail full", async () => {
+    const loners = Array.from({ length: 70 }, (_, i) => `0x${(0xabc000 + i).toString(16).padStart(64, "0")}`);
+    const linked = [PAYER, `0x${"7".repeat(64)}`];
+    earliest[linked[1]] = [fundingTx("Linked2", PAYER_FUNDER, linked[1], "40000000000", "2025-09-07T14:00:05.000Z")];
+    const addresses = [...loners, ...linked];
+
+    const d = await run("find_funding_sources", { addresses, measure_fanout: false, depth: "first_hop" });
+    expect(d.shared_funders.map((f: { funder: string }) => f.funder)).toEqual([PAYER_FUNDER]);
+    const listed = d.results.map((r: { address: string }) => r.address);
+    expect(listed).toEqual(expect.arrayContaining(linked));
+    expect(d.truncated).toBe(true);
+    expect(listed.length + d.omitted.lists.results.count).toBe(addresses.length);
+    expect(d.address_count).toBe(addresses.length);
+    expect(d.omitted.next_call).toEqual({ tool: "find_funding_sources", repeat_with: { detail: "full" } });
+
+    const full = await run("find_funding_sources", { addresses, measure_fanout: false, depth: "first_hop", detail: "full" });
+    expect(full.results).toHaveLength(addresses.length);
+    expect(full.truncated).toBeUndefined();
+    expect(full.results.find((r: { address: string }) => r.address === PAYER).chain[0].funded_by).toBe(PAYER_FUNDER);
   });
 });

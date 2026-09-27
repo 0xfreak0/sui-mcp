@@ -27,6 +27,16 @@ function parse(result: any) {
 
 beforeEach(() => mockGql.mockReset());
 
+/**
+ * Answer the disassembly reads with `answer` and the linkage read, which
+ * runs beside every module read, with `linkage`.
+ */
+function answer(value: unknown, linkage: unknown[] = []) {
+  mockGql.mockImplementation(async (query: string) =>
+    /\blinkage\b/.test(query) ? { object: { asMovePackage: { linkage } } } : value,
+  );
+}
+
 describe("looksLikeMvrName", () => {
   it("treats 0x ids as raw, @org/app and org/app as MVR names", () => {
     expect(looksLikeMvrName("0xabc")).toBe(false);
@@ -58,7 +68,7 @@ describe("disassemble_module tool", () => {
   });
 
   it("returns disassembly for a single module", async () => {
-    mockGql.mockResolvedValueOnce({
+    answer({
       object: { asMovePackage: { module: { name: "a", disassembly: "// Move bytecode v7\nmodule x.a {}" } } },
     });
     const out = parse(
@@ -69,22 +79,23 @@ describe("disassemble_module tool", () => {
   });
 
   it("errors cleanly when the package is not found", async () => {
-    mockGql.mockResolvedValueOnce({ object: null });
+    mockGql.mockResolvedValue({ object: null });
     const result = await tools.get("disassemble_module")!({ package_id: PKG, module_name: "a" });
     expect(result.isError).toBe(true);
     expect(parse(result).error).toContain("Package not found");
   });
 
   it("disassembles all modules when all_modules is set", async () => {
-    mockGql
-      .mockResolvedValueOnce({
-        object: {
-          asMovePackage: {
-            modules: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ name: "a" }] },
+    answer({
+      object: {
+        asMovePackage: {
+          modules: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [{ name: "a", disassembly: "code-a" }],
           },
         },
-      })
-      .mockResolvedValueOnce({ object: { asMovePackage: { module: { name: "a", disassembly: "code-a" } } } });
+      },
+    });
     const out = parse(
       await tools.get("disassemble_module")!({ package_id: PKG, all_modules: true }),
     );
@@ -100,7 +111,11 @@ describe("disassemble_module tool", () => {
     const latest = { module: { name: "py", disassembly: "public redeem_pt() {}" } };
     const exact = { module: { name: "py", disassembly: "public init_py_position() {}" } };
     mockGql.mockImplementation(async (query: string) =>
-      /\bpackage\(address/.test(query) ? { package: latest } : { object: { asMovePackage: exact } },
+      /\bpackage\(address/.test(query)
+        ? { package: latest }
+        : /\blinkage\b/.test(query)
+          ? { object: { asMovePackage: { linkage: [] } } }
+          : { object: { asMovePackage: exact } },
     );
     const out = parse(await tools.get("disassemble_module")!({ package_id: V1, module_name: "py" }));
     expect(out.disassembly).toContain("init_py_position");
@@ -108,9 +123,52 @@ describe("disassemble_module tool", () => {
   });
 
   it("says an object id is not a package", async () => {
-    mockGql.mockResolvedValueOnce({ object: { asMovePackage: null } });
+    mockGql.mockResolvedValue({ object: { asMovePackage: null } });
     const result = await tools.get("disassemble_module")!({ package_id: PKG, module_name: "a" });
     expect(result.isError).toBe(true);
     expect(parse(result).error).toContain("not a package");
+  });
+
+  /**
+   * A module runs to 250 KB. function_name returns one function, with the
+   * `use` lines of the modules it calls and the version of each dependency
+   * this package's linkage runs.
+   */
+  it("returns one function with the linked version of each dependency it calls", async () => {
+    const MATE = "714a63a0dba6da4f017b42d5d0fb78867f18bcde904868e51d951a5a6f5b7f57";
+    const MATE_V3 = "0xe2b515f0052c0b3f83c23db045d49dbe1732818ccfc5d4596c9482f7f2e76a85";
+    const text = [
+      "module 1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb.clmm_math {",
+      `use ${MATE}::math_u256;`,
+      `use ${MATE}::full_math_u128;`,
+      "",
+      "public get_delta_a(Arg0: u256): u256 {",
+      "B0:",
+      "\t0: MoveLoc[0](Arg0: u256)",
+      "\t1: Call math_u256::checked_shlw(u256): u256 * bool",
+      "\t2: Pop",
+      "\t3: Ret",
+      "}",
+      "",
+      "public other(): u64 {",
+      "B0:",
+      "\t0: LdU64(1)",
+      "\t1: Ret",
+      "}",
+      "}",
+    ].join("\n");
+    answer({ object: { asMovePackage: { module: { name: "clmm_math", disassembly: text } } } }, [
+      { originalId: `0x${MATE}`, upgradedId: MATE_V3, version: 3 },
+    ]);
+    const out = parse(
+      await tools.get("disassemble_module")!({ package_id: PKG, module_name: "clmm_math", function_name: "get_delta_a" }),
+    );
+    expect(out.function).toBe("get_delta_a");
+    expect(out.disassembly.startsWith("public get_delta_a(Arg0: u256): u256 {")).toBe(true);
+    expect(out.disassembly).not.toContain("other");
+    // Only the module it calls, with the version linked.
+    expect(out.uses).toHaveLength(1);
+    expect(out.uses[0]).toContain(`use ${MATE}::math_u256;`);
+    expect(out.uses[0]).toContain(MATE_V3);
   });
 });

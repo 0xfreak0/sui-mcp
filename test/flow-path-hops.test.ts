@@ -202,4 +202,11 @@ describe("find_flow_path — default max_hops must reach a bridge exit five leve
     const data = await run({ from: START, to: `eip155:1:${ETH_DEST}`, max_hops: 4 });
     expect(data.found).toBe(false);
   });
+
+  it("names the nodes the node limit left unexpanded when it finds nothing", async () => {
+    const data = await run({ from: START, to: `eip155:1:${ETH_DEST}`, max_nodes: 2 });
+    expect(data.found).toBe(false);
+    expect(data.explored.node_limited).toMatchObject({ max_nodes: 2, forward: { nodes_unexpanded: 1, share: 1 } });
+    expect(data.explored.node_limited.forward.largest[0].node).toBe(`${NODE_B}|${SUI}`);
+  });
 });

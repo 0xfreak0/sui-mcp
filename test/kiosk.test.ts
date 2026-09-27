@@ -8,7 +8,7 @@ const { findEnclosingKiosk, resolveKioskCapHolder, unresolvedCapHolderNote } = a
 const KIOSK = "0x306b2b5bcec1a7d1a4e780dce1f418fba11f21081575f42c261d09de5eedfd90";
 const WRAPPER = "0x2f699d7454664e560f970930efa106e0556c3d2a0cf34781db9a5b033ae724f4";
 const CAP = "0x0785656e67232a0a5d9f895d980e7ab0dffc982fb83ac7c7e4d19d2068855fcc";
-const ORIGINAL_HOLDER = "0x2237921ac0071178d803f913ae9e487ee772a1a3d20bad6e430e88b29d8074b1";
+const ORIGINAL_HOLDER = `0xa11ce0${"6".repeat(58)}`;
 const CURRENT_HOLDER = "0x5ecf90fa681d13629e91067782316d89893c5cede1b889d7e2ea4eabd0e54088";
 const CREATION_TX = "5cfiNwdFJ2FiiJJpBsL4HMqvLfnh6RbcdQNaRMANkeXJ";
 

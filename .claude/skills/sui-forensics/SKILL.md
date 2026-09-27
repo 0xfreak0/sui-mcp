@@ -57,19 +57,35 @@ holds one for a client.
    (forward) or `unfollowed_sources` (backward) *before* the path: a trace
    follows one branch, and splitting across wallets is the ordinary laundering
    move. A hop with `commingled` spent more than the trace delivered to it, so
-   from there on the amounts include other funds. A hop with
+   from there on the amounts include other funds. A hop is the largest of the
+   holder's spends that cover what arrived; the others are its
+   `unfollowed_spends`. `kept_as_claim` lists deposits the holder made for a
+   share or receipt coin typed over the tracked one (an LP share): the value
+   is still the holder's, so they are not hops. A hop with
    `signer_is_sender: false` was signed by `authorized_by` acting for the
    sender (an address alias or a protocol recovery); it is not the sender's own
    act, and a forward trace stops there. When the question is where *all* of
    it went, use `trace_flow_graph`: it follows every branch and reports the
    share of the value under each terminal. Read `coverage.truncated` and the
-   `budget` terminal before calling a share final, and remember the shares
-   rest on a first-in, first-out convention once funds are mixed.
+   `budget` terminal before calling a share final, `truncated` and `omitted`
+   before calling a node absent (`detail: "full"` lists every node and edge),
+   and remember the shares
+   rest on a first-in, first-out convention once funds are mixed. A
+   `retained` terminal is value sold for proceeds worth under a tenth of it
+   where the object changes show the seller holds no receipt, position or
+   table entry for it: the pool or contract it names kept it, so read who
+   can withdraw from that object before calling the value gone.
 4. **Attribute with `find_funding_source`**, or `find_funding_sources` for
    several addresses at once, which also reports co-funding and its denominators
    and every payment one subject signed to another (`subject_paid_subject`).
-   The walk stops at a funder that paid more than 50 distinct addresses: that is
-   an exchange or service, and its own ancestry says nothing about the subject.
+   The walk stops at a funder that paid more than 50 distinct addresses at least
+   0.01 SUI or $0.10 each: that is an exchange or service, and its own ancestry
+   says nothing about the subject. Addresses it paid only dust are counted apart
+   (`below_floor_recipients`), so dusting cannot end the walk. It also stops at
+   an established funder, one that paid the subject after its own earliest 12
+   transactions: it paid from a balance it held, so its ancestry is its own.
+   A victim who paid a thief is the case; run `find_funding_source` on that
+   funder separately if its own history matters.
    Then measure the funder with `get_address_fanout` before believing anything,
    and run `classify_deposit_address` on a funder or a destination that looks
    like an exchange. A deposit address names the exchange that can identify the
@@ -157,9 +173,9 @@ Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
 - **An ambiguous symbol is an answer.** Several legitimate coins share `USDC` —
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
-- **A symbol nothing curates lists every coin that uses it, up to 100.** 30
-  coins use `KONG`; `analyze_token` returns them all as `candidates`, verified
-  first and then by supply, from a symbol index synced from every
+- **A symbol nothing curates lists every coin that uses it, up to 100.** When
+  dozens of coins share one, `analyze_token` returns them all as
+  `candidates`, verified first and then by supply, from a symbol index synced from every
   `CoinMetadata` and coin registry entry. Above 100 coins the index keeps only
   the count: `analyze_token` returns the count and no candidates, and
   `search_token` names such symbols in `unlisted_symbols` (124 coins use
@@ -234,7 +250,7 @@ had a last transfer with no non-gas balance change at all.
   `PersonalKioskCap`, listed in `kiosk_cap_wrapped_in`, and
   `kiosk_cap_holder` is that wrapper's owner. The wrapper has no transfer
   function, so a thief who wraps a stolen cap this way owns the kiosk for
-  good, as the Suisse drainer did.
+  good.
 - **`appeared` means the previous holder is not recorded**, which is normal
   before roughly March 2024. It is not evidence of an unwrap, and not evidence
   of a transfer. The chain did not say.
@@ -266,19 +282,30 @@ credited to an address (or an object id) with no `Coin<T>` behind them:
 - **Pre-sign triage reads the withdrawal.** `decode_ptb` shows a
   `FundsWithdrawal` input's `amount`, `coin_type` and `withdraw_from`. A PTB
   that withdraws the whole address balance and calls `send_funds` to a
-  stranger moves everything without touching a coin.
+  stranger moves everything without touching a coin. `presign_context` gives
+  each coin's `share_of_balance` (above 1 means more than the sender holds
+  now) and each recipient's `first_seen` and `first_digest`. A null
+  `first_seen` means the recipient has never appeared on chain; an absent
+  one means its history could not be read, which says nothing.
+- **A clean pre-sign triage clears nothing.** `decode_ptb` reads only the
+  commands, and `checks_run` lists what it checked. A drainer that pays out
+  from its own function, not TransferObjects or a framework payout, names no
+  recipient in the bytes. `simulate_transaction` shows where every coin and
+  object would end up before you sign.
 
 ## An address's rendering is not its identity
 
 Wallets and explorers truncate a 32-byte address to something like
-`0xd649a4d5…57127127`. Address poisoning exploits exactly that: an attacker
+`0xa1b2c3d4…e5f60718`. Address poisoning exploits exactly that: an attacker
 grinds an address matching the leading and trailing characters of one the victim
 already deals with, sends dust from it, and waits for a human to copy the wrong
 row out of their own transaction history.
 
 `get_transaction_history`, `trace_funds`, `trace_flow_graph` and
-`summarize_address_flows` report `address_poisoning` when two addresses they
-touched are close enough to be mistaken for one another. Measured on mainnet:
+`summarize_address_flows` always report `address_poisoning`, with
+`addresses_compared` and the `pairs` of addresses they touched that are close
+enough to be mistaken for one another. An empty `pairs` covers only the
+addresses in that result, never the wallet's whole history. Measured on mainnet:
 zero flags across 75 random active wallets and 265 pages of history.
 `trace_funds` and `trace_flow_graph` also state each pair in the summary,
 and a Mermaid or CSV export carries that summary. `trace_flow_graph` and
@@ -333,21 +360,43 @@ finding; a random 3+3 collision in a wide payout is kept the same way.
 - **`unresolved` is not `publisher`.** Publish transactions are frequently
   pruned. A failed lookup is "could not check", never "still with the deployer".
 - **Diff the upgrade, and its dependencies.** `diff_package_upgrade` returns
-  each changed module as unified hunks, the functions that were added,
+  each changed module as unified hunks, `changed_functions` (functions whose
+  instructions changed, largest first), the functions that were added,
   removed or made more reachable (`visibility_changes` with `widened: true`),
-  and `linkage_changes`. An upgrade can change behaviour by relinking a
+  and `linkage_changes`, and names the functions in `summary`. Functions are
+  matched by name, so a hunk holds only its own function's lines; lines that
+  only renumber locals, fields or instruction offsets are counted in
+  `renumbered_lines` and a function with nothing else is listed in
+  `renumbering_only_functions`. An upgrade can change behaviour by relinking a
   dependency while its own modules barely change; each relinked dependency
   carries the `diff_package_upgrade` call that shows what changed inside it.
+  When a module's sample is cut, `unsampled_functions` and
+  `partly_sampled_functions` name the functions it leaves out and
+  `sample_next_call` shows them; a function missing from the sample has not
+  been shown unchanged.
 - **Ask who could upgrade at the time, not only now.** `get_upgrade_history`
   joins every version to its publisher, the publisher's signing scheme and the
   UpgradeCap's holder at that moment, and `as_of` answers for one instant. It
   flags a `cap_round_trip`: the cap leaves its usual holder, a version ships,
-  and the cap comes back. On Nemo that was an eleven-minute loan to a single
-  key that shipped the vulnerable version. `analyze_package` shows only the
-  holder today.
+  and the cap comes back, as when it is lent for minutes to a single key that
+  ships the version. `analyze_package` shows only the holder today.
+- **A flaw can predate the lineage.** A redeploy mints an unrelated root, so
+  no version walk reaches the code's earlier home. `get_upgrade_history` with
+  `find_redeploys: true` compares every version of the lineages whose
+  UpgradeCap the publisher or the current cap holder still holds, with
+  addresses blanked. `module_origins` names, per module, the earliest version
+  here or in a compared lineage that carries that code. A lineage whose cap
+  went elsewhere is not found. A module changes whenever any of its code
+  does, so read `function_origins` too: it names, per function, the version
+  where that function's code first appeared, even when its module changed
+  around it, and `declared_changes` names a function that was private or
+  package-only at its origin and is exposed now.
 - **Read one version's bytecode by that version's address.**
   `disassemble_module` and `get_move_function` return the version whose ID you
-  pass. To compare versions, `diff_package_upgrade` is still the tool.
+  pass; `function_name` returns one function of a module. A `use` line prints
+  a dependency's original ID, and its note gives the version and ID this
+  package runs (also `get_package` → `dependencies`). To compare versions,
+  `diff_package_upgrade` is still the tool.
 
 ## Why a transaction failed
 
@@ -399,15 +448,27 @@ balance changes and is anything but.
 with the window, and on one mainnet sponsor the count went 1 to 86 between a
 100- and an 800-transaction scan, crossing the threshold. If
 `sponsor_shape_provisional` is set, raise `max_transactions` before writing
-"narrow", and never treat shared sponsorship through a relayer as a link.
+"narrow". Shared sponsorship through a relayer is not a link on its own, and
+it does not rule one out either.
 
 **An `operator` funds the wallets it sponsors.** When a sponsor also sent a
 coin to at least half the addresses it pays gas for (`sponsored_and_paid_count`),
 `sponsor_shape` is `operator` however many it sponsors. A public relayer pays
 gas for strangers it never funded. Shared sponsorship through an operator is a
 link between its wallets, the same pair `build_wallet_edges` links as an
-operator edge: the poisoning operator `0x7c8e2ceb…` paid every one of the 377
-addresses it sponsored in its last 1,000 transactions.
+operator edge, as when a poisoning operator both funds and sponsors its dust
+senders.
+
+**An operator can split the two roles across two addresses.** Funded from one
+address and sponsored from another, its wallets show a sponsor that paid none
+of them and reads `relayer`. `build_wallet_edges` reads the first funders of
+up to six other wallets such a sponsor pays gas for, when the seeds' funder
+is itself narrow and unlabelled (an exchange's customers share it anyway;
+`role_split.not_checked` says so). When at least three, and
+at least half of those read, share the seeds' first funder, it links sponsor,
+funder and seeds as one operator and records `role_split` on the sponsor. A
+wallet provider that onboards and sponsors its own users shows the same shape,
+so check what the linked wallets do before calling them one person.
 
 ## Multisig
 
@@ -426,10 +487,10 @@ plain reading gets wrong:
   generalise from one. Use `analyze_multisig` for the wallet-level picture:
   which keys are live, which have never signed, whether the active set shifted.
 - **Some committee keys can never sign.** A member marked `unsignable` holds a
-  public key written by hand ("maven" and zeros on Volo's admin multisig), and
-  nobody holds its private key. Read the committee as `effective_committee`
-  (Volo's 2-of-4 is 2-of-3), and do not describe that member as a cold key or
-  a backup.
+  public key written by hand (a readable word padded with zeros), and nobody
+  holds its private key. Read the committee as `effective_committee` (a 2-of-4
+  with one such member is 2-of-3), and do not describe that member as a cold
+  key or a backup.
 - **A wallet that has never SENT cannot be classified at all.** No signature, no
   committee. `authentication: null` with a caveat means unknown, not ordinary —
   a receive-only treasury multisig looks exactly like a fresh personal wallet.
@@ -482,15 +543,17 @@ absence is unremarkable and presence is worth a second look.
 totals many, grouped by the pool each drained.
 
 ```
-analyze_attack_tx("DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x")
-  profit: +10,024,321.275 haSUI $44.0M, +5,765,124.463 SUI $24.0M
-  flash swap (calls): pool::flash_swap repaid by pool::repay_flash_swap on 0x871d8a22…
-  swap on 0x871d8a22…: price_change_pct -99.999906 (sqrt price)
-  pool 0x871d8a22… lost $68.0M by its own events
+analyze_attack_tx(<digest>)
+  profit: +<amount> <coin> $<usd>, one line per coin the attacker gained
+  flash swap (calls): <module>::flash_swap repaid by <module>::repay_flash_swap on <pool>
+  swap on <pool>: price_change_pct <change> (sqrt price)
+  pool <pool> lost $<usd> by its own events
+  anomaly outsized-mint: <event> liquidity <credited> for amount_a <a>, amount_b <b>; ticks <lower> to <upper> allow at most <bound>
+  anomaly shared-state-jump: <pool> Balance<<coin>> <before> -> <after>; <address> gained this coin
 
-summarize_incident_losses(digests: <265 Cetus exploit digests>)
-  $193.7M across 103 priced coins; 92 more have no price, so a lower bound
-  265 pool groups, largest 0x871d8a22… $68.0M
+summarize_incident_losses(digests: <every attack digest>)
+  $<total> across <n> priced coins; <m> more have no price, so a lower bound
+  <k> pool groups, largest <pool> $<usd>
 ```
 
 - **`attacker`/`profit.address` defaults to the sender, not always the
@@ -506,26 +569,95 @@ summarize_incident_losses(digests: <265 Cetus exploit digests>)
   you know it.
 
 - **Balance changes and pool losses are chain-derived.** A pool's loss is summed
-  from its own swap and liquidity events, and an event naming the pool in a
-  shape the tool does not read is listed in `undecoded_events`, not guessed.
+  from its own swap and liquidity events. An event belongs to the changed
+  shared object whose id one of its fields carries, whatever the field is
+  named, and one naming it in a shape the tool does not read is listed in
+  `undecoded_events`, not guessed. `value_reconciliation` sets the value that
+  came out of objects and mints against what decoded events and the read
+  objects' balances paid out (a transfer from one address to another cancels
+  out); value neither accounts for came from something not read, and
+  `objects_unread` names the objects left unread.
+- **A subject that lost value is not a winner.** When the sender or the named
+  `attacker` lost value, the headline says so, and `profit.gained_elsewhere`
+  names who gained it.
 - **Flash legs, oracle touches and anomalies are heuristic.** They are matched
-  on function and event names. Check the paired calls before writing "flash
-  loan" in a report.
+  on function and event names, the PTB's data flow and who published each
+  called package. Check the paired calls before writing "flash loan" in a
+  report.
+- **An empty anomaly list clears nothing.** `checks_run` names every check
+  that ran, with its rule. An exploit can use a shape none of them reads, so
+  report which checks ran and matched nothing, never that the transaction is
+  clean.
+- **Four anomalies point at the code to read.** `shared-state-jump` reads
+  each changed shared object at the transaction's input and output versions
+  (`state_deltas`): a stored number that moved 100x or more (a price, an
+  index, a liquidity, a counter), a `Balance<T>` holding drained 100x or to
+  zero (a pool's or a vault's reserve), or by less when its holder lost at
+  least half of its priced value and addresses gained at least half of that
+  (`drops[].value_share_lost`), or a value taken from an object other than
+  the one it references.
+  It is high when the new number is one the caller passed, when
+  addresses gained at least half the drained value in any coin, or for a
+  wrong source; a holding drained into other objects (a staking buffer
+  staked out) or swapped by its holder for other coins worth 90% of what it
+  paid out reads info.
+  `caller-value-used` means a value the caller passed, directly or through
+  calls built only from pure inputs, was stored in a changed shared object
+  (passed directly, or carried inside an earlier command's result) that a
+  later call read (a price the caller set, then a swap priced by it),
+  including a set, use and
+  restore that leaves the field as it was. It is high when that field's
+  values span 10x inside the PTB and medium otherwise, as a keeper's
+  set-and-settle or a swap stopping at its price limit reads; a signature on
+  the writing call lowers the grade by one step. It is also medium when an
+  event naming the object states the caller's value times another of its
+  numbers, scaled by a power of ten (`product`). `caller_value_writes` lists
+  every write with the `fields` that hold the value, and `value_signed` when
+  the value reads as negative. `outsized-mint` means a liquidity event
+  credited more than its amounts buy on its own tick range at any price, or
+  an event minted a share of an object's `Supply<T>` more than 100x the share
+  of the object's own holdings its deposits make up.
+  `unreconciled-gain` (info) means
+  value reached addresses that nothing decoded or read paid out, priced or
+  not. `flagged_commands` lists the commands behind the high and medium
+  anomalies, and its `next_call` decodes the most severe with `decode_ptb`.
+  Read the
+  writing or pricing function next with `get_move_function` and
+  `disassemble_module`.
+- **The PTB checks run here too.** `analyze_attack_tx` runs `decode_ptb`'s
+  checks with the transaction's sender and effects. A name is not trust:
+  `unverified-package-call` means neither the curated registry nor a curated
+  protocol's publishing key vouches for a called package, whatever its Move
+  Registry name. It reads info when nothing of value moves through it, and,
+  for an executed transaction, when the value came back to the sender and no
+  other address gained what the sender lost.
+  `stale-package-version` at medium means a superseded version wrote its own
+  lineage's shared objects with a function the newest version changed or
+  removed, so the call ran logic the lineage has since replaced. At info it
+  only says an old version ran. A
+  `transfers-to-non-sender` line marked `by effects` is a payout no command
+  names.
 - **USD is a provider's price, not the chain's.** Each price carries its
   source, confidence and `price_offset_sec`. A price sampled after the exploit
   may already reflect it; `price_at` sets the moment every coin is priced at.
 - **A total with unpriced coins is a lower bound.** Say so, and quote
   `unpriced_remainder` with it. An unpriced coin is not worth zero.
+- **What the attacker sent on is not part of the take.** A coin the attacker
+  paid to another address, in a transaction where that coin moved only
+  between addresses, is listed in `transfers_out` with every recipient and
+  kept out of the totals and groups. Follow those recipients; they are often
+  the attacker's own next wallets. A vault that emits no pool event is still
+  a group: its `pool_basis` is `"state"`, read from the holdings that fell.
 
 `summarize_address_flows` answers the next questions about the attacker's
 wallet: what it took per asset, who paid it, and what left Sui to where.
 
 ```
-summarize_address_flows(0x01229b3c…, from: "2025-09-07T00:00:00Z", to: "2025-09-07T23:59:59Z")
-  coverage: 30 transactions, complete
-  inflow_sources: 0x9e5590… 78.41 SUI (2 txs), 0x1f7b27… 39.45 SUI (1 tx)
-  unattributed_inflows: 144,835.79 SUI, 287,547.92 USDT, 185,016.40 HAEDAL … (exploit and swap proceeds)
-  bridge_exits.by_bridge: Circle CCTP, 8 txs, 2,408,672.76 USDC → eip155:1:0x135477aa…
+summarize_address_flows(<attacker>, from: <window start>, to: <window end>)
+  coverage: <n> transactions, complete
+  inflow_sources: <address> <amount> SUI (<n> txs), …
+  unattributed_inflows: <amount> <coin>, … (exploit and swap proceeds)
+  bridge_exits.by_bridge: <bridge>, <n> txs, <amount> <coin> → <chain>:<address>
 ```
 
 - **`unattributed` is value no address paid or received**: swap proceeds,
@@ -544,10 +676,9 @@ summarize_address_flows(0x01229b3c…, from: "2025-09-07T00:00:00Z", to: "2025-0
 manipulated state:
 
 ```
-aggregate_events(module: "0x0f286ad0…::market", from: "2025-09-07T15:30:00Z", to: "2025-09-07T17:00:00Z", group_pnl: true)
-  pnl.senders: 0x01229b3c… $2.41M (the exploit, 8 txs)
-               0x62781b5e… $49.6K: +37,690.99 USDC, +11,450.43 USDT, +2,769.79 HAEDAL (5 txs, multi-leg)
-               0x69255804… $23.4K: +6,868.64 SUI
+aggregate_events(module: "<called package id>::<module>", from: <window start>, to: <window end>, group_pnl: true)
+  pnl.senders: <attacker> $<usd> (the exploit, <n> txs)
+               <address> $<usd>: +<amount> <coin>, … (<n> txs, multi-leg)
 ```
 
 - **Filter by `module` at the version that was called.** `event_type` matches
@@ -557,6 +688,98 @@ aggregate_events(module: "0x0f286ad0…::market", from: "2025-09-07T15:30:00Z", 
   included. `multi_leg_transactions` and `other_packages` say when a PTB also
   went through another protocol, where the profit may have been made.
 
+## Finding the flaw in the code
+
+The exploit transaction names every function it called, and every version's
+bytecode is on chain, so the mechanism can be read rather than guessed. Work
+from the exploit to the code. Starting from the upgrade list assumes an
+upgrade introduced the flaw, and many shipped with the first publish.
+
+1. **Name the calls and read their arguments.** `decode_ptb` with `digest`
+   lists each command's arguments: the objects passed, pure values decoded
+   against the called function's signature, and which earlier result fed
+   which call; its `inputs` give the version of each object the transaction
+   read. `analyze_attack_tx` marks the oracle writes and flash legs among
+   them, and its `caller-value-used`, `shared-state-jump`, `outsized-mint` and
+   `stale-package-version` anomalies point at the command and the object to
+   read first; `flagged_commands.next_call` lists just those with
+   `decode_ptb` `commands: [i, j]`, and `decode_ptb`'s own first page puts
+   the commands its anomalies name ahead of the rest. A pure integer whose
+   top bit is set also carries `signed_value`, since Move code can read it as
+   two's complement.
+   `get_transaction` with `detail: "full"` carries the same program beside
+   every event and object change, at several times the size; an event number
+   in the top half of `u256` carries `signed_readings`. The anomalies
+   are heuristic leads, not the flaw. An object the attacker passed that
+   belongs to someone else (another user's account, another market's pool) is
+   often the whole exploit.
+2. **Read the version that ran.** A call names the package version it went
+   through. `get_upgrade_history` with `as_of` at the
+   exploit says which version was newest then; read the function at the
+   address the transaction called, with `get_move_function` for its signature
+   and `disassemble_module` with `module_name` and `function_name` for its
+   body. Follow the calls it makes the same way. `analyze_package` on that
+   version traces each function's data flow and lists graded leads with the
+   instructions behind them: a check whose bool reaches nothing
+   (`discarded-check`), a public function that skips a check its siblings on
+   the same object type make (`sibling-guard-gap`), and a caller's value
+   written into a shared object with no comparison against stored state
+   (`unchecked-state-write`). A lead says where to read, not that the code is
+   wrong, and a function with no lead has not been cleared: `bytecode_scan`
+   names the three shapes checked. Weak leads raise no finding and are listed
+   in `bytecode_scan.weak_leads` (the first few by default, all with
+   `detail: "full"`); `bytecode_scan.read` says how to read one.
+3. **Check every version of the lineage the exploit ran.** Older versions stay
+   callable against the shared objects newer versions manage, unless each
+   checks a version number that newer code raises. `stale-package-version`
+   names a call through a superseded version and whether the newest version
+   changed that function. Read the older function's gate with
+   `disassemble_module` and `function_name`: a version check the newer code
+   makes and the older one lacks leaves every later fix open through the old
+   version. When an upgrade moved where an object keeps its state, or changed
+   what a stored figure means, old and new code can each act on a figure the
+   other rewrote. `analyze_package` on any version of the lineage raises
+   `ungated-older-version` when an older version's public functions mutate a
+   shared type without the check most of the newest version's public
+   functions on that type make; read the function it names with
+   `disassemble_module` at that version's package id. `diff_package_upgrade`
+   between the two versions dates the gate and the move.
+4. **Read the objects around the exploit.** `query_transactions` with
+   `affected_object` lists every transaction that touched a shared object the
+   exploit changed, the attacker's setup included, and `get_object` with
+   `version` reads its fields at any version. `get_transaction` with
+   `detail: "full"` → `object_changes.by_kind` gives the version each
+   transaction left a changed object at, which reaches an object held in a
+   dynamic field that no command names; an object passed as an input also
+   shows the version read in `decode_ptb`'s `inputs`. The state before the
+   first step and between steps shows what each call relied on.
+5. **Check the dependencies it linked.** Bytecode names a dependency by its
+   original id (`use 0x<original id>::<module>`), and reading that id returns
+   the first version. `disassemble_module` notes the linked version's ID on
+   that line (`// linked version <n>: 0x<id>`), and `get_package` →
+   `dependencies` lists the same; read the code at that ID.
+   `get_package_dependency_graph` reads the dependencies' own linkage. A flaw in a
+   dependency shows in none of the protocol's own module diffs.
+6. **Date the flaw with diffs.** `diff_package_upgrade` on the fix shows what
+   closed it: the protocol's next version, or an upgrade whose change is a
+   relink (`linkage_changes`, each carrying the diff inside the dependency).
+   Its `changed_functions` names each function whose body changed. The same
+   diff on the version that introduced the code dates the flaw. Either upgrade
+   may be missing: the flaw may date from the first publish or from an earlier
+   deployment of the same code, the exploited version need not be the one that
+   introduced it, and a protocol may answer by pausing or draining pools with
+   no upgrade at all.
+7. **Say what you read and what you inferred.** A missing check, a wrong
+   bound or a discarded result read from bytecode is a fact about the code.
+   How the attacker's values moved through it, and which step is the root
+   cause, stay inference until each is matched to an instruction you read and
+   a value in the transaction.
+
+`diff_package_upgrade`, `get_package_dependency_graph` and `decode_ptb` are in
+the `developer` profile. `decompile_module` renders the same bytecode as Move
+source when `SUI_DECOMPILER_PATH` points at a decompiler binary. It is an
+optional aid for reading, and every step above works without it.
+
 ## Which tool answers what
 
 Reaching for raw GraphQL is almost always a sign you missed a tool. Two of the
@@ -565,7 +788,8 @@ get the schema wrong in ways that fail silently.
 
 | question | tool |
 |---|---|
-| What is this address? | `identify_address` |
+| What is this address? | `identify_address`. For a package, `bridge_carrier` lists calls into a bridge's exit entry: it can send bridge transfers for its callers |
+| Is this address fresh? | `identify_address` → `first_seen` (oldest transaction, its sender, coins received; `first_inflow` true when another address funded it there) |
 | Where did the money go / come from? | `trace_funds` (one branch), `find_funding_source` |
 | Where did ALL of it go, and how much reached each exit? | `trace_flow_graph` → `terminals`, `coverage` |
 | Is there any path from this wallet to that one (or to a foreign account a bridge paid)? | `find_flow_path` — a miss is not evidence; read `explored` |
@@ -581,15 +805,20 @@ get the schema wrong in ways that fail silently.
 | Is this wallet automated? | `build_timeline` with `activity_hours` |
 | Where does this trace stop, and why? | `manage_labels` — sinks are yours to set |
 | What did this transaction do, with event values? | `get_transaction` |
-| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers`, `created_for`, `mutated_capabilities` (a capability that authorised the call by mutating itself, not by changing hands) |
+| Which objects and values did each command receive? | `decode_ptb` with `digest` → `inputs` (each object with the version the transaction read), `commands` (each argument resolved to an object, a pure value or an earlier command's result); commands are paged at about 30k characters with the commands an anomaly names first, `commands_omitted` gives the exact ranges left out, `commands: [i, j]` lists exactly the calls you need and `command_offset` continues a page. `get_transaction` with `detail: "full"` carries the same beside every event and object change, at several times the size |
+| Did it touch anything, when it moved no coin? | `get_transaction` → `command_count`, `object_changes`, `object_transfers`, `created_for`, `mutated_capabilities` (a capability that authorised the call by mutating itself, not by changing hands); with `detail: "full"`, `object_changes.by_kind` lists each object's id, type and version, dynamic fields of one type folded into one row with `object_ids`. Adding `commands: [i, j]` narrows `events` (each names its `command`, or `commands` when neighbouring calls share a module), `inputs` and `object_changes.by_kind` to those commands; `events_omitted`, `inputs_omitted` and `object_changes_omitted` count the rest |
 | Did funds move without a coin object? | `get_transaction` → `address_balance_ops`, `funds_withdrawals`, `gas_source` |
+| Which protocol took a fee, and to whose key? | `get_transaction` → `protocols` (a package published by a curated protocol's key is named after it), and `publisher_key_of` on a `balance_changes` row whose address signed that protocol's packages |
 | Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
 | Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
 | What did this address hold before/after the incident? | `get_balance` with `at` or `at_checkpoint` → `balance` only when `complete` is true |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — per-module API summary and capability audit; `modules: [...]` for those modules' struct shapes and signatures |
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
-| What did an upgrade change? | `diff_package_upgrade` → hunks, `visibility_changes`, `linkage_changes` |
+| What did an upgrade change? | `diff_package_upgrade` → `summary`, `changed_functions`, hunks, `visibility_changes`, `linkage_changes` |
+| How did this exploit work? | "Finding the flaw in the code": the calls (`decode_ptb`), then `get_move_function` and `disassemble_module` with `function_name` on each version of the lineage that ran |
+| What did a shared object hold before, between or after the attack's steps? | `query_transactions` with `affected_object` for every transaction that touched it, then `get_object` with `version`; `get_transaction` with `detail: "full"` → `object_changes.by_kind` gives the version each transaction left it at, and `decode_ptb` → `inputs` the version read for an object passed as an input |
+| Which version of a dependency did this package run? | The note on the dependency's `use` line in `disassemble_module`, or `get_package` → `dependencies`; `get_package_dependency_graph` for dependencies of dependencies |
 | Can the code still be changed, and by whom? | `analyze_package` → the UpgradeCap's `holder_status` |
 | Who pushed each version, with one key or a multisig, and who held the UpgradeCap at time T? | `get_upgrade_history` → per-version `signer`, `cap_holder`, `flags`; `as_of` for a moment |
 | Why did this transaction fail? | `get_transaction` → `failure` (abort code, module, function) |
@@ -601,14 +830,15 @@ get the schema wrong in ways that fail silently.
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
 | What happened between two times? | All four take ISO bounds or checkpoints, under different names: `query_transactions` and `query_events` as `after_checkpoint`/`before_checkpoint` (an ISO time is accepted there), `build_timeline` and `aggregate_events` as `from`/`to`. `get_checkpoint {timestamp}` gives the checkpoint |
-| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract`, a LayerZero `destination_oapp`, a CCTP leg marked `settlement_intermediate`, a Wormhole message marked `settlement_message` (a Mayan order's own message, never redeemed, or the message of an Allbridge pool transfer sent through Allbridge's Wormhole messenger) and a CCTP leg that `carries` an Allbridge transfer are bridge contracts, messages or intermediate accounts, not the recipient. `carried_by` names the one protocol the transfer went through when others settled it (`settled_over`); `also_exited` names any other bridge the transaction used, whose recipient is a separate destination |
-| Where did money arriving on Sui come from? | `resolve_bridge_transfer` on the redeeming transaction → `sui_native_bridge_inbound` / `wormhole_inbound`: origin chain and transfer id (VAA id) |
+| Did value leave the chain? | `trace_funds` reports `bridge_exits`; then `resolve_bridge_transfer` → `beneficiaries`. `redeemed_via_contract`, a LayerZero `destination_oapp`, a CCTP leg marked `settlement_intermediate`, a Wormhole message marked `settlement_message` (a Mayan order's own message, never redeemed, or the message of an Allbridge pool transfer sent through Allbridge's Wormhole messenger) and a CCTP leg that `carries` an Allbridge transfer are bridge contracts, messages or intermediate accounts, not the recipient. `carried_by` names the one protocol the transfer went through when others settled it (`settled_over`); `also_exited` names any other bridge the transaction used, whose recipient is a separate destination. `carriers` names a package that made the bridge call on the sender's behalf (an adapter or aggregator), with its function and its own events such as an order id |
+| Did value leave through a bridge this server does not recognise? | `cross_chain_leads` in `resolve_bridge_transfer`, `summarize_address_flows` and on `trace_flow_graph`'s consumed terminals: events carrying a chain field and a foreign-address-sized byte string, tier heuristic. Read the emitting package before calling it an exit; no `cross_chain_leads` does not rule out a bridge that encodes its destination another way |
+| Where did money arriving on Sui come from? | `resolve_bridge_transfer` on the redeeming transaction → `sui_native_bridge_inbound` / `wormhole_inbound`: origin chain and transfer id (VAA id). A solver or relayer fulfilment by any other package → `fulfilment_inbound`: origin chain, CCTP transfer id and VAA id, and the beneficiary credited the amount its events state. A heuristic origin or beneficiary is a lead, not a finding |
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | Who else profited in this window, and by how much? | `aggregate_events` with `module` and `group_pnl` — each sender's own balance changes in USD, multi-leg PTBs marked |
-| How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, every inflow source, top recipients, gas sponsors, bridge exits grouped by destination |
+| How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, inflow sources, top recipients, gas sponsors, bridge exits grouped by destination; totals and `inflow_source_count` cover every row, and `detail: "full"` lists every source |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
-| Where did this object come from? | `trace_object_history` — reaches a deleted or wrapped object (`end`), and a distant transition on a capability mutated on every privileged call, without paging through every version |
+| Where did this object come from? How did it change just before the incident? | `trace_object_history` — reaches a deleted or wrapped object (`end`), and a distant transition on a capability mutated on every privileged call, without paging through every version; `order: "newest"` lists the latest versions first and `next_call` pages back |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |
 | Has anything moved since I looked? | `watch_addresses` then `poll_watch` |
 | What is this address doing over time? | `build_timeline` |
@@ -641,7 +871,10 @@ ten round trips for the same data.
 - **"The trace ended, so the money stopped."** A forward trace stops when the
   recipient has not spent *yet*, when the value went into a protocol (the
   depositor holds the claim), at a bridge exit, or at a hub whose next outflow
-  is someone else's money. Check `stop_reason`, which is always set.
+  is someone else's money. Forward, a hub is an address that 100 or more
+  distinct senders pay into; one paid by a few that pays hundreds (a theft
+  wallet, an operator's disperser) is followed, and so is any wallet labelled
+  malicious. Check `stop_reason`, which is always set.
 - **"Funds sent to an address went to a wallet."** A `Receiving<T>` transfer
   (a zkSend link) pays an object's id. `identify_address` reports
   `wrapped_or_deleted_object` for such an id, and `trace_funds` follows the
@@ -674,12 +907,34 @@ ten round trips for the same data.
 
 ## Traps in the data itself
 
+- **A listed row count is not the total.** A response with `truncated: true`
+  listed what fit its budget and computed every total, count and verdict over
+  all rows. `omitted.lists` says per list how many rows are missing, the USD
+  value of the priced ones, how many are unpriced (an unpriced row can be the
+  loot) and the largest by USD; flagged rows (bridge exits, lookalikes, labelled
+  addresses, capabilities, linked subjects, the sender's own changes) are
+  never among them. A `get_transaction` event row with `count` is several
+  events folded: its `varying` fields give totals, not one event's value.
+  Before concluding that an address is absent, repeat the
+  call with `detail: "full"`, or read the `page` URI of that list with
+  `match` set to the address when the store is on.
+
+- **`detail: "full"` lifts a default cap.** `analyze_attack_tx`,
+  `summarize_incident_losses`, `aggregate_events`, `get_transactions`,
+  `get_transaction_history` and `build_timeline` list what fits their budget
+  by default and take `detail: "full"` for every row. `omitted.next_call` is
+  the exact call.
+
 - **Dust is not funding.** A 1-MIST spam send is not who funded a wallet, and an
   inflow in a coin nobody prices is spam unless it is at least 1% of the coin's
   supply, or 0.1% from the coin's publisher, which no airdrop can give
-  thousands of wallets (a rug deployer's grant to an insider is the case). Such
-  a hop carries `unpriced_funding`. Skipped inflows appear as
-  `dust_skipped`; read them rather than assuming nothing was filtered. A hop
+  thousands of wallets (a rug deployer's grant to an insider is the case), or
+  at least 0.01% sent as a grant: to at most five addresses in its transaction
+  and in the funder's sends of that coin within about ten minutes, in amounts
+  not all equal. Such a hop carries `unpriced_funding`, whose `basis` says which
+  rule counted it (`supply_share` or `targeted_send`, with `send_shape`). Skipped inflows appear as
+  `dust_skipped` (in `find_funding_sources`, `dust_skipped_count` unless
+  `detail: "full"`); read them rather than assuming nothing was filtered. A hop
   in `prices_unavailable_at` was judged while no coin price loaded, so a
   non-SUI inflow there passed at any value; rerun before trusting it.
   `sponsored_by` (the parties that paid gas for transactions the address sent)
@@ -731,7 +986,9 @@ ten round trips for the same data.
   `build_timeline` row it is the balance change of whoever sent the
   transaction, so a transfer the subject received shows the sender's outflow.
   The subject's own side is `subject_flow`: signed, formatted, with
-  `coin_verified`, and keyed by address in a timeline.
+  `coin_verified`, and keyed by address in a timeline. A row the subject (or,
+  in a timeline, a tracked address) sent carries `subject_flow` alone, since
+  the two are the same side.
 
 ## A worked case
 

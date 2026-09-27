@@ -22,6 +22,8 @@ import { foreignAccountId, unpadForeignAddress } from "./foreign-address.js";
 
 export const CCTP_DEPOSIT_EVENT_SUFFIX = "::deposit_for_burn::DepositForBurn";
 export const CCTP_MESSAGE_EVENT_SUFFIX = "::send_message::MessageSent";
+/** Circle's domain for Sui: the source domain of a burn made here. */
+export const CCTP_SUI_DOMAIN = 8;
 
 /**
  * Circle's domain numbering: its own namespace, neither CAIP-2 nor Wormhole's.

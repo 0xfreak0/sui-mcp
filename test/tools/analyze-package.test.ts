@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   analyzePackageModules,
+  bytecodeFindings,
   type AnalyzedModule,
 } from "../../src/tools/analyze-package.js";
 
@@ -196,5 +197,64 @@ describe("analyzePackageModules", () => {
     ]);
     expect(found).toContain("uses-randomness");
     expect(found).toContain("hot-potato");
+  });
+});
+
+describe("bytecodeFindings", () => {
+  // Three public functions check the pool's own version before mutating it;
+  // `sweep` does not. A skipped check of one object's own state is a weak lead.
+  const fn = (name: string, check: boolean) => [
+    `entry public ${name}(Arg0: &mut Pool, Arg1: u64) {`,
+    "B0:",
+    ...(check ? ["\t0: CopyLoc[0](Arg0: &mut Pool)", "\t1: FreezeRef", "\t2: Call assert_version(&Pool)"] : []),
+    "\t3: MoveLoc[1](Arg1: u64)",
+    "\t4: MoveLoc[0](Arg0: &mut Pool)",
+    "\t5: MutBorrowField[1](Pool.total: u64)",
+    "\t6: WriteRef",
+    "\t7: Ret",
+    "}",
+    "",
+  ];
+  const text = [
+    "module 00000000000000000000000000000000000000000000000000000000000000aa.pool {",
+    "struct Pool has key {",
+    "\tid: UID,",
+    "\ttotal: u64,",
+    "\tversion: u64",
+    "}",
+    "",
+    "assert_version(Arg0: &Pool) {",
+    "B0:",
+    "\t0: MoveLoc[0](Arg0: &Pool)",
+    "\t1: ImmBorrowField[2](Pool.version: u64)",
+    "\t2: ReadRef",
+    "\t3: LdU64(1)",
+    "\t4: Eq",
+    "\t5: BrFalse(7)",
+    "B1:",
+    "\t6: Ret",
+    "B2:",
+    "\t7: LdU64(2)",
+    "\t8: Abort",
+    "}",
+    "",
+    ...fn("deposit", true),
+    ...fn("withdraw", true),
+    ...fn("claim", true),
+    ...fn("sweep", false),
+    "}",
+  ].join("\n");
+
+  it("counts a weak lead without raising a finding, and names the checks it ran", () => {
+    const { findings, scan } = bytecodeFindings(new Map([["pool", text]]));
+    expect(findings).toEqual([]);
+    expect(scan.leads["sibling-guard-gap"]).toEqual({ strong: 0, medium: 0, weak: 1 });
+    expect(scan.checks).toEqual(["discarded-check", "sibling-guard-gap", "unchecked-state-write"]);
+  });
+
+  it("lists every weak lead no finding lists, with the check that made it", () => {
+    const { scan } = bytecodeFindings(new Map([["pool", text]]));
+    expect(scan.weak_leads?.map((l) => [l.check, l.function, l.grade])).toEqual([["sibling-guard-gap", "pool::sweep", "weak"]]);
+    expect(scan.weak_leads?.[0].instructions.some((i) => i.includes("Call assert_version"))).toBe(true);
   });
 });

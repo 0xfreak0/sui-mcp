@@ -24,7 +24,7 @@ src/
 ├── discovery.ts          # Token discovery (static + Aftermath fallback)
 ├── discovery-nft.ts      # NFT collection discovery
 ├── prompts.ts            # MCP prompts (task + forensics skill sections)
-└── resources.ts          # MCP resources (chain reads, sui://case/{name})
+└── resources.ts          # MCP resources (chain reads, sui://case/{name}, sui://results/{id})
 ```
 
 Per-call network selection. `SUI_NETWORK` sets only the *default* (mainnet if
@@ -65,8 +65,11 @@ GraphQL `package(address:)` answers with the **lineage's latest version**,
 whichever version's address you pass: Nemo v1 (`0x2b71…`) and v5 (`0xef9c…`)
 both come back as v12. For one version's bytes read
 `object(address:) { asMovePackage }` (`fetchModuleDisassembly`,
-`fetchModuleNames`) or `package { packageAt(version:) }` (`diff_package_upgrade`).
-gRPC reads by object ID and is exact.
+`fetchAllModuleDisassembly`, `fetchModuleNames`, `fetchPackageLinkage`) or
+`package { packageAt(version:) }` (`diff_package_upgrade`).
+gRPC reads by object ID and is exact. `MovePackageService.GetPackage`
+returns `linkage` empty; `get_package` reads the table from the package object
+with a `package.linkage` read mask, as `get_package_dependency_graph` does.
 
 ### Archive fallback
 
@@ -257,14 +260,21 @@ TRANSACTION:
   `versionScopeNote` names the lineage for `query_transactions`; `all_versions`
   reads every version as aliased connections and merges them
   (`src/utils/version-fanout.ts`), with a cursor recording each version's
-  position so no call is skipped or repeated across pages.
+  position so no call is skipped or repeated across pages. With
+  `include_functions`, each row's `matched_calls` counts the calls the filter
+  names at its own granularity (function, module or package), through the
+  versions read, against `total_calls`.
 
 ## Address identity in investigation flows
 
 `src/utils/identity.ts` resolves name, label, kind and historical names for a
 whole result set in two batched calls, and `trace_funds`, both funding tools and
 `build_wallet_edges` all use it. `identify_address` stays the thorough
-single-address tool; it costs about five requests each and cannot run per hop.
+single-address tool; it costs about six requests each and cannot run per hop.
+For a wallet it adds `first_seen` (`readFirstSeen`): the oldest transaction
+`affectedAddress` returns, in one request, with the coins the wallet gained in
+it and `first_inflow`, null when its balance changes ran past one page without
+a gain for it.
 
 Two things it adds that the flows were missing:
 
@@ -379,38 +389,275 @@ pool of gas coins.
 
 ## Completeness beats payload size
 
-`get_transaction` returns decoded fields for **every** event by default.
-`max_event_field_bytes` exists but is unset unless a caller asks for it.
+Every tool result stays in the model's context for the rest of the
+conversation, and Claude Code writes a result over ~50k characters to a file
+and shows the model a 2 KB preview unless the tool declares
+`_meta['anthropic/maxResultSizeChars']` (500k, Claude Code's ceiling, set in
+`tool-meta.ts`). Before caps, `summarize_address_flows` on a busy drainer was
+273k characters and `get_transaction` on a 400-NFT airdrop 139k.
 
-**Do not add a default cap.** It would let an investigation reach a conclusion
-from a subset of the events without the reader having chosen that, and it would
-almost never fire: the 99th percentile of transactions with events carries 12 KB
-of decoded fields, against 53 KB (~13k tokens) for a 59-event outlier. Paying
-for the outlier is the right trade. Bounding the payload is the caller's
-decision, and when they make it the response says plainly that it is not the
-complete event data.
+### The cap rule
 
-Tools whose complete result is the point declare
-`_meta['anthropic/maxResultSizeChars']` (500k, Claude Code's ceiling) in
-`tool-meta.ts`. Claude Code otherwise writes a result over ~50k characters to a
-file and shows the model a 2 KB preview, which is a default cap by another
-route.
+A tool may cap a list in its default view only through
+`src/utils/output-cap.ts`, and only under these rules:
 
-A default view is different from a cap when nothing is dropped from the answer,
-only moved behind an argument that the response names. `analyze_package` and
-`get_package` return a per-module summary (counts, entry and public function
-names) and compact JSON, because the full listing of `0x2` is 272k characters;
-`modules: [...]` or `detail: 'full'` returns struct shapes and signatures.
-`analyze_package` folds caps of one type and ownership into one entry that still
-lists every object and holder. `find_funding_sources` keeps each result's origin,
-first funder and first hop, and `include_chains` returns every hop; shared
-funders, co-funding and payments are computed from the full chains either way.
+1. **Totals, shares, counts, nets and verdicts are computed over every row**
+   before any list is cut. A cap shortens a list, never the answer, and a list
+   that loses rows keeps its count beside it (`inflow_source_count`,
+   `created_for_count`, `balance_change_count`).
+2. **Rows are ranked by investigative importance, and flagged rows survive
+   any budget**: bridge exits, lookalike and poisoning pairs, failed
+   transactions, labelled or non-wallet addresses, capabilities, a subject
+   tied to another, the sender's own changes, a pool a flash leg or anomaly
+   names, every counterparty whose kind could not be read, and the largest
+   values. `summarize_address_flows` classifies every counterparty, not only
+   the top ones, before the cap reads `kind`, and ranks unpriced coins and
+   unattributed rows ahead of priced dust. Identical rows fold before any
+   cap: `analyze_attack_tx` folds swaps of one pool, coins and direction into
+   a row with their count, event indices and summed amounts (Nemo's 100
+   swaps, 48k characters); a swap whose direction and coins are both unknown
+   never folds.
+3. **The response says exactly what it left out**: `truncated: true`, and per
+   list under `omitted.lists` the count, the USD summed over the priced
+   omitted rows with `unpriced` counting the rest, `largest` (by USD) where
+   rows carry a value and otherwise `first` (the first omitted row in rank
+   order, never called the largest), `entries` for a folded list, and
+   `from`, the first omitted index.
+4. **Everything omitted is reachable.** `omitted.next_call` is the exact call
+   that returns it, usually this call repeated with `detail: "full"`; a list
+   another call pages names that call (`decode_ptb` with `command_offset`, or
+   `commands: [i, j]`).
+5. **With `SUI_STORE_PATH` set, the full result is stored** (`results` table,
+   keyed by a 12-hex content hash) and `omitted.result.uri` is
+   `sui://results/{id}`. Each list's `page` URI reads it as an MCP resource
+   with `omitted=1`, which pages only the rows the response left out (the
+   `shown` column records the listed indices, and a folded row covers its
+   member entries), so the response plus its pages hold every row exactly
+   once. `path`, `offset`, `limit` and `match` page any list, 20k characters
+   at most per page. With no store, rules 1 to 4 hold on their own.
+   `test/output-cap-property.test.ts` checks all of this over random row
+   sets, budgets and orders.
+
+A resource was chosen over a paging tool because a tool definition costs
+context on every turn and Claude Code already reads resources
+(ReadMcpResource). A client without resource support still reaches every row
+through `next_call`.
+
+Measured 2026-09 on the case set, summary view before and after:
+`summarize_address_flows` on the Suisses drainer 273k to 29k and on its fee
+address 204k to 13k; `get_transaction` on the phishing airdrop 139k to 8k and
+on the Cetus recovery (193 coins) 131k to 56k; `list_nfts` on the drainer 69k
+to 26k; `find_funding_sources` on KONG's 35 bundle wallets 76k to 46k; `get_transaction` with `detail: "full"` on Nemo's
+exploit 463k to 167k, and its default view 98k to 17k once events fold. Half of each saving was lossless: compact JSON (pretty
+printing added a quarter), one copy of the payload instead of text plus
+`structuredContent`, a reason text named once instead of per row, a cursor
+that drops drained kiosks, a first hop that no longer repeats its result's
+subject and funder, and a bridge exit's beneficiary without the tier, account
+and padded bytes the output already implies, its amount note named once per
+source in `amount_notes`.
+
+Measured 2026-09 on the held-out round, before and after: `summarize_incident_losses`
+over a meme-coin drainer's 691-transaction window 488k to 33k (776 unpriced
+coins were 451k of it), `aggregate_events` with `group_pnl` over the same
+drain 425k to 23k (one sender's 776-coin net was 174k), `get_transactions` on
+a perpetuals exploit's 17 transactions 163k to 40k, `get_transaction_history`
+50 rows 108k to 36k (60k with `detail: "full"`), and `analyze_attack_tx` on
+two of the drainer's transactions 51k and 69k to 43k and 46k. A list inside
+each row of another list is capped by a path with a list index
+(`transactions.3.events`, `pnl.senders.0.net`, `addresses.2.coins`); such
+paths go before the path of the list that holds them, whose own cap renumbers
+its rows. `capPayload`'s `paged` records the stored indices of a list the
+caller narrowed or paged itself, so its `omitted` page skips them too.
+
+`get_transaction`'s full view pages what grows with the PTB. `commands:
+[i, j]` narrows the events, the inputs and `object_changes.by_kind` to those
+commands (`src/utils/command-attribution.ts`), and `events_omitted`,
+`inputs_omitted` and `object_changes_omitted` count the rest with the call
+that lists them. An event carries the package and module of the Move call
+that emitted it, and commands run in order, so each event's possible
+commands are the matching calls between the earliest and latest that keep
+emission order; one is exact (`command`), several are neighbouring calls
+into one module (`commands`). An object belongs to a command that takes it as
+an argument, or, when created, to one that returns its type. Without
+`commands`, dynamic fields of one type and version fold into one row with
+their `object_ids`. Events page by position, 40k characters a page:
+`event_offset` starts a page within the listed events (after any `commands`
+narrowing) and `events_page.next_call` carries the next one, so every event
+is reachable with the store off. Paging by command could not do that: a
+command whose own events passed the budget named itself as the next call and
+returned the same page again. Nemo's
+exploit with five commands picked went from 141k to 23k and in full from
+167k to 110k; Cetus's full view from 126k to 48k (260 tick fields).
+
+### Events fold past 20k characters
+
+`get_transaction` decodes **every** event, and `max_event_field_bytes` (unset
+unless a caller asks) is the only thing that rations decoded fields. The 99th
+percentile of transactions with events carries 12 KB of decoded fields, so
+most lists pass untouched. Past `EVENT_FOLD_BUDGET` (20k characters) the
+summary view folds events that differ only in their amounts
+(`src/utils/event-fold.ts`): same type, emitting package, module and sender,
+and the same fields once every digit string is set aside. Sui renders u64
+and wider as digit strings and u8 to u32 as JSON numbers, which are reserve
+indices, chain ids and kinds, so a JSON number stays in the key: borrows from
+two reserves never sum into one total. A boolean is a field too, so a signed
+amount's `positive` keeps opposite signs apart. A folded row keeps every emission index, the shared fields under
+`parsed` and each varying field under `varying` with its total, minimum and
+maximum; a lone event keeps its own fields and gains `index`. The rows then
+go through the cap, keeping every event a non-framework package the
+transaction called emitted, and `omitted.folded` states the fold. Nemo's
+exploit went from 98k to 17k: its 100 market swaps are one row.
+
+A default view that moves detail behind an argument the response names is
+not a cap. `analyze_package` and `get_package` return a per-module summary
+(counts, entry and public function names) and compact JSON, because the full
+listing of `0x2` is 272k characters; `modules: [...]` or `detail: 'full'`
+returns struct shapes and signatures. `analyze_package` folds caps of one type
+and ownership into one entry that still lists every object and holder.
+`list_nfts` leaves raw Move contents to `detail: 'full'` and counts them under
+`omitted`. `find_funding_sources` keeps each result's origin, first funder and
+first hop, and `detail: 'full'` returns every hop; shared funders, co-funding
+and payments are computed from the full chains either way.
 
 A list row folds repeats: `get_transaction_history` and `build_timeline`
 actions and `query_transactions` `move_calls` go through `foldRepeats`, each
-distinct entry once with ` ×N`. The Nemo exploit's 214-command PTBs made a
-30-minute `build_timeline` 195k characters. `get_transaction` keeps every
-action in order, so the sequence is one call away.
+distinct entry once with ` ×N`. The Nemo
+exploit's 214-command PTBs made a 30-minute `build_timeline` 195k characters.
+`get_transaction` keeps every action in order, so the sequence is one call
+away. A history or timeline row the subject (or a tracked address) sent
+carries `subject_flow` alone: `token_flow`, the sender's side, would repeat
+it.
+
+### A PTB's inputs and argument wiring
+
+`get_transaction` with `detail: 'full'` and `decode_ptb` (bytes, or `digest`
+for an executed transaction) share one resolver, `src/utils/ptb-resolve.ts`.
+It reads the transaction's own BCS (`transaction.bcs`, which the fullnode and
+the archive both return), so the two tools print the same `commands` and
+`inputs`, and a test holds them equal. Events rarely echo an attacker's
+arguments: the Scallop spool exploit passed a dormant sWETH Spool to
+`update_points`, which emits nothing, and only the command's argument names it.
+
+- **Pure values are decoded with the declared type.** The called function's
+  signature comes from `getMoveFunction` (cached per network and target; a
+  failed read is not cached), with the call's type arguments substituted.
+  SplitCoins amounts are u64, a TransferObjects recipient is an address, and a
+  MakeMoveVec element has the vector's type. Bytes that are not exactly one
+  value of that type stay as `bytes`; a signature that cannot be read is named
+  in `signatures_unavailable`. An address-typed value sits under `address`,
+  the key `flagPtbAnomalies` reads a recipient from, and an untyped 32-byte
+  pure keeps the address-shaped guess there. A `u64`, `u128` or `u256` with
+  its top bit set also carries `signed_value`, its two's-complement reading
+  (`src/utils/signed-int.ts`): signed quantities (an `ifixed` fee) travel in
+  unsigned integers. `get_transaction` gives an event field in the top half
+  of the `u256` range the same reading under `signed_readings`; a `u128` in
+  its top half can be a wrapping accumulator, so it gets none there.
+- **Versions come from the effects.** An owned or receiving input carries its
+  version in the bytes. A shared input carries only its initial shared
+  version; the version read is the changed object's input version or the
+  unchanged consensus object's version. Types come from the effects, and the
+  object set (`objects.objects.*` in the read mask) fills an immutable input's.
+- **An argument is short; the input list is full.** An object argument carries
+  its id, version and `module::Name` type; `inputs[index]` has the full type,
+  initial shared version and mutability. A Result names `module::function`,
+  and the producing Move call lists its declared `returns`. Repeating full
+  types in every argument made Nemo's 214-command PTB 570k characters.
+- **`object_changes.by_kind` partitions the counts.** Created and deleted match
+  `created` and `deleted`, and every group together matches `changed`;
+  accumulator writes are excluded from both.
+- **Commands are paged at 30k characters.** With commands listed the JSON is
+  compact. A first page lists every command when they fit
+  `COMMAND_PAGE_BUDGET`; when they do not, the commands an anomaly names
+  (each `PtbAnomaly.commands`; the most severe flag first, and among equals
+  the one naming the fewest commands) go first, then Move calls into
+  non-framework packages, then the plumbing, each in index order while they
+  fit. `analyze_attack_tx` gives the `decode_ptb` call that lists the 20
+  most severe commands its medium and high flags name (`flagged_commands`).
+  `commands_omitted` gives the exact index ranges left out. A continuation
+  (`decode_ptb` with `command_offset`) lists commands in index order from the
+  offset, so it always advances and every command is reachable with the
+  store off; it repeats any command the ranked first page already listed.
+  Ranking a continuation too returned the same page forever once the first
+  omitted command was plumbing. `commands: [i, j]` on either tool lists
+  exactly those commands. Each command carries its `index`, so a
+  page with gaps never renumbers. Nemo's exploit `19Zkat1x…` returned all 214
+  commands in 463k characters; its first page is now 167k, of which 85k is
+  events, and `commands: [203, 204]` is 138k.
+
+### PTB anomaly triage
+
+`flagPtbAnomalies` (`src/utils/ptb-anomalies.ts`) is one pass for both
+`decode_ptb` and `analyze_attack_tx`, over the commands and inputs
+`resolvePtb` returns. `analyze_attack_tx` resolves the transaction's own BCS
+(`AttackTx.bcs`) and passes the same sender, blocklist and trust as
+`decode_ptb`, so a payout or blocklisted call flags in both tools.
+
+- **Naming is not trust.** `unverified-package-call` asks
+  `lookupPackageTrust` (`src/protocols/registry.ts`): the curated registry
+  (exact ID or lineage), or a called version whose own publisher also signed a
+  version of a curated lineage (`custody.signers`, tier 4 below). A Move
+  Registry name or any other display name never counts. A publisher match
+  reports `unregistered-package-lineage` at info instead.
+- **Unrecognized is graded by value.** `callValues`
+  (`src/utils/ptb-value-flow.ts`) marks a call that takes the gas coin, an
+  owned or receiving object, a funds withdrawal, or a coin, balance or token
+  (declared type, or a SplitCoins/MergeCoins result), or that returns one, or
+  that names another address. With effects, a named address counts only when
+  it gained. `unverified-package-call` is medium when a call into an
+  unrecognized package moves value or another medium or high lead fires, and
+  info otherwise. Derived from the negatives: of the 54 ordinary transactions
+  it flagged, the 16 left at info call recorders, oracle refreshes and checks
+  that take and pay nothing.
+- **An executed transaction is graded by round trip.** With effects
+  (`effectsPayouts`, gas taken out of its payer's SUI change), value through
+  an unrecognized package keeps the flag at medium only when it went one way:
+  another address gained what the sender lost, or the sender lost value and
+  received no coin or object. A swap, deposit, redeem or trade that returned
+  value to the sender reads info, unless another medium or high lead fires,
+  including `analyze_attack_tx`'s trade and state leads (`unreconciled-gain`
+  covers an attacker contract that profits). Before signing there are no
+  effects, so the structural grade stands.
+- **Superseded versions.** The lineage read gives the newest versions with the
+  checkpoint each was published at, so a call is judged against the versions
+  that existed when it ran (bytes not yet signed: now). `stale-package-version`
+  is medium when the call writes a mutable shared object whose type its own
+  lineage defines and the newest version changed or removed the function it
+  ran (`superseded-diff.ts` diffs the module's disassembly at both versions,
+  at most 8 module pairs per call; the rest read "not compared"), whatever
+  the registry says. Grading on the registry instead would turn the flag off
+  the day a lineage is curated. On the 129 labelled transactions every
+  superseded call ran a function its newest version kept unchanged, so
+  nothing reads medium; that includes the Scallop exploit, whose `user`
+  module is identical from v2 to v4.
+- **Payouts by effects.** For an executed transaction,
+  `effectsPayouts` (`src/utils/payouts.ts`) lists coins the sender lost that
+  another address gained and objects the sender held that another address now
+  holds, whichever function moved them. They join `transfers-to-non-sender`
+  as `by effects` lines: info alone, medium beside another lead, and the
+  anomaly stays high whenever a command pays a stranger.
+- **Pre-sign sends are put in context.** With bytes and no effects,
+  `presignSends` (`src/utils/presign-context.ts`) resolves what each
+  TransferObjects or `pay::split_and_transfer` hands another address to its
+  source (the gas coin, a coin input, or a SplitCoins of one) and amount,
+  and `readPresignContext` reads, now, the coin objects, the sender's balance
+  of each coin and each recipient's first transaction (one aliased GraphQL
+  document, first 20 recipients). `presign_context` gives `share_of_balance`
+  per coin and `first_seen` per recipient, and the payout flag's evidence
+  leads with them. A whole coin sent is worth its balance plus every coin a
+  MergeCoins joined into it before the send (the drainer's send-max shape,
+  `MergeCoins(coin0, [coin1..]); TransferObjects([coin0], …)`, and coins
+  merged into the gas coin); a coin that took in an earlier command's
+  result, or a split result that took in anything, is left unresolved. A
+  whole coin whose coins were not all read (a gas coin spent since the bytes
+  were built) counts in `unresolved_sends` and each unread object is named in
+  `unread`, never valued at zero. A history read that failed leaves
+  `first_seen` absent and names the failure in `unread`, so it never reads
+  as a fresh address. The flag's grade does not change: an exchange deposit
+  is also a large share to an address seen before.
+- **Absence is stated.** `PTB_CHECKS` and `TRADE_CHECKS` name every check
+  with its rule; both tools return them as `checks_run` with `NO_MATCH_NOTE`,
+  and `analyze_attack_tx` prints every anomaly and the checks line in its text.
+  System packages are 0x1, 0x2, 0x3, 0xb and 0xdee9.
 
 ## Tool arguments
 
@@ -507,9 +754,10 @@ its file. The default is a chain read: a title derived from the name,
   description is one line because it repeats in every schema; it was 23% of the
   whole tool list at three sentences.
 - **`structured: true`** adds the first JSON-object text item as
-  `structuredContent`. It is opt-in because the payload then travels twice.
-  `trace_funds` puts its prose summary in the first item and its JSON in the
-  second, and the JSON is what becomes structured content.
+  `structuredContent`. It is opt-in because the payload then travels twice,
+  and a capped tool leaves it off. `trace_funds` puts its prose summary in the
+  first item and its JSON in the second, and the JSON is what becomes
+  structured content.
 
 `enable_tools` is registered on the raw server and reads the same table. Its
 description lists every tool of each profile that is still off and must stay
@@ -542,8 +790,8 @@ An exhausted 429 reports the endpoint and suggests
 A read that fails must not render as empty or zero. When the core read of a
 tool fails, return `isError`. When a secondary read fails, set its value to
 `null` and add a `*_unavailable` string saying what is unknown, as
-`identify_address` does for `sui_balance`, `sui_name`, `token_count` and
-`aliases`, and `get_wallet_overview` for `staked_sui_count` and `kiosk_count`.
+`identify_address` does for `sui_balance`, `sui_name`, `token_count`,
+`first_seen` and `aliases`, and `get_wallet_overview` for `staked_sui_count` and `kiosk_count`.
 
 A call to a tool that the active profile disabled gets a reply naming its
 profile and the `enable_tools` call. `explainDisabledTools` in `toolset.ts`
@@ -569,6 +817,28 @@ reach for it. Someone lands on them to get work done.
   The bug that taught us to say it is not.
 - **Show a call and its output.** Concrete beats prose for anything with
   arguments.
+- **Code guidance leads with tools every install has.** The decompiler is an
+  optional external binary (`SUI_DECOMPILER_PATH`). The skill, the prompts, the
+  server instructions and tool hints send code questions to
+  `disassemble_module`, `get_move_function` and `diff_package_upgrade`, and name
+  `decompile_module` only after them as an optional aid;
+  `leadsWithBinaryTool` in `test/helpers/tool-names.ts` checks each surface.
+  Case checks never call `decompile_module`.
+- **The mechanism method starts from the exploit, not the upgrade list.** An
+  introducing or fixing upgrade need not exist (the flaw can date from the
+  first publish, sit in a linked dependency, or go unfixed), so `trace_incident`
+  and the skill's "Finding the flaw in the code" read the calls (`decode_ptb`,
+  a fraction of `get_transaction`'s full detail), then the code of every
+  version that ran and its gate, since an older version stays callable against
+  shared objects newer ones manage, then the objects' state around each step
+  (`query_transactions` `affected_object`, `get_object` at a version) and the
+  linked dependencies, and only then diff.
+- **Guidance names no incident.** Examples in the skill, the prompts, the
+  server instructions and tool descriptions are generic shapes with
+  placeholders, never a case's protocol, functions, addresses, digests or
+  figures, so a round on a known incident still measures discovery.
+  `tool-annotations.test.ts` checks the served text against every address and
+  digest in `cases/incidents`.
 
 ### Prose that reads as machine-written
 
@@ -655,7 +925,149 @@ parse surfaces there as a fixture that no longer derives to its own address.
 It also replays every case in `cases/incidents/` through `case-pass.mjs`
 (format in `cases/README.md`). Every registered tool needs a live check, a
 probe call or a case check, and `test/live-coverage.test.ts` fails naming any
-tool without one. `adversarial.mjs` does not count toward that.
+tool without one. `adversarial.mjs` does not count toward that. The closing
+summary of `verify:live` reports case-pass output size against
+`scripts/probe/lib/size-budget.mjs`: the total chars and estimated tokens, the
+tools/list cost, each case's total, every call over its tool's budget (known
+defects marked), and the five calls nearest theirs.
+
+`detector-pass.mjs` scores the anomaly detectors of `analyze_attack_tx` and
+`decode_ptb` (by digest, and on the transaction's own BCS as the pre-sign
+mode, `decode_ptb_bytes`) on `cases/detectors.json`: 61 exploit and attack
+transactions from fourteen incidents, and ordinary transactions, each labelled
+`tuning` or `holdout`. The 30 `tuning` positives are 16 from the seven
+incidents the rules were first written or tuned on, and 14 from Aftermath
+Perpetuals and BlueMove, labelled as `holdout` and moved to `tuning` in the
+commit that changed `shared-state-jump`, `outsized-mint` and
+`caller-value-used` from their flags. The 31 `holdout` positives come from
+Haedal, Full Sail, AlphaLend and two wallet drainers, labelled after every
+current rule was written; a `holdout` positive's incident may appear in no
+`detector_origins` entry. A drain the victim signed records
+`sender_withheld` instead of the signer, and so does a negative whose signer
+is a known victim.
+The `tuning` negatives are the 113 rule authors have looked at (the overfit
+audit's 40 plus 73 picked across keepers, oracle refreshes, LST mints,
+extreme-tick CLMM adds, aggregator routes, bridge sends, NFT trades, multisig
+ops, publishes, and legitimate calls of the functions each exploit used). The
+`holdout` negatives are 138 drawn on 2026-09-27 after the attack rounds,
+never shown to rule authors: 100 from random checkpoints and 38 by function,
+one per sender, none already labelled (`sample-negatives.mjs`). It fails on a
+medium or high flag on a tuning negative that `accepted_fps` does not list,
+on a positive that loses a
+`detected_by` detection, and on a run of the whole holdout split, when any
+kind's medium-or-high count there differs from `holdout_ceilings`.
+
+Rules for judging a detector change:
+
+- **Judge it on holdout.** Every exclusion in the attack rounds was added to
+  clear a tuning negative, so tuning figures are in-sample: a rule tuned on a
+  set passes it by construction, the same as a rule written from an incident
+  catches that incident. Iterate with `--split tuning`; run holdout once.
+- **Rotate holdout once it has been tuned against.** Whoever reads holdout
+  flags while changing a rule moves those negatives to `tuning` and draws as
+  many fresh ones.
+- **A detection is held out only if the rule never saw the incident.**
+  `detector_origins[code].incidents` lists what it was designed from and
+  `tuned_with` every incident labelled while its grades and exclusions were
+  set. Every rule changed since the labelled set existed was run against
+  every positive in view, so its `tuned_with` holds every incident labelled
+  then, and the only held-out detection is `stale-package-version` on
+  BlueMove (below). Held-out detection needs incidents labelled after the
+  rule was last tuned: the holdout positives. A rule changed while its
+  author looks at a holdout incident's flags moves that incident's positives
+  to `tuning` in the same commit and lists it in `incidents` or `tuned_with`.
+- **Holdout is gated by rate, never by entry.** A per-entry accepted list
+  would turn every holdout flag into a label someone looked at. The ceilings
+  equal the counts measured when they were recorded; a fall must be written
+  down (`--write-ceilings`) and a rise needs a reason in the commit.
+
+Measured on ea6b098, after this round's changes to `shared-state-jump`,
+`outsized-mint` and `caller-value-used`, and the recorded
+`holdout_ceilings` (medium or high; info flags excluded). Tuning was
+iterated on; holdout was run once, after. Against the mech/integ 1ccdb7f
+baseline, no tuning or holdout negative changed except three holdout
+Aftermath limit orders that now read `caller-value-used` medium.
+
+| Kind | Detects | Tuning (113) | Holdout (138), lead / noise |
+|---|---|---|---|
+| `analyze_attack_tx` `shared-state-jump` | Typus, Nemo, Cetus, Scallop, Volo, Aftermath, BlueMove | 0 | 3 (2.2%), 1 / 2 |
+| `analyze_attack_tx` `caller-value-used` | Typus, Nemo, Aftermath | 4 (3.5%), accepted | 3 (2.2%), 0 / 3 |
+| `analyze_attack_tx` `outsized-mint` | Cetus, BlueMove | 0 | 0 |
+| `stale-package-version`, by digest (both tools) | BlueMove | 0 | 1 (0.7%), 1 / 0 |
+| `blocklisted-package-call`, all three | Suisses | 0 | 0 |
+| `transfers-to-non-sender`, all three | Suisses, Volo | 5 (4.4%) | 6 (4.3%), 5 / 1 |
+| `unverified-package-call`, `analyze_attack_tx` | Suisses | 9 (8.0%) | 13 (9.4%), 8 / 5 |
+| `unverified-package-call`, `decode_ptb` by digest | Suisses | 7 (6.2%) | 11 (8.0%), 8 / 3 |
+| `unverified-package-call`, pre-sign | Suisses | 35 (31.0%) | 24 (17.4%); 8 / 17, 1 unclear when it was 26 |
+| `publishes-or-upgrades`, all three | none | 2 (1.8%) | 2 (1.4%), 2 / 0 |
+
+Negatives with any medium or high flag, per mode: `analyze_attack_tx` 15 of
+113 and 24 of 138; `decode_ptb` by digest 11 and 19; pre-sign 39 and 31.
+A holdout flag is a lead when it describes what a funds or code trace
+follows (a payment to another address, a bridge send, value going one way
+into unvetted code, an upgrade, old code writing live state), and noise when
+the sender keeps or gets back the value, an owner empties its own account, or
+the flag reads medium only because another flag fired beside it. Of the 38
+flagged holdout negatives, 17 carry a lead. `shared-state-jump` cannot tell an
+owner emptying its own fee account or collateral from a drain. The pre-sign
+mode cannot see value come back, so routes, mints and settlements through an
+unregistered package read medium. Two tuning Cetus flash swaps read
+`unverified-package-call` medium in `analyze_attack_tx` only because
+`caller-value-used` fires beside them. The three holdout `caller-value-used`
+flags are market makers' limit orders on a perpetuals `ClearingHouse`
+carried in a session result: the order's price becomes the book's best bid
+or ask and the next command takes the object, the set-and-settle shape the
+rule grades medium.
+
+Aftermath Perpetuals and BlueMove were labelled as holdout and read once on
+mech/integ d5b38ad, before these rules changed:
+
+| Incident | Detected | By | Names |
+|---|---|---|---|
+| Aftermath Perpetuals | 5 of 11 drains | `analyze_attack_tx` `shared-state-jump` (high) | the drained `ClearingHouse<USDC>` vault, so the loss; nothing names the flaw |
+| BlueMove, one batch | 3 of 3 | `stale-package-version` (medium, `analyze_attack_tx` and `decode_ptb`) on steps 1 and 3; `shared-state-jump` (high) on steps 2 and 3 | the v1 `router::add_liquidity` and `remove_liquidity` calls, which is the flaw; the emptied `EscrowCoinsV2` escrows (the loss) and the v1 `Pool` balances (the attacker's own deposit) |
+
+The six drains missed there left the vault's accrued fees behind, so its
+USDC fell 13.9x in the first one, under the 100x bar, and the negative
+integrator fee reached shared state only as fee times notional. The rules
+were then changed from those flags and both incidents moved to `tuning`, so
+what follows is in-sample: Aftermath reads 11 of 11 by `shared-state-jump`
+(high, the value-share branch) and `caller-value-used` (medium, the fee
+times the fill's notional, which names the flaw), and the BlueMove drain
+adds `outsized-mint` (the LP minted at 122,000 times its supply). The
+pre-sign mode detects neither incident.
+
+One detection is held out: `stale-package-version`, unchanged this round,
+never saw BlueMove and reads its steps 1 and 3 at medium in both tools,
+naming the v1 `router` calls that are the flaw. Every rule changed this
+round lists all nine incidents in `incidents` or `tuned_with`.
+`stale-package-version` reads medium on no other positive (the Scallop
+exploit's `user` module is identical from v2 to v4), so Scallop's detection
+is `shared-state-jump` alone. The pre-sign mode detects only Suisses and
+Volo. Nothing detects the KONG sells.
+
+The holdout positives, read once on mech/integ caac419 with every flag
+reviewed. No rule saw these incidents, so every detection here is held out:
+
+| Incident | Detected | By | Names the flaw? |
+|---|---|---|---|
+| Haedal (8: 4 v1 deposits, 4 v3 redeems) | 4 of 8, every v1 deposit | `stale-package-version` (medium, `analyze_attack_tx` and `decode_ptb`) naming v1 `vault::deposit` with v3 already published; `shared-state-jump` (medium) on the vault's `last_aum` collapsing, or its LP supply rising 1,000x | Yes: the superseded version and the understated AUM. The v3 redeems, where the value leaves, read medium only in the pre-sign mode, as an unregistered package |
+| Full Sail (12: 3 guardian inits, 3 attests, 3 deposit and withdraw pairs) | 0 of 12 | nothing at medium or high by digest; the pre-sign mode reads the deposits' and withdrawals' Switchboard submit and port oracle calls as an unregistered package | No: neither the key swap nor the price set 100x below market is flagged; `caller-value-used` reads info on the withdrawals and nothing on the deposits |
+| AlphaLend (7 borrows on 6 September) | 2 of 7 | `shared-state-jump` (high) on a lending reserve losing 55% and 60% of its value to the borrower | No: the loss only; nothing reads ALPHA priced from the AVAX feed |
+| Scallop Pass drainer (1) | 1 of 1 | `blocklisted-package-call` and `transfers-to-non-sender` (high, all three modes) naming the drainer package and the collector | Yes: the payout to a stranger |
+| giftsui drainer (3) | 3 of 3 | the same two, naming `srt::mint` and each collector | Yes |
+
+On mech/integ cbf4801 the pre-sign `unverified-package-call` count fell to
+35 tuning and 24 holdout negatives once c6d4e32 curated Scallop's packages
+and deploy keys (the sCoin converter 0x80ca5778 and the `scallop` package
+0xee1ff669 that Nemo calls stopped reading unregistered); the five accepted
+false positives that stopped firing were removed and the ceiling lowered to
+24.
+
+Also firing, not counted as pointing at the attack: `unverified-package-call`
+(medium) on the Haedal deposits and both drainers, and
+`transfers-to-non-sender` (medium) on the Haedal deposits, where the
+payouts are 1 MIST each to 8 addresses.
 
 Not in CI. It needs the network and mainnet's current state, so it would be
 flaky on a schedule nobody chose, and a flaky required check teaches people to
@@ -668,7 +1080,7 @@ to the code.
 
 ### Protocol identification
 
-Three tiers, cheapest first, all behind `prefetchProtocolNames` +
+Four tiers, cheapest first, all behind `prefetchProtocolNames` +
 `lookupProtocol` / `lookupProtocolDisplay` (`src/protocols/registry.ts`):
 
 1. `src/data/protocols.json` — exact package ID, in memory, no network. Keys
@@ -680,15 +1092,105 @@ Three tiers, cheapest first, all behind `prefetchProtocolNames` +
    is stable across every version a protocol ever publishes. Generated by
    `npm run sync:protocol-roots` — re-run it after editing protocols.json.
 3. MVR reverse-resolution (`src/protocols/mvr-names.ts`) — display only.
+4. **Custody** (`src/protocols/package-custody.ts`) — a package with no
+   curated or MVR name whose own version was published by a key that also
+   published or upgraded a version of a curated lineage. The curated side is
+   `custody.signers` in protocol-roots.json: every address that signed a
+   publish or upgrade of each curated lineage, written by the same sync. A key
+   two curated protocols share (Pyth and Wormhole's deployer, Suilend and
+   SpringSui's) names neither. **The UpgradeCap holder is never used**: a cap
+   has `store`, so anyone can send one to a curated protocol's cap holder, and
+   a match on it would name an exploit contract after that protocol. A
+   signature needs the key. The version's own publisher is read, not the
+   root's: a lineage whose cap moved to another key after a curated key
+   published it does not inherit the match (Suilend's key published STEAMM
+   v1 to v5; v18 was published by a key that signed no curated lineage).
+   Only `prefetchProtocolCustody` fills it: one GraphQL request per 20 called
+   packages, at most 40 per call, reading each lineage's newest 50 versions
+   with their publishers and checkpoints, which also feeds the
+   superseded-version check. Only a lookup passing `{ custody: true }` reads
+   the name (`identify_address`, the attack tools, `get_transaction` and
+   `get_transactions`). Its cache is process-wide, so a lookup must pass
+   `custody` only for a package the same call prefetched, or a package would
+   be named one way or another depending on which tool ran first.
+   `readProtocolCustody` returns that set (`custodyFor`, which
+   `decodeTransaction` also takes). `get_transaction` reads the called and
+   event-type packages in one request; packages it left unread are listed in
+   `protocols_unchecked`.
+   It also marks a `balance_changes` row whose address signed a curated
+   lineage with `publisher_key_of` (`protocolsSignedBy`, shipped data only),
+   which makes a protocol fee paid to the team's key visible. The history,
+   timeline and trace decoders do not read custody. The attack tools resolve it
+   for the called packages only (`protocolNamer`), so event-type and
+   pool-type packages never read it, and a call past the bound reports the
+   unchecked packages in `protocol_attribution_incomplete` (`decode_ptb`:
+   `trust_incomplete`), as does a read that failed (`read_failed`, retried on
+   the next call): neither has a trust basis or a superseded state. It comes after MVR because a package's own registered
+   name (`@typus/perpetuals`) says more than its deployer's protocol
+   (`Typus`).
 
 Tiers 1–2 are curated and carry a verified category, so `lookupProtocol` (which
 gates behaviour: fund-tracing pass-through, pool parser selection) uses them.
-Tier 3 is a name anybody can register, so only `lookupProtocolDisplay` sees it.
+Tier 3 is a name anybody can register, and tier 4 says who deployed the
+code, not what it does, so only `lookupProtocolDisplay` sees
+them, with `type: "unknown"` and the tier in `source`. Trust is separate from
+naming: `lookupPackageTrust` counts tiers 1–2 and a tier-4 publisher match,
+even for a key two protocols share, and never tier 3 (see PTB anomaly
+triage).
 
 Lookups are synchronous and read caches only. Without a prefetch they degrade to
 tier 1; they never block. Lineage resolution batches 20 packages per GraphQL
 request — the service rejects 21+ store-backed queries in one request, and caps
 the payload at 5000 bytes.
+
+### Redeploys: the same code under another root
+
+`get_upgrade_history` with `find_redeploys` (`src/utils/redeploys.ts`, the
+fingerprint in `src/utils/module-fingerprint.ts`). No endpoint indexes
+packages by code, so the rules bound a search that starts from people:
+
+- **Candidates are the lineages whose UpgradeCap the root's publisher or the
+  current cap holder still holds** (`address.objects` filtered to
+  `0x2::package::UpgradeCap`, 5 pages of 50 per address). A cap burned or
+  handed elsewhere hides its lineage, so the result states what it searched.
+- **Half the module names in common, or it is not a copy.** Nemo's publisher
+  holds 215 caps; 41 lineages pass this filter.
+- **Code is compared with the ADDRESS_IDENTIFIERS table zeroed.** Zeroing
+  only the module's own address is not enough: the Nemo lineages link
+  different dependency packages, and their `py` bytes differ while the code
+  is identical. Every other table still counts, so a changed body, constant
+  or signature changes the fingerprint.
+- **Reads are batched and budgeted.** Module bytes come 5 packages per
+  request (a package's modules run to hundreds of KB), at most 120 package
+  versions per call, nearest-published lineages first, earlier before later.
+  The queried lineage's bytes are read only once a candidate exists: its
+  module names come first, names only. Nemo: 81 reads,
+  `module_origins.py` = `0x84d66b28…` v3.
+- **An origin never points forward in time.** `module_origins` weighs the
+  queried lineage's own versions against every compared copy, by each
+  version's publish time, and names the queried lineage
+  (`queried_lineage: true`) when it carried the code first. Querying
+  `0x84d66b28…` names itself for `py`, not the later `0xf2f765df…` copy.
+- **Functions are dated one by one.** A module fingerprint breaks on any
+  change in the module, so `module_origins` understates how old a function's
+  code is. `src/utils/function-fingerprint.ts` reads the module bytes already
+  fetched (bytecode 5 to 7, enums and jump tables included) and hashes each
+  function with every table index resolved to what it names: calls as
+  `module::function` with type arguments, datatypes by module and name,
+  fields by struct and field name, constants by type and value bytes,
+  variants by enum, name and tag. Addresses are dropped (the package's own
+  modules bare, framework packages by address, any other as `ext`), so a
+  function or constant added elsewhere in the module does not move the hash.
+  Visibility and the entry flag sit beside the hash rather than in it, and
+  `declared_changes` names a body whose exposure changed. `function_origins`
+  groups, by module and origin version, the functions whose earliest carrier
+  (the rules above) predates their module's origin or whose module has no
+  whole-module match. On Aftermath Perpetuals `clearing_house` dates to
+  `0x9a17a6ab…` (2026-02-10), while 98 of its functions, `calculate_taker_fees`
+  and `create_integrator_info` among them, carry the code of `0x2892f0e2…` v1
+  (2025-12-10), where `calculate_taker_fees` was private. Parsed names and
+  instruction counts match the GraphQL disassembly on every module of 0x1,
+  0x2, 0x3, DeepBook v3, six Aftermath packages and two BlueMove packages.
 
 ### What counts as funding
 
@@ -726,6 +1228,20 @@ someone in a report. Four rules, in `src/utils/funding.ts`:
   listed in `origin_unread_at` (`build_wallet_edges` adds a note and reports
   `truncated`). A failed read must never be read as "no supply": one 429
   would then put the later SUI back as the funding.
+- **Below those shares, the send decides.** An inflow of at least 0.01% of
+  supply (`UNPRICED_TARGETED_SHARE`) that neither share rule settles counts
+  when it was sent as a grant (`isTargetedSend`): at most
+  `GRANT_MAX_RECIPIENTS` (5) addresses paid in the coin in its transaction
+  and across the funder's sends of the coin within `SEND_BURST_CHECKPOINTS`
+  (about ten minutes) either side, and not three or more payments all of one
+  amount. An airdrop pays many at once, in a burst, or the same amount each,
+  and a share rule alone let any grant under 1% (or 0.1% from the publisher)
+  pass as spam, far below KONG's 10% and 5%. `readSendShape` is one read per
+  inflow, up to `MAX_SHAPE_READS` (3) per judgement; a window or transaction
+  past one page is `burst_truncated` and never a grant, and a failed read
+  lists the coin in `origin_unread_at`. `unpriced_funding.basis` is
+  `supply_share` or `targeted_send`, with `send_shape` when it was read. The
+  share rules still count on their own, whatever the shape.
 - **Floors:** 0.01 SUI, or $0.10 for a priced non-SUI coin. Gas for a transfer
   is roughly 0.001-0.005 SUI, so a real funder sends enough for many. Both are
   parameters, so a faucet-scale case can lower them.
@@ -764,6 +1280,15 @@ inflow. This is about coin dust only.
 
 Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
 
+- **An established funder ends the walk.** When a funder's payment to the
+  previous address is not among its own earliest `EARLIEST_TXS` (12)
+  transactions, the window every hop reads as an address's funding, the
+  funder paid from a balance it had been using. Its funding then describes
+  the funder, not that payment: a victim's transfer to a thief would
+  otherwise walk on to whoever funded the victim and read as the thief's
+  origin. The stop costs no read, since the funder's earliest transactions
+  are read for its own step anyway. The Suisse drainer's first funder paid
+  it in its 12th transaction, so that walk still reaches the airdropper.
 - **A service-scale funder ends the walk.** Each hop's funder goes through
   `probeRecipients` with `DEFAULT_POPULARITY_LIMIT`, the probe and the limit
   `build_wallet_edges` uses to discard an intermediary, so the two tools cannot
@@ -972,6 +1497,17 @@ funder `build_wallet_edges` picked. Any new caller that formats or values an
 amount must call `prefetchCoinScale` first, and belongs in
 `test/tools/coin-scale-cold.test.ts`, which runs each such tool once in a
 cold process against a coin whose CoinMetadata the mock serves.
+
+**Many unread coins are read over GraphQL, twenty to a request.** Below ten
+unread coins, `prefetchCoinScale` reads each over gRPC. From ten, aliased
+`coinMetadata` fields go into GraphQL requests of at most 20 coins (the
+service answers 21 store lookups per request) and 4,500 bytes (it refuses a
+body over 5,000, so the coin types go inline rather than as variables). A
+null answer is "no metadata", the answer gRPC gives as NOT_FOUND; a failed
+request falls back to one gRPC read per coin. Under a rate limit the request
+count is the latency, so a meme-coin drain's hundreds of coins cost one
+GraphQL request per 20 instead of one read each. DefiLlama price batches run
+four at a time.
 
 **A caller that VALUES an amount must warm before it judges, not after.**
 The funding walk used to prefetch after `pickFundingTx` had applied the $0.10
@@ -1198,6 +1734,17 @@ keeps the two apart.
 generates candidates. Popular means discard; narrow means at most `limit`
 candidates, all eligible.
 
+**A recipient counts only above the dust floor.** `probeRecipients` counts an
+address toward the limit only when a payment to it clears the floors
+`pickFundingTx` applies (`clearsDustFloor`: 0.01 SUI, $0.10 of a priced coin,
+and a coin no source prices never). Addresses paid only below them are
+`belowFloor`, reported as `below_floor_recipients` and never candidates.
+Counted, dusting 51 addresses for a fraction of a SUI made any funder read as
+a service, ended `find_funding_source`'s walk there and dropped the funder
+from `build_wallet_edges`. When no price can be read a non-SUI payment counts,
+the fallback funding applies. A reciprocal edge needs value back above the
+floor too, since dust back is what a poisoner sends.
+
 | Signal | Weight | Basis |
 |---|---|---|
 | `co_signer` | 1.5 | A key that can spend the wallet ALONE (`weight >= threshold`), read from the address hash |
@@ -1324,6 +1871,24 @@ Four rules that are easy to get wrong:
   paid all 377 addresses it sponsored in 1,000 transactions; two public gas
   stations sampled from mainnet traffic sponsored 945 and 115 and paid none.
   `FANOUT_METHOD_VERSION` 6 drops the rows classified by breadth alone.
+- **The operator can split its roles across two addresses.** Funding its
+  wallets from F and paying their gas from S, it leaves S with
+  `sponsored_and_paid_count` 0, and past the limit S reads `relayer`. The
+  relayer text therefore states what was measured and never says shared
+  sponsorship is not evidence. `build_wallet_edges` tests the split for every
+  measured sponsor whose seeds have a first funder F other than itself, when
+  F is a seed or passed the funder popularity filter and carries no label.
+  An exchange's customers share it by being customers, so a relayer most of
+  whose sampled users withdrew from one hot wallet linked unrelated users at
+  the merge floor; such a sponsor's `role_split` carries `not_checked`. It
+  reads the first funders of up to `ROLE_SPLIT_SAMPLE` (6) other wallets S
+  sponsors, from the probe's `sample` when S is popular, and links S to F and
+  to each seed F funded at weight 1.0 when at least `ROLE_SPLIT_MIN_MATCHES`
+  (3) and half of those read share F. A public relayer's users are first
+  funded by whoever onboarded each of them. The result is `role_split` on the
+  sponsor's intermediary row either way, and an excluded relayer's reason
+  names the count. A wallet provider that onboards and sponsors its own users
+  shows the same shape, which the edge detail says.
 - **Narrow and popular are not symmetric.** Popular is proven by what was seen.
   Narrow off an incomplete scan is provisional, because the probe reads recent
   activity while the fundings it filters are historical. `used_intermediaries`
@@ -1654,6 +2219,43 @@ is read from the transaction's pure input (the bytes passed to
 transceiver prefix and names Sui as `to_chain`. Pyth price updates verify VAAs
 too, and are not transfers.
 
+A solver-style bridge fulfils through its own package, which no curated
+inbound reader knows (`bridge/inbound-fulfil.ts`, `fulfilment_inbound`). The
+fulfilment has to consume the other chain's message, and says which one in
+its events: a `source_domain` field beside a `nonce` quotes a CCTP message,
+and a field equal to a VAA input's payload bytes, or a field named for a
+sequence holding its sequence, quotes that VAA. Only a transaction that also
+credits an address counts, and Pyth events quote no VAA. The origin is the
+CCTP domain when one is quoted (the chain the USDC was burned on; a VAA
+beside it is the protocol's own message, such as an auction result), else
+the VAA's emitter chain. The CCTP reading is `heuristic` unless the event's
+package carries a bridge label (Circle's own), since the domain is read from
+another package's field name. The beneficiary is `chain-derived` when an
+address was credited exactly an amount and coin the package's events state;
+the only credit besides the sender's is `heuristic`. The package is named by
+`nameBridgePackage` (`bridge/labeled-package.ts`): the registry, then a
+bridge label on the package, then a bridge label on an object whose type the
+package's lineage defines (Mayan's documented `state::State` object names its
+MCTP package). `identify_address` uses the same labeled-object rule when the
+registry names nothing.
+
+A package that sends a bridge's transfer from its own code is a **carrier**
+(`bridge/carrier.ts`). Each event records the module of the PTB command whose
+call emitted it (`transactionModule`); a curated bridge event emitted under a
+package outside the bridge's upgrade lineage names that package under
+`carriers`, with the PTB's functions in that module and the events of its own
+lineage (an order id). The lineage roots are read only when such an event
+exists, and an unread root attributes nothing, since a direct call into an
+upgraded bridge version looks the same until then. A package that defines a
+curated bridge event in the same transaction is that bridge (Mayan's package
+sending its Wormhole leg), already named by `carried_by`. `identify_address`
+reads the package's module bytes (`module-imports.ts`: function handles at
+another address) and lists calls into a curated exit entry as
+`bridge_carrier`; a marker naming a whole module (a fee calculator) is not an
+exit entry. The entry is matched by `module::function`, so the called package
+must also be the bridge: a registry `bridge` (its lineage root read first) or
+a package labelled `bridge`. Any package can publish a `bridge::send_token`.
+
 CCTP specifics: `DepositForBurn` carries `destination_domain` and a 32-byte
 `mint_recipient`; the paired `send_message::MessageSent` carries the raw
 message whose header is `version(4) ‖ sourceDomain(4) ‖ destDomain(4) ‖
@@ -1958,6 +2560,30 @@ ran at all (some branches, like a busy+deleted object or a missing
 checkpoint on `current`, page the oldest versions only and never search)
 before ever claiming anything about the object's "full life".
 
+`order: "newest"` pages back from the current version, so the versions just
+before an incident are reachable on a busy shared object. The cursor is a
+boundary version (`objectVersions` `filter: {afterVersion|beforeVersion}`,
+both exclusive), and every page reads one version past its older edge only
+to compute the owner change into its oldest listed row, so a change is never
+lost at a page boundary. The search covers only the span beyond the page in
+its paging direction: oldest first from the last shown row to `current`,
+newest first from the earliest retained version to the version before the
+page. `created` is always read from the earliest retained version, never from
+the page's first row.
+
+**The search reads both halves of a range at once, and the span's last
+write first.** Volo's OperatorCap has three owner changes after its first 50
+versions, the last made by the cap's latest write. Reading one probe at a
+time, pinning all three took 77 reads one after another, so the check ran
+past the 20 s time budget whenever the endpoint slowed. One read at the
+checkpoint before the span's upper end pins a change made by that write, and
+splitting each range into two concurrent searches makes wall time follow the
+search's depth rather than its read count. A search the budget stops
+lists every range it stopped inside in `owner_change_unpinned`, with the
+owners at both ends: each holds a change not yet pinned to a transaction,
+so a stopped search still says where the missing changes are. At most one
+range per read, so the list is bounded by the budget.
+
 `holder_kind` is three-valued — `wallet`, `kiosk_declared`, `mixed` — because
 one address can hold some NFTs outright and others through a kiosk. Collapsing
 it to two called a holder with three verified NFTs and one kiosk NFT a guess
@@ -2155,7 +2781,7 @@ the same as monitoring. Say so rather than implying otherwise.
 ### Address poisoning
 
 `address-lookalike.ts` reports two addresses close enough to be mistaken for
-one another. Five rules:
+one another. Six rules:
 
 - **Normalize before looking activity up.** The ledger is keyed by the strings
   the chain returned; the subject is whatever the caller typed, and the
@@ -2189,6 +2815,11 @@ one another. Five rules:
 - **Do not claim the addresses render identically.** At the 8+8 width this
   module itself renders, a 3+4 pair visibly differs. The true claim is that
   they match at both ends, which defeats a glance and a short truncation.
+- **The report is always emitted.** `lookalikeReport` returns
+  `addresses_compared` and `pairs: []` when nothing matched, and every tool
+  that runs the check puts it in its response. An omitted block read as a
+  check that never ran, or as a clean wallet. The empty report's note says it
+  covers only the addresses in that result.
 
 The rule is a floor of `MIN_PER_END` at each end, and the candidate bucketing
 uses the same width. Making the rule asymmetric without changing the bucketing
@@ -2369,9 +3000,37 @@ into "the funds did leave". Verified against the Typus second wallet's
 izg6h1Er…, which aborted with `INSUFFICIENT_COIN_BALANCE` inside a Mayan
 MCTP order and moved nothing but gas.
 
-There is deliberately **no heuristic tier**. Guessing that an unknown package
-looks bridge-shaped would manufacture exactly the unverifiable attribution this
-project refuses to ship.
+Detection has deliberately **no heuristic tier**: `detectBridges` never calls
+an unknown package a bridge, so no exit, carrier or beneficiary rests on a
+guess. A bridge with no marker still has to say where its value goes, though,
+so `cross-chain.ts` reads every event no curated reader or bridge-typed
+registry package covers for a field named for a chain (`chain`, `domain`,
+`eid`) holding a number, beside a 20- or 32-byte string (base64, a byte array,
+or 20-byte hex; a 32-byte hex string is a Sui address and is skipped). 32
+random bytes count only left-padded like a 20-byte address or under a field
+named for a party: on the Volo LayerZero exit `GqFPRF2e…` the OFT app's own
+`OFTSentEvent` carries `dst_eid` and a 32-byte `guid`, which read as a
+recipient before that rule. A lead whose recipient a curated reader already
+decoded from the same transaction restates that transfer and is dropped. The
+pair is reported apart, as `cross_chain_leads` with evidence `heuristic`, the
+recipient bytes raw and a direction from the field names: by
+`resolve_bridge_transfer` over the whole transaction, by
+`summarize_address_flows` over up to `LEAD_READ_LIMIT` (20) sends of the
+subject in which value reached no address, and by the flow graph on each
+consumed or retained terminal (`LEAD_READS`, 20 per graph), which graph_json
+carries in the node's attributes. Without it an unknown bridge's
+exit read as value consumed by a contract. A lead never ends a trace or names
+a beneficiary.
+
+`0xb` is in `protocols.json` as `Sui Bridge`, type `bridge`, so decoding and
+identification name it and a call to it other than `send_token` is no exit
+(the curated entry decides). The plumbing packages that four places leave out
+(protocols named in a case diagram, events kept when a transaction's events
+fold, calls ordered first on a command page, legs of a participant P&L) are
+`isPlumbingPackage` in `system-packages.ts`: 0x1, 0x2 and 0x3. The bridge
+(0xb) and DeepBook v1 (0xdee9) are system packages too, and `SYSTEM_PACKAGE`
+in `disassembly.ts` matches them, but their shared objects hold users' value,
+so a call into either is a leg like any protocol's and stays in all four.
 
 Detect from **Move calls and events, not sink labels.** A bridge burns or
 locks the coin and emits a message; it does not transfer value to a labelable
@@ -2397,17 +3056,56 @@ Rules a change is likely to break:
   (`swap-follow`), an exploit, withdrawal or claim that credits only its caller
   (`self-credit`), or the actor turning one asset into another (`conversion`).
   None of these is a cycle.
+- **A swap is read from the values, not only the name.** `isSwapShape`: the
+  sender net spent the tracked coin, net gained a different one, and other
+  addresses took less than half of what it spent in the tracked coin, so the
+  rest went into an object. When both sides are priced the gains must be
+  worth a tenth of the tracked coin no address took, so a reward claimed
+  beside a deposit and a payment does not read as the swap and steal the
+  payee's branch. That follows the swapper through a swap that also
+  pays a fee collector, which without a call named `swap` sent the trace to
+  the collector. `isSwapHop` still matches a named swap. A flash swap nets to
+  nothing and matches neither. Backward, the actor paying another coin in for
+  the tracked one is `swap-follow` by the same reading, and the flow graph
+  labels the holder's own gains in a conversion `swap-follow` whatever the
+  calls are named.
 - **An object cannot send.** When the recipient has sent nothing since the hop,
   the next hop is the first later transaction in which its balance of the coin
   goes down, found through `affectedAddress` and marked
   `reached_via: "released-from-object"`; the custody check does not apply.
+- **The next hop is the largest spend of what arrived.** `findNextForward`
+  reads the holder's spends until they cover what the previous hop delivered
+  (at most `MOVES_PER_NODE`, 20) and follows the largest; the others are the
+  hop's `unfollowed_spends`. A small transfer sent before the bulk payment
+  is not where the funds went. Without a delivered amount it takes
+  the first spend.
+- **A deposit the holder keeps a claim on is not a hop.** `claimCoinsKept`:
+  the holder spent the tracked coin, no other address gained anything, and it
+  gained a coin generic over the tracked one (`LP<SUI, X>`, `MarketCoin<SUI>`).
+  The value is still the holder's while it holds the claim, so the search
+  passes over it and lists it in the next hop's `kept_as_claim`. A later
+  transaction the search reads that passes the claim coin to another address
+  (`passesClaim`) turns the deposit back into a spend in its place, followed
+  as a conversion into the claim coin; redeeming or burning the claim does
+  not. Before this, an
+  exploiter adding liquidity in the next attack batch was followed into the
+  swap's dust output and reported as never having spent the SUI it later
+  bridged. A deposit that leaves only a receipt object still reads as
+  consumed.
 - **Backward follows who paid the coin in**, which is the owner of the largest
   decrease, not the sender. Then the payer's most recent earlier inflow of that
   coin, walking newest to oldest. A `last` page arrives ascending, so taking
   its first element picks the oldest.
 - **A hub ends the trace.** A new party with 100+ counterparties in its last
   200 transactions (`measureFanout`) pools other people's money, so its earlier
-  inflows (backward) and its next outflow (forward) are not these funds.
+  inflows (backward) are not these funds. Forward, the pooling is on the inflow
+  side: it stops only when 100+ distinct senders pay into it
+  (`sender_classification`, the same cut on `sender_count`). A theft wallet or
+  an operator's disperser, paid by a few and paying hundreds, passes on what
+  those few sent, so its outflows are followed with the mixing flagged hop by
+  hop. A sender count of unknown width stops, and a wallet labelled malicious
+  never stops a forward trace. `stopsAsHub` in `trace-read.ts` is the one rule
+  `trace_funds`, `trace_flow_graph` and `find_flow_path` share.
 - **A transaction its sender did not sign ends a forward trace.** The signer
   acted for the sender (an alias or a protocol substitution), and following on
   would attribute its actions to the sender.
@@ -2420,6 +3118,26 @@ Pure split and accounting rules in `src/utils/flow-graph.ts`, the BFS in
 `src/utils/flow-engine.ts`, renderers in `src/utils/flow-export.ts`. Rules a
 change is likely to break:
 
+- **The trunk reads as many moves as the start.** A node carrying more than
+  half the traced value is the start's continuation and gets
+  `MOVES_PER_START_ADDRESS` instead of `MOVES_PER_NODE`, both directions. At
+  most one node per level can hold over half, so this adds at most one
+  large read per level. Otherwise a wallet passing most of the value on in
+  more than 20 lots ends as a budget stop before its later lots.
+- **A path search that finds nothing names what the node limit left.**
+  `FlowEngine.nodeLimited` records each job the node limit stopped, and
+  `find_flow_path` reports them as `explored.node_limited`, per side
+  (`forward` as a share of what `from` moved, `backward` of what `to`
+  received), each node once with its arrivals summed. Reading the trunk's every lot fans a graph out, so the node
+  limit, which a caller can raise, is often the bound that decided.
+- **The default response fits a budget.** `trace_flow_graph` caps `nodes`
+  (9k characters) and `edges` (11k) through `capPayload`, largest
+  `traced_share` first, and keeps every non-address node (exits, consumed,
+  retained), every node with a stop, label, non-wallet kind or lookalike, and
+  every edge into one. Terminals, coverage and shares are computed over the
+  whole graph first; `detail: "full"` returns every row. `unpriced_coins`
+  groups coin types by the reason, which a graph through meme-coin pools
+  repeats a hundred times.
 - **Shares are first in, first out, and that is a convention.** A node's traced
   amount goes to the transactions that moved it in order until it is used up;
   each transaction's share goes to the parties it paid in proportion to the
@@ -2450,12 +3168,23 @@ change is likely to break:
   (`conversionWeights`), so an unpriced coin bought or sold for a priced one
   keeps the swap's value. A transaction whose proceeds are worth less than a
   tenth of what the holder put in, both at market prices
-  (`DUST_RETURN_RATIO`), is a deposit that returned change or dust, not a
-  swap: `splitSpend` converts only the part of the outflow the proceeds are
-  worth, and the rest is `consumed`. A transaction that swaps without a
-  deposit, stake, loan, lock or liquidity add is exempt: a dump into a thin
-  pool sells far below the hourly price and still converts in full.
-  `splitInflow` mirrors the rule: inputs worth
+  (`DUST_RETURN_RATIO`), converts only the part of the outflow the proceeds
+  are worth, whatever its calls are named. Where the rest went is read from
+  object flow (`FetchedTx.written`, from either transport's object changes).
+  When the holder is left owning a non-coin object the transaction created,
+  transferred or wrote in place (a receipt, or its existing obligation or
+  position, `receivedClaim`), it is a deposit and the rest is `consumed`.
+  `retained` needs the object changes to show the holder holds nothing: read
+  in full, no such object, and no dynamic field written, since a table keyed
+  by address keeps an account the changes cannot attribute. Then the
+  counterparty kept it, a node named after the shared objects the
+  transaction wrote, or the calls. Anything else, a row cached before these
+  were recorded included, stays `consumed`. Reading only new objects called
+  a deposit into an existing position with a small borrow `retained`. Converting a sale at a few percent of market value in
+  full followed the proceeds and never showed the pool that kept 95%, which
+  is how value sold into a pool the seller controls is later withdrawn from
+  another address. The swap-name exemption and the deposit-name regex are
+  gone. `splitInflow` mirrors the rule: inputs worth
   less than a tenth of what the conversion produced are a fee paid on a
   withdrawal, so they explain only their own worth of the inflow and the rest
   is `source`. A backward swap is not exempt, so an exploit that drains a pool
@@ -2467,9 +3196,19 @@ change is likely to break:
   `malicious` is therefore not in `SINK_CATEGORIES`: every `is_sink` a tool
   reports must agree with what the traces do. Watches still alert on it
   through `isWatchAlert`.
-- **Level by level.** Every inflow found at one depth reaches a node before it
-  is expanded. A node reached again later is expanded again from the new
-  arrival, skipping transactions already allocated to it, unless the value
+- **Level order until the node limit binds, heaviest first after.** While
+  the node limit left covers every queued node not yet expanded, the engine
+  expands the shallowest job, so branches that reconverge on a wallet all
+  merge into its job before it is expanded. Pure best-first expanded such a
+  wallet once per arriving branch and cut the fifth arrival off at
+  `EXPANSIONS_PER_NODE` as a truncating `budget`. Once the queued nodes
+  outnumber the limit left, the job carrying the largest share goes next,
+  whatever its depth. Level by level, a trunk that paid 25 light wallets a
+  level before its heavy lots spent the node limit on the light wallets and
+  never reached the lot that bridged out. `find_flow_path` interleaves its
+  two engines one node at a time and keeps only paths within `max_hops`
+  transfers. Arrivals at a node still queued merge into its job. A node reached again after it was expanded is expanded
+  again from the new arrival, skipping transactions already allocated to it, unless the value
   left the address and came back along its own path, which is a `cycle`
   (`returnsTo`). A swap-follow edge stays at the holder, so value converting
   coins in place has not left: when the Volo attacker's SUI (swapped from
@@ -2529,6 +3268,10 @@ change is likely to break:
   uses). Exits are grouped by protocol and beneficiary account, and a
   transaction's beneficiaries join its exit once however many of its coins
   reach it.
+- **A path is the shortest explored route.** `shortestPath` walks the
+  explored edges from the roots, fewest edges first. The edge that first
+  reached a node can lie on a heavier, longer route, and a path rebuilt from
+  it can exceed `max_hops` while a shorter explored route exists.
 - **`find_flow_path` joins in time order.** A forward node meets a backward node
   at the same address only when the forward side arrived no later than the
   backward side paid on toward the target. A foreign-chain target is reached
@@ -2581,7 +3324,7 @@ change is likely to break:
 
 `priceUsdAtTime` (`src/utils/valuation.ts`) is the one historical path, and
 `trace_funds`, `get_token_prices` with `at`, `analyze_attack_tx` and
-`summarize_incident_losses` all use it. Four rules:
+`summarize_incident_losses` all use it. Six rules:
 
 - **DefiLlama is the keyless source, and its key is the PADDED coin type.**
   `sui:0x2::sui::SUI` resolves, but a stripped leading zero does not:
@@ -2592,6 +3335,14 @@ change is likely to break:
 - **Pyth is asked about VERIFIED coins only.** Its feeds are found by symbol,
   so an impostor ending `::sui::SUI` would get SUI's price. DefiLlama keys on
   the full type and prices a coin as itself or not at all.
+- **A Sui Bridge token with no DefiLlama price of its own is priced as its
+  Ethereum asset.** `SUI_BRIDGE_ASSET` in `price-providers.ts` lists the four
+  tokens `0xb::treasury::NewTokenEvent` registered (ids 1, 2, 4, 6), each
+  minted 1:1 against the asset the bridge locks, keyed to that asset's
+  `coingecko:` id; the quote carries `priced_as`. DefiLlama had no price for
+  the Sui Bridge USDT or wBTC at 2025-05-22, which left 19.0M USDT out of the
+  Cetus total. Only these exact types qualify: a coin named `USDT` elsewhere
+  gets nothing.
 - **`compare_oracle_price` stays Pyth-only** (`sources: ["pyth"]`). Comparing
   DeepBook against a market aggregate is not an oracle check. The market
   price is a candle's close, so the oracle is read at the candle's end (or the
@@ -2626,10 +3377,191 @@ Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
 - **Flash pairing ignores framework singletons.** Nearly every DeFi call takes
   the Clock (`0x6`); counting it as the object a borrow and a repay share
   pairs any borrow with any repay.
-- **Pool losses come from the pool's own events, read by field name.** An event
-  naming a pool with amount fields in an unread shape goes to
-  `undecoded_events`. One with no amount field (opening a position) moves
-  nothing and is not listed.
+- **A subject that lost value gets a loss line, not a profit.** When no
+  attacker is given and the sender did more than pay gas, the sender stays
+  the subject; a victim who signed the transaction then reads "Loss for
+  <sender> (the sender)", and the line and `profit.gained_elsewhere` name the
+  addresses that gained. The reconciliation line reports value that came
+  out of objects or mints: per coin every address's change is summed, so a
+  transfer between addresses cancels, and with none it says so instead of
+  printing "$0 reached addresses".
+- **An event belongs to the changed shared object whose id it carries.**
+  `poolOfEvent` matches the event's top-level id values against the shared
+  objects the effects changed (`sharedObjectsOf`, from the input owner or a
+  mutable shared input), whatever the field is named, preferring a
+  pool-shaped type when several match. When no shared object matches, it
+  falls back to any other changed object that is not a coin or a dynamic
+  field (`eventTargetsOf`): a pool kept as a dynamic object field of a
+  registry, as Typus's TLP pool is, is object-owned. Do not grow a key list:
+  Scallop's `rewards_pool_id` fell through the last one. An attributed event with an
+  amount field, or with a coin type beside a non-zero number, in an unread
+  shape goes to `undecoded_events`; one with neither (opening a position)
+  moves nothing and is not listed. `X_before`/`X_after`, `before_X`/
+  `after_X`, `old_X`/`new_X` and `X_old`/`X_new` pairs go to
+  `recorded_changes`; only `total_usd_value_*`, whose 1e9 USD scale is
+  known, also feeds `recorded_loss_usd`.
+- **A swap event that names its coins is read from those coins.** Typus's
+  `lp_pool::SwapEvent` (`from_token_type`/`to_token_type`) and Nemo's
+  `market::SwapEvent<T>` fill `coin_in`/`coin_out` in `readSwap`, and
+  `poolFlows` credits them from there, not from an A/B order. Nemo's
+  amounts are signed Q64.64: `sy_amount` is the market's own SY change,
+  while `pt_amount` is negative in both directions, so only its magnitude
+  counts. PT is keyed `PT<T>`, not a coin type: `isCoinTypeKey` keeps it out
+  of every price lookup.
+- **Amounts keyed by side and direction are read by that shape.** A field
+  whose name, split at `_`, has `amount`, one side token (`x`/`a`, `y`/`b`)
+  and one direction (`in`/`out`) is a pool's take or payout of that side's
+  coin (`sidedAmounts`), whatever the struct is called: `token_x_amount_in`
+  on an add, `amount_y_out` on a swap. The coin is the one a same-side
+  non-amount field names (`token_x_name`), else the pool type's argument.
+  Before this, BlueMove's `Add_Liquidity_Pool` and `Remove_Liqidity_Pool`
+  were undecoded and every pool read `usd_net` 0.
+- **State deltas read objects, not names** (`src/utils/state-read.ts`,
+  pure rules in `src/utils/state-delta.ts`). Changed shared objects,
+  dynamic fields whose value type keeps a `Balance<T>` or `Supply<T>`, other
+  object-owned objects (`child`: a pool kept as a dynamic object field),
+  created objects and address-held `TreasuryCap<T>`s are chosen from the
+  effects' types, then read with `batchGetObjects` at their input and
+  output versions, fullnode then archive. At most 24 shared objects, ranked
+  by a storage-rebate-only read before any JSON is fetched; each kind has
+  its own cap (48 coin-holding fields, 48 object-owned objects, 12 created
+  objects and 12 treasury caps), and every candidate left unread (past a
+  cap, or a field whose value type could not be read) is listed in
+  `state_deltas.skipped`. `value_reconciliation.objects_unread` counts them,
+  and the reconciliation line says the unexplained part may be theirs: a
+  router touching twelve pools kept as dynamic object fields changes each
+  pool and its escrow, and a cap of 12 read half of them.
+  `getDatatype` says which struct fields are `Balance<T>` and `Supply<T>`
+  (following nested structs, `Coin<T>` and `TreasuryCap<T>` two levels
+  down, all types at once). Only a complete layout is cached, per type and
+  depth: a failed read is retried, and a type whose nested structs could
+  not all be read is named in `layout_unread`. Jumps read only shared
+  objects; a child's numbers are often a user's own position. List
+  entries are never compared, because their index is not their identity
+  (order books, VecMaps), and neither are `{ bits }` two's-complement ints
+  or values at or above 2^127.
+- **`shared-state-jump` uses one factor, 100x, from the audit.** On the 113
+  tuning negatives, before the rules below, a raw 100x-or-zero rule fired on
+  17 jumps and 17 zeroings: order-book list slots, tick crossings flipping
+  `fee_growth_outside`, a two's-complement u256 crossing zero, a keeper
+  moving a vault's USDC between two balance fields, a counter reset to 0 and
+  a staking buffer staked out. Each rule removes one of those shapes by
+  structure, and each was chosen on those 113, so their rate there is
+  in-sample; judge the rules by a held-out split. A move to or from zero
+  counts only for a `Balance<T>` holding, summed per holder and coin with
+  created and deleted fields, so a balance moved between two fields of one
+  object nets out. A dynamic field's holder is a read object's own id or a
+  collection UID nested in it (`{ id }` inside its JSON), never an id it
+  only stores as a value, or a registry would absorb its pools' drains.
+  A drained holding is info when its holder took back, in other coins,
+  90% or more of the USD it paid out across all its coins (a market
+  maker's pool selling its USDC reserve for SUI, `A667WCrJ`); otherwise it
+  is high when addresses gained, net and in any coin, at least half of its
+  USD (a drain swapped or repaid inside the PTB still reaches someone), or,
+  unpriced, half of it in the same coin; otherwise info.
+- **A holder losing most of its value counts under the factor.** A holding
+  that fell by less than 100x is listed when its holder lost
+  `VALUE_SHARE_LOST` (half) or more of its priced value across all its
+  coins and addresses gained at least half of that loss; each such drop
+  carries `value_share_lost`. A holder with a moved coin that has no price
+  has no share and is judged by the factor alone. On the 113 tuning
+  negatives the largest share a holder paid to addresses was 6.8% (a CLMM
+  liquidity removal), and the holders that lost half or more paid it into
+  other objects. A drain that leaves a vault's accrued fees behind can stop
+  short of 100x: the Aftermath Perpetuals drains fell 13.9x to 776x, and six
+  of eleven were under the factor.
+- **The wrong-source rule compares an object with what it references.** A
+  created or changed object's number (2^16 or more) that equals the same
+  field of one shared object, while every object of that type it references
+  by id holds another value, came from the wrong object. This is Scallop's
+  `update_points` missing `assert_pool_id`, stated as data flow.
+- **`caller-value-used` follows values, not oracle names.** A value from a
+  pure input, or from a call built only from pure inputs
+  (`create_from_raw_value`, a `MakeMoveVector`; `vector<u64>`/`vector<u128>`
+  pures are decoded), passed to a call that operates on a changed shared
+  object (as an argument, or inside an earlier command's result: a session
+  or hot potato wrapping it), must be stored: fields of the object's output
+  version changed to it (every such field is listed, since the effects do
+  not say which command wrote which), or an event naming the object states
+  it in a field that tracks the object's own (the last value any event
+  states for it is the value the object holds after). A liquidity or amount
+  field echoing a delta fails that test. The field need not change: a set,
+  a use and a restore to the exact prior value leaves it unchanged, and its
+  events still show the caller's value. A value equal to what an unchanged
+  field held throughout, with no event stating another, wrote nothing.
+  Equality is the only evidence of the flow, so a value below 2^16 (a flag,
+  a status, zero) counts only when the field swings 10x, the floor the
+  wrong-source rule applies too. Failing both, arithmetic counts: an event
+  naming the object states a number that is the caller value times another
+  number of that event over a power of ten, within one unit, in any
+  two's-complement reading with the signs agreeing (`productMatch`: fee x
+  notional / 10^18). The caller value and the factor need 2^16 in magnitude,
+  the stated number 2^32 (a chance match within one unit is then about one
+  in two billion), the factor may not be a power of ten and the caller
+  value not a positive one, since multiplying by a scale converts units.
+  Each event's (stated, factor) pairs are built once and filtered by
+  logarithm before the integer check, and a transaction tries at most
+  `MAX_PRODUCT_CHECKS` (8 million) triples; past it the search stops and the
+  anomaly says so (an info `caller-value-used` when nothing matched). A
+  500-call, 500-event batch had taken 16 s unbounded; the cap adds about
+  0.4 s. A later command must operate on the object. It replaced
+  `oracle-set-then-used` and keeps its tiers: high when the field's values
+  across the PTB span 10x, medium otherwise, and a product is medium. A
+  keeper's set-and-settle and a swap stopping at the caller's
+  `sqrt_price_limit` read medium and are accepted false positives, not a
+  reason to lower the grade. A 64-byte-or-longer pure on the writing call
+  lowers the grade one step and never suppresses it. Every write is in
+  `caller_value_writes`, with `value_signed` when the value reads negative
+  and `product` when it arrived by arithmetic; the evidence keeps ten.
+- **`outsized-mint` bounds come from the math, not from samples.**
+  `maxLiquidity` takes the event's own tick range (any `*lower*`/`*upper*`
+  tick field) and returns the most liquidity its amounts, plus one raw unit
+  each for rounding, can buy at any price: the crossing of the coin-A and
+  coin-B limits inside the range, found by bisection. It holds for adds and
+  removals alike, so no struct-name gate is needed. An event without ticks
+  falls back to 1e18 per raw unit (8.6e13 is the most at the Q64.64
+  sqrt-price bound). The Nemo PY-mint branch is gone: `shared-state-jump`
+  reads Nemo's inflated `py_index_stored` directly. For an object whose
+  state keeps one `Supply<T>` (LP or vault shares), an event naming it that
+  states a minted amount (a field with `lp`, `lsp`, `share`, `minted` or
+  `liquidity`, and no total) and deposits (sided `in` amounts, or
+  `amount_a`/`amount_b` on an add) is outsized when minted / supply exceeds
+  `SHARE_MINT_FACTOR` (100) times every deposit's share of the object's own
+  holdings of that coin at the input version. A proportional mint issues at
+  most the smallest deposit share, and reserves outside the read balances
+  only lower the minted share against them, so exceeding it needs an
+  object holding 100 times more coin than its share price counts. Adds on
+  one object run in order against what the earlier ones left; a first mint
+  and a deposit into a coin the object held none of are not bounded.
+- **`unreconciled-gain` is info.** Per coin, the sum of every address's
+  change (address-to-address moves cancel) is set against the larger of
+  what decoded events paid out and what the read state paid out: the
+  `Balance<T>` holdings' net fall plus the `Supply<T>` totals' rise (a
+  mint), net across objects so a route's hops cancel. What neither explains
+  came from an object that was not read. An unpriced coin nothing paid out
+  raises it too, and is counted in `unexplained_unpriced`, never valued at
+  zero.
+- **An incident's take leaves out what the attacker sent on.** In
+  `aggregateIncident`, a coin moved only between addresses in a transaction
+  when every address's change in it sums to zero (for SUI, to minus the gas
+  paid): no pool or vault took any in or paid any out. The attacker's outflow
+  in such a coin is a transfer to the addresses that gained it, listed in
+  `transfers_out` and kept out of `totals` and the groups; its gas stays in.
+  A gain is never split off, because a drained wallet pays its thief the same
+  way. Window mode used to net the transfers in: a meme-coin drainer's 714,000
+  SUI moved to its own second wallet read as a loss and the window reported
+  $17.3K, and a perpetuals exploiter's four 50,000 USDC laundering transfers
+  took $200K off a 1,139,652 USDC total. A coin some object also moved in the
+  same transaction (a swap, a fee paid beside a deposit) is not split.
+- **A vault that emits no pool event is read from its holdings.** A
+  successful transaction that changed a non-framework shared object and whose
+  events decode into no pool amounts has its state read
+  (`readObjectStates`), and is grouped under every holder whose `Balance<T>`
+  holdings of some coin fell (`stateLossOf`), with `pool_basis: "state"` and
+  the holders' net change as `pool`. At most 50 transactions are read per
+  call, 2 to 4 requests each; the rest are named in `state_reads.unread`.
+  Perpetuals market vaults drained through a negative fee emit no pool event,
+  and used to leave every exploit transaction unattributed.
 
 ### Address flow summaries
 
@@ -2700,6 +3632,190 @@ distinct transactions behind the matched events over gRPC with archive
 fallback (`readAttackTransactions`), so no nested connection is a page. A
 transaction is multi-leg when it calls a package outside the filter's whole
 lineage (`fetchPackageVersions`); 0x1, 0x2 and 0x3 never count as a leg.
+
+### Reading Move bytecode
+
+`disassemble_module`, `diff_package_upgrade` and `analyze_package` read the
+GraphQL disassembly through `src/utils/disassembly.ts`. The decompiler is
+optional (`SUI_DECOMPILER_PATH`, an external binary), so every code question
+must be answerable from these tools, and no case check calls
+`decompile_module`. Rules a change is likely to break:
+
+- **Annotations append, never rewrite.** `annotateLines` adds ` // …` to a line
+  and changes no line's text or the line count. Case checks match the
+  disassembly's own text (`LdU64\(0\)\n\t1: Abort`), and hunk line numbers
+  refer to the same lines `disassemble_module` returns. `Shl` and `Shr`
+  lines get a note that the bits shifted out are dropped without an abort
+  (only a shift amount at or above the width aborts), since `Add`, `Sub` and
+  `Mul` abort on overflow and the bare opcode reads as if a shift did too.
+  `decompile_module` appends the same large-integer note to decompiled lines
+  (`annotateSource`, `src/utils/move-source.ts`) under the same rule.
+- **Both clever-abort indices are constant-pool indices.** The Move Book calls
+  the name index an identifier-table index, but the compiler stores the error's
+  name as a `vector<u8>` constant, and Sui's resolver
+  (`sui-package-resolver`, `resolve_clever_error`) reads both from the
+  constant pool. In Typus oracle v10 identifier 7 is `State` and constant 7 is
+  `EInvalidVersion`. The top nibble is the version: 0b1100, which current
+  compilers always write, or the older 0b1000. The next byte is the
+  `#[error(code)]` value, 0xff when unset, so Typus v10's codes start
+  `0xc0ff`. The compiler builds clever codes only as the operand of `abort` or
+  `assert!`, so an `LdU64` is decoded only where the next instruction is
+  `Abort`: a literal such as `1 << 63` fits the layout (version 0b1000, line
+  0, indices 0 and 0) and resolves against any module whose constant 0 is a
+  string.
+- **A `use` line prints the dependency's original ID.** Passing that ID to
+  `disassemble_module` reads version 1, and the latest ID reads the fix. The
+  version a package runs comes from its linkage table, which
+  `disassemble_module`, `get_package` and `get_upgrade_history`
+  (`dependencies`) all report. A module imported under a second name is
+  printed `use <addr>::pool as 0pool;` and called as `0pool::swap`, so
+  `USE_LINE` and `extractFunction` read the alias. The `module` header drops
+  leading zeros (`module 2.coin`) while `use` lines print 64 digits.
+- **Declarations are matched by name, never by position.** `diffLines` splits
+  each module at its declarations (`splitSections`) and diffs a function
+  against its own old body. A whole-module line diff of an upgrade compiled in
+  another order put one function's old body under another's hunk header.
+- **A truncated diff sample is spent breadth first.** When a module's hunks
+  do not fit `max_sample_lines` even without context, `sampleHunks` orders
+  changed function bodies by the share of their lines that changed, gives
+  each its largest hunk before any gets a second (a first hunk may take half
+  the room left), and names the functions it leaves out in
+  `unsampled_functions` and `partly_sampled_functions` with a
+  `sample_next_call`. Cutting in hunk order let one long function with many
+  small edits hide a short function rewritten to `abort` (Typus oracle
+  9→10).
+- **Renumbering is checked, not assumed.** Lines are aligned on
+  `normalizeLines`, which masks offsets, labels, branch targets, local slots,
+  field and struct indices (printed beside their names) and vector signature
+  indices (the element type is fixed by the printed types around it), and
+  replaces a constant load by its value. Variant handle indices stay: the
+  index is the only thing naming the variant, and two variants of one enum
+  have the same type, so masking it read `PackVariant` of another variant as
+  renumbering. `reconcile` then keeps a matched pair as renumbered only if its
+  branch target follows the old-to-new offset map and its locals follow the
+  most-voted one-to-one slot mapping, a tie going to the slot that keeps its
+  number; otherwise it is a removed and an added line. Local declarations list
+  slots in order and match on type alone. Masking without the check would hide
+  a jump retargeted to other code, or a read of the other operand.
+  `test/package-diff-mutations.test.ts` mutates real disassemblies one
+  instruction at a time and requires every function to be listed as changed.
+- **The alignment cap is per declaration.** `MAX_EDIT_DISTANCE` (2,000) bounds
+  one function's Myers run; a function past it is counted on its raw lines,
+  named in the module's `note`, and the rest of the module is still aligned.
+  Counting normal forms there would make a function whose only change is a
+  retargeted branch count as nothing, since no offset map checks it.
+- **`analyze_package`'s bytecode checks are data flow, not name lists.**
+  `src/utils/code-guards.ts` interprets each function's stack abstractly: a
+  value carries the parameters, reads of a parameter's object, the sender and
+  the check results it was computed from. Locals are joined without regard
+  to order, a reference to a local carries the slot so writes through it
+  (`vector::append(&mut buf, …)`) reach it, and calls into the package's own
+  modules go through per-function summaries (branch conditions, writes,
+  guards, fields read and borrowed mutably) mapped from callee parameters to
+  caller arguments. A call into another package uses every argument, and a
+  call there that takes `&mut` alongside a value counts as comparing them,
+  since it can abort on the pair (`balance::split`, `table::add`). Arities
+  come from printed signatures and struct field counts; a variant handle,
+  which the disassembly names only by index, is solved from the verifier's
+  rule that every basic block leaves the stack empty. Over 182 package
+  versions every one of 83,803 blocks balanced.
+- **`discarded-check` follows the bool to any use.** A check is a comparison
+  or a call whose one result is `bool` and whose parameters are immutable
+  references or plain values, whatever its name. A branch, abort, return,
+  store, pack or an argument the callee uses is a use; a `Pop`, a local never
+  read, or a package function that never uses the parameter is not. A `&mut`
+  call's status and a bool inside a tuple are not checks: counting them gave
+  67 leads on 12 of 82 clean packages (getters' flags, overflow flags). A
+  call into the package whose summary can abort is not a check either: a
+  helper that asserts and returns `true` enforces its condition itself.
+- **`sibling-guard-gap` compares public functions that mutate one type.** In
+  a module, the public or entry functions that mutate a `&mut` object of a
+  package key type are siblings; a guard is a call that only reads, returns
+  nothing and can abort. A bool that reaches a branch is not a guard:
+  `table::contains` and `option::is_some` drive control flow, and counting
+  them raised the leads on 82 clean packages from 643 to 1,587. A missing guard is not a lead when the guard reads
+  no object, when the function writes a field the guard reads (it maintains
+  the guard's state: a version bump, an unpause), when the guard relates
+  objects the function does not take, when it validates a capability type
+  the function does not take, or when another guard the function calls reads
+  most of the same fields. Strong needs a relating guard (two objects, one of
+  them the mutated one) made by three quarters of the siblings; a check of
+  one object's own state stays weak, because version and pause checks are
+  often skipped on purpose.
+- **`unchecked-state-write` needs a free value, a shared target and no gate.**
+  A free value is a plain value or a struct or enum the package can copy
+  (`copy` declared here, or a `CopyLoc` of it anywhere). The package's own
+  enums are in its type table, so a copyable enum argument is not mistaken
+  for another package's capability. Coins, capabilities and
+  receipts cannot be copied. The target is a `&mut` of a type the package
+  passes to `share_object`. A comparison linking the value to stored state,
+  a branch on the sender, or an owned package object or witness among the
+  parameters clears it. A comparison records which sources stood on each
+  side (`q<a>|<b>` labels, mapped through callees like any other label), and
+  a chain of them counts: a price concatenated into a message that must
+  equal an argument verified against a stored key is bound. A figure
+  computed from the value and stored state together and compared with a
+  constant links nothing: Nemo's `log_proportion` asserts `index × total
+  != 1` after `current_py_index` has stored the caller's index, and reading
+  that assert as a stored-state check hid `get_market_state_cache` and three
+  other public writers of the same index. A non-copyable struct from another
+  package among the parameters, or a returned request or receipt, may gate
+  it and makes it weak.
+- **Measured on 10 exploited versions and 138 clean ones** (every curated
+  root at its first and latest version, the framework, Typus oracle 10, 11,
+  12 and 17, integer-mate 5, CLMM 11). Target leads over leads on clean
+  packages: `discarded-check` strong 5/5 (Typus oracle 5 to 9, `update_v2`).
+  `sibling-guard-gap` strong 2/3 (Scallop spool 2 and 4, `update_points`;
+  the other is Volo's `update_curator_position_value`), strong or medium
+  2/14. `unchecked-state-write` strong 2/2 (Nemo 1 and 10,
+  `get_sy_amount_in_for_exact_py_out`), strong or medium 7/11, adding Typus
+  `update_v2`; Nemo's other public writers of the index (four in version
+  10, three in version 1) add medium leads and no clean package gains one.
+  Integer-mate 3's wrong shift bound is arithmetic and none of
+  the three checks it.
+- **Every counted lead is listed somewhere.** Weak leads never raise a
+  finding, and in round three Nemo's six and Aftermath's four were counted
+  in every detail and listed in none.
+  A finding lists its first eight leads and `detail: 'full'` lists them all;
+  weak leads no finding lists go to `bytecode_scan.weak_leads`, capped by
+  `capPayload` in the summary with `next_call` `detail: 'full'`, and
+  `bytecode_scan.read` says how to read one. Across the 138 clean versions
+  the most weak leads one package has is 64 (about 44 KB), so full mode
+  lists them uncapped.
+- **`ungated-older-version` compares a lineage's versions.** Every version
+  of a package stays callable and its types are the lineage's types, so an
+  older version runs against the objects the newest one manages.
+  `ungatedOlderVersions` (code-guards.ts) takes the newest version's gate
+  for each shared type: a check (read-only, returns nothing, can abort)
+  reading a shared object, made by at least two and more than half of the
+  public functions that mutate the type. An older version's public mutator
+  of the type is gated when it makes that check or reads a stored field the
+  check reads (UID fields excluded: reading one only reaches dynamic
+  fields), so a version number checked inline since version 1 counts. A
+  function comparing the sender (a `q` pair, never a `k` pair: BlueMove's
+  v1 `add_liquidity` stores the sender in a new pool through
+  `dynamic_object_field::add`) or taking an owned package object is left
+  out, and so is one whose namesake in the newest version skips the check
+  too. Consecutive versions exposing the same functions fold into one lead.
+  `scanVersionGates` (version-gates.ts) reads up to 30 versions, the oldest
+  and the newest, one at a time; the largest lineage among the curated
+  roots has 28. On BlueMove (versions 1 to 6 and 11 against 12, gate
+  `swap::assert_version_contract`) it flags the v1 `add_liquidity` and
+  `remove_liquidity` the exploit used. Over 62 other lineages with more
+  than one version (the curated roots, and the Aftermath Perpetuals, Typus
+  oracle, Nemo, Scallop spool, integer-mate and Volo vault lineages) it
+  raises a strong lead on two: Typus oracle 1 to 6 (`update_with_pyth` and
+  siblings, before `version_check` existed) and AlphaLend 6 to 10 (two
+  getters that borrow positions and markets mutably). Both are old
+  versions left ungated, which the rule describes; neither is known to be
+  exploitable. Two more are weak (the
+  functions return a request the caller hands on). The other 58, Cetus
+  CLMM, Suilend and NAVI lending among them, raise nothing.
+  `analyze_package` runs it on any version it is given.
+- **A blank `SUI_DECOMPILER_PATH` means no decompiler.** `execFile("")`
+  throws synchronously, so `runDecompiler` refuses first and returns
+  `MissingDecompiler`. `decompilerAvailable` looks the binary up the way
+  `execFile` does, and the module-list mode reports `decompiler_available`.
 
 ## Key Patterns
 

@@ -1,0 +1,568 @@
+{
+  "slug": "gobble-rug-2024-10",
+  "kind": "token-rug",
+  "title": "Gobble (GOBBLE) liquidity pull, 10 October 2024",
+  "network": "mainnet",
+  "summary": "Chain-only case: no public source names it. 0x5fb4b721 got 2,003 SUI from 0x8b302e06 at 03:29 UTC and published GOBBLE (1B supply, TreasuryCap sent to 0x0) at 03:38. By 03:40 it had opened a full-range Cetus position with 1,000 SUI and 500M GOBBLE and a BlueMove v1 pool with the same amounts, keeping the Cetus Position object and the LSP<SUI, GOBBLE> LP coin in its own wallet with no lock. At 03:46:57 it closed the Cetus position (1,321.85 SUI) and at 03:47:54 burned the LP coin through BlueMove remove_liquidity (1,302.14 SUI), leaving both pools with dust. It had put in 2,000.04 SUI and took out 2,623.98, so buyers lost about 624 SUI over nine minutes. At 11:56 it sent 2,626 SUI to 0x721ebd9e, which funded the next deployer, 0x4ec4701f, with the same 2,003 SUI; that wallet ran the same play with MONKSUI (published 12:46, pulled 12:55).",
+  "sources": [
+    {
+      "url": "https://suivision.xyz/txblock/Fc9PcgF7Duy7f9SVjSBMLSGFassmUWguh8vYajzX6NAd",
+      "publisher": "chain",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "coin": "0xe24cf7665edf8dbf3452b786bbf20a40b5d52f9957c92bbb1e46efdaebafc7b6::gobble::GOBBLE",
+    "package": "0xe24cf7665edf8dbf3452b786bbf20a40b5d52f9957c92bbb1e46efdaebafc7b6",
+    "deployer": "0x5fb4b7218acdafd00716621ffe154967920d28f3e09ba9c0892c4caccd15ac1e",
+    "funder": "0x8b302e06dd0bc3e09f1e009e1dc32a04f6b4b75ab5500f4137cb713de0a938de",
+    "hub": "0x721ebd9e2b8818caeeae4125f5a15616144970b309aa55c01db2c08b0bc0dbe8",
+    "next_deployer": "0x4ec4701fd9cfdb3af1482ab0a72d4338b6f081104827ffdb8ba752e1d34f8eb3",
+    "zero": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "cetus_pool": "0xb2614af81a47f9e7a423db5ae7a0b69165c268cd8032cb0d56c3a6273bc6fd2d",
+    "cetus_position": "0x3a8d3ffd72f3282144ce56ec97f835396c37151535e60fecef3fbb5a56fbc711",
+    "bluemove_pool": "0xce12565b8875ddd3d929a963891374bd991c38085b372a6a39f3c32bae1a6e81",
+    "lsp_coin": "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::LSP<0x2::sui::SUI,0xe24cf7665edf8dbf3452b786bbf20a40b5d52f9957c92bbb1e46efdaebafc7b6::gobble::GOBBLE>",
+    "funding_tx": "7yCnBe6NQ32qnNWexxdKCzHBaM2ySbrJ9aDmW4qyyVwZ",
+    "publish_tx": "CDkshsFc5aeCJA1j8J5NgcqpSyX9T6sCKRchSudE8kHh",
+    "cetus_create_tx": "EauNeoxTsPeK6FpXkaygQEMGzSV16KXnZ8bFa2FSD1jv",
+    "bluemove_add_tx": "G5TPQactAEwWc4sPLoac9T2mk2LbHpaMPe2pHVK52kmH",
+    "cetus_pull_tx": "Fc9PcgF7Duy7f9SVjSBMLSGFassmUWguh8vYajzX6NAd",
+    "bluemove_pull_tx": "E84h8MFmEsYPLPiNNsWVevoe9wQEyQhsSZmMDEk9zfhP",
+    "exit_tx": "E3NFaoVSsT8Sy5KvveVTad58ZXyYgC4SNKDRRpj2JXgi",
+    "next_funding_tx": "BRCVwEeZkNE8h2YzeSoybmrMAoVnxo5iVfxWuj7PKWsa"
+  },
+  "checks": [
+    {
+      "id": "publisher-and-time",
+      "question": "Who published GOBBLE, and when?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "root_publisher.publish_tx",
+          "op": "equals",
+          "value": "{publish_tx}"
+        },
+        {
+          "path": "root_publisher.published_at",
+          "op": "equals",
+          "value": "2024-10-10T03:38:13.097Z"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: publish transaction CDkshsFc at checkpoint time 03:38:13 UTC, signed by the same key that later pulled both pools."
+    },
+    {
+      "id": "mint-renounced-upgrade-held",
+      "question": "Could the deployer mint more GOBBLE, or change the coin package?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{package}"
+      },
+      "expect": [
+        {
+          "path": "capabilities.capabilities[*].owner_address",
+          "op": "includes",
+          "value": "{zero}"
+        },
+        {
+          "path": "capabilities.capabilities[*].holder_status",
+          "op": "includes",
+          "value": "publisher"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: TreasuryCap 0x048340a9 was sent to 0x0 in the publish transaction, so mint authority was gone and the rug needed none; the UpgradeCap stayed with the deployer."
+    },
+    {
+      "id": "token-metadata",
+      "question": "What is GOBBLE, and is it vouched for?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{coin}",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "name",
+          "op": "equals",
+          "value": "Gobble"
+        },
+        {
+          "path": "total_supply",
+          "op": "equals",
+          "value": "1000000000000000000"
+        },
+        {
+          "path": "verified",
+          "op": "equals",
+          "value": false
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: CoinMetadata name Gobble, 9 decimals; the whole 1B supply was minted to the deployer at publish."
+    },
+    {
+      "id": "token-names-its-pools",
+      "question": "Does the token analysis show where GOBBLE's liquidity sits and who can pull it?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{coin}",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "{cetus_pool}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: GOBBLE's only liquidity was the Cetus pool (and the BlueMove pool), both funded by positions the deployer held in its own wallet. The rug risk sat there, not in a mint authority.",
+      "known_defect": "analyze_token names no pool, no liquidity and no LP holder, so the unlocked LP in the deployer's wallet is invisible."
+    },
+    {
+      "id": "find-pools-cetus",
+      "question": "Which pools pair GOBBLE with SUI?",
+      "tool": "find_pools",
+      "args": {
+        "token_a": "{coin}",
+        "token_b": "0x2::sui::SUI"
+      },
+      "expect": [
+        {
+          "path": "pools[*].pool_id",
+          "op": "includes",
+          "value": "{cetus_pool}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: pool created by EauNeox (pool_script_v2::create_pool_with_liquidity)."
+    },
+    {
+      "id": "find-pools-bluemove",
+      "question": "Does the pool search find the BlueMove pool the deployer also drained?",
+      "tool": "find_pools",
+      "args": {
+        "token_a": "{coin}",
+        "token_b": "0x2::sui::SUI"
+      },
+      "expect": [
+        {
+          "path": "pools[*].pool_id",
+          "op": "includes",
+          "value": "{bluemove_pool}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: BlueMove v1 router::add_liquidity in G5TPQact emitted Created_Pool_Event for pool 0xce12565b with creator = deployer.",
+      "known_defect": "find_pools searches Cetus, DeepBook and Turbos only, so the BlueMove pool that held half the liquidity is missing."
+    },
+    {
+      "id": "bluemove-lp-minted-to-deployer",
+      "question": "Who created the BlueMove pool and who got its LP coin?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{bluemove_add_tx}"
+      },
+      "expect": [
+        {
+          "path": "events[*].parsed.creator",
+          "op": "includes",
+          "value": "{deployer}"
+        },
+        {
+          "path": "events[*].parsed.lsp_balance",
+          "op": "includes",
+          "value": "707106781185547"
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "707106781185547"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: Add_Liquidity_Pool event (1,000 SUI and 500M GOBBLE in) and a +707106781185547 LSP<SUI, GOBBLE> balance change to the deployer."
+    },
+    {
+      "id": "lp-coin-held-before-pull",
+      "question": "Just before the pull, did the deployer still hold the whole BlueMove LP coin?",
+      "tool": "get_balance",
+      "args": {
+        "address": "{deployer}",
+        "coin_type": "{lsp_coin}",
+        "at_checkpoint": 67311200
+      },
+      "expect": [
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": "707106781185547"
+        },
+        {
+          "path": "complete",
+          "op": "equals",
+          "value": true
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the LP coin minted in G5TPQact never moved until E84h8 burned it; checkpoint 67311200 is 03:46:51, six seconds before the first pull."
+    },
+    {
+      "id": "cetus-position-owned",
+      "question": "Who held the Cetus liquidity position, was it ever locked or moved, and when did it end?",
+      "tool": "trace_object_history",
+      "args": {
+        "object_id": "{cetus_position}"
+      },
+      "expect": [
+        {
+          "path": "created.tx",
+          "op": "equals",
+          "value": "{cetus_create_tx}"
+        },
+        {
+          "path": "created.owner.address",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "owner_change_count",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "end.kind",
+          "op": "equals",
+          "value": "deleted"
+        },
+        {
+          "path": "end.tx",
+          "op": "equals",
+          "value": "{cetus_pull_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the Position object was created in the deployer's wallet and deleted by close_position seven minutes later, never passing through a locker."
+    },
+    {
+      "id": "cetus-pull-read",
+      "question": "What did the first pull transaction do?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{cetus_pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "actions",
+          "op": "includes",
+          "value": "Call pool_script::close_position on Cetus"
+        },
+        {
+          "path": "events[*].parsed.after_liquidity",
+          "op": "includes",
+          "value": "0"
+        },
+        {
+          "path": "events[*].parsed.amount_b",
+          "op": "includes",
+          "value": "1321197078986"
+        },
+        {
+          "path": "balance_changes[*].amount",
+          "op": "includes",
+          "value": "1321849912449"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: RemoveLiquidityEvent for the full-range position (ticks -443580..443580) with after_liquidity 0; the deployer's SUI rose 1,321.85 net of gas."
+    },
+    {
+      "id": "cetus-pull-ptb",
+      "question": "Which object authorised the removal?",
+      "tool": "decode_ptb",
+      "args": {
+        "digest": "{cetus_pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "commands[3].target",
+          "op": "contains",
+          "value": "pool_script::close_position"
+        },
+        {
+          "path": "commands[3].arguments[*].object_id",
+          "op": "includes",
+          "value": "{cetus_position}"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: close_position takes the owned Position object as its authority; the sender passed its own position 0x3a8d3ffd, so holding that object was all the pull needed."
+    },
+    {
+      "id": "cetus-pull-attack-view",
+      "question": "Does the incident breakdown attribute the pool's loss to the deployer?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{cetus_pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "profit.address",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "pool_flows[*].pool",
+          "op": "includes",
+          "value": "{cetus_pool}"
+        },
+        {
+          "path": "state_deltas.drops[*].holder",
+          "op": "includes",
+          "value": "{cetus_pool}"
+        },
+        {
+          "path": "state_deltas.drops[*].after",
+          "op": "includes",
+          "value": "161058502"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "shared-state-jump"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the pool's SUI balance fell from 1,322.00 to 0.161 SUI in this transaction, all paid to the deployer."
+    },
+    {
+      "id": "bluemove-pull-state",
+      "question": "Does the breakdown of the LP-coin burn show the BlueMove pool emptied and the LP coin spent?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{bluemove_pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "profit.gains[*].amount",
+          "op": "includes",
+          "value": "1302138800448"
+        },
+        {
+          "path": "profit.losses[*].amount",
+          "op": "includes",
+          "value": "-707106781185547"
+        },
+        {
+          "path": "state_deltas.drops[*].holder",
+          "op": "includes",
+          "value": "{bluemove_pool}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: BlueMove v1 router::remove_liquidity burned the whole LSP balance and paid 1,302.14 SUI (net of gas) and 384.1M GOBBLE; the pool's SUI fell from 1,302.59 to 0.448."
+    },
+    {
+      "id": "bluemove-pull-decoded",
+      "question": "Does the breakdown decode the BlueMove remove-liquidity event into pool deltas?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{bluemove_pull_tx}"
+      },
+      "expect": [
+        {
+          "path": "pool_flows[*].pool",
+          "op": "includes",
+          "value": "{bluemove_pool}"
+        },
+        {
+          "path": "pool_flows[*].deltas[*].amount",
+          "op": "includes",
+          "value": "-1302140763768"
+        },
+        {
+          "path": "pool_flows[*].deltas[*].amount",
+          "op": "includes",
+          "value": "-384131336595290993"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the transaction emits swap::Remove_Liqidity_Pool with token_x_amount_out 1302140763768 and token_y_amount_out 384131336595290993 for pool 0xce12565b. One call during the investigation returned this event undecoded with empty deltas; repeat calls decode it."
+    },
+    {
+      "id": "deployer-flows",
+      "question": "What did the deployer take in and pay out on the day, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{deployer}",
+        "from": "2024-10-10T03:00:00Z",
+        "to": "2024-10-10T12:00:00Z",
+        "top": 10
+      },
+      "expect": [
+        {
+          "path": "coverage.complete",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{funder}"
+        },
+        {
+          "path": "unattributed_inflows[*].digests[*]",
+          "op": "includes",
+          "value": "{cetus_pull_tx}"
+        },
+        {
+          "path": "unattributed_inflows[*].digests[*]",
+          "op": "includes",
+          "value": "{bluemove_pull_tx}"
+        },
+        {
+          "path": "top_recipients[*].address",
+          "op": "includes",
+          "value": "{hub}"
+        },
+        {
+          "path": "top_recipients[*].digests[*]",
+          "op": "includes",
+          "value": "{exit_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 2,003 SUI in from the funder (7yCnBe6), 2,623.98 SUI from the two pulls, 2,626.42 SUI out to 0x721ebd9e in E3NFao and Ab9Q9XoZ."
+    },
+    {
+      "id": "deployer-funder",
+      "question": "Who funded the deployer?",
+      "tool": "find_funding_source",
+      "args": {
+        "address": "{deployer}"
+      },
+      "expect": [
+        {
+          "path": "origin.address",
+          "op": "iequals",
+          "value": "{funder}"
+        },
+        {
+          "path": "chain[0].funding_tx",
+          "op": "equals",
+          "value": "{funding_tx}"
+        },
+        {
+          "path": "chain[0].amount",
+          "op": "equals",
+          "value": "2003 SUI"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the deployer's first transaction is 7yCnBe6, 2,003 SUI from 0x8b302e06 nine minutes before publish. 0x8b302e06 paid more than 50 addresses, so its own ancestry attributes nothing."
+    },
+    {
+      "id": "history-inbound-sign",
+      "question": "Does the deployer's history show its funding as money received?",
+      "tool": "get_transaction_history",
+      "args": {
+        "address": "{deployer}",
+        "limit": 5,
+        "order": "oldest"
+      },
+      "expect": [
+        {
+          "path": "transactions[0].digest",
+          "op": "equals",
+          "value": "{funding_tx}"
+        },
+        {
+          "path": "transactions[0].token_flow[0].amount",
+          "op": "equals",
+          "value": "2003000000000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 7yCnBe6 credits the deployer +2003000000000 MIST; the sender 0x8b302e06 is debited 2003001848880.",
+      "known_defect": "token_flow on a transaction the address did not send shows the sender's flow (-2003.00184888 SUI), so an inbound funding reads as an outflow."
+    },
+    {
+      "id": "proceeds-fund-next-rug",
+      "question": "Do the pull proceeds reach the next deployer?",
+      "tool": "find_flow_path",
+      "args": {
+        "from": "{deployer}",
+        "to": "{next_deployer}",
+        "max_hops": 3,
+        "coin_type": "0x2::sui::SUI",
+        "window_start": "2024-10-10T03:00:00Z",
+        "window_end": "2024-10-10T13:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "found",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "paths[0].meets_at",
+          "op": "iequals",
+          "value": "{hub}"
+        },
+        {
+          "path": "paths[0].steps[*].digests[*]",
+          "op": "includes",
+          "value": "{exit_tx}"
+        },
+        {
+          "path": "paths[0].steps[*].digests[*]",
+          "op": "includes",
+          "value": "{next_funding_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: E3NFao (2,626 SUI to 0x721ebd9e), then BRCVwEe (2,003 SUI to 0x4ec4701f), which published MONKSUI at 12:46:59, opened a 2,000 SUI Cetus position at 12:48:46 and closed it for 2,646.64 SUI at 12:55:14 (GwxX8cuu)."
+    },
+    {
+      "id": "proceeds-trace-stops-at-lp",
+      "question": "Where do the proceeds go after the hub?",
+      "tool": "trace_flow_graph",
+      "args": {
+        "digest": "{exit_tx}",
+        "direction": "forward",
+        "coin_type": "0x2::sui::SUI",
+        "max_depth": 4,
+        "max_nodes": 60
+      },
+      "expect": [
+        {
+          "path": "edges[*].digests[*]",
+          "op": "includes",
+          "value": "{next_funding_tx}"
+        },
+        {
+          "path": "terminals[*].reason",
+          "op": "includes",
+          "value": "consumed"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the hub and the next deployer put the SUI into new Cetus positions (D6qGPaiP, 4mNpUMvX); the trace ends there as consumed, although the operator withdraws it minutes later with close_position."
+    }
+  ]
+}

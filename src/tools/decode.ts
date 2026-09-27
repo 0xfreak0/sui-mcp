@@ -1,289 +1,201 @@
 import { z } from "zod";
-import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
 import { fromBase64 } from "@mysten/sui/utils";
+import type { GrpcTypes } from "@mysten/sui/grpc";
 import { errorResult } from "../utils/errors.js";
-import { lookupProtocolDisplay, lookupOperation, prefetchProtocolNames } from "../protocols/registry.js";
 import { guardiansFlagsForPackage } from "../utils/guardians.js";
-import { flagPtbAnomalies, type FormattedCommand } from "../utils/ptb-anomalies.js";
+import { flagPtbAnomalies, isSystemPackage, NO_MATCH_NOTE, PTB_CHECKS, SEVERITY_RANK, supersededWrites, type FormattedCommand } from "../utils/ptb-anomalies.js";
+import { readSupersededChanges } from "../utils/superseded-diff.js";
+import { lookupPackageTrust, prefetchProtocolCustody } from "../protocols/registry.js";
+import { originIncomplete } from "../protocols/package-custody.js";
+import { effectsPayouts, gasPaidOf } from "../utils/payouts.js";
+import { readGrpcObjectChanges } from "../utils/object-flow.js";
 import { gasSource } from "../utils/address-balance.js";
+import { withArchiveFallback } from "../utils/archive-fallback.js";
+import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
+import { formatStatus } from "../utils/formatting.js";
+import {
+  EXECUTED_OBJECT_PATHS,
+  commandsOmittedView,
+  executedObjects,
+  ptbDataFromBcs,
+  resolvePtb,
+  selectCommands,
+  type ExecutedObjects,
+} from "../utils/ptb-resolve.js";
+import { saveResult } from "../utils/store.js";
+import { presignSends, readPresignContext } from "../utils/presign-context.js";
+import { getNetwork } from "../config.js";
+import { numArg } from "./args.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-/** A Pure input holding exactly 32 bytes, decoded as a Sui address. Null for any other length. A u256, an object ID (`ID`), and a 31-byte `vector<u8>`/`String` (a 0x1f length-prefix byte plus 31 content bytes) are also Pure and also exactly 32 raw bytes, so a result shows only that the input can be an address. */
-function addressFromPureBytes(bytesB64: string): string | null {
-  let raw: Uint8Array;
-  try {
-    raw = fromBase64(bytesB64);
-  } catch {
-    return null;
-  }
-  if (raw.length !== 32) return null;
-  return "0x" + Buffer.from(raw).toString("hex");
-}
-
-/** The address a TransferObjects/MoveCall argument resolves to, when it is a Pure 32-byte input. */
-function resolveAddressInput(
-  input: { $kind: string } & Record<string, unknown>,
-  rawInputs: Array<({ $kind: string } & Record<string, unknown>) | undefined>,
-): string | null {
-  if (input.$kind !== "Input") return null;
-  const raw = rawInputs[input.Input as number];
-  if (!raw || raw.$kind !== "Pure") return null;
-  const pure = raw.Pure as { bytes: string };
-  return addressFromPureBytes(pure.bytes);
-}
-
-function formatInput(input: { $kind: string } & Record<string, unknown>): Record<string, unknown> {
-  switch (input.$kind) {
-    case "GasCoin":
-      return { type: "GasCoin" };
-    case "Input": {
-      const idx = input.Input as number;
-      return { type: "Input", index: idx };
-    }
-    case "Result": {
-      const idx = input.Result as number;
-      return { type: "Result", index: idx };
-    }
-    case "NestedResult": {
-      const val = input.NestedResult as [number, number];
-      return { type: "NestedResult", result: val[0], subresult: val[1] };
-    }
-    default:
-      return { type: input.$kind };
-  }
-}
-
-/**
- * A MoveCall argument, resolved to a plain address the same way a
- * TransferObjects recipient is: a Move function's `address`-typed parameter
- * is a Pure 32-byte input exactly like a TransferObjects recipient, so
- * `0x2::transfer::public_transfer`'s recipient (and the framework's other
- * transfer-shaped functions) can be read the same way. No argument is
- * type-checked here, so this attaches `address` to every argument that
- * happens to be 32 Pure bytes, including ones the function does not take as
- * an address.
- */
-function formatMoveCallArgument(
-  input: { $kind: string } & Record<string, unknown>,
-  rawInputs: Array<({ $kind: string } & Record<string, unknown>) | undefined>,
-): Record<string, unknown> {
-  const resolved = resolveAddressInput(input, rawInputs);
-  return resolved ? { ...formatInput(input), address: resolved } : formatInput(input);
-}
-
-function formatCommand(
-  cmd: { $kind: string } & Record<string, unknown>,
-  rawInputs: Array<({ $kind: string } & Record<string, unknown>) | undefined>,
-): Record<string, unknown> {
-  switch (cmd.$kind) {
-    case "MoveCall": {
-      const mc = cmd.MoveCall as {
-        package: string;
-        module: string;
-        function: string;
-        typeArguments?: string[];
-        arguments?: Array<{ $kind: string } & Record<string, unknown>>;
-      };
-      const protocol = lookupProtocolDisplay(mc.package);
-      const operation = lookupOperation(mc.module, mc.function);
-      return {
-        type: "MoveCall",
-        target: `${mc.package}::${mc.module}::${mc.function}`,
-        type_arguments: mc.typeArguments ?? [],
-        arguments: mc.arguments?.map((a) => formatMoveCallArgument(a, rawInputs)) ?? [],
-        ...(protocol ? { protocol: protocol.name, protocol_type: protocol.type } : {}),
-        ...(operation ? { action: operation.action } : {}),
-      };
-    }
-    case "TransferObjects": {
-      const to = cmd.TransferObjects as {
-        objects: Array<{ $kind: string } & Record<string, unknown>>;
-        address: { $kind: string } & Record<string, unknown>;
-      };
-      // The recipient is what makes this a payment or a drain. Resolved to a
-      // plain address when it is a Pure 32-byte input (the overwhelming
-      // majority in practice), so the anomaly pass below can compare it to
-      // the sender without re-decoding.
-      const resolved = resolveAddressInput(to.address, rawInputs);
-      return {
-        type: "TransferObjects",
-        objects: to.objects.map(formatInput),
-        address: resolved ? { ...formatInput(to.address), address: resolved } : formatInput(to.address),
-      };
-    }
-    case "SplitCoins": {
-      const sc = cmd.SplitCoins as {
-        coin: { $kind: string } & Record<string, unknown>;
-        amounts: Array<{ $kind: string } & Record<string, unknown>>;
-      };
-      return {
-        type: "SplitCoins",
-        coin: formatInput(sc.coin),
-        amounts: sc.amounts.map(formatInput),
-      };
-    }
-    case "MergeCoins": {
-      const mc = cmd.MergeCoins as {
-        destination: { $kind: string } & Record<string, unknown>;
-        sources: Array<{ $kind: string } & Record<string, unknown>>;
-      };
-      return {
-        type: "MergeCoins",
-        destination: formatInput(mc.destination),
-        sources: mc.sources.map(formatInput),
-      };
-    }
-    case "Publish": {
-      const pub = cmd.Publish as { modules: unknown[]; dependencies: string[] };
-      return {
-        type: "Publish",
-        module_count: pub.modules.length,
-        dependencies: pub.dependencies,
-      };
-    }
-    case "Upgrade": {
-      const up = cmd.Upgrade as {
-        modules: unknown[];
-        dependencies: string[];
-        package: string;
-        ticket: { $kind: string } & Record<string, unknown>;
-      };
-      return {
-        type: "Upgrade",
-        package: up.package,
-        module_count: up.modules.length,
-        dependencies: up.dependencies,
-        ticket: formatInput(up.ticket),
-      };
-    }
-    case "MakeMoveVec": {
-      const mmv = cmd.MakeMoveVec as {
-        type: string | null;
-        elements: Array<{ $kind: string } & Record<string, unknown>>;
-      };
-      return {
-        type: "MakeMoveVec",
-        element_type: mmv.type,
-        elements: mmv.elements.map(formatInput),
-      };
-    }
-    default:
-      return { type: cmd.$kind, ...cmd };
-  }
-}
-
-function formatPureInput(input: { $kind: string } & Record<string, unknown>): Record<string, unknown> {
-  if (input.$kind === "Pure") {
-    const pure = input.Pure as { bytes: string };
-    const address = addressFromPureBytes(pure.bytes);
-    // Exactly 32 bytes is address-shaped, but not proof: a u256, an object
-    // ID (`ID`, such as a kiosk item id in a purchase/take call) and a 31-byte
-    // vector<u8>/String (its 0x1f length-prefix byte plus 31 content bytes)
-    // are all Pure and also exactly 32 raw bytes. Shown alongside the raw
-    // bytes rather than replacing them, so the caller can tell which it is
-    // from the calling function's declared parameter type.
-    return { type: "Pure", bytes: pure.bytes, ...(address ? { possible_address: address } : {}) };
-  }
-  if (input.$kind === "Object") {
-    const obj = input.Object as { $kind: string } & Record<string, unknown>;
-    if (obj.$kind === "ImmOrOwnedObject") {
-      const io = obj.ImmOrOwnedObject as { objectId: string; version: string; digest: string };
-      return { type: "ImmOrOwnedObject", object_id: io.objectId };
-    }
-    if (obj.$kind === "SharedObject") {
-      const so = obj.SharedObject as { objectId: string; initialSharedVersion: string; mutable: boolean };
-      return { type: "SharedObject", object_id: so.objectId, mutable: so.mutable };
-    }
-    if (obj.$kind === "Receiving") {
-      const ro = obj.Receiving as { objectId: string; version: string; digest: string };
-      return { type: "Receiving", object_id: ro.objectId };
-    }
-    return { type: obj.$kind };
-  }
-  if (input.$kind === "FundsWithdrawal") {
-    // A withdrawal from an address balance: the funds a drainer PTB takes are
-    // named here and nowhere else in the bytes, so the amount is the number
-    // that matters for triage.
-    const fw = input.FundsWithdrawal as {
-      reservation: { $kind: string; MaxAmountU64?: string };
-      typeArg: { $kind: string; Balance?: string };
-      withdrawFrom: { $kind: string };
-    };
-    return {
-      type: "FundsWithdrawal",
-      amount: fw.reservation.MaxAmountU64 ?? null,
-      coin_type: fw.typeArg.Balance ?? null,
-      withdraw_from: fw.withdrawFrom.$kind,
-    };
-  }
-  return { type: input.$kind };
-}
 
 export function registerDecodeTools(server: McpServer) {
   server.tool(
     "decode_ptb",
-    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes — the pre-sign check: read this BEFORE approving a wallet prompt, not after. Returns the list of commands, inputs, protocol annotations, and a heuristic anomaly-triage pass (publishes/upgrades, calls into unrecognized or wallet-blocklisted packages, sending owned objects or split coins to an address other than the sender — whether through TransferObjects or a framework payout call (0x2::transfer::public_transfer, 0x2::pay::split_and_transfer, 0x2::pay::join_vec_and_transfer, 0x2::sui::transfer, 0x2::coin::send_funds, 0x2::balance::send_funds, 0x2::coin::mint_and_transfer, 0x2::token::transfer, or 0x2::party::single_owner building a party for transfer::public_party_transfer) — flash-loan patterns, multi-package composition) — without executing. A Pure input of exactly 32 bytes also carries `possible_address` (the hex address, alongside the raw bytes — a u256, an object ID (`ID`) and a 31-byte vector<u8>/String are also Pure and also 32 bytes, so this is evidence, not proof — check the calling function's declared parameter type), and a TransferObjects command's `address`, or a MoveCall argument at the same index, carries the resolved recipient the same way. A FundsWithdrawal input shows the amount, coin type and whose address balance it draws on (Sender or Sponsor), and `gas_source` says whether gas is paid from coins or from the gas owner's address balance. Use get_transaction with a digest instead if you want to inspect an already-executed transaction.",
+    "(Developer) Decode a Programmable Transaction Block (PTB) from base64 BCS bytes, or an executed transaction's PTB from its digest. With bytes it is the pre-sign check: read this BEFORE approving a wallet prompt, not after. With bytes, what the commands send to another address (a SplitCoins amount, a whole coin, the gas coin) is set against the sender's balances now, and each recipient's first transaction on chain is read (`presign_context`: share_of_balance per coin, first_seen per recipient, null when no transaction has ever affected it). Returns the list of commands with each argument resolved, the inputs, protocol annotations, and a heuristic anomaly-triage pass (publishes/upgrades; calls into wallet-blocklisted packages; calls into packages that neither the curated registry nor a curated protocol's publishing key vouches for, medium only when value moves through them one way (with `digest`: another address gained what the sender lost, or the sender got nothing back) or another lead fires, since a Move Registry name is display only; calls into lineages the registry does not list, and into a superseded version of a lineage; sending owned objects or split coins to an address other than the sender, whether through TransferObjects or a framework payout call (0x2::transfer::public_transfer, 0x2::pay::split_and_transfer, 0x2::pay::join_vec_and_transfer, 0x2::sui::transfer, 0x2::coin::send_funds, 0x2::balance::send_funds, 0x2::coin::mint_and_transfer, 0x2::token::transfer, or 0x2::party::single_owner building a party for transfer::public_party_transfer), and with `digest` the coins and objects its effects show the sender lost to another address; flash-loan patterns; multi-package composition) without executing. `checks_run` names every check, and one that matched nothing clears nothing: before signing, simulate_transaction shows where every coin and object would end up. A Pure input is decoded as the type the receiving Move function declares for it (`value_type`, `value`; an address-typed value is under `address`); a u64, u128 or u256 with its top bit set also carries `signed_value`, its two's-complement reading (signed quantities travel in unsigned integers); when no type can be read it stays as `bytes`, and 32 bytes also carry an address-shaped guess, under `possible_address` in `inputs` and under `address` with no `value_type` in `commands`; the guess is evidence, not proof (a u256, an `ID` and a 31-byte string are also 32 bytes). A Result or NestedResult argument names the command it came from (`from`); its declared type is that command's `returns`. With `digest`, each object input also carries the version the transaction read and the object's type. A FundsWithdrawal input shows the amount, coin type and whose address balance it draws on (Sender or Sponsor), and `gas_source` says whether gas is paid from coins or from the gas owner's address balance. get_transaction with detail: 'full' returns the same inputs and commands beside the transaction's effects and events.",
     {
       transaction_bcs: z
         .string()
-        .describe("Base64-encoded BCS transaction bytes"),
+        .optional()
+        .describe("Base64-encoded BCS transaction bytes. Pass this or `digest`, not both."),
+      digest: z
+        .string()
+        .optional()
+        .describe("Digest (Base58) of an executed transaction, to decode its PTB. Pass this or `transaction_bcs`, not both."),
+      command_offset: numArg()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Continue from this command index: lists commands in index order from it while they fit about 30k characters. Without it, when the PTB does not fit, the first page keeps the commands an anomaly names first (each anomaly lists them in `commands`; most severe flag first, and among equals the one naming the fewest commands), then Move calls into non-framework packages; either way `commands_omitted` lists the exact index ranges left out and next_call the offset to continue from.",
+        ),
+      commands: z
+        .array(numArg().int().min(0))
+        .max(100)
+        .optional()
+        .describe("Exact command indices to list, e.g. [3, 7], instead of a page. Each listed command carries its `index`."),
     },
-    async ({ transaction_bcs }) => {
-      // BCS parsing stops where the struct ends and ignores what follows, so
-      // 10,000 base64 'A's decoded as a transaction from 0x0 with no commands.
-      const bytes = fromBase64(transaction_bcs.trim());
-      const used = bcs.TransactionData.serialize(bcs.TransactionData.parse(bytes)).toBytes().length;
-      if (used !== bytes.length) {
-        return errorResult(
-          `Not one transaction: the first ${used} bytes decode as transaction data and ${bytes.length - used} bytes follow it.`,
-        );
+    async ({ transaction_bcs, digest: rawDigest, command_offset, commands: pick }) => {
+      if ((transaction_bcs === undefined) === (rawDigest === undefined)) {
+        return errorResult("Pass exactly one of transaction_bcs (bytes to sign) or digest (an executed transaction).");
       }
-      const tx = Transaction.from(bytes);
-      const data = tx.getData();
 
-      // The SDK's Transaction shape differs from the gRPC one, so package IDs
-      // are collected here rather than via collectPackageIds.
+      let bytes: Uint8Array;
+      let executed: ExecutedObjects | undefined;
+      let executedTx: GrpcTypes.ExecutedTransaction | undefined;
+      if (rawDigest !== undefined) {
+        const digest = normalizeDigest(rawDigest);
+        if (!isDigest(digest)) return errorResult(invalidDigestMessage(digest));
+        const res: GrpcTypes.GetTransactionResponse = await withArchiveFallback(
+          (client) =>
+            client.ledgerService.getTransaction({
+              digest,
+              readMask: { paths: ["digest", "transaction.bcs", "effects", "checkpoint", "balance_changes", ...EXECUTED_OBJECT_PATHS] },
+            }),
+          (r) => !r.transaction?.transaction?.bcs?.value,
+        );
+        executedTx = res.transaction;
+        const value = executedTx?.transaction?.bcs?.value;
+        if (!value) return errorResult(`Transaction ${digest} came back without its transaction bytes, so its PTB cannot be decoded. get_transaction reads the same digest.`);
+        bytes = new Uint8Array(value);
+        executed = executedObjects(executedTx);
+      } else {
+        bytes = fromBase64(transaction_bcs!.trim());
+        // BCS parsing stops where the struct ends and ignores what follows, so
+        // 10,000 base64 'A's decoded as a transaction from 0x0 with no commands.
+        const used = bcs.TransactionData.serialize(bcs.TransactionData.parse(bytes)).toBytes().length;
+        if (used !== bytes.length) {
+          return errorResult(
+            `Not one transaction: the first ${used} bytes decode as transaction data and ${bytes.length - used} bytes follow it.`,
+          );
+        }
+      }
+      const data = ptbDataFromBcs(bytes);
+      if (!data) {
+        return errorResult("This is a system transaction, not a programmable one, so it has no PTB commands or inputs to decode. get_transaction describes it.");
+      }
+
       const calledPackages = data.commands.flatMap((c) => (c.$kind === "MoveCall" ? [c.MoveCall.package] : []));
-      await prefetchProtocolNames(calledPackages);
       const blocklistedPackages = new Set(
         [...new Set(calledPackages)].filter((p) => guardiansFlagsForPackage(p).length > 0),
       );
 
-      const rawInputs = data.inputs as Array<{ $kind: string } & Record<string, unknown>>;
-      const commands = data.commands.map((c) => formatCommand(c, rawInputs));
-      const inputs = data.inputs.map(formatPureInput);
-      const anomalies = flagPtbAnomalies(commands as FormattedCommand[], { sender: data.sender ?? undefined, blocklistedPackages });
+      const { inputs, commands, signatures_unavailable } = await resolvePtb(data, executed);
+      // Who published each called version, and its lineage's newer versions:
+      // the trust basis and the superseded-version check read them.
+      const trustIncomplete = originIncomplete(await prefetchProtocolCustody(new Set(calledPackages.filter((p) => !isSystemPackage(p)))));
+      // An executed transaction is judged at its own checkpoint; bytes not yet
+      // signed, against the versions published now.
+      const checkpoint = executedTx?.checkpoint !== undefined ? Number(executedTx.checkpoint) : null;
+      const effects = executedTx
+        ? effectsPayouts(
+            data.sender ?? null,
+            (executedTx.balanceChanges ?? []).map((b) => ({ address: b.address ?? "", coinType: b.coinType ?? "", amount: b.amount ?? "0" })),
+            readGrpcObjectChanges(executedTx.effects?.changedObjects ?? []),
+            gasPaidOf(executedTx.effects?.gasUsed, data.gasData.owner),
+          )
+        : undefined;
+      const trust = (pkg: string) => lookupPackageTrust(pkg, checkpoint);
+      const anomalies = flagPtbAnomalies(commands as FormattedCommand[], {
+        sender: data.sender ?? undefined,
+        blocklistedPackages,
+        inputs,
+        trust,
+        supersededChanges: await readSupersededChanges(supersededWrites(commands as FormattedCommand[], inputs, trust)),
+        effects,
+      });
       // Null when the bytes carry no gas data yet, which says nothing about
       // where gas will come from.
       const gas = data.gasData.payment ? gasSource(data.gasData.payment) : null;
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                sender: data.sender,
-                gas_budget: data.gasData.budget,
-                gas_price: data.gasData.price,
-                // An empty payment list means gas comes out of the gas owner's
-                // address balance rather than a coin object.
-                ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
-                expiration: data.expiration,
-                command_count: commands.length,
-                input_count: inputs.length,
-                anomaly_count: anomalies.length,
-                anomalies,
-                commands,
-                inputs,
-              },
-              null,
-              2
+      // Before signing, what leaves for another address is set against the
+      // sender's balances now, and each recipient's first appearance is read.
+      const sends = !executedTx && data.sender ? presignSends(commands as FormattedCommand[], data.sender) : [];
+      const presign = sends.length ? await readPresignContext(data.sender!, sends, gas?.coins ?? []) : null;
+      const payout = presign ? anomalies.find((a) => a.code === "transfers-to-non-sender") : undefined;
+      if (presign && payout) {
+        const lines = [
+          ...presign.coins
+            .filter((c) => c.share_of_balance !== null)
+            .map((c) =>
+              c.share_of_balance! > 1
+                ? `sends ${c.sent} raw ${c.coin_type}, more than the sender's balance now (${c.sender_balance} raw)`
+                : `sends ${(c.share_of_balance! * 100).toFixed(2)}% of the sender's ${c.coin_type} balance now (${c.sent} of ${c.sender_balance} raw)`,
             ),
-          },
-        ],
+          ...presign.recipients
+            .filter((r) => r.first_seen !== undefined)
+            .map((r) => (r.first_digest === null ? `${r.address} has no transaction on chain yet` : `${r.address} first seen ${r.first_seen ?? "at an unknown time"} (${r.first_digest})`)),
+        ];
+        payout.evidence = [...lines.slice(0, 6), ...payout.evidence];
+      }
+
+      const body: Record<string, unknown> = {
+        ...(executedTx ? { digest: executedTx.digest, status: formatStatus(executedTx.effects?.status) } : {}),
+        sender: data.sender,
+        gas_budget: data.gasData.budget,
+        gas_price: data.gasData.price,
+        // An empty payment list means gas comes out of the gas owner's
+        // address balance rather than a coin object.
+        ...(gas ? { gas_source: gas.source, ...(gas.coins.length ? { gas_coins: gas.coins } : {}) } : {}),
+        expiration: data.expiration,
+        command_count: commands.length,
+        input_count: inputs.length,
+        anomaly_count: anomalies.length,
+        anomalies,
+        checks_run: PTB_CHECKS,
+        checks_note:
+          NO_MATCH_NOTE +
+          (executedTx
+            ? ""
+            : " Only the commands were read. Before signing, simulate_transaction shows the effects: where every coin and object would end up, whichever function moves it."),
+        ...(presign ? { presign_context: presign } : {}),
+        ...(trustIncomplete ? { trust_incomplete: trustIncomplete } : {}),
+        ...(signatures_unavailable.length
+          ? {
+              signatures_unavailable,
+              signatures_unavailable_note:
+                "The signatures of these Move functions could not be read, so their pure arguments are shown as bytes and their results carry no declared type.",
+            }
+          : {}),
+        commands,
+        inputs,
       };
+      // Anomalies are flagged over every command above; only the listing is
+      // paged. A first page lists the flagged commands first: most severe
+      // flag first, and among equals the flag naming the fewest commands.
+      const first = [...anomalies]
+        .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || (a.commands?.length ?? 0) - (b.commands?.length ?? 0))
+        .flatMap((a) => a.commands ?? []);
+      const { page, omitted, missing } = selectCommands(commands, { offset: command_offset, indices: pick, first });
+      const resultId = omitted ? saveResult(getNetwork(), "decode_ptb", { transaction_bcs, digest: rawDigest, command_offset }, body, { commands: page.map((c) => c.index as number) }) : null;
+      const out = {
+        ...(omitted ? { truncated: true } : {}),
+        ...body,
+        commands: page,
+        ...(missing.length ? { commands_not_found: missing } : {}),
+        ...(omitted ? { commands_omitted: commandsOmittedView(omitted, rawDigest === undefined ? null : normalizeDigest(rawDigest), resultId) } : {}),
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
     }
   );
 }

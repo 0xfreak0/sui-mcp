@@ -29,19 +29,20 @@ describe("diffLines", () => {
     const d = diffLines(a, b, 60);
     expect(d.unified).toContain("- \t100: MoveLoc[3](Arg3: &mut State)");
     expect(d.unified).toContain("+ \t100: CopyLoc[3](Arg3: &mut State)");
-    // Three lines of context either side, not the whole prefix.
+    // Three lines of context either side, not the whole prefix. The Ret that
+    // only moved from offset 101 to 102 is context, not a change.
     expect(d.unified).toEqual([
       "@@ -98,6 +98,7 @@",
       "  \t97: Nop",
       "  \t98: Nop",
       "  \t99: Nop",
       "- \t100: MoveLoc[3](Arg3: &mut State)",
-      "- \t101: Ret",
       "+ \t100: CopyLoc[3](Arg3: &mut State)",
       "+ \t101: Pop",
-      "+ \t102: Ret",
+      "  \t102: Ret",
       "  }",
     ]);
+    expect(d.renumbered).toBe(1);
     expect(d.hunk_count).toBe(1);
     expect(d.truncated).toBe(false);
   });
@@ -207,6 +208,347 @@ describe("diffPackages", () => {
     ]);
     const d = diffPackages(from, to);
     expect(d.changed_modules[0].module).toBe("big");
+  });
+
+  /**
+   * An upgrade compiled with functions in another order. A line diff of the
+   * whole module pairs the old text of one function with the new header of
+   * another; each function must be diffed against its own old body.
+   */
+  it("diffs each function against its own old body when the upgrade reorders functions", () => {
+    const fnA = [
+      "fun_a(Arg0: &mut Oracle, Arg1: u64) {",
+      "B0:",
+      "\t0: MoveLoc[1](Arg1: u64)",
+      "\t1: MoveLoc[0](Arg0: &mut Oracle)",
+      "\t2: MutBorrowField[3](Oracle.time_interval: u64)",
+      "\t3: WriteRef",
+      "\t4: Ret",
+      "}",
+      "",
+    ];
+    const oldB = [
+      "fun_b(Arg0: &mut Oracle, Arg1: u64) {",
+      "B0:",
+      "\t0: MoveLoc[1](Arg1: u64)",
+      "\t1: MoveLoc[0](Arg0: &mut Oracle)",
+      "\t2: MutBorrowField[1](Oracle.price: u64)",
+      "\t3: WriteRef",
+      "\t4: Ret",
+      "}",
+      "",
+    ];
+    const newB = ["fun_b(Arg0: &mut Oracle, Arg1: u64) {", "B0:", "\t0: LdU64(0)", "\t1: Abort", "}", ""];
+    const from = new Map([["m", ["module 0.m {", ...fnA, ...oldB, "}"].join("\n")]]);
+    const to = new Map([["m", ["module 0.m {", ...newB, ...fnA, "}"].join("\n")]]);
+    const d = diffPackages(from, to);
+
+    const sample = d.changed_modules[0].sample ?? [];
+    const at = sample.findIndex((l) => l.startsWith("@@") && l.endsWith("@@ fun_b(Arg0: &mut Oracle, Arg1: u64)"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    const next = sample.findIndex((l, i) => i > at && l.startsWith("@@"));
+    const hunk = sample.slice(at, next < 0 ? undefined : next);
+    expect(hunk).toContain("- \t2: MutBorrowField[1](Oracle.price: u64)");
+    expect(hunk.join("\n")).not.toContain("time_interval");
+    expect(d.changed_functions.map((f) => f.function)).toEqual(["fun_b"]);
+  });
+
+  /**
+   * A recompile shifts instruction offsets, branch targets, local slots and
+   * field and constant indices. When those shift consistently the lines are
+   * counted as renumbered and kept out of the hunks, so the hunks hold only
+   * instructions that were added or removed.
+   */
+  it("counts consistent renumbering apart from real changes", () => {
+    const from = [
+      "module 0.spool {",
+      "public a(Arg0: &Spool): u64 {",
+      "B0:",
+      "\t0: MoveLoc[0](Arg0: &Spool)",
+      "\t1: ImmBorrowField[2](Spool.index: u64)",
+      "\t2: ReadRef",
+      "\t3: LdConst[0](u64: 1000..)",
+      "\t4: Add",
+      "\t5: Ret",
+      "}",
+      "",
+      "public b(Arg0: &mut Spool, Arg1: u64) {",
+      "L2:\tloc0: u64",
+      "B0:",
+      "\t0: MoveLoc[1](Arg1: u64)",
+      "\t1: StLoc[2](loc0: u64)",
+      "\t2: CopyLoc[2](loc0: u64)",
+      "\t3: LdU64(0)",
+      "\t4: Eq",
+      "\t5: BrFalse(7)",
+      "B1:",
+      "\t6: Branch(9)",
+      "B2:",
+      "\t7: LdU64(1)",
+      "\t8: Abort",
+      "B3:",
+      "\t9: MoveLoc[2](loc0: u64)",
+      "\t10: MoveLoc[0](Arg0: &mut Spool)",
+      "\t11: MutBorrowField[1](Spool.total: u64)",
+      "\t12: WriteRef",
+      "\t13: Ret",
+      "}",
+      "",
+      "Constants [",
+      "\t0 => u64: 1000000000",
+      "]",
+      "}",
+    ];
+    const to = [
+      "module 0.spool {",
+      "public a(Arg0: &Spool): u64 {",
+      "B0:",
+      "\t0: MoveLoc[0](Arg0: &Spool)",
+      "\t1: ImmBorrowField[3](Spool.index: u64)",
+      "\t2: ReadRef",
+      "\t3: LdConst[1](u64: 1000..)",
+      "\t4: Add",
+      "\t5: Ret",
+      "}",
+      "",
+      "public b(Arg0: &mut Spool, Arg1: u64) {",
+      "L2:\tloc0: bool",
+      "L3:\tloc1: u64",
+      "B0:",
+      "\t0: CopyLoc[0](Arg0: &mut Spool)",
+      "\t1: FreezeRef",
+      "\t2: Call assert_version(&Spool)",
+      "\t3: MoveLoc[1](Arg1: u64)",
+      "\t4: StLoc[3](loc1: u64)",
+      "\t5: CopyLoc[3](loc1: u64)",
+      "\t6: LdU64(0)",
+      "\t7: Eq",
+      "\t8: BrFalse(10)",
+      "B1:",
+      "\t9: Branch(12)",
+      "B2:",
+      "\t10: LdU64(1)",
+      "\t11: Abort",
+      "B3:",
+      "\t12: MoveLoc[3](loc1: u64)",
+      "\t13: MoveLoc[0](Arg0: &mut Spool)",
+      "\t14: MutBorrowField[2](Spool.total: u64)",
+      "\t15: WriteRef",
+      "\t16: Ret",
+      "}",
+      "",
+      "Constants [",
+      '\t0 => vector<u8>: "EPaused" // interpreted as UTF8 string',
+      "\t1 => u64: 1000000000",
+      "]",
+      "}",
+    ];
+    const d = diffPackages(new Map([["spool", from.join("\n")]]), new Map([["spool", to.join("\n")]]));
+    const m = d.changed_modules[0];
+    const sample = m.sample ?? [];
+
+    expect(sample.filter((l) => l.startsWith("- "))).toEqual([]);
+    expect(sample.filter((l) => l.startsWith("+ "))).toEqual([
+      "+ L2:\tloc0: bool",
+      "+ \t0: CopyLoc[0](Arg0: &mut Spool)",
+      "+ \t1: FreezeRef",
+      "+ \t2: Call assert_version(&Spool)",
+      '+ \t0 => vector<u8>: "EPaused" // interpreted as UTF8 string',
+    ]);
+    expect(m.renumbering_only_functions).toEqual(["a"]);
+    expect(d.changed_functions).toEqual([
+      { module: "spool", function: "b", added_lines: 4, removed_lines: 0, renumbered_lines: 15 },
+    ]);
+  });
+
+  describe("a sample that cannot show every change", () => {
+    // A long function with twenty small edits first in the module, then a
+    // short one rewritten to abort, then a short one with a single edit.
+    const long = (bump: number) => [
+      "public long_fn(Arg0: u64): u64 {",
+      "B0:",
+      ...Array.from({ length: 40 }, (_, j) => (j % 2 ? `\t${j}: Pop` : `\t${j}: LdU64(${j + bump})`)),
+      "\t40: Ret",
+      "}",
+      "",
+    ];
+    const guarded = [
+      "public guarded(Arg0: &Pool, Arg1: address) {",
+      "B0:",
+      "\t0: MoveLoc[0](Arg0: &Pool)",
+      "\t1: ImmBorrowField[0](Pool.admin: address)",
+      "\t2: ReadRef",
+      "\t3: MoveLoc[1](Arg1: address)",
+      "\t4: Eq",
+      "\t5: Pop",
+      "\t6: Ret",
+      "}",
+      "",
+    ];
+    const aborted = ["public guarded(Arg0: &Pool, Arg1: address) {", "B0:", "\t0: LdU64(0)", "\t1: Abort", "}", ""];
+    const small = (fee: number) => [
+      "public small(Arg0: u64): u64 {",
+      "B0:",
+      "\t0: MoveLoc[0](Arg0: u64)",
+      `\t1: LdU64(${fee})`,
+      "\t2: Add",
+      "\t3: Ret",
+      "}",
+      "",
+    ];
+    const from = new Map([["m", ["module 0.m {", ...long(0), ...guarded, ...small(1), "}"].join("\n")]]);
+    const to = new Map([["m", ["module 0.m {", ...long(7), ...aborted, ...small(2), "}"].join("\n")]]);
+    const titles = (sample: string[]) =>
+      sample.filter((l) => l.startsWith("@@")).map((l) => /@@ \S+ \S+ @@ public (\w+)/.exec(l)![1]);
+
+    it("shows every changed function, the most rewritten first, before a second hunk of any", () => {
+      const m = diffPackages(from, to, 30).changed_modules[0];
+      const sample = m.sample ?? [];
+      expect(m.sample_truncated).toBe(true);
+      expect(new Set(titles(sample))).toEqual(new Set(["guarded", "long_fn", "small"]));
+      expect(titles(sample)[0]).toBe("guarded");
+      expect(sample).toContain("+ \t1: Abort");
+      expect(sample.filter((l) => l.startsWith("- ") && sample.indexOf(l) < sample.indexOf("+ \t0: LdU64(0)"))).toHaveLength(7);
+      expect(m.unsampled_functions).toBeUndefined();
+      expect(m.partly_sampled_functions).toEqual(["long_fn"]);
+      // Each function's hunks sit together.
+      const order = titles(sample).filter((t, i, all) => t !== all[i - 1]);
+      expect(order).toHaveLength(3);
+    });
+
+    it("names the functions a small budget leaves out, and needs sample_lines_needed to show all", () => {
+      const m = diffPackages(from, to, 6).changed_modules[0];
+      const shown = new Set(titles(m.sample ?? []));
+      for (const fn of ["guarded", "long_fn", "small"]) {
+        expect(shown.has(fn) !== (m.unsampled_functions ?? []).includes(fn)).toBe(true);
+      }
+      expect(m.unsampled_functions?.length).toBeGreaterThan(0);
+      for (const fn of m.partly_sampled_functions ?? []) expect(shown.has(fn)).toBe(true);
+
+      const full = diffPackages(from, to, m.sample_lines_needed).changed_modules[0];
+      expect(full.sample_truncated).toBe(false);
+      expect(full.unsampled_functions).toBeUndefined();
+      expect(full.partly_sampled_functions).toBeUndefined();
+      expect(diffPackages(from, to, m.sample_lines_needed! - 1).changed_modules[0].sample_truncated).toBe(true);
+    });
+  });
+
+  it("shows a branch that now jumps to another instruction", () => {
+    const body = (target: number) =>
+      [
+        "module 0.m {",
+        "public c(Arg0: bool): u64 {",
+        "B0:",
+        "\t0: MoveLoc[0](Arg0: bool)",
+        `\t1: BrFalse(${target})`,
+        "B1:",
+        "\t2: LdU64(1)",
+        "\t3: Ret",
+        "B2:",
+        "\t4: LdU64(0)",
+        "\t5: Abort",
+        "}",
+        "}",
+      ].join("\n");
+    const d = diffPackages(new Map([["m", body(4)]]), new Map([["m", body(2)]]));
+    expect(d.changed_modules[0].sample).toContain("- \t1: BrFalse(4)");
+    expect(d.changed_modules[0].sample).toContain("+ \t1: BrFalse(2)");
+    expect(d.changed_functions.map((f) => f.function)).toEqual(["c"]);
+  });
+
+  /**
+   * A function past the alignment cap is counted, not aligned, so its branch
+   * targets are never checked against an offset map. Swapping which block a
+   * branch falls through to changes what it does and must not count as
+   * nothing.
+   */
+  it("counts a too-large function that only swapped its branch arms as changed", () => {
+    const block = (start: number, base: number) =>
+      Array.from({ length: 1100 }, (_, j) =>
+        j === 1099 ? `\t${start + j}: Ret` : j % 2 ? `\t${start + j}: Pop` : `\t${start + j}: LdU64(${base + j})`,
+      );
+    const fn = (first: number, second: number) =>
+      [
+        "module 0.m {",
+        "public big(Arg0: bool) {",
+        "B0:",
+        "\t0: MoveLoc[0](Arg0: bool)",
+        "\t1: BrFalse(1102)",
+        "B1:",
+        ...block(2, first),
+        "B2:",
+        ...block(1102, second),
+        "}",
+        "}",
+      ].join("\n");
+    const d = diffPackages(new Map([["m", fn(10_000, 50_000)]]), new Map([["m", fn(50_000, 10_000)]]));
+    expect(d.identical).toBe(false);
+    expect(d.changed_functions.map((f) => f.function)).toEqual(["big"]);
+    expect(d.changed_modules[0].note).toContain("big");
+  });
+
+  /**
+   * Two stores trade slots while the reads stay put, so `x - y` becomes
+   * `y - x`. The votes tie; the slots keeping their number win, and the
+   * stores are the lines shown as changed.
+   */
+  it("shows the stores that trade slots, not the reads that did not change", () => {
+    const body = (first: number, second: number) =>
+      [
+        "module 0.m {",
+        "public sub(Arg0: u64, Arg1: u64): u64 {",
+        "L2:\tloc0: u64",
+        "L3:\tloc1: u64",
+        "B0:",
+        "\t0: MoveLoc[0](Arg0: u64)",
+        `\t1: StLoc[${first}](loc${first - 2}: u64)`,
+        "\t2: MoveLoc[1](Arg1: u64)",
+        `\t3: StLoc[${second}](loc${second - 2}: u64)`,
+        "\t4: MoveLoc[2](loc0: u64)",
+        "\t5: MoveLoc[3](loc1: u64)",
+        "\t6: Sub",
+        "\t7: Ret",
+        "}",
+        "}",
+      ].join("\n");
+    const d = diffPackages(new Map([["m", body(2, 3)]]), new Map([["m", body(3, 2)]]));
+    const changed = (d.changed_modules[0].sample ?? []).filter((l) => /^[-+] /.test(l));
+    expect(changed.sort()).toEqual([
+      "+ \t1: StLoc[3](loc1: u64)",
+      "+ \t3: StLoc[2](loc0: u64)",
+      "- \t1: StLoc[2](loc0: u64)",
+      "- \t3: StLoc[3](loc1: u64)",
+    ]);
+  });
+
+  it("shows a read of a different local, even where the slot numbers look renumbered", () => {
+    const body = (first: string, second: string) =>
+      [
+        "module 0.m {",
+        "public d(Arg0: u64, Arg1: u64): u64 {",
+        "L2:\tloc0: u64",
+        "L3:\tloc1: u64",
+        "B0:",
+        "\t0: MoveLoc[0](Arg0: u64)",
+        "\t1: StLoc[2](loc0: u64)",
+        "\t2: MoveLoc[1](Arg1: u64)",
+        "\t3: StLoc[3](loc1: u64)",
+        "\t4: CopyLoc[2](loc0: u64)",
+        "\t5: CopyLoc[3](loc1: u64)",
+        "\t6: Add",
+        "\t7: Pop",
+        `\t8: ${first}`,
+        `\t9: ${second}`,
+        "\t10: Sub",
+        "\t11: Ret",
+        "}",
+        "}",
+      ].join("\n");
+    const a = "MoveLoc[2](loc0: u64)";
+    const b = "MoveLoc[3](loc1: u64)";
+    const d = diffPackages(new Map([["m", body(a, b)]]), new Map([["m", body(b, a)]]));
+    const changed = (d.changed_modules[0].sample ?? []).filter((l) => /^[-+] /.test(l));
+    expect(changed.sort()).toEqual([`+ \t8: ${b}`, `+ \t9: ${a}`, `- \t8: ${a}`, `- \t9: ${b}`]);
   });
 });
 

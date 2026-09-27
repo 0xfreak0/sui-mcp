@@ -1,0 +1,300 @@
+{
+  "slug": "scallop-2026-04",
+  "kind": "protocol-exploit",
+  "title": "Scallop sSUI spool rewards exploit, 26 April 2026",
+  "network": "mainnet",
+  "summary": "On 26 April 2026 an attacker drained 150,098 SUI from the RewardsPool of Scallop's sSUI spool in one transaction, calling version 2 (November 2023) of the spool package. The spool package's user::update_points takes any Spool and never checks that the SpoolAccount belongs to it, unlike stake, unstake and redeem_rewards. The attacker staked 0.18 sSUI in a new account on the sSUI spool, ran update_points against a dormant sWETH spool whose index had grown to 8.9e14, then redeemed the inflated points 1:1 against the sSUI rewards pool. No later package version changed the user module; Scallop's multisig pulled the other rewards pools' balances out an hour later. The SUI was split across four addresses that each swept into one of two high-fanout wallets.",
+  "sources": [
+    { "url": "https://x.com/Scallop_io/status/2048384340049215835", "publisher": "Scallop", "kind": "official" },
+    { "url": "https://x.com/exvulsec/status/2048409683405476224", "publisher": "ExVul", "kind": "security-firm" },
+    { "url": "https://blocksec.com/blog/weekly-web3-security-roundup-2026-04-26", "publisher": "BlockSec", "kind": "security-firm" },
+    { "url": "https://x.com/deanmlittle/status/2048455207923917202", "publisher": "Dean Little", "kind": "news" }
+  ],
+  "subjects": {
+    "attacker": "0x27bc7a3c4f406cfa91551c32490ad7f5029414578c0649ab4ddbd232e76ef44e",
+    "exploit_tx": "6WNDjCX3W852hipq6yrHhpUaSFHSPWfTxuLKaQkgNfVL",
+    "spool_root": "0xe87f1b2d498106a2c61421cec75b7b5c5e348512b0dc263949a0e7a3c256571a",
+    "spool_v2": "0xec1ac7f4d01c5bf178ff4e62e523e7df7721453d81d4904a42a0ffc2686c843d",
+    "spool_v4": "0x472fc7d4c3534a8ec8c2f5d7a557a43050eab057aaab853e8910968ddc84fc9f",
+    "ssui_spool": "0x4f0ba970d3c11db05c8f40c64a15b6a33322db3702d634ced6536960ab6f3ee4",
+    "donor_spool": "0xeec40beccb07c575bebd842eeaabb835f77cd3dab73add433477e57f583a6787",
+    "ssui_rewards_pool": "0x162250ef72393a4ad3d46294c4e1bdfcb03f04c869d390e7efbfc995353a7ee9",
+    "attacker_spool_account": "0x2a710b62bf4f905546489d6f9bc4428b0dfba92532a7c04be519e97cdc0fbda0",
+    "first_funder": "0xae3f7ba925a0fdfd553c313e97e1b63f4305933a166749e197a0af14caee613f",
+    "first_funding_tx": "4wd9hrp7E9BnrzrJUWUA11GsvqdJmzuR2Fz4MBiZoCC4",
+    "recipient_30k": "0x2fb27fc8f1716c245f9c579f9d3179a833aa7ef6e314dc4c4b95a033603f2558",
+    "recipient_40k_a": "0x2bcab90f2c2b08b42fa5f6ca35ed3b9239c39016a8b9a1d56b19c9867009ced0",
+    "recipient_40k_b": "0x2a19c0d5330b5a51b693ef956817d8e6565cb1c23207948949bc410587ff2967",
+    "recipient_40k_c": "0xbd31b1d0305f2ada7720cf0406c4c336106f00c7c47fdce7c05dec270a681a2c",
+    "scallop_multisig": "0x1226a80ef40bd2e70c6a285b045b9b5d29915a2c5a2d57a2d3032cbdd89a8d5c",
+    "response_tx": "F6PdvGKrd9fUQXGLhf74HGY2QRVHgzjAuNZohbDWniww"
+  },
+  "checks": [
+    {
+      "id": "exploit-profit",
+      "question": "What did the attacker take in the exploit transaction?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{attacker}" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "150098051263289" },
+        { "path": "flash_legs", "op": "count_lte", "value": 0 }
+      ],
+      "tier": "chain-derived",
+      "basis": "ExVul names the attacker and transaction; the attacker's SUI balance change on chain is +150,098.051263289 SUI net of gas, with no flash loan."
+    },
+    {
+      "id": "exploit-usd",
+      "question": "What was the loss worth in USD at the time?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "profit.usd_net", "op": "approx", "value": 142700, "tolerance": 0.03 }
+      ],
+      "tier": "price-provider",
+      "basis": "BlockSec puts the loss at about $142.7K."
+    },
+    {
+      "id": "exploit-move-calls",
+      "question": "Which Move calls did the exploit make, and into which package version?",
+      "tool": "get_transactions",
+      "args": { "digests": ["{exploit_tx}"] },
+      "expect": [
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{spool_v2}::user::new_spool_account" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{spool_v2}::user::stake" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{spool_v2}::user::update_points" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{spool_v2}::user::redeem_rewards" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{spool_v2}::user::unstake" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec's attack steps name new_spool_account, stake, update_points, redeem_rewards and unstake; the transaction on chain calls all five in package 0xec1ac7f4."
+    },
+    {
+      "id": "exploit-events",
+      "question": "How much did the attacker stake, and what did the redeem pay out from which pool?",
+      "tool": "get_transaction",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "events[*].parsed.stake_amount", "op": "includes", "value": "181779285" },
+        { "path": "events[*].parsed.rewards_pool_id", "op": "includes", "value": "{ssui_rewards_pool}" },
+        { "path": "events[*].parsed.spool_id", "op": "includes", "value": "{ssui_spool}" },
+        { "path": "events[*].parsed.rewards", "op": "includes", "value": "150098061595978" },
+        { "path": "events[*].parsed.total_user_points", "op": "includes", "value": "162019889778297" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec: 0.2 SUI of bait, rewards = 150,098,061,595,978 raw SUI. On chain the SpoolAccountStakeEvent stakes 181,779,285 raw sSUI (0.18 sSUI, not the 136K sSUI Dean Little reported) and SpoolAccountRedeemRewardsEventV2 pays from the sSUI RewardsPool."
+    },
+    {
+      "id": "exploited-version",
+      "question": "Which version of the spool package did the attacker call, and when was it published?",
+      "tool": "get_upgrade_history",
+      "args": { "package": "{spool_v2}" },
+      "expect": [
+        { "path": "root_package_id", "op": "iequals", "value": "{spool_root}" },
+        { "path": "versions[1].version", "op": "equals", "value": 2 },
+        { "path": "versions[1].package_id", "op": "iequals", "value": "{spool_v2}" },
+        { "path": "versions[1].timestamp", "op": "matches", "value": "^2023-11-24" },
+        { "path": "versions[3].package_id", "op": "iequals", "value": "{spool_v4}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Dean Little: an old V2 package from November 2023. The lineage on chain has 0xec1ac7f4 as version 2, upgraded 2023-11-24, with version 4 (0x472fc7d4) published 2024-08-26 before the exploit."
+    },
+    {
+      "id": "account-index-injected",
+      "question": "What reward index did the attacker's spool account end the exploit with, and which spool is it bound to?",
+      "tool": "get_object",
+      "args": { "object_id": "{attacker_spool_account}", "version": "856036007" },
+      "expect": [
+        { "path": "previous_transaction", "op": "equals", "value": "{exploit_tx}" },
+        { "path": "content.spool_id", "op": "iequals", "value": "{ssui_spool}" },
+        { "path": "content.index", "op": "equals", "value": "891301263052871" },
+        { "path": "content.total_points", "op": "equals", "value": "162019889778297" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec: the donor's index of about 8.91e14 was written into the account. On chain the account, bound to the sSUI spool, holds index 891,301,263,052,871 after the exploit."
+    },
+    {
+      "id": "donor-spool-at-exploit",
+      "question": "Which other spool did the exploit touch, and what was its index?",
+      "tool": "get_object",
+      "args": { "object_id": "{donor_spool}", "version": "856036007" },
+      "expect": [
+        { "path": "previous_transaction", "op": "equals", "value": "{exploit_tx}" },
+        { "path": "content.index", "op": "equals", "value": "891301263052871" },
+        { "path": "content.stake_type", "op": "contains", "value": "af8cd5edc19c4512f4259f0bee101a40d41ebed738ade5874359610ef8eeced5::coin::COIN" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec describes an abandoned donor Spool with index about 8.91e14 but does not name it. On chain the sWETH spool 0xeec40bec was mutated by the exploit and its index equals the attacker account's index exactly."
+    },
+    {
+      "id": "target-spool-at-exploit",
+      "question": "What was the sSUI spool's own index at the exploit?",
+      "tool": "get_object",
+      "args": { "object_id": "{ssui_spool}", "version": "856036007" },
+      "expect": [
+        { "path": "previous_transaction", "op": "equals", "value": "{exploit_tx}" },
+        { "path": "content.index", "op": "equals", "value": "1191219615" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec and Dean Little put the sSUI spool index at about 1.19e9. On chain it is 1,191,219,615, so the account's 8.9e14 index cannot have come from its own spool."
+    },
+    {
+      "id": "rewards-pool-drained",
+      "question": "What was left in the sSUI rewards pool, and at what points-to-SUI rate?",
+      "tool": "get_object",
+      "args": { "object_id": "{ssui_rewards_pool}", "version": "856036007" },
+      "expect": [
+        { "path": "previous_transaction", "op": "equals", "value": "{exploit_tx}" },
+        { "path": "content.rewards", "op": "equals", "value": "0" },
+        { "path": "content.exchange_rate_numerator", "op": "equals", "value": "1" },
+        { "path": "content.exchange_rate_denominator", "op": "equals", "value": "1" },
+        { "path": "content.spool_id", "op": "iequals", "value": "{ssui_spool}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec: points redeemed 1:1 up to the pool's balance. On chain the sSUI RewardsPool holds 0 after the exploit."
+    },
+    {
+      "id": "flaw-update-points-unbound",
+      "question": "Which user function skips the check that the account belongs to the spool passed in?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{spool_v2}", "module_name": "user" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "entry public update_points<Ty0>\\([^)]*\\) \\{(?:(?!assert_pool_id)[^}])*\\}" },
+        { "path": "disassembly", "op": "matches", "value": "entry public stake<Ty0>\\([^{]*\\{[^}]*assert_pool_id" },
+        { "path": "disassembly", "op": "matches", "value": "public unstake<Ty0>\\([^{]*\\{[^}]*assert_pool_id" },
+        { "path": "disassembly", "op": "matches", "value": "public redeem_rewards<Ty0, Ty1>\\([^{]*\\{[^}]*assert_pool_id" }
+      ],
+      "tier": "code-derived",
+      "basis": "BlockSec: update_points does not assert account.spool_id == object::id(spool); stake, unstake and redeem_rewards do. The version 2 bytecode shows update_points calling spool::accrue_points and spool_account::accrue_points with no spool_account::assert_pool_id, which the other three call first."
+    },
+    {
+      "id": "update-points-signature",
+      "question": "Can anyone call update_points directly, and does it take anything that ties the account to the spool or gates the package version?",
+      "tool": "get_move_function",
+      "args": { "package_id": "{spool_v2}", "module_name": "user", "function_name": "update_points" },
+      "expect": [
+        { "path": "visibility", "op": "equals", "value": "public" },
+        { "path": "is_entry", "op": "equals", "value": true },
+        { "path": "parameters", "op": "count_lte", "value": 3 },
+        { "path": "parameters[0]", "op": "contains", "value": "::spool::Spool" },
+        { "path": "parameters[1]", "op": "contains", "value": "::spool_account::SpoolAccount<T0>" }
+      ],
+      "tier": "code-derived",
+      "basis": "BlockSec: the attacker called update_points directly with a donor Spool. The version 2 signature is public entry (&mut Spool, &mut SpoolAccount<T0>, &Clock): no version or config object, so every published version stays callable."
+    },
+    {
+      "id": "account-index-initialised",
+      "question": "Does a new spool account start with the spool's current index, or with zero?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{spool_v2}", "module_name": "spool_account" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "public\\(friend\\) new<Ty0>\\([^{]*\\{[^}]*Call spool::index\\(&Spool\\): u64[^}]*PackGeneric\\[0\\]\\(SpoolAccount<Ty0>\\)" }
+      ],
+      "tier": "code-derived",
+      "basis": "Dean Little said last_index is left at 0 in a fresh account. The version 2 bytecode of spool_account::new reads spool::index and packs it as the account's last field, index, so the account starts at the spool's index; BlockSec's cross-spool account matches the code."
+    },
+    {
+      "id": "no-fix-after-v2",
+      "question": "Did any later version of the spool package change the user module?",
+      "tool": "diff_package_upgrade",
+      "args": { "package": "{spool_v2}", "from_version": 2, "to_version": 4, "max_sample_lines": 20 },
+      "expect": [
+        { "path": "diff.changed_modules[*].module", "op": "excludes", "value": "user" },
+        { "path": "diff.changed_modules[*].module", "op": "includes", "value": "spool" }
+      ],
+      "tier": "code-derived",
+      "basis": "BlockSec gives the fix as adding the binding assert to update_points. Diffing version 2 against version 4 on chain shows only spool and admin changed; user is unchanged."
+    },
+    {
+      "id": "latest-version-still-unbound",
+      "question": "Is update_points in the newest spool version any different?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{spool_v4}", "module_name": "user" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "entry public update_points<Ty0>\\([^)]*\\) \\{(?:(?!assert_pool_id)[^}])*\\}" }
+      ],
+      "tier": "code-derived",
+      "basis": "BlockSec's missing check. Version 4 (0x472fc7d4), the latest version before the exploit, has the same update_points bytecode without assert_pool_id, so the flaw was not confined to the version 2 package the attacker called."
+    },
+    {
+      "id": "attacker-split",
+      "question": "Where did the attacker send the stolen SUI, and did any of it cross a bridge?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2026-04-26T00:00:00Z", "to": "2026-04-27T00:00:00Z" },
+      "expect": [
+        { "path": "top_recipients[*].address", "op": "includes", "value": "{recipient_30k}" },
+        { "path": "top_recipients[*].address", "op": "includes", "value": "{recipient_40k_a}" },
+        { "path": "top_recipients[*].address", "op": "includes", "value": "{recipient_40k_b}" },
+        { "path": "top_recipients[*].address", "op": "includes", "value": "{recipient_40k_c}" },
+        { "path": "bridge_exits.transaction_count", "op": "equals", "value": 0 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: within 45 minutes of the exploit the attacker sent 30,000 SUI and three 40,000 SUI transfers to four addresses, and made no bridge transfer."
+    },
+    {
+      "id": "first-funder",
+      "question": "Who paid for the attacker's first gas?",
+      "tool": "find_funding_source",
+      "args": { "address": "{attacker}" },
+      "expect": [
+        { "path": "chain[0].funded_by", "op": "iequals", "value": "{first_funder}" },
+        { "path": "chain[0].funding_tx", "op": "equals", "value": "{first_funding_tx}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 5.96 SUI from 0xae3f7ba9 at 11:41:28 UTC, 3.5 minutes before the exploit, is the attacker's first inflow."
+    },
+    {
+      "id": "scallop-response",
+      "question": "What did Scallop do on chain to stop further draining?",
+      "tool": "get_transactions",
+      "args": { "digests": ["{response_tx}"] },
+      "expect": [
+        { "path": "transactions[0].sender", "op": "iequals", "value": "{scallop_multisig}" },
+        { "path": "transactions[0].move_calls", "op": "includes", "value": "{spool_v2}::admin::take_rewards" },
+        { "path": "transactions[0].balance_changes[*].amount", "op": "includes", "value": "48470041465152" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Scallop's notice says the affected contract was frozen. On chain at 12:54 UTC the UpgradeCap's 3-of-5 multisig called admin::take_rewards on six rewards pools and took back 48,470.04 SUI; no package upgrade followed."
+    },
+    {
+      "id": "exploit-inputs-visible",
+      "question": "Which Spool object did the exploit pass to update_points?",
+      "tool": "get_transaction",
+      "args": { "digest": "{exploit_tx}", "detail": "full" },
+      "expect": [
+        { "path": "commands[5].target", "op": "iequals", "value": "{spool_v2}::user::update_points" },
+        { "path": "commands[5].arguments[0].object_id", "op": "iequals", "value": "{donor_spool}" },
+        { "path": "commands[5].arguments[0].object_type", "op": "equals", "value": "spool::Spool" },
+        { "path": "commands[4].arguments[0].object_id", "op": "iequals", "value": "{ssui_spool}" },
+        { "path": "object_changes.by_kind.mutated[*].object_id", "op": "includes", "value": "{donor_spool}" },
+        { "path": "object_changes.by_kind.created[*].object_id", "op": "includes", "value": "{attacker_spool_account}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the exploit's update_points (command 5) takes the donor sWETH spool 0xeec40bec as its Spool while stake (command 4) takes the sSUI spool; the donor was mutated by the exploit (its version 856036007 has the exploit as previous_transaction), and the attacker's SpoolAccount was created in it."
+    },
+    {
+      "id": "spool-package-attributed",
+      "question": "Whose package is the one the exploit called?",
+      "tool": "identify_address",
+      "args": { "address": "{spool_v2}" },
+      "expect": [
+        { "path": "protocol.name", "op": "iequals", "value": "Scallop" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Scallop's notice names its sSUI spool rewards contract. On chain spool v2 0xec1ac7f4 was published by 0x1226a80e, which also signed upgrades of Scallop's core lineage 0xefe8b36d; the spool root was published by 0xf7055587, which published that core root."
+    },
+    {
+      "id": "scan-flags-update-points",
+      "question": "Does a scan of the exploited spool version point at update_points without being told where to look?",
+      "tool": "analyze_package",
+      "args": { "package_id": "{spool_v2}", "audit_capabilities": false },
+      "expect": [
+        { "path": "findings[*].code", "op": "includes", "value": "sibling-guard-gap" },
+        { "path": "_text", "op": "contains", "value": "user::update_points" },
+        { "path": "_text", "op": "contains", "value": "user::stake: 6: Call spool_account::assert_pool_id" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xec1ac7f4 bytecode): stake, unstake and redeem_rewards call spool_account::assert_pool_id on their Spool and SpoolAccount at instruction 6, and update_points mutates the SpoolAccount through spool_account::accrue_points with no such call. BlockSec names the missing binding check in update_points."
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+{
+  "slug": "aftermath-2026-04",
+  "kind": "protocol-exploit",
+  "title": "Aftermath Perpetuals negative integrator fee exploit, 29 April 2026",
+  "network": "mainnet",
+  "summary": "On 29 April 2026 an attacker drained 1,139,927.48 USDC from Aftermath Perpetuals in 11 profitable transactions (17 attempts) between 08:55:50 and 09:31:49 UTC. Each PTB set the attacker as integrator on a fresh account with max_taker_fee 0, built an IntegratorInfo through the public clearing_house::create_integrator_info with a taker fee of 2^256 - 1e23 (-100,000 as a signed ifixed), and filled a small market order: calculate_taker_fees only checks the fee against the maximum with the signed ifixed::less_than_eq, and process_fill_taker subtracts the negative fee from collateral, crediting about 7.7M USD. Deallocating that collateral paid out everything the market's vault held beyond its accrued fees, which the attacker withdrew. Package version 2 (0x9e208bed) ran; version 4 (0x7fb12cb0, 4 May 2026) rejects negative fees. The attacker was funded from a KuCoin reserve wallet and cashed out through single-use wallets to KuCoin, HTX and two other exchange deposit hubs, with no bridge exit.",
+  "sources": [
+    { "url": "https://x.com/AftermathFi/status/2049962599950024830", "publisher": "Aftermath", "kind": "victim-postmortem" },
+    { "url": "https://blocksec.com/blog/weekly-web3-security-roundup-2026-05-10", "publisher": "BlockSec", "kind": "security-firm" },
+    { "url": "https://cryip.co/aftermath-finance-exploit-1-14m-usdc-drained-from-sui-perpetuals-protocol/", "publisher": "Cryip", "kind": "news" }
+  ],
+  "subjects": {
+    "attacker": "0x1a65086c85114c1a3f8dc74140115c6e18438d48d33a21fd112311561112d41e",
+    "exploit_tx": "531W14qrdyoD8tZrA34CzSU8pe4Dz1bNEAEcq2mC7E7u",
+    "blocksec_tx": "4pGQdfFG96Ghqj1xqkaeeAgMQCpttivdkgSRUGc6wVD8",
+    "funding_tx": "Dy69pP2metqZm2svciZ92JY2p3oy37RPenp2seGWJn7j",
+    "kucoin_funder": "0xd5ccdf77cab59778ad6c6d599af3819b0281c3fe434f7df4b82290620331bb01",
+    "kucoin_hot": "0x13c075644dad21bf10cb12447b825b535c24ddae428e27abc5858d1511e24c6d",
+    "htx_deposit": "0xe5c05e8e99d394c6968dfdda0085274b674f8e791a39342d8cae345b0a75fd1a",
+    "poisoner": "0x6e570fdf9a95e78083fea24364506b694aacf41f16f65407af6e2760eb1d6144",
+    "perps_root": "0x21d001e8b07da2e3facb3e2d636bbaef43ba3c978bd84810368840b7d57c5068",
+    "perps_v2": "0x9e208bed81b7072fa75af8f9eaca42ced3ec8154bb04f5b948c2a9455125d136",
+    "perps_v4": "0x7fb12cb035906e4cd4e41ddee56186b986343f57b8ebf51a9f7af6ed00535cbc",
+    "ifixed_pkg": "0x46234ba81f3a5ba6571383233df0f9ea5fe60a3a327537be1f5fec447bced693",
+    "blocksec_clearing_house": "0x1afbec3d7265c38afd41a851bf7a45f903e5b5d1f3cc3146e2b6248792e7de02",
+    "usdc": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
+  },
+  "checks": [
+    {
+      "id": "exploit-profit",
+      "question": "Who profited from the first exploit transaction, and by how much?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "profit.address", "op": "iequals", "value": "{attacker}" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "261652224099" },
+        { "path": "flash_legs", "op": "count_lte", "value": 0 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the attacker's USDC balance change in 531W14qr is +261,652.224099. Aftermath names the attacker and the 08:55:50 start."
+    },
+    {
+      "id": "exploit-integrator-call-args",
+      "question": "Which fee did the attacker allow, which fee did it pass, and how much did it withdraw?",
+      "tool": "get_transaction",
+      "args": { "digest": "{exploit_tx}", "detail": "full", "commands": [9, 13, 16, 18] },
+      "expect": [
+        { "path": "commands[0].target", "op": "iequals", "value": "{perps_v2}::interface::add_integrator_config" },
+        { "path": "commands[0].arguments[2].address", "op": "iequals", "value": "{attacker}" },
+        { "path": "commands[0].arguments[3].value", "op": "equals", "value": "0" },
+        { "path": "commands[1].target", "op": "iequals", "value": "{perps_v2}::clearing_house::create_integrator_info" },
+        { "path": "commands[1].arguments[1].value", "op": "equals", "value": "115792089237316195423570985008687907853269984665640563939457584007913129639936" },
+        { "path": "commands[2].arguments[3].from", "op": "equals", "value": "clearing_house::create_integrator_info" },
+        { "path": "commands[3].target", "op": "iequals", "value": "{perps_v2}::interface::withdraw_collateral" },
+        { "path": "commands[3].arguments[2].value", "op": "equals", "value": "261752224099" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the PTB's pure inputs. 2^256 - 10^23 is -100,000 as an 18-decimal ifixed, the 'negative 100,000 taker fee' Aftermath's post-mortem describes; max_taker_fee 0 is the setting BlockSec names as essential."
+    },
+    {
+      "id": "exploit-negative-fee-events",
+      "question": "What did the protocol record for the integrator fee and the resulting collateral?",
+      "tool": "get_transaction",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "events[*].parsed.max_taker_fee", "op": "includes", "value": "0" },
+        { "path": "events[*].parsed.fees", "op": "includes", "value": "115792089237316195423570985008687907853269984665640556335585084007913129639936" },
+        { "path": "events[*].parsed.collateral", "op": "includes", "value": "7705953015675" },
+        { "path": "events[*].parsed.collateral", "op": "includes", "value": "261752224099" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: PaidIntegratorFees carries 2^256 - 7.7038725e24 (-7,703,872.5 USD as ifixed), DeallocatedCollateral the 7,705,953.015675 USDC of free collateral debited from the position (take_collateral moved only the vault's 261,752.224099 above accrued fees), and WithdrewCollateral 261,752.224099 USDC. Aftermath: the negative fee is credited to the new account and withdrawn from the vault."
+    },
+    {
+      "id": "exploit-flagged-first-tx",
+      "question": "Does any anomaly check fire at medium or high on the first exploit transaction?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{exploit_tx}" },
+      "expect": [
+        { "path": "_text", "op": "matches", "value": "Anomaly \\(heuristic lead, (medium|high)\\)" }
+      ],
+      "tier": "heuristic",
+      "basis": "Aftermath and BlockSec: 531W14qr is one of the 11 exploit transactions. Chain: the market vault fell from about 282,030.57 to 20,355.40 USDC collateral (13.9x) and the attacker gained 261,652 USDC of it."
+    },
+    {
+      "id": "vault-drain-flagged-blocksec-tx",
+      "question": "In the transaction BlockSec analyses, which object was drained and was it flagged?",
+      "tool": "analyze_attack_tx",
+      "args": { "digest": "{blocksec_tx}" },
+      "expect": [
+        { "path": "anomalies[*].code", "op": "includes", "value": "shared-state-jump" },
+        { "path": "state_deltas.drops[*].holder", "op": "includes", "value": "{blocksec_clearing_house}" },
+        { "path": "state_deltas.drops[*].before", "op": "includes", "value": "79828259122" },
+        { "path": "state_deltas.drops[*].after", "op": "includes", "value": "102816684" },
+        { "path": "profit.gains[*].amount", "op": "includes", "value": "79610446067" }
+      ],
+      "tier": "chain-derived",
+      "basis": "BlockSec analyses 4pGQdf and a 79,610 USDC gain. Chain: ClearingHouse 0x1afbec3d's USDC holding fell from 79,828.26 to 102.82 in it."
+    },
+    {
+      "id": "exploited-version",
+      "question": "Which package version ran, and when did the fix version ship?",
+      "tool": "get_upgrade_history",
+      "args": { "package": "{perps_v2}", "as_of": "2026-04-29T08:55:50Z" },
+      "expect": [
+        { "path": "root_package_id", "op": "iequals", "value": "{perps_root}" },
+        { "path": "as_of.newest_version.package_id", "op": "iequals", "value": "{perps_v2}" },
+        { "path": "versions[0].timestamp", "op": "matches", "value": "^2026-02-11" },
+        { "path": "versions[3].package_id", "op": "iequals", "value": "{perps_v4}" },
+        { "path": "versions[3].timestamp", "op": "matches", "value": "^2026-05-04" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the upgrade transactions of lineage 0x21d001e8. BlockSec names 0x9e208bed as the buggy package."
+    },
+    {
+      "id": "create-integrator-info-public",
+      "question": "Can anyone build an IntegratorInfo with any fee?",
+      "tool": "get_move_function",
+      "args": { "package_id": "{perps_v2}", "module_name": "clearing_house", "function_name": "create_integrator_info" },
+      "expect": [
+        { "path": "visibility", "op": "equals", "value": "public" },
+        { "path": "parameters", "op": "equals", "value": ["address", "u256"] }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: the function's signature in version 2. BlockSec: create_integrator_info is publicly callable with no permission or fee-bound check."
+    },
+    {
+      "id": "create-integrator-info-unchecked",
+      "question": "Does create_integrator_info validate the fee in the exploited version?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{perps_v2}", "module_name": "clearing_house", "function_name": "create_integrator_info" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "^public create_integrator_info\\(Arg0: address, Arg1: u256\\): Option<IntegratorInfo> \\{\\nB0:\\n\\t0: MoveLoc\\[0\\]\\(Arg0: address\\)\\n\\t1: MoveLoc\\[1\\]\\(Arg1: u256\\)\\n\\t2: Pack\\[\\d+\\]\\(IntegratorInfo\\)" },
+        { "path": "disassembly", "op": "matches", "value": "^(?![\\s\\S]*(is_neg|Abort))" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: version 2 bytecode packs the caller's fee with no branch or abort. BlockSec quotes the same body."
+    },
+    {
+      "id": "fee-check-upper-bound-only",
+      "question": "What does calculate_taker_fees check about the integrator fee?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{perps_v2}", "module_name": "clearing_house", "function_name": "calculate_taker_fees" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "Call account::get_integrator_max_taker_fee\\(&IntegratorConfig\\): u256[\\s\\S]*ImmBorrowField\\[\\d+\\]\\(IntegratorInfo\\.taker_fee: u256\\)[\\s\\S]*Call ifixed::less_than_eq\\(u256, u256\\): bool\\n\\t\\d+: BrFalse\\(\\d+\\)[\\s\\S]*Call errors::invalid_integrator_taker_fee\\(\\): u64" },
+        { "path": "disassembly", "op": "matches", "value": "^(?![\\s\\S]*is_neg)" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: version 2 bytecode asserts only ifixed::less_than_eq(taker_fee, max_taker_fee). BlockSec names this assert as the vulnerability."
+    },
+    {
+      "id": "lte-is-signed",
+      "question": "Is ifixed::less_than_eq a signed comparison?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{ifixed_pkg}", "module_name": "ifixed", "function_name": "less_than_eq" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "LdConst\\[\\d+\\]\\(u256: 5789\\.\\.\\) // 57896044618658097711785492504343953926634992332820282019728792003956564819968 \\(1 << 255\\)\\n\\t2: Xor[\\s\\S]*\\t5: Xor\\n\\t6: Le" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: both operands have bit 255 flipped before an unsigned Le, which is a two's-complement comparison. BlockSec: ifixed::less_than_eq performs a signed comparison over u256."
+    },
+    {
+      "id": "settlement-subtracts-fee",
+      "question": "How does settlement apply the integrator fee to the taker's collateral?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{perps_v2}", "module_name": "clearing_house", "function_name": "process_fill_taker" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "Call calculate_taker_fees<Ty0>[\\s\\S]*Call ifixed::add\\(u256, u256\\): u256\\n\\t\\d+: Call ifixed::sub\\(u256, u256\\): u256\\n\\t\\d+: StLoc\\[\\d+\\]\\(loc3: u256\\)\\n\\t\\d+: MoveLoc\\[0\\]\\(Arg0: &mut Position\\)\\n\\t\\d+: MoveLoc\\[\\d+\\]\\(loc3: u256\\)\\n\\t\\d+: MoveLoc\\[2\\]\\(Arg2: u256\\)\\n\\t\\d+: Call position::add_to_collateral_usd" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: version 2 adds pnl - (taker_fee + integrator_fee) to the position's collateral. BlockSec quotes the same add_to_collateral_usd call."
+    },
+    {
+      "id": "fix-diff-names-fee-functions",
+      "question": "Which upgrade changed the fee functions?",
+      "tool": "diff_package_upgrade",
+      "args": { "package": "{perps_root}", "from_version": 3, "to_version": 4 },
+      "expect": [
+        { "path": "to.address", "op": "iequals", "value": "{perps_v4}" },
+        { "path": "diff.changed_functions[*].function", "op": "includes", "value": "calculate_taker_fees" },
+        { "path": "diff.changed_functions[*].function", "op": "includes", "value": "create_integrator_info" },
+        { "path": "diff.changed_functions[*].function", "op": "includes", "value": "add_integrator_config" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: the version 3 to 4 diff. BlockSec recommends enforcing non-negative fees in these functions."
+    },
+    {
+      "id": "fix-rejects-negative-fee",
+      "question": "Does the fixed version reject a negative fee?",
+      "tool": "disassemble_module",
+      "args": { "package_id": "{perps_v4}", "module_name": "clearing_house", "function_name": "create_integrator_info" },
+      "expect": [
+        { "path": "disassembly", "op": "matches", "value": "Call ifixed::is_neg\\(u256\\): bool\\n\\t2: Not\\n\\t3: BrFalse\\(5\\)[\\s\\S]*Call errors::invalid_integrator_taker_fee\\(\\): u64\\n\\t6: Abort" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: version 4 aborts with invalid_integrator_taker_fee when the fee is negative, the check BlockSec's first mitigation asks for."
+    },
+    {
+      "id": "flaw-predates-v2",
+      "question": "Did the version 2 upgrade introduce the flaw?",
+      "tool": "diff_package_upgrade",
+      "args": { "package": "{perps_root}", "from_version": 1, "to_version": 2 },
+      "expect": [
+        { "path": "diff.changed_functions[*].function", "op": "excludes", "value": "calculate_taker_fees" },
+        { "path": "diff.changed_functions[*].function", "op": "excludes", "value": "create_integrator_info" },
+        { "path": "diff.changed_functions[*].function", "op": "includes", "value": "check_ch_version" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: the version 1 to 2 diff leaves both fee functions unchanged, so the lineage shipped the flaw at its first publish (2026-02-11). Aftermath dates the source change to 29 August 2025."
+    },
+    {
+      "id": "fee-functions-predate-lineage",
+      "question": "How old is the code of the two fee functions, given clearing_house as a whole first appears in February 2026?",
+      "tool": "get_upgrade_history",
+      "args": { "package": "{perps_root}", "find_redeploys": true, "detail": "full" },
+      "expect": [
+        { "path": "function_origins[*].functions[*]", "op": "includes", "value": "calculate_taker_fees" },
+        { "path": "function_origins[*].functions[*]", "op": "includes", "value": "create_integrator_info" },
+        { "path": "function_origins[*].root_package_id", "op": "includes", "value": "0x2892f0e29fa85c91acd8d587870b0772d7ff253f07fac75e56c0e94ec2057800" },
+        { "path": "function_origins[*].published_at", "op": "includes", "value": "2025-12-10T18:49:10.576Z" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: function by function, both fee functions carry the code of lineage 0x2892f0e2… v1, published 2025-12-10 by Aftermath's key, two months before clearing_house's whole-module origin (0x9a17a6ab…, 2026-02-10). calculate_taker_fees was private there and is public in the exploited lineage. Aftermath dates the source change to 29 August 2025."
+    },
+    {
+      "id": "attacker-funded-by-kucoin",
+      "question": "Who funded the attacker's gas, and when?",
+      "tool": "find_funding_source",
+      "args": { "address": "{attacker}" },
+      "expect": [
+        { "path": "chain[0].funded_by", "op": "iequals", "value": "{kucoin_funder}" },
+        { "path": "chain[0].funding_tx", "op": "equals", "value": "{funding_tx}" },
+        { "path": "chain[0].timestamp", "op": "equals", "value": "2026-04-28T22:02:07.221Z" },
+        { "path": "origin.label", "op": "equals", "value": "KuCoin reserve wallet" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Aftermath: first funded 04-28 22:02:07 UTC with 405.24 SUI. Chain: the sender is 0xd5ccdf77, listed in KuCoin's proof-of-reserves report."
+    },
+    {
+      "id": "attacker-flows",
+      "question": "How much did the attacker take in, how many wallets did it pay, and did any value leave by bridge?",
+      "tool": "summarize_address_flows",
+      "args": { "address": "{attacker}", "from": "2026-04-28T00:00:00Z", "to": "2026-05-01T00:00:00Z" },
+      "expect": [
+        { "path": "coverage.complete", "op": "equals", "value": true },
+        { "path": "coins[*].raw.in", "op": "includes", "value": "1140206212799" },
+        { "path": "inflow_sources[*].address", "op": "includes", "value": "{kucoin_funder}" },
+        { "path": "recipient_count", "op": "equals", "value": 23 },
+        { "path": "bridge_exits.transaction_count", "op": "equals", "value": 0 },
+        { "path": "address_poisoning.pairs[*].suspect", "op": "includes", "value": "{poisoner}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 1,139,927.48 USDC from the 11 exploit transactions plus 278.73 USDC from the SOR swap; 23 recipients. Aftermath: laundered through fresh single-use wallets and DEX swaps to exchanges, no bridge."
+    },
+    {
+      "id": "cashout-exchanges",
+      "question": "Where did the proceeds end up?",
+      "tool": "trace_flow_graph",
+      "args": { "address": "{attacker}", "direction": "forward", "from": "2026-04-29T08:55:00Z", "to": "2026-05-10T00:00:00Z", "max_depth": 4 },
+      "expect": [
+        { "path": "terminals[*].reason", "op": "includes", "value": "sink" },
+        { "path": "terminals[*].entries[*].node", "op": "includes", "value": "{kucoin_hot}|{usdc}" },
+        { "path": "terminals[*].entries[*].node", "op": "includes", "value": "{htx_deposit}|0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Aftermath names KuCoin 0x13c0… and HTX 0xe5c0… (about 150K SUI) as deposit destinations. Chain: the traced edges end at both."
+    },
+    {
+      "id": "incident-total",
+      "question": "What did the 17 exploit attempts take in total?",
+      "tool": "summarize_incident_losses",
+      "args": { "digests": ["531W14qrdyoD8tZrA34CzSU8pe4Dz1bNEAEcq2mC7E7u", "FQALUkZD1NnY9cDYoah2Zus6Z4TSp6voj1k2XKuA863Y", "56WY6LkWobjzjtNDaTS2LWYLS6s3kHsg3SdBnMuJ45pU", "4LTrkjYxdBRzs8G8FVDxJMuiFtmGuxuZmTMgBue3aGQV", "4FB2dEz6mFdJ9ikKsAtpEzCp1hd44mgENb61XAcPAehD", "u4zE7XBnPKxETVPBfF7XtKYd694qEHa6QTx1LDHwujT", "2s3ybJFhwzzLSMTsugGSAN9b1SgjaL1uc8yPaqVbJ1wz", "HmPxZWRgoJfh8WMEQzvbAUaSGcEUMessihJcRdrgPpk7", "9UJLFirEqNuXEPkVZQL1MfNHZTfHy2zDH99MyoSb7k61", "8UVSYd5G8LSLg7J4XLzF5X31ZoGzgLSwPynmcy189xgs", "CKfb8nYzTA9XWSs6A3PpaCT6HqQFp48nBLBPwEV4EGPC", "7P8TFYuvACtoPG79SpsBhucEiJ7MvmdVj11DomLjgrXu", "BqWYBVHnx8USdbKH24BNJD1gB7WxZWGeGz4WqMVmEFMn", "CSaHz1ABSeUbaLv7zdqFkH4ibLxEBxPWqYTBmXyCXVXB", "7gR7xpvy3GiPMUyB62R5a4j5yw7tx1NnubcVdf4535xg", "4H8pXMBQ5951EjeL6kag2Way5QP5tGXVSsMyFzWWQCrX", "4pGQdfFG96Ghqj1xqkaeeAgMQCpttivdkgSRUGc6wVD8"] },
+      "expect": [
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "1139652059864" },
+        { "path": "failed_transactions", "op": "count_gte", "value": 3 }
+      ],
+      "tier": "chain-derived",
+      "basis": "Aftermath: ~1,139,927 USDC across 17 attempts (11 successful). Chain: the 11 gains sum to 1,139,927.483185 USDC, less 275.423321 USDC the 3 unprofitable attempts left behind; 3 attempts aborted."
+    },
+    {
+      "id": "losses-name-victim-vaults",
+      "question": "Which protocol objects lost the funds?",
+      "tool": "summarize_incident_losses",
+      "args": { "digests": ["531W14qrdyoD8tZrA34CzSU8pe4Dz1bNEAEcq2mC7E7u", "4pGQdfFG96Ghqj1xqkaeeAgMQCpttivdkgSRUGc6wVD8"] },
+      "expect": [
+        { "path": "groups", "op": "count_gte", "value": 1 },
+        { "path": "groups[*].pools[*]", "op": "includes", "value": "{blocksec_clearing_house}" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: each exploit transaction withdrew from one ClearingHouse<USDC> market vault (4pGQdf: 0x1afbec3d fell from 79,828.26 to 102.82 USDC). Aftermath: funds were withdrawn from the vault."
+    },
+    {
+      "id": "window-total",
+      "question": "Asked by sender and time window, what did the exploit take?",
+      "tool": "summarize_incident_losses",
+      "args": { "sender": "{attacker}", "start": "2026-04-29T08:55:00Z", "end": "2026-04-29T09:32:00Z" },
+      "expect": [
+        { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "1139652059864" }
+      ],
+      "tier": "chain-derived",
+      "basis": "Aftermath: ~1,139,927 USDC drained between 08:55:50 and 09:31:49 UTC. Chain: the 17 attempts net 1,139,652.059864 USDC."
+    }
+  ]
+}

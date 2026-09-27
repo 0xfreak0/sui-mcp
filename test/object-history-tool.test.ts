@@ -18,14 +18,15 @@ vi.mock("../src/utils/kiosk.js", () => ({
 
 const { registerObjectHistoryTools } = await import("../src/tools/object-history.js");
 
-let handler: (args: { object_id: string; limit?: number }) => Promise<{ content: { text: string }[] }>;
+type Args = { object_id: string; limit?: number; order?: "oldest" | "newest"; cursor?: string };
+let handler: (args: Args) => Promise<{ content: { text: string }[] }>;
 registerObjectHistoryTools({
   tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
     handler = h;
   },
 } as never);
 
-const run = async (args: { object_id: string; limit?: number }) =>
+const run = async (args: Args) =>
   JSON.parse((await handler(args)).content[0].text);
 
 /** One version node in the shape both `current` and `objectVersions.nodes[]` share. */
@@ -263,7 +264,7 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
     expect(r.owner_change_note).toMatch(/reversed transfer/);
   });
 
-  it("counts what a search that ran out of budget found before stopping, and still says it stopped", async () => {
+  it("says a search that ran out of budget stopped, and lists every range it stopped inside with the owners at its ends", async () => {
     mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
       if (query.includes("objectVersions(address: $id, first: $first)")) {
         return {
@@ -286,10 +287,20 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
     getTransaction.mockResolvedValue(effectsWith("0xflipper", 2));
 
     const r = await run({ object_id: "0xflipper", limit: 1 });
-    const found = r.owner_change_count;
-    expect(found).toBeGreaterThan(0);
     expect(r.owner_change_note).toMatch(/did not finish/);
-    expect(r.owner_change_note).toContain(`after finding ${found} transition(s)`);
+    type Range = { from_checkpoint: number; to_checkpoint: number; owner_before: { address: string }; owner_after: { address: string } };
+    const ranges: Range[] = r.owner_change_unpinned;
+    expect(ranges.length).toBeGreaterThan(0);
+    let last = 10;
+    for (const u of ranges) {
+      // Each range holds a change: its ends disagree, and ranges tile the span in order.
+      expect(u.owner_before.address).not.toBe(u.owner_after.address);
+      expect(u.from_checkpoint).toBeGreaterThanOrEqual(last);
+      expect(u.to_checkpoint).toBeGreaterThan(u.from_checkpoint);
+      expect(u.to_checkpoint).toBeLessThanOrEqual(1_000_001);
+      last = u.to_checkpoint;
+    }
+    if (r.owner_change_count > 0) expect(r.owner_change_note).toContain(`after finding ${r.owner_change_count} transition(s)`);
   });
 
   /**
@@ -331,6 +342,141 @@ describe("trace_object_history — a busy object beyond the page limit", () => {
       ["0xa", "0xb"],
       ["0xb", "0xc"],
     ]);
+  });
+});
+
+describe("trace_object_history — paging newest first and by cursor", () => {
+  const pairs = (r: { owner_changes: { from: { address: string }; to: { address: string }; at_version: string }[] }) =>
+    r.owner_changes.map((c) => [c.from.address, c.to.address, c.at_version]);
+
+  /**
+   * A busy object's recent versions: v2..v5 are the newest, v1 its creation.
+   * One more version than the page is read, so the change into the oldest
+   * listed version (v3, from v2's owner) is exact without listing v2.
+   */
+  it("lists the newest versions first, with each owner change still from the version before", async () => {
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      if (query.includes("last: $last")) {
+        expect(vars.last).toBe(4);
+        expect(vars.filter).toBeNull();
+        return {
+          current: version("5", "0xc", 500),
+          objectVersions: {
+            pageInfo: { hasNextPage: false, endCursor: "c" },
+            nodes: [version("2", "0xa", 200), version("3", "0xb", 300), version("4", "0xb", 400), version("5", "0xc", 500)],
+          },
+          genesis: { nodes: [version("1", "0xa", 100)] },
+        };
+      }
+      throw new Error(`unexpected query (v1 and v2 share an owner, so no search reads): ${query.slice(0, 60)}`);
+    });
+    getTransaction.mockResolvedValue(effectsWith("0xbusy", 2));
+
+    const r = await run({ object_id: "0xbusy", limit: 3, order: "newest" });
+    expect(r.order).toBe("newest");
+    expect(r.history.map((h: { version: string }) => h.version)).toEqual(["5", "4", "3"]);
+    expect(pairs(r)).toEqual([
+      ["0xb", "0xc", "5"],
+      ["0xa", "0xb", "3"],
+    ]);
+    expect(r.created.tx).toBe("tx1");
+    expect(r.history_truncated).toBe(true);
+    expect(r.next_cursor).toBe("3");
+    expect(r.next_call).toEqual({ tool: "trace_object_history", repeat_with: { order: "newest", cursor: "3" } });
+  });
+
+  it("continues newest first from a cursor, and stops offering a cursor at the first version", async () => {
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      if (query.includes("last: $last")) {
+        expect(vars.filter).toEqual({ beforeVersion: 3 });
+        return {
+          current: version("5", "0xc", 500),
+          objectVersions: { pageInfo: { hasNextPage: true, endCursor: "c" }, nodes: [version("1", "0xa", 100), version("2", "0xa", 200)] },
+          genesis: { nodes: [version("1", "0xa", 100)] },
+        };
+      }
+      throw new Error(`unexpected query: ${query.slice(0, 60)}`);
+    });
+    getTransaction.mockResolvedValue(effectsWith("0xbusy", 2));
+
+    const r = await run({ object_id: "0xbusy", limit: 3, order: "newest", cursor: "3" });
+    expect(r.history.map((h: { version: string }) => h.version)).toEqual(["2", "1"]);
+    expect(r.owner_change_count).toBe(0);
+    expect(r.next_cursor).toBeUndefined();
+    // Newer versions sit on the page already walked.
+    expect(r.history_truncated).toBe(true);
+  });
+
+  it("continues oldest first from a cursor, relating the first row to the previous page's last", async () => {
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      if (query.includes("afterVersion")) {
+        expect(vars.after).toBe(2);
+        expect(vars.first).toBe(3);
+        return {
+          current: version("4", "0xb", 400),
+          objectVersions: { pageInfo: { hasNextPage: false, endCursor: "c" }, nodes: [version("3", "0xa", 300), version("4", "0xb", 400)] },
+          genesis: { nodes: [version("1", "0xa", 100)] },
+        };
+      }
+      throw new Error(`unexpected query: ${query.slice(0, 60)}`);
+    });
+    getTransaction.mockResolvedValue(effectsWith("0xslow", 2));
+
+    const r = await run({ object_id: "0xslow", limit: 2, cursor: "3" });
+    expect(r.history.map((h: { version: string }) => h.version)).toEqual(["4"]);
+    expect(pairs(r)).toEqual([["0xa", "0xb", "4"]]);
+    expect(r.next_cursor).toBeUndefined();
+  });
+
+  it("never asks GraphQL for more than 50 rows at limit 50, newest first or after a cursor", async () => {
+    const asked: number[] = [];
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      const rows = (vars.last ?? vars.first) as number | undefined;
+      if (rows !== undefined) {
+        asked.push(rows);
+        if (rows > 50) throw new Error(`Page size is too large: ${rows} > 50`);
+      }
+      if (query.includes("objectVersions")) {
+        const nodes = Array.from({ length: rows ?? 0 }, (_, i) => version(String(100 + i), "0xa", 1000 + i));
+        return {
+          current: version("500", "0xa", 5000),
+          objectVersions: { pageInfo: { hasNextPage: true, endCursor: "c" }, nodes },
+          genesis: { nodes: [version("1", "0xa", 10)] },
+        };
+      }
+      throw new Error(`unexpected query: ${query.slice(0, 60)}`);
+    });
+    getTransaction.mockResolvedValue(effectsWith("0xbusy", 2));
+
+    const newestPage = await run({ object_id: "0xbusy", limit: 50, order: "newest" });
+    expect(newestPage.history).toHaveLength(49);
+    expect(newestPage.next_cursor).toBe("101");
+    const cursorPage = await run({ object_id: "0xbusy", limit: 50, cursor: "100" });
+    expect(cursorPage.history).toHaveLength(49);
+    expect(cursorPage.next_cursor).toBe("149");
+    expect(Math.max(...asked)).toBeLessThanOrEqual(50);
+  });
+
+  it("offers the next oldest-first page when the first one is full", async () => {
+    mockGqlQuery.mockImplementation(async (query: string) => {
+      if (query.includes("objectVersions(address: $id, first: $first)")) {
+        return {
+          current: version("4", "0xa", 400),
+          objectVersions: { pageInfo: { hasNextPage: true, endCursor: "c" }, nodes: [version("1", "0xa", 100), version("2", "0xa", 200)] },
+        };
+      }
+      throw new Error(`unexpected query (both search ends agree): ${query.slice(0, 60)}`);
+    });
+    getTransaction.mockResolvedValue(effectsWith("0xslow", 2));
+
+    const r = await run({ object_id: "0xslow", limit: 2 });
+    expect(r.next_call).toEqual({ tool: "trace_object_history", repeat_with: { order: "oldest", cursor: "2" } });
+  });
+
+  it("rejects a cursor that is not a version", async () => {
+    const r = await handler({ object_id: "0xslow", cursor: "c1" });
+    expect((r as { isError?: boolean }).isError).toBe(true);
+    expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 });
 

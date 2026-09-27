@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { getMvrName, prefetchMvrNames } from "./mvr-names.js";
 import { getPackageRoot, prefetchPackageRoots } from "./package-roots.js";
+import { getPackageCustody, getPackageOrigin, newerVersions, prefetchPackageCustody } from "./package-custody.js";
+import { isPlumbingPackage } from "../utils/system-packages.js";
 const require = createRequire(import.meta.url);
 const protocolsData = require("../data/protocols.json");
 const protocolRootsData = require("../data/protocol-roots.json");
@@ -34,8 +36,11 @@ export interface ProtocolInfo {
    * Where this identification came from. Absent means curated (the shipped
    * registry). `"mvr"` means it was reverse-resolved at runtime and carries no
    * verified category — safe to display, not safe to make decisions on.
+   * `"publisher"` means the package version's own publisher also signed a
+   * version of a curated protocol's lineage (./package-custody.ts): display
+   * only, with no category.
    */
-  source?: "mvr";
+  source?: "mvr" | "publisher";
 }
 
 export interface OperationInfo {
@@ -103,6 +108,10 @@ interface OperationPattern {
 
 const OPERATION_PATTERNS: OperationPattern[] = [
   // DEX: swap
+  // Cetus's `swap_pay_amount` and `add_liquidity_pay_amount` read what a
+  // receipt owes; they move nothing. Listed before the prefixes they share.
+  { module: "pool", fnPrefix: "swap_pay_amount", operation: { action: "quote", skip: true } },
+  { module: "pool", fnPrefix: "add_liquidity_pay_amount", operation: { action: "quote", skip: true } },
   { module: "pool", fnPrefix: "swap", operation: { action: "swap" } },
   // Deliberately NOT "swap". A flash swap borrows and repays inside the same
   // transaction, so the actor does not end up holding proceeds — and the trace's
@@ -116,7 +125,9 @@ const OPERATION_PATTERNS: OperationPattern[] = [
 
   // DEX: liquidity
   { module: "pool", fnPrefix: "add_liquidity", operation: { action: "add_liquidity" } },
-  { module: "pool", fnPrefix: "repay_add_liquidity", operation: { action: "add_liquidity" } },
+  // Pays the receipt `add_liquidity` returned: the same add, so it is not
+  // listed again, but it still moves coins in the net-trust check.
+  { module: "pool", fnPrefix: "repay_add_liquidity", operation: { action: "add_liquidity", skip: true } },
   { module: "pool", fnPrefix: "remove_liquidity", operation: { action: "remove_liquidity" } },
 
   // DEX: position management
@@ -333,21 +344,100 @@ export async function prefetchProtocolNames(packageIds: Iterable<string>): Promi
 }
 
 /**
+ * Read who published each called package version and which newer versions
+ * its lineage had (./package-custody.ts). Twenty packages share one GraphQL
+ * request, so only the tools that judge or name a called package call it
+ * (`identify_address`, `decode_ptb`, `analyze_attack_tx`,
+ * `summarize_incident_losses`). Curated packages are read too: whether a call
+ * used a superseded version matters for them as well. Returns the packages
+ * left unread because the per-call bound was reached.
+ */
+export async function prefetchProtocolCustody(packageIds: Iterable<string>): Promise<{ skipped: string[]; failed: string[] }> {
+  if (!curatedApplies()) return { skipped: [], failed: [] };
+  return prefetchPackageCustody(packageIds);
+}
+
+/** Result of {@link readProtocolCustody}. */
+export interface ProtocolCustodyRead {
+  /** Normalized IDs whose publisher was read: the set to pass as `custody` or `custodyFor`. */
+  custodyFor: Set<string>;
+  unread: { skipped: string[]; failed: string[] };
+}
+
+/**
+ * {@link prefetchProtocolCustody} over the packages a call names, skipping
+ * the framework.
+ */
+export async function readProtocolCustody(packageIds: Iterable<string>): Promise<ProtocolCustodyRead> {
+  const ids = new Set([...packageIds].filter((p) => p && !isPlumbingPackage(p)).map((p) => normalizeSuiAddress(p)));
+  const unread = ids.size > 0 ? await prefetchProtocolCustody(ids) : { skipped: [], failed: [] };
+  const missed = new Set([...unread.skipped, ...unread.failed]);
+  return { custodyFor: new Set([...ids].filter((id) => !missed.has(id))), unread };
+}
+
+/** Why a called package is or is not recognised, as {@link lookupPackageTrust} reads it. */
+export interface PackageTrust {
+  /**
+   * `curated`: the registry names the package or its lineage. `publisher`: the
+   * version's own publisher also signed a version of a curated lineage, so
+   * the key behind a curated protocol deployed it. Null: neither.
+   */
+  basis: "curated" | "publisher" | null;
+  /** The curated protocol, or every protocol whose lineage the publisher signed. */
+  protocols: string[];
+  /** The called version and the newest version its lineage had at the time, when that was newer. */
+  superseded: { version: number; newest_version: number; newest: string } | null;
+  /** Every version of the lineage read here, to tell the lineage's own types from others'. */
+  lineage: string[];
+}
+
+/**
+ * Trust basis and version state of a called package, from the caches that
+ * {@link prefetchProtocolNames} and {@link prefetchProtocolCustody} filled.
+ * Names from the Move Registry never count: anybody can register one.
+ * `checkpoint` is when the call ran; null means now, for bytes not yet
+ * signed. A package no prefetch read has no publisher basis and no
+ * superseded state, so the answer is never stronger than the data.
+ */
+export function lookupPackageTrust(packageId: string, checkpoint: number | null): PackageTrust {
+  const curated = lookupProtocol(packageId);
+  const origin = curatedApplies() ? getPackageOrigin(packageId) : null;
+  const newer = curatedApplies() ? newerVersions(packageId, checkpoint) : [];
+  const newest = newer[newer.length - 1];
+  const root = getPackageRoot(packageId);
+  return {
+    basis: curated ? "curated" : origin?.signed_for.length ? "publisher" : null,
+    protocols: curated ? [curated.name] : (origin?.signed_for.map((s) => s.protocol) ?? []),
+    superseded: newest && origin?.version != null ? { version: origin.version, newest_version: newest.version, newest: newest.address } : null,
+    lineage: [...new Set([...(root ? [root] : []), ...(origin?.versions.map((v) => v.address) ?? [])])],
+  };
+}
+
+/**
  * Protocol identification for **display**: curated first — including the
  * lineage tier, so an upgraded package still reports its protocol and category
- * — then any name the Move Registry gave us for this package (./mvr-names.ts).
+ * — then any name the Move Registry gave us for this package
+ * (./mvr-names.ts), then, only when the caller asks with `custody`, the
+ * curated protocol whose key published this package version
+ * (./package-custody.ts).
  *
- * MVR entries come back with `type: "unknown"` and `source: "mvr"` so callers
- * can tell a verified category from a name someone registered. Falls back to
+ * Custody is opt-in because its cache is filled only by the tools that
+ * prefetch it; a tool that does not must not name a package differently
+ * depending on which tool ran before it in the same process.
+ *
+ * MVR and custody entries come back with `type: "unknown"` and their
+ * `source`, so callers can tell a verified category from a name. Falls back to
  * the curated answer — which may be null — when nothing has been prefetched,
  * so this is always safe to call.
  */
-export function lookupProtocolDisplay(packageId: string): ProtocolInfo | null {
+export function lookupProtocolDisplay(packageId: string, opts: { custody?: boolean } = {}): ProtocolInfo | null {
   if (!curatedApplies()) return null;
   const curated = lookupProtocol(packageId);
   if (curated) return curated;
   const mvrName = getMvrName(packageId);
-  return mvrName ? { name: mvrName, type: "unknown", source: "mvr" } : null;
+  if (mvrName) return { name: mvrName, type: "unknown", source: "mvr" };
+  const custody = opts.custody ? getPackageCustody(packageId) : null;
+  return custody ? { name: custody.protocol, type: "unknown", source: custody.via } : null;
 }
 
 export function lookupOperation(module: string, fn: string): OperationInfo | null {

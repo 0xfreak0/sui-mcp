@@ -140,6 +140,11 @@ export interface WormholeMessage {
 /** Shape of one event as the GraphQL layer returns it. */
 export interface SuiEventNode {
   contents?: { type?: { repr?: string }; json?: unknown } | null;
+  /**
+   * `0xpkg::module` of the PTB command whose call emitted the event. A bridge
+   * event emitted under another package's module was sent by that package.
+   */
+  transactionModule?: { fullyQualifiedName?: string } | null;
 }
 
 /** Strip the 0x prefix and left-pad to 32 bytes, which is how a VAA holds it. */

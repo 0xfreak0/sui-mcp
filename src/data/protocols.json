@@ -28,6 +28,34 @@
       "name": "Scallop",
       "type": "lending"
     },
+    "0x472fc7d4c3534a8ec8c2f5d7a557a43050eab057aaab853e8910968ddc84fc9f": {
+      "name": "Scallop",
+      "type": "farm"
+    },
+    "0x74922703605ba0548a55188098d6ebc8fdeb9fe16993986f1b7c9a49036c7c9c": {
+      "name": "Scallop",
+      "type": "farm"
+    },
+    "0x18ff254b07856588796b3a97e447a1e504c48f58b309437cd8f2c397ecc2fc21": {
+      "name": "Scallop",
+      "type": "farm"
+    },
+    "0x80ca577876dec91ae6d22090e56c39bc60dce9086ab0729930c6900bc4162b4c": {
+      "name": "Scallop",
+      "type": "lending"
+    },
+    "0x73883b65a77436e7028bc41be184a7795573ceed8bb24cb289ae21680beb037c": {
+      "name": "Scallop",
+      "type": "lending"
+    },
+    "0x21d0ba130d0ce783fd6377dc5c88aabbe60e947e40a6c42fb52761569ae9a7d8": {
+      "name": "Scallop",
+      "type": "lending"
+    },
+    "0xc23deff2b10e58ad7d11b14a748a5e9673c39af6a8695e23bafddab3a65d96e5": {
+      "name": "Scallop",
+      "type": "farm"
+    },
     "0x834a86970ae93a73faf4fff16ae40bdb72b91c47be585fff19a2af60a19ddca3": {
       "name": "NAVI",
       "type": "lending"
@@ -123,6 +151,14 @@
     "0x2": {
       "name": "Sui Framework",
       "type": "system"
+    },
+    "0x000000000000000000000000000000000000000000000000000000000000000b": {
+      "name": "Sui Bridge",
+      "type": "bridge"
+    },
+    "0xb": {
+      "name": "Sui Bridge",
+      "type": "bridge"
     },
     "0x71af035413ed499710980ed8adb010bbf2cc5cacf4ab37c7710a4bb87eb58ba5": {
       "name": "SuiNS",

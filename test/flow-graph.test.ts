@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   allocateFifo,
   meetingPoints,
-  pathTo,
+  shortestPath,
   splitInflow,
   splitOrigin,
   splitSpend,
@@ -30,7 +30,6 @@ describe("splitSpend", () => {
         { address: B, amount: "75000000000", coin_type: SUI },
         { address: C, amount: "25000000000", coin_type: SUI },
       ],
-      actions: [],
       trackedCoin: SUI,
     });
     expect(s.total).toBe(100000000000n);
@@ -51,7 +50,6 @@ describe("splitSpend", () => {
         { address: A, amount: "-101000000000", coin_type: SUI },
         { address: B, amount: "100000000000", coin_type: SUI },
       ],
-      actions: [],
       trackedCoin: SUI,
       gas: { payer: A, net: 1000000000n },
     });
@@ -68,7 +66,6 @@ describe("splitSpend", () => {
         { address: A, amount: "-10000000000", coin_type: SUI },
         { address: A, amount: "34000000", coin_type: USDC },
       ],
-      actions: ["Swap SUI → USDC on Cetus"],
       trackedCoin: SUI,
       valueUsd: usd,
     });
@@ -87,7 +84,6 @@ describe("splitSpend", () => {
         { address: A, amount: "-999000000", coin_type: USDC },
         { address: A, amount: "1000000000000", coin_type: CETUS },
       ],
-      actions: ["Swap on Cetus"],
       trackedCoin: SUI,
       valueUsd: usd,
     });
@@ -103,10 +99,10 @@ describe("splitSpend", () => {
       { address: A, amount: "-500000000", coin_type: USDC },
       { address: RELAYER, amount: "1000000000", coin_type: SUI },
     ];
-    const asExit = splitSpend({ sender: A, holder: A, changes, actions: [], trackedCoin: USDC, bridgeExit: true });
+    const asExit = splitSpend({ sender: A, holder: A, changes, trackedCoin: USDC, bridgeExit: true });
     expect(asExit.branches).toEqual([]);
     expect(asExit.unallocated).toBe(1);
-    const plain = splitSpend({ sender: A, holder: A, changes, actions: [], trackedCoin: USDC });
+    const plain = splitSpend({ sender: A, holder: A, changes, trackedCoin: USDC });
     expect(plain.branches.map((b) => [b.address, b.basis])).toEqual([[RELAYER, "conversion"]]);
   });
 
@@ -118,7 +114,6 @@ describe("splitSpend", () => {
         { address: A, amount: "-100", coin_type: SUI },
         { address: B, amount: "40", coin_type: SUI },
       ],
-      actions: [],
       trackedCoin: SUI,
     });
     expect(s.branches[0].weight).toBeCloseTo(0.4);
@@ -135,10 +130,33 @@ describe("splitSpend", () => {
         { address: B, amount: "-100", coin_type: SUI },
         { address: C, amount: "100", coin_type: SUI },
       ],
-      actions: [],
       trackedCoin: SUI,
     });
     expect(s.branches.map((b) => [b.address, b.basis, b.weight])).toEqual([[C, "direct", 1]]);
+  });
+});
+
+describe("splitSpend on proceeds worth under a tenth of the input", () => {
+  // A sells 1,000 SUI ($1,000) and keeps 20 USDC ($20).
+  const sale = [
+    { address: A, amount: "-1000000000000", coin_type: SUI },
+    { address: A, amount: "20000000", coin_type: USDC },
+  ];
+
+  it("converts only what the proceeds are worth and leaves the rest retained by the counterparty", () => {
+    const s = splitSpend({ sender: A, holder: A, changes: sale, trackedCoin: SUI, valueUsd: usd, holderGotClaim: false });
+    expect(s.branches.map((b) => [b.address, b.coin_type, b.basis])).toEqual([[A, USDC, "swap-follow"]]);
+    expect(s.branches[0].weight).toBeCloseTo(0.02);
+    expect(s.retained).toBeCloseTo(0.98);
+    expect(s.unallocated).toBeCloseTo(0.98);
+  });
+
+  it("keeps the rest unallocated, not retained, when the holder got a receipt or its object changes are unknown", () => {
+    for (const holderGotClaim of [true, undefined]) {
+      const s = splitSpend({ sender: A, holder: A, changes: sale, trackedCoin: SUI, valueUsd: usd, holderGotClaim });
+      expect(s.retained).toBe(0);
+      expect(s.unallocated).toBeCloseTo(0.98);
+    }
   });
 });
 
@@ -175,7 +193,6 @@ describe("splitInflow", () => {
         { address: C, amount: "-10", coin_type: SUI },
         { address: A, amount: "40", coin_type: SUI },
       ],
-      actions: [],
       trackedCoin: SUI,
       isPassThrough: () => false,
     });
@@ -193,7 +210,6 @@ describe("splitInflow", () => {
         { address: A, amount: "-34000000", coin_type: USDC },
         { address: A, amount: "10000000000", coin_type: SUI },
       ],
-      actions: ["Swap USDC → SUI"],
       trackedCoin: SUI,
       isPassThrough: () => false,
     });
@@ -205,7 +221,6 @@ describe("splitInflow", () => {
       sender: A,
       recipient: A,
       changes: [{ address: A, amount: "100", coin_type: SUI }],
-      actions: [],
       trackedCoin: SUI,
       isPassThrough: () => false,
     });
@@ -280,12 +295,14 @@ describe("TerminalLedger", () => {
 });
 
 describe("paths", () => {
-  it("walks first-arrival edges back to the root", () => {
-    const parent = new Map([
-      ["b", { edge: "a>b", from: "a" }],
-      ["c", { edge: "b>c", from: "b" }],
-    ]);
-    expect(pathTo("c", parent).map((s) => s.edge)).toEqual(["a>b", "b>c"]);
+  it("takes the fewest explored edges, not the route that first reached the node", () => {
+    // a>b>d>e reached e first (the heavier branch); a>c>e is shorter.
+    const edges = ["a>b", "b>d", "d>e", "a>c", "c>e", "e>x"].map((id) => ({ id, from: id[0], to: id[2] }));
+    expect(shortestPath("x", edges, ["a"], "forward").map((s) => s.edge)).toEqual(["a>c", "c>e", "e>x"]);
+    // Backward edges point payer to recipient; the root is the recipient.
+    const back = ["x>e", "e>d", "d>b", "b>a", "e>c", "c>a"].map((id) => ({ id, from: id[0], to: id[2] }));
+    expect(shortestPath("x", back, ["a"], "backward").map((s) => s.edge)).toEqual(["x>e", "e>c", "c>a"]);
+    expect(shortestPath("q", edges, ["a"], "forward")).toEqual([]);
   });
 
   it("joins the two searches only where the money arrived before it moved on", () => {

@@ -87,6 +87,25 @@ describe("decodeTransaction", () => {
     expect(result.actions[0]).toContain("mymod::myfn");
   });
 
+  it("reads Cetus's add, its pay-amount getter and its repayment as one add, and a flash swap's getter as no swap", () => {
+    // The call sequence of DVMG3B2k…, one liquidity add paid through its receipt.
+    const CETUS = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
+    const pair = ["0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d::hasui::HASUI", "0x2::sui::SUI"];
+    const commands = [
+      makeCommand(CETUS, "pool", "flash_swap", pair),
+      makeCommand(CETUS, "pool", "swap_pay_amount", pair),
+      makeCommand(CETUS, "pool", "open_position", pair),
+      makeCommand(CETUS, "pool", "add_liquidity", pair),
+      makeCommand(CETUS, "pool", "remove_liquidity", pair),
+      makeCommand(CETUS, "pool", "repay_flash_swap", pair),
+      makeCommand(CETUS, "pool", "add_liquidity_pay_amount", pair),
+      makeCommand(CETUS, "pool", "repay_add_liquidity", pair),
+    ];
+    const { actions } = decodeTransaction(commands, [], "0xsender");
+    expect(actions.filter((a) => /add liquidity/i.test(a))).toHaveLength(1);
+    expect(actions.filter((a) => /^swap/i.test(a))).toHaveLength(0);
+  });
+
   it("captures sender token flow from balance changes", () => {
     const sender = "0xsender";
     const balanceChanges = [

@@ -92,6 +92,31 @@ describe("priceUsdAtTime", () => {
     expect(points.get(REAL_SUI)?.source).toBe("defillama");
   });
 
+  it("prices a Sui Bridge token with no price of its own as the asset it is minted against, and no lookalike", async () => {
+    const BRIDGE_USDT = "0x375f70cf2ae4c00bf37117d0c85a2c71545e6ee05c4a5c7d282cd66a4504b068::usdt::USDT";
+    /** Same module and struct name, another package: nothing vouches for it. */
+    const OTHER_USDT = "0x1d8f5b3e0e7a9b0c7c2e4f6a8b9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f70812::usdt::USDT";
+    // DefiLlama at 2025-05-22 10:30 UTC: nothing for the Sui type, Tether at $1.
+    routes({ llama: { "coingecko:tether": { symbol: "USDT", price: 1, timestamp: AT - 1, confidence: 0.99 } } });
+    const { points, unpriced } = await priceUsdAtTime([BRIDGE_USDT, OTHER_USDT], AT);
+    expect(points.get(BRIDGE_USDT)).toMatchObject({ price: 1, source: "defillama", priced_as: "coingecko:tether" });
+    expect(points.has(OTHER_USDT)).toBe(false);
+    expect(unpriced.map((u) => u.coin_type)).toEqual([OTHER_USDT]);
+  });
+
+  it("keeps a Sui Bridge token's own price when DefiLlama has one", async () => {
+    const BRIDGE_ETH = "0xd0e89b2af5e4910726fbcd8b8dd37bb79b29e5f83f7491bca830e94f7f226d29::eth::ETH";
+    routes({
+      llama: {
+        [`sui:${BRIDGE_ETH}`]: { decimals: 8, symbol: "ETH", price: 2669.22, timestamp: AT + 1736, confidence: 0.99 },
+        "coingecko:ethereum": { symbol: "ETH", price: 1, timestamp: AT, confidence: 0.99 },
+      },
+    });
+    const { points } = await priceUsdAtTime([BRIDGE_ETH], AT);
+    expect(points.get(BRIDGE_ETH)?.price).toBe(2669.22);
+    expect(points.get(BRIDGE_ETH)?.priced_as).toBeUndefined();
+  });
+
   it("asks nobody but Pyth in oracle-only mode, and says so when there is no key", async () => {
     routes({});
     const { points, unpriced } = await priceUsdAtTime([REAL_SUI], AT, { sources: ["pyth"] });

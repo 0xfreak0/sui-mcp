@@ -359,19 +359,9 @@
       },
       "expect": [
         {
-          "path": "inflow_sources[*].address",
-          "op": "count_gte",
+          "path": "inflow_source_count",
+          "op": "gte",
           "value": 24
-        },
-        {
-          "path": "inflow_sources[*].address",
-          "op": "includes",
-          "value": "{claimer_a}"
-        },
-        {
-          "path": "inflow_sources[*].address",
-          "op": "excludes",
-          "value": "{control_a}"
         },
         {
           "path": "coins[0].in",
@@ -388,6 +378,37 @@
       "tier": "chain-derived",
       "timeout_s": 300,
       "basis": "chain: 24 WAL transfers into the collector sum to 19,968 WAL, and 4vjL1u67 sent 19,968 WAL to the Bybit reserve wallet (raw GraphQL balance changes)."
+    },
+    {
+      "id": "collector-inflows-cohort",
+      "question": "Are the farm wallets, and not the control wallets, among the collector's payers?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{collector}",
+        "from": "2025-03-27T00:00:00Z",
+        "to": "2025-03-30T00:00:00Z",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "inflow_sources[*].address",
+          "op": "count_gte",
+          "value": 24
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{claimer_a}"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "excludes",
+          "value": "{control_a}"
+        }
+      ],
+      "tier": "chain-derived",
+      "timeout_s": 300,
+      "basis": "chain: the 24 WAL transfers into the collector come from the farm cohort, claimer 0x07d047d2 among them, and none from the control sample (raw GraphQL balance changes)."
     },
     {
       "id": "claimer-claim-and-sweep",

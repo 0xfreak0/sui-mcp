@@ -1,0 +1,481 @@
+{
+  "slug": "scallop-pass-drainer-2024-05",
+  "kind": "wallet-drainer",
+  "title": "Fake 'Scallop Incentive Pass' NFT drainer, May-June 2024",
+  "network": "mainnet",
+  "summary": "Victims received an airdropped 'Scallop Incentive Pass' NFT pointing at scallopfi.com and signed a PTB that minted them 412.3 of a fake coin named SUI while transferring their Cetus/Scallop/Suilend positions to collector 0xb0ac0599. The lure and decoy packages share a KuCoin-funded operator with the collector, which bridged about 222 WETH and 698k USDC to Ethereum over Wormhole in May-June 2024. Victim wallets are deliberately not named.",
+  "sources": [
+    {
+      "url": "https://forums.sui.io/t/45654",
+      "publisher": "Sui Developer Forum (victim report, t/45654)",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://forums.sui.io/t/45665",
+      "publisher": "Sui Developer Forum (victim report, t/45665)",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://x.com/SuiNetwork/status/1840920818957860872",
+      "publisher": "Sui",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "collector": "0xb0ac0599b987a1120b8848f4ffbca5785a91920a6229215aad43aae2516d8d59",
+    "drain_tx": "6xLRm3uhZU4MF8RUp6zaCWFY57KxEDHDLdtC97LT8VtH",
+    "lure_package": "0xebbd856ef9b48608a4dfbccbdf4ec6fc4f90dfa7c6cb8e5650217f617ab75724",
+    "decoy_package": "0xbb6a95da5277c9a2f96c87ad8491f04dd40d01ac666b095ddee21cf860f33c49",
+    "decoy_coin": "0xbb6a95da5277c9a2f96c87ad8491f04dd40d01ac666b095ddee21cf860f33c49::SRT::SRT",
+    "lure_publisher": "0x06de67bafb598a7e8c86615940e84ea124c9ecd058ec0783c5bbbcf3e588f0f4",
+    "decoy_publisher": "0xe4545f28295e961f5f4a81d8e1c0521b535f6c2a0d874e2c99526d0e4a8a99ea",
+    "collector_to_lure_publisher_tx": "XH99b7jQ3w1EhrpVacCwkZDcgL7ZHtVJKmWNuM4g7WL",
+    "swap_tx": "FiWHJRng7zTuqDhnjJaRrqDzrrzLRz45BhXeYgMqVS45",
+    "eth_exit_early": "0xffb3c3c06a30e1b456f58b5e264049fe30572032",
+    "eth_exit_main": "0xf0b32a4df676a9c8a17f7c7bb8ba8950dc108ed4"
+  },
+  "checks": [
+    {
+      "id": "drain-to-collector",
+      "question": "Where did the drain transaction send the victim's objects?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{drain_tx}",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "object_transfers[*].to.address",
+          "op": "includes",
+          "value": "{collector}"
+        },
+        {
+          "path": "commands[1].type",
+          "op": "equals",
+          "value": "TransferObjects"
+        },
+        {
+          "path": "commands[1].address.address",
+          "op": "iequals",
+          "value": "{collector}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum (victim report, t/45665) names this digest and the collector; the chain shows a TransferObjects command to it."
+    },
+    {
+      "id": "drain-took-cetus-positions",
+      "question": "What did the drain take?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{drain_tx}",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "object_transfers[*].protocol",
+          "op": "includes",
+          "value": "Cetus"
+        },
+        {
+          "path": "object_transfers",
+          "op": "count_gte",
+          "value": 2
+        },
+        {
+          "path": "object_transfers[*].type",
+          "op": "includes",
+          "value": "position::Position"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum (victim report, t/45665) reports lost Cetus LP positions; chain shows two 0x1eabed72::position::Position objects moved."
+    },
+    {
+      "id": "drain-decoy-mint",
+      "question": "What else does the drain PTB do before the transfer?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{drain_tx}",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "commands[0].target",
+          "op": "iequals",
+          "value": "{decoy_package}::SRT::mint"
+        },
+        {
+          "path": "token_flow[*].raw_type",
+          "op": "includes",
+          "value": "{decoy_coin}"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "chain: command 0 calls SRT::mint on the shared TreasuryAccess, crediting the signer 412.3 of a coin whose metadata says SUI."
+    },
+    {
+      "id": "drain-anomalies",
+      "question": "Do the attack-tx detectors flag the drain?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "blocklisted-package-call"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "transfers-to-non-sender"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "2 object(s) -> {collector}"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "chain: the PTB calls a blocklisted package and hands two owned objects to the collector."
+    },
+    {
+      "id": "drain-anomaly-count",
+      "question": "Does the transfer anomaly count the objects correctly?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].title",
+          "op": "includes",
+          "value": "Sends 2 object(s)/coin(s) to 1 address(es) other than the sender"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: two Position objects go to one address.",
+      "known_defect": "transfers-to-non-sender title says 'Sends 1 object(s)' while its own evidence lists 2 objects to the collector."
+    },
+    {
+      "id": "drain-collector-in-addresses",
+      "question": "Does the attack-tx value view show who gained?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "addresses[*].address",
+          "op": "includes",
+          "value": "{collector}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the collector gained the two Cetus positions in this transaction.",
+      "known_defect": "profit/addresses cover coin balance changes only: the signer shows a +412.3 SRT 'gain' and the collector, who received the two positions, is absent."
+    },
+    {
+      "id": "decoy-coin-impersonates-sui",
+      "question": "What is the coin minted to the victim?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{decoy_coin}"
+      },
+      "expect": [
+        {
+          "path": "symbol",
+          "op": "equals",
+          "value": "SUI"
+        },
+        {
+          "path": "name",
+          "op": "equals",
+          "value": "Sui"
+        },
+        {
+          "path": "verified",
+          "op": "equals",
+          "value": false
+        },
+        {
+          "path": "flagged_by[*].kind",
+          "op": "includes",
+          "value": "coin"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: CoinMetadata of SRT::SRT has symbol SUI, name Sui; MystenLabs wallet_blocklist lists the coin."
+    },
+    {
+      "id": "lure-package-publisher",
+      "question": "Who published the Scallop Incentive Pass package and what can it do?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{lure_package}"
+      },
+      "expect": [
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{lure_publisher}"
+        },
+        {
+          "path": "root_publisher.published_at",
+          "op": "equals",
+          "value": "2024-05-28T15:47:22.524Z"
+        },
+        {
+          "path": "overview.modules[0].entry_functions",
+          "op": "includes",
+          "value": "DistributeReward"
+        },
+        {
+          "path": "flagged_by[*].list",
+          "op": "includes",
+          "value": "MystenLabs/wallet_blocklist"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum (victim report, t/45654) names the lure type 0xebbd856e::scallop_incentive_pass_w::SCALLOP_INCENTIVE_PASS; publish tx 13pjKcUU on chain."
+    },
+    {
+      "id": "decoy-package-publisher",
+      "question": "Who published the decoy SRT package?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{decoy_package}"
+      },
+      "expect": [
+        {
+          "path": "root_publisher.publisher",
+          "op": "iequals",
+          "value": "{decoy_publisher}"
+        },
+        {
+          "path": "root_publisher.publish_tx",
+          "op": "equals",
+          "value": "EvKSnSsnhqsyU44cZrzMqN3r2TSyYBFE67YmQFekyPZN"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: publish transaction EvKSnSsn, 23 May 2024."
+    },
+    {
+      "id": "lure-links-phishing-site",
+      "question": "Where does the lure NFT send its holder?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{lure_package}",
+        "module_name": "scallop_incentive_pass_w"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "Claim your reward at https://scallopfi.com"
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "entry public DistributeReward(Arg0: vector<address>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Sui Developer Forum (victim report, t/45654) describes the airdropped pass pointing to a claim site; the constants and the batch-airdrop entry are in the module bytecode."
+    },
+    {
+      "id": "decoy-mint-open",
+      "question": "Who can mint the decoy coin?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{decoy_package}",
+        "module_name": "SRT"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "Call transfer::share_object<TreasuryAccess>"
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "Call coin::mint_and_transfer<SRT>"
+        },
+        {
+          "path": "disassembly",
+          "op": "contains",
+          "value": "\"SUI\""
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "chain: the published bytecode shows init wraps the TreasuryCap in a shared TreasuryAccess and mint is an unguarded entry, so any signer's PTB can mint the fake 'SUI' to itself."
+    },
+    {
+      "id": "decoy-mint-signature",
+      "question": "Does SRT::mint take any capability?",
+      "tool": "get_move_function",
+      "args": {
+        "package_id": "{decoy_package}",
+        "module_name": "SRT",
+        "function_name": "mint"
+      },
+      "expect": [
+        {
+          "path": "is_entry",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "parameters",
+          "op": "count_lte",
+          "value": 4
+        },
+        {
+          "path": "parameters[0]",
+          "op": "contains",
+          "value": "SRT::TreasuryAccess"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "chain: the published bytecode declares mint(&mut TreasuryAccess, u64, address, &mut TxContext), no cap or sender check."
+    },
+    {
+      "id": "lure-publisher-funding",
+      "question": "Who funded the lure publisher, and where does the walk stop?",
+      "tool": "find_funding_source",
+      "args": {
+        "address": "{lure_publisher}"
+      },
+      "expect": [
+        {
+          "path": "origin.address",
+          "op": "equals",
+          "value": "{decoy_publisher}"
+        },
+        {
+          "path": "stop_reason",
+          "op": "contains",
+          "value": "established wallet"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: the decoy publisher paid the lure publisher from a balance it already held (7N22unSL); its own funding traces to a KuCoin reserve wallet."
+    },
+    {
+      "id": "collector-funding-tree",
+      "question": "Is the collector tied to the package publishers?",
+      "tool": "find_funding_source",
+      "args": {
+        "address": "{collector}"
+      },
+      "expect": [
+        {
+          "path": "chain[*].funded_by",
+          "op": "includes",
+          "value": "0x977195067377f2762db3aded148ad5a7d7f72691a6977d84eecf3c7200be8eff"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 0x97719506 paid the collector; its own funding goes back to the decoy publisher, which the walk reaches when run on 0x97719506."
+    },
+    {
+      "id": "collector-pays-lure-publisher",
+      "question": "Does the collector send funds back to the operators?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{collector_to_lure_publisher_tx}"
+      },
+      "expect": [
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{collector}"
+        },
+        {
+          "path": "coins_delivered_to",
+          "op": "includes",
+          "value": "{lure_publisher}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 100 SUI collector -> lure publisher on 29 May 2024, the day before the lure airdrop reports."
+    },
+    {
+      "id": "collector-early-exit",
+      "question": "Where did the first proceeds leave Sui?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{collector}",
+        "from": "2024-05-28T00:00:00Z",
+        "to": "2024-06-03T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "bridge_exits.by_bridge[*].bridge",
+          "op": "includes",
+          "value": "Wormhole"
+        },
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].address",
+          "op": "includes",
+          "value": "{eth_exit_early}"
+        },
+        {
+          "path": "top_recipients[*].address",
+          "op": "includes",
+          "value": "{lure_publisher}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: Wormhole transfers AnsFgYTA and G6cAeZP3 on 30 May 2024 to Ethereum 0xffb3c3c0.",
+      "timeout_s": 300
+    },
+    {
+      "id": "collector-main-exit",
+      "question": "Where did the bulk leave Sui?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{collector}",
+        "from": "2024-06-03T00:00:00Z",
+        "to": "2024-07-15T00:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].address",
+          "op": "includes",
+          "value": "{eth_exit_main}"
+        },
+        {
+          "path": "bridge_exits.transaction_count",
+          "op": "gte",
+          "value": 16
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: 16 Wormhole Token Bridge exits, 3-8 June 2024, carried about 221.5 WETH and 696,986 USDC to Ethereum 0xf0b32a4d.",
+      "timeout_s": 300
+    },
+    {
+      "id": "swap-label-hops",
+      "question": "What did the collector's USDT swap produce?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{swap_tx}"
+      },
+      "expect": [
+        {
+          "path": "actions[0]",
+          "op": "matches",
+          "value": "USDT.*SUI"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "chain: router::swap_ab_bc<USDT, USDC, SUI> took 7,940.81 USDT and returned 7,803.38 SUI.",
+      "known_defect": "actions labels the two-hop swap_ab_bc as 'Swap USDT → USDC', dropping the SUI leg the token_flow shows."
+    }
+  ]
+}

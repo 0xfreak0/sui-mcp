@@ -13,6 +13,7 @@
 
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { coinKey } from "./trace-hop.js";
+import { isPlumbingPackage } from "./system-packages.js";
 
 export interface PnlTx {
   digest: string;
@@ -29,9 +30,6 @@ export interface SenderPnl {
   multiLeg: string[];
   otherPackages: Set<string>;
 }
-
-/** Move stdlib, the Sui framework and the system package: plumbing in every PTB, never a protocol leg. */
-const FRAMEWORK = new Set(["0x1", "0x2", "0x3"].map((p) => normalizeSuiAddress(p)));
 
 export function participantPnl(txs: PnlTx[], lineage: ReadonlySet<string> | null): SenderPnl[] {
   const bySender = new Map<string, SenderPnl>();
@@ -51,7 +49,7 @@ export function participantPnl(txs: PnlTx[], lineage: ReadonlySet<string> | null
     const others = new Set(
       tx.calls
         .map((c) => normalizeSuiAddress(c.package))
-        .filter((p) => !FRAMEWORK.has(p) && !inLineage.has(p)),
+        .filter((p) => !isPlumbingPackage(p) && !inLineage.has(p)),
     );
     if (others.size > 0) {
       row.multiLeg.push(tx.digest);

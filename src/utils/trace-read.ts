@@ -11,8 +11,10 @@
 import { gqlQuery } from "../clients/graphql.js";
 import { lookupProtocol, lookupProtocolDisplay } from "../protocols/registry.js";
 import { getLabel } from "./labels.js";
+import type { FanoutResult } from "./fanout.js";
 import {
   allSpends,
+  passesClaim,
   inflowsNewestFirst,
   payerOf,
   type CandidateTx,
@@ -32,8 +34,10 @@ import {
   readGrpcObjectChanges,
   readObjectMovements,
   type GqlObjectChange,
+  writtenObjects,
   type GrpcChangedObject,
   type ObjectMovement,
+  type WrittenObjects,
 } from "./object-flow.js";
 import { coinScale, displayCoin } from "./valuation.js";
 import { adaptCommands, adaptBalanceChanges } from "./gql-adapters.js";
@@ -173,6 +177,8 @@ export interface FetchedTx {
   objectMovements?: ObjectMovement[];
   /** The transaction reported more object changes than were read. */
   objectChangesTruncated?: boolean;
+  /** What the object changes say about where unpaid value sits. Undefined for a row cached before it was recorded. */
+  written?: WrittenObjects;
   timestamp: string | null;
   checkpoint: number | null;
   /**
@@ -352,6 +358,7 @@ export async function fetchTx(digest: string): Promise<FetchedTx | null> {
       ...(cmd.truncated ? { commandsTruncated: true } : {}),
       objectMovements: readObjectMovements(objectChanges.nodes, protocolForPackage),
       objectChangesTruncated: objectChanges.truncated,
+      written: writtenObjects({ gql: objectChanges.nodes }),
       timestamp: tx.effects?.timestamp ?? null,
       checkpoint: tx.effects?.checkpoint?.sequenceNumber ?? null,
       source: "fullnode",
@@ -428,6 +435,7 @@ export async function fetchTx(digest: string): Promise<FetchedTx | null> {
       (g.effects?.changedObjects ?? []) as GrpcChangedObject[],
       protocolForPackage,
     ),
+    written: writtenObjects({ grpc: (g.effects?.changedObjects ?? []) as GrpcChangedObject[] }),
     // gRPC returns a protobuf Timestamp ({seconds, nanos}), not a unix number.
     timestamp: timestampToIso(g.timestamp) ?? null,
     checkpoint: g.checkpoint != null ? Number(g.checkpoint) : null,
@@ -538,8 +546,23 @@ export async function candidatePage(
 }
 
 export type ForwardStep =
-  | { digest: string; via: "sent" | "released-from-object"; spent: bigint }
-  | { digest: null; reason: string };
+  | {
+      digest: string;
+      via: "sent" | "released-from-object";
+      spent: bigint;
+      /** The other spends read before the delivered amount was covered, in order. */
+      others: Array<{ digest: string; spent: bigint }>;
+      /** Earlier transactions in which the address kept a claim on the coin it put in and still held (see claimCoinsKept). */
+      keptClaims: Array<{ digest: string; spent: bigint }>;
+    }
+  | { digest: null; reason: string; keptClaims: Array<{ digest: string; spent: bigint }> };
+
+/**
+ * Spends read to choose a forward trace's next hop, and a flow graph's per-node
+ * budget. Bounds how far past the first spend a hop looks for the rest of what
+ * it delivered.
+ */
+export const MOVES_PER_NODE = 20;
 
 /**
  * Checkpoint bounds a caller adds on top of the hop's own, both exclusive as
@@ -580,6 +603,8 @@ export interface ForwardScan {
    * them, and this arrival's share is still held.
    */
   drainedBySelf: number;
+  /** Candidates `passOver` set aside: spends of the coin that did not move it on. */
+  passedOver: ForwardSpend[];
 }
 
 /**
@@ -612,7 +637,19 @@ export async function scanForwardSpends(
   coin: string | null,
   remaining: ReadonlyMap<string, RemainingEntry>,
   current: string | undefined,
-  opts: { need?: bigint; maxSpends?: number; window?: SearchWindow; hardSkip?: ReadonlySet<string> } = {},
+  opts: {
+    need?: bigint;
+    maxSpends?: number;
+    window?: SearchWindow;
+    hardSkip?: ReadonlySet<string>;
+    /**
+     * The claim coins a spend left the holder, which keep the value its own:
+     * such a spend is set aside rather than counted while the holder keeps
+     * the claim, and counted from where a later transaction passes the claim
+     * to another address (see passesClaim).
+     */
+    passOver?: (tx: CandidateTx) => string[];
+  } = {},
 ): Promise<ForwardScan> {
   const w = opts.window ?? {};
   const fromHop = atCheckpoint === undefined ? undefined : atCheckpoint - 1;
@@ -628,7 +665,21 @@ export async function scanForwardSpends(
     pages: number,
   ): Promise<Omit<ForwardScan, "phase">> => {
     const spends: ForwardSpend[] = [];
+    const passedOver: Array<ForwardSpend & { claims: string[] }> = [];
+    /** Order each spend was seen in, so released claims keep their place. */
+    const order = new Map<ForwardSpend, number>();
+    let seq = 0;
     let covered = 0n;
+    const inOrder = () => spends.sort((a, b) => order.get(a)! - order.get(b)!);
+    const result = (exhausted: boolean, satisfied: boolean) => ({
+      spends: inOrder(),
+      seen,
+      exhausted,
+      satisfied,
+      alreadyAllocated,
+      drainedBySelf,
+      passedOver: passedOver.map(({ claims: _, ...p }) => p),
+    });
     let seen = 0;
     let alreadyAllocated = 0;
     let drainedBySelf = 0;
@@ -647,19 +698,40 @@ export async function scanForwardSpends(
       const found = allSpends(txs, address, coin, remaining, opts.hardSkip, current);
       alreadyAllocated += found.alreadyAllocated;
       drainedBySelf += found.drainedBySelf;
-      for (const [k, hit] of found.hits.entries()) {
-        spends.push({ tx: hit.tx, via, spent: hit.spent });
-        covered += hit.spent;
-        if (done(spends, covered)) {
-          // The last spend of the last page leaves nothing unread.
-          const last = k === found.hits.length - 1 && (!more || !cursor);
-          return { spends, seen, exhausted: last, satisfied: true, alreadyAllocated, drainedBySelf };
+      const hitOf = new Map(found.hits.map((h) => [h.tx, h]));
+      const lastHit = found.hits.at(-1)?.tx;
+      for (const tx of txs) {
+        // A claim set aside earlier counts as a spend once it is passed on.
+        for (let i = passedOver.length - 1; i >= 0; i--) {
+          const held = passedOver[i];
+          if (held.tx === tx || !passesClaim(tx, address, held.claims)) continue;
+          passedOver.splice(i, 1);
+          const spend = { tx: held.tx, via: held.via, spent: held.spent };
+          order.set(spend, order.get(held)!);
+          spends.push(spend);
+          covered += held.spent;
         }
+        const hit = hitOf.get(tx);
+        if (hit) {
+          const claims = opts.passOver?.(hit.tx) ?? [];
+          const spend = { tx: hit.tx, via, spent: hit.spent };
+          if (claims.length) {
+            const held = { ...spend, claims };
+            order.set(held, seq++);
+            passedOver.push(held);
+          } else {
+            order.set(spend, seq++);
+            spends.push(spend);
+            covered += hit.spent;
+          }
+        }
+        // The last spend of the last page leaves nothing unread.
+        if (done(spends, covered)) return result(tx === lastHit && (!more || !cursor), true);
       }
-      if (!more || !cursor) return { spends, seen, exhausted: true, satisfied: false, alreadyAllocated, drainedBySelf };
+      if (!more || !cursor) return result(true, false);
       after = cursor;
     }
-    return { spends, seen, exhausted: false, satisfied: false, alreadyAllocated, drainedBySelf };
+    return result(false, false);
   };
 
   const sent = await read(SENT_AFTER, "sent", SENT_PAGES);
@@ -716,7 +788,19 @@ export function noSpendReason(address: string, coin: string | null, scan: Forwar
     : `${address} has not sent a transaction since receiving the funds, and none of the first ${seen} later transactions touching it took ${coinName} out. The search stopped at that limit, so the funds may have left later.`;
 }
 
-/** The next transaction that moves the tracked coin out of `address`. See {@link scanForwardSpends}. */
+/**
+ * The transaction that moves the tracked coin out of `address` next. See
+ * {@link scanForwardSpends}.
+ *
+ * With `need` (what the previous hop delivered), the spends are read in order
+ * until they cover 99% of it (the tolerance `residual` uses, so a sweep that
+ * paid its own gas counts as covering), at most {@link MOVES_PER_NODE}. `need`
+ * is allocated to them first in, first out, and the spend that drew the most
+ * of it is followed: a sliver sent first (a gas top-up, a test transfer) is
+ * not where most of the funds went, and a larger later spend of other funds
+ * draws only what remained. The rest come back as `others`. Without `need`,
+ * the first spend.
+ */
 export async function findNextForward(
   address: string,
   atCheckpoint: number | undefined,
@@ -724,11 +808,34 @@ export async function findNextForward(
   remaining: ReadonlyMap<string, RemainingEntry>,
   current: string,
   hardSkip?: ReadonlySet<string>,
+  opts: { need?: bigint; passOver?: (tx: CandidateTx) => string[] } = {},
 ): Promise<ForwardStep> {
-  const scan = await scanForwardSpends(address, atCheckpoint, coin, remaining, current, { maxSpends: 1, hardSkip });
-  const hit = scan.spends[0];
-  if (hit) return { digest: hit.tx.digest, via: hit.via, spent: hit.spent };
-  return { digest: null, reason: noSpendReason(address, coin, scan) };
+  const need = opts.need !== undefined && opts.need > 0n ? opts.need : null;
+  const scan = await scanForwardSpends(address, atCheckpoint, coin, remaining, current, {
+    ...(need !== null ? { need: (need * 99n + 99n) / 100n, maxSpends: MOVES_PER_NODE } : { maxSpends: 1 }),
+    hardSkip,
+    ...(opts.passOver ? { passOver: opts.passOver } : {}),
+  });
+  const keptClaims = scan.passedOver.map((p) => ({ digest: p.tx.digest, spent: p.spent }));
+  let left = need ?? 0n;
+  let hit: ForwardSpend | undefined;
+  let drawn = -1n;
+  for (const s of scan.spends) {
+    const take = need === null ? s.spent : s.spent < left ? s.spent : left;
+    left -= need === null ? 0n : take;
+    if (take > drawn) {
+      hit = s;
+      drawn = take;
+    }
+  }
+  if (!hit) return { digest: null, reason: noSpendReason(address, coin, scan), keptClaims };
+  return {
+    digest: hit.tx.digest,
+    via: hit.via,
+    spent: hit.spent,
+    others: scan.spends.filter((s) => s !== hit).map((s) => ({ digest: s.tx.digest, spent: s.spent })),
+    keptClaims,
+  };
 }
 
 export type BackwardStep =
@@ -893,6 +1000,29 @@ export async function findPriorInflow(
  * counterparties, and 200 recent transactions is four requests.
  */
 export const HUB_SCAN_TRANSACTIONS = 200;
+
+/**
+ * Whether a trace should stop at `address` because it pools other parties'
+ * money, given its measured fan-out.
+ *
+ * Backward, any wide address stops: which of its many counterparties paid
+ * these funds in is not recoverable. Forward, only a wide inflow side pools:
+ * an address paid by few senders and paying many passes on what those few
+ * sent, so its outflows continue the traced funds (the trace flags any
+ * mixing hop by hop). A sender side of unknown width counts as wide. A
+ * wallet labelled malicious is the subject whose money is being followed,
+ * so it never stops a forward trace.
+ */
+export function stopsAsHub(
+  address: string,
+  fanout: Pick<FanoutResult, "classification" | "sender_classification"> | null,
+  direction: "forward" | "backward",
+): boolean {
+  if (!fanout || fanout.classification === "narrow") return false;
+  if (direction === "backward") return true;
+  if (getLabel(address)?.category === "malicious") return false;
+  return fanout.sender_classification !== "narrow";
+}
 
 /** Calls that put value into a protocol object and leave the caller a claim. */
 export const DEPOSIT_CALL = /^(entry_|public_|request_add_)?(deposit|supply|stake|lock|add_liquidity|lend|provide|mint|open_position|place_order)/;

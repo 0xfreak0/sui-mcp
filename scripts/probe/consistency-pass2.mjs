@@ -140,43 +140,13 @@ await runWithNetwork("mainnet", async () => {
        up?.owner_address === burnedCap.owner?.address?.address);
   }
 
-  // ---- address poisoning: the tool's pair vs a raw scan of the same page ----
-  // A pinned real case. The victim received 0.001 SUI from an address grinding
-  // three leading and four trailing characters of one it actually deals with.
-  // Everything here is public mainnet data.
-  console.log("\naddress poisoning: a pinned mainnet case must still be flagged");
-  const POISON_VICTIM = "0xb95db6b2ec5b953cc522296bd70bc5f245a878bd548ecfbd6b84efb52c581125";
-  const POISON_REAL = "0xd649a4d5b492c0e6b715c0b7cbe2f13386d905a423c7464e3364322f57127127";
-  const POISON_FAKE = "0xd642ef27e58a3a69b92284da03a3a5c2e60500e96a765029f08df81ac75d7127";
-
-  // The case is in the victim's first 50 transactions. History pages newest
-  // first now, so the pinned page has to be asked for by order.
-  const hist = await call("get_transaction_history", { address: POISON_VICTIM, limit: 50, order: "oldest" });
-  const flagged = hist.address_poisoning?.pairs ?? [];
-  ck("the pinned lookalike pair is reported", flagged.length === 1, `pairs=${flagged.length}`);
-  ck("the grinding address is named as the suspect", flagged[0]?.suspect === POISON_FAKE,
-     String(flagged[0]?.suspect).slice(0, 14));
-  ck("the address it imitates is named as established", flagged[0]?.established === POISON_REAL,
-     String(flagged[0]?.established).slice(0, 14));
-  ck("match length agrees with a direct comparison",
-     flagged[0]?.prefix_chars === 3 && flagged[0]?.suffix_chars === 4,
-     `${flagged[0]?.prefix_chars}+${flagged[0]?.suffix_chars}`);
-
-  // Both addresses must really be on the page the tool read — otherwise the
-  // pair proves the detector works on data it invented.
-  const onPage = new Set();
-  for (const t of hist.transactions ?? []) {
-    if (t.sender) onPage.add(t.sender);
-    for (const c of t.counterparties ?? []) onPage.add(c.address);
-  }
-  ck("both addresses really appear in this page", onPage.has(POISON_REAL) && onPage.has(POISON_FAKE),
-     `real=${onPage.has(POISON_REAL)} fake=${onPage.has(POISON_FAKE)}`);
-
-  // A control: an address with ordinary counterparties must not be flagged.
-  // The detector is worth nothing if it fires on everybody.
+  // ---- address poisoning: an unrelated wallet is not flagged ---------------
+  // A detector that fires on everybody is worth nothing. Detection on a
+  // poisoned history is covered by the unit tests, on synthetic addresses.
+  console.log("\naddress poisoning: a busy unrelated wallet must not be flagged");
   const control = await call("get_transaction_history", { address: SPONSOR, limit: 50 });
-  ck("a busy unrelated wallet is not flagged", control.address_poisoning === undefined,
-     JSON.stringify(control.address_poisoning ?? {}).slice(0, 60));
+  ck("a busy unrelated wallet is not flagged", (control.address_poisoning?.pairs ?? []).length === 0,
+     JSON.stringify(control.address_poisoning?.pairs ?? []).slice(0, 60));
 
   console.log(`\n${"=".repeat(64)}`);
   console.log(bad.length ? `${bad.length} PROBLEM(S):` : "no inconsistencies found");

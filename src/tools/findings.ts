@@ -19,6 +19,7 @@ import { fetchTx, formatAmount } from "../utils/trace-read.js";
 import { getLabel } from "../utils/labels.js";
 import { prefetchCoinScale } from "../utils/valuation.js";
 import { detectBridges } from "../utils/bridge/detect.js";
+import { isPlumbingPackage } from "../utils/system-packages.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -42,9 +43,6 @@ function storeRequired() {
 /** Transactions read for a case diagram. */
 const CASE_GRAPH_DIGESTS = 50;
 
-/** Move stdlib, Sui framework and Sui system: called by nearly every transaction, never the protocol holding value. */
-const FRAMEWORK = new Set(["0x1", "0x2", "0x3"].map((a) => normalizeSuiAddress(a)));
-
 /** The case's transfers, read from the transactions its findings cite. */
 async function caseFlowGraph(findings: Finding[]) {
   const all = [...new Set(findings.flatMap((f) => f.digests))];
@@ -55,7 +53,7 @@ async function caseFlowGraph(findings: Finding[]) {
   // Value a case address received that no address paid came out of the called
   // protocols' shared objects, so those protocols need a name in the diagram.
   const packages = new Set(
-    read.flatMap((tx) => tx?.callSites.map((c) => normalizeSuiAddress(c.packageId)) ?? []).filter((p) => !FRAMEWORK.has(p)),
+    read.flatMap((tx) => tx?.callSites.map((c) => normalizeSuiAddress(c.packageId)) ?? []).filter((p) => !isPlumbingPackage(p)),
   );
   await Promise.all([
     prefetchProtocolNames(packages).catch(() => undefined),
@@ -72,7 +70,7 @@ async function caseFlowGraph(findings: Finding[]) {
       ...new Set(
         tx.callSites
           .map((c) => normalizeSuiAddress(c.packageId))
-          .filter((p) => !FRAMEWORK.has(p))
+          .filter((p) => !isPlumbingPackage(p))
           .map((p) => lookupProtocolDisplay(p)?.name ?? `${p.slice(0, 10)}…`),
       ),
     ];

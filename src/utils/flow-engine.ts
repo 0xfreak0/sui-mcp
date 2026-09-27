@@ -1,13 +1,19 @@
 /**
- * Breadth-first fund-flow graph over (address, coin) nodes, on the hop
- * machinery `trace_funds` uses: the same transaction read, the same searches
- * for an address's next spend or earlier inflow, the same stops (sinks,
- * bridges, hubs, signer substitution). Where `trace_funds` picks one branch,
- * this follows every branch and allocates the traced value between them.
+ * Fund-flow graph over (address, coin) nodes, on the hop machinery
+ * `trace_funds` uses: the same transaction read, the same searches for an
+ * address's next spend or earlier inflow, the same stops (sinks, bridges,
+ * hubs, signer substitution). Where `trace_funds` picks one branch, this
+ * follows every branch and allocates the traced value between them.
  *
- * Level by level, so every inflow found at one depth reaches a node before
- * that node is expanded; `find_flow_path` alternates levels of a forward and a
- * backward engine. The split and accounting rules are pure, in `flow-graph.ts`.
+ * Level by level while the node limit can cover every node queued, so the
+ * branches that reconverge on a wallet all reach it before it is expanded.
+ * Once the queued nodes outnumber what the limit has left, the node carrying
+ * the largest share of the traced value goes next, whatever its depth, so the
+ * limit is spent on the heaviest branches rather than on every light branch
+ * of a shallower level. Arrivals at a node still queued merge into its job;
+ * one arriving after the node was expanded queues a further expansion. `find_flow_path` interleaves
+ * a forward and a backward engine one node at a time. The split and
+ * accounting rules are pure, in `flow-graph.ts`.
  */
 
 import { prefetchProtocolNames } from "../protocols/registry.js";
@@ -16,6 +22,9 @@ import { getNetwork } from "../config.js";
 import { detectBridges, type BridgeHit } from "./bridge/detect.js";
 import { LookalikeIndex } from "./address-lookalike.js";
 import { readBridgeEvents, sameForeignAddress } from "./bridge/exits.js";
+import { crossChainLeads, type CrossChainLead } from "./bridge/cross-chain.js";
+import { isPlumbingPackage } from "./system-packages.js";
+import type { SharedWrite } from "./object-flow.js";
 import type { Beneficiary } from "./bridge/beneficiary.js";
 import type { SuiEventNode } from "./bridge/wormhole.js";
 import { fetchEventJson } from "./event-json.js";
@@ -32,10 +41,12 @@ import {
   forwardDeadEnd,
   HUB_SCAN_TRANSACTIONS,
   isPassThroughAddress,
+  MOVES_PER_NODE,
   noInflowReason,
   noSpendReason,
   scanForwardSpends,
   scanPriorInflows,
+  stopsAsHub,
   type FetchedTx,
   type SearchWindow,
 } from "./trace-read.js";
@@ -44,7 +55,7 @@ import {
   coinsMoved,
   movedOnChain,
   nodeId,
-  pathTo,
+  shortestPath,
   ratio,
   scaleAmount,
   splitInflow,
@@ -60,16 +71,32 @@ import {
   type ValueUsd,
 } from "./flow-graph.js";
 
-/** Spends (forward) or inflows (backward) read per node expansion. */
-export const MOVES_PER_NODE = 20;
 /**
- * The same for an address the caller started from. It has no traced amount to
+ * MOVES_PER_NODE for an address the caller started from. It has no traced amount to
  * cover, so every move in the window counts, and an attacker's wallet makes
  * hundreds of them.
  */
 export const MOVES_PER_START_ADDRESS = 100;
 /** Expansions of one node: a wallet that receives the traced coin several times is expanded once per arrival. */
 const EXPANSIONS_PER_NODE = 4;
+
+/**
+ * Whether `holder` can have a claim on value it put into a transaction: it
+ * was left owning a non-coin object the transaction created, transferred or
+ * wrote in place (a receipt, or an existing position). False only when the
+ * object changes were read in full, it owns none, and no dynamic field was
+ * written, since a table keyed by address can hold its account unseen.
+ * Undefined otherwise.
+ */
+function receivedClaim(tx: FetchedTx, holder: string): boolean | undefined {
+  const w = tx.written;
+  if (!w) return undefined;
+  if (w.owners.includes(holder)) return true;
+  return tx.objectChangesTruncated || w.ledger ? undefined : false;
+}
+
+/** Transactions per graph whose events are read for cross-chain leads when they consume traced value. */
+const LEAD_READS = 20;
 
 export interface EngineOptions {
   direction: "forward" | "backward";
@@ -85,7 +112,7 @@ export interface EngineOptions {
   target?: { sui?: string; foreign?: string };
 }
 
-export type NodeKind = "origin_tx" | "address" | "bridge_exit" | "consumed" | "source";
+export type NodeKind = "origin_tx" | "address" | "bridge_exit" | "consumed" | "retained" | "source";
 
 export interface GraphNode {
   id: string;
@@ -110,6 +137,13 @@ export interface GraphNode {
   beneficiaries_unavailable?: string;
   /** Consumed or source: the calls the value went into or came out of. */
   detail?: string;
+  /**
+   * Consumed or retained: events of the transactions that took the value shaped like
+   * a cross-chain message from a bridge with no curated marker. Heuristic.
+   */
+  cross_chain_leads?: Array<CrossChainLead & { digest: string }>;
+  /** Retained: the shared objects the transaction wrote, where the kept value sits. */
+  shared_objects?: SharedWrite[];
   /** Held by the node when the walk ended, in `coin_type`. */
   unspent?: bigint;
 }
@@ -168,6 +202,8 @@ export class FlowEngine {
   readonly notes: string[] = [];
   /** Why the graph is partial where no terminal carries the missing share: a start node that did not read every move. */
   readonly partial: string[] = [];
+  /** Shares left unexpanded because the node limit was reached, by node. */
+  readonly nodeLimited: Array<{ node: string; share: number }> = [];
   txReads = 0;
   archiveReads = 0;
   expandedNodes = 0;
@@ -182,8 +218,8 @@ export class FlowEngine {
   /** The start node's search, of any coin, stopped before reading every move in the window. */
   private startCapped = false;
 
-  private level: Job[] = [];
-  private next = new Map<string, Job>();
+  /** Queued jobs by node id, in the order they were first queued. */
+  private frontier = new Map<string, Job>();
   private readonly txCache = new Map<string, Promise<FetchedTx | null>>();
   private readonly decoded = new Map<string, string[]>();
   /** Every address any branch has named, bucketed for the lookalike check. */
@@ -194,16 +230,14 @@ export class FlowEngine {
   private readonly prices = new Map<number, { at: number | undefined; points: Map<string, PricePoint> }>();
   /** Price requests in flight, by `${bucket}|${coin}`. */
   private readonly priceRequests = new Map<string, Promise<void>>();
-  private readonly exitCache = new Map<string, Promise<{ beneficiaries: Beneficiary[]; unavailable?: string }>>();
+  private readonly eventCache = new Map<string, Promise<SuiEventNode[] | null>>();
+  /** Digests whose events were read for cross-chain leads; see {@link leadsOf}. */
+  private readonly leadDigests = new Set<string>();
   /** `${exit node}|${digest}` pairs whose beneficiaries are already merged into the exit. */
   private readonly mergedExits = new Set<string>();
   private readonly qualify = getNetwork() === "mainnet";
 
   constructor(readonly opts: EngineOptions) {}
-
-  get frontierSize(): number {
-    return this.level.length + this.next.size;
-  }
 
   /* ------------------------------------------------------------------ *
    * Starts
@@ -252,10 +286,12 @@ export class FlowEngine {
     if (split.branches.length === 0) {
       // Credited nobody (forward) or paid by nobody (backward): the start is
       // itself a bridge exit, a deposit or burn, a mint or a withdrawal.
-      const actions = await this.actions(digest, tx);
+      // Decoding prefetches the packages' protocol names, which the
+      // registry tier of bridge detection reads.
+      await this.actions(digest, tx);
       const hits = detectBridges(tx.callSites, tx.eventTypes ?? []);
       if (forward && tx.sender) {
-        const spend = splitSpend({ sender: tx.sender, holder: tx.sender, changes: tx.balanceChanges, actions, trackedCoin: this.opts.coin, gas, valueUsd, bridgeExit: hits.length > 0 });
+        const spend = splitSpend({ sender: tx.sender, holder: tx.sender, changes: tx.balanceChanges, trackedCoin: this.opts.coin, gas, valueUsd, bridgeExit: hits.length > 0 });
         const coin = spend.coin_type ?? "";
         const usd = valueUsd({ amount: spend.total.toString(), coin_type: coin });
         if (spend.total > 0n) {
@@ -280,47 +316,63 @@ export class FlowEngine {
     const id = nodeId(address, this.opts.coin);
     const n = this.node(id, "address", address, this.opts.coin, 0);
     this.roots.push(n.id);
-    this.next.set(id, { node: id, share: 1, need: null, arrival: {}, depth: 0, from: null, via: null });
+    this.frontier.set(id, { node: id, share: 1, need: null, arrival: {}, depth: 0, from: null, via: null });
     n.share = 1;
   }
 
   /* ------------------------------------------------------------------ *
-   * Levels
+   * Frontier
    * ------------------------------------------------------------------ */
 
-  /** Expand every queued node one level. False when nothing was left to expand. */
-  async expandLevel(): Promise<boolean> {
-    if (this.next.size === 0) return false;
-    this.level = [...this.next.values()].sort((a, b) => b.share - a.share);
-    this.next = new Map();
-    for (const job of this.level) {
-      this.depthReached = Math.max(this.depthReached, job.depth);
-      try {
-        if (this.opts.direction === "forward") await this.expandForward(job);
-        else await this.expandBackward(job);
-      } catch (err) {
-        this.ledger.add("read_failed", {
-          node: job.node,
-          share: job.share,
-          usd: null,
-          detail: (err as Error).message,
-        });
-        this.truncated = true;
-      }
+  /**
+   * Expand the next queued job: the shallowest, then the largest share, while
+   * the node limit left covers every queued node not yet expanded; past that,
+   * the largest share, then the shallowest. Ties go to the first queued.
+   * False when nothing was left to expand.
+   */
+  async expandNext(): Promise<boolean> {
+    let unexpanded = 0;
+    for (const j of this.frontier.values()) if (!this.nodes.get(j.node)?.expanded) unexpanded++;
+    const heaviest = unexpanded > this.opts.maxNodes - this.expandedNodes;
+    let job: Job | undefined;
+    for (const j of this.frontier.values()) {
+      const better = heaviest
+        ? !job || j.share > job.share || (j.share === job.share && j.depth < job.depth)
+        : !job || j.depth < job.depth || (j.depth === job.depth && j.share > job.share);
+      if (better) job = j;
     }
-    this.level = [];
+    if (!job) return false;
+    this.frontier.delete(job.node);
+    this.depthReached = Math.max(this.depthReached, job.depth);
+    try {
+      if (this.opts.direction === "forward") await this.expandForward(job);
+      else await this.expandBackward(job);
+    } catch (err) {
+      this.ledger.add("read_failed", {
+        node: job.node,
+        share: job.share,
+        usd: null,
+        detail: (err as Error).message,
+      });
+      this.truncated = true;
+    }
     return true;
   }
 
   async run(): Promise<void> {
-    while (await this.expandLevel()) {
-      /* level by level until the frontier is empty or every node hits a limit */
+    while (await this.expandNext()) {
+      /* heaviest first until the frontier is empty or every node hits a limit */
     }
   }
 
-  /** Nodes whose expansion was refused, for find_flow_path to stop early. */
+  /** Jobs still queued. */
   get pending(): number {
-    return this.next.size;
+    return this.frontier.size;
+  }
+
+  /** Depths expanded, counting the start as the first. */
+  get levels(): number {
+    return this.expandedNodes > 0 ? this.depthReached + 1 : 0;
   }
 
   /* ------------------------------------------------------------------ *
@@ -328,7 +380,7 @@ export class FlowEngine {
    * ------------------------------------------------------------------ */
 
   /** Decide whether a job's node ends here. Returns the stop, or null to expand. */
-  private async gate(job: Job, n: GraphNode): Promise<{ code: StopCode; detail: string; nodeLevel: boolean } | null> {
+  private async gate(job: Job, n: GraphNode): Promise<{ code: StopCode; detail: string; nodeLevel: boolean; nodeLimit?: true } | null> {
     if (n.stop) return { ...n.stop, nodeLevel: true };
     const address = n.address!;
     const target = this.opts.target?.sui;
@@ -360,7 +412,7 @@ export class FlowEngine {
     }
     const firstTime = !n.expanded;
     if (firstTime && this.expandedNodes >= this.opts.maxNodes) {
-      return { code: "budget", detail: `Node limit (${this.opts.maxNodes}) reached before expanding it.`, nodeLevel: false };
+      return { code: "budget", detail: `Node limit (${this.opts.maxNodes}) reached before expanding it.`, nodeLevel: false, nodeLimit: true };
     }
     if ((this.expansions.get(n.id) ?? 0) >= EXPANSIONS_PER_NODE) {
       return { code: "budget", detail: `Expanded ${EXPANSIONS_PER_NODE} times already; later arrivals were not followed.`, nodeLevel: false };
@@ -370,19 +422,22 @@ export class FlowEngine {
     }
     // A new party is measured before its moves are attributed to these funds.
     // The same actor continuing (a swap, a self-credit) is the subject, not a
-    // new party; neither is the address the caller started from.
+    // new party; neither is the address the caller started from. Forward, an
+    // address paid by few senders passes on what they sent and is expanded;
+    // see stopsAsHub.
     if (job.from !== null && job.from !== address) {
       let fanout = this.hubChecked.get(address);
       if (fanout === undefined) {
         fanout = await measureFanout(address, HUB_SCAN_TRANSACTIONS).catch(() => null);
         this.hubChecked.set(address, fanout);
       }
-      if (fanout && fanout.classification !== "narrow") {
+      if (fanout && stopsAsHub(address, fanout, this.opts.direction)) {
+        const senders = this.opts.direction === "forward" && fanout.sender_count >= 0 ? `, ${fanout.sender_count}${fanout.truncated ? "+" : ""} of them paying in` : "";
         return {
           code: "hub",
           detail:
             `A ${fanout.classification}: ${fanout.counterparty_count}${fanout.truncated ? "+" : ""} counterparties in its last ` +
-            `${fanout.scanned_transactions} transactions. Attribute it (manage_labels, classify_deposit_address) rather than walking past it.`,
+            `${fanout.scanned_transactions} transactions${senders}. Attribute it (manage_labels, classify_deposit_address) rather than walking past it.`,
           nodeLevel: true,
         };
       }
@@ -395,6 +450,7 @@ export class FlowEngine {
     if (!stop) return false;
     if (stop.nodeLevel) n.stop = { code: stop.code, detail: stop.detail };
     if (stop.code === "budget") this.truncated = true;
+    if (stop.nodeLimit) this.nodeLimited.push({ node: n.id, share: job.share });
     this.ledger.add(stop.code, {
       node: n.id,
       share: job.share,
@@ -420,9 +476,14 @@ export class FlowEngine {
     // crediting it to two lineages of the same address double-counts it.
     const done = this.allocatedFor(address);
 
+    // A node carrying most of the traced value is the trunk, the start's
+    // continuation, and reads as many moves as the start address. At most one
+    // node per level can hold over half, so this cannot multiply the budget;
+    // the per-node cap still bounds a fan-out's many small branches.
+    const trunk = job.need === null || job.share > 0.5;
     const scan = await scanForwardSpends(address, job.arrival.checkpoint, coin, done, job.arrival.digest, {
       ...(job.need !== null ? { need: job.need } : {}),
-      maxSpends: job.need === null ? MOVES_PER_START_ADDRESS : MOVES_PER_NODE,
+      maxSpends: trunk ? MOVES_PER_START_ADDRESS : MOVES_PER_NODE,
       window: this.opts.window,
     });
     this.markExpanded(n);
@@ -464,21 +525,21 @@ export class FlowEngine {
       async (tx, digest) => {
         // Decoding prefetches the packages' protocol names, which the
         // registry tier of bridge detection reads.
-        const actions = await this.actions(digest, tx);
-        return { actions, bridge: detectBridges(tx.callSites, tx.eventTypes ?? []).length > 0 };
+        await this.actions(digest, tx);
+        return { bridge: detectBridges(tx.callSites, tx.eventTypes ?? []).length > 0, claim: receivedClaim(tx, address) };
       },
       (p) =>
         splitSpend({
           sender: p.sender,
           holder: address,
           changes: p.changes,
-          actions: p.actions,
           trackedCoin: p.trackedCoin,
           gas: p.gas,
           valueUsd: p.valueUsd,
           drawnUsd: p.drawnUsd,
           bridgeExit: p.bridge,
           capToProceeds: p.row,
+          holderGotClaim: p.claim,
         }),
     );
     const moves = movesOf(legs);
@@ -535,11 +596,17 @@ export class FlowEngine {
           kept.held ? this.heldAtStart(address, scan.exhausted, scan.spends.length, kept.held === "unknown") : undefined,
         );
       }
-      if (split.unallocated > 0) {
-        const hits = detectBridges(tx.callSites, tx.eventTypes ?? []);
-        const amount = scaleAmount(split.total, split.unallocated);
+      if (split.retained > 0) {
+        const amount = scaleAmount(split.total, split.retained);
         const usd = valueUsd({ amount: amount.toString(), coin_type: split.coin_type ?? "" });
-        await this.terminalOut(n.id, address, tx, digest, hits, (share * split.unallocated) / keep, amount, scaleAmount(amount, txFrac), split.coin_type ?? "", usd);
+        await this.retainedOut(n.id, address, tx, digest, (share * split.retained) / keep, amount, scaleAmount(amount, txFrac), split.coin_type ?? "", usd);
+      }
+      const rest = split.unallocated - split.retained;
+      if (rest > 0) {
+        const hits = detectBridges(tx.callSites, tx.eventTypes ?? []);
+        const amount = scaleAmount(split.total, rest);
+        const usd = valueUsd({ amount: amount.toString(), coin_type: split.coin_type ?? "" });
+        await this.terminalOut(n.id, address, tx, digest, hits, (share * rest) / keep, amount, scaleAmount(amount, txFrac), split.coin_type ?? "", usd);
       }
     }
 
@@ -622,8 +689,8 @@ export class FlowEngine {
     sign: 1 | -1,
     rows: Array<{ tx: CandidateTx; moved: bigint }>,
     txs: Array<FetchedTx | null>,
-    contextOf: (tx: FetchedTx, digest: string) => Promise<{ actions: string[]; bridge: boolean }>,
-    splitOf: (p: { sender: string | null; changes: HopChange[]; gas: GasCharge; actions: string[]; bridge: boolean; row: boolean; trackedCoin: string | null; valueUsd: ValueUsd; drawnUsd: ValueUsd }) => Split,
+    contextOf: (tx: FetchedTx, digest: string) => Promise<{ bridge: boolean; claim?: boolean }>,
+    splitOf: (p: { sender: string | null; changes: HopChange[]; gas: GasCharge; bridge: boolean; claim?: boolean; row: boolean; trackedCoin: string | null; valueUsd: ValueUsd; drawnUsd: ValueUsd }) => Split,
   ): Promise<{ legs: Leg[]; pools: RootPools | null }> {
     const valuers = await Promise.all(
       txs.map((tx, i) => (tx ? this.valuer(tx) : this.valuerAt(rows[i].tx.changes.map((c) => c.coin_type), nearestRead(txs, i)?.timestamp))),
@@ -635,7 +702,7 @@ export class FlowEngine {
       const row = rows[i];
       const changes = tx ? tx.balanceChanges : row.tx.changes;
       const gas = tx ? gasOf(tx) : row.tx.gas;
-      const context = tx ? await contextOf(tx, row.tx.digest) : { actions: [], bridge: false };
+      const context = tx ? await contextOf(tx, row.tx.digest) : { bridge: false };
       const tracked: Array<string | null> = coin === null ? coinsMoved(changes, address, sign, gas) : [coin];
       if (tracked.length === 0) tracked.push(null);
       const valueUsd = pools
@@ -707,10 +774,45 @@ export class FlowEngine {
     const id = `consumed:${holder}:${into.join("+") || "none"}`;
     const c = this.node(id, "consumed", null, null, 0);
     c.detail = forwardDeadEnd(tx, holder, coin || null, true, undefined);
+    this.addLeads(c, digest, await this.leadsOf(digest));
     this.edge(from, id, { amount, traced, usd, basis: "consumed", digest, tx, coin, share });
     record(c);
     this.ledger.add("consumed", { node: id, share, usd: tracedUsd });
     return true;
+  }
+
+  /** Attach a transaction's cross-chain leads to a terminal node, once each. */
+  private addLeads(n: GraphNode, digest: string, leads: CrossChainLead[]): void {
+    for (const lead of leads) {
+      n.cross_chain_leads ??= [];
+      if (!n.cross_chain_leads.some((l) => l.digest === digest && l.event_type === lead.event_type)) n.cross_chain_leads.push({ digest, ...lead });
+    }
+  }
+
+  /**
+   * Value a conversion's counterparty kept on a forward hop: the proceeds were
+   * worth under a tenth of it and the holder received nothing to claim it
+   * with. One node per set of shared objects the transaction wrote, which is
+   * where that value sits, else per set of calls.
+   */
+  private async retainedOut(from: string, holder: string, tx: FetchedTx, digest: string, share: number, amount: bigint, traced: bigint, coin: string, usd: number | null): Promise<void> {
+    if (share <= 0) return;
+    const tracedUsd = usd === null || amount === 0n ? usd : usd * (Number((traced * 1_000_000n) / amount) / 1e6);
+    const shared = (tx.written?.shared ?? []).slice(0, 3);
+    const into = shared.length ? shared.map((o) => o.object_id) : [...new Set(tx.callSites.map(callTarget))].slice(0, 3);
+    const id = `retained:${holder}:${into.join("+") || "none"}`;
+    const r = this.node(id, "retained", null, null, 0);
+    if (shared.length) r.shared_objects = shared;
+    this.addLeads(r, digest, await this.leadsOf(digest));
+    r.detail =
+      `${holder} put this in (${digest}) and got back proceeds worth under a tenth of it at market prices, with no receipt or position ` +
+      "to claim the rest. The counterparty kept it" +
+      (shared.length ? `: the shared objects the transaction wrote are ${shared.map((o) => o.object_id).join(", ")}.` : `, through ${into.join(", ") || "no Move call"}.`) +
+      " A sale into a pool whose liquidity the seller controls moves value this way; check who can withdraw from it.";
+    this.edge(from, id, { amount, traced, usd, basis: "retained", digest, tx, coin, share });
+    r.share += share;
+    if (tracedUsd !== null) r.usd = (r.usd ?? 0) + tracedUsd;
+    this.ledger.add("retained", { node: id, share, usd: tracedUsd });
   }
 
   /* ------------------------------------------------------------------ *
@@ -728,7 +830,8 @@ export class FlowEngine {
     // An address start explains every inflow up to the limit: no amount to cover.
     const need = job.need ?? (1n << 255n);
     const scan = await scanPriorInflows(address, job.arrival.checkpoint, coin, done, job.arrival.digest, need, {
-      maxInflows: job.need === null ? MOVES_PER_START_ADDRESS : MOVES_PER_NODE,
+      // The trunk rule of expandForward.
+      maxInflows: job.need === null || job.share > 0.5 ? MOVES_PER_START_ADDRESS : MOVES_PER_NODE,
       window: this.opts.window,
     });
     this.markExpanded(n);
@@ -762,13 +865,17 @@ export class FlowEngine {
       1,
       scan.found.map((f) => ({ tx: f.tx, moved: f.received })),
       txs,
-      async (tx, digest) => ({ actions: await this.actions(digest, tx), bridge: false }),
+      async (tx, digest) => {
+        // Decoding prefetches the packages' protocol names, which the
+        // registry tier of bridge detection reads.
+        await this.actions(digest, tx);
+        return { bridge: false };
+      },
       (p) =>
         splitInflow({
           sender: p.sender,
           recipient: address,
           changes: p.changes,
-          actions: p.actions,
           trackedCoin: p.trackedCoin,
           isPassThrough: isPassThroughAddress,
           gas: p.gas,
@@ -949,14 +1056,14 @@ export class FlowEngine {
       });
       return;
     }
-    const queued = this.next.get(n.id);
+    const queued = this.frontier.get(n.id);
     if (queued) {
       queued.share += job.share;
       queued.need = queued.need === null || job.need === null ? null : queued.need + job.need;
       if ((job.arrival.checkpoint ?? Infinity) < (queued.arrival.checkpoint ?? Infinity)) queued.arrival = job.arrival;
       return;
     }
-    this.next.set(n.id, job);
+    this.frontier.set(n.id, job);
   }
 
   private edge(
@@ -1030,22 +1137,9 @@ export class FlowEngine {
     return false;
   }
 
-  /** Edges from a root to `node`, in the direction the money moved. */
+  /** The shortest explored route from a root to `node`, in the direction the money moved. */
   pathFromRoot(node: string): PathStep[] {
-    if (this.opts.direction === "forward") return pathTo(node, this.parentOf);
-    // Backward: the parent of a payer is the recipient it paid toward the root.
-    const steps: PathStep[] = [];
-    const seen = new Set<string>([node]);
-    let at = node;
-    for (let i = 0; i < 64; i++) {
-      const p = this.parentOf.get(at);
-      const edge = p ? this.edges.get(p.edge) : undefined;
-      if (!edge || seen.has(edge.to)) break;
-      steps.push({ from: edge.from, to: edge.to, edge: edge.id });
-      seen.add(edge.to);
-      at = edge.to;
-    }
-    return steps;
+    return shortestPath(node, this.edges.values(), this.roots, this.opts.direction);
   }
 
   /* ------------------------------------------------------------------ *
@@ -1081,30 +1175,49 @@ export class FlowEngine {
     return actions;
   }
 
-  /** Far-side beneficiaries of a bridge exit, read from the transaction's own events. */
-  private beneficiariesOf(digest: string): Promise<{ beneficiaries: Beneficiary[]; unavailable?: string }> {
-    let p = this.exitCache.get(digest);
+  /** A transaction's events with their JSON, read once per digest. Null when they could not be read. */
+  private eventsOf(digest: string): Promise<SuiEventNode[] | null> {
+    let p = this.eventCache.get(digest);
     if (!p) {
       p = (async () => {
-        let events: SuiEventNode[] | null = null;
         const gql = await fetchEventJson(digest);
         if (gql && gql.length > 0) {
-          events = gql.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
-        } else {
-          // GraphQL can answer a pruned transaction without its events; the
-          // archive's gRPC events carry their JSON.
-          const r = await readAttackTransactions([digest]).catch(() => null);
-          const t = r?.txs[0];
-          if (t) events = t.events.map((e) => ({ contents: { type: { repr: e.type }, json: e.json } }));
+          return gql.map((e) => ({ contents: { type: e.type ? { repr: e.type } : undefined, json: e.json } }));
         }
-        if (!events) {
-          return { beneficiaries: [], unavailable: `The events of ${digest} could not be read; run resolve_bridge_transfer on it.` };
-        }
-        return { beneficiaries: readBridgeEvents(events, this.qualify).beneficiaries };
+        // GraphQL can answer a pruned transaction without its events; the
+        // archive's gRPC events carry their JSON.
+        const r = await readAttackTransactions([digest]).catch(() => null);
+        const t = r?.txs[0];
+        return t ? t.events.map((e) => ({ contents: { type: { repr: e.type }, json: e.json } })) : null;
       })();
-      this.exitCache.set(digest, p);
+      this.eventCache.set(digest, p);
     }
     return p;
+  }
+
+  /** Far-side beneficiaries of a bridge exit, read from the transaction's own events. */
+  private async beneficiariesOf(digest: string): Promise<{ beneficiaries: Beneficiary[]; unavailable?: string }> {
+    const events = await this.eventsOf(digest);
+    if (!events) {
+      return { beneficiaries: [], unavailable: `The events of ${digest} could not be read; run resolve_bridge_transfer on it.` };
+    }
+    return { beneficiaries: readBridgeEvents(events, this.qualify).beneficiaries };
+  }
+
+  /**
+   * Cross-chain message shapes in the events of a transaction that consumed
+   * traced value, for up to {@link LEAD_READS} transactions per graph. A
+   * transaction with no event from a package outside the plumbing is not read.
+   */
+  private async leadsOf(digest: string): Promise<CrossChainLead[]> {
+    if (!this.leadDigests.has(digest)) {
+      if (this.leadDigests.size >= LEAD_READS) return [];
+      this.leadDigests.add(digest);
+    }
+    const tx = await this.read(digest);
+    if (!tx?.eventTypes?.some((t) => !isPlumbingPackage(t.split("::")[0]))) return [];
+    const events = await this.eventsOf(digest);
+    return events ? crossChainLeads(events) : [];
   }
 
   /** Prices for a transaction's coins at its time, from the hourly cache. */

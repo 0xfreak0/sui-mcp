@@ -93,19 +93,22 @@ export const OVERRIDES: Record<string, Override> = {
   enable_tools: { title: "Enable tool profiles", annotations: LOCAL_READ },
 
   // Policy-complete results: declare the size, and return structured JSON
-  // where the result is one object.
+  // where the result is one object. A capped tool (output-cap.ts) returns
+  // its JSON once, as text: structured content would send it twice.
   // An object's fields are its answer. A lending market's reserves run to
   // 280k characters, past the 100k default.
   get_object: { meta: FULL_SIZE },
   get_transaction: { meta: FULL_SIZE },
   get_transactions: { meta: FULL_SIZE },
-  find_funding_sources: { meta: FULL_SIZE, structured: true },
-  analyze_attack_tx: { title: "Analyze attack transaction", meta: FULL_SIZE, structured: true },
+  // A resolved command list is paged to fit this ceiling (ptb-resolve.ts).
+  decode_ptb: { meta: FULL_SIZE },
+  find_funding_sources: { meta: FULL_SIZE },
+  analyze_attack_tx: { title: "Analyze attack transaction", meta: FULL_SIZE },
   summarize_incident_losses: { meta: FULL_SIZE },
   screen_address: { meta: FULL_SIZE, structured: true },
   trace_funds: { structured: true },
   build_wallet_edges: { structured: true },
-  summarize_address_flows: { meta: FULL_SIZE, structured: true },
+  summarize_address_flows: { meta: FULL_SIZE },
   trace_flow_graph: { meta: FULL_SIZE, structured: true },
   find_flow_path: { structured: true },
   get_upgrade_history: { structured: true },

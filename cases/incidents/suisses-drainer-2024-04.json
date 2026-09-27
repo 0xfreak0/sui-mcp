@@ -17,7 +17,6 @@
     }
   ],
   "subjects": {
-    "victim": "0xecb58af86777cd758f4f1c7c3fb25880ab5aa22cd24eb77fa4871703d239b633",
     "victim_tx": "8pRzHLYa8kaW63WZVWrxrgnrDGLxy8D8TALpuP9R6zkf",
     "collector_1": "0xb5c5a76ce0726802d8c13525c1650c7ba2d10f19c5a20b3d22d120be9c946695",
     "collector_2": "0x958e135ceff67ae1f13525f120b04d769dac96106ab453a66979e0bec1350297",
@@ -48,11 +47,6 @@
       },
       "expect": [
         {
-          "path": "sender",
-          "op": "iequals",
-          "value": "{victim}"
-        },
-        {
           "path": "object_transfers[*].to.address",
           "op": "includes",
           "value": "{collector_3}"
@@ -81,7 +75,7 @@
       "question": "Given the bytes the victim was asked to sign, does pre-sign triage flag that every asset goes to a stranger?",
       "tool": "decode_ptb",
       "args": {
-        "transaction_bcs": "AAAYAAiOVzgAAAAAAAAIlnuiJQAAAAABAQC5jZtWXTiSrHnz6TtQ0oXeFx2myIIkyjxrZUz9DlDcnaUaBQAAAAABAAgAypo7AAAAAAAgAADap399hFqNO6x3toIfs383lgohTaasMuHTXYBdLNYAIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQANZg7E44w7cNDy0WWdJ8V2+IWN+Ah7ZmeCAC+/pDTO9/6l0AUAAAAAIKApp2Hr/QMeei10Vc8VUDrMnNCJmRCdUWcSUkQw+u2SACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEAGvD4wSOcmN+p8R3bNTd8JoGqYvaXvkSm93OIjQijUxq0D6QFAAAAACDDaFrBAAbeyxnLt9bYRkWowSMHy2d7ssEYB4hWWjcyFAAgXs+Q+mgdE2KekQZ3gjFtiYk8XO3huInX4upOq9DlQIgBADFeiJb8/FRPFPsJZ03SMppQqIESIyVDVUNzKybaxflk/qXQBQAAAAAgyIzzPLcCaC3n0S4Hc2bV8ecBRBW0f36NjgfdoMBPBDMAIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQBb2vNqSjE9UgTgH04KlBplML4NqR3ZkfeiKWnCKZmcglUq0wUAAAAAIHG8hhmuixmOFb8Dc5CCsPtI2EZRtjeicPwbbZBetdl1ACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEAaqu3LGC2lbJFL0/sZ7YoJb6R9B6xts8mwwVyBSM/aHPMpxoFAAAAACCFhXiPOUkF0YS6ZmsaOukK9YHLDpJaVhfBbAyK2sP67QAgXs+Q+mgdE2KekQZ3gjFtiYk8XO3huInX4upOq9DlQIgBAH6kK9UqPCprT8Ug3ZGZ1NsaYWv0e6D87dsCWh/KtNs6zKLQBQAAAAAgNatyCqtmS8/hRONPCTKewnpQrXVLXjb7tXyx89gf3Q4AIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQDTYkc0uGHv3WFP/iUmmTxE0KRk2QzBpfvgJM+lwYJuvJKd6QQAAAAAIK5xDKRAlSyuEpgWycqAlAT6JsLrOPXwo+4+NsaM5N17ACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEB9fFbsVFbErPjBvfvasGCUYAuTpWS1MFCksF79I9sLK6fpRoFAAAAAAEACABgL0YCFAAAACAAANqnf32EWo07rHe2gh+zfzeWCiFNpqwy4dNdgF0s1gAgAADap399hFqNO6x3toIfs383lgohTaasMuHTXYBdLNYNAgABAQAAAgABAQEAAHyp116bEoGi9B93wgNK6vJBxsOnouJ52DWED5GhMjMnB21hbmFnZWQEbWludAADAQIAAQMAAQQAAQEDAQAAAAEFAAEBAQYAAQcAAQEBCAABCQABAQEKAAELAAEBAQwAAQ0AAQEBDgABDwABAQEQAAERAAEBARIAARMAAFhliYObfaiG5H7hf8xq9vTFRSdTTRtpUwLI0VBkrfukB21hbmFnZWQEbWludAADARQAARUAARYAAQEDAAAAAAEXAOy1ivhnd811j08cfD+yWICrWqIs0k63f6SHFwPSObYzAgG7LGC7dTPy/S+LK0UH8l+IWl5zveNUFiI6agBzN3PE/qXQBQAAAAAgijU7yGGAcDcgUemZeVgt1Wy5EwxUskeb/P/Kau6maeyDY/axHi5kppSf5YpnYN2QHX+DQlnuOVa+c+S2r/XdG/6l0AUAAAAAIGjW/woeTwPgeRQ6MGq2rR9wYn2XkNUdDPDKPTsfJrva7LWK+Gd3zXWPTxx8P7JYgKtaoizSTrd/pIcXA9I5tjPuAgAAAAAAAADh9QUAAAAAAA=="
+        "transaction_bcs": "AAAYAAiOVzgAAAAAAAAIlnuiJQAAAAABAQC5jZtWXTiSrHnz6TtQ0oXeFx2myIIkyjxrZUz9DlDcnaUaBQAAAAABAAgAypo7AAAAAAAgAADap399hFqNO6x3toIfs383lgohTaasMuHTXYBdLNYAIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQANZg7E44w7cNDy0WWdJ8V2+IWN+Ah7ZmeCAC+/pDTO9/6l0AUAAAAAIKApp2Hr/QMeei10Vc8VUDrMnNCJmRCdUWcSUkQw+u2SACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEAGvD4wSOcmN+p8R3bNTd8JoGqYvaXvkSm93OIjQijUxq0D6QFAAAAACDDaFrBAAbeyxnLt9bYRkWowSMHy2d7ssEYB4hWWjcyFAAgXs+Q+mgdE2KekQZ3gjFtiYk8XO3huInX4upOq9DlQIgBADFeiJb8/FRPFPsJZ03SMppQqIESIyVDVUNzKybaxflk/qXQBQAAAAAgyIzzPLcCaC3n0S4Hc2bV8ecBRBW0f36NjgfdoMBPBDMAIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQBb2vNqSjE9UgTgH04KlBplML4NqR3ZkfeiKWnCKZmcglUq0wUAAAAAIHG8hhmuixmOFb8Dc5CCsPtI2EZRtjeicPwbbZBetdl1ACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEAaqu3LGC2lbJFL0/sZ7YoJb6R9B6xts8mwwVyBSM/aHPMpxoFAAAAACCFhXiPOUkF0YS6ZmsaOukK9YHLDpJaVhfBbAyK2sP67QAgXs+Q+mgdE2KekQZ3gjFtiYk8XO3huInX4upOq9DlQIgBAH6kK9UqPCprT8Ug3ZGZ1NsaYWv0e6D87dsCWh/KtNs6zKLQBQAAAAAgNatyCqtmS8/hRONPCTKewnpQrXVLXjb7tXyx89gf3Q4AIF7PkPpoHRNinpEGd4IxbYmJPFzt4biJ1+LqTqvQ5UCIAQDTYkc0uGHv3WFP/iUmmTxE0KRk2QzBpfvgJM+lwYJuvJKd6QQAAAAAIK5xDKRAlSyuEpgWycqAlAT6JsLrOPXwo+4+NsaM5N17ACBez5D6aB0TYp6RBneCMW2JiTxc7eG4idfi6k6r0OVAiAEB9fFbsVFbErPjBvfvasGCUYAuTpWS1MFCksF79I9sLK6fpRoFAAAAAAEACABgL0YCFAAAACAAANqnf32EWo07rHe2gh+zfzeWCiFNpqwy4dNdgF0s1gAgAADap399hFqNO6x3toIfs383lgohTaasMuHTXYBdLNYNAgABAQAAAgABAQEAAHyp116bEoGi9B93wgNK6vJBxsOnouJ52DWED5GhMjMnB21hbmFnZWQEbWludAADAQIAAQMAAQQAAQEDAQAAAAEFAAEBAQYAAQcAAQEBCAABCQABAQEKAAELAAEBAQwAAQ0AAQEBDgABDwABAQEQAAERAAEBARIAARMAAFhliYObfaiG5H7hf8xq9vTFRSdTTRtpUwLI0VBkrfukB21hbmFnZWQEbWludAADARQAARUAARYAAQEDAAAAAAEXABERERERERERERERERERERERERERERERERERERERERERAgG7LGC7dTPy/S+LK0UH8l+IWl5zveNUFiI6agBzN3PE/qXQBQAAAAAgijU7yGGAcDcgUemZeVgt1Wy5EwxUskeb/P/Kau6maeyDY/axHi5kppSf5YpnYN2QHX+DQlnuOVa+c+S2r/XdG/6l0AUAAAAAIGjW/woeTwPgeRQ6MGq2rR9wYn2XkNUdDPDKPTsfJrvaERERERERERERERERERERERERERERERERERERERERERHuAgAAAAAAAADh9QUAAAAAAA=="
       },
       "expect": [
         {
@@ -96,7 +90,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "Bytes are the chain's transactionBcs for the victim digest. The PTB has 2 SplitCoins of the gas coin and 8 TransferObjects, all paying addresses other than the sender, and calls two packages on the MystenLabs wallet blocklist."
+      "basis": "Bytes are the chain's transactionBcs for the victim digest, with the sender and gas owner replaced by the synthetic address 0x1111…1111 so the victim's address is not recorded. The PTB has 2 SplitCoins of the gas coin and 8 TransferObjects, all paying addresses other than the sender, and calls two packages on the MystenLabs wallet blocklist."
     },
     {
       "id": "kit-package-blocklisted",
@@ -221,8 +215,8 @@
           "value": "113810862594"
         },
         {
-          "path": "inflow_sources[*].address",
-          "op": "count_gte",
+          "path": "inflow_source_count",
+          "op": "gte",
           "value": 338
         },
         {
@@ -250,13 +244,8 @@
           "value": true
         },
         {
-          "path": "inflow_sources[*].address",
-          "op": "includes",
-          "value": "{victim}"
-        },
-        {
-          "path": "inflow_sources[*].address",
-          "op": "count_gte",
+          "path": "inflow_source_count",
+          "op": "gte",
           "value": 158
         },
         {
@@ -272,6 +261,31 @@
       ],
       "tier": "chain-derived",
       "basis": "On chain 158 victims paid collector 3 in 271 drain transactions, and it sent 31,175.41 SUI and 1,501.67 USDC to 0x025be32e on 2024-05-26 and 1,693.96 SUI and 500.66 USDC to 0xe866957c on 2024-06-01."
+    },
+    {
+      "id": "collector3-victim-inflow",
+      "question": "Is the GitHub issue 17510 victim among collector 3's payers?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{collector_3}",
+        "from": "2024-04-23T00:00:00Z",
+        "to": "2024-06-30T00:00:00Z",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "inflow_sources[*].digests[*]",
+          "op": "includes",
+          "value": "{victim_tx}"
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "count_gte",
+          "value": 158
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain the victim's drain transaction 8pRzHLYa credited collector 3, one of 158 victims that paid it; the payer is read by that digest, since the victim's address is not recorded."
     },
     {
       "id": "collector3-drain-total",
@@ -565,8 +579,8 @@
           "value": "4762130055993"
         },
         {
-          "path": "senders",
-          "op": "count_gte",
+          "path": "sender_count",
+          "op": "gte",
           "value": 158
         }
       ],
@@ -691,35 +705,13 @@
       "timeout_s": 300
     },
     {
-      "id": "flow-path-default-hops",
-      "question": "Is there a value path from the victim to the Solana account, at default limits?",
+      "id": "flow-path-collector3-to-solana",
+      "question": "Is there a value path from collector 3 to the Solana account, at default limits?",
       "tool": "find_flow_path",
       "args": {
-        "from": "{victim}",
+        "from": "{collector_3}",
         "to": "6Lwf2AjmqgnKGNDgsLcM14oKgUDnwj6p7j6xzujb7WZR",
         "window_start": "2024-05-04T00:00:00Z"
-      },
-      "expect": [
-        {
-          "path": "found",
-          "op": "equals",
-          "value": true
-        }
-      ],
-      "tier": "chain-derived",
-      "basis": "On chain the victim's 0.631 SUI goes 8pRzHLYa, GAcRB4HK, the swap 4N92pDi5 and the bridge AWwu2Rk5: four hops, within the default max_hops (5).",
-      "timeout_s": 300
-    },
-    {
-      "id": "flow-path-six-hops",
-      "question": "With six hops allowed, which transactions carry the victim's funds to Solana?",
-      "tool": "find_flow_path",
-      "args": {
-        "from": "{victim}",
-        "to": "6Lwf2AjmqgnKGNDgsLcM14oKgUDnwj6p7j6xzujb7WZR",
-        "window_start": "2024-05-04T00:00:00Z",
-        "max_hops": 6,
-        "max_nodes": 100
       },
       "expect": [
         {
@@ -730,10 +722,41 @@
         {
           "path": "paths[*].steps[*].digests[*]",
           "op": "includes",
-          "value": "{victim_tx}"
+          "value": "{bridge_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain collector 3 paid 0x025be32e 31,175.41 SUI (GAcRB4HK) and 1,501.67 USDC (J7DzN6iX) on 2024-05-26, and 0x025be32e bridged 33,670 USDC to this Solana account in AWwu2Rk5: within the default max_hops (5).",
+      "timeout_s": 300
+    },
+    {
+      "id": "drain-trace-to-solana",
+      "question": "Which transactions carry the reported drain's funds to Solana?",
+      "tool": "trace_funds",
+      "args": {
+        "digest": "{victim_tx}",
+        "direction": "forward",
+        "hops": 5,
+        "format": "json"
+      },
+      "expect": [
+        {
+          "path": "hops[*].digest",
+          "op": "includes",
+          "value": "88ugfeaFFkv2oSCHxQwALHKQ864Cm7gH582AeuiaEpRz"
         },
         {
-          "path": "paths[*].steps[*].digests[*]",
+          "path": "hops[*].digest",
+          "op": "includes",
+          "value": "GAcRB4HK1k21oeEimZcVde3cwBFcC1CX29SExNT54sVG"
+        },
+        {
+          "path": "hops[*].digest",
+          "op": "includes",
+          "value": "4N92pDi5wbwKYYTGTa1v6MVrjYL4wv9yNjHZ64Z2Wpb5"
+        },
+        {
+          "path": "bridge_exits[*].digest",
           "op": "includes",
           "value": "{bridge_tx}"
         }
@@ -825,11 +848,6 @@
           "value": "{victim_tx}"
         },
         {
-          "path": "owner_changes[0].from.address",
-          "op": "iequals",
-          "value": "{victim}"
-        },
-        {
           "path": "owner_changes[0].to.address",
           "op": "iequals",
           "value": "{collector_3}"
@@ -841,7 +859,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "On chain the victim created the KriyaLPToken on 2024-04-20 and it moved to collector 3 in the reported drain, as the GitHub issue describes."
+      "basis": "On chain the victim created the KriyaLPToken on 2024-04-20 (5UsssSpB) and it moved to collector 3 in the reported drain, as the GitHub issue describes."
     }
   ]
 }

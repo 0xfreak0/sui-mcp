@@ -39,6 +39,7 @@ const EVENT_JSON_QUERY = `query ($digest: String!, $first: Int!, $after: String)
         pageInfo { hasNextPage endCursor }
         nodes {
           contents { type { repr } json }
+          transactionModule { fullyQualifiedName }
         }
       }
     }
@@ -61,7 +62,7 @@ interface EventJsonResult {
     effects: {
       events: {
         pageInfo?: { hasNextPage: boolean; endCursor?: string };
-        nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }>;
+        nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown }; transactionModule?: { fullyQualifiedName?: string } | null }>;
       };
     } | null;
   } | null;
@@ -70,6 +71,8 @@ interface EventJsonResult {
 export interface ParsedEvent {
   type: string | null;
   json: unknown;
+  /** `0xpkg::module` of the PTB command whose call emitted the event, when the service returned it. */
+  module?: string;
 }
 
 /**
@@ -87,7 +90,8 @@ export async function fetchEventJson(digest: string): Promise<ParsedEvent[] | nu
       const events = r.transaction?.effects?.events;
       if (!events?.nodes) return out.length > 0 ? out : null;
       for (const n of events.nodes) {
-        out.push({ type: n.contents?.type?.repr ?? null, json: n.contents?.json ?? null });
+        const module = n.transactionModule?.fullyQualifiedName;
+        out.push({ type: n.contents?.type?.repr ?? null, json: n.contents?.json ?? null, ...(module ? { module } : {}) });
       }
       // A response without pageInfo is treated as a single complete page
       // rather than an error: returning what was read beats discarding it.

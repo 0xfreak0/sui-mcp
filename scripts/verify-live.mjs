@@ -27,9 +27,11 @@
  * teaches people to ignore failures.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sizeReport } from "./probe/lib/size-budget.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -56,11 +58,17 @@ const CHECKS = [
   ["probe/surface-pass", "stateful, prompt, core, market and developer tools against raw chain reads, plus malformed input"],
   ["probe/case-pass", "every case in cases/incidents, against the answers its sources and the chain give"],
   ["probe/invariant-pass", "a seeded random sample of mainnet through the tools, against rules that hold for any input"],
+  ["probe/detector-pass", "the anomaly detectors on labelled exploit and ordinary transactions: false positives, lost detections, leave one incident out"],
 ];
+
+// case-pass writes its sizes and token counts here for the closing summary.
+const scratch = mkdtempSync(join(tmpdir(), "verify-live-"));
+const caseSummary = join(scratch, "case-pass.json");
+const ARGS = { "probe/case-pass": ["--summary", caseSummary] };
 
 const run = (script) =>
   new Promise((resolve) => {
-    const p = spawn(process.execPath, [join(root, "scripts", `${script}.mjs`)], {
+    const p = spawn(process.execPath, [join(root, "scripts", `${script}.mjs`), ...(ARGS[script] ?? [])], {
       cwd: root,
       stdio: "inherit",
     });
@@ -78,6 +86,11 @@ for (const [script, what] of CHECKS) {
 }
 
 console.log(`\n${"=".repeat(70)}`);
+console.log("case-pass output size against the budgets in scripts/probe/lib/size-budget.mjs (tokens ≈ chars / 4)");
+if (existsSync(caseSummary)) for (const line of sizeReport(JSON.parse(readFileSync(caseSummary, "utf8")))) console.log(`  ${line}`);
+else console.log("  not measured: case-pass wrote no summary");
+rmSync(scratch, { recursive: true, force: true });
+console.log("=".repeat(70));
 if (failed) {
   console.error(`${failed} of ${CHECKS.length} live checks failed.`);
   console.error("Run `npm test` next: a drifted fixture shows up there as a parse mismatch.");

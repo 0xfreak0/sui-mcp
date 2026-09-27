@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   computeOwnerChanges,
   findOwnerTransitions,
+  findOwnerTransitionsFromEnd,
   ownerDesc,
   ownerKey,
   type CheckpointState,
@@ -92,7 +93,7 @@ describe("findOwnerTransitions — checkpoint bisection for a busy object", () =
   it("finds nothing when the owner never changed", async () => {
     const fetch = async () => addr("0xa");
     const r = await findOwnerTransitions(addrState(0, "0xa"), addrState(1_000_000, "0xa"), fetch, { remaining: 100 });
-    expect(r).toEqual({ transitions: [], truncated: false });
+    expect(r).toEqual({ transitions: [], truncated: false, unresolved: [] });
   });
 
   /**
@@ -128,10 +129,51 @@ describe("findOwnerTransitions — checkpoint bisection for a busy object", () =
     ]);
   });
 
-  it("reports truncated rather than silently dropping a transition when the budget runs out", async () => {
-    const fetch = async (cp: number): Promise<OwnerDesc> => (cp >= 500_000 ? addr("0xb") : addr("0xa"));
+  it("reports truncated, and the range that still holds the change, rather than silently dropping it when the budget runs out", async () => {
+    const fetch = async (cp: number): Promise<OwnerDesc> => (cp >= 700_000 ? addr("0xb") : addr("0xa"));
     const r = await findOwnerTransitions(addrState(0, "0xa"), addrState(1_000_000, "0xb"), fetch, { remaining: 1 });
     expect(r.truncated).toBe(true);
+    expect(r.transitions).toEqual([]);
+    expect(r.unresolved.map((u) => [u.lo.checkpoint, u.hi.checkpoint, u.lo.owner, u.hi.owner])).toEqual([
+      [500_000, 1_000_000, addr("0xa"), addr("0xb")],
+    ]);
+  });
+
+  it("searches both halves of a range at once", async () => {
+    // 0xa until 100, 0xb until 300, 0xc from 300 on: each half of the
+    // first split holds a change.
+    let inFlight = 0;
+    let most = 0;
+    const fetch = async (cp: number): Promise<OwnerDesc> => {
+      most = Math.max(most, ++inFlight);
+      await Promise.resolve();
+      inFlight--;
+      return cp < 100 ? addr("0xa") : cp < 300 ? addr("0xb") : addr("0xc");
+    };
+    const r = await findOwnerTransitions(addrState(0, "0xa"), addrState(400, "0xc"), fetch, { remaining: 100 });
+    expect(r.transitions.map((t) => t.checkpoint)).toEqual([100, 300]);
+    expect(most).toBeGreaterThan(1);
+  });
+
+  it("pins a change made at the span's upper end with one read before bisecting the rest", async () => {
+    // 0xa until 4,000, then 0xb until the last checkpoint, whose write moves it to 0xc.
+    const HI = 10_000_000;
+    const owner = (cp: number): OwnerDesc => (cp < 4_000 ? addr("0xa") : cp < HI ? addr("0xb") : addr("0xc"));
+    const plainReads: number[] = [];
+    const plain = await findOwnerTransitions(addrState(0, "0xa"), addrState(HI, "0xc"), async (cp) => (plainReads.push(cp), owner(cp)), {
+      remaining: 100,
+    });
+    const reads: number[] = [];
+    const r = await findOwnerTransitionsFromEnd(addrState(0, "0xa"), addrState(HI, "0xc"), async (cp) => (reads.push(cp), owner(cp)), {
+      remaining: 100,
+    });
+    expect(r.transitions).toEqual(plain.transitions);
+    expect(r.transitions).toEqual([
+      { checkpoint: 4_000, owner: addr("0xb") },
+      { checkpoint: HI, owner: addr("0xc") },
+    ]);
+    expect(reads[0]).toBe(HI - 1);
+    expect(reads.length).toBeLessThan(plainReads.length - 15);
   });
 
   /**

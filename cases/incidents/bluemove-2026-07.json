@@ -1,0 +1,667 @@
+{
+  "slug": "bluemove-2026-07",
+  "kind": "protocol-exploit",
+  "title": "BlueMove DEX legacy-version drain, 11 July 2026",
+  "network": "mainnet",
+  "summary": "From 20:49 UTC on 11 July 2026 (main run from 22:13) one wallet drained 389 BlueMove AMM pools by alternating package versions on the same Pool objects. v1 (2023, no version gate) keeps liquidity in Pool.token_x/token_y; v7 and later keep it in an escrow dynamic field; both overwrite Pool.reserve_x/reserve_y. Per batch of 12 pools: a v12 swap plus a v1 add_liquidity, a v12 remove_liquidity that empties the escrow, then a v12 add_liquidity_returns that divides by the emptied reserve and mints just under 2^64 LSP, redeemed through v1 remove_liquidity. 714,000 SUI went to 0xa74ee820, was swapped to 528,612.59 USDC and left through 13 Circle CCTP burns to Ethereum 0x877b0c04. Publicly argued as an insider backdoor in the 31 May upgrade, as a legacy overflow bug, and as a cross-version reserve desync; the code supports the desync, present since v7 (October 2024).",
+  "sources": [
+    {
+      "url": "https://forums.sui.io/t/bluemove-was-not-an-overflow-bug-how-a-cross-version-reserve-desync-drained-714-000-sui/49409",
+      "publisher": "Sui Developer Forum",
+      "kind": "news"
+    },
+    {
+      "url": "https://protos.com/bluemoves-500k-sui-loss-raises-insider-job-suspicions/",
+      "publisher": "Protos",
+      "kind": "news"
+    },
+    {
+      "url": "https://dex.bluemove.net/",
+      "publisher": "BlueMove",
+      "kind": "victim-postmortem"
+    }
+  ],
+  "subjects": {
+    "attacker": "0xb29e79198742e84ddf6a5a952238990f7d80565826ff3d97dc92d7056b097335",
+    "exploit_tx": "8pMKBovvrHzyRiaGjUPPFuFX6a92KkqSRitZ36zbD1qz",
+    "prep_swap_add_tx": "Auzj4QzkrVMacUJoKThqgP3x15wnHcp9ZVfiTkFEs1DB",
+    "prep_remove_tx": "Bqr41F1podpadETbH9kNPnQkvokdfKdPgYqkD7AbErzo",
+    "attacker_first_tx": "EugVQBpX8jp6GFkXSRfhe5cfCeXhwiipKndGpeNAkZRb",
+    "bridge_wallet": "0xa74ee820821d52994785eb9160b3a114a6338de1b3d9e188c00f09ba4f75065e",
+    "eth_destination": "eip155:1:0x877b0c047f69c321271cca53de3fbc1253a96277",
+    "attacker_funder": "0x50fc775d4fd01d9a7783477dcda7ddebc97f17b6970d66782e0f60914e77ae03",
+    "funding_tx": "6JnDedPvMwA7H7tTe7faMofvWbaTGPTiXVw3Yn8rSUEz",
+    "v1_package": "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9",
+    "v6_package": "0xa00faab58ff6876dce096d5e0591200b84a14f4033319d27c48b781a37aa2ed7",
+    "v7_package": "0x08cd33481587d4c4612865b164796d937df13747d8c763b8a178c87e3244498f",
+    "v12_package": "0x35f3190a41b98da22c997c9266143523816d73a902123dde6f60fac2e0f656d7",
+    "deployer": "0x7d823d7c8cd081bd9c4cbb02d92f36fa2bacbf3f5a7fb44ac4886b2abd14e035",
+    "cap_burn_tx": "2yvBKS4DaWQATaz8qm6eRv9NPcMQkLcUxcyvfZshscP5",
+    "aaameme_pool": "0xc74e2faca55745620d801fa46f1c7f29907e85483b78951712dba9b84c5a85c7"
+  },
+  "checks": [
+    {
+      "id": "exploit-profit-and-stale-version",
+      "question": "What did the named attack transaction pay its sender, and which superseded version did it run?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{exploit_tx}"
+      },
+      "expect": [
+        {
+          "path": "profit.address",
+          "op": "iequals",
+          "value": "{attacker}"
+        },
+        {
+          "path": "profit.gains[*].amount",
+          "op": "includes",
+          "value": "83239779845396"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "stale-package-version"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::router::remove_liquidity (takes a coin or balance; v1"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum names 8pMKBovv, its add_liquidity_returns on V-latest and remove_liquidity on V1, and the attacker 0xb29e7919. Chain: the sender's SUI balance change is +83,239.779845396, and v12 (0x35f3190a) was published on 1 June, before this 11 July call into v1."
+    },
+    {
+      "id": "exploit-calls-args-events",
+      "question": "Which versions did the first pool's two calls go through, with which LP amount, and what did the pool pay?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{exploit_tx}",
+        "detail": "full",
+        "commands": [
+          2,
+          3
+        ]
+      },
+      "expect": [
+        {
+          "path": "commands[0].target",
+          "op": "iequals",
+          "value": "{v12_package}::router::add_liquidity_returns"
+        },
+        {
+          "path": "commands[1].target",
+          "op": "iequals",
+          "value": "{v1_package}::router::remove_liquidity"
+        },
+        {
+          "path": "commands[1].arguments[0].value",
+          "op": "equals",
+          "value": "18446539931587002074"
+        },
+        {
+          "path": "events[*].parsed.lsp_balance",
+          "op": "includes",
+          "value": "18446539931587002074"
+        },
+        {
+          "path": "events[*].parsed.token_x_amount_out",
+          "op": "includes",
+          "value": "7022208298020"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum: V-latest add_liquidity_returns then V1 remove_liquidity, aaaMEME pool -7,022.21 SUI. Chain: the Add_Liquidity_Pool event credits 18,446,539,931,587,002,074 LSP (2^64 - 2.04e14) for 57,205,071 MIST, and Remove_Liqidity_Pool pays 7,022,208,298,020 MIST."
+    },
+    {
+      "id": "batch-attacker-net",
+      "question": "Over one full batch (the two preparation transactions and the drain), what did the attacker net in SUI?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{prep_swap_add_tx}",
+          "{prep_remove_tx}",
+          "{exploit_tx}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "priced_coins[*].attacker_net_raw",
+          "op": "includes",
+          "value": "13828748654456"
+        },
+        {
+          "path": "senders",
+          "op": "includes",
+          "value": "{attacker}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the sender's SUI balance changes are -111,031.619185882 (Auzj4Qzk), +41,620.587994942 (Bqr41F1p) and +83,239.779845396 (8pMKBovv), net +13,828.748654456 SUI for the 12 pools. The forum reads the drain transaction alone and misses the first two."
+    },
+    {
+      "id": "batch-pool-loss-decoded",
+      "question": "How much did the 12 pools lose by their own events over that batch?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{prep_swap_add_tx}",
+          "{prep_remove_tx}",
+          "{exploit_tx}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "totals.pool_reserves_lost_usd",
+          "op": "gte",
+          "value": 9000
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: BlueMove's swap::Add_Liquidity_Pool, Remove_Liqidity_Pool and Swap_Event carry pool_id and token amounts; over the batch the 12 pools paid out 13,828.75 SUI net (about $10.3K at $0.744) plus about 9.7 billion of each meme coin."
+    },
+    {
+      "id": "step2-escrow-drained",
+      "question": "What did the v12 remove_liquidity step take, and from which object?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{prep_remove_tx}"
+      },
+      "expect": [
+        {
+          "path": "profit.gains[*].amount",
+          "op": "includes",
+          "value": "41620587994942"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "shared-state-jump"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "(swap::EscrowCoinsV2) Balance<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI> 3467085939492 -> 400"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: in Bqr41F1p, 13 seconds before the drain transaction, each pool's EscrowCoinsV2 (the v7+ liquidity store) is emptied to a few hundred MIST and the sender gains 41,620.587994942 SUI. The forum describes the escrow as untouched."
+    },
+    {
+      "id": "pool-legacy-balance-empty-before",
+      "question": "Before the attack, where did the aaaMEME pool's liquidity sit?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{aaameme_pool}",
+        "version": "897663388"
+      },
+      "expect": [
+        {
+          "path": "content.token_x",
+          "op": "equals",
+          "value": "0"
+        },
+        {
+          "path": "content.token_y",
+          "op": "equals",
+          "value": "0"
+        },
+        {
+          "path": "content.reserve_x",
+          "op": "equals",
+          "value": "1166723287393"
+        },
+        {
+          "path": "content.lsp_supply.value",
+          "op": "equals",
+          "value": "150556857990248"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: version 897663388 is the pool's last version before the attack (30 May 2026). The v1 balances are empty and reserve_x reflects the escrow. The forum's worked example assumes 7,022 SUI of v1 aggregator swaps in pool.token_x; the 7,022 SUI there came from the attacker's own v1 add_liquidity in Auzj4Qzk."
+    },
+    {
+      "id": "pool-reserve-desynced-before-drain",
+      "question": "Between the escrow drain and the final call, what did the pool's reserves and v1 balances hold?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{aaameme_pool}",
+        "version": "942523295"
+      },
+      "expect": [
+        {
+          "path": "previous_transaction",
+          "op": "equals",
+          "value": "{prep_remove_tx}"
+        },
+        {
+          "path": "content.reserve_x",
+          "op": "equals",
+          "value": "467"
+        },
+        {
+          "path": "content.reserve_y",
+          "op": "equals",
+          "value": "426346"
+        },
+        {
+          "path": "content.token_x",
+          "op": "equals",
+          "value": "7022265624604"
+        },
+        {
+          "path": "content.lsp_supply.value",
+          "op": "equals",
+          "value": "150590393429569"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 57,205,071 x 150,590,393,429,569 / 467 and 52,225,167,453 x 150,590,393,429,569 / 426,346 have minimum exactly 18,446,539,931,587,002,074, the LSP 8pMKBovv minted, and 7,022,265,624,604 x L / (supply + L) = 7,022,208,298,020, the SUI it paid."
+    },
+    {
+      "id": "upgrade-v12-and-cap-renounced",
+      "question": "Which version was newest at the drain, who pushed it, and when were upgrade rights given up?",
+      "tool": "get_upgrade_history",
+      "args": {
+        "package": "{v1_package}",
+        "as_of": "2026-07-11T22:13:51Z"
+      },
+      "expect": [
+        {
+          "path": "as_of.newest_version.version",
+          "op": "equals",
+          "value": 12
+        },
+        {
+          "path": "as_of.newest_version.package_id",
+          "op": "iequals",
+          "value": "{v12_package}"
+        },
+        {
+          "path": "as_of.newest_version.sender",
+          "op": "iequals",
+          "value": "{deployer}"
+        },
+        {
+          "path": "flags[*].kind",
+          "op": "includes",
+          "value": "cap_renounced"
+        },
+        {
+          "path": "flags[*].txs[*]",
+          "op": "includes",
+          "value": "{cap_burn_tx}"
+        },
+        {
+          "path": "flags[*].txs[*]",
+          "op": "excludes",
+          "value": "{attacker_first_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Protos quotes BlueMove: UpgradeCap burned on 3 June; Simpson: 31 May upgrade by the cap holder. Chain: v12 9wTz16dg at 2026-06-01T00:08:56Z by 0x7d823d7c, holder of the cap since 2023; the cap went to 0x0 in 2yvBKS4D at 2026-06-03T12:25Z. The forum's timeline gives EugVQB... for the burn, which is the attacker's first transaction (11 July 20:46)."
+    },
+    {
+      "id": "v12-upgrade-diff",
+      "question": "What did the 31 May / 1 June upgrade (v11 to v12) add?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{v1_package}",
+        "from_version": 11,
+        "to_version": 12
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "{v12_package}"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "migrate_escrow_coins"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "excludes",
+          "value": "add_liquidity_returns"
+        },
+        {
+          "path": "diff.changed_functions[*].function",
+          "op": "includes",
+          "value": "burn"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (v11 0xf72bd3b3 vs v12 0x35f3190a bytecode): one function added, swap::migrate_escrow_coins (EscownCoins to EscrowCoinsV2), escrow-type renames in burn and add_liquidity_direct, contract version 10 to 11. Protos quotes Simpson that v12 added add_liquidity_returns; it did not."
+    },
+    {
+      "id": "add-liquidity-returns-since-v6",
+      "question": "Which upgrade introduced add_liquidity_returns?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{v1_package}",
+        "from_version": 5,
+        "to_version": 6
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "{v6_package}"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "add_liquidity_returns"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: router::add_liquidity_returns and swap::add_liquidity_returns are absent from v1 to v5 and added in v6 (0xa00faab5, 2024-08-26), 21 months before the upgrade Simpson credits with them."
+    },
+    {
+      "id": "version-gate-and-escrow-since-v7",
+      "question": "When did the package start gating calls by version and moving liquidity out of the Pool?",
+      "tool": "diff_package_upgrade",
+      "args": {
+        "package": "{v1_package}",
+        "from_version": 6,
+        "to_version": 7
+      },
+      "expect": [
+        {
+          "path": "to.address",
+          "op": "iequals",
+          "value": "{v7_package}"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "assert_version_contract"
+        },
+        {
+          "path": "diff.added_functions[*].function",
+          "op": "includes",
+          "value": "migrate_pool"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: v7 (0x08cd3348, 2024-10-10) adds assert_version_contract, called by every v7+ router function, and migrate_pool into the EscownCoins escrow. v1 to v6 have no such check, so from v7 two callable versions kept liquidity in different places while sharing reserve_x/reserve_y. The forum names 0x08cd3348 as the version that introduced EscownCoins."
+    },
+    {
+      "id": "v1-remove-liquidity-ungated",
+      "question": "Does v1's remove_liquidity check the contract version before paying out?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{v1_package}",
+        "module_name": "router",
+        "function_name": "remove_liquidity"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^entry public remove_liquidity<Ty0, Ty1>\\(Arg0: u64, Arg1: Coin<LSP<Ty0, Ty1>>"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^(?![\\s\\S]*assert_version_contract)[\\s\\S]*Call swap::remove_liquidity<Ty0, Ty1>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xb24b6789 bytecode): router::remove_liquidity goes straight from swap::get_pool to swap::remove_liquidity; v1 has no assert_version_contract at all. The forum: old versions remain callable on the same shared objects."
+    },
+    {
+      "id": "scan-flags-ungated-v1",
+      "question": "Does a scan of v1, without being told where to look, say its public functions still run on the pools v12 gates behind a version check?",
+      "tool": "analyze_package",
+      "args": {
+        "package_id": "{v1_package}",
+        "audit_capabilities": false
+      },
+      "expect": [
+        { "path": "findings[*].code", "op": "includes", "value": "ungated-older-version" },
+        { "path": "findings[*].version_leads[*].gate", "op": "includes", "value": "swap::assert_version_contract" },
+        { "path": "findings[*].version_leads[*].functions[*].function", "op": "includes", "value": "router::remove_liquidity" },
+        { "path": "findings[*].version_leads[*].functions[*].function", "op": "includes", "value": "router::add_liquidity" },
+        { "path": "findings[*].version_leads[*].package_ids[*]", "op": "includes", "value": "{v1_package}" }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0xb24b6789 and 0x35f3190a bytecode): in v12 22 of the 31 public functions that mutate the shared Dex_Info call swap::assert_version_contract first, add_liquidity and remove_liquidity among them; v1's router::add_liquidity and remove_liquidity mutate the same Dex_Info with no such call and read no field it reads. The forum: old versions remain callable on the same shared objects."
+    },
+    {
+      "id": "v12-burn-pays-escrow-by-reserve",
+      "question": "In v12, what does burn price a withdrawal by, what does it pay from, and what does it write back?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{v12_package}",
+        "module_name": "swap",
+        "function_name": "burn"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "B0:\\n\\t0: CopyLoc\\[1\\]\\(Arg1: &mut Pool<Ty0, Ty1>\\)\\n\\t1: ImmBorrowFieldGeneric\\[\\d+\\]\\(Pool\\.reserve_x: u64\\)"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "MutBorrowFieldGeneric\\[\\d+\\]\\(EscrowCoinsV2\\.token_x: Balance<Ty0>\\)\\n\\t\\d+: MoveLoc\\[\\d+\\]\\(loc\\d+: u64\\)\\n\\t\\d+: Call balance::split<Ty0>[\\s\\S]*ImmBorrowFieldGeneric\\[\\d+\\]\\(EscrowCoinsV2\\.token_x: Balance<Ty0>\\)\\n\\t\\d+: Call balance::value<Ty0>[\\s\\S]*Call update<Ty0, Ty1>\\(u64, u64, &mut Pool<Ty0, Ty1>\\)"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x35f3190a bytecode): burn reads Pool.reserve_x for the payout, splits it from EscrowCoinsV2, then writes the escrow's remaining balance into reserve_x via update. v1 burn (0xb24b6789) pays from and writes back Pool.token_x instead. The forum: both versions write reserve_x from different balances."
+    },
+    {
+      "id": "v12-mint-divides-by-reserve",
+      "question": "In v12, how does mint size the LP it credits?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{v12_package}",
+        "module_name": "swap",
+        "function_name": "mint"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "\\t0: CopyLoc\\[1\\]\\(Arg1: u64\\)\\n\\t1: CastU128\\n\\t2: CopyLoc\\[0\\]\\(Arg0: &mut Pool<Ty0, Ty1>\\)\\n\\t3: ImmBorrowFieldGeneric\\[\\d+\\]\\(Pool\\.reserve_x: u64\\)\\n\\t4: ReadRef\\n\\t5: CastU128\\n\\t6: Sub"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "Mul\\n\\t\\d+: CopyLoc\\[0\\]\\(Arg0: &mut Pool<Ty0, Ty1>\\)\\n\\t\\d+: ImmBorrowFieldGeneric\\[\\d+\\]\\(Pool\\.reserve_x: u64\\)\\n\\t\\d+: ReadRef\\n\\t\\d+: CastU128\\n\\t\\d+: Div"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "CastU64\\n\\t\\d+: Call balance::increase_supply<LSP<Ty0, Ty1>>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x35f3190a bytecode): amount = escrow balance - reserve_x, LP = min(amount x supply / reserve), cast to u64. With reserve_x = 467 after the escrow drain this minted 18,446,539,931,587,002,074 LSP for 57,205,071 MIST. The forum: mint divides by a deflated reserve_x. BlueMove: an overflow; Move aborts on overflow, and the attacker sized the deposit to stay under the u64 cast."
+    },
+    {
+      "id": "v12-freeze-pool-dev-gated",
+      "question": "Could BlueMove's dev key stop the pools after the cap was burned?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{v12_package}",
+        "module_name": "swap",
+        "function_name": "freeze_pool"
+      },
+      "expect": [
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "^entry public freeze_pool<Ty0, Ty1>\\(Arg0: bool, Arg1: &mut Dex_Info"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "ImmBorrowField\\[\\d+\\]\\(Dex_Info\\.dev: address\\)"
+        },
+        {
+          "path": "disassembly",
+          "op": "matches",
+          "value": "MutBorrowFieldGeneric\\[\\d+\\]\\(Pool\\.is_freeze: bool\\)"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain (0x35f3190a bytecode): freeze_pool is an entry function for Dex_Info.dev (0x049cc391, read from Dex_Info) that sets Pool.is_freeze, and v1 swap::remove_liquidity aborts with 24 when is_freeze is set. Protos quotes BlueMove: no on-chain path left to patch or disable the v1 package."
+    },
+    {
+      "id": "bridge-wallet-cctp-exit",
+      "question": "How did the 714,000 SUI leave Sui, and to whom?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{bridge_wallet}",
+        "from": "2026-07-11T22:00:00Z",
+        "to": "2026-07-11T23:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "coverage.complete",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "inflow_sources[*].address",
+          "op": "includes",
+          "value": "{attacker}"
+        },
+        {
+          "path": "coins[*].in",
+          "op": "includes",
+          "value": 714000
+        },
+        {
+          "path": "bridge_exits.transaction_count",
+          "op": "equals",
+          "value": 13
+        },
+        {
+          "path": "bridge_exits.by_bridge[*].bridge",
+          "op": "includes",
+          "value": "Circle CCTP"
+        },
+        {
+          "path": "bridge_exits.by_bridge[*].destinations[*].account",
+          "op": "includes",
+          "value": "{eth_destination}"
+        },
+        {
+          "path": "bridge_exits.transactions[*].beneficiaries[*].amount",
+          "op": "includes",
+          "value": "37687339118"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum: bridge wallet 0xa74ee820, about 714,000 SUI, about $528,000 USDC off Sui in 23 minutes (it says Wormhole). Chain: 4 transfers of 714,000 SUI from the attacker, then 13 Circle CCTP DepositForBurn events totalling 528,612.593297 USDC to 0x877b0c04 on Ethereum, and no Wormhole message."
+    },
+    {
+      "id": "attacker-flow-graph-exit",
+      "question": "Following all of the attacker's SUI forward, where did it leave Sui?",
+      "tool": "trace_flow_graph",
+      "args": {
+        "address": "{attacker}",
+        "direction": "forward",
+        "from": "2026-07-11T22:13:00Z",
+        "to": "2026-07-12T00:00:00Z",
+        "coin_type": "0x2::sui::SUI"
+      },
+      "expect": [
+        {
+          "path": "terminals[*].reason",
+          "op": "includes",
+          "value": "bridge_exit"
+        },
+        {
+          "path": "nodes[*].beneficiaries[*].account",
+          "op": "includes",
+          "value": "{eth_destination}"
+        },
+        {
+          "path": "nodes[*].beneficiaries[*].amount",
+          "op": "includes",
+          "value": "528612593297"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Sui Developer Forum: the proceeds crossed as USDC. Chain: 0xb29e7919 to 0xa74ee820 (714,000 SUI), swapped to 528,612.593297 USDC, 13 CCTP burns to 0x877b0c04.",
+      "timeout_s": 240
+    },
+    {
+      "id": "attacker-first-funder",
+      "question": "Who first funded the attacker's wallet?",
+      "tool": "find_funding_source",
+      "args": {
+        "address": "{attacker}"
+      },
+      "expect": [
+        {
+          "path": "chain[0].funded_by",
+          "op": "iequals",
+          "value": "{attacker_funder}"
+        },
+        {
+          "path": "chain[0].funding_tx",
+          "op": "equals",
+          "value": "{funding_tx}"
+        },
+        {
+          "path": "origin_popularity.popular",
+          "op": "equals",
+          "value": true
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 242.366151855 SUI at 20:40:27 UTC in 6JnDedPv, a cross-chain order fulfilment sent by 0x50fc775d, a solver that paid 65 distinct addresses, so the walk must stop there."
+    },
+    {
+      "id": "funding-inbound-bridge",
+      "question": "Did the attacker's first funding arrive from another chain, and from which?",
+      "tool": "resolve_bridge_transfer",
+      "args": {
+        "digest": "{funding_tx}"
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "Mayan"
+        },
+        {
+          "path": "_text",
+          "op": "matches",
+          "value": "[Ee]thereum|eip155:1\\b"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 6JnDedPv calls Wormhole's vaa::parse_and_verify and 0xb5bd3599::fulfill_swap (modules auction_message, bridge_with_fee, fulfill_swap, swap_order); its SwapPreparedToFulfill event carries cctp_nonce 481889 and cctp_source_domain 0 (Ethereum), 181.446172 USDC in, 242.366151855 SUI out to the attacker."
+    },
+    {
+      "id": "forward-trace-from-exploit",
+      "question": "Following the named attack transaction's SUI forward, where does it leave Sui?",
+      "tool": "trace_funds",
+      "args": {
+        "digest": "{exploit_tx}",
+        "direction": "forward",
+        "hops": 6,
+        "coin_type": "0x2::sui::SUI"
+      },
+      "expect": [
+        {
+          "path": "stop_reason",
+          "op": "contains",
+          "value": "Circle CCTP"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 2 minutes 39 seconds after 8pMKBovv the attacker sent the first of four SUI transfers (714,000 SUI in all) to 0xa74ee820, which bridged it out through Circle CCTP."
+    }
+  ]
+}

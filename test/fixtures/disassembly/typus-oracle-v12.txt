@@ -1,0 +1,1269 @@
+// Move bytecode v6
+module 855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a.oracle {
+use 8d97f1cd6ac663735be08d1d2b6d02a159e711586461306ce60a2b7a6a565a9e::price_info;
+use 8d97f1cd6ac663735be08d1d2b6d02a159e711586461306ce60a2b7a6a565a9e::state;
+use 0000000000000000000000000000000000000000000000000000000000000001::ascii;
+use 0000000000000000000000000000000000000000000000000000000000000001::option;
+use 0000000000000000000000000000000000000000000000000000000000000001::string;
+use 0000000000000000000000000000000000000000000000000000000000000001::type_name;
+use 0000000000000000000000000000000000000000000000000000000000000001::u64;
+use 0000000000000000000000000000000000000000000000000000000000000001::vector;
+use 0000000000000000000000000000000000000000000000000000000000000002::clock;
+use 0000000000000000000000000000000000000000000000000000000000000002::dynamic_field;
+use 0000000000000000000000000000000000000000000000000000000000000002::event;
+use 0000000000000000000000000000000000000000000000000000000000000002::object;
+use 0000000000000000000000000000000000000000000000000000000000000002::transfer;
+use 0000000000000000000000000000000000000000000000000000000000000002::tx_context;
+use 855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a::pyth_parser;
+
+struct ManagerCap has key {
+	id: UID
+}
+
+struct UpdateCap has key {
+	id: UID,
+	for: address
+}
+
+struct UpdateCaps has key {
+	id: UID,
+	for: vector<address>
+}
+
+struct Oracle has key {
+	id: UID,
+	base_token: String,
+	quote_token: String,
+	base_token_type: TypeName,
+	quote_token_type: TypeName,
+	decimal: u64,
+	price: u64,
+	twap_price: u64,
+	ts_ms: u64,
+	epoch: u64,
+	time_interval: u64,
+	switchboard: Option<ID>,
+	pyth: Option<ID>
+}
+
+struct PriceEvent has copy, drop {
+	id: ID,
+	price: u64,
+	ts_ms: u64
+}
+
+struct UpdateAuthority has key {
+	id: UID,
+	authority: vector<address>
+}
+
+init(Arg0: &mut TxContext) {
+B0:
+	0: CopyLoc[0](Arg0: &mut TxContext)
+	1: Call object::new(&mut TxContext): UID
+	2: Pack[0](ManagerCap)
+	3: MoveLoc[0](Arg0: &mut TxContext)
+	4: FreezeRef
+	5: Call tx_context::sender(&TxContext): address
+	6: Call transfer::transfer<ManagerCap>(ManagerCap, address)
+	7: Ret
+}
+
+public burn_update_authority(Arg0: UpdateAuthority) {
+B0:
+	0: MoveLoc[0](Arg0: UpdateAuthority)
+	1: Unpack[5](UpdateAuthority)
+	2: Pop
+	3: Call object::delete(UID)
+	4: Ret
+}
+
+public copy_manager_cap(Arg0: &ManagerCap, Arg1: address, Arg2: &mut TxContext) {
+B0:
+	0: MoveLoc[2](Arg2: &mut TxContext)
+	1: Call object::new(&mut TxContext): UID
+	2: Pack[0](ManagerCap)
+	3: MoveLoc[1](Arg1: address)
+	4: Call transfer::transfer<ManagerCap>(ManagerCap, address)
+	5: Ret
+}
+
+public burn_manager_cap(Arg0: ManagerCap) {
+B0:
+	0: MoveLoc[0](Arg0: ManagerCap)
+	1: Unpack[0](ManagerCap)
+	2: Call object::delete(UID)
+	3: Ret
+}
+
+entry create_update_cap(Arg0: &ManagerCap, Arg1: address, Arg2: &mut TxContext) {
+B0:
+	0: MoveLoc[2](Arg2: &mut TxContext)
+	1: Call object::new(&mut TxContext): UID
+	2: MoveLoc[1](Arg1: address)
+	3: Pack[1](UpdateCap)
+	4: Call transfer::share_object<UpdateCap>(UpdateCap)
+	5: Ret
+}
+
+entry burn_update_cap(Arg0: &ManagerCap, Arg1: UpdateCap) {
+B0:
+	0: MoveLoc[1](Arg1: UpdateCap)
+	1: Unpack[1](UpdateCap)
+	2: Pop
+	3: Call object::delete(UID)
+	4: Ret
+}
+
+entry create_update_caps(Arg0: &ManagerCap, Arg1: &mut TxContext) {
+B0:
+	0: MoveLoc[1](Arg1: &mut TxContext)
+	1: Call object::new(&mut TxContext): UID
+	2: LdConst[13](vector<address>: 00)
+	3: Pack[2](UpdateCaps)
+	4: Call transfer::share_object<UpdateCaps>(UpdateCaps)
+	5: Ret
+}
+
+entry burn_update_caps(Arg0: &ManagerCap, Arg1: UpdateCaps) {
+B0:
+	0: MoveLoc[1](Arg1: UpdateCaps)
+	1: Unpack[2](UpdateCaps)
+	2: Pop
+	3: Call object::delete(UID)
+	4: Ret
+}
+
+entry add_update_caps_user(Arg0: &ManagerCap, Arg1: &mut UpdateCaps, Arg2: address) {
+B0:
+	0: CopyLoc[1](Arg1: &mut UpdateCaps)
+	1: ImmBorrowField[0](UpdateCaps.for: vector<address>)
+	2: ImmBorrowLoc[2](Arg2: address)
+	3: Call vector::contains<address>(&vector<address>, &address): bool
+	4: Not
+	5: BrFalse(11)
+B1:
+	6: MoveLoc[1](Arg1: &mut UpdateCaps)
+	7: MutBorrowField[0](UpdateCaps.for: vector<address>)
+	8: MoveLoc[2](Arg2: address)
+	9: VecPushBack(30)
+	10: Branch(13)
+B2:
+	11: MoveLoc[1](Arg1: &mut UpdateCaps)
+	12: Pop
+B3:
+	13: Ret
+}
+
+entry remove_update_caps_user(Arg0: &ManagerCap, Arg1: &mut UpdateCaps, Arg2: address) {
+L3:	loc0: u64
+B0:
+	0: CopyLoc[1](Arg1: &mut UpdateCaps)
+	1: ImmBorrowField[0](UpdateCaps.for: vector<address>)
+	2: ImmBorrowLoc[2](Arg2: address)
+	3: Call vector::index_of<address>(&vector<address>, &address): bool * u64
+	4: StLoc[3](loc0: u64)
+	5: BrFalse(12)
+B1:
+	6: MoveLoc[1](Arg1: &mut UpdateCaps)
+	7: MutBorrowField[0](UpdateCaps.for: vector<address>)
+	8: MoveLoc[3](loc0: u64)
+	9: Call vector::remove<address>(&mut vector<address>, u64): address
+	10: Pop
+	11: Branch(14)
+B2:
+	12: MoveLoc[1](Arg1: &mut UpdateCaps)
+	13: Pop
+B3:
+	14: Ret
+}
+
+entry update_version(Arg0: &mut Oracle, Arg1: &ManagerCap) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: ImmBorrowField[1](Oracle.id: UID)
+	2: LdConst[14](vector<u8>: "VER..)
+	3: Call string::utf8(vector<u8>): String
+	4: Call dynamic_field::exists_<String>(&UID, String): bool
+	5: BrFalse(14)
+B1:
+	6: LdConst[0](u64: 2)
+	7: MoveLoc[0](Arg0: &mut Oracle)
+	8: MutBorrowField[1](Oracle.id: UID)
+	9: LdConst[14](vector<u8>: "VER..)
+	10: Call string::utf8(vector<u8>): String
+	11: Call dynamic_field::borrow_mut<String, u64>(&mut UID, String): &mut u64
+	12: WriteRef
+	13: Branch(20)
+B2:
+	14: MoveLoc[0](Arg0: &mut Oracle)
+	15: MutBorrowField[1](Oracle.id: UID)
+	16: LdConst[14](vector<u8>: "VER..)
+	17: Call string::utf8(vector<u8>): String
+	18: LdConst[0](u64: 2)
+	19: Call dynamic_field::add<String, u64>(&mut UID, String, u64)
+B3:
+	20: Ret
+}
+
+public new_oracle<Ty0, Ty1>(Arg0: &ManagerCap, Arg1: String, Arg2: String, Arg3: u64, Arg4: &mut TxContext) {
+L5:	loc0: Oracle
+B0:
+	0: CopyLoc[4](Arg4: &mut TxContext)
+	1: Call object::new(&mut TxContext): UID
+	2: MoveLoc[1](Arg1: String)
+	3: MoveLoc[2](Arg2: String)
+	4: Call type_name::with_defining_ids<Ty0>(): TypeName
+	5: Call type_name::with_defining_ids<Ty1>(): TypeName
+	6: MoveLoc[3](Arg3: u64)
+	7: LdU64(0)
+	8: LdU64(0)
+	9: LdU64(0)
+	10: MoveLoc[4](Arg4: &mut TxContext)
+	11: FreezeRef
+	12: Call tx_context::epoch(&TxContext): u64
+	13: LdU64(300000)
+	14: Call option::none<ID>(): Option<ID>
+	15: Call option::none<ID>(): Option<ID>
+	16: Pack[3](Oracle)
+	17: StLoc[5](loc0: Oracle)
+	18: MutBorrowLoc[5](loc0: Oracle)
+	19: MutBorrowField[1](Oracle.id: UID)
+	20: LdConst[14](vector<u8>: "VER..)
+	21: Call string::utf8(vector<u8>): String
+	22: LdConst[0](u64: 2)
+	23: Call dynamic_field::add<String, u64>(&mut UID, String, u64)
+	24: MoveLoc[5](loc0: Oracle)
+	25: Call transfer::share_object<Oracle>(Oracle)
+	26: Ret
+}
+
+public update(Arg0: &mut Oracle, Arg1: &ManagerCap, Arg2: u64, Arg3: u64, Arg4: &Clock, Arg5: &mut TxContext) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: MoveLoc[0](Arg0: &mut Oracle)
+	4: MoveLoc[2](Arg2: u64)
+	5: MoveLoc[3](Arg3: u64)
+	6: MoveLoc[4](Arg4: &Clock)
+	7: MoveLoc[5](Arg5: &mut TxContext)
+	8: FreezeRef
+	9: Call update_(&mut Oracle, u64, u64, &Clock, &TxContext)
+	10: Ret
+}
+
+public update_with_update_cap(Arg0: &mut Oracle, Arg1: &UpdateCap, Arg2: u64, Arg3: u64, Arg4: &Clock, Arg5: &TxContext) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: MoveLoc[1](Arg1: &UpdateCap)
+	4: ImmBorrowField[2](UpdateCap.for: address)
+	5: ReadRef
+	6: CopyLoc[5](Arg5: &TxContext)
+	7: Call tx_context::sender(&TxContext): address
+	8: Eq
+	9: BrFalse(11)
+B1:
+	10: Branch(19)
+B2:
+	11: MoveLoc[0](Arg0: &mut Oracle)
+	12: Pop
+	13: MoveLoc[5](Arg5: &TxContext)
+	14: Pop
+	15: MoveLoc[4](Arg4: &Clock)
+	16: Pop
+	17: LdU64(13906835205135859718)
+	18: Abort
+B3:
+	19: MoveLoc[0](Arg0: &mut Oracle)
+	20: MoveLoc[2](Arg2: u64)
+	21: MoveLoc[3](Arg3: u64)
+	22: MoveLoc[4](Arg4: &Clock)
+	23: MoveLoc[5](Arg5: &TxContext)
+	24: Call update_(&mut Oracle, u64, u64, &Clock, &TxContext)
+	25: Ret
+}
+
+public update_with_update_caps(Arg0: &mut Oracle, Arg1: &UpdateCaps, Arg2: u64, Arg3: u64, Arg4: &Clock, Arg5: &TxContext) {
+L6:	loc0: address
+L7:	loc1: &vector<address>
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: MoveLoc[1](Arg1: &UpdateCaps)
+	4: ImmBorrowField[0](UpdateCaps.for: vector<address>)
+	5: StLoc[7](loc1: &vector<address>)
+	6: CopyLoc[5](Arg5: &TxContext)
+	7: Call tx_context::sender(&TxContext): address
+	8: StLoc[6](loc0: address)
+	9: MoveLoc[7](loc1: &vector<address>)
+	10: ImmBorrowLoc[6](loc0: address)
+	11: Call vector::contains<address>(&vector<address>, &address): bool
+	12: BrFalse(14)
+B1:
+	13: Branch(22)
+B2:
+	14: MoveLoc[0](Arg0: &mut Oracle)
+	15: Pop
+	16: MoveLoc[5](Arg5: &TxContext)
+	17: Pop
+	18: MoveLoc[4](Arg4: &Clock)
+	19: Pop
+	20: LdU64(13906835260970434566)
+	21: Abort
+B3:
+	22: MoveLoc[0](Arg0: &mut Oracle)
+	23: MoveLoc[2](Arg2: u64)
+	24: MoveLoc[3](Arg3: u64)
+	25: MoveLoc[4](Arg4: &Clock)
+	26: MoveLoc[5](Arg5: &TxContext)
+	27: Call update_(&mut Oracle, u64, u64, &Clock, &TxContext)
+	28: Ret
+}
+
+public update_time_interval(Arg0: &mut Oracle, Arg1: &ManagerCap, Arg2: u64) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: MoveLoc[2](Arg2: u64)
+	4: MoveLoc[0](Arg0: &mut Oracle)
+	5: MutBorrowField[3](Oracle.time_interval: u64)
+	6: WriteRef
+	7: Ret
+}
+
+public update_token(Arg0: &mut Oracle, Arg1: &ManagerCap, Arg2: String, Arg3: String) {
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: MoveLoc[2](Arg2: String)
+	4: CopyLoc[0](Arg0: &mut Oracle)
+	5: MutBorrowField[4](Oracle.quote_token: String)
+	6: WriteRef
+	7: MoveLoc[3](Arg3: String)
+	8: MoveLoc[0](Arg0: &mut Oracle)
+	9: MutBorrowField[5](Oracle.base_token: String)
+	10: WriteRef
+	11: Ret
+}
+
+entry update_pyth_oracle(Arg0: &mut Oracle, Arg1: &ManagerCap, Arg2: &PriceInfoObject, Arg3: &PriceInfoObject) {
+L4:	loc0: ID
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: MoveLoc[2](Arg2: &PriceInfoObject)
+	4: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	5: Call option::some<ID>(ID): Option<ID>
+	6: CopyLoc[0](Arg0: &mut Oracle)
+	7: MutBorrowField[6](Oracle.pyth: Option<ID>)
+	8: WriteRef
+	9: MoveLoc[3](Arg3: &PriceInfoObject)
+	10: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	11: StLoc[4](loc0: ID)
+	12: MoveLoc[0](Arg0: &mut Oracle)
+	13: MutBorrowField[1](Oracle.id: UID)
+	14: LdConst[15](vector<u8>: "quo..)
+	15: Call string::utf8(vector<u8>): String
+	16: MoveLoc[4](loc0: ID)
+	17: Call dynamic_field::add<String, ID>(&mut UID, String, ID)
+	18: Ret
+}
+
+entry update_pyth_oracle_usd(Arg0: &mut Oracle, Arg1: &ManagerCap, Arg2: &PriceInfoObject) {
+L3:	loc0: bool
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: CopyLoc[0](Arg0: &mut Oracle)
+	4: ImmBorrowField[4](Oracle.quote_token: String)
+	5: ReadRef
+	6: LdConst[16](vector<u8>: "USD..)
+	7: Call ascii::string(vector<u8>): String
+	8: Eq
+	9: BrFalse(13)
+B1:
+	10: LdTrue
+	11: StLoc[3](loc0: bool)
+	12: Branch(20)
+B2:
+	13: CopyLoc[0](Arg0: &mut Oracle)
+	14: ImmBorrowField[5](Oracle.base_token: String)
+	15: ReadRef
+	16: LdConst[16](vector<u8>: "USD..)
+	17: Call ascii::string(vector<u8>): String
+	18: Eq
+	19: StLoc[3](loc0: bool)
+B3:
+	20: MoveLoc[3](loc0: bool)
+	21: BrFalse(23)
+B4:
+	22: Branch(29)
+B5:
+	23: MoveLoc[0](Arg0: &mut Oracle)
+	24: Pop
+	25: MoveLoc[2](Arg2: &PriceInfoObject)
+	26: Pop
+	27: LdU64(13906835454244225034)
+	28: Abort
+B6:
+	29: MoveLoc[2](Arg2: &PriceInfoObject)
+	30: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	31: Call option::some<ID>(ID): Option<ID>
+	32: MoveLoc[0](Arg0: &mut Oracle)
+	33: MutBorrowField[6](Oracle.pyth: Option<ID>)
+	34: WriteRef
+	35: Ret
+}
+
+entry update_pyth_oracle_usd_reciprocal(Arg0: &mut Oracle, Arg1: &ManagerCap, Arg2: &PriceInfoObject) {
+L3:	loc0: ID
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: CopyLoc[0](Arg0: &mut Oracle)
+	4: ImmBorrowField[4](Oracle.quote_token: String)
+	5: ReadRef
+	6: LdConst[16](vector<u8>: "USD..)
+	7: Call ascii::string(vector<u8>): String
+	8: Eq
+	9: BrFalse(11)
+B1:
+	10: Branch(17)
+B2:
+	11: MoveLoc[0](Arg0: &mut Oracle)
+	12: Pop
+	13: MoveLoc[2](Arg2: &PriceInfoObject)
+	14: Pop
+	15: LdU64(13906835505783832586)
+	16: Abort
+B3:
+	17: MoveLoc[2](Arg2: &PriceInfoObject)
+	18: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	19: StLoc[3](loc0: ID)
+	20: Call option::none<ID>(): Option<ID>
+	21: CopyLoc[0](Arg0: &mut Oracle)
+	22: MutBorrowField[6](Oracle.pyth: Option<ID>)
+	23: WriteRef
+	24: MoveLoc[0](Arg0: &mut Oracle)
+	25: MutBorrowField[1](Oracle.id: UID)
+	26: LdConst[17](vector<u8>: "rec..)
+	27: Call string::utf8(vector<u8>): String
+	28: MoveLoc[3](loc0: ID)
+	29: Call dynamic_field::add<String, ID>(&mut UID, String, ID)
+	30: Ret
+}
+
+public update_with_pyth(Arg0: &mut Oracle, Arg1: &State, Arg2: &PriceInfoObject, Arg3: &PriceInfoObject, Arg4: &Clock, Arg5: &TxContext) {
+L6:	loc0: ID
+L7:	loc1: &ID
+L8:	loc2: ID
+L9:	loc3: &ID
+L10:	loc4: u64
+L11:	loc5: u64
+L12:	loc6: u64
+L13:	loc7: u64
+L14:	loc8: u64
+L15:	loc9: u64
+L16:	loc10: u64
+L17:	loc11: u64
+L18:	loc12: u64
+L19:	loc13: u64
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: CopyLoc[0](Arg0: &mut Oracle)
+	4: ImmBorrowField[6](Oracle.pyth: Option<ID>)
+	5: Call option::is_some<ID>(&Option<ID>): bool
+	6: BrFalse(8)
+B1:
+	7: Branch(22)
+B2:
+	8: MoveLoc[1](Arg1: &State)
+	9: Pop
+	10: MoveLoc[3](Arg3: &PriceInfoObject)
+	11: Pop
+	12: MoveLoc[0](Arg0: &mut Oracle)
+	13: Pop
+	14: MoveLoc[5](Arg5: &TxContext)
+	15: Pop
+	16: MoveLoc[4](Arg4: &Clock)
+	17: Pop
+	18: MoveLoc[2](Arg2: &PriceInfoObject)
+	19: Pop
+	20: LdU64(13906835578798276618)
+	21: Abort
+B3:
+	22: CopyLoc[0](Arg0: &mut Oracle)
+	23: ImmBorrowField[6](Oracle.pyth: Option<ID>)
+	24: Call option::borrow<ID>(&Option<ID>): &ID
+	25: StLoc[7](loc1: &ID)
+	26: CopyLoc[2](Arg2: &PriceInfoObject)
+	27: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	28: StLoc[6](loc0: ID)
+	29: MoveLoc[7](loc1: &ID)
+	30: ImmBorrowLoc[6](loc0: ID)
+	31: Eq
+	32: BrFalse(34)
+B4:
+	33: Branch(48)
+B5:
+	34: MoveLoc[1](Arg1: &State)
+	35: Pop
+	36: MoveLoc[3](Arg3: &PriceInfoObject)
+	37: Pop
+	38: MoveLoc[0](Arg0: &mut Oracle)
+	39: Pop
+	40: MoveLoc[5](Arg5: &TxContext)
+	41: Pop
+	42: MoveLoc[4](Arg4: &Clock)
+	43: Pop
+	44: MoveLoc[2](Arg2: &PriceInfoObject)
+	45: Pop
+	46: LdU64(13906835583092850692)
+	47: Abort
+B6:
+	48: CopyLoc[0](Arg0: &mut Oracle)
+	49: ImmBorrowField[1](Oracle.id: UID)
+	50: LdConst[15](vector<u8>: "quo..)
+	51: Call string::utf8(vector<u8>): String
+	52: Call dynamic_field::borrow<String, ID>(&UID, String): &ID
+	53: StLoc[9](loc3: &ID)
+	54: CopyLoc[3](Arg3: &PriceInfoObject)
+	55: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	56: StLoc[8](loc2: ID)
+	57: MoveLoc[9](loc3: &ID)
+	58: ImmBorrowLoc[8](loc2: ID)
+	59: Eq
+	60: BrFalse(62)
+B7:
+	61: Branch(76)
+B8:
+	62: MoveLoc[1](Arg1: &State)
+	63: Pop
+	64: MoveLoc[3](Arg3: &PriceInfoObject)
+	65: Pop
+	66: MoveLoc[0](Arg0: &mut Oracle)
+	67: Pop
+	68: MoveLoc[5](Arg5: &TxContext)
+	69: Pop
+	70: MoveLoc[4](Arg4: &Clock)
+	71: Pop
+	72: MoveLoc[2](Arg2: &PriceInfoObject)
+	73: Pop
+	74: LdU64(13906835587387817988)
+	75: Abort
+B9:
+	76: CopyLoc[1](Arg1: &State)
+	77: CopyLoc[2](Arg2: &PriceInfoObject)
+	78: CopyLoc[4](Arg4: &Clock)
+	79: Call pyth_parser::get_price(&State, &PriceInfoObject, &Clock): u64 * u64 * u64
+	80: Pop
+	81: StLoc[10](loc4: u64)
+	82: StLoc[12](loc6: u64)
+	83: MoveLoc[1](Arg1: &State)
+	84: CopyLoc[3](Arg3: &PriceInfoObject)
+	85: CopyLoc[4](Arg4: &Clock)
+	86: Call pyth_parser::get_price(&State, &PriceInfoObject, &Clock): u64 * u64 * u64
+	87: Pop
+	88: StLoc[15](loc9: u64)
+	89: StLoc[17](loc11: u64)
+	90: CopyLoc[12](loc6: u64)
+	91: LdU64(0)
+	92: Gt
+	93: BrFalse(95)
+B10:
+	94: Branch(107)
+B11:
+	95: MoveLoc[3](Arg3: &PriceInfoObject)
+	96: Pop
+	97: MoveLoc[0](Arg0: &mut Oracle)
+	98: Pop
+	99: MoveLoc[5](Arg5: &TxContext)
+	100: Pop
+	101: MoveLoc[4](Arg4: &Clock)
+	102: Pop
+	103: MoveLoc[2](Arg2: &PriceInfoObject)
+	104: Pop
+	105: LdU64(13906835604567556098)
+	106: Abort
+B12:
+	107: CopyLoc[17](loc11: u64)
+	108: LdU64(0)
+	109: Gt
+	110: BrFalse(112)
+B13:
+	111: Branch(124)
+B14:
+	112: MoveLoc[3](Arg3: &PriceInfoObject)
+	113: Pop
+	114: MoveLoc[0](Arg0: &mut Oracle)
+	115: Pop
+	116: MoveLoc[5](Arg5: &TxContext)
+	117: Pop
+	118: MoveLoc[4](Arg4: &Clock)
+	119: Pop
+	120: MoveLoc[2](Arg2: &PriceInfoObject)
+	121: Pop
+	122: LdU64(13906835608862523394)
+	123: Abort
+B15:
+	124: MoveLoc[12](loc6: u64)
+	125: CastU256
+	126: LdU64(10)
+	127: CopyLoc[0](Arg0: &mut Oracle)
+	128: ImmBorrowField[7](Oracle.decimal: u64)
+	129: ReadRef
+	130: CastU8
+	131: Call u64::pow(u64, u8): u64
+	132: CastU256
+	133: Mul
+	134: LdU64(10)
+	135: MoveLoc[15](loc9: u64)
+	136: CastU8
+	137: Call u64::pow(u64, u8): u64
+	138: CastU256
+	139: Mul
+	140: LdU64(10)
+	141: MoveLoc[10](loc4: u64)
+	142: CastU8
+	143: Call u64::pow(u64, u8): u64
+	144: CastU256
+	145: Div
+	146: MoveLoc[17](loc11: u64)
+	147: CastU256
+	148: Div
+	149: CastU64
+	150: StLoc[14](loc8: u64)
+	151: MoveLoc[2](Arg2: &PriceInfoObject)
+	152: Call pyth_parser::get_ema_price(&PriceInfoObject): u64 * u64 * u64
+	153: Pop
+	154: StLoc[11](loc5: u64)
+	155: StLoc[13](loc7: u64)
+	156: MoveLoc[3](Arg3: &PriceInfoObject)
+	157: Call pyth_parser::get_ema_price(&PriceInfoObject): u64 * u64 * u64
+	158: Pop
+	159: StLoc[16](loc10: u64)
+	160: StLoc[18](loc12: u64)
+	161: CopyLoc[13](loc7: u64)
+	162: LdU64(0)
+	163: Gt
+	164: BrFalse(166)
+B16:
+	165: Branch(174)
+B17:
+	166: MoveLoc[0](Arg0: &mut Oracle)
+	167: Pop
+	168: MoveLoc[5](Arg5: &TxContext)
+	169: Pop
+	170: MoveLoc[4](Arg4: &Clock)
+	171: Pop
+	172: LdU64(13906835643222261762)
+	173: Abort
+B18:
+	174: CopyLoc[18](loc12: u64)
+	175: LdU64(0)
+	176: Gt
+	177: BrFalse(179)
+B19:
+	178: Branch(187)
+B20:
+	179: MoveLoc[0](Arg0: &mut Oracle)
+	180: Pop
+	181: MoveLoc[5](Arg5: &TxContext)
+	182: Pop
+	183: MoveLoc[4](Arg4: &Clock)
+	184: Pop
+	185: LdU64(13906835647517229058)
+	186: Abort
+B21:
+	187: MoveLoc[13](loc7: u64)
+	188: CastU256
+	189: LdU64(10)
+	190: CopyLoc[0](Arg0: &mut Oracle)
+	191: ImmBorrowField[7](Oracle.decimal: u64)
+	192: ReadRef
+	193: CastU8
+	194: Call u64::pow(u64, u8): u64
+	195: CastU256
+	196: Mul
+	197: LdU64(10)
+	198: MoveLoc[16](loc10: u64)
+	199: CastU8
+	200: Call u64::pow(u64, u8): u64
+	201: CastU256
+	202: Mul
+	203: LdU64(10)
+	204: MoveLoc[11](loc5: u64)
+	205: CastU8
+	206: Call u64::pow(u64, u8): u64
+	207: CastU256
+	208: Div
+	209: MoveLoc[18](loc12: u64)
+	210: CastU256
+	211: Div
+	212: CastU64
+	213: StLoc[19](loc13: u64)
+	214: CopyLoc[14](loc8: u64)
+	215: CopyLoc[0](Arg0: &mut Oracle)
+	216: MutBorrowField[8](Oracle.price: u64)
+	217: WriteRef
+	218: MoveLoc[19](loc13: u64)
+	219: CopyLoc[0](Arg0: &mut Oracle)
+	220: MutBorrowField[9](Oracle.twap_price: u64)
+	221: WriteRef
+	222: CopyLoc[4](Arg4: &Clock)
+	223: Call clock::timestamp_ms(&Clock): u64
+	224: CopyLoc[0](Arg0: &mut Oracle)
+	225: MutBorrowField[10](Oracle.ts_ms: u64)
+	226: WriteRef
+	227: MoveLoc[5](Arg5: &TxContext)
+	228: Call tx_context::epoch(&TxContext): u64
+	229: CopyLoc[0](Arg0: &mut Oracle)
+	230: MutBorrowField[11](Oracle.epoch: u64)
+	231: WriteRef
+	232: MoveLoc[0](Arg0: &mut Oracle)
+	233: FreezeRef
+	234: Call object::id<Oracle>(&Oracle): ID
+	235: MoveLoc[14](loc8: u64)
+	236: MoveLoc[4](Arg4: &Clock)
+	237: Call clock::timestamp_ms(&Clock): u64
+	238: Pack[4](PriceEvent)
+	239: Call event::emit<PriceEvent>(PriceEvent)
+	240: Ret
+}
+
+public update_with_pyth_usd(Arg0: &mut Oracle, Arg1: &State, Arg2: &PriceInfoObject, Arg3: &Clock, Arg4: &TxContext) {
+L5:	loc0: bool
+L6:	loc1: ID
+L7:	loc2: &ID
+L8:	loc3: u64
+L9:	loc4: u64
+L10:	loc5: u64
+L11:	loc6: u64
+L12:	loc7: u64
+L13:	loc8: bool
+L14:	loc9: u64
+B0:
+	0: CopyLoc[0](Arg0: &mut Oracle)
+	1: FreezeRef
+	2: Call version_check(&Oracle)
+	3: CopyLoc[0](Arg0: &mut Oracle)
+	4: ImmBorrowField[4](Oracle.quote_token: String)
+	5: ReadRef
+	6: LdConst[16](vector<u8>: "USD..)
+	7: Call ascii::string(vector<u8>): String
+	8: Eq
+	9: BrFalse(13)
+B1:
+	10: LdTrue
+	11: StLoc[5](loc0: bool)
+	12: Branch(20)
+B2:
+	13: CopyLoc[0](Arg0: &mut Oracle)
+	14: ImmBorrowField[5](Oracle.base_token: String)
+	15: ReadRef
+	16: LdConst[16](vector<u8>: "USD..)
+	17: Call ascii::string(vector<u8>): String
+	18: Eq
+	19: StLoc[5](loc0: bool)
+B3:
+	20: MoveLoc[5](loc0: bool)
+	21: BrFalse(23)
+B4:
+	22: Branch(35)
+B5:
+	23: MoveLoc[1](Arg1: &State)
+	24: Pop
+	25: MoveLoc[0](Arg0: &mut Oracle)
+	26: Pop
+	27: MoveLoc[4](Arg4: &TxContext)
+	28: Pop
+	29: MoveLoc[3](Arg3: &Clock)
+	30: Pop
+	31: MoveLoc[2](Arg2: &PriceInfoObject)
+	32: Pop
+	33: LdU64(13906835767776837642)
+	34: Abort
+B6:
+	35: LdFalse
+	36: StLoc[13](loc8: bool)
+	37: CopyLoc[0](Arg0: &mut Oracle)
+	38: ImmBorrowField[1](Oracle.id: UID)
+	39: LdConst[17](vector<u8>: "rec..)
+	40: Call string::utf8(vector<u8>): String
+	41: Call dynamic_field::exists_<String>(&UID, String): bool
+	42: BrFalse(71)
+B7:
+	43: LdTrue
+	44: StLoc[13](loc8: bool)
+	45: CopyLoc[0](Arg0: &mut Oracle)
+	46: ImmBorrowField[1](Oracle.id: UID)
+	47: LdConst[17](vector<u8>: "rec..)
+	48: Call string::utf8(vector<u8>): String
+	49: Call dynamic_field::borrow<String, ID>(&UID, String): &ID
+	50: StLoc[7](loc2: &ID)
+	51: CopyLoc[2](Arg2: &PriceInfoObject)
+	52: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	53: StLoc[6](loc1: ID)
+	54: MoveLoc[7](loc2: &ID)
+	55: ImmBorrowLoc[6](loc1: ID)
+	56: Eq
+	57: BrFalse(59)
+B8:
+	58: Branch(92)
+B9:
+	59: MoveLoc[1](Arg1: &State)
+	60: Pop
+	61: MoveLoc[0](Arg0: &mut Oracle)
+	62: Pop
+	63: MoveLoc[4](Arg4: &TxContext)
+	64: Pop
+	65: MoveLoc[3](Arg3: &Clock)
+	66: Pop
+	67: MoveLoc[2](Arg2: &PriceInfoObject)
+	68: Pop
+	69: LdU64(13906835789251280900)
+	70: Abort
+B10:
+	71: CopyLoc[0](Arg0: &mut Oracle)
+	72: ImmBorrowField[6](Oracle.pyth: Option<ID>)
+	73: ReadRef
+	74: CopyLoc[2](Arg2: &PriceInfoObject)
+	75: Call object::id<PriceInfoObject>(&PriceInfoObject): ID
+	76: Call option::some<ID>(ID): Option<ID>
+	77: Eq
+	78: BrFalse(80)
+B11:
+	79: Branch(92)
+B12:
+	80: MoveLoc[1](Arg1: &State)
+	81: Pop
+	82: MoveLoc[0](Arg0: &mut Oracle)
+	83: Pop
+	84: MoveLoc[4](Arg4: &TxContext)
+	85: Pop
+	86: MoveLoc[3](Arg3: &Clock)
+	87: Pop
+	88: MoveLoc[2](Arg2: &PriceInfoObject)
+	89: Pop
+	90: LdU64(13906835797841215492)
+	91: Abort
+B13:
+	92: MoveLoc[1](Arg1: &State)
+	93: CopyLoc[2](Arg2: &PriceInfoObject)
+	94: CopyLoc[3](Arg3: &Clock)
+	95: Call pyth_parser::get_price(&State, &PriceInfoObject, &Clock): u64 * u64 * u64
+	96: Pop
+	97: StLoc[8](loc3: u64)
+	98: StLoc[10](loc5: u64)
+	99: CopyLoc[10](loc5: u64)
+	100: LdU64(0)
+	101: Gt
+	102: BrFalse(104)
+B14:
+	103: Branch(114)
+B15:
+	104: MoveLoc[0](Arg0: &mut Oracle)
+	105: Pop
+	106: MoveLoc[4](Arg4: &TxContext)
+	107: Pop
+	108: MoveLoc[3](Arg3: &Clock)
+	109: Pop
+	110: MoveLoc[2](Arg2: &PriceInfoObject)
+	111: Pop
+	112: LdU64(13906835815020953602)
+	113: Abort
+B16:
+	114: MoveLoc[10](loc5: u64)
+	115: CastU256
+	116: LdU64(10)
+	117: CopyLoc[0](Arg0: &mut Oracle)
+	118: ImmBorrowField[7](Oracle.decimal: u64)
+	119: ReadRef
+	120: CastU8
+	121: Call u64::pow(u64, u8): u64
+	122: CastU256
+	123: Mul
+	124: LdU64(10)
+	125: MoveLoc[8](loc3: u64)
+	126: CastU8
+	127: Call u64::pow(u64, u8): u64
+	128: CastU256
+	129: Div
+	130: CastU64
+	131: StLoc[12](loc7: u64)
+	132: MoveLoc[2](Arg2: &PriceInfoObject)
+	133: Call pyth_parser::get_ema_price(&PriceInfoObject): u64 * u64 * u64
+	134: Pop
+	135: StLoc[9](loc4: u64)
+	136: StLoc[11](loc6: u64)
+	137: CopyLoc[11](loc6: u64)
+	138: LdU64(0)
+	139: Gt
+	140: BrFalse(142)
+B17:
+	141: Branch(150)
+B18:
+	142: MoveLoc[0](Arg0: &mut Oracle)
+	143: Pop
+	144: MoveLoc[4](Arg4: &TxContext)
+	145: Pop
+	146: MoveLoc[3](Arg3: &Clock)
+	147: Pop
+	148: LdU64(13906835836495790082)
+	149: Abort
+B19:
+	150: MoveLoc[11](loc6: u64)
+	151: CastU256
+	152: LdU64(10)
+	153: CopyLoc[0](Arg0: &mut Oracle)
+	154: ImmBorrowField[7](Oracle.decimal: u64)
+	155: ReadRef
+	156: CastU8
+	157: Call u64::pow(u64, u8): u64
+	158: CastU256
+	159: Mul
+	160: LdU64(10)
+	161: MoveLoc[9](loc4: u64)
+	162: CastU8
+	163: Call u64::pow(u64, u8): u64
+	164: CastU256
+	165: Div
+	166: CastU64
+	167: StLoc[14](loc9: u64)
+	168: MoveLoc[13](loc8: bool)
+	169: BrFalse(192)
+B20:
+	170: LdU64(10)
+	171: CopyLoc[0](Arg0: &mut Oracle)
+	172: ImmBorrowField[7](Oracle.decimal: u64)
+	173: ReadRef
+	174: LdU64(2)
+	175: Mul
+	176: CastU8
+	177: Call u64::pow(u64, u8): u64
+	178: MoveLoc[12](loc7: u64)
+	179: Div
+	180: StLoc[12](loc7: u64)
+	181: LdU64(10)
+	182: CopyLoc[0](Arg0: &mut Oracle)
+	183: ImmBorrowField[7](Oracle.decimal: u64)
+	184: ReadRef
+	185: LdU64(2)
+	186: Mul
+	187: CastU8
+	188: Call u64::pow(u64, u8): u64
+	189: MoveLoc[14](loc9: u64)
+	190: Div
+	191: StLoc[14](loc9: u64)
+B21:
+	192: CopyLoc[12](loc7: u64)
+	193: CopyLoc[0](Arg0: &mut Oracle)
+	194: MutBorrowField[8](Oracle.price: u64)
+	195: WriteRef
+	196: MoveLoc[14](loc9: u64)
+	197: CopyLoc[0](Arg0: &mut Oracle)
+	198: MutBorrowField[9](Oracle.twap_price: u64)
+	199: WriteRef
+	200: CopyLoc[3](Arg3: &Clock)
+	201: Call clock::timestamp_ms(&Clock): u64
+	202: CopyLoc[0](Arg0: &mut Oracle)
+	203: MutBorrowField[10](Oracle.ts_ms: u64)
+	204: WriteRef
+	205: MoveLoc[4](Arg4: &TxContext)
+	206: Call tx_context::epoch(&TxContext): u64
+	207: CopyLoc[0](Arg0: &mut Oracle)
+	208: MutBorrowField[11](Oracle.epoch: u64)
+	209: WriteRef
+	210: MoveLoc[0](Arg0: &mut Oracle)
+	211: FreezeRef
+	212: Call object::id<Oracle>(&Oracle): ID
+	213: MoveLoc[12](loc7: u64)
+	214: MoveLoc[3](Arg3: &Clock)
+	215: Call clock::timestamp_ms(&Clock): u64
+	216: Pack[4](PriceEvent)
+	217: Call event::emit<PriceEvent>(PriceEvent)
+	218: Ret
+}
+
+version_check(Arg0: &Oracle) {
+L1:	loc0: u64
+B0:
+	0: CopyLoc[0](Arg0: &Oracle)
+	1: ImmBorrowField[1](Oracle.id: UID)
+	2: LdConst[14](vector<u8>: "VER..)
+	3: Call string::utf8(vector<u8>): String
+	4: Call dynamic_field::exists_<String>(&UID, String): bool
+	5: BrFalse(21)
+B1:
+	6: MoveLoc[0](Arg0: &Oracle)
+	7: ImmBorrowField[1](Oracle.id: UID)
+	8: LdConst[14](vector<u8>: "VER..)
+	9: Call string::utf8(vector<u8>): String
+	10: Call dynamic_field::borrow<String, u64>(&UID, String): &u64
+	11: ReadRef
+	12: StLoc[1](loc0: u64)
+	13: LdConst[0](u64: 2)
+	14: MoveLoc[1](loc0: u64)
+	15: Ge
+	16: BrFalse(18)
+B2:
+	17: Branch(20)
+B3:
+	18: LdU64(13906835956755267592)
+	19: Abort
+B4:
+	20: Ret
+B5:
+	21: MoveLoc[0](Arg0: &Oracle)
+	22: Pop
+	23: LdU64(13906835973935136776)
+	24: Abort
+}
+
+update_(Arg0: &mut Oracle, Arg1: u64, Arg2: u64, Arg3: &Clock, Arg4: &TxContext) {
+L5:	loc0: u64
+B0:
+	0: CopyLoc[1](Arg1: u64)
+	1: LdU64(0)
+	2: Gt
+	3: BrFalse(5)
+B1:
+	4: Branch(13)
+B2:
+	5: MoveLoc[0](Arg0: &mut Oracle)
+	6: Pop
+	7: MoveLoc[4](Arg4: &TxContext)
+	8: Pop
+	9: MoveLoc[3](Arg3: &Clock)
+	10: Pop
+	11: LdU64(13906836016884416514)
+	12: Abort
+B3:
+	13: CopyLoc[2](Arg2: u64)
+	14: LdU64(0)
+	15: Gt
+	16: BrFalse(18)
+B4:
+	17: Branch(26)
+B5:
+	18: MoveLoc[0](Arg0: &mut Oracle)
+	19: Pop
+	20: MoveLoc[4](Arg4: &TxContext)
+	21: Pop
+	22: MoveLoc[3](Arg3: &Clock)
+	23: Pop
+	24: LdU64(13906836021179383810)
+	25: Abort
+B6:
+	26: MoveLoc[3](Arg3: &Clock)
+	27: Call clock::timestamp_ms(&Clock): u64
+	28: StLoc[5](loc0: u64)
+	29: CopyLoc[1](Arg1: u64)
+	30: CopyLoc[0](Arg0: &mut Oracle)
+	31: MutBorrowField[8](Oracle.price: u64)
+	32: WriteRef
+	33: MoveLoc[2](Arg2: u64)
+	34: CopyLoc[0](Arg0: &mut Oracle)
+	35: MutBorrowField[9](Oracle.twap_price: u64)
+	36: WriteRef
+	37: CopyLoc[5](loc0: u64)
+	38: CopyLoc[0](Arg0: &mut Oracle)
+	39: MutBorrowField[10](Oracle.ts_ms: u64)
+	40: WriteRef
+	41: MoveLoc[4](Arg4: &TxContext)
+	42: Call tx_context::epoch(&TxContext): u64
+	43: CopyLoc[0](Arg0: &mut Oracle)
+	44: MutBorrowField[11](Oracle.epoch: u64)
+	45: WriteRef
+	46: MoveLoc[0](Arg0: &mut Oracle)
+	47: FreezeRef
+	48: Call object::id<Oracle>(&Oracle): ID
+	49: MoveLoc[1](Arg1: u64)
+	50: MoveLoc[5](loc0: u64)
+	51: Pack[4](PriceEvent)
+	52: Call event::emit<PriceEvent>(PriceEvent)
+	53: Ret
+}
+
+public get_oracle(Arg0: &Oracle): u64 * u64 * u64 * u64 {
+B0:
+	0: CopyLoc[0](Arg0: &Oracle)
+	1: ImmBorrowField[8](Oracle.price: u64)
+	2: ReadRef
+	3: CopyLoc[0](Arg0: &Oracle)
+	4: ImmBorrowField[7](Oracle.decimal: u64)
+	5: ReadRef
+	6: CopyLoc[0](Arg0: &Oracle)
+	7: ImmBorrowField[10](Oracle.ts_ms: u64)
+	8: ReadRef
+	9: MoveLoc[0](Arg0: &Oracle)
+	10: ImmBorrowField[11](Oracle.epoch: u64)
+	11: ReadRef
+	12: Ret
+}
+
+public get_token(Arg0: &Oracle): String * String * TypeName * TypeName {
+B0:
+	0: CopyLoc[0](Arg0: &Oracle)
+	1: ImmBorrowField[5](Oracle.base_token: String)
+	2: ReadRef
+	3: CopyLoc[0](Arg0: &Oracle)
+	4: ImmBorrowField[4](Oracle.quote_token: String)
+	5: ReadRef
+	6: CopyLoc[0](Arg0: &Oracle)
+	7: ImmBorrowField[12](Oracle.base_token_type: TypeName)
+	8: ReadRef
+	9: MoveLoc[0](Arg0: &Oracle)
+	10: ImmBorrowField[13](Oracle.quote_token_type: TypeName)
+	11: ReadRef
+	12: Ret
+}
+
+public get_price(Arg0: &Oracle, Arg1: &Clock): u64 * u64 {
+B0:
+	0: MoveLoc[1](Arg1: &Clock)
+	1: Call clock::timestamp_ms(&Clock): u64
+	2: CopyLoc[0](Arg0: &Oracle)
+	3: ImmBorrowField[10](Oracle.ts_ms: u64)
+	4: ReadRef
+	5: Sub
+	6: CopyLoc[0](Arg0: &Oracle)
+	7: ImmBorrowField[3](Oracle.time_interval: u64)
+	8: ReadRef
+	9: Lt
+	10: BrFalse(12)
+B1:
+	11: Branch(16)
+B2:
+	12: MoveLoc[0](Arg0: &Oracle)
+	13: Pop
+	14: LdU64(13906836145734090764)
+	15: Abort
+B3:
+	16: CopyLoc[0](Arg0: &Oracle)
+	17: ImmBorrowField[8](Oracle.price: u64)
+	18: ReadRef
+	19: MoveLoc[0](Arg0: &Oracle)
+	20: ImmBorrowField[7](Oracle.decimal: u64)
+	21: ReadRef
+	22: Ret
+}
+
+public get_twap_price(Arg0: &Oracle, Arg1: &Clock): u64 * u64 {
+B0:
+	0: MoveLoc[1](Arg1: &Clock)
+	1: Call clock::timestamp_ms(&Clock): u64
+	2: CopyLoc[0](Arg0: &Oracle)
+	3: ImmBorrowField[10](Oracle.ts_ms: u64)
+	4: ReadRef
+	5: Sub
+	6: CopyLoc[0](Arg0: &Oracle)
+	7: ImmBorrowField[3](Oracle.time_interval: u64)
+	8: ReadRef
+	9: Lt
+	10: BrFalse(12)
+B1:
+	11: Branch(16)
+B2:
+	12: MoveLoc[0](Arg0: &Oracle)
+	13: Pop
+	14: LdU64(13906836184388796428)
+	15: Abort
+B3:
+	16: CopyLoc[0](Arg0: &Oracle)
+	17: ImmBorrowField[9](Oracle.twap_price: u64)
+	18: ReadRef
+	19: MoveLoc[0](Arg0: &Oracle)
+	20: ImmBorrowField[7](Oracle.decimal: u64)
+	21: ReadRef
+	22: Ret
+}
+
+public get_price_with_interval_ms(Arg0: &Oracle, Arg1: &Clock, Arg2: u64): u64 * u64 {
+L3:	loc0: bool
+L4:	loc1: u64
+B0:
+	0: MoveLoc[1](Arg1: &Clock)
+	1: Call clock::timestamp_ms(&Clock): u64
+	2: StLoc[4](loc1: u64)
+	3: CopyLoc[4](loc1: u64)
+	4: CopyLoc[0](Arg0: &Oracle)
+	5: ImmBorrowField[10](Oracle.ts_ms: u64)
+	6: ReadRef
+	7: Sub
+	8: CopyLoc[0](Arg0: &Oracle)
+	9: ImmBorrowField[3](Oracle.time_interval: u64)
+	10: ReadRef
+	11: Lt
+	12: BrFalse(22)
+B1:
+	13: MoveLoc[4](loc1: u64)
+	14: CopyLoc[0](Arg0: &Oracle)
+	15: ImmBorrowField[10](Oracle.ts_ms: u64)
+	16: ReadRef
+	17: Sub
+	18: MoveLoc[2](Arg2: u64)
+	19: Le
+	20: StLoc[3](loc0: bool)
+	21: Branch(24)
+B2:
+	22: LdFalse
+	23: StLoc[3](loc0: bool)
+B3:
+	24: MoveLoc[3](loc0: bool)
+	25: BrFalse(27)
+B4:
+	26: Branch(31)
+B5:
+	27: MoveLoc[0](Arg0: &Oracle)
+	28: Pop
+	29: LdU64(13906836227338469388)
+	30: Abort
+B6:
+	31: CopyLoc[0](Arg0: &Oracle)
+	32: ImmBorrowField[8](Oracle.price: u64)
+	33: ReadRef
+	34: MoveLoc[0](Arg0: &Oracle)
+	35: ImmBorrowField[7](Oracle.decimal: u64)
+	36: ReadRef
+	37: Ret
+}
+
+public update_v2(Arg0: &mut Oracle, Arg1: &UpdateAuthority, Arg2: u64, Arg3: u64, Arg4: &Clock, Arg5: &mut TxContext) {
+B0:
+	0: LdU64(0)
+	1: Abort
+}
+
+Constants [
+	0 => u64: 2
+	1 => vector<u8>: "EInvalidPrice" // interpreted as UTF8 string
+	2 => vector<u8>: "Invalid Price" // interpreted as UTF8 string
+	3 => vector<u8>: "EInvalidPyth" // interpreted as UTF8 string
+	4 => vector<u8>: "Invalid Pyth" // interpreted as UTF8 string
+	5 => vector<u8>: "EInvalidUpdateCap" // interpreted as UTF8 string
+	6 => vector<u8>: "Invalid Update Cap" // interpreted as UTF8 string
+	7 => vector<u8>: "EInvalidVersion" // interpreted as UTF8 string
+	8 => vector<u8>: "Invalid Version" // interpreted as UTF8 string
+	9 => vector<u8>: "ENotPyth" // interpreted as UTF8 string
+	10 => vector<u8>: "Not Pyth" // interpreted as UTF8 string
+	11 => vector<u8>: "EOracleExpired" // interpreted as UTF8 string
+	12 => vector<u8>: "Oracle Expired" // interpreted as UTF8 string
+	13 => vector<address>: 00
+	14 => vector<u8>: "VERSION" // interpreted as UTF8 string
+	15 => vector<u8>: "quote_price_info_object" // interpreted as UTF8 string
+	16 => vector<u8>: "USD" // interpreted as UTF8 string
+	17 => vector<u8>: "reciprocal_pyth" // interpreted as UTF8 string
+]
+}

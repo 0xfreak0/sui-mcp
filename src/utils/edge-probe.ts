@@ -35,8 +35,14 @@ import { BALANCE_CHANGES_SELECTION, completeTxConnections, readAllBalanceChanges
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 import { isSponsorGasChange, isSuiCoinType } from "./sponsor-gas.js";
 import {
+  clearsDustFloor,
+  GRANT_MAX_RECIPIENTS,
   pickFundingTx,
+  SEND_BURST_CHECKPOINTS,
   UNPRICED_PUBLISHER_SHARE,
+  UNPRICED_SUPPLY_SHARE,
+  UNPRICED_TARGETED_SHARE,
+  type SendShape,
   type CoinOrigin,
   type FundingAssessment,
   type FundingTx,
@@ -49,6 +55,7 @@ import { assessCoFunding } from "./co-funding.js";
 import { pricesForRanking } from "./price-providers.js";
 import { prefetchCoinScale, pricingScale, usdValue } from "./valuation.js";
 import { counterpartySides } from "./fanout.js";
+import { getLabel } from "./labels.js";
 
 /**
  * Distinct counterparties past which an intermediary is a service, not a person.
@@ -68,6 +75,23 @@ export const DEFAULT_POPULARITY_LIMIT = 50;
  * transaction has one or two distinct balance-change parties.
  */
 const MASS_ACTION_LIMIT = 20;
+
+/**
+ * Other wallets a sponsor pays gas for whose first funders are read, to test
+ * whether the sponsor and the seeds' funder are one operator in two roles.
+ *
+ * An operator can fund its wallets from one address and pay their gas from
+ * another. The sponsor then pays none of the wallets it sponsors, and past
+ * the popularity limit it reads as a relayer. Breadth cannot separate the
+ * two; who funded the wallets it serves can. A public relayer's users are
+ * first funded by whoever onboarded each of them, while a split operator's
+ * wallets share its funder.
+ */
+const ROLE_SPLIT_SAMPLE = 6;
+/** Sampled wallets the seeds' funder must have first funded, at least. */
+const ROLE_SPLIT_MIN_MATCHES = 3;
+/** And at least this share of those whose first funder was read. */
+const ROLE_SPLIT_SHARE = 0.5;
 
 /** Transactions read per page. GraphQL caps this at 50. */
 const PAGE = 50;
@@ -93,7 +117,32 @@ export interface ExcludedIntermediary {
   role: "funder" | "sponsor";
   /** Distinct counterparties seen before the scan stopped. A lower bound. */
   observed_counterparties: number;
+  /** A funder's recipients paid only below the dust floors, not counted in `observed_counterparties`. */
+  below_floor_recipients?: number;
+  /** A sponsor checked for a funder in another address; see {@link RoleSplit}. */
+  role_split?: RoleSplit;
   reason: string;
+}
+
+/**
+ * Whether a sponsor and the seeds' first funder serve the same wallets: the
+ * first funders of a sample of the other wallets the sponsor pays gas for.
+ */
+export interface RoleSplit {
+  /** The first funder of the seeds this sponsor paid gas for. */
+  funder: string;
+  /** Other wallets the sponsor pays gas for whose first funder was read. */
+  wallets_checked: number;
+  /** Of those, how many `funder` first funded. */
+  first_funded_by_funder: number;
+  /** The share cleared {@link ROLE_SPLIT_SHARE} and {@link ROLE_SPLIT_MIN_MATCHES}. */
+  linked: boolean;
+  /**
+   * Why no wallet was checked: the seeds' funder is a service by the
+   * popularity filter or a label, or was never measured. Wallets a service
+   * funded share it by being its customers, so the overlap would say nothing.
+   */
+  not_checked?: string;
 }
 
 /** An intermediary that survived the filter, and how well it was measured. */
@@ -101,6 +150,10 @@ export interface UsedIntermediary {
   address: string;
   role: "funder" | "sponsor";
   observed_counterparties: number;
+  /** A funder's recipients paid only below the dust floors, not counted in `observed_counterparties`. */
+  below_floor_recipients?: number;
+  /** A sponsor checked for a funder in another address; see {@link RoleSplit}. */
+  role_split?: RoleSplit;
   /**
    * False when the scan stopped at its page cap or the query budget before
    * reaching the end of history.
@@ -255,9 +308,19 @@ async function fundingValuer(txs: FundingTx[], address: string): Promise<Funding
   for (const t of txs) {
     for (const c of t.changes) if (c.address === address && BigInt(c.amount) > 0n) received.add(c.coinType);
   }
-  const [prices] = await Promise.all([pricesForRanking([...received, SUI_COIN_TYPE]), prefetchCoinScale(received)]);
+  return floorValuer(received);
+}
+
+/**
+ * USD values for `coinTypes` under the rule {@link fundingValuer} states: SUI
+ * rides in every request as the canary, and when even SUI comes back unpriced
+ * the service is down and `valueUsd` is withheld.
+ */
+async function floorValuer(coinTypes: Iterable<string>): Promise<FundingValuer> {
+  const types = [...new Set(coinTypes)];
+  const [prices] = await Promise.all([pricesForRanking([...types, SUI_COIN_TYPE]), prefetchCoinScale(types)]);
   if (!prices.has(SUI_COIN_TYPE)) {
-    return { pricesUnavailable: [...received].some((t) => !isSuiCoinType(t)) };
+    return { pricesUnavailable: types.some((t) => !isSuiCoinType(t)) };
   }
   return {
     pricesUnavailable: false,
@@ -273,15 +336,19 @@ export interface FundingJudgement {
   assessment: FundingAssessment;
   /** A coin other than SUI reached the address while no price could be read. */
   pricesUnavailable: boolean;
-  /** Requests made to read unpriced coins' supply and publisher, for a caller's budget. */
+  /** Requests made to read unpriced coins' supply, publisher and send shape, for a caller's budget. */
   reads: number;
   /**
-   * Unpriced coins still skipped before the pick whose supply or publisher
-   * read failed. Each was judged spam without the read that could have made
-   * it funding, so the pick stands only provisionally and callers disclose it.
+   * Unpriced coins still skipped before the pick whose supply, publisher or
+   * send-shape read failed. Each was judged spam without the read that could
+   * have made it funding, so the pick stands only provisionally and callers
+   * disclose it.
    */
   originUnread: string[];
 }
+
+/** Unpriced inflows whose send shape one judgement reads, at most. */
+const MAX_SHAPE_READS = 3;
 
 /**
  * Judge an address's earliest transactions the one way both funding tools do:
@@ -293,9 +360,10 @@ export interface FundingJudgement {
  * is how that insider was set up. Only coins actually skipped as
  * unpriced are read: the supply first, and the publisher only when the
  * largest such inflow is big enough to count at all, so `from_publisher` is
- * a read fact wherever it is reported. When a read fails the coin stays
- * skipped, and if its skip still precedes the final pick it is listed in
- * `originUnread`.
+ * a read fact wherever it is reported. An inflow whose share could count only
+ * as a grant also has its send read ({@link readSendShape}), up to
+ * {@link MAX_SHAPE_READS}. When a read fails the coin stays skipped, and if
+ * its skip still precedes the final pick it is listed in `originUnread`.
  */
 export async function assessFunding(txs: FundingTx[], address: string): Promise<FundingJudgement> {
   const { valueUsd, pricesUnavailable } = await fundingValuer(txs, address);
@@ -319,7 +387,7 @@ export async function assessFunding(txs: FundingTx[], address: string): Promise<
     // Scaled to the same millionths `pickFundingTx` compares in.
     const share = Number((amount * 1_000_000n) / supply.value) / 1_000_000;
     let publisher: string | null = null;
-    if (share >= UNPRICED_PUBLISHER_SHARE) {
+    if (share >= UNPRICED_TARGETED_SHARE) {
       const read = await coinPublisher(coinType);
       // The package object, then its creating transaction.
       if (read.fetched) reads += 2;
@@ -328,12 +396,108 @@ export async function assessFunding(txs: FundingTx[], address: string): Promise<
     }
     origins.set(coinType, { totalSupply: supply.value, publisher });
   }
-  const assessment = origins.size === 0 ? first : pickFundingTx(txs, address, { valueUsd, coinOrigin: (t) => origins.get(t) });
+
+  // Only an inflow the share alone does not settle, and that clears the grant floor.
+  const shapes = new Map<string, SendShape>();
+  let shapeReads = 0;
+  for (const s of first.dustSkipped) {
+    const origin = origins.get(s.coinType);
+    if (s.reason !== "unpriced_coin" || !origin?.totalSupply) continue;
+    const share = Number((BigInt(s.amount) * 1_000_000n) / origin.totalSupply) / 1_000_000;
+    const fromPublisher = origin.publisher !== null && origin.publisher === s.funder;
+    if (share < UNPRICED_TARGETED_SHARE || share >= UNPRICED_SUPPLY_SHARE || (fromPublisher && share >= UNPRICED_PUBLISHER_SHARE)) continue;
+    const tx = txs.find((t) => t.digest === s.digest);
+    if (!tx) continue;
+    if (shapeReads >= MAX_SHAPE_READS) {
+      unread.add(s.coinType);
+      continue;
+    }
+    shapeReads++;
+    const read = await readSendShape(tx, s.funder, s.coinType);
+    reads += read.reads;
+    if (!read.shape) {
+      unread.add(s.coinType);
+      continue;
+    }
+    shapes.set(`${s.digest}|${s.coinType}`, read.shape);
+  }
+
+  const assessment =
+    origins.size === 0
+      ? first
+      : pickFundingTx(txs, address, {
+          valueUsd,
+          coinOrigin: (t) => origins.get(t),
+          sendShape: (digest, coinType) => shapes.get(`${digest}|${coinType}`),
+        });
   // Only a skip before the final pick could have changed it.
   const originUnread = [...unread].filter((t) =>
     assessment.dustSkipped.some((s) => s.reason === "unpriced_coin" && s.coinType === t),
   );
   return { assessment, pricesUnavailable, reads, originUnread };
+}
+
+const SENT_IN_WINDOW_QUERY = `query ($filter: TransactionFilter) {
+  transactions(filter: $filter, first: ${PAGE}) {
+    pageInfo { hasNextPage }
+    nodes { digest effects { ${BALANCE_CHANGES_SELECTION} } }
+  }
+}`;
+
+/**
+ * How `funder` sent `coinType` around `tx`: who the transaction itself paid
+ * in the coin, and who the funder paid in it across the transactions it sent
+ * within {@link SEND_BURST_CHECKPOINTS} either side. One read. The shape is
+ * absent when the read failed or the transaction has no checkpoint; a window
+ * or a transaction past one page marks it `burst_truncated`, which never
+ * reads as a grant.
+ */
+async function readSendShape(tx: FundingTx, funder: string, coinType: string): Promise<{ shape?: SendShape; reads: number }> {
+  const paid = new Map<string, bigint>();
+  const add = (owner: string, amount: bigint) => paid.set(owner, (paid.get(owner) ?? 0n) + amount);
+  for (const c of tx.changes) {
+    if (c.coinType === coinType && c.address !== funder && BigInt(c.amount) > 0n) add(c.address, BigInt(c.amount));
+  }
+  const recipientsInTx = paid.size;
+  const shapeOf = (truncated: boolean): SendShape => {
+    const amounts = [...paid.values()];
+    return {
+      recipients_in_tx: recipientsInTx,
+      burst_recipients: paid.size,
+      ...(truncated ? { burst_truncated: true as const } : {}),
+      even_amounts: amounts.length >= 3 && amounts.every((a) => a === amounts[0]),
+    };
+  };
+  // A transaction that already paid more than a grant does is a mass send; no read changes that.
+  if (recipientsInTx > GRANT_MAX_RECIPIENTS) return { reads: 0, shape: shapeOf(false) };
+  if (tx.checkpoint === null || funder === "unknown") return { reads: 0 };
+  const cp = Number(tx.checkpoint);
+  let truncated: boolean;
+  try {
+    const page = await gqlQuery<{
+      transactions?: {
+        pageInfo: { hasNextPage: boolean };
+        nodes: Array<{ digest: string; effects?: { balanceChanges: GqlConnection<GqlBalanceChangeNode> } | null }>;
+      } | null;
+    }>(SENT_IN_WINDOW_QUERY, {
+      filter: { sentAddress: funder, afterCheckpoint: Math.max(0, cp - SEND_BURST_CHECKPOINTS - 1), beforeCheckpoint: cp + SEND_BURST_CHECKPOINTS + 1 },
+    });
+    if (!page?.transactions) return { reads: 1 };
+    truncated = page.transactions.pageInfo?.hasNextPage === true;
+    for (const n of page.transactions.nodes) {
+      if (n.digest === tx.digest) continue;
+      const conn = n.effects?.balanceChanges;
+      if (conn?.pageInfo?.hasNextPage) truncated = true;
+      for (const bc of conn?.nodes ?? []) {
+        const owner = bc.owner?.address;
+        const amount = BigInt(bc.amount ?? "0");
+        if (owner && owner !== funder && bc.coinType?.repr === coinType && amount > 0n) add(owner, amount);
+      }
+    }
+  } catch {
+    return { reads: 1 };
+  }
+  return { reads: 1, shape: shapeOf(truncated) };
 }
 
 /** What {@link firstFunderOf} found, and how firmly. */
@@ -436,6 +600,20 @@ export interface Popularity {
   popular: boolean;
   observed: number;
   /**
+   * Distinct addresses {@link probeRecipients} saw paid only below the dust
+   * floors funding is judged by (0.01 SUI, $0.10 of a priced coin, or a coin
+   * no source prices). They are not counted toward the limit: dusting a
+   * thousand addresses costs next to nothing, and counting them would let
+   * anyone make a funder read as a service and end a walk there.
+   */
+  belowFloor?: number;
+  /**
+   * Popular only: the counterparties seen before the scan stopped. A sample
+   * for a measurement of who the address served (see {@link ROLE_SPLIT_SAMPLE}),
+   * never sibling candidates.
+   */
+  sample?: Map<string, string>;
+  /**
    * True when the scan reached the end of the address's history.
    *
    * A `popular` verdict is proven either way — the limit was exceeded by
@@ -470,11 +648,17 @@ export interface Popularity {
 export type UnmeasuredReason = "budget" | "read_failed";
 
 /**
- * Who did `address` pay, up to `limit + 1` distinct recipients?
+ * Who did `address` pay at least the dust floor, up to `limit + 1` distinct
+ * recipients?
  *
  * Stops the moment the limit is exceeded — the verdict is settled at that point
  * and every further page is spent proving something already known. When the
  * scan finishes under the limit, `members` is the candidate sibling set.
+ *
+ * A payment counts only when it clears the floors `pickFundingTx` applies
+ * ({@link clearsDustFloor}); recipients paid only below them are counted
+ * apart in `belowFloor`. When no price can be read, a non-SUI payment counts,
+ * the same fallback funding applies.
  */
 export async function probeRecipients(
   address: string,
@@ -482,6 +666,9 @@ export async function probeRecipients(
   budget: Budget,
 ): Promise<Popularity> {
   const members = new Map<string, string>();
+  const belowFloor = new Set<string>();
+  const valuedTypes = new Set<string>();
+  let valuer: FundingValuer | null = null;
   let cursor: string | undefined;
   let pages = 0;
   let reachedEnd = false;
@@ -508,22 +695,37 @@ export async function probeRecipients(
     // A short recipient list is not a count. The scan goes on, since a
     // popular verdict proven by what was read still stands.
     if (completed.some((c) => c.balanceChangesTruncated)) readFailed = true;
+    const payments: Array<{ owner: string; digest: string; coin: string; amount: bigint }> = [];
     for (const [i, n] of page.transactions.nodes.entries()) {
       const sender = n.sender?.address;
       const sponsor = n.gasInput?.gasSponsor?.address;
       for (const bc of completed[i].balanceChanges) {
         const owner = bc.owner?.address;
         if (!owner || owner === address) continue;
-        if (BigInt(bc.amount ?? "0") <= 0n) continue;
+        const amount = BigInt(bc.amount ?? "0");
+        if (amount <= 0n) continue;
         // The sponsor's storage rebate is not a payment, and a sponsor listed
         // here would become a sibling candidate.
         if (isSponsorGasChange(owner, bc.coinType?.repr, sender, sponsor)) continue;
-        if (!members.has(owner)) members.set(owner, n.digest);
+        payments.push({ owner, digest: n.digest, coin: bc.coinType?.repr ?? "", amount });
+      }
+    }
+    // Priced once per new coin, SUI excluded: its floor needs no price.
+    const unvalued = payments.filter((p) => !isSuiCoinType(p.coin) && !valuedTypes.has(p.coin));
+    if (unvalued.length > 0) {
+      for (const p of unvalued) valuedTypes.add(p.coin);
+      valuer = await floorValuer(valuedTypes);
+    }
+    for (const p of payments) {
+      if (clearsDustFloor(p.coin, p.amount, valuer?.valueUsd) === true) {
+        if (!members.has(p.owner)) members.set(p.owner, p.digest);
+      } else {
+        belowFloor.add(p.owner);
       }
     }
     if (members.size > limit) {
       // Proven by what was seen; further pages cannot change the verdict.
-      return { members: new Map(), popular: true, observed: members.size, complete: true };
+      return { members: new Map(), popular: true, observed: members.size, belowFloor: dustOnly(belowFloor, members), complete: true };
     }
     if (!page.transactions.pageInfo.hasPreviousPage) {
       reachedEnd = true;
@@ -532,7 +734,26 @@ export async function probeRecipients(
     cursor = page.transactions.pageInfo.startCursor;
     if (!cursor) break;
   }
-  return { members, popular: false, observed: members.size, complete: reachedEnd, ...unmeasured(pages, readFailed) };
+  return {
+    members,
+    popular: false,
+    observed: members.size,
+    belowFloor: dustOnly(belowFloor, members),
+    complete: reachedEnd,
+    ...unmeasured(pages, readFailed),
+  };
+}
+
+/** `below_floor_recipients` for an intermediary's row, when the probe saw any. */
+function belowFloorOf(p: Popularity): { below_floor_recipients?: number } {
+  return p.belowFloor ? { below_floor_recipients: p.belowFloor } : {};
+}
+
+/** Addresses paid below the floors that no payment above them reached. */
+function dustOnly(belowFloor: Set<string>, members: Map<string, string>): number {
+  let n = 0;
+  for (const a of belowFloor) if (!members.has(a)) n++;
+  return n;
 }
 
 /**
@@ -572,7 +793,7 @@ export async function probeSponsored(
     }
     if (members.size > limit) {
       // Proven by what was seen; further pages cannot change the verdict.
-      return { members: new Map(), popular: true, observed: members.size, complete: true };
+      return { members: new Map(), sample: members, popular: true, observed: members.size, complete: true };
     }
     if (!page.transactions.pageInfo.hasPreviousPage) {
       reachedEnd = true;
@@ -931,7 +1152,8 @@ export async function buildWalletEdges(
         address: funder,
         role: "funder",
         observed_counterparties: p.observed,
-        reason: `Paid more than ${popularityLimit} distinct addresses — exchange, bridge or faucet-scale distributor. Shared ancestry through it carries no information.`,
+        ...belowFloorOf(p),
+        reason: `Paid more than ${popularityLimit} distinct addresses at least 0.01 SUI or $0.10 each — exchange, bridge or faucet-scale distributor. Shared ancestry through it carries no information.`,
       });
       continue;
     }
@@ -940,6 +1162,7 @@ export async function buildWalletEdges(
       address: funder,
       role: "funder",
       observed_counterparties: p.observed,
+      ...belowFloorOf(p),
       scan_complete: p.complete,
     });
   }
@@ -979,6 +1202,53 @@ export async function buildWalletEdges(
     }
   }
 
+  /**
+   * Is `sponsor` one operator with the seeds' first funder, working from a
+   * second address? Reads the first funders of up to {@link ROLE_SPLIT_SAMPLE}
+   * other wallets it pays gas for. Null when no seed it sponsored has a known
+   * first funder other than itself, so there is nothing to compare against.
+   */
+  const checkRoleSplit = async (sponsor: string, p: Popularity): Promise<(RoleSplit & { digests: string[] }) | null> => {
+    const seedsHere = uniqueSeeds.filter((s) => profiles.get(s)?.sponsors.has(sponsor));
+    const known = [...new Set(seedsHere.map((s) => firstFunders.get(s)).filter((f): f is string => Boolean(f) && f !== sponsor))];
+    if (known.length === 0) return null;
+    // Only a funder that is a seed, or that passed the popularity filter and
+    // carries no label: an exchange's customers share it by being customers.
+    const funders = known.filter((f) => uniqueSeeds.includes(f) || (funderMembers.has(f) && !getLabel(f)));
+    if (funders.length === 0) {
+      const f = known[0];
+      const why = getLabel(f)
+        ? "it carries a label"
+        : excluded.some((e) => e.address === f && e.role === "funder")
+          ? "it was excluded as a service or could not be measured"
+          : "its popularity was not measured";
+      return { funder: f, wallets_checked: 0, first_funded_by_funder: 0, linked: false, not_checked: `The seeds' funder is not narrow: ${why}.`, digests: [] };
+    }
+    const served = [...(p.popular ? (p.sample ?? new Map()) : p.members)].filter(
+      ([a]) => !uniqueSeeds.includes(a) && !funders.includes(a),
+    );
+    const tally = new Map<string, string[]>();
+    let checked = 0;
+    for (const [wallet] of served.slice(0, ROLE_SPLIT_SAMPLE)) {
+      const f = await firstFunderOf(wallet, budget);
+      if (!f) continue;
+      if (f.pricesUnavailable) unpricedLookups++;
+      if (f.originUnread.length) originUnreadLookups++;
+      checked++;
+      if (f.funder && f.digest && funders.includes(f.funder)) tally.set(f.funder, [...(tally.get(f.funder) ?? []), f.digest]);
+    }
+    const [funder, digests] = [...tally].sort((a, b) => b[1].length - a[1].length)[0] ?? [funders[0], []];
+    const matched = digests.length;
+    return {
+      funder,
+      wallets_checked: checked,
+      first_funded_by_funder: matched,
+      linked: matched >= ROLE_SPLIT_MIN_MATCHES && matched >= checked * ROLE_SPLIT_SHARE,
+      digests,
+    };
+  };
+  const splitFunders = new Set<string>();
+
   const distinctSponsors = new Set<string>();
   for (const prof of profiles.values()) for (const s of prof.sponsors.keys()) distinctSponsors.add(s);
   for (const sponsor of distinctSponsors) {
@@ -992,20 +1262,58 @@ export async function buildWalletEdges(
       excludeUnmeasured(sponsor, "sponsor", p.unmeasured, p.observed);
       continue;
     }
-    if (p.popular) {
+    const split = await checkRoleSplit(sponsor, p);
+    const roleSplit = split
+      ? {
+          role_split: {
+            funder: split.funder,
+            wallets_checked: split.wallets_checked,
+            first_funded_by_funder: split.first_funded_by_funder,
+            linked: split.linked,
+            ...(split.not_checked ? { not_checked: split.not_checked } : {}),
+          },
+        }
+      : {};
+    if (split?.linked) {
+      // Linked at operator weight whatever the sponsor's breadth: the wallets
+      // it pays gas for share the seeds' funder, which a relayer's users do not.
+      const detail =
+        `${sponsor.slice(0, 10)}… pays gas for wallets ${split.funder.slice(0, 10)}… first funded: ` +
+        `${split.first_funded_by_funder} of the ${split.wallets_checked} other wallets it sponsors whose first funder was read. ` +
+        "One operator funding from one address and paying gas from another shows this shape; so does a wallet provider that onboards and sponsors its own users.";
+      edges.add("sponsor", sponsor, split.funder, detail, split.digests, undefined, 1.0);
+      for (const seed of uniqueSeeds) {
+        const sponsorDigest = profiles.get(seed)?.sponsors.get(sponsor);
+        if (!sponsorDigest || firstFunders.get(seed) !== split.funder) continue;
+        const fundDigest = funderDigest.get(seed);
+        edges.add("sponsor", sponsor, seed, detail, fundDigest ? [sponsorDigest, fundDigest] : [sponsorDigest], undefined, 1.0);
+      }
+      operators.add(sponsor);
+      splitFunders.add(split.funder);
+    }
+    if (p.popular && !split?.linked) {
+      const measured = !split
+        ? "No seed it paid gas for has a known first funder, so whether one operator funds these wallets from another address was not checked."
+        : split.not_checked
+          ? `${split.not_checked} Whether one operator funds these wallets from another address was not checked.`
+          : split.wallets_checked === 0
+          ? `No first funder of the other wallets it sponsors could be read (the query budget ran out or the reads failed), so whether the seeds' funder ${split.funder.slice(0, 10)}… funds them from another address was not checked.`
+          : `${split.first_funded_by_funder} of the ${split.wallets_checked} other wallets it sponsors whose first funder was read were first funded by the seeds' funder ${split.funder.slice(0, 10)}…, below the ${ROLE_SPLIT_MIN_MATCHES} (and half) that would make the two one operator.`;
       excluded.push({
         address: sponsor,
         role: "sponsor",
         observed_counterparties: p.observed,
-        reason: `Sponsored gas for more than ${popularityLimit} distinct senders — a relayer or wallet-aggregator service, not a person paying for their own wallets.`,
+        ...roleSplit,
+        reason: `Sponsored gas for more than ${popularityLimit} distinct senders, so shared sponsorship through it is not used as a link on its own. ${measured}`,
       });
       continue;
     }
-    sponsorMembers.set(sponsor, p.members);
+    if (!p.popular) sponsorMembers.set(sponsor, p.members);
     used.push({
       address: sponsor,
       role: "sponsor",
       observed_counterparties: p.observed,
+      ...roleSplit,
       scan_complete: p.complete,
     });
   }
@@ -1081,6 +1389,7 @@ export async function buildWalletEdges(
 
   const examined = new Set(uniqueSeeds);
   for (const o of operators) examined.add(o);
+  for (const f of splitFunders) examined.add(f);
 
   // --- phase 3: expansion ----------------------------------------------
   if (expand) {
@@ -1214,7 +1523,7 @@ export async function buildWalletEdges(
           address: c.other,
           role: "funder",
           observed_counterparties: p.observed,
-          reason: `Value moved to this address, but it pays more than ${popularityLimit} distinct addresses — an exchange or service, where a deposit followed by a withdrawal is reciprocal and means nothing.`,
+          reason: `Value moved to this address, but it pays more than ${popularityLimit} distinct addresses at least 0.01 SUI or $0.10 each — an exchange or service, where a deposit followed by a withdrawal is reciprocal and means nothing.`,
         });
       }
       continue;

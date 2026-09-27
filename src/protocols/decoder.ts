@@ -228,10 +228,17 @@ function swapDirection(typeArgs: string[], net: Map<string, bigint>, fn: string,
   return typeArgs;
 }
 
+/**
+ * `custodyFor` holds the normalized IDs of packages whose publisher this call
+ * read (`prefetchProtocolCustody`). Only those may be named through the
+ * publisher tier, so a package this call did not read is never named from a
+ * cache another tool filled.
+ */
 export function decodeTransaction(
   commands: GrpcTypes.Command[],
   balanceChanges: GrpcTypes.BalanceChange[] | undefined,
-  sender: string | undefined
+  sender: string | undefined,
+  opts: { custodyFor?: ReadonlySet<string> } = {},
 ): DecodedTransaction {
   const protocols = new Set<string>();
   const actions: string[] = [];
@@ -267,7 +274,7 @@ export function decodeTransaction(
         // Display lookup: a Move Registry name is strictly better output than a
         // truncated 0x address, and nothing downstream of the decoder makes a
         // trust decision on it.
-        const proto = lookupProtocolDisplay(pkg);
+        const proto = lookupProtocolDisplay(pkg, { custody: opts.custodyFor?.has(normalizeSuiAddress(pkg)) ?? false });
         const op = lookupOperation(mod, fn);
 
         if (proto) {

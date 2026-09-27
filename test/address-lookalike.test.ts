@@ -201,10 +201,12 @@ describe("findLookalikes — input handling", () => {
 });
 
 describe("lookalikeReport", () => {
-  it("is null when nothing collides, not an empty report", () => {
-    // An absent field says "not observed here"; an empty one reads as a clean
-    // bill of health for the whole wallet, which one page cannot support.
-    expect(lookalikeReport([addr("1111", "22223333"), addr("4444", "55556666")])).toBeNull();
+  it("reports the comparison with no pairs when nothing collides", () => {
+    // An absent block cannot be told from a check that never ran; the empty
+    // one names how many addresses it covered.
+    const report = lookalikeReport([addr("1111", "22223333"), addr("4444", "55556666")]);
+    expect(report.pairs).toEqual([]);
+    expect(report.addresses_compared).toBe(2);
   });
 
   it("says the comparison was bounded by what was returned", () => {
@@ -395,7 +397,7 @@ describe("direction falls back to lifecycle only for the poisoning shape", () =>
     // 09:30, imitating R, whose earlier payment to V is before the page; R
     // pays V 500 SUI at 09:35. Both first appear paying V, so which came
     // first says nothing about which one is the impostor.
-    const V = `0x5e455d${"4".repeat(58)}`;
+    const V = `0xa11ce0${"4".repeat(58)}`;
     const X = `0x77${"3".repeat(62)}`;
     const L = fake;
     const R = real;
@@ -427,7 +429,7 @@ describe("ActivityLedger tracks first_seen", () => {
   });
 
   it("marks an address first seen crediting the subject and nothing to itself, whatever the subject's spelling", () => {
-    const victim = `0x5e455d${"4".repeat(58)}`;
+    const victim = `0xa11ce0${"4".repeat(58)}`;
     const dust = `0x6b7452${"5".repeat(58)}`;
     const real = `0x6b74e9${"6".repeat(58)}`;
     const ledger = new ActivityLedger(victim.toUpperCase().replace("0X", "0x"));
@@ -467,7 +469,10 @@ describe("lookalikeReport counts and discloses", () => {
 
   it("stays silent about low-entropy counterparties", () => {
     const burn = `0x${"0".repeat(64)}`;
-    expect(lookalikeReport([a, burn], undefined, a)).toBeNull();
+    const r = lookalikeReport([a, burn], undefined, a);
+    expect(r.pairs).toEqual([]);
+    expect(r.addresses_compared).toBe(1);
+    expect(r.subject_excluded).toBeUndefined();
   });
 });
 

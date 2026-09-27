@@ -18,7 +18,7 @@ export const CASE_KINDS = [
 ];
 export const SOURCE_KINDS = ["victim-postmortem", "security-firm", "official", "exchange", "news"];
 /** The evidence tiers the server itself reports. */
-export const TIERS = ["chain-derived", "indexer-attested", "price-provider", "heuristic"];
+export const TIERS = ["chain-derived", "code-derived", "indexer-attested", "price-provider", "heuristic"];
 export const NETWORKS = ["mainnet", "testnet", "devnet"];
 export const OPS = [
   "equals",

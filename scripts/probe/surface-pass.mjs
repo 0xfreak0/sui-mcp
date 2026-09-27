@@ -177,12 +177,23 @@ try {
   // ======================================================================
   console.log("\nprompts");
   const verbs = new Set([...toolNames].map((t) => t.split("_")[0]));
+  // A parameter (`find_redeploys`) or a result field the tools document in
+  // backticks (`sample_next_call`) can start with a tool's verb; the prompts
+  // name them as what they are, not as tools.
+  const documented = new Set();
+  for (const t of listed) {
+    for (const [param, spec] of Object.entries(t.inputSchema?.properties ?? {})) {
+      documented.add(param);
+      for (const m of String(spec.description ?? "").matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) documented.add(m[1]);
+    }
+    for (const m of String(t.description ?? "").matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) documented.add(m[1]);
+  }
   const promptArgs = { investigate_address: { address: NEMO_ATTACKER }, trace_incident: { subject: NEMO_EXPLOIT }, attribute_cluster: { addresses: `${NEMO_ATTACKER},${NEMO_FUNDER}` } };
   for (const [name, args] of Object.entries(promptArgs)) {
     const r = await server.rpc("prompts/get", { name, arguments: args });
     const text = (r.result?.messages ?? []).map((m) => m.content?.text ?? "").join("\n");
     const tokens = [...new Set(text.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [])];
-    const unknown = tokens.filter((t) => !toolNames.has(t) && verbs.has(t.split("_")[0]));
+    const unknown = tokens.filter((t) => !toolNames.has(t) && !documented.has(t) && verbs.has(t.split("_")[0]));
     ck(`${name} renders and names only existing tools`, text.length > 1000 && tokens.some((t) => toolNames.has(t)) && unknown.length === 0, unknown.join(","));
   }
 

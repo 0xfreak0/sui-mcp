@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.22.1 (2026-09-27)
+
+### Fixed
+- **`analyze_attack_tx` failed on a programmable system transaction.** The
+  SDK's BCS schema lists four transaction kinds, and a programmable system
+  transaction, which mainnet runs against the accumulator root `0xacc`, is
+  kind 10, so reading one failed with "Unknown value 10 for enum
+  TransactionKind". The kind is now read from the bytes before they are
+  parsed: `analyze_attack_tx` answers with its other checks and says in
+  `checks_note` why the PTB checks did not run, and `decode_ptb` and
+  `get_transaction` with `detail: "full"` give the same reason. The other
+  kinds past the SDK's four are system transactions with no commands, and are
+  read as having no PTB.
+
+### Changed
+- The live probes check 1.22.0's behaviour instead of the behaviour it
+  replaced. `invariant-pass` and `incident-pass` compare a capped list's
+  full view (`detail: "full"`) with the chain and check that the default
+  view is that list with exactly `omitted` rows left out; they unfold
+  events `get_transaction` folds, apply `trace_funds`' next-hop rule (the
+  spend that drew most of what arrived), accept `disassemble_module`'s line
+  notes, and count `diff_package_upgrade`'s renumbered lines. `adversarial`
+  tests a list of command indices with a word, and `surface-pass` no longer
+  reads a documented parameter or result field in a prompt as a tool name.
+
 ## 1.22.0 (2026-09-27)
 
 Investigations now ask how an exploit worked, not only where its funds went.

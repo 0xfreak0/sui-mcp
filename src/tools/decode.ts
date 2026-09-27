@@ -81,6 +81,16 @@ export function registerDecodeTools(server: McpServer) {
         executed = executedObjects(executedTx);
       } else {
         bytes = fromBase64(transaction_bcs!.trim());
+      }
+      const { data, unread } = ptbDataFromBcs(bytes);
+      if (!data) {
+        return errorResult(
+          unread
+            ? `This transaction's PTB cannot be decoded. ${unread} get_transaction describes its effects.`
+            : "This is a system transaction, not a programmable one, so it has no PTB commands or inputs to decode. get_transaction describes it.",
+        );
+      }
+      if (transaction_bcs !== undefined) {
         // BCS parsing stops where the struct ends and ignores what follows, so
         // 10,000 base64 'A's decoded as a transaction from 0x0 with no commands.
         const used = bcs.TransactionData.serialize(bcs.TransactionData.parse(bytes)).toBytes().length;
@@ -89,10 +99,6 @@ export function registerDecodeTools(server: McpServer) {
             `Not one transaction: the first ${used} bytes decode as transaction data and ${bytes.length - used} bytes follow it.`,
           );
         }
-      }
-      const data = ptbDataFromBcs(bytes);
-      if (!data) {
-        return errorResult("This is a system transaction, not a programmable one, so it has no PTB commands or inputs to decode. get_transaction describes it.");
       }
 
       const calledPackages = data.commands.flatMap((c) => (c.$kind === "MoveCall" ? [c.MoveCall.package] : []));

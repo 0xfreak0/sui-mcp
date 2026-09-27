@@ -19,7 +19,7 @@
  */
 import { bcs, TypeTagSerializer, type BcsType, type TypeTag } from "@mysten/sui/bcs";
 import { fromBase64, normalizeSuiAddress, toHex } from "@mysten/sui/utils";
-import { Transaction } from "@mysten/sui/transactions";
+import { Transaction, type TransactionData } from "@mysten/sui/transactions";
 import type { SuiClientTypes } from "@mysten/sui/client";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { sui } from "../clients/grpc.js";
@@ -103,14 +103,52 @@ export function executedObjects(tx: GrpcTypes.ExecutedTransaction | undefined): 
   return out;
 }
 
+/** Sui's `TransactionKind` index of a user's programmable transaction. */
+const KIND_PROGRAMMABLE = 0;
 /**
- * Transaction data from BCS bytes, or null when the transaction is not
- * programmable (a system transaction has no inputs or commands to resolve).
+ * Sui's `TransactionKind` index of a programmable system transaction: a PTB
+ * the protocol runs, which the SDK's BCS schema does not decode. Indices 1 to
+ * 9 are system transactions with no commands.
  */
-export function ptbDataFromBcs(bytes: Uint8Array): ReturnType<Transaction["getData"]> | null {
-  const parsed = bcs.TransactionData.parse(bytes);
-  if (parsed.V1?.kind?.$kind !== "ProgrammableTransaction") return null;
-  return Transaction.from(bytes).getData();
+const KIND_PROGRAMMABLE_SYSTEM = 10;
+
+/**
+ * A transaction's PTB read from its BCS. `data` is null when there is none to
+ * read: `unread` is null for a system transaction, which has no commands, and
+ * says why otherwise.
+ */
+export type BcsPtb =
+  | { data: TransactionData; unread: null }
+  | { data: null; unread: string | null };
+
+/** The ULEB128 at `offset` and the offset after it, or null past the end. */
+function readUleb(bytes: Uint8Array, offset: number): { value: number; next: number } | null {
+  let value = 0;
+  for (let shift = 0, i = offset; i < bytes.length && shift < 35; shift += 7, i++) {
+    value += (bytes[i] & 0x7f) * 2 ** shift;
+    if ((bytes[i] & 0x80) === 0) return { value, next: i + 1 };
+  }
+  return null;
+}
+
+/**
+ * Transaction data from BCS bytes. `TransactionData` is an enum whose one
+ * variant, V1, starts with the `TransactionKind`, so the kind is the second
+ * ULEB128 in the bytes and is read before any parse.
+ */
+export function ptbDataFromBcs(bytes: Uint8Array): BcsPtb {
+  const version = readUleb(bytes, 0);
+  const kind = version?.value === 0 ? readUleb(bytes, version.next) : null;
+  if (kind === null || kind.value === KIND_PROGRAMMABLE) {
+    return { data: Transaction.from(bytes).getData(), unread: null };
+  }
+  if (kind.value === KIND_PROGRAMMABLE_SYSTEM) {
+    return { data: null, unread: `It is a programmable system transaction (TransactionKind ${KIND_PROGRAMMABLE_SYSTEM}), a PTB the protocol runs, which the SDK's BCS reader does not decode.` };
+  }
+  if (kind.value > KIND_PROGRAMMABLE_SYSTEM) {
+    return { data: null, unread: `Its TransactionKind ${kind.value} is newer than the SDK's BCS reader knows.` };
+  }
+  return { data: null, unread: null };
 }
 
 // --- Move signatures --------------------------------------------------------

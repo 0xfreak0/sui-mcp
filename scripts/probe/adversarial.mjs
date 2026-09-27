@@ -463,7 +463,10 @@ function generate(tool) {
         const item = Array.isArray(current) && current.length ? current[0] : "x";
         add(field, "over maxItems", withField(field, Array.from({ length: p.maxItems + 1 }, () => item)), "reject");
       }
-      add(field, "number in the list", withField(field, [12345]), "reject");
+      // The wrong item type: a word where the items are numbers, else a number.
+      const itemTypes = typesOf(p.items ?? {});
+      if (itemTypes.has("integer") || itemTypes.has("number")) add(field, "word in the list", withField(field, ["abc"]), "reject");
+      else add(field, "number in the list", withField(field, [12345]), "reject");
       if (["address", "object", "package"].includes(itemKind)) {
         add(field, "non-hex item", withField(field, ["0xZZ12"]), "reject");
         add(field, "10k-char item", withField(field, [`0x${LONG}`]), "reject");

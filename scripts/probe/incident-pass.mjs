@@ -250,7 +250,12 @@ try {
   console.log("\nsummarize_incident_losses: the Cetus attacker, 10:30 to 10:46 UTC");
   const START = Date.parse("2025-05-22T10:30:00Z");
   const END = Date.parse("2025-05-22T10:46:00Z");
-  const losses = await call("summarize_incident_losses", { sender: CETUS_ATTACKER, start: new Date(START).toISOString(), end: new Date(END).toISOString() });
+  const lossArgs = { sender: CETUS_ATTACKER, start: new Date(START).toISOString(), end: new Date(END).toISOString() };
+  // The default view lists what fits its budget and counts the rest in
+  // `omitted`; the full view lists every group and coin, and is what the
+  // counts and sums below are checked on.
+  const lossesSummary = await call("summarize_incident_losses", lossArgs);
+  const losses = await call("summarize_incident_losses", { ...lossArgs, detail: "full" });
   // Wide checkpoint bounds (10:27 to 10:49), then the window applied by each
   // transaction's own timestamp.
   const sent = (await rawTxs({ sentAddress: CETUS_ATTACKER, afterCheckpoint: 148114000, beforeCheckpoint: 148119500 })).filter((t) => {
@@ -271,6 +276,23 @@ try {
   ck("265 pools drained, per the public count", (losses.groups ?? []).length === 265, `${losses.groups?.length}`);
   const pricedSum = (losses.priced_coins ?? []).reduce((s, c) => s + (c.usd ?? 0), 0);
   ck("total USD is the sum of the priced coins", near(losses.totals?.usd_net ?? NaN, pricedSum, 1e-6), `${losses.totals?.usd_net} vs ${pricedSum.toFixed(2)}`);
+  // Each capped list: the rows listed plus the count omitted are the full
+  // list, and the omitted USD is what the full list's other rows carry.
+  const capExact = (list, usdOf) => {
+    const shown = lossesSummary[list] ?? [];
+    const all = losses[list] ?? [];
+    const left = lossesSummary.omitted?.lists?.[list];
+    const counted = shown.length + (left?.count ?? 0) === all.length;
+    if (!usdOf || !left) return { ok: counted, detail: `${shown.length} + ${left?.count ?? 0} of ${all.length}` };
+    const shownUsd = shown.reduce((s, r) => s + (usdOf(r) ?? 0), 0);
+    const allUsd = all.reduce((s, r) => s + (usdOf(r) ?? 0), 0);
+    return { ok: counted && near(shownUsd + (left.usd ?? 0), allUsd, 1e-6), detail: `${shown.length} + ${left.count} of ${all.length}; $${(shownUsd + (left.usd ?? 0)).toFixed(2)} vs $${allUsd.toFixed(2)}` };
+  };
+  const groupsCap = capExact("groups", (g) => Math.max(g.attacker_usd, -g.pool_usd));
+  ck("the default view's groups and the omitted ones are the full list", groupsCap.ok, groupsCap.detail);
+  const coinsCap = capExact("priced_coins", (c) => (c.usd === null ? null : Math.abs(c.usd)));
+  ck("the default view's priced coins and the omitted ones are the full list", coinsCap.ok, coinsCap.detail);
+  ck("the default view's totals are the full view's", JSON.stringify(lossesSummary.totals) === JSON.stringify(losses.totals));
   const top = (losses.groups ?? [])[0];
   ck("the largest pool is the haSUI/SUI pool analyze_attack_tx values the same", top?.pools?.includes(CETUS_POOL) && near(top.attacker_usd, cetus.profit?.usd_net ?? NaN, 1e-4), `${top?.attacker_usd} vs ${cetus.profit?.usd_net}`);
 
@@ -282,18 +304,37 @@ try {
   const hops = trace.hops ?? [];
   ck("it stops at the CCTP exit", /CCTP/.test(trace.stop_reason ?? ""), short(trace.stop_reason));
   const after = (await rawTxs({ sentAddress: NEMO_ATTACKER, afterCheckpoint: 187415929, beforeCheckpoint: 187430000 }));
-  // Forward rule: the recipient's next transaction that moves the coin. The
-  // exploit paid the attacker SUI; the first later debit of SUI (gas aside) is
-  // hop 2, and hop 2 swapped into USDC, whose first later debit is hop 3.
-  const nextDebit = (fromDigest, coin) => {
+  // Forward rule: the recipient's later spends of the coin (gas aside), read
+  // in order until they cover 99% of what the previous hop delivered to it.
+  // The delivered amount is drawn first in, first out, and the spend that drew
+  // the most is the next hop, so a small spend first does not stand for where
+  // the funds went. The exploit paid the attacker SUI; hop 2 swapped SUI into
+  // USDC, and hop 3 is drawn from the USDC hop 2 delivered.
+  const nextHop = (fromDigest, coin, delivered) => {
     const i = after.findIndex((t) => t.digest === fromDigest);
-    return after.slice(i + 1).find((t) => (changesNetOfGas(t, NEMO_ATTACKER).get(coin) ?? 0n) < 0n)?.digest;
+    const need = (delivered * 99n + 99n) / 100n;
+    let covered = 0n;
+    let left = delivered;
+    let best = null;
+    let drawn = -1n;
+    for (const t of after.slice(i + 1)) {
+      const spent = -(changesNetOfGas(t, NEMO_ATTACKER).get(coin) ?? 0n);
+      if (spent <= 0n) continue;
+      const take = spent < left ? spent : left;
+      left -= take;
+      if (take > drawn) [best, drawn] = [t.digest, take];
+      covered += spent;
+      if (covered >= need) break;
+    }
+    return best;
   };
   ck("hop 1 credits the attacker what the chain says", hops[0]?.balance_changes?.some((b) => b.address === NEMO_ATTACKER && b.coin_type === SUI && BigInt(b.amount) === raw));
-  const hop2 = nextDebit(NEMO_EXPLOIT, SUI);
-  ck("hop 2 is the attacker's next SUI debit", hops[1]?.digest === hop2, `${hops[1]?.digest} vs ${hop2}`);
-  const hop3 = nextDebit(hop2, USDC);
-  ck("hop 3 is the next USDC debit after the swap", hops[2]?.digest === hop3, `${hops[2]?.digest} vs ${hop3}`);
+  const exploitRaw = after.find((t) => t.digest === NEMO_EXPLOIT) ?? (await rawTx(NEMO_EXPLOIT));
+  const hop2 = nextHop(NEMO_EXPLOIT, SUI, changesNetOfGas(exploitRaw, NEMO_ATTACKER).get(SUI) ?? 0n);
+  ck("hop 2 is the SUI spend that drew most of what the exploit paid", hops[1]?.digest === hop2, `${hops[1]?.digest} vs ${hop2}`);
+  const hop2Tx = await rawTx(hop2);
+  const hop3 = nextHop(hop2, USDC, changesOf(hop2Tx, NEMO_ATTACKER).get(USDC) ?? 0n);
+  ck("hop 3 is the USDC spend that drew most of what hop 2 swapped into", hops[2]?.digest === hop3, `${hops[2]?.digest} vs ${hop3}`);
   const exitTx = await rawTx(hop3);
   ck("hop 3 is a CCTP burn on chain", eventsOf(exitTx, "::deposit_for_burn::DepositForBurn").length === 1);
   const exitUsdc = -(changesOf(exitTx, NEMO_ATTACKER).get(USDC) ?? 0n);
@@ -550,7 +591,16 @@ try {
 
   const d1 = await call("disassemble_module", { package_id: NEMO_ROOT, module_name: "py" });
   const d5 = await call("disassemble_module", { package_id: NEMO_V5, module_name: "py" });
-  ck("each version's disassembly is that version's bytecode on chain", d5.disassembly === (await disassembly(NEMO_V5, "py")) && d1.disassembly === (await disassembly(NEMO_ROOT, "py")));
+  // disassemble_module appends ` // note` to a line whose operand the text
+  // leaves raw (an abort code, a large integer, a dependency's version); the
+  // line before the note is the chain's, and no line is added or dropped.
+  const sameBytecode = (tool, raw) => {
+    const a = String(tool).split("\n");
+    const b = String(raw).split("\n");
+    return a.length === b.length && a.every((l, i) => l === b[i] || l.startsWith(`${b[i]} // `));
+  };
+  const [raw5, raw1] = [await disassembly(NEMO_V5, "py"), await disassembly(NEMO_ROOT, "py")];
+  ck("each version's disassembly is that version's bytecode on chain", sameBytecode(d5.disassembly, raw5) && sameBytecode(d1.disassembly, raw1));
   ck("v1's py has no redeem_pt; v5's does", !String(d1.disassembly).includes("redeem_pt") && String(d5.disassembly).includes("redeem_pt"));
 
   // =========================================================================
@@ -573,10 +623,33 @@ try {
   ck("the changed modules are the ones whose bytecode differs on chain", changed.map((c) => c.module).join() === changedRaw.join() && changedRaw.join() === "sy", `${changed.map((c) => c.module)} vs ${changedRaw}`);
   const sy = changed.find((c) => c.module === "sy");
   const syRaw = rawDiffs.get("sy");
-  ck("sy: added and removed line counts are the raw diff's", sy?.added_lines === syRaw?.added.length && sy?.removed_lines === syRaw?.removed.length, `+${sy?.added_lines}/-${sy?.removed_lines} vs +${syRaw?.added.length}/-${syRaw?.removed.length}`);
+  // Lines that only move to another instruction offset are counted in
+  // renumbered_lines and not shown, so the raw diff's changed lines are the
+  // shown ones plus that many renumbered pairs on each side.
+  const renumbered = sy?.renumbered_lines ?? 0;
+  ck("sy: added, removed and renumbered line counts make up the raw diff's", sy?.added_lines + renumbered === syRaw?.added.length && sy?.removed_lines + renumbered === syRaw?.removed.length, `+${sy?.added_lines}/-${sy?.removed_lines} and ${renumbered} renumbered vs +${syRaw?.added.length}/-${syRaw?.removed.length}`);
   const plus = (sy?.sample ?? []).filter((l) => l.startsWith("+ ")).map((l) => l.slice(2));
   const minus = (sy?.sample ?? []).filter((l) => l.startsWith("- ")).map((l) => l.slice(2));
-  ck("sy: the hunk's lines are the raw changed lines", plus.join("\n") === syRaw?.added.join("\n") && minus.join("\n") === syRaw?.removed.join("\n"));
+  /** `rows` less one of each of `taken`, or null when one of `taken` is not in `rows`. */
+  const without = (rows, taken) => {
+    const left = [...rows];
+    for (const t of taken) {
+      const at = left.indexOf(t);
+      if (at < 0) return null;
+      left.splice(at, 1);
+    }
+    return left;
+  };
+  // An instruction's own offset and its branch targets are the numbering.
+  const unnumbered = (l) => l.replace(/^(\s*)\d+:/, "$1#:").replace(/\b(Br(?:True|False)|Branch)\(\d+\)/, "$1(#)");
+  const addedLeft = without(syRaw?.added ?? [], plus);
+  const removedLeft = without(syRaw?.removed ?? [], minus);
+  ck(
+    "sy: the hunk's lines are raw changed lines, and the rest are the same instructions renumbered",
+    addedLeft !== null && removedLeft !== null && addedLeft.length === renumbered && removedLeft.length === renumbered &&
+      addedLeft.map(unnumbered).sort().join("\n") === removedLeft.map(unnumbered).sort().join("\n"),
+    short({ added_left: addedLeft, removed_left: removedLeft }),
+  );
 
   console.log("\ndiff_package_upgrade: the Cetus fix");
   const im = await call("diff_package_upgrade", { package: INTEGER_MATE, from_version: 3, to_version: 5 });

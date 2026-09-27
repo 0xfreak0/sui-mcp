@@ -5,7 +5,7 @@ import { createMockClient } from "./helpers/mock-grpc.js";
 const mockSui = createMockClient();
 vi.mock("../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 
-const { resolvePtb, selectCommands, executedObjects } = await import("../src/utils/ptb-resolve.js");
+const { resolvePtb, selectCommands, executedObjects, ptbDataFromBcs } = await import("../src/utils/ptb-resolve.js");
 
 const PKG = `0x${"ab".repeat(32)}`;
 const POOL = `0x${"cd".repeat(32)}`;
@@ -201,6 +201,47 @@ describe("executedObjects", () => {
     expect(objects.get(clock)).toEqual({ version: "3", type: "0x2::clock::Clock" });
     expect(objects.get(frozen)).toEqual({ version: "12", type: "0x9::config::Config" });
     expect(objects.has(`0x${"ac".repeat(32)}`)).toBe(false);
+  });
+});
+
+describe("ptbDataFromBcs", () => {
+  /** A signed-shape transaction's bytes with its TransactionKind index (byte 1, after the V1 tag) replaced. */
+  async function bytesOfKind(kind: number): Promise<Uint8Array> {
+    const tx = new Transaction();
+    tx.setSender(`0x${"11".repeat(32)}`);
+    tx.setGasPrice(1000);
+    tx.setGasBudget(1_000_000);
+    tx.setGasPayment([]);
+    tx.setExpiration({ None: true });
+    tx.transferObjects([tx.splitCoins(tx.gas, [tx.pure.u64(1)])], tx.pure.address(`0x${"22".repeat(32)}`));
+    const bytes = await tx.build();
+    expect(bytes[0]).toBe(0);
+    expect(bytes[1]).toBe(0);
+    const out = Uint8Array.from(bytes);
+    out[1] = kind;
+    return out;
+  }
+
+  it("reads a user's programmable transaction", async () => {
+    const { data, unread } = ptbDataFromBcs(await bytesOfKind(0));
+    expect(data?.commands.map((c) => c.$kind)).toEqual(["SplitCoins", "TransferObjects"]);
+    expect(unread).toBeNull();
+  });
+
+  it("says a programmable system transaction, a kind the SDK's BCS schema lacks, was not read instead of throwing", async () => {
+    const { data, unread } = ptbDataFromBcs(await bytesOfKind(10));
+    expect(data).toBeNull();
+    expect(unread).toContain("programmable system transaction");
+  });
+
+  it("names a kind newer than any it knows", async () => {
+    const { data, unread } = ptbDataFromBcs(await bytesOfKind(11));
+    expect(data).toBeNull();
+    expect(unread).toContain("TransactionKind 11");
+  });
+
+  it("treats a system kind the SDK cannot parse as a system transaction with no PTB", async () => {
+    expect(ptbDataFromBcs(await bytesOfKind(8))).toEqual({ data: null, unread: null });
   });
 });
 

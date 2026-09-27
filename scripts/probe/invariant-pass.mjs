@@ -508,32 +508,68 @@ async function checkTransaction(digest, why) {
 async function checkBatch(sampled) {
   const digests = sampled.map((s) => s.digest).slice(0, 50);
   const args = { digests };
+  // The default view keeps each transaction's lists within a share of its
+  // budget and names what it left out in `omitted.lists`; `detail: "full"`
+  // lists every row. The full view is compared with the single reads, and the
+  // default view must be a subset of it with `omitted` counting the rest.
   const batch = await call("get_transactions", args);
-  if (!batch) return;
-  const byDigest = new Map((batch.transactions ?? []).map((t) => [t.digest, t]));
+  const full = await call("get_transactions", { ...args, detail: "full" });
+  if (!batch || !full) return;
+  const byDigest = new Map((full.transactions ?? []).map((t) => [t.digest, t]));
+  const summaryAt = new Map((batch.transactions ?? []).map((t, i) => [t.digest, { t, i }]));
   for (const s of sampled.slice(0, 50)) {
     const one = s.tool;
     const many = byDigest.get(s.digest);
     if (!one) continue;
     if (!many) {
-      check(I.batch, false, { seed: SEED, tool: "get_transactions", args: { digests: [s.digest] }, got: `not returned (not_found: ${short(batch.not_found)})`, raw: "the transaction exists" });
+      check(I.batch, false, { seed: SEED, tool: "get_transactions", args: { digests: [s.digest], detail: "full" }, got: `not returned (not_found: ${short(full.not_found)})`, raw: "the transaction exists" });
       continue;
     }
     const diffs = [];
+    const summary = summaryAt.get(s.digest);
+    if (!summary) diffs.push({ field: "default view", got: `not returned (not_found: ${short(batch.not_found)})` });
+    else {
+      for (const list of ["events", "move_calls", "balance_changes"]) {
+        const shown = (summary.t[list] ?? []).map((r) => JSON.stringify(r));
+        const all = (many[list] ?? []).map((r) => JSON.stringify(r));
+        // Rows repeat (a Move call made twice), so the listed rows must be
+        // found in the full list one for one.
+        const unmatched = [...all];
+        const extra = shown.filter((r) => {
+          const at = unmatched.indexOf(r);
+          if (at < 0) return true;
+          unmatched.splice(at, 1);
+          return false;
+        });
+        const left = batch.omitted?.lists?.[`transactions.${summary.i}.${list}`]?.count ?? 0;
+        if (shown.length + left !== all.length || extra.length) {
+          diffs.push({ field: `default view ${list}`, shown: shown.length, omitted: left, full: all.length, not_in_full: extra.slice(0, 2) });
+        }
+      }
+    }
     if (normAddr(many.sender) !== normAddr(one.sender)) diffs.push({ field: "sender", batch: many.sender, single: one.sender });
     if (String(many.status).toLowerCase() !== String(one.status).toLowerCase()) diffs.push({ field: "status", batch: many.status, single: one.status });
     if (String(many.checkpoint) !== String(one.checkpoint)) diffs.push({ field: "checkpoint", batch: many.checkpoint, single: one.checkpoint });
     if (many.timestamp !== one.timestamp) diffs.push({ field: "timestamp", batch: many.timestamp, single: one.timestamp });
     // The batch reads one page of events per transaction and says so with
     // events_truncated. Then its events must be the first of the single read's.
-    const oneTypes = (one.events ?? []).map((e) => e.event_type ?? e.type);
+    // get_transaction folds events that differ only in amounts into one row
+    // naming their positions in `indices`; unfolded, they are the event list.
+    const oneTypes = [];
+    for (const e of one.events ?? []) for (const i of e.indices ?? [e.index ?? oneTypes.length]) oneTypes[i] = e.event_type ?? e.type;
     const manyTypes = (many.events ?? []).map((e) => e.type);
     if (many.events_truncated) {
       if (!(Number(one.event_count) > manyTypes.length && manyTypes.join() === oneTypes.slice(0, manyTypes.length).join() && /get_transaction/.test(many.events_note ?? "")))
         diffs.push({ field: "events (truncated page)", batch: many.event_count, single: one.event_count });
     } else {
-      if (Number(many.event_count) !== Number(one.event_count)) diffs.push({ field: "event_count", batch: many.event_count, single: one.event_count });
-      else if (manyTypes.join() !== oneTypes.join()) diffs.push({ field: "event types", batch: manyTypes.slice(0, 5), single: oneTypes.slice(0, 5) });
+      // Positions the single read left out past its budget are counted in its
+      // `omitted`; every position it lists must match the batch's.
+      const listed = oneTypes.filter((t) => t !== undefined).length;
+      const oneLeft = one.omitted?.lists?.events?.count ?? 0;
+      if (Number(many.event_count) !== Number(one.event_count) || manyTypes.length !== Number(many.event_count)) diffs.push({ field: "event_count", batch: many.event_count, listed: manyTypes.length, single: one.event_count });
+      else if (listed + oneLeft !== manyTypes.length || manyTypes.some((t, i) => oneTypes[i] !== undefined && oneTypes[i] !== t)) {
+        diffs.push({ field: "event types", batch: manyTypes.slice(0, 5), single: oneTypes.slice(0, 5), single_omitted: oneLeft });
+      }
     }
     const bd = mapDiff(netMap(toolRows(many.balance_changes)), netMap(toolRows(one.balance_changes)));
     if (bd.length) diffs.push({ field: "balance_changes", diff: bd.slice(0, 5) });
@@ -650,15 +686,23 @@ async function checkBalancePast(address, coinType, checkpoint) {
   });
 }
 
-/** get_transaction_history and query_transactions against the raw page, both orders. */
+/**
+ * get_transaction_history and query_transactions against the raw page, both
+ * orders. History's default view lists the rows that fit its budget and counts
+ * the rest in `omitted`; `detail: "full"` lists the whole page, which is what
+ * the raw page is compared with. The default view must be the full page in
+ * order with exactly `omitted` rows left out.
+ */
 async function checkHistory(address) {
   const out = {};
   for (const order of ["oldest", "newest"]) {
     const limit = 20;
-    const hArgs = { address, limit, order };
+    const hArgs = { address, limit, order, detail: "full" };
     const qArgs = { affected_address: address, limit, order };
     const rawBefore = await rawAddressPage(address, { order, limit });
     const h = await call("get_transaction_history", hArgs);
+    const sArgs = { address, limit, order };
+    const summary = await call("get_transaction_history", sArgs);
     const q = await call("query_transactions", qArgs);
     const rawAfter = order === "newest" ? await rawAddressPage(address, { order, limit }) : rawBefore;
     const hd = (h?.transactions ?? []).map((t) => t.digest);
@@ -666,6 +710,17 @@ async function checkHistory(address) {
     const same = (xs, r) => xs.join() === r.rows.map((x) => x.digest).join();
     if (h) check(I.historyList, same(hd, rawBefore) || same(hd, rawAfter), { seed: SEED, tool: "get_transaction_history", args: hArgs, got: hd, raw: rawAfter.rows.map((x) => x.digest) });
     if (q) check(I.historyList, same(qd, rawBefore) || same(qd, rawAfter), { seed: SEED, tool: "query_transactions", args: qArgs, got: qd, raw: rawAfter.rows.map((x) => x.digest) });
+    if (summary && h) {
+      // A newest-first page of a busy address moves between two reads; the
+      // two views are compared only when the raw page did not move.
+      if (!same(hd, rawBefore) || !same(hd, rawAfter)) skip(I.historyList, "the newest page moved between the full and default reads");
+      else {
+        const sd = (summary.transactions ?? []).map((t) => t.digest);
+        const left = summary.omitted?.lists?.transactions?.count ?? 0;
+        const inOrder = sd.every((d, i) => i === 0 || hd.indexOf(d) > hd.indexOf(sd[i - 1])) && sd.every((d) => hd.includes(d));
+        check(I.historyList, inOrder && sd.length + left === hd.length, { seed: SEED, tool: "get_transaction_history", args: sArgs, got: { listed: sd, omitted: left }, raw: `the full view's ${hd.length} rows` });
+      }
+    }
     out[order] = {
       rows: h?.transactions ?? [],
       raw: same(hd, rawBefore) ? rawBefore : rawAfter,
@@ -722,7 +777,9 @@ async function checkTimeline(address, history) {
     }
     const expected = page.raw.rows.filter((r) => r.checkpoint > w.after && r.checkpoint < w.before).map((r) => r.digest);
     const historyDigests = page.rows.map((r) => r.digest).filter((d) => expected.includes(d));
-    const args = { addresses: [address], from: String(w.after), to: String(w.before), per_address: 60, limit: 200 };
+    // The full view lists every entry up to `limit`; the default view keeps
+    // what fits its budget and counts the rest in `omitted`.
+    const args = { addresses: [address], from: String(w.after), to: String(w.before), per_address: 60, limit: 200, detail: "full" };
     const t = await call("build_timeline", args);
     if (!t) continue;
     const ta = t.window?.after_checkpoint;

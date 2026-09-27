@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.22.0 (2026-09-27)
 
 Investigations now ask how an exploit worked, not only where its funds went.
 Across Typus, Nemo, Cetus, Scallop, Aftermath Perpetuals, BlueMove, Haedal,

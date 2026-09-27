@@ -166,12 +166,23 @@ async function prefetchFor(
  * decode_ptb's anomaly pass over an executed transaction, with what only an
  * executed transaction has: payouts read from its effects, the addresses that
  * gained, and the checkpoint a superseded version is judged at. `leads` are
- * the trade anomalies, which count as other leads. Null when the transaction
- * carries no programmable PTB to read, so the pass did not run.
+ * the trade anomalies, which count as other leads. `anomalies` is null when
+ * the pass did not run, and `unread` then says why.
  */
-async function ptbAnomaliesFor(tx: AttackTx, leads: PtbAnomaly[]): Promise<PtbAnomaly[] | null> {
-  const data = tx.bcs ? ptbDataFromBcs(tx.bcs) : null;
-  if (!data) return null;
+async function ptbAnomaliesFor(
+  tx: AttackTx,
+  leads: PtbAnomaly[],
+): Promise<{ anomalies: PtbAnomaly[]; unread: null } | { anomalies: null; unread: string }> {
+  const read = tx.bcs ? ptbDataFromBcs(tx.bcs) : null;
+  const data = read?.data;
+  if (!data) {
+    return {
+      anomalies: null,
+      unread: read === null
+        ? "The response carried no transaction bytes to read the PTB from."
+        : read.unread ?? "This transaction carried no programmable PTB to read.",
+    };
+  }
   // Mutable shared inputs are always among the changed objects, which is
   // where the superseded-version check reads their types.
   const executed: ExecutedObjects = new Map();
@@ -183,7 +194,7 @@ async function ptbAnomaliesFor(tx: AttackTx, leads: PtbAnomaly[]): Promise<PtbAn
   const called = [...new Set(tx.calls.map((c) => canonicalId(c.package)).filter((p): p is string => p !== null))];
   const checkpoint = tx.checkpoint !== null ? Number(tx.checkpoint) : null;
   const trust = (pkg: string) => lookupPackageTrust(pkg, checkpoint);
-  return flagPtbAnomalies(commands as FormattedCommand[], {
+  const anomalies = flagPtbAnomalies(commands as FormattedCommand[], {
     sender: tx.sender ?? undefined,
     blocklistedPackages: new Set(called.filter((p) => guardiansFlagsForPackage(p).length > 0)),
     inputs,
@@ -192,6 +203,7 @@ async function ptbAnomaliesFor(tx: AttackTx, leads: PtbAnomaly[]): Promise<PtbAn
     effects: effectsPayouts(tx.sender, tx.balanceChanges, tx.movements, tx.gas),
     leads,
   });
+  return { anomalies, unread: null };
 }
 
 /** The per-coin price table a response carries once, instead of per row. */
@@ -386,9 +398,10 @@ export function registerAttackTools(server: McpServer) {
         const unreconciled = reconciliationAnomaly(reconciliation, GAS_ONLY_USD_THRESHOLD);
         const trade = [...tradeAnomalies(tx, state, flows, prices.points), ...(unreconciled ? [unreconciled] : [])];
         const callerWrites = callerValueWrites(tx, state);
-        const ptbAnomalies = await ptbAnomaliesFor(tx, trade);
-        const anomalies = [...trade, ...(ptbAnomalies ?? [])].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
-        const checksRun = [...TRADE_CHECKS, ...(ptbAnomalies ? PTB_CHECKS : [])];
+        const ptbPass = await ptbAnomaliesFor(tx, trade);
+        const anomalies = [...trade, ...(ptbPass.anomalies ?? [])].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+        const checksRun = [...TRADE_CHECKS, ...(ptbPass.anomalies ? PTB_CHECKS : [])];
+        const ptbUnreadNote = ptbPass.unread === null ? "" : ` The PTB checks did not run. ${ptbPass.unread}`;
         const oracle = oracleTouches(tx.calls, tx.events);
 
         const lines: string[] = [];
@@ -493,7 +506,7 @@ export function registerAttackTools(server: McpServer) {
         }
         lines.push(
           `Checks run: ${checksRun.map((c) => c.code).join(", ")}. ${leadCount ? `${leadCount} matched at medium or high` : "None matched at medium or high"}; a check that did not match clears nothing.` +
-            (ptbAnomalies ? "" : " The PTB checks did not run: no programmable PTB was read."),
+            ptbUnreadNote,
         );
         if (prices.unpriced.length) lines.push(`Unpriced coins: ${prices.unpriced.length}. See \`unpriced\`.`);
 
@@ -601,7 +614,7 @@ export function registerAttackTools(server: McpServer) {
               }
             : {}),
           checks_run: checksRun,
-          checks_note: NO_MATCH_NOTE + (ptbAnomalies ? "" : " The PTB checks did not run: this transaction carried no programmable PTB to read."),
+          checks_note: NO_MATCH_NOTE + ptbUnreadNote,
           ...custodySkippedNote(custodySkipped),
           prices: priceTable(prices, atSec),
           ...(prices.unpriced.length

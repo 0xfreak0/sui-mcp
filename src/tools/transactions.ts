@@ -408,9 +408,10 @@ export function registerTransactionTools(server: McpServer) {
       if (full && kind?.data.oneofKind === "programmableTransaction") {
         const bcsValue = transaction?.bcs?.value;
         try {
-          const data = bcsValue ? ptbDataFromBcs(new Uint8Array(bcsValue)) : null;
-          if (data) resolved = await resolvePtb(data, executedObjects(tx));
-          else unresolvedReason = "The response carried no transaction bytes to decode the PTB from.";
+          const read = bcsValue ? ptbDataFromBcs(new Uint8Array(bcsValue)) : null;
+          if (read?.data) resolved = await resolvePtb(read.data, executedObjects(tx));
+          else if (read === null) unresolvedReason = "The response carried no transaction bytes to decode the PTB from.";
+          else unresolvedReason = read.unread ?? "The transaction bytes hold no programmable PTB.";
         } catch (err) {
           unresolvedReason = `The transaction bytes did not decode: ${err instanceof Error ? err.message : String(err)}`;
         }

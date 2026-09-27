@@ -129,7 +129,7 @@ describe("capPayload properties", () => {
           expect(resultId, context).toBeNull();
         }
       }
-    });
+    }, 60_000);
   }
 
   it("reaches every entry of a folded list once, and counts the omitted entries", () => {

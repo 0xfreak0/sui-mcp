@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.23.0 (2026-09-27)
 
 What a wallet holds beyond plain coins now has a value. Staked SUI,
 liquid-staking coins, CLMM and AMM liquidity, lending positions and

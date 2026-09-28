@@ -34,12 +34,16 @@ describe("get_wallet_overview when a read fails", () => {
   });
 
   it("reports a failed staked or kiosk read as unknown rather than zero", async () => {
-    mockGqlQuery.mockResolvedValue({
-      address: {
-        defaultNameRecord: null,
-        balances: { nodes: [], pageInfo: { hasNextPage: false } },
-      },
-      transactions: { nodes: [] },
+    // Stakes are counted over gRPC and kiosks found through their keys over GraphQL.
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (q.includes("kiosk::KioskOwnerCap")) throw new Error("GraphQL request failed with HTTP 503");
+      return {
+        address: {
+          defaultNameRecord: null,
+          balances: { nodes: [], pageInfo: { hasNextPage: false } },
+        },
+        transactions: { nodes: [] },
+      };
     });
     mockSui.listOwnedObjects.mockRejectedValue(grpcError("UNAVAILABLE"));
 

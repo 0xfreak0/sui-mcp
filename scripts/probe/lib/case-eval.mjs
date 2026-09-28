@@ -39,7 +39,7 @@ export const DEFAULT_TIMEOUT_S = 120;
 
 const CASE_KEYS = ["slug", "kind", "title", "network", "summary", "sources", "subjects", "checks"];
 const SOURCE_KEYS = ["url", "publisher", "kind"];
-const CHECK_KEYS = ["id", "question", "tool", "args", "expect", "tier", "basis", "known_defect", "timeout_s", "max_chars"];
+const CHECK_KEYS = ["id", "question", "tool", "args", "expect", "tier", "basis", "known_defect", "timeout_s", "max_chars", "critical"];
 const EXPECT_KEYS = ["path", "op", "value", "tolerance"];
 const NO_VALUE_OPS = new Set(["exists", "absent"]);
 const STRING_OPS = new Set(["iequals", "contains", "matches"]);
@@ -368,6 +368,8 @@ export function validateCase(c, { tools, file } = {}) {
     if (ck.known_defect !== undefined && !nonBlank(ck.known_defect)) err(`${where}.known_defect`, "one line saying what the tool gets wrong");
     if (ck.timeout_s !== undefined && !(typeof ck.timeout_s === "number" && ck.timeout_s > 0)) err(`${where}.timeout_s`, "a positive number of seconds");
     if (ck.max_chars !== undefined && !(Number.isInteger(ck.max_chars) && ck.max_chars > 0)) err(`${where}.max_chars`, "a positive integer");
+    if (ck.critical !== undefined && ck.critical !== true) err(`${where}.critical`, "true, or left out");
+    if (ck.critical === true && ck.known_defect !== undefined) err(`${where}.critical`, "a critical check cannot be a known defect");
   });
   return errors;
 }

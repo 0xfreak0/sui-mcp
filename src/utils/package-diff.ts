@@ -6,7 +6,6 @@
 
 import {
   FUNCTION_DECL,
-  SYSTEM_PACKAGE,
   annotateLines,
   branchTarget,
   instructionOffset,
@@ -16,6 +15,7 @@ import {
   toLines,
   type Section,
 } from "./disassembly.js";
+import { SYSTEM_PACKAGE } from "./system-packages.js";
 
 /** A function present in both versions whose instructions changed. */
 export interface FunctionBodyChange {

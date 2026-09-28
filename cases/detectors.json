@@ -159,6 +159,97 @@
       "incidents": [],
       "tuned_with": [],
       "basis": "54ee32e (2026-08-04), decode_ptb triage written before any incident case; unchanged since."
+    },
+    "signing-key-replaced": {
+      "incidents": [
+        "fullsail-2026-08"
+      ],
+      "tuned_with": [
+        "cetus-2025-05",
+        "nemo-2025-09",
+        "typus-2025-10",
+        "scallop-2026-04",
+        "volo-vaults-2026-04",
+        "suisses-drainer-2024",
+        "kong-sui-rug-2024-10",
+        "aftermath-2026-04",
+        "bluemove-2026-07",
+        "haedal-2026-06",
+        "fullsail-2026-08",
+        "alphafi-2026-09",
+        "scallop-pass-drainer-2024-05",
+        "giftsui-drainer-2024-08"
+      ],
+      "basis": "DetectV123 (v123/detect, 2026-09-27), written from Full Sail's Switchboard key swap H6d13yy4, which replaced the live oracle's 64-byte secp256k1 key. 32-byte strings and decimal strings were dropped from the key lengths after they matched transaction digests Full Sail's port objects keep (last_deposit_tx and the like) and a Pyth Lazer tuning negative's writer_digest, and a stored number that parses as base64. Tuned with every positive in view: each revision was run against all 61 positives and the 113 tuning negatives, and the holdout positives (Haedal, Full Sail, AlphaLend and the two wallet drainers) moved to tuning in the same commit."
+    },
+    "price-off-market": {
+      "incidents": [
+        "alphafi-2026-09",
+        "fullsail-2026-08"
+      ],
+      "tuned_with": [
+        "cetus-2025-05",
+        "nemo-2025-09",
+        "typus-2025-10",
+        "scallop-2026-04",
+        "volo-vaults-2026-04",
+        "suisses-drainer-2024",
+        "kong-sui-rug-2024-10",
+        "aftermath-2026-04",
+        "bluemove-2026-07",
+        "haedal-2026-06",
+        "fullsail-2026-08",
+        "alphafi-2026-09",
+        "scallop-pass-drainer-2024-05",
+        "giftsui-drainer-2024-08"
+      ],
+      "basis": "DetectV123 (v123/detect, 2026-09-27), written from AlphaLend's ALPHA-to-AVAX slot (the LazerPriceUpdationEvent and the AlphaLend PriceInfo rows keyed by coin type) and Full Sail's UpdatePriceEvent set at 1/100 of market and restored. The 5% agreement and 5x off-market factors were set before any negative was scored; the DefiLlama confidence floor (0.95, its top tier) was raised from 0.9 to clear the Volo tuning negative 5Yp9U9YY, where DefiLlama priced YBTC at $10.6K with confidence 0.9. The AlphaLend refresh 2NKoEGWv is accepted: the slot it flags really read the AVAX feed that day. Tuned with every positive in view: each revision was run against all 61 positives and the 113 tuning negatives, and the holdout positives (Haedal, Full Sail, AlphaLend and the two wallet drainers) moved to tuning in the same commit."
+    },
+    "share-round-trip": {
+      "incidents": [
+        "haedal-2026-06",
+        "fullsail-2026-08"
+      ],
+      "tuned_with": [
+        "cetus-2025-05",
+        "nemo-2025-09",
+        "typus-2025-10",
+        "scallop-2026-04",
+        "volo-vaults-2026-04",
+        "suisses-drainer-2024",
+        "kong-sui-rug-2024-10",
+        "aftermath-2026-04",
+        "bluemove-2026-07",
+        "haedal-2026-06",
+        "fullsail-2026-08",
+        "alphafi-2026-09",
+        "scallop-pass-drainer-2024-05",
+        "giftsui-drainer-2024-08"
+      ],
+      "basis": "DetectV123 (v123/detect, 2026-09-27), written from Haedal's v3 redeems of LP minted through v1 (up to 1,763x per share) and Full Sail's port withdrawals paired with deposits made at a price set 100x below market. The 1.1x factor sits under Full Sail's smallest withdrawal (1.155x); the one-day window, the $0.10 exit floor and the rule that a position is scored only when nothing changed it between its creation and the exit were set before any negative was scored, and no tuning negative flags. Tuned with every positive in view: each revision was run against all 61 positives and the 113 tuning negatives, and the holdout positives (Haedal, Full Sail, AlphaLend and the two wallet drainers) moved to tuning in the same commit."
+    },
+    "switched-before-execution": {
+      "incidents": [
+        "claim-swaps-drainer-2024-11"
+      ],
+      "tuned_with": [
+        "cetus-2025-05",
+        "nemo-2025-09",
+        "typus-2025-10",
+        "scallop-2026-04",
+        "volo-vaults-2026-04",
+        "suisses-drainer-2024",
+        "kong-sui-rug-2024-10",
+        "aftermath-2026-04",
+        "bluemove-2026-07",
+        "haedal-2026-06",
+        "fullsail-2026-08",
+        "alphafi-2026-09",
+        "scallop-pass-drainer-2024-05",
+        "giftsui-drainer-2024-08",
+        "claim-swaps-drainer-2024-11"
+      ],
+      "basis": "DetectV123 (v123/integ, 2026-09-27), written from HeldOutV123's detector gap D4 on the claim::swapS drainer, whose owner flipped ClaimParams.initialized about a second before each drain and set its amounts about 4.5 s before. The window (60 s), the high bound (10 s), the $1 moved-to-others floor and the three field kinds (a flipped boolean, an address that gains, a number equal to an amount moved) were set from that design before any negative was scored. On the 113 tuning negatives, 64 read a shared object another sender wrote within 60 s (55 within 10 s) and none of those writes changed a field of the three kinds. Run against every positive; the three drains are tuning positives because the rule was designed from them."
     }
   },
   "incidents": {
@@ -245,6 +336,12 @@
       "title": "giftsui.net staked-SUI drainer, 10 August 2024",
       "cases": [
         "giftsui-drainer-2024-08"
+      ]
+    },
+    "claim-swaps-drainer-2024-11": {
+      "title": "claim::swapS drainer kit, staked SUI and positions taken by switching shared state after signature, November and December 2024",
+      "cases": [
+        "claim-swaps-staked-drainer-2024-11"
       ]
     }
   },
@@ -1016,7 +1113,7 @@
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: v1 deposit into the LBTC-SUI vault that mints excess LP against the understated AUM",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
       "timestamp": "2026-06-08T18:24:21.286Z",
       "source": "case haedal-2026-06 subjects.inflating_deposit_tx",
@@ -1043,7 +1140,7 @@
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: the first v1 deposit of the run",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
       "timestamp": "2026-06-08T18:04:39.422Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0xfbc91f75 (v1) vault::calculate_aum and vault::deposit",
@@ -1070,7 +1167,7 @@
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: a v1 deposit in the first round",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
       "timestamp": "2026-06-08T18:05:08.326Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0xfbc91f75 (v1) vault::calculate_aum and vault::deposit",
@@ -1097,7 +1194,7 @@
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: a v1 deposit in the first round",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
       "timestamp": "2026-06-08T18:05:17.405Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0xfbc91f75 (v1) vault::calculate_aum and vault::deposit",
@@ -1124,51 +1221,75 @@
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: a v3 redeem of LP minted through v1",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
       "timestamp": "2026-06-08T18:16:52.021Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0x4893ee66 (v3) vault withdraw functions",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0xb04524f33f417f7c52ae1685f6524c13da1ee078ed5a9315058e4e74d10009cb"
+        }
+      ]
     },
     {
       "digest": "DkDmwtpVaQVQtMFNa6TnSUgwQnBtQVpiD6f56z6vkGe1",
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: a v3 redeem of LP minted through v1",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x15dc1cc8b53774559fb04babc01f91ee540d3a0a928e2135416474cc16b386c1",
       "timestamp": "2026-06-08T18:17:31.017Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0x4893ee66 (v3) vault withdraw functions",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0x1d0938e67b84556575e79f8797add799d862c359f1352b9a0a0e9980b91cb9c7"
+        }
+      ]
     },
     {
       "digest": "4NR14WP5h3CDN97yTQGw8mvwDSjT3Av3M5LM9bgAFaRd",
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: a v3 redeem by the second wallet",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xbcec4942fe70bbadc211137c617517fcb1d28fba023b78a7e352152b1fd8438e",
       "timestamp": "2026-06-08T23:17:25.928Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0x4893ee66 (v3) vault withdraw functions",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0x19d8d74a350f2baa415908b7a4bf03ffefd1a14b63af3875380229f8a64b3f61"
+        }
+      ]
     },
     {
       "digest": "FKwVFEutwquF5nGZP9neTFq7yj5Mn8dqCujzHizgxWnN",
       "incident": "haedal-2026-06",
       "case": "haedal-2026-06",
       "role": "exploit: a v3 redeem by the second wallet",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xbcec4942fe70bbadc211137c617517fcb1d28fba023b78a7e352152b1fd8438e",
       "timestamp": "2026-06-08T23:19:06.837Z",
       "source": "case haedal-2026-06 check exploit-net-gain: one of the 146 exploit transactions; chain: calls 0x4893ee66 (v3) vault withdraw functions",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0x19d8d74a350f2baa415908b7a4bf03ffefd1a14b63af3875380229f8a64b3f61"
+        }
+      ]
     },
     {
       "digest": "C6qrKqP7cWxvHQTVhytzLN29dTEgbA81irXVqzQqoDrh",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: guardian oracle created on the guardian queue through oracle_init_action::run",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T01:32:33.660Z",
       "source": "case fullsail-2026-08 check attacker-made-its-guardians: one of the attacker's three oracle_init_action::run or oracle_attest_action::run calls",
@@ -1179,7 +1300,7 @@
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: guardian oracle created on the guardian queue through oracle_init_action::run",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T01:32:37.071Z",
       "source": "case fullsail-2026-08 check attacker-made-its-guardians: one of the attacker's three oracle_init_action::run or oracle_attest_action::run calls",
@@ -1190,7 +1311,7 @@
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: guardian oracle created on the guardian queue through oracle_init_action::run",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T01:32:42.200Z",
       "source": "case fullsail-2026-08 check attacker-made-its-guardians: one of the attacker's three oracle_init_action::run or oracle_attest_action::run calls",
@@ -1201,7 +1322,7 @@
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: oracle_attest_action::run with one of the attacker's guardians",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T01:32:47.160Z",
       "source": "case fullsail-2026-08 check attacker-made-its-guardians: one of the attacker's three oracle_init_action::run or oracle_attest_action::run calls",
@@ -1212,7 +1333,7 @@
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: oracle_attest_action::run with one of the attacker's guardians",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T01:32:51.002Z",
       "source": "case fullsail-2026-08 check attacker-made-its-guardians: one of the attacker's three oracle_init_action::run or oracle_attest_action::run calls",
@@ -1223,117 +1344,177 @@
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: the attestation that put the attacker's key on the live oracle",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T01:32:55.088Z",
       "source": "case fullsail-2026-08 subjects.key_swap_tx",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "signing-key-replaced",
+          "evidence": "0x0f307cb2c7e1fe98587f7022ed327e2b5e8372bfa17b8a7a5f1ce6f56f911b81"
+        }
+      ]
     },
     {
       "digest": "8J5b55S5xjPrU4M1dUThdzUawn24dxK96is4wrRoFfLW",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: deposit into a port after setting the SUI price 100x below market",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T04:41:40.738Z",
       "source": "case fullsail-2026-08 check losses-grouped-per-port: one of the attacker's port deposits; chain: calls port_oracle::external_update_price_from_switchboard and port::deposit",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xd0e89b2af5e4910726fbcd8b8dd37bb79b29e5f83f7491bca830e94f7f226d29::eth::ETH stated at"
+        }
+      ]
     },
     {
       "digest": "DbXSF2Gw1gGmMcAZ9rzjHVvFmfGRRB2QHxhMEKcc2jVV",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: the withdrawal paired with the deposit before it",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T04:42:03.883Z",
       "source": "case fullsail-2026-08 check losses-grouped-per-port: one of the attacker's port deposits; chain: calls port_oracle::external_update_price_from_switchboard and port::deposit",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0xf1c4476002e9124db284369e286b9594e05cdf01c92f7b67347e50acb1f043ca"
+        }
+      ]
     },
     {
       "digest": "HnMQD1avcpNCzkRMQqX7Pjj2Y9NUvLZ1DigyVL1uDvLr",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: deposit into a port after setting the SUI price 100x below market",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T04:12:07.036Z",
       "source": "case fullsail-2026-08 check losses-grouped-per-port: one of the attacker's port deposits; chain: calls port_oracle::external_update_price_from_switchboard and port::deposit",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA stated at"
+        }
+      ]
     },
     {
       "digest": "51v26CfmRxu3uCWRBhizcWeNSMqJcpj1dTywbZ1CaFGf",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: the withdrawal paired with the deposit before it",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T04:12:53.161Z",
       "source": "case fullsail-2026-08 check losses-grouped-per-port: one of the attacker's port deposits; chain: calls port_oracle::external_update_price_from_switchboard and port::deposit",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0xa08fe030c21718fcac471d752d6bdc309c961fc5302407efeda6d914bcca58db"
+        }
+      ]
     },
     {
       "digest": "H83xf84aufu1q5A2kU3axtWsxpcynzkNAk1amojqMkfp",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: the set-use-restore deposit the case reads",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T04:47:20.516Z",
       "source": "case fullsail-2026-08 subjects.deposit_tx",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI stated at"
+        }
+      ]
     },
     {
       "digest": "92dorWBdSTHQAHKk99r1Mv2jNDjZedNC5jd9ZvUiCSsm",
       "incident": "fullsail-2026-08",
       "case": "fullsail-2026-08",
       "role": "exploit: the withdrawal paired with the deposit before it",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0x9104d073e1fdfd76a6b756f61c5684e4affa0b3d124d383afc64aabbd87934cc",
       "timestamp": "2026-08-29T04:47:47.501Z",
       "source": "case fullsail-2026-08 check losses-grouped-per-port: one of the attacker's port deposits; chain: calls port_oracle::external_update_price_from_switchboard and port::deposit",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "share-round-trip",
+          "evidence": "0xbfd0557acc4caa9f94152f9c75ceff491909596e90fbe01aa1f7448604867dcc"
+        }
+      ]
     },
     {
       "digest": "FeM4bX5EWLEJBd3EqpCCHyTNciYv5ntQcmuJDe1hPMJx",
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T16:41:52.539Z",
       "source": "case alphafi-2026-09 subjects.borrow_usdc_1",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
+        }
+      ]
     },
     {
       "digest": "GAqcErjPk7M9WHKjdh3C3zqoKwWu3VViFsr539M7GojX",
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T16:46:44.526Z",
       "source": "case alphafi-2026-09 subjects.borrow_xbtc_1",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
+        }
+      ]
     },
     {
       "digest": "BLuEqxTwR37NfnUgUJxZxzdCboEjsrw1idLH1akdbx3o",
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T16:59:22.703Z",
       "source": "case alphafi-2026-09 subjects.borrow_xbtc_2",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
+        }
+      ]
     },
     {
       "digest": "AUHp6aWyN5dCpumZttoty3CkgEZPLFT44czTtmbq5UTJ",
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T17:00:32.112Z",
       "source": "case alphafi-2026-09 subjects.borrow_tx",
@@ -1342,6 +1523,11 @@
           "tool": "analyze_attack_tx",
           "code": "shared-state-jump",
           "evidence": "0x5feef019ab4f85ce01ccffffef89f6fd14e2dc79e272e2c0cf7b52bc1fd062a5"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
         }
       ]
     },
@@ -1350,18 +1536,24 @@
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T17:02:36.217Z",
       "source": "case alphafi-2026-09 subjects.borrow_usdc_3",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
+        }
+      ]
     },
     {
       "digest": "9FZ7sbAESmNKcH7qwnx6ay5tpeFpkprVEG6AW8zsKKkc",
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T17:10:56.842Z",
       "source": "case alphafi-2026-09 subjects.borrow_xbtc_3",
@@ -1370,6 +1562,11 @@
           "tool": "analyze_attack_tx",
           "code": "shared-state-jump",
           "evidence": "0x8eccd4b9f6c93da6a0563655826e6e02423ff328503a3f9e75280c90012c63fc"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
         }
       ]
     },
@@ -1378,18 +1575,24 @@
       "incident": "alphafi-2026-09",
       "case": "alphafi-2026-09",
       "role": "exploit: a 6 September borrow against ALPHA collateral priced at the AVAX feed",
-      "split": "holdout",
+      "split": "tuning",
       "sender": "0xee5360c5fa13555cbf355cb5015b865d742040e42ff90c324e11f0c63e504545",
       "timestamp": "2026-09-06T17:12:01.780Z",
       "source": "case alphafi-2026-09 subjects.borrow_xbtc_4",
-      "detected_by": []
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "price-off-market",
+          "evidence": "0xfe3afec26c59e874f3c1d60b8203cb3852d2bb2aa415df9548b8d688e6683f93::alpha::ALPHA stated at"
+        }
+      ]
     },
     {
       "digest": "6xLRm3uhZU4MF8RUp6zaCWFY57KxEDHDLdtC97LT8VtH",
       "incident": "scallop-pass-drainer-2024-05",
       "case": "scallop-pass-drainer-2024-05",
       "role": "drain: the victim-signed PTB that hands its positions to the collector",
-      "split": "holdout",
+      "split": "tuning",
       "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
       "timestamp": "2024-05-31T13:43:58.871Z",
       "source": "case scallop-pass-drainer-2024-05 subjects.drain_tx",
@@ -1431,7 +1634,7 @@
       "incident": "giftsui-drainer-2024-08",
       "case": "giftsui-drainer-2024-08",
       "role": "drain: the campaign's first srt::mint drain, a NAVI withdrawal paid to the collector",
-      "split": "holdout",
+      "split": "tuning",
       "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
       "timestamp": "2024-07-27T10:20:56.672Z",
       "source": "case giftsui-drainer-2024-08 subjects.first_drain_tx",
@@ -1473,7 +1676,7 @@
       "incident": "giftsui-drainer-2024-08",
       "case": "giftsui-drainer-2024-08",
       "role": "drain: the victim-signed PTB that transfers two StakedSui to the collector",
-      "split": "holdout",
+      "split": "tuning",
       "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
       "timestamp": "2024-08-10T00:16:17.654Z",
       "source": "case giftsui-drainer-2024-08 subjects.drain_tx",
@@ -1515,7 +1718,7 @@
       "incident": "giftsui-drainer-2024-08",
       "case": "giftsui-drainer-2024-08",
       "role": "drain: the campaign's last srt::mint drain",
-      "split": "holdout",
+      "split": "tuning",
       "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
       "timestamp": "2024-08-16T16:15:46.797Z",
       "source": "case giftsui-drainer-2024-08 subjects.last_drain_tx",
@@ -1549,6 +1752,117 @@
           "tool": "decode_ptb_bytes",
           "code": "transfers-to-non-sender",
           "evidence": "0xd908bf1686103339619153584fd4f81f191323fd383fdbd7e0b8b118c05557c4"
+        }
+      ]
+    },
+    {
+      "digest": "F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd",
+      "incident": "claim-swaps-drainer-2024-11",
+      "case": "claim-swaps-staked-drainer-2024-11",
+      "role": "drain: three StakedSui and a SUI coin through claim::swapS and swapT, ClaimParams switched 0.935 s before",
+      "split": "tuning",
+      "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
+      "timestamp": "2024-11-28T19:03:29.732Z",
+      "source": "case claim-swaps-staked-drainer-2024-11 subjects.drain_tx",
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "switched-before-execution",
+          "evidence": "0x7188a53ee9daee5604da2649e7b87b100c6693e4ce6b9d411f8af799b9960ecd"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "blocklisted-package-call"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "transfers-to-non-sender"
+        },
+        {
+          "tool": "decode_ptb",
+          "code": "blocklisted-package-call"
+        },
+        {
+          "tool": "decode_ptb",
+          "code": "transfers-to-non-sender"
+        },
+        {
+          "tool": "decode_ptb_bytes",
+          "code": "blocklisted-package-call"
+        }
+      ]
+    },
+    {
+      "digest": "3Q4b1uQMJJex4vFFPyBDaHb8bxfa3bHmDdc2crbvzDES",
+      "incident": "claim-swaps-drainer-2024-11",
+      "case": "claim-swaps-staked-drainer-2024-11",
+      "role": "drain: a Suilend obligation, a Bluefin position and coins, ClaimParams switched 0.933 s before",
+      "split": "tuning",
+      "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
+      "timestamp": "2024-12-03T01:17:42.045Z",
+      "source": "case claim-swaps-staked-drainer-2024-11 subjects.lending_drain_tx",
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "switched-before-execution",
+          "evidence": "0xe14ce60904df73c20f71618302f57e97163e758bc664aedc02f98cd102d373de"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "blocklisted-package-call"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "transfers-to-non-sender"
+        },
+        {
+          "tool": "decode_ptb",
+          "code": "blocklisted-package-call"
+        },
+        {
+          "tool": "decode_ptb",
+          "code": "transfers-to-non-sender"
+        },
+        {
+          "tool": "decode_ptb_bytes",
+          "code": "blocklisted-package-call"
+        }
+      ]
+    },
+    {
+      "digest": "6rB49EwjCyiUHna5iyGXAPVEjSRHzzv6Ah6aEvs5gNLN",
+      "incident": "claim-swaps-drainer-2024-11",
+      "case": "claim-swaps-staked-drainer-2024-11",
+      "role": "drain: a Cetus position, a Suilend obligation, an AlphaFi receipt and coins, ClaimParams switched 1.056 s before",
+      "split": "tuning",
+      "sender_withheld": "victim-signed drain; the signer is the victim and is not recorded",
+      "timestamp": "2024-11-29T14:21:44.350Z",
+      "source": "case claim-swaps-staked-drainer-2024-11 subjects.lp_drain_tx",
+      "detected_by": [
+        {
+          "tool": "analyze_attack_tx",
+          "code": "switched-before-execution",
+          "evidence": "0x9a97139820b3c35a46757d46305b62894ca478ff7172cfa7d517e33d04462860"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "blocklisted-package-call"
+        },
+        {
+          "tool": "analyze_attack_tx",
+          "code": "transfers-to-non-sender"
+        },
+        {
+          "tool": "decode_ptb",
+          "code": "blocklisted-package-call"
+        },
+        {
+          "tool": "decode_ptb",
+          "code": "transfers-to-non-sender"
+        },
+        {
+          "tool": "decode_ptb_bytes",
+          "code": "blocklisted-package-call"
         }
       ]
     }
@@ -5534,6 +5848,12 @@
       "tool": "analyze_attack_tx",
       "code": "unverified-package-call",
       "reason": "Calls 0x7432b455::vault, which the curated registry does not name. By effects no value left the sender one way; it reads medium only because caller-value-used reads medium on the same Cetus flash swap (its sqrt_price_limit)"
+    },
+    {
+      "digest": "2NKoEGWvs4V6Kb7QWQqpefg3MjhuLRpcxJUK5DZ8A7zv",
+      "tool": "analyze_attack_tx",
+      "code": "price-off-market",
+      "reason": "An ordinary AlphaLend oracle refresh, but the flag's statement is true: the 0x3a5143bb::coin::COIN slot held the AVAX/USD price (12.9x its own market price), the misconfiguration the AlphaLend ALPHA case traces to 9 December 2025"
     }
   ],
   "holdout_ceilings": {

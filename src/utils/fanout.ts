@@ -86,7 +86,17 @@ export interface FanoutResult {
   flow_shape: "disperser" | "collector" | "balanced" | "unknown";
   /** Transactions actually scanned. */
   scanned_transactions: number;
-  /** True when the scan hit its budget before running out of transactions. */
+  /**
+   * The transaction budget the reading ran under. Two readings of one address
+   * are comparable only through this and `scanned_transactions`: a smaller
+   * budget can stop short of a history a larger one reads to the end.
+   */
+  max_transactions: number;
+  /**
+   * True when the scan stopped at `max_transactions` with transactions left
+   * unread. A scan that read the whole history is never truncated, whatever
+   * its budget.
+   */
   truncated: boolean;
   /**
    * Coarse reading of the count, so callers don't have to invent thresholds.
@@ -344,7 +354,7 @@ export function reportedClassification(
     classification_provisional: true,
     interpretation:
       classification === "narrow"
-        ? "Narrow within the window scanned, but the scan reached its budget before the end of this address's history, so the count is a lower bound. Raise max_transactions before reading shared funding through it as meaningful."
+        ? "Narrow within the window scanned, but the scan reached its budget before the end of this address's history, so the count is a lower bound. Measure it with get_address_fanout at a larger max_transactions before reading shared funding through it as meaningful."
         : `${interpretation} The scan reached its budget before the end of this address's history, so the count is a lower bound and the address may be hub-scale.`,
   };
 }
@@ -383,6 +393,13 @@ export function counterpartySides(
 }
 
 /**
+ * The budget `get_address_fanout` scans by default, and the one any other
+ * report of a single address's fan-out uses, so that report and a direct
+ * measurement of the same address agree on `truncated` and the counts.
+ */
+export const FANOUT_DEFAULT_TRANSACTIONS = 1000;
+
+/**
  * Count distinct counterparties of `address`, walking backwards from its most
  * recent activity and scanning at most `maxTransactions`.
  *
@@ -392,7 +409,7 @@ export function counterpartySides(
  */
 export async function measureFanout(
   address: string,
-  maxTransactions = 1000,
+  maxTransactions = FANOUT_DEFAULT_TRANSACTIONS,
   useCache = true,
 ): Promise<FanoutResult> {
   // Cheap win when the optional store is on: this is the expensive measurement
@@ -434,6 +451,9 @@ export async function measureFanout(
           cached.truncated === 1,
         ),
         scanned_transactions: cached.scanned_transactions,
+        // A truncated scan stops exactly at its budget, so a served reading
+        // deeper than asked for ran under its own scanned count.
+        max_transactions: Math.max(maxTransactions, cached.scanned_transactions),
         truncated: cached.truncated === 1,
         ...reportedClassification(cached.counterparty_count, cached.truncated === 1),
         cached: true,
@@ -532,6 +552,7 @@ export async function measureFanout(
     flow_shape: flowShape,
     ...sponsorReport(sponsorShape, sponsored.size, sponsoredAndPaid, sponsoredTxs, hasNext),
     scanned_transactions: scanned,
+    max_transactions: maxTransactions,
     truncated: hasNext,
     ...reportedClassification(counterparties.size, hasNext),
   };

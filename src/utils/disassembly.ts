@@ -7,6 +7,7 @@
  */
 
 import type { LinkageEntry } from "./package-diff.js";
+import { SYSTEM_PACKAGE } from "./system-packages.js";
 
 /** Trailing whitespace and CRLF are not part of the bytecode. */
 export function toLines(code: string): string[] {
@@ -204,9 +205,6 @@ const SHIFT_NOTE: Record<string, string> = {
   Shl: "bits shifted past the type's width are dropped, no abort; only a shift amount >= the width aborts",
   Shr: "low bits shifted out are dropped; only a shift amount >= the width aborts",
 };
-
-/** Framework packages live at small reserved addresses (0x1, 0x2, 0x3, 0xb, 0xdee9). */
-export const SYSTEM_PACKAGE = /^0x0{60}[0-9a-f]{4}$/;
 
 export interface AnnotateOptions {
   /**

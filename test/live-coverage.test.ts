@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registeredTools } from "./helpers/tool-names.js";
 import { validateCase } from "../scripts/probe/lib/case-eval.mjs";
+import { callsTool, NOT_COVERAGE } from "../scripts/probe/lib/tiers.mjs";
 
 /**
  * Every tool must be exercised live against a known answer: called by a
@@ -15,7 +16,6 @@ import { validateCase } from "../scripts/probe/lib/case-eval.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROBE_DIR = join(ROOT, "scripts", "probe");
 const CASE_DIR = join(ROOT, "cases", "incidents");
-const NOT_COVERAGE = new Set(["adversarial.mjs"]);
 
 /**
  * Tools exempt from the gate, each with the reason. Empty while every tool
@@ -33,11 +33,8 @@ const caseFiles = readdirSync(CASE_DIR)
   .filter((f) => f.endsWith(".json"))
   .map((f) => ({ file: f, json: JSON.parse(readFileSync(join(CASE_DIR, f), "utf8")) }));
 
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 /** A call like `call("get_balance", …)`, `callRaw('get_balance'` or `server.call(\`get_balance\``. */
-const calledInProbe = (tool: string) =>
-  probeSources.some((src) => new RegExp(`\\b\\w*[Cc]all\\w*\\(\\s*(["'\`])${escapeRe(tool)}\\1`).test(src));
+const calledInProbe = (tool: string) => probeSources.some((src) => callsTool(src, tool));
 
 const caseTools = new Set<string>(caseFiles.flatMap(({ json }) => (json.checks ?? []).map((c: { tool?: string }) => c.tool)));
 

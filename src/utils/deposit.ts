@@ -3,7 +3,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { getLabel, labelProvenance } from "./labels.js";
 import { measureFanout, type FanoutResult } from "./fanout.js";
 import { decimalsForCoinType, displayCoin, prefetchCoinScale, toHumanAmount } from "./valuation.js";
-import { isSponsorGasChange } from "./sponsor-gas.js";
+import { isSponsorGasChange, isSuiCoinType } from "./sponsor-gas.js";
 
 /**
  * Is this address an exchange deposit address?
@@ -14,14 +14,27 @@ import { isSponsorGasChange } from "./sponsor-gas.js";
  * observations make the pattern, and each one alone has innocent explanations:
  *
  *   1. Every outflow goes to one destination D, and each outflow is a
- *      full-balance sweep: the coin's balance is zero right after it.
+ *      full-balance sweep: the coin's balance is zero right after it, apart
+ *      from a small SUI gas reserve on a sweep the address paid gas for.
  *   2. The sweep's gas is paid by a sponsor that pays for many unrelated
  *      senders (relayer-shaped). Exchanges sponsor sweeps so deposit addresses
  *      never need SUI of their own.
  *   3. D is a disclosed exchange wallet, or at least hub-shaped.
  *
- * The verdict is `heuristic`: it names a pattern, not a disclosure.
+ * The verdict is `heuristic`: it names a pattern, not a disclosure. Every
+ * check runs whatever an earlier one found, and a check that cannot run says
+ * why in `checks_not_run`, so a verdict never rests on a check that was skipped.
  */
+
+/**
+ * SUI a self-paid sweep may leave behind and still count as a full-balance
+ * sweep. An address that pays its own gas has to keep SUI for the next sweep's
+ * gas, so its SUI never reaches zero. A Sui transfer costs a few thousandths of
+ * a SUI, so this bound is a reserve for hundreds of sweeps, while a transfer
+ * that leaves more than it did not empty the address. A sponsored sweep needs
+ * no reserve, and other coins pay no gas, so both must be swept whole.
+ */
+export const SWEEP_GAS_RESERVE_MIST = 1_000_000_000n;
 
 export interface BalanceChange {
   owner: string;
@@ -60,7 +73,14 @@ export interface Sweep {
   timestamp: string | null;
   destination: string;
   coins: SweepCoin[];
+  /**
+   * True when every swept coin is at zero right after the transfer, or when
+   * the only thing left is SUI within the gas reserve on a self-paid sweep.
+   * Null when the balance after is unknown.
+   */
   full_balance: boolean | null;
+  /** SUI left behind as the gas reserve, when full_balance holds only because of it. */
+  kept_for_gas?: string;
   /** Gas payer when it is not the address itself. */
   sponsor: string | null;
 }
@@ -170,12 +190,23 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
             balance_after_raw: after[i] ? String(bal ?? 0n) : null,
           };
         });
+      // A self-paid sweep keeps its gas reserve; see SWEEP_GAS_RESERVE_MIST.
+      const selfPaid = sponsor === null && tx.sender === address;
+      let full: boolean | null = after[i] ? true : null;
+      let reserve: string | undefined;
+      for (const c of coins) {
+        const left = BigInt(c.balance_after_raw ?? "0");
+        if (left === 0n) continue;
+        if (selfPaid && isSuiCoinType(c.coin_type) && left <= SWEEP_GAS_RESERVE_MIST) reserve = human(left, c.coin_type);
+        else if (full) full = false;
+      }
       sweeps.push({
         digest: tx.digest,
         timestamp: tx.timestamp,
         destination,
         coins,
-        full_balance: after[i] ? coins.every((c) => c.balance_after_raw === "0") : null,
+        full_balance: full,
+        ...(full && reserve ? { kept_for_gas: reserve } : {}),
         sponsor,
       });
       return;
@@ -228,24 +259,38 @@ export interface VerdictResult {
     sponsor_relayer_shaped: boolean | null;
     destination_is_exchange: boolean | null;
   };
+  /** Why each null check could not run. Every null check has an entry. */
+  checks_not_run: Partial<Record<keyof VerdictResult["checks"], string>>;
   reasons: string[];
 }
+
+/** Why a measurement the verdict uses was not taken, when the caller knows. */
+export interface Unmeasured {
+  sponsor?: string;
+  destination?: string;
+}
+
+/** SUI has 9 decimals on every network. */
+const RESERVE_TEXT = `${toHumanAmount(SWEEP_GAS_RESERVE_MIST, 9)} SUI`;
 
 /**
  * Combine the pattern with what is known about the destination and the sweep
  * sponsor.
  *
  * `likely` needs every outflow to be a full-balance sweep to one destination
- * that is an exchange, AND either a relayer-shaped sponsor or a disclosed
- * exchange label on the destination. A hub-shaped destination with self-paid
- * sweeps stays `unknown`: a person consolidating into their own exchange
- * account produces the same outflows.
+ * that is an exchange, AND either a relayer-shaped sponsor on the sweeps or a
+ * disclosed exchange label on the destination. A hub-shaped destination with
+ * self-paid sweeps stays `unknown`: a person consolidating into their own
+ * exchange account produces the same outflows. `no` needs an outflow that is
+ * observed not to be a sweep; a check that could not run never decides it.
  */
 export function decideDepositVerdict(
   pattern: DepositPattern,
   destination: DestinationEvidence | null,
   sponsorShape: FanoutResult["sponsor_shape"] | null,
+  unmeasured: Unmeasured = {},
 ): VerdictResult {
+  const { sweeps, otherOutflows, destinations, sponsors } = pattern;
   const reasons: string[] = [];
   const checks: VerdictResult["checks"] = {
     single_destination: null,
@@ -254,60 +299,97 @@ export function decideDepositVerdict(
     sponsor_relayer_shaped: null,
     destination_is_exchange: null,
   };
+  const notRun: VerdictResult["checks_not_run"] = {};
 
-  if (pattern.sweeps.length === 0 && pattern.otherOutflows.length === 0) {
+  if (sweeps.length === 0 && otherOutflows.length === 0) {
+    for (const key of Object.keys(checks) as Array<keyof typeof checks>) notRun[key] = "No outflow in the window to test.";
     reasons.push(
       "No outflows in the window. An exchange deposit address that has not been swept yet looks like any receive-only wallet.",
     );
-    return { verdict: "unknown", checks, reasons };
+    return { verdict: "unknown", checks, checks_not_run: notRun, reasons };
   }
 
-  if (pattern.otherOutflows.length > 0) {
-    checks.single_destination = false;
+  checks.single_destination = otherOutflows.length === 0 && destinations.length === 1;
+  if (otherOutflows.length > 0) {
+    const first = otherOutflows[0]!;
     reasons.push(
-      `${pattern.otherOutflows.length} outflow(s) are not a transfer to a single recipient (e.g. ${pattern.otherOutflows[0]!.digest}: ${pattern.otherOutflows[0]!.reason}). Deposit addresses only sweep.`,
+      `${otherOutflows.length} outflow(s) were not a transfer to a single recipient (e.g. ${first.digest}: ${first.reason}). A deposit address only sweeps, so this reads as a wallet that also spends or trades.`,
     );
-    return { verdict: "no", checks, reasons };
+  }
+  if (destinations.length > 1) {
+    reasons.push(`Transfers went to ${destinations.length} different destinations; a deposit address sweeps to one.`);
   }
 
-  checks.single_destination = pattern.destinations.length === 1;
-  if (!checks.single_destination) {
-    reasons.push(`Outflows went to ${pattern.destinations.length} different destinations; a deposit address sweeps to one.`);
-    return { verdict: "no", checks, reasons };
-  }
-
-  const fullness = pattern.sweeps.map((s) => s.full_balance);
-  checks.full_balance_sweeps = fullness.includes(false) ? false : fullness.includes(null) ? null : true;
-  if (checks.full_balance_sweeps === false) {
-    const partial = pattern.sweeps.find((s) => s.full_balance === false)!;
-    reasons.push(`Outflow ${partial.digest} left a balance behind, so it was a payment rather than a sweep.`);
-    return { verdict: "no", checks, reasons };
-  }
-  if (checks.full_balance_sweeps === null) {
-    reasons.push("The balance after each outflow could not be reconstructed, so full-balance sweeps are unconfirmed.");
+  if (sweeps.length === 0) {
+    const why = "No outflow was a transfer to a single recipient.";
+    notRun.full_balance_sweeps = why;
+    notRun.sponsored_sweeps = why;
+    notRun.sponsor_relayer_shaped = why;
   } else {
-    reasons.push(`All ${pattern.sweeps.length} outflow(s) emptied the swept coin into ${pattern.destinations[0]}.`);
-  }
+    const into = destinations.length === 1 ? ` into ${destinations[0]}` : "";
+    const partial = sweeps.filter((s) => s.full_balance === false);
+    checks.full_balance_sweeps =
+      partial.length > 0 ? false : sweeps.some((s) => s.full_balance === null) ? null : true;
+    if (checks.full_balance_sweeps === false) {
+      const first = partial[0]!;
+      const residue = first.coins.filter((c) => c.balance_after_raw !== "0");
+      const rule = residue.some((c) => !isSuiCoinType(c.coin_type))
+        ? "a coin other than SUI pays no gas and is swept whole"
+        : first.sponsor
+          ? "a sponsored sweep needs no gas reserve"
+          : `more than the ${RESERVE_TEXT} a self-paid sweep may keep for gas`;
+      const left = residue.map((c) => human(BigInt(c.balance_after_raw!), c.coin_type)).join(", ");
+      reasons.push(
+        `${partial.length} of ${sweeps.length} transfer(s)${into} left a balance behind (e.g. ${first.digest} left ${left}; ${rule}). A deposit address is swept whole, so this reads as a payment rather than a sweep.`,
+      );
+    } else if (checks.full_balance_sweeps === null) {
+      notRun.full_balance_sweeps =
+        "The balance after each transfer could not be reconstructed (the current balance list was unreadable or did not fit one page).";
+    } else {
+      const reserved = sweeps.filter((s) => s.kept_for_gas).length;
+      reasons.push(
+        `All ${sweeps.length} transfer(s) emptied the swept coin${into}` +
+          (reserved
+            ? `; ${reserved} of them paid their own gas and left only SUI within the ${RESERVE_TEXT} gas reserve (kept_for_gas), which reads as gas for the next sweep.`
+            : "."),
+      );
+    }
 
-  checks.sponsored_sweeps = pattern.sweeps.every((s) => s.sponsor !== null);
-  if (checks.sponsored_sweeps) {
-    checks.sponsor_relayer_shaped = sponsorShape === null ? null : sponsorShape === "relayer";
-    reasons.push(
-      sponsorShape === null
-        ? `Sweep gas was paid by ${pattern.sponsors.join(", ")}; its sponsorship breadth was not measured.`
-        : sponsorShape === "relayer"
-          ? `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which sponsors many unrelated senders (relayer-shaped).`
+    const sponsored = sweeps.filter((s) => s.sponsor !== null).length;
+    checks.sponsored_sweeps = sponsored === sweeps.length;
+    const selfPaid = sponsored < sweeps.length ? ` The other ${sweeps.length - sponsored} paid their own gas.` : "";
+    const paidBy = `${sponsored} of ${sweeps.length} transfer(s) had gas paid by ${sponsors.join(", ")}`;
+    if (sponsored === 0) {
+      checks.sponsor_relayer_shaped = false;
+      reasons.push("Every transfer paid its own gas, so no sponsor points to an exchange relayer.");
+    } else if (sponsorShape === null) {
+      notRun.sponsor_relayer_shaped = unmeasured.sponsor ?? "The sponsor's sponsorship breadth was not measured.";
+      reasons.push(`${paidBy}; its sponsorship breadth was not measured.${selfPaid}`);
+    } else {
+      checks.sponsor_relayer_shaped = sponsorShape === "relayer";
+      reasons.push(
+        (sponsorShape === "relayer"
+          ? `${paidBy}, which sponsors many unrelated senders (relayer-shaped).`
           : sponsorShape === "operator"
-            ? `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which also sent a coin to most of the addresses it sponsors; that fits an operator running its own wallets better than an exchange relayer.`
-            : `Sweep gas was paid by ${pattern.sponsors.join(", ")}, which sponsors few senders; that fits a private payer better than an exchange relayer.`,
-    );
-  } else {
-    checks.sponsor_relayer_shaped = false;
-    reasons.push("At least one sweep paid its own gas.");
+            ? `${paidBy}, which also sent a coin to most of the addresses it sponsors; that fits an operator running its own wallets better than an exchange relayer.`
+            : `${paidBy}, which sponsors few senders; that fits a private payer better than an exchange relayer.`) + selfPaid,
+      );
+    }
   }
 
-  if (destination) {
+  if (!destination) {
+    notRun.destination_is_exchange =
+      destinations.length > 1
+        ? `Transfers went to ${destinations.length} destinations, so there is no single hot wallet to check.`
+        : destinations.length === 0
+          ? "No transfer to a single recipient, so there is no hot wallet to check."
+          : (unmeasured.destination ?? "The destination was not looked up.");
+  } else {
     checks.destination_is_exchange = destination.cexLabel || destination.hub === true ? true : destination.hub === null ? null : false;
+    if (checks.destination_is_exchange === null) {
+      notRun.destination_is_exchange =
+        unmeasured.destination ?? "The destination carries no exchange label and its fan-out was not measured.";
+    }
     reasons.push(
       destination.cexLabel
         ? "The destination carries a cex label."
@@ -319,16 +401,16 @@ export function decideDepositVerdict(
     );
   }
 
+  const result = (verdict: DepositVerdict): VerdictResult => ({ verdict, checks, checks_not_run: notRun, reasons });
+  if (checks.single_destination === false || checks.full_balance_sweeps === false) return result("no");
   const exchange = checks.destination_is_exchange === true;
   const strongSponsor = checks.sponsor_relayer_shaped === true;
   const labelled = destination?.cexLabel === true;
-  if (checks.full_balance_sweeps === true && exchange && (strongSponsor || labelled)) {
-    return { verdict: "likely", checks, reasons };
-  }
+  if (checks.full_balance_sweeps === true && exchange && (strongSponsor || labelled)) return result("likely");
   if (checks.destination_is_exchange === false) {
     reasons.push("Without an exchange-shaped destination this reads as a wallet forwarding to one place, which is not specific to exchanges.");
   }
-  return { verdict: "unknown", checks, reasons };
+  return result("unknown");
 }
 
 // ---------------------------------------------------------------------------
@@ -427,18 +509,34 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
   const hotLabel = hotWallet ? getLabel(hotWallet) : null;
   let destination: DestinationEvidence | null = null;
   let destinationFanout: FanoutResult | null = null;
+  const unmeasured: Unmeasured = {};
   if (hotWallet) {
     const cexLabel = hotLabel?.category === "cex";
     if (!cexLabel && measureDestination) {
-      destinationFanout = await measureFanout(hotWallet, 300).catch(() => null);
+      destinationFanout = await measureFanout(hotWallet, 300).catch((err: unknown) => {
+        unmeasured.destination = `The destination's fan-out could not be read: ${err instanceof Error ? err.message : String(err)}`;
+        return null;
+      });
+    } else if (!cexLabel) {
+      unmeasured.destination = "The destination carries no exchange label and its fan-out is not measured in this call; classify_deposit_address measures it.";
     }
     destination = { cexLabel, hub: destinationFanout ? destinationFanout.classification === "hub" : null };
   }
 
   const sponsor = pattern.sponsors.length === 1 ? pattern.sponsors[0]! : null;
-  const sponsorFanout = sponsor && measureSponsor ? await measureFanout(sponsor, 300).catch(() => null) : null;
+  let sponsorFanout: FanoutResult | null = null;
+  if (pattern.sponsors.length > 1) {
+    unmeasured.sponsor = `The sweeps had ${pattern.sponsors.length} different sponsors; sponsorship breadth is measured for a single sponsor only.`;
+  } else if (sponsor && !measureSponsor) {
+    unmeasured.sponsor = "The sponsor's breadth is not measured in this call; classify_deposit_address measures it.";
+  } else if (sponsor) {
+    sponsorFanout = await measureFanout(sponsor, 300).catch((err: unknown) => {
+      unmeasured.sponsor = `The sponsor's fan-out could not be read: ${err instanceof Error ? err.message : String(err)}`;
+      return null;
+    });
+  }
 
-  const decided = decideDepositVerdict(pattern, destination, sponsorFanout?.sponsor_shape ?? null);
+  const decided = decideDepositVerdict(pattern, destination, sponsorFanout?.sponsor_shape ?? null, unmeasured);
   return {
     address: scan.address,
     verdict: decided.verdict,
@@ -463,6 +561,7 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
         }
       : null,
     checks: decided.checks,
+    checks_not_run: decided.checks_not_run,
     reasons: decided.reasons,
     sweeps: pattern.sweeps.slice(-10).reverse(),
     sweep_count: pattern.sweeps.length,

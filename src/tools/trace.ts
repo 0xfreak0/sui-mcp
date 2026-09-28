@@ -13,6 +13,7 @@ import {
   type CandidateTx,
   type GasCharge,
   type HopBasis,
+  type NextHop,
   type RemainingEntry,
   type UnfollowedRecipient,
 } from "../utils/trace-hop.js";
@@ -42,6 +43,10 @@ import {
 import { ActivityLedger, lookalikeReport, lookalikeWarning } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
 import { pricesForRanking } from "../utils/price-providers.js";
+import { gqlQuery } from "../clients/graphql.js";
+import { readerFor } from "../utils/position-value.js";
+import { readMovedObjects, valueMovedObjects, type MovedObjectValue } from "../utils/moved-value.js";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import {
   coinScale,
   decimalsForCoinType,
@@ -130,6 +135,26 @@ interface HopResult {
   object_transfers?: ObjectMovement[];
   /** Set when more object changes existed than the page returned. */
   object_changes_truncated?: string;
+  /**
+   * The valued objects (staked SUI, LP positions, lending caps, vault
+   * receipts, NFT estimates) this hop moved into or out of an address, each
+   * with its USD at the hop's checkpoint and the method it was valued by.
+   */
+  object_values?: Array<
+    Pick<MovedObjectValue, "object_id" | "kind" | "usd" | "tier"> &
+      Partial<Pick<MovedObjectValue, "from" | "to" | "protocol">> & {
+      type?: string;
+      /** How it was valued; absent when an earlier hop (`method_on_hop`) states it. */
+      method?: string;
+      method_on_hop?: number;
+      estimate?: true;
+      changed_in_place?: true;
+      usd_after?: number | null;
+      custody?: MovedObjectValue["custody"];
+    }
+  >;
+  /** Objects a reader values whose value this hop could not read. */
+  object_values_unread?: Array<{ what: string; reason: string }>;
   /** More balance changes or commands existed than could be read. */
   balance_changes_truncated?: true;
   commands_truncated?: true;
@@ -306,6 +331,79 @@ interface FollowedHop {
   coin: string | null;
   amount: bigint;
   basis: HopBasis;
+}
+
+/**
+ * The valued objects a forward hop should follow instead of its coin: those
+ * the actor handed to one other address, when their priced value exceeds the
+ * coin flow the next-hop decision follows. Estimates (NFTs) and objects
+ * without a price never outweigh a coin. Null when the coin stands.
+ */
+function objectLead(
+  values: NonNullable<HopResult["object_values"]>,
+  actor: string | null,
+  decision: NextHop,
+  changes: BalanceChangeInfo[],
+  valueUsd: (c: { amount: string; coin_type: string }) => number | null,
+  gas: GasCharge,
+): { to: string; objects: string[]; note: string } | null {
+  if (!actor) return null;
+  const from = normalizeSuiAddress(actor);
+  const byRecipient = new Map<string, { usd: number; objects: string[] }>();
+  for (const v of values) {
+    if (v.changed_in_place || v.custody || v.estimate || v.usd === null || v.from !== from || !v.to || v.to === from) continue;
+    const e = byRecipient.get(v.to) ?? { usd: 0, objects: [] };
+    e.usd += v.usd;
+    e.objects.push(v.object_id);
+    byRecipient.set(v.to, e);
+  }
+  const top = [...byRecipient].sort((a, b) => b[1].usd - a[1].usd)[0];
+  if (!top) return null;
+  // The coin flow to beat: the largest priced flow of one coin to one
+  // address other than the actor, whichever the coin choice took, so a bait
+  // coin the choice followed is not the comparison.
+  let best: { address: string; coin: string; usd: number } | null = null;
+  for (const c of changes) {
+    if (normalizeSuiAddress(c.address) === from) continue;
+    const moved = nonGasAmount(c, gas);
+    if (moved <= 0n) continue;
+    const usd = valueUsd({ amount: moved.toString(), coin_type: c.coin_type });
+    if (usd !== null && (!best || usd > best.usd)) best = { address: c.address, coin: c.coin_type, usd };
+  }
+  if (best && top[1].usd <= best.usd) return null;
+  return {
+    to: top[0],
+    objects: top[1].objects,
+    note:
+      `Followed ${top[1].objects.length} valued object(s) worth ${formatUsd(top[1].usd)} at this hop's checkpoint to ${top[0]}` +
+      (best
+        ? `, more than the largest priced coin flow, ${displayCoin(best.coin).symbol} to ${best.address} (${formatUsd(best.usd)} at current prices).`
+        : ", where no priced coin reached another address.") +
+      " The next hop is the next transaction that touches one of them.",
+  };
+}
+
+/** Objects whose next transaction is looked up per trace hop. */
+const MAX_TRACKED_OBJECTS = 5;
+
+/**
+ * The earliest transaction at or after `checkpoint` that touches any of
+ * `objectIds`, other than those already read. Null when none does.
+ */
+async function nextObjectTransaction(objectIds: string[], checkpoint: number | undefined, visited: ReadonlySet<string>): Promise<string | null> {
+  let best: { digest: string; checkpoint: number } | null = null;
+  for (const id of objectIds.slice(0, MAX_TRACKED_OBJECTS)) {
+    const d = await gqlQuery<{
+      transactions: { nodes: Array<{ digest: string; effects: { checkpoint: { sequenceNumber: number } | null } | null }> };
+    }>(
+      `query($f: TransactionFilter!) { transactions(first: 5, filter: $f) { nodes { digest effects { checkpoint { sequenceNumber } } } } }`,
+      { f: { affectedObject: id, ...(checkpoint !== undefined ? { afterCheckpoint: Math.max(0, checkpoint - 1) } : {}) } },
+    );
+    const next = d.transactions.nodes.find((n) => !visited.has(n.digest));
+    const cp = next?.effects?.checkpoint?.sequenceNumber;
+    if (next && cp !== undefined && (!best || cp < best.checkpoint)) best = { digest: next.digest, checkpoint: cp };
+  }
+  return best?.digest ?? null;
 }
 
 function amountLabel(amount: string | bigint, coin: string | null): string {
@@ -510,6 +608,9 @@ export function registerTraceTools(server: McpServer) {
       let custodyBreak: Record<string, unknown> | null = null;
       // The coin we're following. May change mid-trace after a swap (A→B).
       let trackedCoin: string | null = coinFilter;
+      // Forward: the valued objects the trace followed to their recipient,
+      // whose next transaction is the one that touches them.
+      let trackedObjects: string[] = [];
 
       for (let hop = 0; hop < maxHops && currentDigest; hop++) {
         let tx: FetchedTx | null;
@@ -688,6 +789,33 @@ export function registerTraceTools(server: McpServer) {
           movementsByHop.set(hopResult.hop, tx.objectMovements);
           const moved = custodyChanges(tx.objectMovements);
           if (moved.length > 0) hopResult.object_transfers = moved;
+          // Valued at this hop's checkpoint. Read only when a movement is of a
+          // type some reader values: one request for the versions, plus the
+          // readers' own.
+          // A tracked object changed in place is no movement, so a hop that
+          // carries tracked objects is always read.
+          if (trackedObjects.length > 0 || tx.objectMovements.some((m) => m.type && readerFor(m.type) !== null)) {
+            const valued = await readMovedObjects([currentDigest])
+              .then((r) => (r.txs[0] ? valueMovedObjects(r.txs[0].moved, r.txs[0].checkpoint) : null))
+              .catch((err: unknown) => ({ rows: [], unread: [{ what: currentDigest!, reason: err instanceof Error ? err.message : String(err) }] }));
+            if (valued?.rows.length) {
+              hopResult.object_values = valued.rows.map(({ object_id, type, from, to, kind, protocol, usd, tier, method, estimate, changed_in_place, usd_after, custody }) => ({
+                object_id,
+                type,
+                from,
+                to,
+                kind,
+                protocol,
+                usd,
+                tier,
+                method,
+                ...(estimate ? { estimate: true as const } : {}),
+                ...(changed_in_place ? { changed_in_place: true as const, usd_after: usd_after ?? null } : {}),
+                ...(custody ? { custody } : {}),
+              }));
+            }
+            if (valued?.unread.length) hopResult.object_values_unread = valued.unread;
+          }
           if (tx.objectChangesTruncated) {
             hopResult.object_changes_truncated =
               `This transaction has more object changes than were read (${OBJECT_CHANGE_PAGES} pages of 50), ` +
@@ -761,16 +889,68 @@ export function registerTraceTools(server: McpServer) {
           ...(direction === "forward" ? { holder: holder ?? sender } : { recipient }),
         });
         const coinBefore = trackedCoin;
+        // Forward: valued objects the actor handed to one other address, worth
+        // more than the coin the decision follows, are followed instead: a
+        // drain of stakes or positions moves them and no coin of value.
+        const objectPick: { to: string; objects: string[]; note: string } | null =
+          direction === "forward" ? objectLead(hopResult.object_values ?? [], actor, decision, allChanges, valueUsd, gas) : null;
+        // Forward: tracked objects the holder kept through this hop (fees or
+        // rewards collected, liquidity added or taken out in part) stay the
+        // trail; its coin flows are side flows. The trail moves on when the
+        // objects are handed on, or closed and paid out in coins.
+        // A tracked object drawn down in place (liquidity removed without a
+        // close) stays the trail only while what it still holds outweighs
+        // the coin flow the decision would follow; emptied, the payout is.
+        const heldAfter = (hopResult.object_values ?? [])
+          .filter((v) => v.changed_in_place && trackedObjects.includes(v.object_id))
+          .map((v) => v.usd_after ?? null);
+        const followedCoinUsd =
+          decision.nextAddress && decision.nextCoinType
+            ? allChanges
+                .filter((c) => c.address === decision.nextAddress && sameCoin(c.coin_type, decision.nextCoinType!))
+                .reduce((sum, c) => {
+                  const moved = nonGasAmount(c, gas);
+                  return moved > 0n ? sum + (valueUsd({ amount: moved.toString(), coin_type: c.coin_type }) ?? 0) : sum;
+                }, 0)
+            : 0;
+        const stillHolds = heldAfter.length === 0 || heldAfter.reduce<number>((t, u) => t + (u ?? 0), 0) > followedCoinUsd;
+        const keptTracked =
+          direction === "forward" && !objectPick && trackedObjects.length > 0 && actor && stillHolds
+            ? trackedObjects.every(
+                (id) =>
+                  !(tx.objectMovements ?? []).some(
+                    (m) => normalizeSuiAddress(m.object_id) === id && (m.kind === "transferred" || m.kind === "deleted" || m.kind === "wrapped"),
+                  ),
+              )
+            : false;
+        if (objectPick) {
+          decision.nextAddress = objectPick.to;
+          decision.nextCoinType = null;
+          decision.basis = "object";
+          decision.note = objectPick.note;
+          trackedObjects = objectPick.objects;
+        } else if (keptTracked) {
+          decision.nextAddress = actor;
+          decision.nextCoinType = null;
+          decision.basis = "object";
+          decision.note =
+            `The ${trackedObjects.length} tracked object(s) stayed with ${actor}: this transaction changed them in place, and its coin flows are side flows. ` +
+            "The next hop is the next transaction that touches one of them.";
+        } else trackedObjects = [];
         trackedCoin = decision.nextCoinType;
         if (decision.note) hopResult.note = decision.note;
         hopResult.basis = decision.basis;
         // Branches the trace set aside. Reported per hop so "the money went
         // here" is never read off a split that had five other recipients.
         if (decision.unfollowed.length) {
-          if (direction === "forward") hopResult.unfollowed_recipients = decision.unfollowed;
-          else hopResult.unfollowed_sources = decision.unfollowed;
+          // USD to the cent: a ranking value, not an audit figure.
+          const rows = decision.unfollowed.map((u) =>
+            typeof u.usd_value === "number" ? { ...u, usd_value: Math.round(u.usd_value * 100) / 100 } : u,
+          );
+          if (direction === "forward") hopResult.unfollowed_recipients = rows;
+          else hopResult.unfollowed_sources = rows;
         }
-        const nextAddress = decision.nextAddress;
+        const nextAddress: string | null = decision.nextAddress;
         if (!nextAddress) {
           terminationReason =
             direction === "forward"
@@ -852,8 +1032,10 @@ export function registerTraceTools(server: McpServer) {
         // the traced SUI. An address paid by few that pays many (an operator's
         // disperser) passes on what it received, and is followed. Not asked
         // when the trace keeps following the same actor, who is the subject
-        // rather than a new party.
-        if (direction === "backward" || nextAddress !== actor) {
+        // rather than a new party, nor when the trace follows objects: the
+        // next hop is the transaction that touches those objects, which
+        // pooling at the holder cannot confuse.
+        if (direction === "backward" || (nextAddress !== actor && trackedObjects.length === 0)) {
           const fanout = await measureFanout(nextAddress, HUB_SCAN_TRANSACTIONS).catch(() => null);
           if (fanout && stopsAsHub(nextAddress, fanout, direction)) {
             terminationReason =
@@ -885,7 +1067,21 @@ export function registerTraceTools(server: McpServer) {
               .reduce((sum, c) => sum + nonGasAmount(c, gas), 0n)
           : 0n;
 
-        if (direction === "forward") {
+        if (direction === "forward" && trackedObjects.length > 0) {
+          delivered = null;
+          const next = await nextObjectTransaction(trackedObjects, checkpointNum, visitedDigests);
+          if (!next) {
+            terminationReason =
+              `${nextAddress} holds the tracked valued objects and no later transaction touches them (checked by object id). ` +
+              "They are still held there unless a transaction this read missed moved them.";
+            break;
+          }
+          holder = nextAddress;
+          reachedVia = undefined;
+          // An owned object moves only in a transaction its holder sends.
+          expectedSender = nextAddress;
+          currentDigest = next;
+        } else if (direction === "forward") {
           delivered = trackedCoin && movedHere > 0n ? { address: nextAddress, coin: trackedCoin, amount: movedHere } : null;
           const coin = trackedCoin;
           const step = await findNextForward(nextAddress, checkpointNum, coin, EMPTY_REMAINING, currentDigest, visitedDigests, {
@@ -1057,11 +1253,30 @@ export function registerTraceTools(server: McpServer) {
 
       let anyStalePrice = false;
 
+      // An object valued on several hops states its method once, on the
+      // first; later rows point back to it. Its type is in object_transfers.
+      const methodHop = new Map<string, number>();
+      for (const hop of traceHops) {
+        if (!hop.object_values) continue;
+        // A row whose object is in this hop's object_transfers leaves its
+        // holders and protocol to that row.
+        const transferred = new Set((hop.object_transfers ?? []).map((t) => normalizeSuiAddress(t.object_id)));
+        hop.object_values = hop.object_values.map(({ type: _type, method, from, to, protocol, ...row }) => {
+          const first = methodHop.get(row.object_id);
+          if (first === undefined) methodHop.set(row.object_id, hop.hop);
+          const own = transferred.has(normalizeSuiAddress(row.object_id)) ? {} : { from, to, protocol };
+          return first === undefined ? { ...row, ...own, method } : { ...row, ...own, method_on_hop: first };
+        }) as typeof hop.object_values;
+      }
+
       // Enrich hops with names, protocol labels, formatted amounts, and USD value
       const enrichedHops = traceHops.map((hop, i) => {
         const prices = hopPrices[i];
         const blockUnix = hopUnix[i];
         const flows: Array<{ address: string; usd: number }> = [];
+        // Each coin's price record once per hop, not once per row: a drain
+        // hop can carry dozens of rows of a few coins.
+        const price_basis: Record<string, Record<string, unknown>> = {};
         const balance_changes = hop.balance_changes.map((bc) => {
           const pp = prices.get(bc.coin_type) ?? null;
           const price = pp?.price ?? null;
@@ -1071,7 +1286,22 @@ export function registerTraceTools(server: McpServer) {
           const ageSec = pp && blockUnix != null ? Math.abs(pp.publishTime - blockUnix) : null;
           const stale = ageSec != null && ageSec > PRICE_STALE_THRESHOLD_SEC;
           if (stale) anyStalePrice = true;
+          if (pp && price != null && !price_basis[bc.coin_type]) {
+            // Unit price actually used, where it came from and when it was
+            // sampled, so the valuation is auditable.
+            price_basis[bc.coin_type] = {
+              price_usd: Number(price.toFixed(price < 1 ? 6 : 4)),
+              price_source: pp.source,
+              ...(pp.priced_as ? { priced_as: pp.priced_as } : {}),
+              // The sample time says how far it is from the hop; price_stale
+              // flags one past the threshold.
+              priced_at: new Date(pp.publishTime * 1000).toISOString(),
+              ...(stale ? { price_stale: true } : {}),
+            };
+          }
           const coin = displayCoin(bc.coin_type);
+          const name = nameMap.get(bc.address) ?? null;
+          const protocol = lookupProtocolDisplay(bc.address)?.name ?? null;
           return {
             ...bc,
             formatted: formatAmount(bc.amount, bc.coin_type),
@@ -1081,18 +1311,9 @@ export function registerTraceTools(server: McpServer) {
             // another, so "moved 10,000 USDC" is not a claim about which USDC.
             coin_verified: coin.verified,
             ...(coin.verified ? {} : { coin_scale: coinScale(bc.coin_type).source }),
-            name: nameMap.get(bc.address) ?? null,
-            protocol: lookupProtocolDisplay(bc.address)?.name ?? null,
+            ...(name ? { name } : {}),
+            ...(protocol ? { protocol } : {}),
             usd_value: price != null ? Number(usd.toFixed(2)) : null,
-            // Unit price actually used, where it came from and when it was
-            // sampled, so the valuation is auditable.
-            price_usd: price != null ? Number(price.toFixed(price < 1 ? 6 : 4)) : null,
-            price_source: pp?.source ?? null,
-            ...(pp?.priced_as ? { priced_as: pp.priced_as } : {}),
-            ...(pp?.confidence !== undefined ? { price_confidence: pp.confidence } : {}),
-            priced_at: pp ? new Date(pp.publishTime * 1000).toISOString() : null,
-            price_age_sec: ageSec,
-            price_stale: stale || undefined,
           };
         });
         const hopUsd = dominantFlowUsd(flows);
@@ -1101,6 +1322,7 @@ export function registerTraceTools(server: McpServer) {
           sender_name: hop.sender ? nameMap.get(hop.sender) ?? null : null,
           usd_total: hopUsd > 0 ? Number(hopUsd.toFixed(2)) : null,
           balance_changes,
+          ...(Object.keys(price_basis).length ? { price_basis } : {}),
         };
       });
 
@@ -1113,20 +1335,18 @@ export function registerTraceTools(server: McpServer) {
       const baseSummary = buildSummary(traceHops, direction, nameMap);
       const parts = [baseSummary];
       if (peakUsd > 0) {
+        type Basis = { price_usd: number; price_source: string; priced_at: string; price_stale?: true };
         const usedSources = [
-          ...new Set(enrichedHops.flatMap((h) => h.balance_changes.map((bc) => bc.price_source)).filter(Boolean)),
+          ...new Set(enrichedHops.flatMap((h) => Object.values((h.price_basis ?? {}) as Record<string, Basis>).map((b) => b.price_source))),
         ];
         const usd = [`Value (USD, at transaction time — ${usedSources.join(" + ")}):`];
         if (originUsd > 0) usd.push(`  Origin (hop 1): ${formatUsd(originUsd)}`);
         usd.push(`  Largest single-hop flow: ${formatUsd(peakUsd)}`);
         // Show the unit prices and their exact sample times, so it's visible
         // these are transaction-second prices — not a daily average.
-        const shown = new Set<string>();
-        for (const bc of enrichedHops[0].balance_changes) {
-          if (bc.price_usd == null || shown.has(bc.coin_type)) continue;
-          shown.add(bc.coin_type);
-          const at = bc.priced_at ? ` (${bc.priced_at.replace("T", " ").slice(0, 19)} UTC)` : "";
-          usd.push(`  ${shortCoinType(bc.coin_type)} @ $${bc.price_usd}${at}${bc.price_stale ? " ⚠stale" : ""}`);
+        for (const [coin, b] of Object.entries((enrichedHops[0].price_basis ?? {}) as Record<string, Basis>)) {
+          const at = ` (${b.priced_at.replace("T", " ").slice(0, 19)} UTC)`;
+          usd.push(`  ${shortCoinType(coin)} @ $${b.price_usd}${at}${b.price_stale ? " ⚠stale" : ""}`);
         }
         usd.push("  (Later hops are largely the same funds moving; values are not summed.)");
         if (anyStalePrice) {

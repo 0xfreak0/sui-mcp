@@ -3,6 +3,7 @@ import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { coinScale, displayCoin, type CoinScale } from "../utils/valuation.js";
 import { lookupProtocolDisplay, lookupOperation } from "./registry.js";
+import { isVerifiedCoin } from "../utils/coin-registry.js";
 
 export interface DecodedTransaction {
   protocols: string[];
@@ -181,9 +182,9 @@ const NET_POLLUTING_ACTIONS = new Set(["deposit", "withdraw", "borrow", "repay",
 
 /**
  * The direction a swap function name states outright, when it does:
- * `swap_a2b`/`swapAtoB`, Turbos `swap_a_b` and DeepBook
+ * `swap_a2b`/`swapAtoB`/`swap_a_to_b`, Turbos `swap_a_b` and DeepBook
  * `swap_exact_base_for_quote` swap the first type argument in, the second out
- * (the given order already matches); `swap_b2a`/`swapBtoA`, Turbos
+ * (the given order already matches); `swap_b2a`/`swapBtoA`/`swap_b_to_a`, Turbos
  * `swap_b_a` and DeepBook `swap_exact_quote_for_base` swap the second in, the
  * first out (the given order is reversed). Turbos's multi-hop
  * `swap_b_a_b_c`-style functions are left out: their first type argument is
@@ -193,8 +194,8 @@ const NET_POLLUTING_ACTIONS = new Set(["deposit", "withdraw", "borrow", "repay",
  */
 function directionFromFunctionName(fn: string): "a2b" | "b2a" | null {
   const lower = fn.toLowerCase();
-  if (/a2b|atob|^swap_a_b(?:_with_|$)|base_for_quote/.test(lower)) return "a2b";
-  if (/b2a|btoa|^swap_b_a(?:_with_|$)|quote_for_base/.test(lower)) return "b2a";
+  if (/a2b|atob|a_to_b|^swap_a_b(?:_with_|$)|base_for_quote/.test(lower)) return "a2b";
+  if (/b2a|btoa|b_to_a|^swap_b_a(?:_with_|$)|quote_for_base/.test(lower)) return "b2a";
   return null;
 }
 
@@ -226,6 +227,51 @@ function swapDirection(typeArgs: string[], net: Map<string, bigint>, fn: string,
   }
   if (directionFromFunctionName(fn) === "b2a") return [b, a, ...rest];
   return typeArgs;
+}
+
+const FRAMEWORK = normalizeSuiAddress("0x2");
+/** Framework modules whose calls move a coin of the type they are given. */
+const FRAMEWORK_COIN_MODULES = new Set(["coin", "balance", "pay"]);
+
+/**
+ * The bookkeeping types a router passes first in each call of a route, such
+ * as Aftermath's `RouterDataV1`. A type is one when a call with no known
+ * operation passes it with exactly one other type (the call that starts a
+ * path, naming the path's coin), a swap call with four or more type
+ * arguments passes it first, no call passes it in any other position, and
+ * nothing in the transaction shows it to be a coin.
+ */
+function routeMarkers(commands: GrpcTypes.Command[], hasCoinEvidence: (t: string) => boolean): Set<string> {
+  const startsPath = new Set<string>();
+  const leadsHop = new Set<string>();
+  const elsewhere = new Set<string>();
+  for (const cmd of commands) {
+    const c = cmd.command;
+    if (c.oneofKind !== "moveCall") continue;
+    const tas = c.moveCall.typeArguments ?? [];
+    if (tas.length === 0) continue;
+    const op = lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "");
+    if (tas.length === 2 && !op) startsPath.add(tas[0]);
+    if (op?.action === "swap" && tas.length >= 4) leadsHop.add(tas[0]);
+    for (const t of tas.slice(1)) for (const tok of t.split(/[<>,\s]+/)) if (tok) elsewhere.add(tok);
+    for (const tok of tas[0].split(/[<>,\s]+/).slice(1)) if (tok) elsewhere.add(tok);
+  }
+  return new Set([...startsPath].filter((t) => leadsHop.has(t) && !elsewhere.has(t) && !hasCoinEvidence(t)));
+}
+
+/**
+ * One hop of a route: `[marker, path start coin, ...the hop's own types]`, the
+ * hop's own types in each integration's order, so position says nothing about
+ * direction. The hop takes in the coin the path holds (the previous hop's
+ * output, or the start coin) and gives out another of its own types: the last
+ * one the transaction shows to be a coin, else the last one.
+ */
+function routeHop(typeArgs: string[], pathCoin: string | null, hasCoinEvidence: (t: string) => boolean): [string, string] | null {
+  const own = typeArgs.slice(2);
+  const input = pathCoin !== null && own.includes(pathCoin) ? pathCoin : typeArgs[1];
+  const rest = own.filter((t) => t !== input).reverse();
+  const output = rest.find(hasCoinEvidence) ?? rest[0];
+  return output ? [input, output] : null;
 }
 
 /**
@@ -261,6 +307,21 @@ export function decodeTransaction(
     }
   }
 
+  // Types the transaction shows to be coins: moved in a balance change or
+  // passed to a framework coin call.
+  const coinTypes = new Set<string>((balanceChanges ?? []).flatMap((bc) => (bc.coinType ? [bc.coinType] : [])));
+  for (const cmd of commands) {
+    const c = cmd.command;
+    if (c.oneofKind !== "moveCall") continue;
+    if (normalizeSuiAddress(c.moveCall.package ?? "0x0") === FRAMEWORK && FRAMEWORK_COIN_MODULES.has(c.moveCall.module ?? "")) {
+      for (const t of c.moveCall.typeArguments ?? []) coinTypes.add(t);
+    }
+  }
+  const hasCoinEvidence = (t: string) => coinTypes.has(t) || isVerifiedCoin(t);
+  const markers = routeMarkers(commands, hasCoinEvidence);
+  // The coin a route's path holds: its start coin, then each hop's output.
+  let pathCoin: string | null = null;
+
   for (const cmd of commands) {
     const c = cmd.command;
     switch (c.oneofKind) {
@@ -285,16 +346,25 @@ export function decodeTransaction(
           break;
         }
 
+        const routed = typeArgs.length >= 2 && markers.has(typeArgs[0]);
+        if (routed && typeArgs.length === 2 && !op) pathCoin = typeArgs[1];
+
         if (op) {
-          const args =
-            op.action === "swap"
-              ? swapDirection(
-                  typeArgs,
-                  net,
-                  fn,
-                  !pollutingLegs.some((coins) => coins.size === 0 || coins.has(typeArgs[0]) || coins.has(typeArgs[1])),
-                )
-              : typeArgs;
+          let args = typeArgs;
+          if (op.action === "swap" && routed) {
+            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence);
+            args = hop ?? typeArgs.slice(1);
+            if (hop) pathCoin = hop[1];
+          } else if (op.action === "swap") {
+            args = swapDirection(
+              typeArgs,
+              net,
+              fn,
+              !pollutingLegs.some((coins) => coins.size === 0 || coins.has(typeArgs[0]) || coins.has(typeArgs[1])),
+            );
+          } else if (routed) {
+            args = typeArgs.slice(1);
+          }
           actions.push(formatAction(op.action, proto?.name ?? null, args));
         } else if (proto) {
           actions.push(`Call ${mod}::${fn} on ${proto.name}`);

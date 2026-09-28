@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `get_transaction` and the other decoded views named a router's own
+  bookkeeping type as a coin in swaps routed through Aftermath's router
+  (`Swap RouterDataV1 → USDC`). Each hop now shows the coins it traded, in
+  route order: a path starts from the coin the route names and each hop takes
+  in what the previous hop gave out. Swap function names spelled `a_to_b` and
+  `b_to_a` now also count as a direction.
+
 ## 1.23.0 (2026-09-27)
 
 What a wallet holds beyond plain coins now has a value. Staked SUI,

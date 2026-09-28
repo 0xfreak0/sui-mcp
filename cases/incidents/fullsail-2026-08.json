@@ -45,7 +45,8 @@
     "deposit_tx": "H83xf84aufu1q5A2kU3axtWsxpcynzkNAk1amojqMkfp",
     "first_funding_tx": "5J8LTSiG3c46bRkTMEgbBseZRi2bTVgvPRcotJJo8dQF",
     "binance_reserve": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
-    "collector": "0x4f5222267f3d7c74d7613580eab2de77d113e953a268b4280cf46d53baf0768d"
+    "collector": "0x4f5222267f3d7c74d7613580eab2de77d113e953a268b4280cf46d53baf0768d",
+    "withdraw_tx": "92dorWBdSTHQAHKk99r1Mv2jNDjZedNC5jd9ZvUiCSsm"
   },
   "checks": [
     {
@@ -455,7 +456,78 @@
       ],
       "tier": "heuristic",
       "basis": "Chain: the SUI/USD aggregator is set to 0.007405 by a caller value (command 3), read by port_oracle (command 4) before the deposit, then set back to 0.7405, a 100x span inside one PTB.",
-      "known_defect": "analyze_attack_tx raises no caller-value-used on the set-use-restore deposit; only an info unverified-package-call fires."
+      "known_defect": "analyze_attack_tx raises no caller-value-used on the set-use-restore deposit, since the aggregator ends where it began; the price the port read is flagged by price-off-market instead (check deposit-price-off-market)."
+    },
+    {
+      "id": "deposit-price-off-market",
+      "question": "Does the breakdown of that deposit say the port read SUI far below its market price?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{deposit_tx}"
+      },
+      "expect": [
+        {
+          "path": "off_market_prices[*].coin",
+          "op": "includes",
+          "value": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+        },
+        {
+          "path": "off_market_prices[0].factor",
+          "op": "lte",
+          "value": 0.02
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain against DefiLlama: port_oracle's UpdatePriceEvent states SUI at 74,050,000 and, after the restore, 7,405,000,000, the scale at which it states USDC at 1.0019; DefiLlama priced SUI at about $0.74, so the first reading is 1/100 of market."
+    },
+    {
+      "id": "key-swap-flagged",
+      "question": "Does the breakdown of the key swap say the live oracle's signing key was replaced?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{key_swap_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "signing-key-replaced"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "{compromised_oracle} (oracle::Oracle) secp256k1_key"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: H6d13yy4 changes the compromised oracle's 64-byte secp256k1_key to the key its attacker-made guardians attested."
+    },
+    {
+      "id": "withdrawal-round-trip",
+      "question": "Does the breakdown of the withdrawal paired with that deposit show what the position cost?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{withdraw_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "share-round-trip"
+        },
+        {
+          "path": "round_trips[0].entry_digest",
+          "op": "equals",
+          "value": "{deposit_tx}"
+        },
+        {
+          "path": "round_trips[0].factor",
+          "op": "gte",
+          "value": 2
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: 92dorWBd withdraws the PortEntry H83xf84a created 27 seconds earlier for 3,112.95 USDC and pays 3,075.17 USDC and 5,112.2 SUI; at the withdrawal's prices that is 2.2 times what the deposit paid."
     },
     {
       "id": "attacker-pnl-on-ports",

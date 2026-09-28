@@ -15,7 +15,7 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import type { PackageTrust } from "../protocols/registry.js";
 import type { EffectsPayouts } from "./payouts.js";
-import { SYSTEM_PACKAGE } from "./disassembly.js";
+import { SYSTEM_PACKAGE } from "./system-packages.js";
 import { callValues, type CallValue, type FormattedInput } from "./ptb-value-flow.js";
 
 export interface PtbAnomaly {
@@ -318,12 +318,15 @@ export function flagPtbAnomalies(commands: FormattedCommand[], opts: FlagPtbAnom
         p.coin_type ? `by effects: ${p.amount} ${p.coin_type} the sender lost -> ${p.to}` : `by effects: object ${p.object_id} (${p.object_type ?? "unknown type"}) the sender held -> ${p.to}`,
       );
     }
+    // A TransferObjects command can hand over several objects; each counts.
+    const itemsSent =
+      divertedTransfers.reduce((n, c) => n + Math.max(1, (c.objects as unknown[] | undefined)?.length ?? 0), 0) + frameworkPayouts.length;
     anomalies.push({
       severity: commandPayouts > 0 ? "high" : otherLead ? "medium" : "info",
       code: "transfers-to-non-sender",
       title:
         commandPayouts > 0
-          ? `Sends ${commandPayouts} object(s)/coin(s) to ${recipients.size} address(es) other than the sender`
+          ? `Sends ${itemsSent} object(s)/coin(s) to ${recipients.size} address(es) other than the sender`
           : `Effects show value the sender held reaching ${recipients.size} other address(es)`,
       detail:
         "TransferObjects, or a framework payout call (0x2 transfer::public_transfer, pay::split_and_transfer, pay::join_vec_and_transfer, sui::transfer, coin::send_funds, balance::send_funds, coin::mint_and_transfer, token::transfer, or a party::single_owner party for transfer::public_party_transfer), hands what this transaction controls — owned objects or coins just split off — to an address that is not the signer. Legitimate for payments and gifts, but it is exactly the shape of a drainer PTB: everything the signer holds, moved to a stranger in one transaction. " +

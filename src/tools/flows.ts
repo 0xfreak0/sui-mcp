@@ -19,6 +19,7 @@ import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
 import {
   coinValuer,
+  destinationKey,
   roundUsd as round,
   entryCandidates,
   exitCandidates,
@@ -31,6 +32,8 @@ import {
   type FlowTx,
 } from "../utils/address-flows.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
+import { readMovedObjects, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 
 /**
  * Everything one scan needs: balance changes and commands (both completed past
@@ -83,6 +86,11 @@ const DEFAULT_TOP = 10;
 const DIGESTS_PER_ROW = 5;
 /** Aliased connections per request; the service refuses more than 21. */
 const EVENT_BATCH = 20;
+/**
+ * Transactions read for the objects they moved, newest successful ones
+ * first. Each 25 cost one request, plus the reads that value what moved.
+ */
+const MAX_OBJECT_TXS = 300;
 
 /** Event JSON for many transactions, 20 per request, paging any with more than 50 events. */
 async function readEvents(digests: string[]): Promise<Map<string, SuiEventNode[] | null>> {
@@ -288,18 +296,108 @@ export function registerFlowTools(server: McpServer) {
         for (const e of exits) for (const c of [...e.sent.keys(), ...e.retained.keys()]) coinSet.add(c);
         const sui = coinKey("0x2::sui::SUI");
         coinSet.add(sui);
-        const [prices] = await Promise.all([
+        // Valued objects (staked SUI, LP positions, lending caps, vault
+        // receipts, NFT estimates) that entered or left the address, each
+        // read at its transaction's checkpoint and priced at the same time
+        // as the coins. A coin filter narrows the summary to coins only.
+        const subject = normalizeSuiAddress(address);
+        const objectCandidates = coin_type
+          ? []
+          : // Any successful transaction that affected the address: a Move call
+            // in a transaction someone else signed can hand it an object with
+            // no TransferObjects command at all.
+            txs.filter((t) => t.status === "success").map((t) => t.digest);
+        const objectRead = objectCandidates.slice(0, MAX_OBJECT_TXS);
+        const [prices, , objectValues] = await Promise.all([
           priceUsdAtTime([...coinSet], atSec ?? undefined),
           prefetchCoinScale(coinSet),
+          // Specific readers only: an NFT estimate stays out of the totals,
+          // and its market reads cost far more per object than the rest.
+          readMovedObjects(objectRead, true).then(async (r) => ({
+            ...(await valueTransactionObjects(
+              // An object whose previous holder went unrecorded is kept until
+              // that holder is read, since it may have left this address.
+              r.txs.map((t) => ({ ...t, moved: t.moved.filter((m) => m.from === subject || m.to === subject || m.prior_version) })),
+              { maxTxs: MAX_OBJECT_TXS, maxObjects: SCAN_OBJECT_BUDGET },
+              atSec ?? undefined,
+            )),
+            unreadTxs: r.unread,
+          })),
         ]);
         const v = coinValuer(prices);
+        const txTime = new Map(txs.map((t) => [t.digest, t.timestamp]));
+        // A kept object the transaction changed counts its signed change,
+        // in or out by its sign, with no counterparty. An object wrapped,
+        // unwrapped or from a holder that could not be read is listed as
+        // "custody" and not counted: the address holds it in another form.
+        const objectRows = objectValues.rows.filter((r) => r.from === subject || r.to === subject).map((r) => {
+          const inbound = r.changed_in_place ? (r.usd ?? 0) >= 0 : r.to === subject;
+          return {
+            digest: r.digest,
+            timestamp: txTime.get(r.digest) ?? null,
+            direction: r.custody ? ("custody" as const) : inbound ? ("in" as const) : ("out" as const),
+            ...(r.custody ? { custody: r.custody } : {}),
+            counterparty: r.changed_in_place ? null : inbound ? r.from : r.to,
+            ...(r.changed_in_place ? { changed_in_place: true } : {}),
+            object_id: r.object_id,
+            object_type: r.type,
+            kind: r.kind,
+            protocol: r.protocol,
+            usd: r.usd === null ? null : Math.abs(r.usd),
+            tier: r.tier,
+            ...(r.estimate ? { estimate: true } : {}),
+            method: r.method,
+            ...(r.unpriced_reason ? { unpriced_reason: r.unpriced_reason } : {}),
+          };
+        });
+        // Objects count with the counterparty they came from or went to, as
+        // coins do; one created or deleted has no counterparty.
+        const objectUsdBy = (dir: "in" | "out") => {
+          const m = new Map<string, { usd: number; rows: typeof objectRows }>();
+          for (const r of objectRows) {
+            if (r.direction !== dir || !r.counterparty) continue;
+            const e = m.get(r.counterparty) ?? { usd: 0, rows: [] };
+            if (r.usd !== null && !r.estimate) e.usd += r.usd;
+            e.rows.push(r);
+            m.set(r.counterparty, e);
+          }
+          return m;
+        };
+        const objectsFrom = objectUsdBy("in");
+        const objectsTo = objectUsdBy("out");
+        const addObjectCounterparties = (m: Map<string, Counterparty>, by: typeof objectsFrom) => {
+          for (const [address, e] of by) {
+            const c = m.get(address) ?? { address, coins: new Map<string, bigint>(), digests: [], firstAt: null, lastAt: null };
+            for (const r of e.rows) {
+              if (!c.digests.includes(r.digest)) c.digests.push(r.digest);
+              if (r.timestamp && (!c.firstAt || r.timestamp < c.firstAt)) c.firstAt = r.timestamp;
+              if (r.timestamp && (!c.lastAt || r.timestamp > c.lastAt)) c.lastAt = r.timestamp;
+            }
+            m.set(address, c);
+          }
+        };
+        addObjectCounterparties(summary.sources, objectsFrom);
+        addObjectCounterparties(summary.recipients, objectsTo);
+        const objectTotal = (dir: "in" | "out") =>
+          objectRows.filter((r) => r.direction === dir && r.usd !== null && !r.estimate).reduce((s, r) => s + r.usd!, 0);
+        const objectsIn = objectTotal("in");
+        const objectsOut = objectTotal("out");
+        // Objects the totals leave out: older candidates not read,
+        // transactions or objects that could not be read, and objects past
+        // the scan's budget.
+        const objectsPartial =
+          objectCandidates.length > objectRead.length || objectValues.unreadTxs.length > 0 || objectValues.unread.length > 0 || objectValues.skipped.length > 0;
 
-        const rank = (m: Map<string, Counterparty>) =>
+        const rank = (m: Map<string, Counterparty>, objects: typeof objectsFrom) =>
           [...m.values()]
-            .map((c) => ({ c, usd: v.totalUsd(c.coins) }))
+            .map((c) => {
+              const coinUsd = v.totalUsd(c.coins);
+              const o = objects.get(c.address);
+              return { c, usd: o ? (coinUsd ?? 0) + o.usd : coinUsd, objects: o?.rows };
+            })
             .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1) || b.c.digests.length - a.c.digests.length);
-        const sources = rank(summary.sources);
-        const recipients = rank(summary.recipients);
+        const sources = rank(summary.sources, objectsFrom);
+        const recipients = rank(summary.recipients, objectsTo);
         const sponsoredBy = [...summary.sponsoredBy.values()].sort((a, b) => b.digests.length - a.digests.length);
         const sponsored = [...summary.sponsored.values()].sort((a, b) => b.digests.length - a.digests.length);
 
@@ -323,11 +421,14 @@ export function registerFlowTools(server: McpServer) {
           return k.kind === "wallet" ? {} : { kind: k.kind, ...(k.type ? { object_type: k.type } : {}) };
         };
 
-        const counterpartyRow = ({ c, usd }: { c: Counterparty; usd: number | null }, identify: boolean) => ({
+        const counterpartyRow = ({ c, usd, objects }: { c: Counterparty; usd: number | null; objects?: typeof objectRows }, identify: boolean) => ({
           ...who(c.address, identify ? identities.get(c.address) : undefined),
           ...(identify ? {} : kindOf(c.address)),
           usd: usd === null ? null : round(usd),
           coins: v.amounts(c.coins),
+          ...(objects?.length
+            ? { objects: objects.map((r) => ({ object_id: r.object_id, kind: r.kind, protocol: r.protocol, usd: r.usd, ...(r.estimate ? { estimate: true } : {}) })) }
+            : {}),
           transactions: c.digests.length,
           first_at: c.firstAt,
           last_at: c.lastAt,
@@ -393,15 +494,25 @@ export function registerFlowTools(server: McpServer) {
         const unresolvedVaas = exits.flatMap((e) => e.unresolvedVaas);
         // An exit's beneficiary drops what the output already says once: its
         // evidence tier (bridge_exits.evidence), an account that is
-        // chain:address, raw bytes that are the address zero-padded, and its
-        // amount note, named per source in amount_notes.
+        // chain:address, raw bytes that are the address zero-padded, its
+        // amount note, named per source in amount_notes, the Wormhole chain
+        // id its CAIP-2 `chain` names, and the chain label and protocol its
+        // destination row in by_bridge states.
         const amountNotes: Record<string, string> = {};
+        const destinationRows = new Map(
+          bridgeGroups.flatMap((g) => g.destinations.map((d) => [`${g.bridge}|${d.key}`, d.beneficiary] as const)),
+        );
         const exitBeneficiaries = exits.map((e) =>
-          e.beneficiaries.map(({ evidence: _tier, amount_note, address_raw, account, ...b }) => {
+          e.beneficiaries.map((full) => {
+            const { evidence: _tier, amount_note, address_raw, account, wormhole_chain_id, chain_label, protocol, ...b } = full;
             if (amount_note) amountNotes[b.source] = amount_note;
             const padded = b.address?.startsWith("0x") ? `0x${b.address.slice(2).toLowerCase().padStart(64, "0")}` : null;
+            const row = destinationRows.get(`${e.bridge}|${destinationKey(full)}`);
             return {
+              ...(row?.protocol === protocol ? {} : { protocol }),
               ...b,
+              ...(row?.chain_label === chain_label ? {} : { chain_label }),
+              ...(wormhole_chain_id !== undefined && !b.chain ? { wormhole_chain_id } : {}),
               ...(address_raw !== padded ? { address_raw } : {}),
               ...(account && account !== `${b.chain}:${b.address}` ? { account } : {}),
             };
@@ -444,12 +555,36 @@ export function registerFlowTools(server: McpServer) {
             ? { unpriced_reasons: Object.fromEntries(prices.unpriced.map((u) => [u.code, u.reason])) }
             : {}),
           totals_usd: {
-            in: round(pricedCoins.reduce((s, c) => s + (c.usd?.in ?? 0), 0)),
-            out: round(pricedCoins.reduce((s, c) => s + (c.usd?.out ?? 0), 0)),
-            net: round(pricedCoins.reduce((s, c) => s + (c.usd?.net ?? 0), 0)),
+            ...(objectsPartial ? { objects_partial: true } : {}),
+            in: round(pricedCoins.reduce((s, c) => s + (c.usd?.in ?? 0), 0) + objectsIn),
+            out: round(pricedCoins.reduce((s, c) => s + (c.usd?.out ?? 0), 0) + objectsOut),
+            net: round(pricedCoins.reduce((s, c) => s + (c.usd?.net ?? 0), 0) + objectsIn - objectsOut),
             priced_coins: pricedCoins.length,
             unpriced_coins: coins.length - pricedCoins.length,
+            ...(objectRows.length
+              ? {
+                  objects_in: round(objectsIn),
+                  objects_out: round(objectsOut),
+                  priced_objects: objectRows.filter((r) => r.direction !== "custody" && r.usd !== null && !r.estimate).length,
+                  unpriced_objects: objectRows.filter((r) => r.direction !== "custody" && r.usd === null).length,
+                }
+              : {}),
           },
+          ...(objectRows.length || objectValues.unread.length || objectValues.unreadTxs.length || objectValues.skipped.length || objectCandidates.length > objectRead.length
+            ? {
+                objects: objectRows,
+                ...(objectValues.unread.length ? { objects_unread: objectValues.unread } : {}),
+                ...(objectValues.unreadTxs.length ? { objects_transactions_unread: objectValues.unreadTxs } : {}),
+                ...(objectValues.skipped.length ? { objects_skipped_transactions: objectValues.skipped } : {}),
+                objects_scope:
+                  `Non-coin objects a reader values (staked SUI, LP positions, lending caps, vault receipts; NFTs are not valued here) that entered ("in") or left ("out") this address, or that it kept while a transaction raised ("in") or lowered ("out") their value (changed_in_place, usd the size of the change), in the ${objectRead.length} newest successful transaction(s) of the scan` +
+                  (objectCandidates.length > objectRead.length ? `; ${objectCandidates.length - objectRead.length} older such transaction(s) were not read` : "") +
+                  (objectValues.skipped.length
+                    ? `; the objects of ${objectValues.skipped.length} older transaction(s) past the first ${SCAN_OBJECT_BUDGET} objects were not valued (objects_skipped_transactions), so totals_usd leaves them out (objects_partial); narrow the window to value them`
+                    : "") +
+                  `. Each is read at its transaction's checkpoint and priced at the same time as the coins; each row states its method. totals_usd counts them, estimates (tier heuristic, NFTs) and "custody" rows (wrapped into or unwrapped from another object, or from a holder that could not be read) excepted, and inflow_sources and top_recipients rank counterparties with them. totals_usd.objects_partial says objects were left out: older transactions not read (above), objects_transactions_unread, objects_unread or objects_skipped_transactions.`,
+              }
+            : {}),
           gas: {
             paid_sui: v.human(sui, summary.gasPaid),
             transactions: summary.gasTransactions,
@@ -511,7 +646,8 @@ export function registerFlowTools(server: McpServer) {
               digest: e.digest,
               timestamp: e.timestamp,
               bridge: e.bridge,
-              protocols: e.protocols,
+              // Named only when the transaction used more than its bridge.
+              ...(e.protocols.length === 1 && e.protocols[0] === e.bridge ? {} : { protocols: e.protocols }),
               sent: v.amounts(e.sent),
               ...(e.retained.size ? { retained_on_sui: v.amounts(e.retained) } : {}),
               beneficiaries: exitBeneficiaries[i],
@@ -539,6 +675,7 @@ export function registerFlowTools(server: McpServer) {
         type Row = { address: string; label?: string; kind?: string; kind_unread?: boolean; usd: number | null };
         type CoinRow = (typeof coins)[number];
         type Unattributed = { usd: number | null; transactions: number };
+        type ObjRow = (typeof objectRows)[number];
         const flagged = (r: Row) => Boolean(r.label || r.kind || r.kind_unread) || lookalikes.has(r.address);
         // Priced rows worth $1 or more first, then unpriced rows, then priced
         // dust: an unpriced coin can be the loot, and $0.01 of a priced one
@@ -588,6 +725,13 @@ export function registerFlowTools(server: McpServer) {
             } satisfies ListCap<Unattributed>,
             "gas_sponsorship.sponsored_by": { budget: 1_500, keep: (r: Row) => Boolean(r.label || r.kind || r.kind_unread) },
             "gas_sponsorship.sponsored": { budget: 1_500 },
+            objects_skipped_transactions: { budget: 1_000, keepOrder: true },
+            objects_unread: { budget: 2_000, keepOrder: true, brief: (u: { what: string }) => u.what } satisfies ListCap<{ what: string }>,
+            objects: {
+              budget: 5_000,
+              usd: (r: ObjRow) => (r.usd === null ? null : Math.abs(r.usd)),
+              brief: (r: ObjRow) => ({ digest: r.digest, direction: r.direction, object_id: r.object_id, usd: r.usd }),
+            } satisfies ListCap<ObjRow>,
           },
           { full: detail === "full", next_call: { tool: "summarize_address_flows", repeat_with: { detail: "full" } } },
         );

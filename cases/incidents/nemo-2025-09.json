@@ -37,6 +37,7 @@
       "id": "cctp-exits",
       "question": "How much left Sui through CCTP on the day, and to whom?",
       "tool": "summarize_address_flows",
+      "critical": true,
       "args": { "address": "{attacker}", "from": "2025-09-07T00:00:00Z", "to": "2025-09-08T00:00:00Z" },
       "expect": [
         { "path": "bridge_exits.by_bridge[*].bridge", "op": "includes", "value": "Circle CCTP" },

@@ -8,7 +8,7 @@ import { describeLabel, getLabel } from "../utils/labels.js";
 import { classifyDepositAddress } from "../utils/deposit.js";
 import { coinScale, displayCoin, prefetchCoinScale, toHumanAmount } from "../utils/valuation.js";
 import type { FundingAssessment, FundingTx, GasSponsor, UnpricedFunding } from "../utils/funding.js";
-import { measureFanout, type FanoutResult } from "../utils/fanout.js";
+import { FANOUT_DEFAULT_TRANSACTIONS, measureFanout, type FanoutResult } from "../utils/fanout.js";
 import { assessCoFunding, detectCoFunding } from "../utils/co-funding.js";
 import { detectFundingBursts, detectSubjectLinks } from "../utils/funding-signals.js";
 import {
@@ -461,6 +461,7 @@ function fanoutView(f: FanoutResult, pop: FunderPopularity | undefined) {
     out_in_ratio: f.out_in_ratio,
     flow_shape: f.flow_shape,
     scanned_transactions: f.scanned_transactions,
+    max_transactions: f.max_transactions,
     truncated: f.truncated,
     classification: probeDecides ? ("distributor" as const) : f.classification,
     ...(raised
@@ -497,7 +498,7 @@ export function registerFundingTools(server: McpServer) {
     },
     async ({ address, max_transactions }) => {
       try {
-        const result = await measureFanout(address, max_transactions ?? 1000);
+        const result = await measureFanout(address, max_transactions ?? FANOUT_DEFAULT_TRANSACTIONS);
         const existing = getLabel(address);
 
         // Suggested, never applied. Labels decide where fund traces stop, so
@@ -1012,7 +1013,7 @@ export function registerFundingTools(server: McpServer) {
       measure_fanout: boolArg()
         .optional()
         .describe(
-          "Measure the origin's fan-out so a hub can be told from a real link (default true).",
+          "Measure the origin's fan-out so a hub can be told from a real link (default true). Scans the same default window as get_address_fanout, so the two agree on `truncated` and the counts.",
         ),
     },
     async ({ address, max_hops, measure_fanout }) => {
@@ -1031,11 +1032,13 @@ export function registerFundingTools(server: McpServer) {
         // A chain that ends at an address paying thousands of recipients has
         // found an exchange. A walk that stopped at a hub has already measured
         // that, and a bidirectional count over a short window could call the
-        // same address narrow.
+        // same address narrow. Measured at get_address_fanout's default budget:
+        // a shorter one can stop short of a history that call reads to the
+        // end, and the two would then disagree about the same address.
         let originFanout: FanoutResult | null = null;
         if (measure_fanout !== false && origin !== address && !stoppedAtHub) {
           try {
-            originFanout = await measureFanout(origin, 300);
+            originFanout = await measureFanout(origin, FANOUT_DEFAULT_TRANSACTIONS);
           } catch {
             // Context, not the answer — never fail the trace over it.
           }
@@ -1108,6 +1111,10 @@ export function registerFundingTools(server: McpServer) {
                     ? {
                         origin_fanout: {
                           recipient_count: originFanout.recipient_count,
+                          sender_count: originFanout.sender_count,
+                          counterparty_count: originFanout.counterparty_count,
+                          scanned_transactions: originFanout.scanned_transactions,
+                          max_transactions: originFanout.max_transactions,
                           truncated: originFanout.truncated,
                           classification: originFanout.classification,
                           ...(originFanout.classification_provisional ? { classification_provisional: true } : {}),

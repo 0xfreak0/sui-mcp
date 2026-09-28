@@ -21,6 +21,10 @@ npm run build
 node scripts/probe/case-pass.mjs                          # every case
 node scripts/probe/case-pass.mjs --case nemo-2025-09      # one case
 node scripts/probe/case-pass.mjs --case nemo-2025-09 --check cctp-exits
+node scripts/probe/case-pass.mjs --smoke                  # one check per tool, plus the critical ones
+node scripts/probe/case-pass.mjs --affected main..HEAD    # the checks a change can reach, plus the critical ones
+node scripts/probe/case-pass.mjs --jobs 4                 # four cases at once, one request budget
+SUI_REPLAY_DIR=~/.cache/sui-replay node scripts/probe/case-pass.mjs   # replay reads that cannot change
 SUI_CASES_DIR=~/private-cases node scripts/probe/case-pass.mjs
 ```
 
@@ -110,6 +114,9 @@ SUI_CASES_DIR=~/private-cases node scripts/probe/case-pass.mjs
 - `checks[].known_defect`: optional, one line. See the rules.
 - `checks[].timeout_s`: optional, default 120. A slower call fails.
 - `checks[].max_chars`: optional. A larger result fails.
+- `checks[].critical`: optional, `true` or left out. A critical check runs in
+  every tier. It cannot also be a `known_defect`, since a known defect cannot
+  fail the run.
 
 Any other key is an error, so a misspelt `tolerance` cannot pass unnoticed.
 Put explanations in `summary` or `basis`.
@@ -122,15 +129,49 @@ Put explanations in `summary` or `basis`.
   path to an array.
 - `iequals`, `contains`, `matches`, `gte`, `lte` and `approx` need one value
   at the path, and the first three need a string.
-- Each case runs on its own server with a throwaway store. Each check prints
-  its status, latency, result size and estimated tokens (chars / 4), and each
-  case prints its total. The run also prints the tools/list size for the
+- Each case runs on its own server with a throwaway store, unless `--jobs`
+  shares one (below). Each check prints its status, latency, result size and
+  estimated tokens (chars / 4), and each case prints its total. The run also prints the tools/list size for the
   default profile and for `SUI_TOOLS=all`.
 - A result over its tool's budget in `scripts/probe/lib/size-budget.mjs`
   fails, as one over `max_chars` does. A call with `detail: "full"` or a
   `commands` pick is held to the 500k ceiling instead.
 - The run fails on any failed check, any case file that breaks this format,
   and any `known_defect` check that now passes.
+- Every check runs by default. `--smoke` runs each tool's first check that is
+  not a known defect, plus the critical checks. `--affected <git-range>` runs
+  the checks whose tool a changed file can reach through the source imports,
+  every check of a changed case file, and the critical checks; a change it
+  cannot place runs every check. `scripts/probe/README.md` ("Tiers") has the
+  rules. Every case file is validated in every tier.
+- `--jobs <n>` runs n cases at once through one server, so they draw on one
+  rate limit and one in-flight cap per endpoint instead of n. A case that
+  calls a tool which writes the store runs afterwards on a server of its own.
+  A check's latency then includes waiting for the shared budget, which can
+  pass its `timeout_s`, and a tool with a wall-clock budget (the holder scan,
+  the object-history owner search) reads less in that time. So a check that
+  fails in the shared run runs again alone on a fresh server and fails the
+  run only if it fails there too.
+- With `SUI_REPLAY_DIR` set, reads whose answer cannot change are answered
+  from the recordings in that directory and recorded on their first live
+  answer. `scripts/probe/README.md` ("Replaying fixed reads") has the rules.
+
+## Critical checks
+
+A critical check is a safety net for a change whose reach the file map
+misses. Each one exercises an engine that many tools share, on a fact that
+cannot drift, so the set stays small:
+
+| Case | Check | Engine |
+|---|---|---|
+| `cetus-2025-05` | `first-exploit-profit` | attack analysis: balance changes, valuation, detectors |
+| `cetus-2025-05` | `incident-losses` | loss totals across a window |
+| `nemo-2025-09` | `cctp-exits` | address flows and bridge exits |
+| `typus-2025-10` | `attacker-flow-graph-exit` | the flow graph |
+| `typus-2025-10` | `fix-diff-names-rewritten-functions` | package versions, bytecode and the diff |
+| `scallop-2026-04` | `first-funder` | the funding walk through history |
+
+Add one only for an engine none of these reaches.
 
 ## Rules
 

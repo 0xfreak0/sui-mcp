@@ -44,6 +44,8 @@ export type HopBasis =
   | "self-credit"
   | "conversion"
   | "pool-fallback"
+  /** Valued objects (a stake, an LP position) worth more than the coin flow went to this address. */
+  | "object"
   | "none";
 
 export interface NextHop {

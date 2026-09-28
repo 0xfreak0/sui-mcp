@@ -1,17 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockGql = vi.fn();
+// OriginByte owner tokens answer from `obTokens`, empty unless a test sets
+// it, so the other tests' mocks need not know about them.
+const obTokens: Array<{ contents: { json: Record<string, unknown> } }> = [];
 vi.mock("../../src/clients/graphql.js", () => ({
-  gqlQuery: (...args: unknown[]) => mockGql(...args),
+  gqlQuery: (...args: unknown[]) =>
+    String(args[0]).includes("ob_kiosk::OwnerToken")
+      ? Promise.resolve({ address: { objects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: obTokens } } })
+      : mockGql(...args),
   graphqlClient: {},
 }));
 
 const { registerNftTools } = await import("../../src/tools/nft.js");
 
 const tools = new Map<string, Function>();
+// These tests cover discovery and paging; valuation is off so no market is read.
 const mockServer = {
   tool: (name: string, _desc: string, _schema: unknown, handler: Function) => {
-    tools.set(name, handler);
+    tools.set(name, (args: Record<string, unknown>) => handler({ value: false, ...args }));
   },
 } as any;
 
@@ -224,6 +231,40 @@ describe("list_nfts — kiosk discovery", () => {
     // Together the two pages must cover items 1..5 with no overlap or gap.
     const ids = [...d1.nfts, ...d2.nfts].map((n: { object_id: string }) => n.object_id);
     expect(new Set(ids).size).toBe(5);
+  });
+
+  it("walks OriginByte kiosks named by owner tokens, and does not list the token itself", async () => {
+    const OB_KIOSK = "0x000000000000000000000000000000000000000000000000000000000000ccc1";
+    const OB_TOKEN = "0x95a441d389b07437d00dd07e0b6f05f513d7659b13fd7c5d3923c7d9d847199b::ob_kiosk::OwnerToken";
+    obTokens.push({ contents: { json: { kiosk: OB_KIOSK, owner: OWNER } } });
+    mockGql.mockImplementation((query: string, vars: Record<string, unknown>) => {
+      if (query.includes("0x2::kiosk::KioskOwnerCap") || query.includes("personal_kiosk::PersonalKioskCap")) {
+        return Promise.resolve({ address: { objects: emptyPage } });
+      }
+      if (query.includes("dynamicFields") && vars.kioskId === OB_KIOSK) {
+        return Promise.resolve({
+          object: { dynamicFields: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [kioskItemNode(OB_KIOSK, 1, nftCollection("OB"))] } },
+        });
+      }
+      if (query.includes("address(address: $owner)") && !query.includes("filter:")) {
+        return Promise.resolve({
+          address: {
+            objects: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              edges: [{ cursor: "c-0xd01", node: { address: "0xd01", contents: { type: { repr: OB_TOKEN }, json: {}, display: null } } }],
+            },
+          },
+        });
+      }
+      throw new Error("unexpected query: " + query);
+    });
+    try {
+      const data = JSON.parse((await tools.get("list_nfts")!({ address: OWNER, limit: 50 })).content[0].text);
+      expect(data.kiosk_count).toBe(1);
+      expect(data.nfts.map((n: { collection: string }) => n.collection)).toEqual([nftCollection("OB")]);
+    } finally {
+      obTokens.length = 0;
+    }
   });
 
   it("excludes PersonalKioskCap objects from direct-owned NFT results", async () => {

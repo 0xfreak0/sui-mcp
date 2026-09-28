@@ -11,6 +11,7 @@
  *   TradePort listings       nft_id, seller, buyer, price
  *   TradePort kiosk_listings nft_id, seller, seller_kiosk_id, buyer, buyer_kiosk_id, price
  *   TradePort simple listing nft_id, seller, buyer, price, maybe_seller_kiosk_id, maybe_buyer_kiosk_id
+ *   TradePort bid match      nft_id, nft_type, buyer, maybe_buyer_kiosk_id, price (no seller)
  *   BlueMove marketplace     item_id, amount, buyer            (no seller)
  *   OriginByte orderbook     nft, seller, seller_kiosk, buyer, buyer_kiosk, price
  *

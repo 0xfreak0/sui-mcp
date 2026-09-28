@@ -37,6 +37,11 @@
       "priced": true
     },
     {
+      "type": "0x53134eb544c5a0b5085e99efaf7eab13b28ad123de35d61f941f8c8c40b72033::tradeport_biddings::MatchSingleBidEvent",
+      "marketplace": "TradePort",
+      "priced": true
+    },
+    {
       "type": "0xd5dd28cc24009752905689b2ba2bf90bfc8de4549b9123f93519bb8ba9bf9981::marketplace::BuyEvent",
       "marketplace": "BlueMove",
       "priced": true

@@ -1,252 +1,190 @@
+import { z } from "zod";
 import { addressArg } from "./args.js";
-import { listOwnedWithJson } from "../utils/owned-objects.js";
+import "../utils/valuers/index.js";
+import { registeredValuers, valuePositions, type ValuedPosition } from "../utils/position-value.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
+import { heldWalk } from "../utils/valuers/held-balances.js";
+import { ownedCoverage } from "../utils/owned-coverage.js";
+import { operatedLeadRow, operatedSharedObjects } from "../utils/operated-objects.js";
+import { dollars, type HealthRatios } from "../utils/valuers/lending.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-const POSITION_TYPES = {
-  suilend: "0xf95b06141ed4a174f239417323bde3f209b972f5930d8521ea38a52aff3a6ddf::obligation::Obligation",
-  cetus_lp: "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::position::Position",
-  navi: "0x834a86970ae93a73faf4fff16ae40bdb72b91c47be585fff19a2af60a19ddca3::storage::Obligation",
-  scallop: "0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf::obligation::Obligation",
-  staked_sui: "0x3::staking_pool::StakedSui",
-  bluefin: "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::position::Position",
-  bucket: "0x665188033384920a5bb5dcfb2ef21f54b4568d08b431718b97e02e5c184b92cc::account::Account",
-} as const;
+/** NFTs are valued as estimates by get_wallet_overview, not listed as DeFi positions. */
+const NON_DEFI_VALUERS = ["nft"];
 
-type ProtocolName = keyof typeof POSITION_TYPES;
-
-/** Positions of one protocol read before the list is reported as truncated. */
-const MAX_POSITIONS_PER_PROTOCOL = 1000;
-
-// ---------------------------------------------------------------------------
-// Per-protocol extractors: pull actionable fields from raw on-chain JSON
-// ---------------------------------------------------------------------------
-
-type RawJson = Record<string, unknown>;
-
-function extractSuilend(json: RawJson): Record<string, unknown> {
-  // Obligation has deposits, borrows, and deposit/borrow values
-  const deposits = json.deposits as unknown[] | undefined;
-  const borrows = json.borrows as unknown[] | undefined;
-  return {
-    deposit_count: Array.isArray(deposits) ? deposits.length : 0,
-    borrow_count: Array.isArray(borrows) ? borrows.length : 0,
-    deposits: Array.isArray(deposits)
-      ? deposits.map((d: unknown) => {
-          const dep = d as RawJson;
-          return {
-            coin_type: dep.coin_type ?? dep.deposit_reserve,
-            deposited_ctoken_amount: dep.deposited_ctoken_amount,
-            market_value_usd: dep.market_value,
-          };
-        })
-      : [],
-    borrows: Array.isArray(borrows)
-      ? borrows.map((b: unknown) => {
-          const bor = b as RawJson;
-          return {
-            coin_type: bor.coin_type ?? bor.borrow_reserve,
-            borrowed_amount: bor.borrowed_amount,
-            market_value_usd: bor.market_value,
-          };
-        })
-      : [],
-    weighted_borrowed_value_usd: json.weighted_borrowed_value,
-    allowed_borrow_value_usd: json.allowed_borrow_value,
-    unhealthy_borrow_value_usd: json.unhealthy_borrow_value,
-  };
+export interface PositionRow {
+  protocol: string | null;
+  kind: ValuedPosition["kind"];
+  object_id: string | null;
+  usd: number | null;
+  tier: ValuedPosition["tier"];
+  method: string;
+  assets: ValuedPosition["assets"];
+  unpriced_reason?: string;
+  health?: ValuedPosition["health"];
+  health_basis?: string;
+  detail?: Record<string, unknown>;
 }
 
-function extractNavi(json: RawJson): Record<string, unknown> {
-  // NAVI Obligation: similar structure to Suilend
-  const supplies = json.supplies as unknown[] | undefined;
-  const borrows = json.borrows as unknown[] | undefined;
-  return {
-    supply_count: Array.isArray(supplies) ? supplies.length : 0,
-    borrow_count: Array.isArray(borrows) ? borrows.length : 0,
-    supplies: Array.isArray(supplies)
-      ? supplies.map((s: unknown) => {
-          const sup = s as RawJson;
-          return {
-            pool_id: sup.pool_id ?? sup.asset,
-            amount: sup.amount ?? sup.balance,
-          };
-        })
-      : [],
-    borrows: Array.isArray(borrows)
-      ? borrows.map((b: unknown) => {
-          const bor = b as RawJson;
-          return {
-            pool_id: bor.pool_id ?? bor.asset,
-            amount: bor.amount ?? bor.balance,
-          };
-        })
-      : [],
-  };
+/** Positions as rows, most valuable first and unpriced last. */
+export function positionRows(positions: ValuedPosition[]): PositionRow[] {
+  return positions
+    .map((p) => ({
+      protocol: p.protocol,
+      kind: p.kind,
+      object_id: p.object_id,
+      usd: p.usd_net === null ? null : Math.round(p.usd_net * 100) / 100,
+      tier: p.tier,
+      method: p.method,
+      // Legs to the cent, as the row's own `usd` is.
+      assets: p.assets.map((a) => (a.usd === null ? a : { ...a, usd: Math.round(a.usd * 100) / 100 })),
+      ...(p.unpriced_reason ? { unpriced_reason: p.unpriced_reason } : {}),
+      ...(p.health ? { health: p.health } : {}),
+      ...(p.health_basis ? { health_basis: p.health_basis } : {}),
+      ...(p.detail ? { detail: p.detail } : {}),
+    }))
+    .sort((a, b) => (b.usd ?? -Infinity) - (a.usd ?? -Infinity));
 }
 
-function extractScallop(json: RawJson): Record<string, unknown> {
-  // Scallop Obligation: collaterals and debts
-  const collaterals = json.collaterals as unknown[] | undefined;
-  const debts = json.debts as unknown[] | undefined;
-  return {
-    collateral_count: Array.isArray(collaterals) ? collaterals.length : 0,
-    debt_count: Array.isArray(debts) ? debts.length : 0,
-    collaterals: Array.isArray(collaterals)
-      ? collaterals.map((c: unknown) => {
-          const col = c as RawJson;
-          return { asset: col.type ?? col.asset, amount: col.amount };
-        })
-      : [],
-    debts: Array.isArray(debts)
-      ? debts.map((d: unknown) => {
-          const debt = d as RawJson;
-          return { asset: debt.type ?? debt.asset, amount: debt.amount };
-        })
-      : [],
-    lock_key: json.lock_key,
-  };
+export interface PositionTotals {
+  total_usd: number;
+  priced_positions: number;
+  unpriced_positions: number;
+  by_protocol: Record<string, { count: number; usd: number; unpriced: number }>;
 }
 
-function extractCetusLp(json: RawJson): Record<string, unknown> {
-  // Cetus LP Position: pool, liquidity, ticks, fee owed
-  return {
-    pool: json.pool,
-    liquidity: json.liquidity,
-    tick_lower_index: json.tick_lower_index,
-    tick_upper_index: json.tick_upper_index,
-    fee_owed_a: json.fee_owed_a,
-    fee_owed_b: json.fee_owed_b,
-    reward_amount_owed_0: json.reward_amount_owed_0,
-    reward_amount_owed_1: json.reward_amount_owed_1,
-    reward_amount_owed_2: json.reward_amount_owed_2,
-  };
-}
-
-function extractBluefin(json: RawJson): Record<string, unknown> {
-  return {
-    pool: json.pool,
-    liquidity: json.liquidity,
-    tick_lower_index: json.tick_lower_index,
-    tick_upper_index: json.tick_upper_index,
-    fee_growth_inside_a: json.fee_growth_inside_a,
-    fee_growth_inside_b: json.fee_growth_inside_b,
-  };
-}
-
-function extractStakedSui(json: RawJson): Record<string, unknown> {
-  return {
-    pool_id: json.pool_id,
-    principal: json.principal,
-    stake_activation_epoch: json.stake_activation_epoch,
-  };
-}
-
-function extractBucket(json: RawJson): Record<string, unknown> {
-  return {
-    collateral_amount: json.collateral_amount,
-    buck_amount: json.buck_amount,
-  };
-}
-
-const EXTRACTORS: Record<ProtocolName, (json: RawJson) => Record<string, unknown>> = {
-  suilend: extractSuilend,
-  navi: extractNavi,
-  scallop: extractScallop,
-  cetus_lp: extractCetusLp,
-  bluefin: extractBluefin,
-  staked_sui: extractStakedSui,
-  bucket: extractBucket,
-};
-
-// ---------------------------------------------------------------------------
-// Position entry (now with extracted summary)
-// ---------------------------------------------------------------------------
-
-interface PositionEntry {
-  object_id: string;
-  type: string;
-  version?: string;
-  summary: Record<string, unknown>;
-}
-
-async function fetchPositions(
-  address: string,
-  protocol: ProtocolName,
-): Promise<{ protocol: ProtocolName; positions: PositionEntry[]; truncated: boolean; error?: string }> {
-  try {
-    // Paged to the end with each object's JSON on the page, so a wallet with
-    // more than one page of positions is not summarised from its first 50.
-    const { objects, complete } = await listOwnedWithJson(address, POSITION_TYPES[protocol], MAX_POSITIONS_PER_PROTOCOL);
-    const extractor = EXTRACTORS[protocol];
-    const positions = objects.map((obj): PositionEntry => ({
-      object_id: obj.objectId,
-      type: obj.type,
-      version: obj.version,
-      summary: obj.json ? extractor(obj.json) : {},
-    }));
-    return { protocol, positions, truncated: !complete };
-  } catch (err) {
-    return {
-      protocol,
-      positions: [],
-      truncated: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+/**
+ * Totals over every position: the priced sum, and per protocol (or kind,
+ * for a generic reader) the count and priced sum. An unpriced position is
+ * counted, never summed as zero.
+ */
+export function positionTotals(positions: ValuedPosition[]): PositionTotals {
+  const by: Record<string, { count: number; usd: number; unpriced: number }> = {};
+  let total = 0;
+  let unpriced = 0;
+  for (const p of positions) {
+    const key = p.protocol ?? p.kind;
+    const row = (by[key] ??= { count: 0, usd: 0, unpriced: 0 });
+    row.count++;
+    if (p.usd_net === null) {
+      row.unpriced++;
+      unpriced++;
+    } else {
+      row.usd += p.usd_net;
+      total += p.usd_net;
+    }
   }
+  for (const row of Object.values(by)) row.usd = Math.round(row.usd * 100) / 100;
+  return {
+    total_usd: Math.round(total * 100) / 100,
+    priced_positions: positions.length - unpriced,
+    unpriced_positions: unpriced,
+    by_protocol: by,
+  };
+}
+
+/** Within this share of its borrow limit, a small price move or accrued interest takes a position to the limit. */
+const NEAR_BORROW_LIMIT = 0.95;
+
+/**
+ * One lead per position at or past {@link NEAR_BORROW_LIMIT} of its borrow
+ * limit, closest to its limit first, naming the figures each ratio is made
+ * of (`detail.health_ratios`).
+ */
+export function healthLeads(positions: ValuedPosition[]): Array<{ object_id: string | null; protocol: string | null; borrow_limit_used: number; lead: string }> {
+  const leads: Array<{ object_id: string | null; protocol: string | null; borrow_limit_used: number; lead: string }> = [];
+  for (const p of positions) {
+    const used = p.health?.borrow_limit_used;
+    if (typeof used !== "number" || used < NEAR_BORROW_LIMIT) continue;
+    const health = p.health!;
+    const ratios = (p.detail?.health_ratios ?? {}) as HealthRatios;
+    const figures = (name: keyof HealthRatios) => {
+      const pair = ratios[name];
+      if (!pair) return "";
+      const shown = pair.map((key) => {
+        const v = health[key];
+        return `${key} ${typeof v === "number" ? (key.endsWith("_usd") ? dollars(v) : String(v)) : "unknown"}`;
+      });
+      return ` (${shown.join(" over ")})`;
+    };
+    const liq = health.liquidation_threshold_used;
+    const who = `${p.protocol ?? p.kind} position ${p.object_id ?? "without an object id"}`;
+    const limitText =
+      used >= 1
+        ? `${who} is past its borrow limit at ${(used * 100).toFixed(2)}%${figures("borrow_limit_used")}`
+        : `${who} has used ${(used * 100).toFixed(2)}% of its borrow limit${figures("borrow_limit_used")}`;
+    const liqText = typeof liq === "number" ? ` and ${(liq * 100).toFixed(2)}% of its liquidation threshold${figures("liquidation_threshold_used")}` : "";
+    const outcome =
+      used >= 1
+        ? "it can borrow or withdraw no more, and a small price move or accrued interest moves it further toward liquidation"
+        : "a small price move or accrued interest reaches the limit";
+    const basis = p.health_basis ? " Its stored figures and its legs' market value disagree; see `health_basis`." : "";
+    leads.push({ object_id: p.object_id, protocol: p.protocol, borrow_limit_used: used, lead: `${limitText}${liqText}, by the figures in \`health\`; ${outcome}.${basis}` });
+  }
+  return leads.sort((a, b) => b.borrow_limit_used - a.borrow_limit_used);
 }
 
 export function registerDefiTools(server: McpServer) {
   server.tool(
     "get_defi_positions",
-    "Find DeFi positions owned by a Sui wallet across major protocols: Suilend, Cetus LP, NAVI, Scallop, Bluefin, Bucket, and staked SUI. Returns extracted position summaries (deposits, borrows, liquidity, fees) instead of raw on-chain data.",
+    "Find and value the DeFi positions a Sui wallet holds: staked SUI with accrued rewards, liquid-staking coins at their issuer's exchange rate, CLMM and AMM liquidity positions, lending positions, and balances held inside objects the wallet owns (a vault, a table of coins, a wrapped position). Every position carries `usd` (null when a leg has no price, with `unpriced_reason`), the `method` its amounts and price came from, its evidence `tier`, and its asset legs. Lending rows' `health` adds `borrow_limit_used` and `liquidation_threshold_used` from the protocol's own figures; `health_basis` appears when those figures and the legs' USD part by more than 2%. `total_usd` and `by_protocol` sum every priced position; `coverage` says what that covers of the objects the wallet owns and lists the ones no reader recognises by type and count; `unread` lists what could not be read; `leads` names positions near their borrow limit and shared vaults the wallet operates, with what they hold.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): the most valuable positions that fit about 30k characters, keeping every unpriced one; `omitted` states the rest. 'full': every position."),
     },
-    async ({ address }) => {
-      const protocols: ProtocolName[] = [
-        "suilend", "cetus_lp", "navi", "scallop", "staked_sui",
-        "bluefin", "bucket",
+    async ({ address, detail }) => {
+      const only = registeredValuers().filter((name) => !NON_DEFI_VALUERS.includes(name));
+      // One memo, so the readers and the coverage count share one walk of the owned objects.
+      const ctx = { owner: address, memo: new Map<string, Promise<unknown>>() };
+      const [valued, operated] = await Promise.all([
+        valuePositions(ctx, only),
+        operatedSharedObjects(address, ctx).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+      ]);
+      const rows = positionRows(valued.positions);
+      const unread = [...valued.unread];
+      if (operated instanceof Error) unread.push({ what: "operated shared objects", reason: operated.message });
+      const walk = heldWalk(ctx);
+      const coverage = walk ? ownedCoverage(await walk, valued.positions, valued.unread, false) : null;
+      const leads = [
+        ...healthLeads(valued.positions).map((l) => ({ kind: "near_borrow_limit", ...l })),
+        ...(operated instanceof Error ? [] : operated.leads.map(operatedLeadRow)),
       ];
-
-      const results = await Promise.allSettled(
-        protocols.map((p) => fetchPositions(address, p)),
-      );
-
-      const positions: Record<string, PositionEntry[]> = {};
-      const errors: Record<string, string> = {};
-      const truncatedProtocols: string[] = [];
-      let totalPositions = 0;
-
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          const { protocol, positions: pos, truncated, error } = result.value;
-          if (pos.length > 0) {
-            positions[protocol] = pos;
-          }
-          totalPositions += pos.length;
-          if (truncated) truncatedProtocols.push(protocol);
-          if (error) errors[protocol] = error;
-        }
-      }
-
       const output: Record<string, unknown> = {
         address,
-        total_positions: totalPositions,
-        positions,
+        total_positions: rows.length,
+        ...positionTotals(valued.positions),
+        ...(coverage ? { coverage } : {}),
+        ...(leads.length > 0 ? { leads } : {}),
+        positions: rows,
+        ...(unread.length > 0 ? { unread } : {}),
+        readers: valued.valuers_run,
       };
-      if (truncatedProtocols.length > 0) {
-        output.truncated_protocols = truncatedProtocols;
-      }
-      if (Object.keys(errors).length > 0) {
-        output.errors = errors;
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify(output, null, 2),
-        }],
-      };
+      const { payload } = capPayload(
+        "get_defi_positions",
+        { address },
+        output,
+        {
+          positions: {
+            budget: 30_000,
+            keep: (r: PositionRow) => r.usd === null,
+            usd: (r: PositionRow) => r.usd,
+            brief: (r: PositionRow) => ({ protocol: r.protocol, kind: r.kind, object_id: r.object_id, usd: r.usd }),
+          } satisfies ListCap<PositionRow>,
+          leads: {
+            budget: 8_000,
+            brief: (l: { kind: string; object_id: string | null }) => ({ kind: l.kind, object_id: l.object_id }),
+          } satisfies ListCap<{ kind: string; object_id: string | null }>,
+          "coverage.not_recognised_types": {
+            budget: 6_000,
+            brief: (g: { type: string; count: number }) => ({ type: g.type, count: g.count }),
+          } satisfies ListCap<{ type: string; count: number }>,
+        },
+        { full: detail === "full", next_call: { tool: "get_defi_positions", repeat_with: { detail: "full" } } },
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     },
   );
 }

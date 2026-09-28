@@ -44,7 +44,8 @@
     "v1_publish_tx": "8JzL5e9ugKWZM4Q3d5wmz3zEzPyX9jG3dC6KnY2kqqqN",
     "eth_a": "eip155:1:0x99a8aa2ae13da715b59f9949a0f35100ecdf9591",
     "eth_b1": "eip155:1:0xd8b541a686a12c7a7035d1405cb8246d33e96cf8",
-    "eth_b2": "eip155:1:0xc82c6a8be79ff9ebed09336149f1bdc1c1f1e007"
+    "eth_b2": "eip155:1:0xc82c6a8be79ff9ebed09336149f1bdc1c1f1e007",
+    "v3_redeem_tx": "FKwVFEutwquF5nGZP9neTFq7yj5Mn8dqCujzHizgxWnN"
   },
   "checks": [
     {
@@ -93,6 +94,33 @@
       ],
       "tier": "chain-derived",
       "basis": "Chain: the transaction calls v1 calculate_aum and deposit while v3 (2025-12-23) was the newest version; the LBTC-SUI vault's LP supply went from 25,865,437,586,547 to 26,876,536,092,401,957 for 577,605 DEEP and 0.62 USDC. Haedal: excess LP was minted through an old deposit path."
+    },
+    {
+      "id": "v3-redeem-round-trip",
+      "question": "Does the breakdown of a v3 redeem show the LP was bought for a fraction of what it redeems for?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{v3_redeem_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "share-round-trip"
+        },
+        {
+          "path": "round_trips[0].vault",
+          "op": "iequals",
+          "value": "{sui_usdc_vault}"
+        },
+        {
+          "path": "round_trips[0].factor",
+          "op": "gte",
+          "value": 2
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: FKwVFEut burns 1.99 LPCOIN of the SUI-USDC vault through v3 and pays attacker_b about $1.2K at block-time prices; attacker_b's v1 deposits into the same vault earlier that day paid about a fifth of that per LP unit."
     },
     {
       "id": "deposit-coins-and-versioned-read",

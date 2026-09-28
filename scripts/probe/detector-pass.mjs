@@ -40,6 +40,10 @@
  *
  * `--split` runs one split's positives and negatives. `--json` prints the
  * whole report as JSON on stdout and progress on stderr.
+ *
+ * With `SUI_REPLAY_DIR` set, the server and this script's own transaction
+ * reads answer reads that cannot change from the recordings there, and record
+ * the rest of them as they go out (see src/clients/replay.ts).
  */
 import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -94,7 +98,7 @@ if (!picked.length) {
   process.exit(2);
 }
 
-const server = await startServer({ name: "detector-pass" });
+const server = await startServer({ name: "detector-pass", replay: true });
 const transient = (msg) => /timed out|429|rate|fetch failed|ECONNRESET|503|502|UNAVAILABLE|DEADLINE|Unexpected token/i.test(msg);
 
 /** Retry once after a transient failure. Returns `{ value }` or `{ error }`. */
@@ -118,7 +122,7 @@ async function run(tool, digest) {
   let args = { digest };
   if (tool === "decode_ptb_bytes") {
     const bcs = await retried("reading the transaction's BCS", async () => {
-      const bytes = (await gql("query($d:String!){ transaction(digest:$d){ transactionBcs } }", { d: digest })).transaction?.transactionBcs;
+      const bytes = (await gql("query($d:String!){ transaction(digest:$d){ transactionBcs } }", { d: digest }, { replay: true })).transaction?.transactionBcs;
       return bytes ? { value: bytes } : { error: "the chain returned no transactionBcs" };
     });
     if (bcs.error) return bcs;

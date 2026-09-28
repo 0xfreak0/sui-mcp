@@ -10,6 +10,7 @@ import {
 } from "../utils/labels.js";
 import { currentSuiAccount } from "../utils/chain-id.js";
 import { storeStatus } from "../utils/store.js";
+import { capPayload } from "../utils/output-cap.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -24,6 +25,9 @@ const CATEGORIES = [
   "burn",
   "other",
 ] as const;
+
+/** The `source` of a label added or imported through this tool, this session or a stored earlier one. */
+const ADDED_HERE: Record<string, true> = { session: true, stored: true };
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -49,7 +53,10 @@ export function registerLabelTools(server: McpServer) {
       "Labels attribute addresses (exchanges, bridges, mixers, malicious wallets, protocols, etc.) " +
       "so traces are readable and stop at known sinks. Actions: 'list' all labels, 'lookup' one " +
       "address, 'add' or 'remove' one label, 'import' a batch, and 'export' every label in the " +
-      "shape 'import' accepts, to move a set between machines. Labels added or imported here are " +
+      "shape 'import' accepts, to move a set between machines. 'list' counts every label by " +
+      "category and source, lists the labels added here first, then the rest that fit about 30k " +
+      "characters, and states the rest under `omitted`; `detail: 'full'` lists all. " +
+      "Labels added or imported here are " +
       "saved to the local store when SUI_STORE_PATH is set and last only for the session " +
       "otherwise; 'remove' deletes the stored copy too. Only those labels can be removed: the " +
       "override file (SUI_LABELS_FILE) and the shipped set are read-only here. Precedence: labels " +
@@ -93,8 +100,14 @@ export function registerLabelTools(server: McpServer) {
         .describe(
           "Labels to bulk-import (for 'import'). Malformed entries are skipped and reported rather than failing the batch.",
         ),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe(
+          "For 'list'. 'summary' (default): the labels added here, then the rest that fit about 30k characters, the rest counted under `omitted`. 'full': every label.",
+        ),
     },
-    async ({ action, address, label, category, confidence, notes, labels: bulk }) => {
+    async ({ action, address, label, category, confidence, notes, labels: bulk, detail }) => {
       // A malformed reference is rejected here. Looked up as it was, it would
       // answer "no label", which reads as an address that was checked and is
       // clean.
@@ -108,7 +121,29 @@ export function registerLabelTools(server: McpServer) {
       switch (action) {
         case "list": {
           const labels = allLabels();
-          return jsonResult({ count: labels.length, labels });
+          const byCategory: Record<string, number> = {};
+          const bySource: Record<string, number> = {};
+          for (const l of labels) {
+            byCategory[l.category] = (byCategory[l.category] ?? 0) + 1;
+            bySource[l.source] = (bySource[l.source] ?? 0) + 1;
+          }
+          type Row = (typeof labels)[number];
+          const { payload } = capPayload(
+            "manage_labels",
+            { action },
+            { count: labels.length, by_category: byCategory, by_source: bySource, labels },
+            {
+              labels: {
+                budget: 30_000,
+                keepOrder: true,
+                // Labels added here lead: they are this investigation's own
+                // attributions, while the shipped and override sets are reference.
+                rank: (a: Row, b: Row) => Number(!ADDED_HERE[a.source]) - Number(!ADDED_HERE[b.source]),
+              },
+            },
+            { full: detail === "full", next_call: { tool: "manage_labels", repeat_with: { detail: "full" } } },
+          );
+          return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
         }
 
         case "lookup": {

@@ -247,8 +247,7 @@
         { "path": "profit.address", "op": "iequals", "value": "{collector_1}" }
       ],
       "tier": "chain-derived",
-      "basis": "On chain the only party that gained anything of value is 0x2a6f4852, which received two StakedSui objects holding 2,979.5 SUI principal; the signer gained only 404.3 of the unpriced imitation coin.",
-      "known_defect": "Defaults the profit address to the signing victim, crediting it with the 404.3 fake SUI, because object transfers are not weighed."
+      "basis": "On chain the only party that gained anything of value is 0x2a6f4852, which received two StakedSui objects holding 2,979.5 SUI principal; the signer gained only 404.3 of the unpriced imitation coin."
     },
     {
       "id": "attack-profit-omits-stakes",
@@ -259,8 +258,7 @@
         { "path": "profit.gains", "op": "count_gte", "value": 1 }
       ],
       "tier": "chain-derived",
-      "basis": "On chain 0x2a6f4852 received StakedSui 0x0e7245c7 (1,020 SUI principal) and 0xe9f88ab9 (1,959.5 SUI principal) in this transaction and nothing else; its profit should list them. The anomalies' evidence already names both objects.",
-      "known_defect": "With attacker set to the collector the profit is $0 with an empty gains list; the two StakedSui it received appear only in the anomaly evidence."
+      "basis": "On chain 0x2a6f4852 received StakedSui 0x0e7245c7 (1,020 SUI principal) and 0xe9f88ab9 (1,959.5 SUI principal) in this transaction and nothing else; its profit should list them. The anomalies' evidence already names both objects."
     },
     {
       "id": "flow-graph-from-drain",
@@ -285,7 +283,6 @@
       ],
       "tier": "chain-derived",
       "basis": "On chain the collector 0x2a6f4852 received the two StakedSui in the drain and sent the unstake 5vuZjVUV three minutes later.",
-      "known_defect": "Hop 1 lists the two StakedSui going to the collector yet notes that nobody but the sender received anything, then follows the fake coin at the signer and stops.",
       "timeout_s": 300
     },
     {

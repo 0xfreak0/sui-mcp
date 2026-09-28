@@ -156,8 +156,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "chain: two Position objects go to one address.",
-      "known_defect": "transfers-to-non-sender title says 'Sends 1 object(s)' while its own evidence lists 2 objects to the collector."
+      "basis": "chain: two Position objects go to one address."
     },
     {
       "id": "drain-collector-in-addresses",
@@ -174,8 +173,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "chain: the collector gained the two Cetus positions in this transaction.",
-      "known_defect": "profit/addresses cover coin balance changes only: the signer shows a +412.3 SRT 'gain' and the collector, who received the two positions, is absent."
+      "basis": "chain: the collector gained the two Cetus positions in this transaction."
     },
     {
       "id": "decoy-coin-impersonates-sui",

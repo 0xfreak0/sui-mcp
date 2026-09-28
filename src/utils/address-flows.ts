@@ -375,7 +375,7 @@ export interface BridgeTotal {
 }
 
 /** One destination's identity: its CAIP-10 account, or the address as the chain holds it. */
-function destinationKey(b: Beneficiary): string {
+export function destinationKey(b: Beneficiary): string {
   return b.account ?? `${b.chain_label}:${b.address ?? b.address_raw}`;
 }
 

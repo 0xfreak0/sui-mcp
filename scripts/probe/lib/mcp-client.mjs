@@ -7,19 +7,24 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
 export const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
+const GRAPHQL = "https://graphql.mainnet.sui.io/graphql";
 
 /**
  * Start the built server with every profile on and a throwaway store.
- * `env` is merged over the process environment.
+ * `env` is merged over the process environment. The server replays fixed
+ * chain reads from `SUI_REPLAY_DIR` only when `replay` is set: case-pass and
+ * detector-pass opt in, and every other probe reads live.
  */
-export async function startServer({ name = "probe", env = {} } = {}) {
+export async function startServer({ name = "probe", env = {}, replay = false } = {}) {
   const store = mkdtempSync(join(tmpdir(), `sui-${name}-`));
+  const base = { ...process.env };
+  if (!replay) delete base.SUI_REPLAY_DIR;
   const child = spawn(process.execPath, [join(ROOT, "dist", "index.js")], {
-    env: { ...process.env, SUI_TOOLS: "all", SUI_STORE_PATH: join(store, "store.db"), ...env },
+    env: { ...base, SUI_TOOLS: "all", SUI_STORE_PATH: join(store, "store.db"), ...env },
     stdio: ["pipe", "pipe", "inherit"],
   });
   const pending = new Map();
@@ -79,16 +84,40 @@ export async function startServer({ name = "probe", env = {} } = {}) {
   return { rpc, call, callRaw, stop, store };
 }
 
-/** Raw mainnet GraphQL: the independent source a tool's answer is compared with. */
-export async function gql(query, variables) {
-  const r = await fetch("https://graphql.mainnet.sui.io/graphql", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query, variables }),
-  });
-  const body = await r.json();
-  if (body.errors?.length) throw new Error(body.errors[0].message);
-  return body.data;
+let replayingFetch = null;
+
+/**
+ * Raw mainnet GraphQL: the independent source a tool's answer is compared
+ * with. With `replay` set and `SUI_REPLAY_DIR` given, a fixed read goes
+ * through the server's own record/replay transport (src/clients/replay.ts).
+ */
+export async function gql(query, variables, { replay = false } = {}) {
+  const dir = process.env.SUI_REPLAY_DIR?.trim();
+  let send = fetch;
+  if (replay && dir) {
+    // From the build, which a probe may run without; loaded only when asked for.
+    replayingFetch ??= import(pathToFileURL(join(ROOT, "dist", "clients", "replay.js")).href).then((m) =>
+      m.replayingGraphqlFetch(GRAPHQL, fetch, dir),
+    );
+    send = await replayingFetch;
+  }
+  // The service reports some list failures as a GraphQL error on an HTTP 200;
+  // a retry of the same query answers them, as the server's own client does.
+  for (let attempt = 0; ; attempt++) {
+    const r = await send(GRAPHQL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+    });
+    const body = await r.json();
+    const message = body.errors?.[0]?.message;
+    if (message && attempt < 2 && /^Failed to list (transactions|events)$/.test(message)) {
+      await new Promise((res) => setTimeout(res, 1000 * 2 ** attempt));
+      continue;
+    }
+    if (body.errors?.length) throw new Error(message);
+    return body.data;
+  }
 }
 
 /** One address's net change in one coin across the digests, read straight from the chain. */

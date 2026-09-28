@@ -10,6 +10,7 @@ import { formatOwner } from "../utils/formatting.js";
 import { objectAddressBalanceFields } from "../utils/address-balance.js";
 import { baseType } from "../utils/object-flow.js";
 import { KIOSK_TYPE, resolveKioskCapHolder, unresolvedCapHolderNote } from "../utils/kiosk.js";
+import { capPayload } from "../utils/output-cap.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -180,7 +181,7 @@ export function registerObjectTools(server: McpServer) {
 
   server.tool(
     "list_owned_objects",
-    "List raw objects owned by a Sui address with optional type filter and pagination. For NFTs specifically, prefer list_nfts (resolves kiosk storage, extracts display metadata). For a wallet summary, prefer get_wallet_overview.",
+    "List raw objects owned by a Sui address with optional type filter and pagination. `count` covers every object of the page; the default view lists the objects that fit about 30k characters in page order and states the rest under `omitted`, and `detail: 'full'` lists the whole page. `next_cursor` continues after the whole page, rows under `omitted` included. For NFTs specifically, prefer list_nfts (resolves kiosk storage, extracts display metadata). For a wallet summary, prefer get_wallet_overview.",
     {
       owner: addressArg().optional().describe("Owner address (0x...). Required; `address` is accepted in its place."),
       address: addressArg().optional().describe("Alias for `owner`."),
@@ -190,8 +191,12 @@ export function registerObjectTools(server: McpServer) {
         .describe("Filter by object type (e.g. 0x2::coin::Coin<0x2::sui::SUI>)"),
       limit: numArg().int().min(1).max(1000).optional().describe("Max results (default 50, max 1000)"),
       cursor: z.string().optional().describe("Pagination cursor from previous response"),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): the objects that fit about 30k characters, in page order, the rest counted under `omitted`. 'full': every object of the page."),
     },
-    async ({ owner: ownerArg, address, object_type, limit, cursor }) => {
+    async ({ owner: ownerArg, address, object_type, limit, cursor, detail }) => {
       const owner = ownerArg ?? address;
       if (!owner) return errorResult("Pass the wallet to list as `owner` (or `address`).");
       const res = await sui.listOwnedObjects({
@@ -207,18 +212,14 @@ export function registerObjectTools(server: McpServer) {
         digest: obj.digest,
         owner: formatOwnerSdk(obj.owner),
       }));
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              { objects, next_cursor: res.cursor },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      const { payload } = capPayload(
+        "list_owned_objects",
+        { owner, object_type, limit, cursor },
+        { count: objects.length, objects, next_cursor: res.cursor },
+        { objects: { budget: 30_000, keepOrder: true } },
+        { full: detail === "full", next_call: { tool: "list_owned_objects", repeat_with: { detail: "full" } } },
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     }
   );
 

@@ -13,7 +13,7 @@ import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
 import { describeSignatures, readAuthentication, type Authentication } from "../utils/multisig.js";
 import { ownerDesc, type OwnerDesc } from "../utils/object-history.js";
 import { diffLinkage, type LinkageEntry } from "../utils/package-diff.js";
-import { SYSTEM_PACKAGE } from "../utils/disassembly.js";
+import { SYSTEM_PACKAGE } from "../utils/system-packages.js";
 import {
   capExcursions,
   capHolderAtPublish,

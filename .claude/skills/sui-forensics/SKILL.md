@@ -18,6 +18,7 @@ Every claim should be traceable to one of these. Say which.
 | tier | means | you may write |
 |---|---|---|
 | `chain-derived` | Read from Sui itself | "X sent 5 SUI to Y in transaction Z" |
+| `price-provider` | An amount read from Sui, valued at a price provider's price (a position's `method` names the provider and the time) | "The position holds 10,140 USDC (chain-derived), about $10,139 at DefiLlama's price at 19:49 UTC" — the amount is a fact, the USD is that provider's quote, not the protocol's own valuation |
 | `indexer-attested` | A third party asserts it | "Wormholescan reports this VAA was redeemed on Ethereum" — a lead to confirm, not a finding |
 | `heuristic` | An inference from patterns | "These addresses may share an operator" — never "they do" |
 
@@ -259,6 +260,18 @@ had a last transfer with no non-gas balance change at all.
   minting NFTs straight to two wallets produces no transfer and no balance
   change. Coins are never in `created_for`; a drain that pays a beneficiary
   and moves nothing else names it in `coins_delivered_to`.
+- **An NFT's USD value is an estimate and says so.** `list_nfts` (`est_usd`)
+  and `list_nft_collections` (`estimated_value`) price an item at the lower of
+  its collection's lowest active listing and its last sale in the past 30
+  days, tier `heuristic`; a listing alone counts only if placed in those 30
+  days. A sale at zero, within one address or kiosk, or
+  where one side first funded the other is left out and listed with its
+  reason under `excluded_sales`. `wash_check` says what was checked; funding
+  through an intermediary is not. An unpriced item had no listing and no
+  sale in the window this server reads (BlueMove and TradePort's non-kiosk
+  listings are not read), which says nothing about what it would fetch. A
+  value for a past time uses sales before it and no listings. Report an NFT
+  loss apart from coin losses, as an estimate with its basis.
 
 Funds also move without any coin object. An address balance holds funds
 credited to an address (or an object id) with no `Coin<T>` behind them:
@@ -562,11 +575,22 @@ summarize_incident_losses(digests: <every attack digest>)
   someone's behalf), both tools default to the largest PRICED gainer over $1
   in the same transaction(s) instead, reported in
   `attacker_defaulted_from_sender`. A gain in a coin with no price by any
-  other non-sender blocks the default and keeps the sender, listed in
+  other non-sender blocks the default (unless the sender itself paid that
+  coin out) and keeps the sender, listed in
   `unpriced_gain_candidates`, rather than naming a small priced fee wallet.
   The largest priced gainer's own unpriced coins do not block it; its profit
   is then a partial figure. Pass `attacker` to name a different address once
-  you know it.
+  you know it. The same default applies when the sender took nothing priced
+  and gave valued objects away (a victim signing a drain of staked SUI or LP
+  positions); a coin a third-party scam list flags counts as a decoy, not a
+  gain.
+- **Objects count as value.** Staked SUI, LP positions, lending caps and
+  vault receipts that an address received, gave up or kept while the
+  transaction changed them are valued at the transaction's checkpoint and
+  counted in its net; each is listed with its method in `object_values`
+  (`objects` in `summarize_incident_losses`). NFT values are estimates and
+  kept out of the totals. `trace_funds` follows such objects when they
+  outweigh the coin flow (basis `object`).
 
 - **Balance changes and pool losses are chain-derived.** A pool's loss is summed
   from its own swap and liquidity events. An event belongs to the changed
@@ -624,6 +648,43 @@ summarize_incident_losses(digests: <every attack digest>)
   Read the
   writing or pricing function next with `get_move_function` and
   `disassemble_module`.
+- **Three anomalies point at a price, a key or a vault's history.**
+  `price-off-market` compares each price the transaction states for one coin
+  (an event naming that coin, or a table row keyed by its type after the
+  transaction) with the provider price at block time. A field counts as a
+  price only when, at one power of ten, it agrees within 5% with the
+  provider for at least two coins and half the priced coins it names; a coin
+  5x or more from its provider price there is flagged, high at 10x
+  (`off_market_prices`). It names a coin valued with another asset's feed or
+  at a price someone signed, including one set and restored inside the PTB.
+  Read which feed or slot the protocol resolves that coin to with
+  `get_object`. `signing-key-replaced` (medium) means a changed shared
+  object's byte string of a public-key length (33, 48, 64, 65 or 96 bytes)
+  now holds another key: whoever holds the new key signs what that object
+  vouches for, such as an oracle's prices. A rotation by the operator reads
+  the same. `share-round-trip` means the sender receives 1.1x or more
+  (high at 2x) what it paid within the previous day for the vault shares it
+  burns, per share against its own mints of that coin on the same vault, or
+  for a position object against the transaction that created it
+  (`round_trips`): the shares were issued against holdings the vault
+  understated, whichever version or price did it, and the redemption takes
+  the difference from the other holders. Both legs are valued at the exit's
+  prices only when they trade the same coins one way each; a zap into another
+  coin, or a leg that borrows or repays, is valued at each leg's own time and
+  counts only from 2x (`basis: "own-time"`), since a price move or leverage
+  alone can make a day's trade gain a tenth. Read the entry transaction with
+  `analyze_attack_tx` next.
+- **`switched-before-execution` catches a bait-and-switch.** A signature
+  binds a shared object by id, not by its contents, so whoever may write it,
+  and whoever submits the signed bytes (a gas sponsor), can change where the
+  signer's value goes after the signer approved. The check follows each
+  shared object the transaction took back through the writes of the minute
+  before it, by other senders, and keeps those that flipped a boolean, set
+  an address that gains value in the transaction, or set a number equal to an
+  amount it moved (`recent_foreign_writes`). It reads high within 10 s when
+  the signer lost $1 or more to other addresses, medium within the minute,
+  info when the signer lost nothing. A keeper writing the same object reads
+  the same; `trace_object_history` shows the object's writes.
 - **The PTB checks run here too.** `analyze_attack_tx` runs `decode_ptb`'s
   checks with the transaction's sender and effects. A name is not trust:
   `unverified-package-call` means neither the curated registry nor a curated
@@ -825,7 +886,10 @@ get the schema wrong in ways that fail silently.
 | Has an issuer frozen this address? | `check_coin_restrictions` |
 | Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |
 | Is this address the one it looks like? | `get_transaction_history`, `trace_funds`, `trace_flow_graph` or `summarize_address_flows` → `address_poisoning` |
-| Did something move that was not a coin? | `trace_funds` → `object_flow` |
+| Did something move that was not a coin? | `trace_funds` → `object_flow`, and `object_values` per hop with USD for staked SUI, LP positions, lending caps and vault receipts |
+| What is this wallet worth beyond its coins? | `get_wallet_overview` with `include_prices` → `positions_value_usd`, `unread`, `coverage`, and with `include_nfts` `nft_estimate_usd` (estimates, not in the total); `get_defi_positions` for every position with its `method` and `tier`. The total covers only what a reader recognised: `coverage.not_recognised_types` lists the owned objects left out by type and count (a receipt of a protocol no reader knows looks like any other object), so report the total as a floor while that list is not empty |
+| Does this wallet run its money through a vault it does not own? | `get_wallet_overview` with `include_prices` or `get_defi_positions` → `leads` of kind `operated_shared_object`: a shared object its recent transactions used whose own fields name it (`members`, `owner`, `operator`, ...), with what it holds and the other addresses named. The naming is chain-derived; what the role lets the address do is in the package's functions |
+| What does this wallet owe or lend, and how close is it to liquidation? | `get_defi_positions` → lending positions with supply and borrow legs, `health` (what the protocol stores: Suilend's and AlphaLend's totals as of the last refresh, Bucket's minimum collateral ratio, plus `borrow_limit_used` and `liquidation_threshold_used` from those figures), `health_basis` when the stored figures and the legs' market value differ (use `health` for distance to liquidation, `usd` for worth), `leads` for a position within 5% of its borrow limit, and `price_check` wherever the protocol's oracle and a provider disagree by more than 2% (the provider's price is then used; a large gap is a lead on a borrowed or manipulated feed, not a verdict) |
 | Who can mint / upgrade / freeze, and did that change hands? | `trace_funds` → `object_flow.capability_transfers` |
 | Does this address pay other people's gas? | `get_address_fanout` → `sponsor_shape` |
 | Events of a given type across time? | `query_events` — returns decoded fields |
@@ -836,7 +900,7 @@ get the schema wrong in ways that fail silently.
 | What did this exploit transaction take, and how? | `analyze_attack_tx` — per-address net in USD, flash legs, pool price moves, pool losses, oracle touches |
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | Who else profited in this window, and by how much? | `aggregate_events` with `module` and `group_pnl` — each sender's own balance changes in USD, multi-leg PTBs marked |
-| How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, inflow sources, top recipients, gas sponsors, bridge exits grouped by destination; totals and `inflow_source_count` cover every row, and `detail: "full"` lists every source |
+| How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, valued objects in and out (`objects`, counted in `totals_usd` and with their counterparty), inflow sources, top recipients, gas sponsors, bridge exits grouped by destination; totals and `inflow_source_count` cover every row, and `detail: "full"` lists every source |
 | What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
 | Where did this object come from? How did it change just before the incident? | `trace_object_history` — reaches a deleted or wrapped object (`end`), and a distant transition on a capability mutated on every privileged call, without paging through every version; `order: "newest"` lists the latest versions first and `next_call` pages back |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |

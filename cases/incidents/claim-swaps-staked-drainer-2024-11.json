@@ -1,0 +1,647 @@
+{
+  "slug": "claim-swaps-staked-drainer-2024-11",
+  "kind": "wallet-drainer",
+  "title": "claim::swapS drainer kit: staked SUI, lending and LP positions taken by switching shared state after signature, November and December 2024",
+  "network": "mainnet",
+  "summary": "A wallet signed a gas-sponsored PTB (F3TCZ6Ki, 19:03:29 UTC on 28 November 2024) that passed its three StakedSui objects, its SUI coin and its sSUI coin into claim::swapS and claim::swapT of package 0xa032d8b8 and minted it 8,314 of a bait coin (CTX). swapS withdraws each stake and pays profit_split percent (75) of it to one collector (0x55abfb40) and the rest to a second (0x532517d0), so 693.41 SUI ($2.41K) left the signer. The package's shared ClaimParams was created with initialized false and zero amounts, which makes every call hand the signer's objects back, and its owner rewrote the amounts and called set_claimable(true) 0.935 s before the drain executed, so a dry run at signing showed no loss. The same kit, re-published from fresh publishers minutes before each large drain and paying the same two collectors, took Suilend obligations, Cetus, Turbos and Bluefin positions and an AlphaFi receipt through swapN, which sends objects whole to 0x532517d0; that address forwarded about 95 of them to operator wallets that unwound them. The first collector was first funded by the second, and the gas sponsor 0xd1c052a8 paid gas for 767 distinct addresses.",
+  "sources": [
+    {
+      "url": "https://forums.sui.io/t/lost-my-staked-sui/46588",
+      "publisher": "Sui Developer Forum",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://forums.sui.io/t/missing-staked-sui-coins/45839",
+      "publisher": "Sui Developer Forum",
+      "kind": "victim-postmortem"
+    },
+    {
+      "url": "https://github.com/MystenLabs/wallet_blocklist",
+      "publisher": "Mysten Labs",
+      "kind": "official"
+    }
+  ],
+  "subjects": {
+    "drain_tx": "F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd",
+    "drainer_package": "0xa032d8b82cb3168ee197aab042edc9421cec42f305dbb6a474a047ec083b5083",
+    "earlier_drainer_package": "0xe210f06cbf93029d0e01cde41fbd66cf52e39f44380c1ba839fe79ba9f90463d",
+    "bait_coin_package": "0xab58b428020df50fe33cbb6d1533b0d146a3c1621210cfc867f8fee394f17ae9",
+    "claim_params": "0x7188a53ee9daee5604da2649e7b87b100c6693e4ce6b9d411f8af799b9960ecd",
+    "publisher": "0xf09d967bd112eb1d71dc1da09a7d19897dba1903d771eee970e72c0213806a5c",
+    "publish_tx": "3LWaip5cvzmAWJZn2Rb87sC2i7HfxdEwnk613GxxSM91",
+    "publisher_funding_tx": "9d91aMgncPczYKF2rHKJPphEkRfwX4bAZHYp6TkSgMSj",
+    "claim_params_create_tx": "F1hZSV2waUBCiRQQgeyqj2AR7Xgquk6bwT4T6mfGULgZ",
+    "claim_params_update_tx": "HBuiLzCyicPavHeVRrYoUGpDhWWAHMkYzX8oz2AwweBc",
+    "set_claimable_tx": "4nxCU6RYo2rayrcQPe99chqF1iAFu7fiMurqrHDsmtUL",
+    "wallet_75": "0x55abfb40f533b549e43cdd2711746b208052512ee72874f7a5851ce186489e0f",
+    "dev_wallet": "0x532517d0f3d0d56566ab3580ca4d3b373a9303cb513c26dbdcf852582ba4e096",
+    "wallet_funding_tx": "CqwzuQvR94ZUzvrxR8KSig3HTTkN6DaLtK5Zic5nNRkd",
+    "gas_sponsor": "0xd1c052a8c3b15eedecb7b068e3beb2cb424354156819b980142f6c18b654a54a",
+    "stolen_stake": "0x184cc7da56a7ffabb2d7c28c5e781790b99071346979966290303da5b2149697",
+    "lending_drain_tx": "3Q4b1uQMJJex4vFFPyBDaHb8bxfa3bHmDdc2crbvzDES",
+    "lending_drain_package": "0x0f1b43df1d44f72fd015ca4721d548fe277620624d4c55b36690557a58ec026b",
+    "stolen_suilend_cap": "0xce89ad22e53d08284c89071442f6f501b0b28685259e9d4be9c0c29535e070e8",
+    "lp_drain_tx": "6rB49EwjCyiUHna5iyGXAPVEjSRHzzv6Ah6aEvs5gNLN",
+    "lp_drain_package": "0x3119a81c1576f9baf4d2bfaa2862e2412f4b5f42ae8363364663bd00050a56d0",
+    "stolen_cetus_position": "0x7995dc8971a6a9dae286a9f1a2a612fc05bbbd73410e4c04bc97fe6fc53b1f3d",
+    "cetus_forward_tx": "D7Nd8jYckjTS1ZaQRP8mXhtk7mM8bC4J6VJybUAzVJx9",
+    "cetus_unwinder": "0x4af665460c73bdccb6aef908bbb9b038291a59fc1b941ef1b7d77f6f351c9484",
+    "cetus_close_tx": "6SnxiLZh9Q4dMWnGYNSkLN1R56nAYqrHrnG8jz59DTRW"
+  },
+  "checks": [
+    {
+      "id": "drain-took-stakes-and-paid-two-collectors",
+      "question": "What did the named drain take from the signer, what was it worth at block time, and who received it?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "object_values[*].kind",
+          "op": "includes",
+          "value": "staked_sui"
+        },
+        {
+          "path": "object_values[*].object_id",
+          "op": "includes",
+          "value": "{stolen_stake}"
+        },
+        {
+          "path": "object_values[0].usd",
+          "op": "approx",
+          "value": 1076.46,
+          "tolerance": 0.01
+        },
+        {
+          "path": "profit.address",
+          "op": "iequals",
+          "value": "{wallet_75}"
+        },
+        {
+          "path": "profit.usd_net",
+          "op": "approx",
+          "value": 1804.61,
+          "tolerance": 0.01
+        },
+        {
+          "path": "addresses[*].address",
+          "op": "includes",
+          "value": "{wallet_75}"
+        },
+        {
+          "path": "addresses[*].address",
+          "op": "includes",
+          "value": "{dev_wallet}"
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Sui Developer Forum topic 46588 names the digest. Chain: three UnstakingRequestEvents (310.219880616, 297.680756240 and 80.145782814 SUI with rewards) plus a 5.367827991 SUI coin, 693.414247661 SUI in all, paid 520.060685745 SUI to 0x55abfb40 and 173.353561916 SUI to 0x532517d0; DefiLlama SUI $3.47 at 2024-11-28T19:03:56Z. The signer took only the bait coin, so the profit is 0x55abfb40's 75% share, 520.06 SUI ($1,804.61)."
+    },
+    {
+      "id": "drain-detectors",
+      "question": "Which anomaly flags does the executed drain raise?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "blocklisted-package-call"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "transfers-to-non-sender"
+        },
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "unverified-package-call"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Mysten Labs wallet_blocklist lists package 0xa032d8b8; chain: the PTB's calls take owned objects into an unregistered package and value reaches two non-signers."
+    },
+    {
+      "id": "drain-switch-flagged",
+      "question": "Does the breakdown of the drain say the shared object it read was switched just before it ran?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "switched-before-execution"
+        },
+        {
+          "path": "recent_foreign_writes[0].digest",
+          "op": "equals",
+          "value": "{set_claimable_tx}"
+        },
+        {
+          "path": "recent_foreign_writes[0].writer",
+          "op": "iequals",
+          "value": "{publisher}"
+        },
+        {
+          "path": "recent_foreign_writes[*].digest",
+          "op": "includes",
+          "value": "{claim_params_update_tx}"
+        }
+      ],
+      "tier": "heuristic",
+      "basis": "Chain: the publisher's set_claimable (4nxCU6RY) flipped ClaimParams.initialized 0.935 s before the drain, and its update_claim_details (HBuiLzCy) set the recorded amounts to the signer's coins 4.67 s before."
+    },
+    {
+      "id": "drain-ptb-shape",
+      "question": "Which Move calls did the drain make, in order, and who paid its gas?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{drain_tx}",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "commands[0].target",
+          "op": "iequals",
+          "value": "{drainer_package}::claim::swapS"
+        },
+        {
+          "path": "commands[3].target",
+          "op": "iequals",
+          "value": "{drainer_package}::claim::swapT"
+        },
+        {
+          "path": "commands[5].target",
+          "op": "iequals",
+          "value": "{bait_coin_package}::ctx::mint"
+        },
+        {
+          "path": "authorization[*].address",
+          "op": "includes",
+          "value": "{gas_sponsor}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: six MoveCall commands, swapS x3, swapT x2, ctx::mint; the transaction is gas-sponsored by 0xd1c052a8."
+    },
+    {
+      "id": "drainer-package-origin",
+      "question": "Who published the drainer package, when, and is it on a scam list?",
+      "tool": "identify_address",
+      "args": {
+        "address": "{drainer_package}"
+      },
+      "expect": [
+        {
+          "path": "publisher.publisher",
+          "op": "iequals",
+          "value": "{publisher}"
+        },
+        {
+          "path": "publisher.publish_tx",
+          "op": "equals",
+          "value": "{publish_tx}"
+        },
+        {
+          "path": "publisher.published_at",
+          "op": "equals",
+          "value": "2024-11-28T18:27:47.705Z"
+        },
+        {
+          "path": "flagged_by[*].list",
+          "op": "includes",
+          "value": "MystenLabs/wallet_blocklist"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: publish transaction 3LWaip5c signed by 0xf09d967b; Mysten Labs wallet_blocklist package-list.json lists the package."
+    },
+    {
+      "id": "drainer-code",
+      "question": "What does the drainer's claim module do with a StakedSui, and what can its owner switch?",
+      "tool": "disassemble_module",
+      "args": {
+        "package_id": "{drainer_package}",
+        "module_name": "claim"
+      },
+      "expect": [
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "sui_system::request_withdraw_stake_non_entry"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "entry public set_claimable(Arg0: &mut ClaimParams, Arg1: bool"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "profit_split: u8"
+        },
+        {
+          "path": "_text",
+          "op": "contains",
+          "value": "entry public swapN<Ty0: store + key>"
+        }
+      ],
+      "tier": "code-derived",
+      "basis": "Chain: package 0xa032d8b8 v1 bytecode. swapS withdraws the stake and splits it between ClaimParams.wallet and dev_wallet by profit_split when initialized is true, and returns it to the sender otherwise; set_claimable (owner only) writes initialized; swapN sends any key+store object to dev_wallet."
+    },
+    {
+      "id": "claimparams-timeline",
+      "question": "When was the drain's ClaimParams created and changed relative to the drain?",
+      "tool": "trace_object_history",
+      "args": {
+        "object_id": "{claim_params}"
+      },
+      "expect": [
+        {
+          "path": "created.tx",
+          "op": "equals",
+          "value": "{claim_params_create_tx}"
+        },
+        {
+          "path": "history[*].tx",
+          "op": "includes",
+          "value": "{claim_params_update_tx}"
+        },
+        {
+          "path": "history[*].tx",
+          "op": "includes",
+          "value": "{set_claimable_tx}"
+        },
+        {
+          "path": "history[*].tx",
+          "op": "includes",
+          "value": "{drain_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: versions 418135263 (create, 19:02:57.330), 418135264 (update_claim_details, 19:03:25.066), 418135265 (set_claimable, 19:03:28.797), 433094869 (the drain, 19:03:29.732)."
+    },
+    {
+      "id": "claimparams-benign-at-creation",
+      "question": "What did the shared ClaimParams hold when it was created, before the switch?",
+      "tool": "get_object",
+      "args": {
+        "object_id": "{claim_params}",
+        "version": "418135263"
+      },
+      "expect": [
+        {
+          "path": "content.initialized",
+          "op": "equals",
+          "value": false
+        },
+        {
+          "path": "content.details.coin_details[0].amount",
+          "op": "equals",
+          "value": "0"
+        },
+        {
+          "path": "content.profit_split",
+          "op": "equals",
+          "value": 75
+        },
+        {
+          "path": "content.wallet",
+          "op": "iequals",
+          "value": "{wallet_75}"
+        },
+        {
+          "path": "content.dev_wallet",
+          "op": "iequals",
+          "value": "{dev_wallet}"
+        },
+        {
+          "path": "content.owner",
+          "op": "iequals",
+          "value": "{publisher}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: ClaimParams at version 418135263. With initialized false and amounts 0, swapS and swapT return the signer's objects to the signer."
+    },
+    {
+      "id": "switch-flipped-before-drain",
+      "question": "What did the owner call 0.935 s before the drain executed?",
+      "tool": "get_transaction",
+      "args": {
+        "digest": "{set_claimable_tx}",
+        "detail": "full"
+      },
+      "expect": [
+        {
+          "path": "commands[0].target",
+          "op": "iequals",
+          "value": "{drainer_package}::claim::set_claimable"
+        },
+        {
+          "path": "inputs[1].value",
+          "op": "equals",
+          "value": true
+        },
+        {
+          "path": "timestamp",
+          "op": "equals",
+          "value": "2024-11-28T19:03:28.797Z"
+        },
+        {
+          "path": "sender",
+          "op": "iequals",
+          "value": "{publisher}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 4nxCU6RY, set_claimable(ClaimParams, true) signed by the publisher at 19:03:28.797 UTC; the drain executed at 19:03:29.732 UTC."
+    },
+    {
+      "id": "collectors-linked",
+      "question": "Is the 75% collector tied to the 25% collector?",
+      "tool": "identify_address",
+      "args": {
+        "address": "{wallet_75}"
+      },
+      "expect": [
+        {
+          "path": "first_seen.sender",
+          "op": "iequals",
+          "value": "{dev_wallet}"
+        },
+        {
+          "path": "first_seen.digest",
+          "op": "equals",
+          "value": "{wallet_funding_tx}"
+        },
+        {
+          "path": "first_seen.received[0].amount",
+          "op": "equals",
+          "value": "1570000000000"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 0x55abfb40's first inflow is 1,570 SUI from 0x532517d0 in CqwzuQvR on 2024-11-08."
+    },
+    {
+      "id": "lending-position-value",
+      "question": "What did the kit take from a victim holding a Suilend obligation, and what was it worth at block time?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{lending_drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "object_values[0].object_id",
+          "op": "iequals",
+          "value": "{stolen_suilend_cap}"
+        },
+        {
+          "path": "object_values[0].protocol",
+          "op": "equals",
+          "value": "Suilend"
+        },
+        {
+          "path": "object_values[0].to",
+          "op": "iequals",
+          "value": "{dev_wallet}"
+        },
+        {
+          "path": "object_values[0].usd",
+          "op": "approx",
+          "value": 69563.17,
+          "tolerance": 0.02
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain: the obligation held only DEEP; its owner withdrew 1,388,917.217017 DEEP for 1,386,719.841878 cDEEP in AjZuVX86 nine hours later with no borrow. DefiLlama DEEP $0.050226 at 2024-12-03T00:59:08Z gives about $69.76K; the tool uses Suilend's stored oracle price, within 2% of the provider."
+    },
+    {
+      "id": "lp-position-value",
+      "question": "What did the kit take from a victim holding a Cetus position, and what was it worth at block time?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{lp_drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "object_values[0].object_id",
+          "op": "iequals",
+          "value": "{stolen_cetus_position}"
+        },
+        {
+          "path": "object_values[0].protocol",
+          "op": "equals",
+          "value": "Cetus"
+        },
+        {
+          "path": "object_values[0].to",
+          "op": "iequals",
+          "value": "{dev_wallet}"
+        },
+        {
+          "path": "object_values[0].usd",
+          "op": "approx",
+          "value": 39177.78,
+          "tolerance": 0.02
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain: FUD/SUI position, liquidity 464964978252093 over ticks [-74200, -54200) at sqrt price 600545876682613589 gives 72,950,160,973 FUD and 3,753.938 SUI; DefiLlama FUD $3.61059e-7 and SUI $3.42 at 2024-11-29T14:21Z give $39,178."
+    },
+    {
+      "id": "alphafi-receipt-valued",
+      "question": "Is every DeFi position the LP drain took valued as a position rather than as an NFT?",
+      "tool": "analyze_attack_tx",
+      "args": {
+        "digest": "{lp_drain_tx}"
+      },
+      "expect": [
+        {
+          "path": "object_values[*].kind",
+          "op": "excludes",
+          "value": "nft"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the third object is an AlphaFi alphapool::Receipt (pool 0x6ee8f602, xTokenBalance 39346972191), a staking receipt with a redeemable balance."
+    },
+    {
+      "id": "trace-follows-stolen-position",
+      "question": "Following the value forward from the LP drain, where did the Cetus position go?",
+      "tool": "trace_funds",
+      "args": {
+        "digest": "{lp_drain_tx}",
+        "direction": "forward",
+        "hops": 2
+      },
+      "expect": [
+        {
+          "path": "hops[0].basis",
+          "op": "equals",
+          "value": "object"
+        },
+        {
+          "path": "hops[1].digest",
+          "op": "equals",
+          "value": "{cetus_forward_tx}"
+        },
+        {
+          "path": "hops[1].object_transfers[*].to.address",
+          "op": "includes",
+          "value": "{cetus_unwinder}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 0x532517d0 sent the position to 0x4af66546 in D7Nd8jYc at 20:42:02 on 2024-11-29."
+    },
+    {
+      "id": "trace-reaches-position-close",
+      "question": "Does the trace reach the transaction that turned the stolen position into coins?",
+      "tool": "trace_funds",
+      "args": {
+        "digest": "{lp_drain_tx}",
+        "direction": "forward",
+        "hops": 4
+      },
+      "expect": [
+        {
+          "path": "hops[*].digest",
+          "op": "includes",
+          "value": "{cetus_close_tx}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: 0x4af66546 closed the position in 6SnxiLZh at 20:51:19, receiving 3,831.66 SUI and 72,222,001,437 FUD; the fee collection before it left the liquidity in place."
+    },
+    {
+      "id": "collector-positions-in",
+      "question": "Over the hours around the LP drain, what valued objects entered the 25% collector?",
+      "tool": "summarize_address_flows",
+      "args": {
+        "address": "{dev_wallet}",
+        "from": "2024-11-29T14:00:00Z",
+        "to": "2024-11-29T21:00:00Z"
+      },
+      "expect": [
+        {
+          "path": "totals_usd.objects_in",
+          "op": "gte",
+          "value": 39000
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain: the Cetus position ($39.18K at block time) and a Suilend obligation entered 0x532517d0 in 6rB49Ewj, a victim-signed swapN."
+    },
+    {
+      "id": "campaign-losses-default-attacker",
+      "question": "Given the three drains and no attacker, does the loss total name the drainers' take?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{drain_tx}",
+          "{lp_drain_tx}",
+          "{lending_drain_tx}"
+        ]
+      },
+      "expect": [
+        {
+          "path": "totals.usd_net",
+          "op": "gte",
+          "value": 0
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain: each signer only lost valued objects and coins and gained the bait coin; the two collectors gained them."
+    },
+    {
+      "id": "campaign-losses-dev-wallet-objects",
+      "question": "With the 25% collector named, are the stolen positions counted in its take?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{drain_tx}",
+          "{lp_drain_tx}",
+          "{lending_drain_tx}"
+        ],
+        "attacker": "{dev_wallet}"
+      },
+      "expect": [
+        {
+          "path": "objects[*].object_id",
+          "op": "includes",
+          "value": "{stolen_suilend_cap}"
+        },
+        {
+          "path": "objects[*].object_id",
+          "op": "includes",
+          "value": "{stolen_cetus_position}"
+        },
+        {
+          "path": "objects[*].direction",
+          "op": "includes",
+          "value": "in"
+        },
+        {
+          "path": "totals.objects_usd_gained",
+          "op": "gte",
+          "value": 100000
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain: the Suilend cap and the Cetus position entered 0x532517d0 in 3Q4b1uQM and 6rB49Ewj."
+    },
+    {
+      "id": "campaign-losses-block-time-value",
+      "question": "Are the positions in the campaign total valued at the time each was taken?",
+      "tool": "summarize_incident_losses",
+      "args": {
+        "digests": [
+          "{drain_tx}",
+          "{lp_drain_tx}",
+          "{lending_drain_tx}"
+        ],
+        "attacker": "{dev_wallet}"
+      },
+      "expect": [
+        {
+          "path": "totals.objects_usd_gained",
+          "op": "approx",
+          "value": 108796,
+          "tolerance": 0.03
+        }
+      ],
+      "tier": "price-provider",
+      "basis": "Chain and DefiLlama: block-time values $69,563 (Suilend, 2024-12-03), $39,178 (Cetus, 2024-11-29), $31 (Bluefin) and $24 (Suilend) sum to about $108.8K."
+    },
+    {
+      "id": "publisher-funded-over-wormhole",
+      "question": "How was the drainer's publisher funded?",
+      "tool": "resolve_bridge_transfer",
+      "args": {
+        "digest": "{publisher_funding_tx}"
+      },
+      "expect": [
+        {
+          "path": "wormhole_inbound.redemptions[0].origin_chain",
+          "op": "equals",
+          "value": "eip155:8453"
+        },
+        {
+          "path": "wormhole_inbound.redemptions[0].kind",
+          "op": "equals",
+          "value": "token-bridge-redemption"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the publisher's first inflow, 9d91aMgn on 2024-11-07, redeemed a Wormhole token-bridge VAA from Base (chain 30); Wormholescan shows the Base source transaction 0x45d47120."
+    }
+  ]
+}

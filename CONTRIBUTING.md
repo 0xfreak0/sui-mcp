@@ -97,7 +97,11 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
 - Run `npm test` and `npx tsc --noEmit` before submitting a PR.
 - Run `npm run verify:live` after bumping `@mysten/sui`, after a Sui GraphQL
   schema change, or before a release. The offline tests pin mainnet fixtures and
-  cannot notice that the chain or the SDK moved underneath them.
+  cannot notice that the chain or the SDK moved underneath them. While working
+  on a change, `npm run verify:live -- --tier affected` runs only the live
+  checks the change can reach, and `SUI_REPLAY_DIR=<dir>` lets case-pass and
+  detector-pass replay the chain reads that cannot change
+  (`scripts/probe/README.md`).
 - Measuring something new? Write a throwaway script and delete it. Record the
   number in a commit message or `CLAUDE.md`. A script kept to rediscover a
   number you already wrote down just rots against live mainnet.

@@ -85,6 +85,11 @@ describe("flagPtbAnomalies", () => {
     expect(codes([transfer(STRANGER)], { sender: SENDER })).toContain("transfers-to-non-sender");
   });
 
+  it("counts every object one TransferObjects hands to a stranger", () => {
+    const a = flagPtbAnomalies([transfer(STRANGER, 2)], { sender: SENDER });
+    expect(a.find((x) => x.code === "transfers-to-non-sender")?.title).toMatch(/\b2\b/);
+  });
+
   it("names the commands each flag is about, so a first page can list them", () => {
     const cmds = [transfer(SENDER), { type: "SplitCoins" } as FormattedCommand, call(`${UNKNOWN}::evil::drain`), transfer(STRANGER)];
     const a = flagPtbAnomalies(cmds, { sender: SENDER });

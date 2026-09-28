@@ -18,9 +18,9 @@ npm run build && npm run verify:live && npm test
 | `incident-pass.mjs` | The incident tools replayed on the Cetus and Nemo exploits through the built server over stdio, each answer against a raw chain read taken in the same run: attack and incident-loss nets against the raw balance changes, trace and flow-graph hops against the payer and next debit on chain, every bridge's beneficiary against its event or payload bytes, flow totals against per-transaction sums, upgrade history and cap custody against package versions and object changes, signatures and bytecode against each exact version, diffs against a line diff of both versions, a deny list against its Config's fields, and prices against DefiLlama read directly. Records every call's latency and size. |
 | `attribution-pass.mjs` | The attribution and history tools (funding, fan-out, deposit, screening, wallet edges, control groups, multisig, timelines, events, transactions, balances, holders, NFT sales, identity) against a raw GraphQL read of the same fact in the same run, plus one malformed input per tool. Prints each tool's slowest call and largest result, and fails on a call over 60s or a result over the tool's declared size. |
 | `surface-pass.mjs` | The stateful tools (labels, findings, watches, `enable_tools`), the prompts and the `sui://case` resource, and the core, market and developer tools, each against a raw read of the same fact taken in the same run: staking principal vs raw StakedSui objects, pools vs a raw walk of every pool type, a decoded PTB vs the raw transaction, a simulated transfer vs its amount, MVR names vs the PackageInfo on chain. Every tool also gets one malformed call that must be refused, and each call's latency and size are checked. |
-| `case-pass.mjs` | Replays every case in `cases/incidents/` (and in `$SUI_CASES_DIR` when set): each check's tool call through the built server, its answer against the value the incident's post-mortem or the chain gives. Validates each file against the format in `cases/README.md` first. A check marked `known_defect` that fails is reported as known; one that passes fails the run until the marker is removed. Prints each call's latency, size and estimated tokens, a total per case, and the tools/list size for the default profile and `SUI_TOOLS=all`; a call over its tool's budget in `lib/size-budget.mjs` fails. `--case <slug>` and `--check <id>` run one; `--summary <file>` writes the tallies, sizes and budgets as JSON, which `verify:live` turns into the size report in its closing summary. |
+| `case-pass.mjs` | Replays every case in `cases/incidents/` (and in `$SUI_CASES_DIR` when set): each check's tool call through the built server, its answer against the value the incident's post-mortem or the chain gives. Validates each file against the format in `cases/README.md` first. A check marked `known_defect` that fails is reported as known; one that passes fails the run until the marker is removed. Prints each call's latency, size and estimated tokens, a total per case, and the tools/list size for the default profile and `SUI_TOOLS=all`; a call over its tool's budget in `lib/size-budget.mjs` fails. `--smoke` runs one check per tool plus the `critical` ones, and `--affected <git-range>` the checks a change can reach (see "Tiers" below). `--jobs <n>` runs n cases at once through one server, sharing its request budget; a check that fails there runs again alone before it counts. `--case <slug>` and `--check <id>` narrow any tier to one; `--summary <file>` writes the tallies, sizes, budgets and wall time as JSON, which `verify:live` turns into the size report in its closing summary. |
 | `invariant-pass.mjs` | A seeded random sample of mainnet: transactions from checkpoints spread over the whole chain, plus the kinds random checkpoints rarely hold (system, failed, sponsored, multisig, zkLogin, address-balance, 100+ command PTBs, packages, shared objects, kiosks, bridge exits). Each is run through the tools and checked against rules that hold for any input, every value against a raw GraphQL read: balance changes against the effects, coin conservation, batch against single reads, balances against coin objects plus the address balance and against a forward sum at a past checkpoint, history and timeline pages against the raw query, flow totals, fan-out recounts, trace and attack nets, identity types, holder balances and bridge beneficiaries against the event bytes. Prints the seed; `--seed S --n N --tip T` redraws the same sample. Default n is 12, four to seven minutes; n 30 takes about ten. |
-| `detector-pass.mjs` | Scores the anomaly detectors on the labelled set in `cases/detectors.json`: exploit and attack transactions from `cases/incidents/` as positives, and ordinary mainnet transactions as negatives, each in two splits, `tuning` (seen by rule authors) and `holdout` (incidents labelled after every current rule was written, and negatives drawn at random afterwards, never shown to them). Runs `analyze_attack_tx`, `decode_ptb` by digest and `decode_ptb` on the transaction's own BCS (the pre-sign mode) on each, and prints per tool and anomaly code the true positives, the false positives and their rate on each split, and a leave-one-out table: which detectors fire on each incident, and which of those were neither designed from it nor tuned while it was labelled, then every medium or high flag with its evidence on each holdout positive. Fails when a tuning negative gets a medium or high flag not listed in `accepted_fps`, when an accepted false positive stops firing, when a positive loses a `detected_by` detection, or, on a run of the whole holdout split, when any kind's medium-or-high count there differs from `holdout_ceilings`. `--write-ceilings` records the measured counts; `--json` prints the report as JSON; `--split`, `--only`, `--incident` and `--digest` run a subset. |
+| `detector-pass.mjs` | Scores the anomaly detectors on the labelled set in `cases/detectors.json`: exploit and attack transactions from `cases/incidents/` as positives, and ordinary mainnet transactions as negatives, each in two splits, `tuning` (seen by rule authors) and `holdout` (incidents labelled after every current rule was written, and negatives drawn at random afterwards, never shown to them). Runs `analyze_attack_tx`, `decode_ptb` by digest and `decode_ptb` on the transaction's own BCS (the pre-sign mode) on each, and prints per tool and anomaly code the true positives, the false positives and their rate on each split, and a leave-one-out table: which detectors fire on each incident, and which of those were neither designed from it nor tuned while it was labelled, then every medium or high flag with its evidence on each holdout positive. Fails when a tuning negative gets a medium or high flag not listed in `accepted_fps`, when an accepted false positive stops firing, when a positive loses a `detected_by` detection, or, on a run of the whole holdout split, when any kind's medium-or-high count there differs from `holdout_ceilings`. `--write-ceilings` records the measured counts; `--json` prints the report as JSON; `--split`, `--only`, `--incident` and `--digest` run a subset. Reads through `SUI_REPLAY_DIR` when it is set, as case-pass does. |
 
 `sample-negatives.mjs` is not a check: it draws fresh holdout negatives for
 `cases/detectors.json` from random checkpoints (or by function with
@@ -32,6 +32,59 @@ tool is called by none of these scripts and named by no check in
 `cases/incidents/`. `adversarial.mjs` does not count toward it: it proves input
 handling, not answers. A new tool needs a live check here or a case.
 
+## Tiers
+
+`npm run verify:live` runs every script. Two cheaper tiers pick a subset:
+
+```bash
+npm run verify:live -- --tier affected                  # what this branch changed, uncommitted work included
+npm run verify:live -- --tier affected --range main..HEAD
+npm run verify:live -- --tier smoke
+```
+
+- `affected` maps each changed file to the tools it can reach and runs only
+  their checks. `lib/tiers.mjs` reads which tools each `src/tools/*.ts` file
+  registers and follows the source imports from there, so a change to a
+  utility reaches every tool whose registration imports it, directly or not.
+  A file that `src/tools/index.ts` wraps every tool with reaches them all. It
+  runs `case-pass --affected` (the checks calling a reached tool, every check
+  of a changed case file, and the `critical` checks), each probe script that
+  changed or that calls a reached tool no case check names (by the rule
+  `test/live-coverage.test.ts` credits a probe with), and `detector-pass` when
+  a tool it scores was reached or `cases/detectors.json` changed. A change it
+  cannot place (a source file nothing imports, `package.json`, the lock file,
+  `tsconfig.json`, `case-pass.mjs`, anything in `lib/` or `verify-live.mjs`)
+  runs the full tier.
+- `smoke` runs `case-pass --smoke`, one check per tool (its first that is not
+  a known defect) plus the `critical` checks, and the fewest probe scripts
+  that call every tool no case check names.
+
+The `critical` checks are a handful across cases that exercise the engines
+most tools share, so a change whose reach the file map misses still meets
+them; `cases/README.md` lists them. The full tier stays the one to run at the
+three moments below.
+
+## Replaying fixed reads
+
+`SUI_REPLAY_DIR=<dir>` makes case-pass and detector-pass read through a
+recording of every chain read whose answer cannot change: a transaction by
+digest once it is in a checkpoint, an object at a version or as of a past
+checkpoint, a package at a version (GraphQL resolves a package asked for by
+address alone to its newest upgrade, so only `packageAt(version:)` under it
+replays), a checkpoint by number, and events or transactions over a
+checkpoint range closed at both ends whose upper end is at least 1,000
+checkpoints before the latest one the endpoint serves. The first run
+records them; later runs answer them from disk and fetch everything else
+live. A GraphQL query replays only when every field it selects is fixed under
+its root, so a latest balance asked for under a transaction's sender still
+goes out. A read that fails or finds nothing is never recorded. Entries are
+keyed by the endpoint and the exact request, so a changed query or SDK
+encoding records afresh. `verify:live` passes the variable to those two
+scripts only. The rules are in `src/clients/replay.ts`.
+
+Replay cannot see a change on Mysten's side, such as a renamed GraphQL field,
+so the full tier before a release runs without it.
+
 ## When to run them
 
 The unit tests are offline by design — they pin real mainnet signatures and
@@ -39,7 +92,7 @@ shapes as fixtures so they stay fast and deterministic. That is exactly why
 these exist: **a fixture cannot notice that the world moved underneath it.** It
 keeps passing against a stale copy.
 
-Three moments, and no others:
+The full tier, at three moments:
 
 - **After an `@mysten/sui` bump.** Signature parsing, protobuf field shapes and
   BCS key encoding all live in the SDK and all fail silently — a changed key

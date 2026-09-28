@@ -8,7 +8,9 @@
  * `Balance<T>` or a `Supply<T>` (a vault's or a pool's coin holdings, by the
  * value type's layout), other objects owned by an object (a pool kept as a
  * dynamic object field), objects the transaction created, and
- * `TreasuryCap<T>`s it changed (a mint). Everything else it changed (tick
+ * `TreasuryCap<T>`s it changed (a mint). Dynamic fields keyed by a coin's
+ * type (a price table's rows) are read too, after the transaction only, for
+ * the prices they state (`price-claims.ts`). Everything else it changed (tick
  * and order-book entries, per-user table rows, coins) holds no coin or is a
  * coin, and is not read.
  *
@@ -31,6 +33,8 @@ export const MAX_SHARED_READ = 24;
 /** Coin-holding dynamic fields, and created objects or treasury caps, read per transaction. */
 const MAX_HOLDINGS_READ = 48;
 const MAX_CREATED_READ = 12;
+/** Dynamic fields keyed by a coin's type (a price table's rows), read after the transaction for the prices they state. */
+const MAX_KEYED_READ = 32;
 /** Requests per `batchGetObjects` call. */
 const OBJECT_BATCH = 50;
 /** Nesting depth the layout reader follows into struct fields. */
@@ -41,6 +45,7 @@ const READ_MASK = { paths: ["object_id", "version", "object_type", "json", "stor
 const REBATE_MASK = { paths: ["object_id", "version", "storage_rebate"] };
 
 const DYNAMIC_FIELD = /^0x0*2::dynamic_field::Field</;
+const KEYED_BY_TYPE = /^0x0*2::dynamic_field::Field<0x0*1::type_name::TypeName,/;
 /** Distinct dynamic-field value types whose layout is read, per transaction. */
 const MAX_VALUE_TYPES = 32;
 /**
@@ -234,6 +239,8 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
     return r != null && keepsCoin(r.layout);
   });
   const holdingsRead = cut(holdings, MAX_HOLDINGS_READ, "holding");
+  const keyed = fields.filter((o) => KEYED_BY_TYPE.test(o.objectType!) && o.outputVersion && !holdings.includes(o));
+  const keyedRead = keyed.slice(0, MAX_KEYED_READ);
   // An object another object owns that is not a dynamic field: a pool or a
   // vault kept as a dynamic object field, or a position in a table.
   const children = unique.filter((o) => o.parent && !o.shared && o.objectType && !DYNAMIC_FIELD.test(o.objectType) && !COIN.test(o.objectType) && o.inputVersion && o.outputVersion);
@@ -255,7 +262,7 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
 
   const whole = [...sharedRead, ...childrenRead, ...treasuriesRead];
   const [after, before] = await Promise.all([
-    readVersions([...whole, ...holdingsRead, ...createdRead].filter((o) => o.outputVersion).map(outputReq)),
+    readVersions([...whole, ...holdingsRead, ...createdRead, ...keyedRead].filter((o) => o.outputVersion).map(outputReq)),
     readVersions([...whole, ...holdingsRead.filter((o) => o.inputVersion)].map(inputReq)),
   ]);
   // Every distinct type's layout at once; a type read before is cached.
@@ -286,5 +293,9 @@ export async function readObjectStates(tx: Pick<AttackTx, "objects">): Promise<S
   for (const o of holdingsRead) push(o, "holding");
   for (const o of createdRead) push(o, "created");
   for (const o of treasuriesRead) push(o, "supply");
-  return { objects, skipped, unavailable, layout_unread: [...layoutUnread] };
+  const keyedRows = keyedRead.flatMap((o) => {
+    const a = json(after, o, o.outputVersion);
+    return a === undefined || a === null ? [] : [{ objectId: o.objectId, objectType: o.objectType, after: a }];
+  });
+  return { objects, skipped, unavailable, layout_unread: [...layoutUnread], keyed: keyedRows };
 }

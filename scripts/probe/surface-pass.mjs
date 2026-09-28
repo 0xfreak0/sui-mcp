@@ -245,8 +245,10 @@ try {
   const rawPrincipal = stakes.reduce((s, n) => s + BigInt(n.contents.json.principal), 0n);
   const staking = await call("get_staking_summary", { address: STAKER });
   ck("get_staking_summary total = sum of raw StakedSui principal", staking.total_staked_mist === rawPrincipal.toString() && staking.position_count === stakes.length, `${staking.total_staked_mist} vs ${rawPrincipal} (${stakes.length})`);
-  const defi = await call("get_defi_positions", { address: STAKER });
-  ck("get_defi_positions lists every StakedSui", (defi.positions?.staked_sui ?? []).length === stakes.length && !defi.truncated_protocols, `${defi.positions?.staked_sui?.length}`);
+  const defi = await call("get_defi_positions", { address: STAKER, detail: "full" });
+  const defiStakes = (defi.positions ?? []).filter((p) => p.kind === "staked_sui");
+  const unreadStakes = (defi.unread ?? []).filter((u) => /StakedSui/.test(u.what));
+  ck("get_defi_positions values every StakedSui", defiStakes.length === stakes.length && unreadStakes.length === 0, `${defiStakes.length} vs ${stakes.length}`);
 
   // ======================================================================
   // Pools
@@ -334,9 +336,19 @@ try {
   const asksAsc = (book.asks ?? []).every((b, i, a) => i === 0 || a[i - 1].price <= b.price);
   ck("the book is ordered and not crossed", bidsDesc && asksAsc && book.summary?.best_bid < book.summary?.best_ask && book.summary.best_bid === book.bids[0].price, `${book.summary?.best_bid} < ${book.summary?.best_ask}`);
   const trades = await call("deepbook_trades", { pool_name: "SUI_USDC", limit: 3 });
-  const tr = trades.trades?.[0];
+  // The newest trade can be newer than GraphQL's indexed range, so compare the
+  // first trade the raw query can read.
+  let tr = null;
+  let events = null;
+  for (const t of trades.trades ?? []) {
+    const raw = await gql(`query($d:String!){ transaction(digest:$d){ effects{ events(first:50){ nodes{ contents{ json } } } } } }`, { d: t.digest });
+    if (raw?.transaction) {
+      tr = t;
+      events = raw.transaction.effects.events.nodes.map((n) => n.contents.json);
+      break;
+    }
+  }
   if (tr) {
-    const events = (await gql(`query($d:String!){ transaction(digest:$d){ effects{ events(first:50){ nodes{ contents{ json } } } } } }`, { d: tr.digest })).transaction.effects.events.nodes.map((n) => n.contents.json);
     const fills = events.flatMap((e) => (e.pool_id === book.pool_id ? (e.fills ?? [e]) : []));
     const match = fills.some((f) => Number(f.base_quantity) / 1e9 === tr.base_volume && Number(f.quote_quantity) / 1e6 === tr.quote_volume);
     ck("deepbook_trades' first trade is a raw fill in that pool", match, short(tr));

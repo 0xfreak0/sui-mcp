@@ -1,8 +1,9 @@
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { GrpcTransport } from "@protobuf-ts/grpc-transport";
 import { ChannelCredentials } from "@grpc/grpc-js";
-import { type SuiNetwork, GRPC_TRANSPORT, getNetwork, getNetworkConfig } from "../config.js";
+import { type SuiNetwork, GRPC_TRANSPORT, REPLAY_DIR, getNetwork, getNetworkConfig } from "../config.js";
 import { retryingFetch } from "./graphql.js";
+import { replayInterceptor } from "./replay.js";
 
 interface NetworkClients {
   /** Fullnode client. */
@@ -30,6 +31,7 @@ function buildClients(network: SuiNetwork): NetworkClients {
         transport: new GrpcTransport({
           host: cfg.archive,
           channelCredentials: ChannelCredentials.createSsl(),
+          ...(REPLAY_DIR ? { interceptors: [replayInterceptor(cfg.archive, REPLAY_DIR)] } : {}),
         }),
       })
     : fullnode;
@@ -41,9 +43,11 @@ function buildClients(network: SuiNetwork): NetworkClients {
  * Route the fullnode client's gRPC-web requests through {@link retryingFetch}:
  * at most `GRPC_TRANSPORT.concurrency` in flight, and a 429 or 5xx retried with
  * backoff. The SDK builds its `GrpcWebFetchTransport` itself and shares it
- * between every service, and protobuf-ts reads `fetch` from the transport's
- * `defaultOptions` on each call, so setting it there covers every `sui.*` call.
- * `test/grpc-client.test.ts` fails if the SDK stops exposing the transport.
+ * between every service, and protobuf-ts reads `fetch` and `interceptors` from
+ * the transport's `defaultOptions` on each call, so setting them there covers
+ * every `sui.*` call. With `SUI_REPLAY_DIR` set, fixed reads are replayed
+ * ahead of the queue. `test/grpc-client.test.ts` fails if the SDK stops
+ * exposing the transport.
  */
 function queueAndRetry(client: SuiGrpcClient, endpoint: string): void {
   const service: object = client.ledgerService;
@@ -52,7 +56,10 @@ function queueAndRetry(client: SuiGrpcClient, endpoint: string): void {
   if (!transport || typeof transport !== "object" || !("defaultOptions" in transport)) return;
   const options = transport.defaultOptions;
   if (!options || typeof options !== "object") return;
-  Object.assign(options, { fetch: retryingFetch(endpoint, { ...GRPC_TRANSPORT, service: "gRPC" }) });
+  Object.assign(options, {
+    fetch: retryingFetch(endpoint, { ...GRPC_TRANSPORT, service: "gRPC" }),
+    ...(REPLAY_DIR ? { interceptors: [replayInterceptor(endpoint, REPLAY_DIR)] } : {}),
+  });
 }
 
 /** Get the client pair for a network (defaults to the current call's network). */

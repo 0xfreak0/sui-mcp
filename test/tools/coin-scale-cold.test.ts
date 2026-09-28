@@ -32,6 +32,11 @@ vi.mock("../../src/utils/price-providers.js", async (importOriginal) => ({
   pythApiKey: () => null,
   fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),
 }));
+// The Aftermath price request get_wallet_overview makes goes nowhere in a test.
+vi.mock("../../src/tools/prices.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  fetchAftermathPrices: async () => null,
+}));
 vi.mock("../../src/utils/names.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   batchResolveNames: async () => new Map(),
@@ -63,6 +68,7 @@ const { registerTimelineTools } = await import("../../src/tools/timeline.js");
 const { registerCoinTools } = await import("../../src/tools/coins.js");
 const { registerFlowTools } = await import("../../src/tools/flows.js");
 const { registerFundingTools } = await import("../../src/tools/funding.js");
+const { registerWorkflowTools } = await import("../../src/tools/workflow.js");
 
 type Handler = (args: Record<string, unknown>) => Promise<{ content: { text: string }[]; isError?: boolean }>;
 const handlers = new Map<string, Handler>();
@@ -81,6 +87,7 @@ for (const register of [
   registerCoinTools,
   registerFlowTools,
   registerFundingTools,
+  registerWorkflowTools,
 ]) {
   register(server);
 }
@@ -247,6 +254,17 @@ describe("amount-formatting tools read a coin's decimals before formatting it", 
   it("get_balance", async () => {
     mockSui.getBalance.mockResolvedValue({ balance: { coinType: FAKE, balance: RAW, coinBalance: RAW, addressBalance: "0" } });
     expectRealScale(await runCold("get_balance", { owner: A, coin_type: FAKE }));
+  });
+
+  it("get_wallet_overview with prices", async () => {
+    route = (query) =>
+      query.includes("balances(")
+        ? {
+            address: { defaultNameRecord: null, balances: { nodes: [{ coinType: { repr: FAKE }, totalBalance: RAW, coinBalance: RAW, addressBalance: "0" }], pageInfo: { hasNextPage: false, endCursor: null } } },
+            transactions: { nodes: [] },
+          }
+        : gqlTx(payment);
+    expectRealScale(await runCold("get_wallet_overview", { address: A, include_prices: true }));
   });
 
   it("classify_deposit_address", async () => {

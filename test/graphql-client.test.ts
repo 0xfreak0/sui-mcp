@@ -134,6 +134,30 @@ describe("gqlQuery errors", () => {
     );
   });
 
+  it.each(["Failed to list transactions", "Failed to list events"])("retries the service's transient failure %s and returns the answer that follows", async (message) => {
+    const failed = () =>
+      new Response(JSON.stringify({ data: null, errors: [{ message }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const fetch = vi.fn().mockResolvedValueOnce(failed()).mockResolvedValueOnce(ok({ n: 1 }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(gqlQuery("query { transactions { nodes { digest } } }")).resolves.toEqual({ n: 1 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry any other GraphQL error", async () => {
+    const fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ data: null, errors: [{ message: "Failed to list transactions: bad cursor" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await expect(gqlQuery("query { a }")).rejects.toThrow(/bad cursor/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("reports an exhausted rate limit as one line naming the endpoint, not the HTML page", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => rateLimited()));
     const err = await gqlQuery("query { a }").catch((e: Error) => e);

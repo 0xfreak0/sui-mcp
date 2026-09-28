@@ -235,6 +235,7 @@
       "id": "first-funder",
       "question": "Who paid for the attacker's first gas?",
       "tool": "find_funding_source",
+      "critical": true,
       "args": { "address": "{attacker}" },
       "expect": [
         { "path": "chain[0].funded_by", "op": "iequals", "value": "{first_funder}" },

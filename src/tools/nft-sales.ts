@@ -3,6 +3,7 @@ import { numArg, boolArg } from "./args.js";
 import { getNetwork } from "../config.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { saveKioskOwners, storeStatus } from "../utils/store.js";
+import { capPayload, type ListCap } from "../utils/output-cap.js";
 import {
   canonicalType,
   ownershipFrom,
@@ -68,6 +69,9 @@ const CHECKPOINTS_PER_SECOND = 4.5;
 
 const CURRENT_CHECKPOINT = `{ checkpoint { sequenceNumber } }`;
 
+/** Characters the default view's sale records may take; the rest are counted under `omitted`. */
+const SALE_RECORDS_BUDGET = 20_000;
+
 async function currentCheckpoint(): Promise<number | null> {
   const d = await gqlQuery<{ checkpoint?: { sequenceNumber?: number | string } }>(
     CURRENT_CHECKPOINT,
@@ -105,13 +109,17 @@ export function registerNftSalesTools(server: McpServer) {
         .optional()
         .default(false)
         .describe(
-          "Return every individual sale as well as the totals. Off by default because a busy window is thousands of rows.",
+          "Return the individual sales as well as the totals, each with its checkpoint and time. Off by default because a busy window is thousands of rows. The default view lists the newest that fit and counts the rest under `omitted`; `detail: 'full'` lists every one.",
         ),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("With include_sales: 'summary' (default) lists the newest sales that fit; 'full' lists every sale."),
     },
-    async ({ hours, collection_type, max_pages, include_sales }) => {
+    async ({ hours, collection_type, max_pages, include_sales, detail }) => {
       const network = getNetwork();
       const out = (o: unknown) => ({
-        content: [{ type: "text" as const, text: JSON.stringify(o, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(o) }],
       });
 
       const tip = await currentCheckpoint();
@@ -123,7 +131,7 @@ export function registerNftSalesTools(server: McpServer) {
       }
       const from = Math.max(tip - Math.round(hours * 3600 * CHECKPOINTS_PER_SECOND), 0);
 
-      const sales: NftSale[] = [];
+      const sales: Array<NftSale & { checkpoint: number; timestamp: string | null }> = [];
       const ownership = new Map<string, KioskOwnership>();
       const unreadable: Record<string, number> = {};
       let requests = 0;
@@ -161,7 +169,10 @@ export function registerNftSalesTools(server: McpServer) {
           }
           requests++;
           const data = await gqlQuery<SalesPage>(SALES_QUERY, {
-            filter: { type: eventType, afterCheckpoint: from },
+            // Bounded above too: a sale landing while the pages are read is
+            // past `to_checkpoint`, and counting it would report more sales
+            // than the stated window holds.
+            filter: { type: eventType, afterCheckpoint: from, beforeCheckpoint: tip + 1 },
             first: 50,
             after: cursor ?? undefined,
           });
@@ -199,7 +210,7 @@ export function registerNftSalesTools(server: McpServer) {
               if (!oldest || node.timestamp < oldest) oldest = node.timestamp;
               if (!newest || node.timestamp > newest) newest = node.timestamp;
             }
-            sales.push(sale);
+            sales.push({ ...sale, checkpoint, timestamp: node.timestamp ?? null });
           }
 
           if (!data.events.pageInfo.hasNextPage) break;
@@ -220,7 +231,7 @@ export function registerNftSalesTools(server: McpServer) {
         : 0;
 
       const totals = totalSales(sales);
-      return out({
+      const payload = {
         network,
         // The REQUESTED window. What was covered is from_checkpoint to
         // to_checkpoint, and the sale timestamps below bound what was actually
@@ -249,7 +260,7 @@ export function registerNftSalesTools(server: McpServer) {
           : {}),
         ...(unread.length
           ? {
-              // Event types, not marketplaces: TradePort alone has six, so
+              // Event types, not marketplaces: TradePort alone has seven, so
               // naming these "marketplaces" would say TradePort went unread
               // when most of it was read.
               event_types_not_read: unread,
@@ -266,7 +277,24 @@ export function registerNftSalesTools(server: McpServer) {
         // Not `sales`: `...totals` already puts the sale count there, and
         // spreading the array over it would leave the count reported nowhere.
         ...(include_sales ? { sale_records: sales } : {}),
-      });
+      };
+      type SaleRow = (typeof sales)[number];
+      const { payload: shown } = capPayload(
+        "get_nft_sales",
+        { hours, collection_type, max_pages, include_sales },
+        payload,
+        {
+          sale_records: {
+            budget: SALE_RECORDS_BUDGET,
+            rank: (a: SaleRow, b: SaleRow) => b.checkpoint - a.checkpoint,
+            brief: (r: SaleRow) => ({ nft_id: r.nft_id, checkpoint: r.checkpoint, timestamp: r.timestamp, marketplace: r.marketplace }),
+          } satisfies ListCap<SaleRow>,
+        },
+        { full: detail === "full", next_call: { tool: "get_nft_sales", repeat_with: { detail: "full" } } },
+      );
+      // `truncated` already says whether the read covered the window; a capped
+      // list is a second reason, and the spread above would hide it.
+      return out(shown.omitted ? { ...shown, truncated: true } : shown);
     },
   );
 }

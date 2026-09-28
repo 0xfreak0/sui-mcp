@@ -99,6 +99,7 @@
       "id": "attacker-flow-graph-exit",
       "question": "Where did all of the attacker's value go, and how much reached each exit?",
       "tool": "trace_flow_graph",
+      "critical": true,
       "args": { "address": "{attacker}", "direction": "forward", "from": "2025-10-15T13:00:00Z", "to": "2025-10-16T00:00:00Z" },
       "expect": [
         { "path": "terminals[*].reason", "op": "includes", "value": "bridge_exit" },
@@ -662,6 +663,7 @@
       "id": "fix-diff-names-rewritten-functions",
       "question": "Which existing functions did the fix upgrade rewrite?",
       "tool": "diff_package_upgrade",
+      "critical": true,
       "args": {
         "package": "0x855eb2d260ee42b898266e6df90bfd3c4ed821ccb253a352c159c223244a4b8a",
         "from_version": 9,

@@ -658,6 +658,11 @@ export interface TerminalEntry {
  * received and still holds the rest appears under `unspent` with the half it
  * holds. What is not accounted for here is in `unaccounted`, the part the
  * graph lost to rounding or to reads that returned less than expected.
+ *
+ * A node has one entry per reason. A node reached by several paths, or
+ * expanded once per arrival, ends each arrival separately; those ends are
+ * one holder's, so their shares add and their distinct details are kept in
+ * the order they were found.
  */
 export class TerminalLedger {
   private readonly groups = new Map<StopCode, TerminalEntry[]>();
@@ -665,10 +670,11 @@ export class TerminalLedger {
   add(code: StopCode, entry: TerminalEntry): void {
     if (entry.share <= 0 && code !== "target") return;
     const list = this.groups.get(code) ?? [];
-    const same = list.find((e) => e.node === entry.node && e.detail === entry.detail);
+    const same = list.find((e) => e.node === entry.node);
     if (same) {
       same.share += entry.share;
       same.usd = same.usd === null && entry.usd === null ? null : (same.usd ?? 0) + (entry.usd ?? 0);
+      if (entry.detail && !same.detail?.includes(entry.detail)) same.detail = same.detail ? `${same.detail} ${entry.detail}` : entry.detail;
     } else {
       list.push({ ...entry });
     }

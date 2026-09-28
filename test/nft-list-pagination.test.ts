@@ -22,7 +22,7 @@ registerNftTools({
 handler = handlers.list_nfts;
 
 const run = async (args: { address: string; limit?: number; cursor?: string }) =>
-  JSON.parse((await handler(args)).content[0].text);
+  JSON.parse((await handler({ value: false, ...args } as typeof args)).content[0].text);
 
 const OWNER = "0xaa1111111111111111111111111111111111111111111111111111111111aa";
 
@@ -65,7 +65,7 @@ function mockWallet(kiosks: Record<string, number>, directCount: number) {
         },
       };
     }
-    if (query.includes("personal_kiosk::PersonalKioskCap")) {
+    if (query.includes("personal_kiosk::PersonalKioskCap") || query.includes("ob_kiosk::OwnerToken")) {
       return { address: { objects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } };
     }
     if (query.includes("dynamicFields")) {

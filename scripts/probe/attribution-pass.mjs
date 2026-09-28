@@ -402,7 +402,15 @@ try {
 
   // ---- get_nft_sales ------------------------------------------------------
   console.log("\nget_nft_sales over 24 hours");
-  const sales = await call("get_nft_sales", { hours: 24, include_sales: true });
+  const sales = await call("get_nft_sales", { hours: 24, include_sales: true, detail: "full" });
+  const salesDefault = await call("get_nft_sales", { hours: 24, include_sales: true });
+  const shownRecords = salesDefault.sale_records ?? [];
+  ck(
+    "the default view lists the newest sales and states the rest",
+    shownRecords.every((r, i) => i === 0 || r.checkpoint <= shownRecords[i - 1].checkpoint) &&
+      shownRecords.length + (salesDefault.omitted?.lists?.sale_records?.count ?? 0) === salesDefault.sales,
+    `${shownRecords.length} shown of ${salesDefault.sales}`,
+  );
   const records = sales.sale_records ?? [];
   const types = [...new Set(records.map((r) => r.event_type))];
   let raw = 0;

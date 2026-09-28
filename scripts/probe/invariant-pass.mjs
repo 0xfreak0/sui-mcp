@@ -707,7 +707,16 @@ async function checkHistory(address) {
     const rawAfter = order === "newest" ? await rawAddressPage(address, { order, limit }) : rawBefore;
     const hd = (h?.transactions ?? []).map((t) => t.digest);
     const qd = (q?.transactions ?? []).map((t) => t.digest);
-    const same = (xs, r) => xs.join() === r.rows.map((x) => x.digest).join();
+    // A newest-first page on a busy address moves between the reads. The tool's
+    // page must then be a contiguous window of the combined newest-first
+    // sequence: the later raw page, followed by the older rows it pushed out.
+    const merged = [...rawAfter.rows.map((x) => x.digest), ...rawBefore.rows.map((x) => x.digest).filter((d) => !rawAfter.rows.some((x) => x.digest === d))];
+    const window = (xs) => {
+      if (order !== "newest" || xs.length === 0) return false;
+      const i = merged.indexOf(xs[0]);
+      return i >= 0 && xs.every((d, k) => merged[i + k] === d);
+    };
+    const same = (xs, r) => xs.join() === r.rows.map((x) => x.digest).join() || window(xs);
     if (h) check(I.historyList, same(hd, rawBefore) || same(hd, rawAfter), { seed: SEED, tool: "get_transaction_history", args: hArgs, got: hd, raw: rawAfter.rows.map((x) => x.digest) });
     if (q) check(I.historyList, same(qd, rawBefore) || same(qd, rawAfter), { seed: SEED, tool: "query_transactions", args: qArgs, got: qd, raw: rawAfter.rows.map((x) => x.digest) });
     if (summary && h) {
@@ -928,7 +937,9 @@ async function checkObject(id, why) {
   if (!r || !o) return;
   const rawType = o.asMovePackage ? "package" : normType(o.asMoveObject?.contents?.type?.repr);
   const toolType = r.object_type === "package" ? "package" : normType(r.object_type);
-  const versionOk = [v1, v2].includes(String(r.version));
+  // A hot shared object advances between the reads; the tool's version must lie
+  // between the raw reads taken on each side of the call.
+  const versionOk = v1 != null && v2 != null && r.version != null && BigInt(v1) <= BigInt(r.version) && BigInt(r.version) <= BigInt(v2);
   check(I.object, toolType === rawType && versionOk, { seed: SEED, tool: "get_object", args, why, got: { type: r.object_type, version: r.version }, raw: { type: rawType, grpc_version: [v1, v2] } });
 }
 

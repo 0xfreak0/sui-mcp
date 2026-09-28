@@ -59,6 +59,7 @@
       "id": "first-exploit-profit",
       "question": "What did the first exploit transaction take, from which pool, and how?",
       "tool": "analyze_attack_tx",
+      "critical": true,
       "args": { "digest": "{exploit_tx}" },
       "expect": [
         { "path": "profit.address", "op": "iequals", "value": "{attacker}" },
@@ -75,6 +76,7 @@
       "id": "incident-losses",
       "question": "How many exploit transactions were there, and what did they take in total?",
       "tool": "summarize_incident_losses",
+      "critical": true,
       "args": { "sender": "{attacker}", "start": "2025-05-22T10:30:00Z", "end": "2025-05-22T10:46:00Z", "max_groups": 15 },
       "expect": [
         { "path": "transactions_read", "op": "equals", "value": 287 },

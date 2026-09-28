@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased
+
+What a wallet holds beyond plain coins now has a value. Staked SUI,
+liquid-staking coins, CLMM and AMM liquidity, lending positions and
+receipts carry a USD figure with its method and evidence tier, and NFTs carry
+an estimate. The wallet, flow, loss and attack tools count those values, so a
+drain of staked SUI or liquidity positions reads as the collector's gain, not
+the victim's. Each reader was checked against the protocol's own figures:
+reward amounts, issuer rates, position views and on-chain removals matched
+exactly.
+
+### Added
+- **Position values.** `get_defi_positions` values every position it finds:
+  staked SUI (principal plus the rewards a withdrawal would pay), every
+  liquid-staking coin at its issuer's rate, CLMM positions on Cetus, Bluefin,
+  Momentum, FlowX, Magma and Turbos, AMM LP shares on Aftermath, FlowX v2 and
+  Kriya v2, and lending and margin positions on Suilend, NAVI, Scallop,
+  AlphaLend, Bucket and Bluefin Pro, with supply and borrow legs and the
+  health figures the protocol stores. An object no specific reader knows is
+  valued at the coin balances it holds.
+- **Wallet totals that state their coverage.** `get_wallet_overview` with
+  `include_prices` pages every coin balance, ranks holdings by value, adds
+  `positions_value_usd` to `total_value_usd`, reports NFTs apart as
+  `nft_estimate_usd`, and lists in `coverage` what was read, what could not
+  be, and which owned object types no reader recognises. `leads` names shared
+  vaults the address operates and positions near their borrow limit.
+- **NFT estimates.** `list_nfts` and `list_nft_collections` estimate a value
+  per item and collection from the lower of the lowest current listing and
+  the last sale in 30 days, after a wash-trade guard, tier heuristic and
+  labelled as an estimate. `get_nft_sales` reads TradePort bid matches, and
+  OriginByte kiosks are found.
+- **Moved objects in investigations.** `analyze_attack_tx`,
+  `summarize_incident_losses`, `summarize_address_flows` and `trace_funds`
+  value the positions a transaction moved at that transaction's checkpoint.
+  `trace_funds` follows a valued object to its recipient's next use of it.
+- **Detectors.** `analyze_attack_tx` flags `price-off-market` (a price a
+  transaction states far from the provider price), `signing-key-replaced` (a
+  public key changed in a shared object), `share-round-trip` (shares or a
+  position redeemed within a day for more than they cost) and
+  `switched-before-execution` (a shared object another address rewrote
+  seconds before the transaction read it, changing where value goes). Each
+  was scored on 251 ordinary transactions with no false positives at medium
+  or above.
+- **Cheaper live verification.** `npm run verify:live -- --tier affected`
+  runs only the checks a change can reach, `--tier smoke` one per tool plus
+  critical checks, and `case-pass --jobs <n>` runs cases in parallel. With
+  `SUI_REPLAY_DIR` set, case-pass and detector-pass record chain reads that
+  cannot change and replay them. The full pass stays the default.
+- A new case, `claim-swaps-staked-drainer-2024-11`: a drainer that switched
+  its routing object seconds before each victim-signed transaction.
+
+### Changed
+- A lending leg is valued at the protocol's oracle only when a price provider
+  confirms it within 2%; otherwise it takes the provider price, tier
+  price-provider, and both prices are shown. A reserve that reuses another
+  asset's feed is not valued at that feed.
+- `classify_deposit_address` counts sweeps that keep gas dust or are paid by
+  a relayer, and runs every check.
+- `list_owned_objects`, `manage_labels`, `get_nft_sales` and
+  `get_defi_positions` keep within their size with `omitted` and `next_call`.
+
+### Fixed
+- `summarize_incident_losses` and `trace_funds` time out less on large
+  incidents: object reads are batched and the hub check is skipped while
+  following objects.
+- The GraphQL service's transient "Failed to list events" is retried like
+  "Failed to list transactions".
+
 ## 1.22.1 (2026-09-27)
 
 ### Fixed

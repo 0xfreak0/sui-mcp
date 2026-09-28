@@ -252,12 +252,17 @@ describe("validateCase", () => {
     ["unknown kind", ["kind"], "hack", 'kind: "hack" is not one of'],
     ["duplicate id", ["checks", 1], good().checks[0], "checks[1] (first).id: duplicate id"],
     ["blank known_defect", ["checks", 0, "known_defect"], " ", "checks[0] (first).known_defect"],
+    ["critical other than true", ["checks", 0, "critical"], "yes", "checks[0] (first).critical"],
+    ["critical known defect", ["checks", 0], { ...good().checks[0], critical: true, known_defect: "wrong total" }, "checks[0] (first).critical"],
   ] as const)("reports %s", (_what, path, value, message) => {
     const errors = errorsWith([...path], value);
     expect(errors.some((e) => e.startsWith(message)), errors.join("\n")).toBe(true);
   });
   it("accepts a basis that names the chain", () => {
     expect(errorsWith(["checks", 0, "basis"], "Read on chain.")).toEqual([]);
+  });
+  it("accepts a critical check", () => {
+    expect(errorsWith(["checks", 0, "critical"], true)).toEqual([]);
   });
   it("skips argument checks for a tool without a schema", () => {
     expect(errorsWith(["checks", 0], { ...good().checks[0], tool: "get_balance", args: { anything: 1 } })).toEqual([]);

@@ -109,6 +109,11 @@ export const OVERRIDES: Record<string, Override> = {
   trace_funds: { structured: true },
   build_wallet_edges: { structured: true },
   summarize_address_flows: { meta: FULL_SIZE },
+  // Capped by default; `detail: "full"` lists every sale of a busy window.
+  get_nft_sales: { meta: FULL_SIZE },
+  // Capped by default; `detail: "full"` lists every position, 141 stakes
+  // alone run past the 100k default.
+  get_defi_positions: { meta: FULL_SIZE },
   trace_flow_graph: { meta: FULL_SIZE, structured: true },
   find_flow_path: { structured: true },
   get_upgrade_history: { structured: true },

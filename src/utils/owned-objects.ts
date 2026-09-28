@@ -12,7 +12,8 @@ export interface OwnedObjectJson {
 }
 
 /**
- * Every object of one type an address owns, with its JSON, up to `max`.
+ * Every object of one type an address owns, with its JSON, up to `max`;
+ * every object it owns of any type when `type` is null.
  *
  * A single page is a sample: a wallet holding 139 StakedSui objects reported
  * the principal of the first 50 as its total stake. `complete` is false only
@@ -21,7 +22,7 @@ export interface OwnedObjectJson {
  */
 export async function listOwnedWithJson(
   owner: string,
-  type: string,
+  type: string | null,
   max: number,
 ): Promise<{ objects: OwnedObjectJson[]; complete: boolean }> {
   const objects: OwnedObjectJson[] = [];
@@ -29,7 +30,7 @@ export async function listOwnedWithJson(
   for (;;) {
     const page: SuiClientTypes.ListOwnedObjectsResponse<{ json: true }> = await sui.listOwnedObjects({
       owner,
-      type,
+      ...(type === null ? {} : { type }),
       limit: Math.min(PAGE_SIZE, max - objects.length),
       cursor,
       include: { json: true },
@@ -43,4 +44,44 @@ export async function listOwnedWithJson(
     if (!page.cursor || objects.length >= max) return { objects, complete: false };
     cursor = page.cursor;
   }
+}
+
+/**
+ * How many objects of one type an address owns, counted over every page up
+ * to `max`. `complete` is false when `max` stopped the count with objects
+ * left, so the count is a floor.
+ */
+export async function countOwned(owner: string, type: string, max: number): Promise<{ count: number; complete: boolean }> {
+  let count = 0;
+  let cursor: string | null = null;
+  for (;;) {
+    const page: SuiClientTypes.ListOwnedObjectsResponse = await sui.listOwnedObjects({ owner, type, limit: Math.min(PAGE_SIZE, max - count), cursor });
+    count += page.objects.length;
+    if (!page.hasNextPage) return { count, complete: true };
+    if (!page.cursor || count >= max) return { count, complete: false };
+    cursor = page.cursor;
+  }
+}
+
+/** Owned objects one call reads, coins included: five pages of the largest size. */
+export const OWNED_WALK_MAX = 5 * PAGE_SIZE;
+
+/**
+ * Every object an address owns, with its JSON, up to {@link OWNED_WALK_MAX},
+ * read once per call: with `memo` (a call's valuation memo) the readers and
+ * the coverage count that follows them share one walk.
+ */
+export function ownedObjectsWalk(
+  owner: string,
+  memo?: Map<string, Promise<unknown>>,
+): Promise<{ objects: OwnedObjectJson[]; complete: boolean }> {
+  if (!memo) return listOwnedWithJson(owner, null, OWNED_WALK_MAX);
+  const key = `owned-walk:${owner}`;
+  let hit = memo.get(key) as Promise<{ objects: OwnedObjectJson[]; complete: boolean }> | undefined;
+  if (!hit) {
+    hit = listOwnedWithJson(owner, null, OWNED_WALK_MAX);
+    memo.set(key, hit);
+    hit.catch(() => memo.delete(key));
+  }
+  return hit;
 }

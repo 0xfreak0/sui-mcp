@@ -180,6 +180,13 @@ export function rateLimitFor(host: string): number | null {
 
 export const DECOMPILER_PATH = process.env.SUI_DECOMPILER_PATH ?? "move-decompiler";
 
+/**
+ * Directory of recorded immutable chain reads (`SUI_REPLAY_DIR`), or null.
+ * Set by the live test harness; see `clients/replay.ts`. Unset, every read
+ * goes to the network.
+ */
+export const REPLAY_DIR: string | null = process.env.SUI_REPLAY_DIR?.trim() || null;
+
 export function suivisionPackageUrl(packageId: string): string {
   return `https://suivision.xyz/package/${packageId}?tab=Code`;
 }

@@ -7,7 +7,7 @@ import { GrpcTypes } from "@mysten/sui/grpc";
 import { selectModules, summarizeModule } from "../utils/package-summary.js";
 import { formatSdkSignatureBody } from "../utils/ptb-resolve.js";
 import type { SuiClientTypes } from "@mysten/sui/client";
-import { SYSTEM_PACKAGE } from "../utils/disassembly.js";
+import { SYSTEM_PACKAGE } from "../utils/system-packages.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function formatVisibility(v?: GrpcTypes.FunctionDescriptor_Visibility): string {

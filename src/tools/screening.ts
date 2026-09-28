@@ -29,7 +29,7 @@ const SCREEN_CAVEATS = [
 export function registerScreeningTools(server: McpServer) {
   server.tool(
     "classify_deposit_address",
-    "(Incident investigation) Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. Verdict likely|no|unknown, tier heuristic, from three checks: every outflow is a full-balance sweep to one destination; the sweeps' gas is paid by a relayer-shaped sponsor; the destination is a labelled exchange wallet (with its source_url) or hub-shaped. Returns the hot wallet, exchange label and provenance, sweep sponsor, sweep digests and a deposits sample. About 1 request plus up to ~12 to measure the sponsor and an unlabelled destination.",
+    "(Incident investigation) Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. Verdict likely|no|unknown, tier heuristic, from three checks: every outflow is a full-balance sweep to one destination (a sweep that pays its own gas may leave up to 1 SUI behind as its gas reserve; other coins and sponsored sweeps must reach zero); the sweeps' gas is paid by a relayer-shaped sponsor; the destination is a labelled exchange wallet (with its source_url) or hub-shaped. Every check runs whatever another found, and checks_not_run says why any check is null. Returns the hot wallet, exchange label and provenance, sweep sponsor, sweep digests and a deposits sample. About 1 request plus up to ~12 to measure the sponsor and an unlabelled destination.",
     {
       address: addressArg().describe("Candidate deposit address (0x...)."),
       max_transactions: numArg()
@@ -48,8 +48,8 @@ export function registerScreeningTools(server: McpServer) {
             result.verdict === "likely"
               ? `This behaves like a customer deposit address${result.exchange?.entity ? ` at ${result.exchange.entity}` : ""}: incoming funds are swept whole into ${result.hot_wallet}. The exchange can name the account holder for this address.`
               : result.verdict === "no"
-                ? "This address does not behave like an exchange deposit address; see reasons."
-                : "Not enough evidence either way; see reasons for which check is open.",
+                ? "The outflows in this window do not fit an exchange deposit address; see reasons."
+                : "Not enough evidence either way; see reasons and checks_not_run for which check is open.",
         });
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));

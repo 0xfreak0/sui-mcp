@@ -81,6 +81,13 @@ is a `host:port` target for `GrpcTransport`, not an `https://` URL like the othe
 endpoints. That inconsistency is load-bearing: a gRPC-Web client aimed at
 `https://archive.mainnet.sui.io` gets a 404. Don't "fix" it.
 
+The public GraphQL service sometimes answers a list query with the GraphQL
+error "Failed to list transactions" or "Failed to list events" on an HTTP
+200; the same query succeeds on retry. `gqlQuery` retries those exact
+messages twice with backoff
+(`TRANSIENT_GRAPHQL_ERRORS`); every other GraphQL error is an answer about
+the query and is not retried.
+
 Do not hand-roll the fallback. Use `withArchiveFallback(call, isEmpty)` from
 `src/utils/archive-fallback.ts`.
 
@@ -787,6 +794,27 @@ An exhausted 429 reports the endpoint and suggests
 `SUI_GRAPHQL_URL`; a GraphQL error reports its first message. Callers never see
 `ClientError`.
 
+`SUI_REPLAY_DIR` is for the live harness. Set, `clients/replay.ts` wraps the
+GraphQL `fetch` and adds a protobuf-ts interceptor to both gRPC transports:
+a read whose answer cannot change is answered from a recording keyed by the
+endpoint and the exact request bytes, and recorded on its first live answer;
+every other read goes out as before. GraphQL queries are parsed and every
+selected field checked against the fields that are fixed under a fixed root,
+with scopes for a called function's names (a framework package is upgraded in
+place, so its code under a transaction is latest state), an address or epoch
+reached from fixed data (its id only), and a package named only by address.
+GraphQL resolves `package(address:)` to the newest upgrade in that package's
+lineage, so without `version` the root is fixed only when it selects nothing
+but `packageAt(version:)`; gRPC `GetPackage`, `GetDatatype` and
+`GetFunction` read the package stored at the id, which is fixed except at a
+reserved address (`SYSTEM_PACKAGE` in `utils/system-packages.ts`). An events
+or transactions range replays only when closed at both ends, since the
+endpoint prunes some filters from the old end (the `type` events filter), and
+once its upper end is `SETTLED_CHECKPOINTS` behind the endpoint's latest
+checkpoint. `address(...)` never replays: its balance as of a checkpoint is
+served only inside a recent window. Unset, the clients are built exactly as
+before.
+
 A read that fails must not render as empty or zero. When the core read of a
 tool fails, return `isError`. When a secondary read fails, set its value to
 `null` and add a `*_unavailable` string saying what is unknown, as
@@ -931,17 +959,35 @@ summary of `verify:live` reports case-pass output size against
 tools/list cost, each case's total, every call over its tool's budget (known
 defects marked), and the five calls nearest theirs.
 
+`verify:live --tier affected|smoke` runs less than the full pass
+(`scripts/probe/README.md`, "Tiers"). `scripts/probe/lib/tiers.mjs` maps
+changed files to tools by reading each `src/tools/*.ts` file's `.tool("name"`
+registrations and following imports, `require` and
+`new URL(…, import.meta.url)` from there; what `src/tools/index.ts` imports
+for anything but `register…Tools` wraps every tool. The six case checks
+marked `critical: true` run in every tier. `case-pass --jobs <n>` runs n
+cases through one server, so one `RateWindow` per host paces them all; a
+check that fails there runs again alone on a fresh server before it counts,
+since a tool with a wall-clock budget (`SCAN_TIME_BUDGET_MS` in
+`get_top_holders`) reads less while it waits on a shared window.
+
 `detector-pass.mjs` scores the anomaly detectors of `analyze_attack_tx` and
 `decode_ptb` (by digest, and on the transaction's own BCS as the pre-sign
-mode, `decode_ptb_bytes`) on `cases/detectors.json`: 61 exploit and attack
-transactions from fourteen incidents, and ordinary transactions, each labelled
-`tuning` or `holdout`. The 30 `tuning` positives are 16 from the seven
-incidents the rules were first written or tuned on, and 14 from Aftermath
+mode, `decode_ptb_bytes`) on `cases/detectors.json`: 64 exploit and attack
+transactions from fifteen incidents, and ordinary transactions, each labelled
+`tuning` or `holdout`. All 64 positives are `tuning`: 16 from the seven
+incidents the rules were first written or tuned on; 14 from Aftermath
 Perpetuals and BlueMove, labelled as `holdout` and moved to `tuning` in the
 commit that changed `shared-state-jump`, `outsized-mint` and
-`caller-value-used` from their flags. The 31 `holdout` positives come from
-Haedal, Full Sail, AlphaLend and two wallet drainers, labelled after every
-current rule was written; a `holdout` positive's incident may appear in no
+`caller-value-used` from their flags; 31 from Haedal, Full Sail,
+AlphaLend and two wallet drainers, labelled after every rule then written,
+read once as `holdout` (the table below), and moved to `tuning` in the
+commit that added `signing-key-replaced`, `price-off-market` and
+`share-round-trip` from their misses, since every revision of those rules
+was run against every positive; and 3 drains of the claim::swapS drainer
+kit, labelled straight into `tuning` because `switched-before-execution`
+was designed from them. No positive is held out until new
+incidents are labelled; a `holdout` positive's incident may appear in no
 `detector_origins` entry. A drain the victim signed records
 `sender_withheld` instead of the signer, and so does a negative whose signer
 is a known victim.
@@ -971,8 +1017,11 @@ Rules for judging a detector change:
   `tuned_with` every incident labelled while its grades and exclusions were
   set. Every rule changed since the labelled set existed was run against
   every positive in view, so its `tuned_with` holds every incident labelled
-  then, and the only held-out detection is `stale-package-version` on
-  BlueMove (below). Held-out detection needs incidents labelled after the
+  then. The held-out detections are those of rules left unchanged since
+  before an incident was labelled: `stale-package-version` on BlueMove and
+  Haedal, `shared-state-jump` on Haedal and AlphaLend, and
+  `blocklisted-package-call` and `transfers-to-non-sender` on the two
+  drainers. Held-out detection needs incidents labelled after the
   rule was last tuned: the holdout positives. A rule changed while its
   author looks at a holdout incident's flags moves that incident's positives
   to `tuning` in the same commit and lists it in `incidents` or `tuned_with`.
@@ -981,18 +1030,27 @@ Rules for judging a detector change:
   equal the counts measured when they were recorded; a fall must be written
   down (`--write-ceilings`) and a rise needs a reason in the commit.
 
-Measured on ea6b098, after this round's changes to `shared-state-jump`,
+Measured on ea6b098, after that round's changes to `shared-state-jump`,
 `outsized-mint` and `caller-value-used`, and the recorded
 `holdout_ceilings` (medium or high; info flags excluded). Tuning was
 iterated on; holdout was run once, after. Against the mech/integ 1ccdb7f
 baseline, no tuning or holdout negative changed except three holdout
-Aftermath limit orders that now read `caller-value-used` medium.
+Aftermath limit orders that now read `caller-value-used` medium. The three
+rows for `price-off-market`, `signing-key-replaced` and `share-round-trip`
+were measured on 6ef4aab, which added them; the other rows did not change
+there, and every holdout ceiling held. `switched-before-execution` was measured
+the same way on v123/integ after it was added: it fires on no tuning or
+holdout negative at any severity, and the other rows did not change.
 
 | Kind | Detects | Tuning (113) | Holdout (138), lead / noise |
 |---|---|---|---|
 | `analyze_attack_tx` `shared-state-jump` | Typus, Nemo, Cetus, Scallop, Volo, Aftermath, BlueMove | 0 | 3 (2.2%), 1 / 2 |
 | `analyze_attack_tx` `caller-value-used` | Typus, Nemo, Aftermath | 4 (3.5%), accepted | 3 (2.2%), 0 / 3 |
 | `analyze_attack_tx` `outsized-mint` | Cetus, BlueMove | 0 | 0 |
+| `analyze_attack_tx` `price-off-market` | AlphaLend, Full Sail | 1 (0.9%), accepted | 0 |
+| `analyze_attack_tx` `share-round-trip` | Haedal, Full Sail | 0 | 0 |
+| `analyze_attack_tx` `signing-key-replaced` | Full Sail | 0 | 0 |
+| `analyze_attack_tx` `switched-before-execution` | claim::swapS drainer | 0 | 0 |
 | `stale-package-version`, by digest (both tools) | BlueMove | 0 | 1 (0.7%), 1 / 0 |
 | `blocklisted-package-call`, all three | Suisses | 0 | 0 |
 | `transfers-to-non-sender`, all three | Suisses, Volo | 5 (4.4%) | 6 (4.3%), 5 / 1 |
@@ -1001,7 +1059,7 @@ Aftermath limit orders that now read `caller-value-used` medium.
 | `unverified-package-call`, pre-sign | Suisses | 35 (31.0%) | 24 (17.4%); 8 / 17, 1 unclear when it was 26 |
 | `publishes-or-upgrades`, all three | none | 2 (1.8%) | 2 (1.4%), 2 / 0 |
 
-Negatives with any medium or high flag, per mode: `analyze_attack_tx` 15 of
+Negatives with any medium or high flag, per mode: `analyze_attack_tx` 16 of
 113 and 24 of 138; `decode_ptb` by digest 11 and 19; pre-sign 39 and 31.
 A holdout flag is a lead when it describes what a funds or code trace
 follows (a payment to another address, a bridge send, value going one way
@@ -1068,6 +1126,20 @@ Also firing, not counted as pointing at the attack: `unverified-package-call`
 (medium) on the Haedal deposits and both drainers, and
 `transfers-to-non-sender` (medium) on the Haedal deposits, where the
 payouts are 1 MIST each to 8 addresses.
+
+The misses in that table were then closed from the three incidents' flags
+and chain data, so the figures below are in-sample, and those incidents'
+positives, with the drainers', moved to `tuning` in the same commit:
+
+| Incident | Detected now | By | Names the flaw? |
+|---|---|---|---|
+| Haedal | 8 of 8 | the v1 deposits as before; each v3 redeem by `share-round-trip` (high), the LP bought through v1 for 1/5 to 1/1,763 of what it redeems for | Yes: the shares issued against the understated AUM, and the vault |
+| Full Sail | 7 of 12 | the key swap by `signing-key-replaced` (medium, the live oracle's `secp256k1_key`); each deposit by `price-off-market` (high, SUI, ETH or IKA stated at 1/100 of market, then restored); each withdrawal by `share-round-trip` (medium or high, 1.16x to 2.2x the paired deposit) | Yes for the key and the price. The three guardian inits and two earlier attestations stay missed: they add an object to a queue and a pending attestation, which nothing reads as a change of authority |
+| AlphaLend | 7 of 7 | `price-off-market` (high): the 0x3a51 COIN slot at 12.3x its market price and ALPHA's own row at 10.6x, in a field that agrees with DefiLlama for 15 other coins | Yes: ALPHA valued at the AVAX feed |
+
+None of the three new rules fires on a holdout negative. The one
+tuning flag, an AlphaLend oracle refresh on 27 September, reads the same
+AVAX-priced COIN slot and is accepted as true.
 
 Not in CI. It needs the network and mainnet's current state, so it would be
 flaky on a schedule nobody chose, and a flaky required check teaches people to
@@ -1314,7 +1386,7 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
   page that threw after taking from the budget: a 429 on the hub's probe read
   as narrow with 0 recipients, and the walk named the hub's own funder as the
   origin. `probePopularity` reads `Popularity.unmeasured` directly.
-- **A hub origin is not re-measured with `measureFanout`.** Its 300-transaction
+- **A hub origin is not re-measured with `measureFanout`.** Its recent
   bidirectional window can classify a 60-recipient distributor as `narrow`,
   which restores the reading the stop exists to prevent. For shared funders the
   probe's verdict sets both the classification and the interpretation, and
@@ -1337,7 +1409,15 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
 
 `measureFanout` follows the same asymmetry: `hub` is proven by what was seen,
 while `narrow` or `distributor` off a truncated scan carries
-`classification_provisional` and loses the "meaningful" reading.
+`classification_provisional` and loses the "meaningful" reading. `truncated`
+means the scan stopped at its budget with transactions left unread, and every
+reading states the budget as `max_transactions` beside
+`scanned_transactions`. `find_funding_source` measures its origin at
+`get_address_fanout`'s default budget (`FANOUT_DEFAULT_TRANSACTIONS`), so the
+two agree on one address; at 300 transactions an origin with a 311-transaction
+history read truncated in the walk and complete in the direct call.
+`find_funding_sources` measures up to ten shared funders at 300 each, and
+its `max_transactions` says so.
 
 ### What may be cached in a trace
 
@@ -1486,11 +1566,10 @@ amounts warm the types first, before the synchronous decode: `get_transaction`,
 `FlowEngine.read`, per transaction), `analyze_attack_tx` and
 `summarize_incident_losses` (beside the price request), `aggregate_events`
 with `group_pnl`, `export_case`'s diagram, `classify_deposit_address` (and
-the deposit check in `get_address_fanout`), and the address balances
-`get_object` and `identify_address` list. `get_wallet_overview` reads each
-held coin's CoinMetadata itself and falls back to `coinScale` only where that
-read found none. Without the warm-up, an unlisted coin reads at an assumed
-scale in a cold process and at its real scale once another call has cached
+the deposit check in `get_address_fanout`), `get_wallet_overview` with
+prices (over every balance page), and the address balances `get_object` and
+`identify_address` list. Without the warm-up, an unlisted coin reads at an
+assumed scale in a cold process and at its real scale once another call has cached
 it: XAUm read "(unverified, assumed scale)" on every `trace_funds` hop and
 every `trace_flow_graph` label, and a 0.5 FISH first inflow changed which
 funder `build_wallet_edges` picked. Any new caller that formats or values an
@@ -2389,6 +2468,86 @@ Both walks were also missed by the null-cursor sweep in #101 — a null
 `endCursor` with `hasNextPage: true` restarted them from page one and added the
 same balances twice. Ten other walks carried the guard; these did not.
 
+### An NFT's value is an estimate from its collection's market
+
+`src/utils/valuers/nft.ts` is the `nft` position reader. It is a fallback: a
+type another reader handles is valued by that reader, and `value` skips it, so
+a wallet total never counts one object twice. An object whose JSON names a
+pool or vault and holds a share balance (`receiptOf`: an AlphaFi
+`alphapool::Receipt`) is a claim on that pool, not a collectible; with no
+reader for its pool it is listed as unread, never valued as an NFT.
+`src/utils/nft-market.ts` holds
+the pure rule and `src/utils/nft-market-read.ts` finds its inputs. Every value
+is tier `heuristic` and carries `detail.estimate: true`. `list_nfts`
+(`est_usd` per item to four significant figures; under `valuation`, each
+priced collection's unit value and basis within 3,000 characters, and with
+`detail: "full"` each collection's floor, last sale and wash check) and
+`list_nft_collections` (`value` per row, `estimated_value` over every row
+before the cap) show it.
+
+- **The rule.** An item is worth the lower of its collection's floor (the
+  lowest active listing) and its last sale in the `MARKET_WINDOW_DAYS` (30)
+  before the valuation time. With one of the two, that one is used; with
+  neither, the item is unpriced. A live listing always caps a counted sale,
+  since anyone can buy at it, but it prices an item alone only when placed or
+  repriced inside the window. Measured on a 921-NFT wallet: without that
+  condition, three collections whose lowest listings had sat unbought for
+  about ten months (100, 10 and 5 SUI, no sale in the window) made up 87% of
+  the total.
+  An OriginByte ask records no time, so it never prices an item alone. A
+  sweep's newest transaction counts its cheapest item.
+- **Listings are read at the current state only.** A valuation for a past
+  time rests on sales before it, and `value` for a past time returns no
+  positions, because holdings are read at the latest state.
+- **Where listings come from.** The TradePort orderbook store
+  (`0x3af0a943…`) keeps, per collection keyed by its `type_name` string
+  (addresses padded with no `0x`, type arguments joined by a bare comma), a
+  big vector of listing ids ordered by the index
+  `2^127 | price << 64 | sequence`, so its leftmost leaf's first entry is the
+  cheapest. Each candidate is confirmed by reading its listing object, which
+  is deleted on purchase or cancel. TradePort's earlier kiosk listings are
+  `Listing<T>` objects, enumerated by type in id order; their price includes
+  TradePort's commission, so a floor from them reads about 3% above the price
+  TradePort displays. OriginByte keeps every ask in an `Orderbook<T, SUI>`,
+  whose crit-bit outer nodes carry the price. `kiosk::list` listings are found
+  through `ItemListed<T>` and confirmed by the kiosk's `Listing` field.
+  BlueMove's and TradePort's non-kiosk listings do not carry the collection
+  type and are not read.
+- **Where sales come from.** A sale mutates the shared object that settles
+  it: the collection's `TransferPolicy<T>` when a royalty is paid into it, its
+  OriginByte orderbook, or its TradePort orderbook entry. `affectedObject`
+  lists only transactions that changed an object, so the policy alone misses
+  every sale that pays it nothing. Measured: Gommies' policy was last changed
+  in February 2025 while its OriginByte orderbook traded daily in September
+  2026. The prices come from the events `get_nft_sales` reads plus
+  `kiosk::ItemPurchased<T>`. An event that does not name its collection is
+  joined to its item's type, and another collection's sale in the same
+  transaction does not count.
+- **Wash checks are the cheap ones, and say what they covered.** A zero
+  price, one address or one kiosk on both sides, and either side's first
+  funder (`firstFunderOf`) being the other. When an event names no seller, the
+  signer stands in for the seller if it is not the buyer. `wash_check` states
+  what was checked and what could not be, and `excluded_sales` lists each sale
+  left out with its reason.
+- **What counts as an NFT.** `handles` refuses types defined at `0x1`, `0x2`
+  and `0x3`. `valueObject` refuses a type with no market and no `Display<T>`,
+  so a protocol receipt no reader handles is never priced as an NFT. That
+  test reads `collectionPresence` (policies, orderbooks, TradePort entry,
+  Display) before anything else. Presence does not depend on the valuation
+  time, so it is read once per type and cached, and a scan that values one
+  type at many checkpoints stops a non-NFT after one request. Markets for a
+  past time are still read per checkpoint, because the last sale depends on
+  it. The TradePort big vector itself is re-read for every current floor,
+  since its shape changes with each listing.
+- **Kiosk discovery follows OriginByte owner tokens.** An OriginByte kiosk
+  keeps its own cap and gives its owner an `ob_kiosk::OwnerToken` naming it,
+  so `discoverKiosks` reads those beside `KioskOwnerCap` and
+  `PersonalKioskCap`.
+
+Measured against TradePort's displayed floors on 2026-09-27: Prime Machin 102,
+Gommies 2.279 (OriginByte), Popkins 76 and Aftermath Egg 24.99 SUI matched
+exactly. SuiNS read 0.103 against 0.1 displayed, the commission above.
+
 ### An NFT's holder is not its owner field
 
 `get_top_holders` in NFT mode resolves a kiosk-held NFT through
@@ -2436,14 +2595,21 @@ ranking for 24 hours. And a sale-derived owner is a SNAPSHOT at that
 checkpoint, so it reports `holder_kind: "kiosk_resolved"` rather than
 `"wallet"`: a kiosk can be sold after the sale that named it.
 
-Four rules for extending it:
+Five rules for extending it:
 
-- **A sale event rarely names the collection.** Measured: 70 of 73 mainnet
-  sales carry no `nft_type`, and the few that do emit the defining address
-  unprefixed and unpadded (`2dcd5252…::m::T`), which never compares equal to
-  the `0x`-padded form every other surface here uses. `canonicalType` fixes the
-  comparison; the missing field cannot be fixed, so those sales are counted in
-  `unattributable_sales` and a filtered result that found little says why.
+- **Many sale events do not name the collection.** Measured before TradePort
+  bid matches were registered: 70 of 73 mainnet sales carried no `nft_type`.
+  Those that do (OriginByte, BlueMove, TradePort's `MatchSingleBidEvent`) emit
+  the defining address unprefixed (`2dcd5252…::m::T`), which never compares
+  equal to the `0x`-padded form every other surface here uses. `canonicalType`
+  fixes the comparison; the missing field cannot be fixed, so those sales are
+  counted in `unattributable_sales` and a filtered result that found little
+  says why.
+
+- **TradePort settles most of its sales by bid match.** Measured over one
+  week of September 2026: over 500 `tradeport_biddings::MatchSingleBidEvent`
+  against 327 `BuySimpleListingEvent`. The bid match names the buyer and not
+  the seller, who is the transaction's signer.
 
 - **Every event type in `nft-sale-events.json` was confirmed to exist on
   mainnet**, with its field names read off a real event. A type nobody emits
@@ -3029,7 +3195,7 @@ identification name it and a call to it other than `send_token` is no exit
 fold, calls ordered first on a command page, legs of a participant P&L) are
 `isPlumbingPackage` in `system-packages.ts`: 0x1, 0x2 and 0x3. The bridge
 (0xb) and DeepBook v1 (0xdee9) are system packages too, and `SYSTEM_PACKAGE`
-in `disassembly.ts` matches them, but their shared objects hold users' value,
+in the same file matches them, but their shared objects hold users' value,
 so a call into either is a leg like any protocol's and stays in all four.
 
 Detect from **Move calls and events, not sink labels.** A bridge burns or
@@ -3361,6 +3527,324 @@ DefiLlama returns the sample it used, which can be hours from the second asked
 for: 50 of 103 Cetus-exploit prices at 10:30 UTC were more than an hour away.
 Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
 
+### Position value
+
+What a wallet holds beyond plain coins is valued through one registry
+(`src/utils/position-value.ts`). Each reader lives in
+`src/utils/valuers/<name>.ts`, registers itself, and is loaded by
+`src/utils/valuers/index.ts`; a tool imports that index and reads positions
+only through `valuePositions` (an owner's holdings) or `valueObjects` (given
+objects, e.g. ones a transaction moved). Shared helpers are in
+`src/utils/valuers/common.ts`. Rules a change is likely to break:
+
+- **A value past what any protocol holds is a reading error.** A position
+  valued above `MAX_PLAUSIBLE_USD` ($10B) is moved to `unread` by
+  `valuePositions` and `valueObjects`, never summed; a CLMM position whose
+  amounts exceed its pool's reserves (liquidity minted through an overflow,
+  as in the Cetus exploit) is left unread by the CLMM reader first.
+- **Every value states its method and tier.** A `ValuedPosition` carries its
+  asset legs, `usd_net` (null when any non-zero leg has no price, with
+  `unpriced_reason`), a one-sentence `method` and a `tier`. Amounts read
+  from chain and priced by a provider are `price-provider`; NFT values are
+  `heuristic` and every total keeps them apart as estimates. A reader that
+  throws, or an object it cannot read, goes to `unread` and never hides the
+  others.
+- **Historical state is read at the checkpoint.** With `atCheckpoint`,
+  `readObjects` asks GraphQL `multiGetObjects` for each protocol object at
+  that checkpoint (verified on 2024 checkpoints), falls back to the latest
+  state for one it cannot give, and `stateNote` puts which in the method.
+  Prices come at the checkpoint's time unless `atTime` is given. A request
+  is capped at 5,000 bytes with its variables, so multi-gets are 40 keys.
+- **One reader per object type, specific before broad.** `valueObjects`
+  gives an object to the first reader whose `handles` accepts its type,
+  `fallback` readers last (held balances, then NFTs); `readerFor` answers
+  the same question, so a broad reader skips types another reader owns. A
+  fallback reader whose answer rests on chain data (a type's field layout)
+  reads it in `prepare`, which `valueObjects` runs first and a caller of
+  `readerFor` about fallbacks runs through `prepareReaders`. When a fallback
+  reader reaches an object a specific reader also valued (wrapped inside
+  another object, say), `valuePositions` keeps the specific one.
+- **A coin a position values is counted once.** A position backed by a coin
+  the wallet holds (a liquid-staking or LP coin) names it in
+  `detail.receipt_coin_types`; `get_wallet_overview` marks that holding
+  `value_counted_in: "positions"` and leaves it out of the coin total when
+  the position is priced.
+- **Staked SUI is worth what `withdraw_stake` would pay.** The principal in
+  pool tokens at the activation epoch's rate, converted back at the
+  valuation epoch's rate, integer division at each step, reward never
+  negative; a stake not yet active has none. Rates are entries of the
+  pool's `exchange_rates` table keyed by epoch, written once, so a past
+  epoch reads the same way (the latest entry at or below it, clamped to a
+  deactivated pool's last epoch). Pools come from the validator set's
+  JSON, then the inactive table's versioned wrapper, then
+  `staking_pool_mappings` (pending, 1:1). Checked against four
+  `UnstakingRequestEvent`s' `reward_amount`: exact. `FungibleStakedSui`
+  converts its pool tokens at the epoch rate.
+- **A liquid-staking coin is worth its issuer's own rate.** Rebuilt from the
+  issuer's fields with its rounding: every SpringSui-framework LST from its
+  `LiquidStakingInfo<T>` (the set listed by type and cached), afSUI,
+  haSUI, and vSUI through Volo's stake pool (its older native pool before
+  that pool existed). Checked against each issuer's view function and past
+  mint events.
+- **A CLMM position is its liquidity at the pool's sqrt price.** Cetus-family
+  tick math (Cetus, Bluefin, Momentum, FlowX CLMM, Magma, Turbos, each
+  checked from bytecode and against removal events), rounded down as on
+  removal. Cetus and Magma read the pool's own record of the position,
+  which the protocol's amounts view follows and which can differ from the
+  object. Fees earned since the position was last touched are not
+  computed; the method says so. AMM LP shares are the share of the pool's
+  reserves (Aftermath, FlowX v2 with its pending fee mint, Kriya v2).
+- **An object is worth the balances held inside it.** The held-balances
+  reader (`valuers/held-balances.ts`) values an owned object no specific
+  reader handles by its `Balance<T>` and `Coin<T>` fields, the entries of a
+  `Table`, `ObjectTable`, `Bag`, `ObjectBag` or `LinkedTable` it holds or
+  is, and its own dynamic fields, to bounded depths (six struct levels,
+  two container levels, 200 entries a container, eight containers an
+  object), and says in `detail.not_read` what a bound cut. A position it
+  wraps (a farm-wrapped CLMM position) and a balance of a coin a reader
+  values (an LP share) go to that reader, marked `detail.held_in`. Whether a
+  type can hold value is its GraphQL `type { layout }`, cached for good; a
+  layout is read only when the object's JSON has a u64 string or a nested
+  struct with an `id`, the only ways a `Balance`, a container or a wrapped
+  object renders. Priced coins and unpriced ones are two positions, so an
+  unpriced spam balance never nulls the priced ones. Dynamic fields are
+  read for at most 30 objects a call, 15 a request (the service rejects a
+  query of over 300 nodes), framework types never, since only a type's own
+  module can add fields to it.
+- **A total says what it covers of the objects owned.** `owned-coverage.ts`
+  sorts every object the wallet owns, coins aside, into read by a reader,
+  unread, a kiosk key, an NFT estimate, or not recognised, and lists the
+  last by type and count with the walk's bound (`OWNED_WALK_MAX`) and the
+  objects whose dynamic fields were not read. `get_wallet_overview` and
+  `get_defi_positions` put it in `coverage` and its sentence in the note.
+- **A shared vault an address operates is a lead, not a holding.**
+  `operated-objects.ts` reads the shared objects the address's last 20
+  transactions used mutably and keeps those whose own fields name it in a
+  control role (`members`, `owner`, `operator`, `admin`, `manager`,
+  `trader`, `keeper`, `controller`, `signer`, `authorized`), with the
+  balances held inside and the other addresses the field names. A bot
+  trading through such a vault moves no balance of its own. What it holds
+  is never in the address's totals. Framework objects (kiosks) are left to
+  the NFT tools.
+
+Consumers value what a transaction moved through `src/utils/moved-value.ts`:
+
+- **An object counts for the address it left and the address it reached.**
+  Transferred and deleted objects leave their holder at the input version;
+  transferred and created objects reach theirs at the output version; each
+  is read by version (`readObjectVersions`) and valued at the transaction's
+  checkpoint, the first 50 per transaction, the rest listed as unread.
+- **A change of form is listed, never counted.** An object wrapped into or
+  unwrapped from another object (a farm, a gauge, collateral) is still its
+  holder's in another form, so its row carries `custody` and stays out of
+  every total; otherwise a window holding only the deposit or only the
+  withdrawal reads as a loss or a gain of the whole position.
+- **An object whose previous holder went unrecorded is resolved first.**
+  Before about March 2024 effects stored no input owner, so every changed
+  object reads `appeared`. Its holder is read at the input version: the same
+  address makes it a kept object, another address a transfer, and an object
+  or an unreadable version a `custody` row (`prior_holder_unknown` or
+  `unwrapped`).
+- **A kept object counts the change in its amounts, at one set of prices.**
+  An object its holder kept but the transaction changed (liquidity added,
+  a deposit into an obligation) is read after the transaction and before
+  it, against protocol state as of the previous checkpoint since a reader
+  may read the protocol's record rather than the object. Both sides are
+  priced at the after side's prices, or the provider's at `atTime` when the
+  caller prices everything at one moment (`keptDelta`), so an oracle refresh
+  alone moves nothing. A side with no position is zero; null is kept for a
+  state that could not be read, which is listed. A kept `Coin<T>` is a
+  balance change and never a row. Several transactions of one checkpoint
+  touching the same kept object read the same whole change when the reader
+  values protocol state at the checkpoint, so a scan counts identical
+  changes once (`same_checkpoint_digests`); a reader valuing the object's
+  own JSON per version gives each its own change, and each counts. A
+  position a reader finds inside the moved object (a farm-wrapped CLMM
+  position, reported under its inner id with `detail.held_in`) counts for
+  the moved object.
+- **`analyze_attack_tx` weighs objects in every address's net.** With no
+  attacker given, a sender that took nothing priced (a coin a third-party
+  scam list flags is a decoy, not value) and gave valued objects away is set
+  aside like a gas-only sender, and the largest priced gainer becomes the
+  profit subject; an unpriced coin or object another address gained still
+  blocks that default, unless the sender paid that coin out itself (a
+  victim's dust swept with the rest is part of the drain, not hidden loot).
+  The incident headline ranks only pool groups that moved priced value and
+  whose pool type no scam list flags.
+- **A consumed position explains the coins it paid out.** The value
+  reconciliation sets what reached addresses unexplained against the valued
+  positions the transaction deleted or drew down in place, per coin by the
+  raw amounts they held (`coin_amounts` on each moved-object row,
+  `positions_usd`): an unstake pays SUI out of a staking pool the state read
+  does not reach, and the StakedSui it burned says how much. `summarize_incident_losses` applies the same default
+  per transaction, counts objects the attacker received, consumed or kept
+  changed, netted per object across the incident as coins are per coin
+  type (a stake received and later unstaked counts once, as the coins the
+  unstake paid; an object in several rows of one coin is netted by amounts
+  at its first row's price, so a price move between them leaves nothing),
+  and keeps objects it handed on out of the totals as coins
+  sent on are, valuing at most `MAX_OBJECT_VALUE_TXS` transactions. Each
+  object is priced at its own transaction's time unless `price_at` is
+  given: coins default to the first transaction's time, before prices
+  reacted, which fits an exploit and misstates a drainer campaign that ran
+  for days. Objects
+  that could not be valued make the total a lower bound, as in
+  `analyze_attack_tx`'s `partial_note` and flows' `objects_partial`.
+- **A scan values at most `SCAN_OBJECT_BUDGET` objects**, newest
+  transactions first, whole transactions at a time; the rest are
+  `objects_skipped_transactions` and the totals say `objects_partial`.
+  Each object costs several reads (a lending market, a pool and its
+  record, a stake pool's rates, at that checkpoint), so a collector holding
+  hundreds of positions would otherwise take minutes. A scan reads every
+  transaction's object versions and checkpoints in batched requests first,
+  and `readObjects` sends the reads asked for in one tick as one multi-get
+  whatever checkpoint each names: the Cetus attacker's 287 transactions went
+  from about 450 requests to about 90.
+- **Scans over many transactions value specific readers only.**
+  `summarize_incident_losses` and `summarize_address_flows` pass
+  `specificOnly`, so the NFT fallback never runs there: an estimate stays
+  out of every total, and its historical market reads took 10 to 26 seconds
+  per object, most of a scan's time. The call's valuations share one
+  `ctx.memo`, so a price, a stake pool or an epoch's rate is read once.
+- **`summarize_address_flows` reads objects for every successful
+  transaction of the scan**, newest first, up to `MAX_OBJECT_TXS`, from
+  gRPC `effects.changed_objects`. Filtering to transactions the address sent
+  or that carry a `TransferObjects` command missed every position a drainer
+  collected: a Move call inside a transaction the victim signed hands it
+  over. A coin filter turns this off.
+- **`trace_funds` follows objects worth more than the coin.** Forward, when
+  the valued objects the actor handed to one address outweigh the priced
+  coin flow the next-hop choice follows (basis `object`), the trace moves to
+  that address and to the next transaction that touches one of the objects
+  (`affectedObject`), then follows whatever that transaction pays out. The
+  coin flow it must beat is the largest priced flow of one coin to one
+  other address, not whichever flow the coin choice took (a bait coin minted
+  to the signer). A transaction that leaves the tracked objects with their
+  holder (fees collected, liquidity changed in part) keeps the trail on the
+  objects, so the trace reaches the close that pays them out; one that
+  leaves them holding no more than the coin flow (liquidity withdrawn in
+  full, the position kept) follows the payout instead. A hop that follows
+  objects skips the hub check: the next hop is the transaction touching those
+  objects, which funds pooled at the holder cannot confuse.
+
+### Lending and margin positions
+
+Readers for Suilend, NAVI, Scallop, AlphaLend, Bucket and Bluefin Pro, one
+file each in `src/utils/valuers/`, sharing `src/utils/valuers/lending.ts`
+(keyed field reads at a checkpoint, owned and type-wide listings, oracle
+pricing). Rules a change is likely to break:
+
+- **Amounts come from the protocol's own records, with its arithmetic.**
+  - Suilend: an `ObligationOwnerCap<P>` names an obligation inside market
+    `P`. A cToken redeems for the reserve's available amount plus borrowed
+    amount less unclaimed spread fees, over its cToken supply; a borrow
+    grows by the reserve's cumulative borrow rate over the rate it last
+    compounded at, rounded up.
+  - NAVI: balances are keyed by address in every market's `Storage` (all
+    listed by type, not only the main one), for the wallet itself and for
+    the `owner` field of each `AccountCap` it holds. A scaled balance times
+    the reserve index over 1e27 is an amount in NAVI's 9-decimal units,
+    then converted to the coin's own decimals.
+  - Scallop: an `ObligationKey` names a shared obligation whose collaterals
+    are coin amounts and whose debts grow by the market's borrow index over
+    the index they settled at. Supply receipts count too: `MarketCoin<T>`
+    coins, sCoins (converted at their `SCoinTreasury<S, T>`'s market-coin
+    balance over sCoin supply) and `SpoolAccount` stakes. A market coin
+    redeems for the reserve's cash plus debt less revenue over its
+    market-coin supply.
+  - AlphaLend: a `PositionCap` names a position in the protocol's table.
+    xTokens are worth the market's `xtoken_ratio`; loans grow by its
+    compounded interest. LP-position collateral is valued by its CLMM
+    reader through `valueObjects` and reported as its own row under the
+    cap's id (the LP id in `detail.lp_position_id`), so a moved cap carries
+    it; an LP object read at its latest state is valued at the latest state.
+  - Bucket: positions are keyed by debtor address, the wallet's and, in v2,
+    those of the `Account` objects it holds. v2 debt adds interest from a
+    unit that rises linearly at the vault's rate since its last update; a
+    v1 bottle adds its redistribution share (stake times the per-stake
+    totals since its snapshot, over 2^64) and grows its debt by the
+    bucket's interest index. A v1 surplus bottle is claimable collateral.
+  - Bluefin Pro: an account in the exchange's `InternalDataStore` is worth
+    its deposited assets, its isolated margin and each position's
+    unrealized PnL at the perpetual's stored oracle price, in the
+    settlement asset. Pending funding is listed in `detail`, not netted.
+- **A protocol's oracle is trusted only as far as a provider confirms it.**
+  The oracles read are Suilend's reserve price, NAVI's `PriceOracle`,
+  Scallop's `XOracle`, AlphaLend's oracle table, Bucket v1's
+  `SingleOracle<T>` and Bluefin Pro's stored prices. A leg is chain-derived
+  only when a provider's price is within 2% of the oracle's. Further apart,
+  however fresh the oracle price, the check fails: the provider's price
+  values the leg, both go in `price_check`, and the method names the failed
+  check. A fresh price proves nothing, because a protocol can price a coin
+  with another asset's feed (Suilend prices FUD, SEND and other reserves it
+  no longer lends against, open LTV 0, with the USDC feed, at about $1),
+  and an oracle read at an attack's checkpoint can be the manipulated
+  price. An oracle price no provider can confirm values the leg as an
+  estimate (tier `heuristic`), which totals of moved value keep apart.
+  Bucket v2 stores no price. A leg whose decimals nothing vouches for has
+  no USD.
+- **A borrowed feed is never used.** A Suilend reserve whose Pyth
+  identifier an earlier reserve of another coin already uses, or a NAVI
+  reserve whose oracle id an earlier reserve uses, is priced as that coin,
+  so its oracle price is dropped (`feed_of`); the provider decides, or the
+  leg is unpriced. A feed belongs to the first reserve listed with it.
+- **A liquid-staking leg is SUI at its issuer's rate.** Protocols price
+  such coins at SUI's feed (Suilend's sSUI came out 2.87% low); every
+  reader values them through `suiPerLst` times the protocol's own SUI price
+  (`priceLendingLegs`, `sui_oracle`), checked like any other leg against the
+  coin's provider price or SUI's at the same rate.
+- **`health` holds only what the protocol stores or defines.** Suilend's
+  obligation USD figures and AlphaLend's position totals and flags, both as
+  of the position's last refresh; Bucket's minimum collateral ratio beside
+  the ratio at the prices used. NAVI, Scallop and Bluefin Pro store no
+  per-account figure, and none is computed in their place.
+- **Health ratios are named the same in every reader.** Where a protocol
+  stores both a borrow side and its limits, `health` adds
+  `borrow_limit_used` (weighted borrows over the borrow limit) and
+  `liquidation_threshold_used` (weighted borrows over the liquidation
+  line), 4 dp, from the protocol's own figures as its own health checks
+  compare them; `detail.health_ratios` names the two figures of each
+  (`HealthRatios`, `withHealthRatios`). Bucket's are its minimum
+  collateral ratio over the collateral ratio at the legs' prices, since a
+  CDP borrows down to that ratio and is liquidated below it. `healthLeads`
+  turns a position at 95% of its borrow limit or more into a lead.
+- **Stored totals and the legs' USD are reconciled, not merged.** When a
+  reader passes the protocol's own deposit and borrow totals
+  (`stored_totals`) and either side parts from the legs by more than
+  `PRICE_CHECK_PCT` of the larger, `health_basis` states both nets and the
+  gap: liquidation follows the protocol's figures at its own oracle
+  prices, so `health` measures distance to liquidation and `usd` measures
+  worth; with a recorded refresh time, the ratios are as of that refresh.
+- **Interest accrues as far as the state read.** Suilend, NAVI, Scallop
+  and AlphaLend amounts stop at the index's last update; Bucket computes to
+  the time of the checkpoint read, as its own getters do, never to a later
+  pricing time (`atTime`), which values the legs only.
+- **A listing the service cannot give at a checkpoint is unread.** Owned
+  objects and balances at a past checkpoint are only listable inside
+  GraphQL's consistent range; outside it the reader names what it could
+  not list, while address-keyed tables (NAVI, Bucket, Bluefin Pro) are
+  still read at the checkpoint.
+- **A request's variables count toward the 5,000-byte payload.**
+  `readFields` packs dynamic-field keys into aliases by byte size
+  (`chunkByBytes`, `PAYLOAD_BUDGET`); a TypeName key is about 150 bytes.
+- **Request count is the cost under a rate limit.** A table's or object's
+  id never changes, so NAVI's markets, Scallop's market tables and
+  AlphaLend's protocol tables are read once at the latest state
+  (`TABLE_IDS_TTL_MS`) and used at any checkpoint; the state inside them
+  is still read at the checkpoint. `readFields` and `readObjectsBatched`
+  send the calls made in one turn of the event loop for one state as one
+  request, and retry each call alone when the combined read fails.
+
+Checked live against each protocol's own figures: NAVI's
+`user_collateral_balance`/`user_loan_balance`, Scallop's accrued debt after
+`accrue_interest_for_market_and_obligation`, and Bucket's v1 and v2
+position getters matched to the base unit or within interest accrued
+between reads; Suilend legs matched the obligation's stored market values
+when it had just been refreshed; valued at the checkpoint of its last
+refresh, an AlphaLend position's loans matched its stored total and its
+collateral came within 1.2%; Bluefin Pro matched the exchange's reported
+account value.
+
 ### Attack analysis
 
 `analyze_attack_tx` and `summarize_incident_losses` read over gRPC
@@ -3378,10 +3862,11 @@ Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
   the Clock (`0x6`); counting it as the object a borrow and a repay share
   pairs any borrow with any repay.
 - **A subject that lost value gets a loss line, not a profit.** When no
-  attacker is given and the sender did more than pay gas, the sender stays
-  the subject; a victim who signed the transaction then reads "Loss for
-  <sender> (the sender)", and the line and `profit.gained_elsewhere` name the
-  addresses that gained. The reconciliation line reports value that came
+  attacker is given and the sender did more than pay gas without giving
+  valued objects away (see Position value), the sender stays the subject; a
+  victim who signed a coin transfer then reads "Loss for <sender> (the
+  sender)", and the line and `profit.gained_elsewhere` name the addresses
+  that gained. The reconciliation line reports value that came
   out of objects or mints: per coin every address's change is summed, so a
   transfer between addresses cancels, and with none it says so instead of
   printing "$0 reached addresses".
@@ -3541,6 +4026,69 @@ Report `price_offset_sec`; the stale flag is `PRICE_STALE_THRESHOLD_SEC`.
   came from an object that was not read. An unpriced coin nothing paid out
   raises it too, and is counted in `unexplained_unpriced`, never valued at
   zero.
+- **`price-off-market` calibrates each field on the provider before judging
+  a coin by it.** `priceClaimsOf` takes every number stated next to exactly
+  one coin: an event naming one coin type in a field (or as its only type
+  argument), and a dynamic field keyed by a coin's `TypeName`, read after
+  the transaction (`state.keyed`, at most 32 rows). A record naming two
+  coins (a swap) is skipped. Per field (event or row type, and JSON path),
+  the power of ten at which the most coins agree with the provider within
+  5% makes the field a price only when at least two coins agree there and
+  they are at least half the coins with a usable provider price; any number
+  in the field 5x or more from its coin's price is flagged, high at 10x. A
+  lone field cannot calibrate itself, and a counter, timestamp or amount
+  agrees with the provider only by chance, for too few coins to pass the
+  majority. The provider price must be within an hour of the block and, from
+  DefiLlama, at its top confidence tier (0.95 and up; it prices YBTC, a BTC
+  wrapper, at $10.6K with 0.9). It names both AlphaLend's slot and ALPHA's
+  own row priced at the AVAX feed, and Full Sail's port price set 100x low
+  and restored in the same PTB, which the state before and after cannot show.
+- **`signing-key-replaced` reads byte strings, not field names.** A string
+  outside lists that decodes from base64 to 33, 48, 64, 65 or 96 bytes, not
+  all zeros, and not a decimal number, is a key; one a shared object held
+  before and holds replaced after is flagged medium. 32 bytes is left out,
+  since digests of the last transaction (Full Sail's ports, Pyth Lazer's
+  `writer_digest`) change on every call; an ed25519 key change is missed
+  for that. A key cleared to zeros or empty is not flagged. An operator's
+  rotation reads the same as a swap.
+- **`share-round-trip` compares a redemption with what its units cost.**
+  `roundTripsOf` runs when the sender receives $0.10 or more of priced
+  coins, gas taken out. A share is a coin whose `Supply<T>` the read state
+  shows falling while the sender's balance of it falls; the sender's own
+  transactions on the object holding that supply in the previous 24 hours
+  (`sentAddress` with `affectedObject`, the last 50) that credited it the
+  coin are the entries, priced per unit. A position is an owned non-coin
+  input the sender created within 24 hours and nothing changed between its
+  creation and this transaction (the first two transactions on it are its
+  creation and this one), priced as the whole creating transaction. A
+  like-for-like trip (the entry only paid, the exit only received, and every
+  coin the entry paid comes back in the exit; the share coin aside) values
+  both legs at this transaction's provider prices and flags 1.1x or more,
+  high at 2x; the same prices leave a day's yield and rewards claimed on exit
+  as its only ordinary sources of a gain. Any other trip (a zap from one coin
+  into another, a leg that also borrows or repays) would measure one coin's
+  move against another at one set of prices, so each leg is valued at its
+  own time's prices (the 8 latest such entries per transaction) and it
+  counts only from 2x (`basis: "own-time"`). An entry that paid an unpriced
+  coin is not scored. Haedal's redeem DkDmwtpV is the one labelled trip that
+  is not like-for-like: its v1 deposit paid DEEP and the redeem returns none.
+- **`switched-before-execution` follows a shared input's last writes.**
+  `recentForeignWrites` takes every shared object the transaction changed or
+  read only (`readShared`, from the effects' read-only consensus objects),
+  system objects aside, at most 8. From the version the transaction read it
+  follows `previous_transaction` back up to 3 writes while each write's
+  sender is not the signer and it ran within 60 s, and compares each write's
+  input and output versions of the object, lists included. A write counts
+  when it flipped a boolean, set an address to one that gains coins or
+  objects in this transaction, or set a number equal to an amount this
+  transaction moved; a pool's reserves or an oracle's price moved by another
+  trader seconds earlier do neither. It reads nothing unless an address other
+  than the signer gains here. The grade uses the latest counted write and what
+  the signer lost that other addresses gained (coins and valued objects):
+  high within 10 s at $1 or more, medium within 60 s at $1 or more, info
+  otherwise. The claim-swaps drainer flipped `ClaimParams.initialized` 0.93
+  to 1.06 s before each of its three labelled drains, after setting the
+  recorded amounts to the signer's coins 4.4 to 4.7 s before.
 - **An incident's take leaves out what the attacker sent on.** In
   `aggregateIncident`, a coin moved only between addresses in a transaction
   when every address's change in it sums to zero (for SUI, to minus the gas

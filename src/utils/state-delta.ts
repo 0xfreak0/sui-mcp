@@ -12,6 +12,7 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import type { AttackTx, PoolFlow } from "./attack-analysis.js";
 import type { PtbAnomaly } from "./ptb-anomalies.js";
+import type { KeyedRow } from "./price-claims.js";
 import { pricingScale, toHumanAmount, type PricePoint } from "./valuation.js";
 
 /** One object read at the transaction's input and output versions. */
@@ -48,6 +49,8 @@ export interface StateSnapshot {
   unavailable: string[];
   /** Object types whose field layout could not be read: their `Balance<T>` fields compare as plain numbers. */
   layout_unread: string[];
+  /** Dynamic fields keyed by a coin's type (a price table's rows), at the output version only, for the prices they state. */
+  keyed?: KeyedRow[];
 }
 
 /**
@@ -487,6 +490,6 @@ export function stateAnomaly(findings: StateFindings, snap: StateSnapshot): PtbA
     detail:
       `Read at the transaction's input and output versions, a shared object's stored number (a price, an index, a liquidity, a counter) moved by ${STATE_JUMP_FACTOR}x or more between non-zero values, or its Balance<T> holdings of a coin fell by ${STATE_JUMP_FACTOR}x or to zero, or a holder lost ${VALUE_SHARE_LOST * 100}% or more of its priced value across all its coins while addresses gained at least half of that, or an object took a number from an object other than the one it references. Ordinary swaps, deposits and accruals move these by fractions. High: the new number is one the caller passed, addresses gained at least half the drained value (in any coin) in this transaction, or a value came from the wrong object. A drained holding reads info when its holder took back nearly all of it in other coins, or when addresses gained less than half of it. Read the functions that took these objects with get_move_function and disassemble_module.` +
       (unread ? ` ${unread} candidate object(s) were not read; see state_deltas.` : ""),
-    evidence: lines.slice(0, 10).map((l) => l.text),
+    evidence: lines.length > 6 ? [...lines.slice(0, 5).map((l) => l.text), `${lines.length - 5} more in state_deltas`] : lines.map((l) => l.text),
   };
 }

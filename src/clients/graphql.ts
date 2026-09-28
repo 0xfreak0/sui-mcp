@@ -4,10 +4,12 @@ import {
   type SuiNetwork,
   GRAPHQL_TRANSPORT,
   RATE_WINDOW_MS,
+  REPLAY_DIR,
   getNetwork,
   getNetworkConfig,
   rateLimitFor,
 } from "../config.js";
+import { replayingGraphqlFetch } from "./replay.js";
 
 /** Connection failures worth another try: the request never got an answer. */
 const RETRYABLE_CODES = new Set([
@@ -212,18 +214,39 @@ export function getGraphqlClient(network: SuiNetwork = getNetwork()): GraphQLCli
   let client = clientCache.get(network);
   if (!client) {
     const endpoint = getNetworkConfig(network).graphql;
-    client = new GraphQLClient(endpoint, { fetch: retryingFetch(endpoint) });
+    const live = retryingFetch(endpoint);
+    client = new GraphQLClient(endpoint, { fetch: REPLAY_DIR ? replayingGraphqlFetch(endpoint, live, REPLAY_DIR) : live });
     clientCache.set(network, client);
   }
   return client;
 }
 
 /** Run a GraphQL query against the current call's network endpoint. */
+/**
+ * Service-side failures the GraphQL endpoint reports as a GraphQL error on an
+ * HTTP 200, which a retry of the same query answers. Matched exactly: every
+ * other GraphQL error is an answer about the query.
+ */
+const TRANSIENT_GRAPHQL_ERRORS: ReadonlySet<string> = new Set([
+  "Failed to list transactions",
+  "Failed to list events",
+]);
+
+/** Retries of a query the service failed transiently, after the transport's own. */
+const TRANSIENT_RETRIES = 2;
+
 export async function gqlQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   const network = getNetwork();
-  try {
-    return await getGraphqlClient(network).request<T>(query, variables);
-  } catch (err) {
-    throw graphqlError(err, getNetworkConfig(network).graphql);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await getGraphqlClient(network).request<T>(query, variables);
+    } catch (err) {
+      const message = err instanceof ClientError ? err.response.errors?.[0]?.message : undefined;
+      if (attempt < TRANSIENT_RETRIES && message !== undefined && TRANSIENT_GRAPHQL_ERRORS.has(message)) {
+        await sleep(GRAPHQL_TRANSPORT.baseDelayMs * 2 ** attempt);
+        continue;
+      }
+      throw graphqlError(err, getNetworkConfig(network).graphql);
+    }
   }
 }

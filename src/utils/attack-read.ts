@@ -48,11 +48,15 @@ const ARGUMENT_RESULT = 3;
 /** gRPC `Owner.kind` of a consensus object, and of an object owned by another object. */
 const OWNER_SHARED = 3;
 const OWNER_OBJECT = 2;
+const OWNER_ADDRESS = 1;
 const OWNER_CONSENSUS_ADDRESS = 5;
 
 /** gRPC `ChangedObject` input and output states. */
 const INPUT_EXISTS = 2;
 const OUTPUT_OBJECT_WRITE = 2;
+
+/** gRPC `UnchangedConsensusObject.kind` of a consensus object read and not changed. */
+const READ_ONLY_ROOT = 1;
 
 /** gRPC `Input.kind` of a shared object input. */
 const INPUT_SHARED = 3;
@@ -179,8 +183,15 @@ export function fromGrpcTransaction(t: GrpcTypes.ExecutedTransaction): AttackTx 
         parent,
         inputVersion: o.inputState === INPUT_EXISTS && o.inputVersion !== undefined ? o.inputVersion.toString() : null,
         outputVersion: o.outputState === OUTPUT_OBJECT_WRITE && o.outputVersion !== undefined ? o.outputVersion.toString() : null,
+        heldBy:
+          o.inputOwner?.kind === OWNER_ADDRESS && o.outputOwner?.kind === OWNER_ADDRESS && o.inputOwner.address === o.outputOwner.address
+            ? (o.inputOwner.address ?? null)
+            : null,
       };
     }),
+    readShared: (t.effects?.unchangedConsensusObjects ?? []).flatMap((u) =>
+      u.kind === READ_ONLY_ROOT && u.objectId && u.version !== undefined ? [{ objectId: u.objectId, version: u.version.toString(), objectType: u.objectType ?? null }] : [],
+    ),
     inputs: inputs.map((inp): AttackInput => ({
       objectId: inp.objectId ?? null,
       bytes: inp.pure?.length ?? 0,

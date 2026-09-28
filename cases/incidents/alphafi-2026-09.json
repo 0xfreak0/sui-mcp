@@ -506,21 +506,30 @@
     },
     {
       "id": "borrow-oracle-price-named",
-      "question": "Does the attack breakdown say which coin the PTB priced and at what price?",
+      "question": "Does the attack breakdown say which coin the PTB priced, at what price, and how far that is from the market?",
       "tool": "analyze_attack_tx",
       "args": {
         "digest": "{borrow_tx}"
       },
       "expect": [
         {
+          "path": "anomalies[*].code",
+          "op": "includes",
+          "value": "price-off-market"
+        },
+        {
+          "path": "off_market_prices[*].coin",
+          "op": "includes",
+          "value": "{alpha}"
+        },
+        {
           "path": "_text",
           "op": "contains",
-          "value": "alpha::ALPHA"
+          "value": "alpha::ALPHA stated at $7.63"
         }
       ],
-      "tier": "chain-derived",
-      "basis": "chain: commands 2 to 4 of AUHp6aWy refresh ALPHA's price through oracle::get_price_info, and a LazerPriceUpdationEvent writes 7.6335 into the 0x3a51 COIN slot ALPHA resolves to.",
-      "known_defect": "oracle_activity counts the calls and 19 LazerPriceUpdationEvents but names neither the coins priced nor the prices written, so ALPHA collateral valued at the AVAX feed never appears."
+      "tier": "price-provider",
+      "basis": "chain against DefiLlama: commands 2 to 4 of AUHp6aWy refresh ALPHA's price through oracle::get_price_info, a LazerPriceUpdationEvent writes 7.6335 into the 0x3a51 COIN slot ALPHA resolves to, and AlphaLend's PriceInfo row keyed by ALPHA holds 7.6335 after the transaction, while DefiLlama prices ALPHA at $0.72 (check market-price-vs-oracle)."
     },
     {
       "id": "first-funding-of-position-holders",

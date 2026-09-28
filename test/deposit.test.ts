@@ -200,3 +200,137 @@ describe("decideDepositVerdict", () => {
     expect(v.verdict).toBe("unknown");
   });
 });
+
+describe("gas reserve on self-paid sweeps", () => {
+  const ADDR = "0x" + "a1".repeat(32);
+  const SINK = "0x" + "b2".repeat(32);
+  const RELAYER = "0x" + "c3".repeat(32);
+  const PAYER = "0x" + "d4".repeat(32);
+  const GAS = 2_000_000n;
+
+  const incoming = (digest: string, amount: bigint, coinType = SUI): ScannedTx => ({
+    digest,
+    timestamp: null,
+    sender: PAYER,
+    gasSponsor: PAYER,
+    changes: [
+      { owner: PAYER, coinType, amount: -amount },
+      { owner: ADDR, coinType, amount },
+    ],
+  });
+  // The address pays gas: it loses the amount plus gas, the sink gains the amount.
+  const selfPaid = (digest: string, amount: bigint, coinType = SUI): ScannedTx => ({
+    digest,
+    timestamp: null,
+    sender: ADDR,
+    gasSponsor: ADDR,
+    changes:
+      coinType === SUI
+        ? [
+            { owner: ADDR, coinType: SUI, amount: -amount - GAS },
+            { owner: SINK, coinType: SUI, amount },
+          ]
+        : [
+            { owner: ADDR, coinType, amount: -amount },
+            { owner: ADDR, coinType: SUI, amount: -GAS },
+            { owner: SINK, coinType, amount },
+          ],
+  });
+  const sponsored = (digest: string, amount: bigint): ScannedTx => ({
+    digest,
+    timestamp: null,
+    sender: ADDR,
+    gasSponsor: RELAYER,
+    changes: [
+      { owner: ADDR, coinType: SUI, amount: -amount },
+      { owner: RELAYER, coinType: SUI, amount: 1_000_000n },
+      { owner: SINK, coinType: SUI, amount },
+    ],
+  });
+  const window = (txs: ScannedTx[], balances: Array<[string, bigint]>): DepositScan => ({
+    address: ADDR,
+    txs,
+    complete: true,
+    currentBalances: new Map(balances),
+  });
+
+  // 30 SUI in, swept self-paid leaving 0.02 SUI; 100 SUI in, swept whole by a relayer.
+  const MIXED = window(
+    [
+      incoming("in1", 30_000_000_000n),
+      selfPaid("self1", 29_978_000_000n),
+      incoming("in2", 100_000_000_000n),
+      sponsored("relay1", 100_020_000_000n),
+    ],
+    [[SUI, 0n]],
+  );
+
+  it("counts a self-paid sweep that leaves only a gas reserve as a full sweep", () => {
+    const p = readDepositPattern(MIXED);
+    expect(p.sweeps.map((s) => [s.digest, s.full_balance, s.kept_for_gas])).toEqual([
+      ["self1", true, "0.02 SUI"],
+      ["relay1", true, undefined],
+    ]);
+    expect(p.sweeps[0]!.coins[0]!.balance_after_raw).toBe("20000000");
+  });
+
+  it("reads sponsored full sweeps mixed with older gas-reserve sweeps as likely, with every check run", () => {
+    const v = decideDepositVerdict(readDepositPattern(MIXED), { cexLabel: true, hub: null }, "relayer");
+    expect(v.verdict).toBe("likely");
+    expect(v.checks).toEqual({
+      single_destination: true,
+      full_balance_sweeps: true,
+      sponsored_sweeps: false,
+      sponsor_relayer_shaped: true,
+      destination_is_exchange: true,
+    });
+    expect(v.checks_not_run).toEqual({});
+  });
+
+  it("is still no when a self-paid transfer leaves more than the gas reserve", () => {
+    const p = readDepositPattern(
+      window([incoming("in1", 100_000_000_000n), selfPaid("pay1", 40_000_000_000n)], [[SUI, 59_998_000_000n]]),
+    );
+    expect(p.sweeps[0]!.full_balance).toBe(false);
+    const v = decideDepositVerdict(p, { cexLabel: true, hub: null }, null);
+    expect(v.verdict).toBe("no");
+    // The later checks still ran, so the reasons show all the evidence.
+    expect(v.checks.sponsored_sweeps).toBe(false);
+    expect(v.checks.sponsor_relayer_shaped).toBe(false);
+    expect(v.checks.destination_is_exchange).toBe(true);
+  });
+
+  it("allows no reserve of a coin other than SUI", () => {
+    const p = readDepositPattern(
+      window(
+        [incoming("in1", 1_000_000_000n), incoming("in2", 500_000n, USDC), selfPaid("usdc1", 400_000n, USDC)],
+        [
+          [SUI, 998_000_000n],
+          [USDC, 100_000n],
+        ],
+      ),
+    );
+    expect(p.sweeps[0]!.full_balance).toBe(false);
+  });
+
+  it("explains every check it leaves null", () => {
+    const cases = [
+      decideDepositVerdict(readDepositPattern(window([incoming("in1", 10n)], [[SUI, 10n]])), null, null),
+      decideDepositVerdict(readDepositPattern({ ...MIXED, currentBalances: null }), { cexLabel: false, hub: null }, null, {
+        sponsor: "sponsor unmeasured",
+        destination: "destination unmeasured",
+      }),
+      decideDepositVerdict(
+        readDepositPattern(window([incoming("in1", 100_000_000_000n), selfPaid("pay1", 40_000_000_000n)], [[SUI, 59_998_000_000n]])),
+        null,
+        null,
+      ),
+    ];
+    for (const v of cases) {
+      const nulls = Object.entries(v.checks).filter(([, value]) => value === null).map(([key]) => key);
+      expect(Object.keys(v.checks_not_run).sort()).toEqual(nulls.sort());
+    }
+    expect(cases[1]!.verdict).toBe("unknown");
+    expect(cases[1]!.checks_not_run.sponsor_relayer_shaped).toBe("sponsor unmeasured");
+  });
+});

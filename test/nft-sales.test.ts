@@ -21,6 +21,8 @@ const BLUEMOVE =
   "0xd5dd28cc24009752905689b2ba2bf90bfc8de4549b9123f93519bb8ba9bf9981::marketplace::BuyEvent";
 const ORIGINBYTE =
   "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a::orderbook::TradeFilledEvent";
+const TRADEPORT_BID =
+  "0x53134eb544c5a0b5085e99efaf7eab13b28ad123de35d61f941f8c8c40b72033::tradeport_biddings::MatchSingleBidEvent";
 
 describe("reading a sale out of its event", () => {
   it("reads the TradePort simple-listing shape", () => {
@@ -79,6 +81,33 @@ describe("reading a sale out of its event", () => {
       price: "7",
     });
     expect(s).toMatchObject({ nft_id: "0xnft", buyer_kiosk_id: "0xbk", seller_kiosk_id: "0xsk" });
+  });
+
+  it("reads the TradePort bid match, which names the collection unpadded and no seller", () => {
+    const s = readSale(TRADEPORT_BID, {
+      bid_id: "0xbid",
+      type: "0",
+      buyer: "0xbuy",
+      maybe_multi_bid_id: "0xmulti",
+      nft_type: "c0ffee::nft::Item",
+      maybe_nft_id: null,
+      maybe_nft_bcs: null,
+      maybe_expire_at: null,
+      price: "93600000000",
+      royalty: "4680000000",
+      fee: "2808000000",
+      nft_id: "0xnft",
+      maybe_buyer_kiosk_id: "0xbk",
+    });
+    expect(s).toMatchObject({
+      nft_id: "0xnft",
+      nft_type: `0x${"0".repeat(58)}c0ffee::nft::Item`,
+      buyer: "0xbuy",
+      price: "93600000000",
+      buyer_kiosk_id: "0xbk",
+      marketplace: "TradePort",
+    });
+    expect(s?.seller).toBeUndefined();
   });
 
   /**

@@ -27,6 +27,7 @@ import { displayCoin, pricingScale, toHumanAmount, type CoinScale, type PricePoi
 import type { CheckRun, PtbAnomaly } from "./ptb-anomalies.js";
 import type { ObjectMovement } from "./object-flow.js";
 import type { GasPaid } from "./payouts.js";
+import { KEY_LENGTHS, keyChangeAnomaly, keyChanges } from "./key-change.js";
 import { compareStates, holdingTotals, mintedTotals, numericFields, stateAnomaly, STATE_JUMP_FACTOR, VALUE_SHARE_LOST, type StateSnapshot } from "./state-delta.js";
 import { signedReading, signedReadings } from "./signed-int.js";
 
@@ -96,6 +97,8 @@ export interface AttackObject {
   inputVersion?: string | null;
   /** Version after the transaction; null for an object it deleted or wrapped. */
   outputVersion?: string | null;
+  /** The address that held it both before and after, for an object changed in place. */
+  heldBy?: string | null;
 }
 
 export interface AttackTx {
@@ -116,6 +119,8 @@ export interface AttackTx {
   events: AttackEvent[];
   balanceChanges: AttackBalanceChange[];
   objects: AttackObject[];
+  /** Shared objects the transaction read without changing them, at the version it read. */
+  readShared?: Array<{ objectId: string; version: string; objectType: string | null }>;
   /** The PTB's inputs. */
   inputs?: AttackInput[];
   /** `MakeMoveVector` commands and their elements. */
@@ -1609,6 +1614,10 @@ export const TRADE_CHECKS: readonly CheckRun[] = [
     code: "unreconciled-gain",
     rule: "coins reaching addresses are worth more than decoded pool and vault events and the read objects' balances and mints paid out, or include an unpriced coin nothing read paid out (info)",
   },
+  {
+    code: "signing-key-replaced",
+    rule: `a changed shared object's byte string of a key length (${[...KEY_LENGTHS].join(", ")} bytes) holds another key (medium)`,
+  },
 ];
 
 /**
@@ -1665,12 +1674,14 @@ export function tradeAnomalies(
       title: `Credits more liquidity or shares than its amounts can buy: ${mints.length} event${mints.length === 1 ? "" : "s"}`,
       detail:
         "A liquidity event states a liquidity delta that no price inside or outside its tick range makes consistent with the amounts it moved, even allowing one raw unit of rounding per coin; or an event mints a share of an object's share supply far larger than the share of the object's holdings its deposits make up, where a proportional mint issues at most the deposit's share. The amount charged or credited was computed wrong, or computed against numbers the holdings do not back. Read the function that computed it with get_move_function and disassemble_module.",
-      evidence: mints.slice(0, 10),
+      evidence: mints.length > 6 ? [...mints.slice(0, 5), `${mints.length - 5} more events`] : mints,
     });
   }
   if (state) {
     const s = stateAnomaly(compareStates(tx, state, flows, prices), state);
     if (s) out.push(s);
+    const k = keyChangeAnomaly(keyChanges(state));
+    if (k) out.push(k);
   }
   return out;
 }

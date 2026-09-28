@@ -367,6 +367,46 @@ describe("FlowEngine forward", () => {
     ]);
   });
 
+  it("lists a holder reached by two paths once under unspent, with both arrivals' held amounts", async () => {
+    // ATTACKER pays A 600 and B 400, B pays A 400, and A's only spend is 300
+    // to C. A's first arrival keeps 300 and its second keeps all 400: two
+    // unspent ends of one holder, reported as one entry of 0.7.
+    const A = `0xa5${"a".repeat(62)}`;
+    const Bh = `0xb6${"b".repeat(62)}`;
+    const Ch = `0xc7${"c".repeat(62)}`;
+    const exploit: HopSpec = { digest: "0xexploit3", sender: ATTACKER, checkpoint: CP, changes: [[ATTACKER, "1000"]] };
+    const split: HopSpec = { digest: "0xsplit3", sender: ATTACKER, checkpoint: CP + 1, changes: [[ATTACKER, "-1000"], [A, "600"], [Bh, "400"]] };
+    const bPaysA: HopSpec = { digest: "0xbpaysa3", sender: Bh, checkpoint: CP + 2, changes: [[Bh, "-400"], [A, "400"]] };
+    const aPaysC: HopSpec = { digest: "0xapaysc3", sender: A, checkpoint: CP + 3, changes: [[A, "-300"], [Ch, "300"]] };
+    const all = new Map([exploit, split, bPaysA, aPaysC].map((h) => [h.digest, h]));
+    const sent: Record<string, HopSpec[]> = { [ATTACKER]: [exploit, split], [Bh]: [bPaysA], [A]: [aPaysC] };
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      const q = String(query);
+      if (q.includes("transactions(")) {
+        const list = q.includes("sentAddress") ? (sent[String(vars.address)] ?? []) : [];
+        return candidates(list, q.includes("last:") ? "backward" : "forward");
+      }
+      const h = all.get(String(vars.digest));
+      return h ? gqlTx(h) : { transaction: null };
+    });
+
+    const e = engine();
+    await e.startFromDigest("0xexploit3");
+    await e.run();
+
+    const aNode = [...e.nodes.values()].find((n) => n.address === A)!;
+    expect(aNode.unspent).toBe(700n);
+    const unspent = e.ledger.summary().find((g) => g.code === "unspent")!;
+    const aEntries = unspent.entries.filter((x) => x.node === aNode.id);
+    expect(aEntries).toHaveLength(1);
+    expect(aEntries[0].share).toBeCloseTo(0.7);
+    // Both arrivals' reasons survive the merge.
+    expect(aEntries[0].detail).toContain("moved only part");
+    expect(aEntries[0].detail).toContain("already counted");
+    expect(unspent.share).toBeCloseTo(unspent.entries.reduce((s, x) => s + x.share, 0));
+    expect(e.ledger.total()).toBeCloseTo(1);
+  });
+
   it("follows a second conversion into an already-expanded coin of the same address to the bridge exit, not a cycle", async () => {
     // ATTACKER swaps XAUm into USDC and into SUI, then that SUI into USDC, and
     // sends all the USDC out through a bridge. Its USDC node is expanded for

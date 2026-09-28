@@ -1,15 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMockClient } from "../helpers/mock-grpc.js";
+import type { ValuedPosition } from "../../src/utils/position-value.js";
 
-const mockSui = createMockClient();
+// The real readers are replaced by the synthetic ones registered below.
+vi.mock("../../src/utils/valuers/index.js", () => ({}));
 
-vi.mock("../../src/clients/grpc.js", () => ({
-  sui: mockSui,
-  archive: mockSui,
-}));
-
-// Imported after the mock above, which the factory closes over.
+// Imported after the mock above.
+const { registerValuer } = await import("../../src/utils/position-value.js");
 const { registerDefiTools } = await import("../../src/tools/defi.js");
 
 const tools = new Map<string, Function>();
@@ -17,37 +14,55 @@ registerDefiTools({
   tool: (name: string, _desc: string, _schema: unknown, handler: Function) => tools.set(name, handler),
 } as unknown as McpServer);
 
-const STAKED = "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui";
+const position = (object_id: string, protocol: string, usd: number | null): ValuedPosition => ({
+  protocol,
+  kind: "staked_sui",
+  object_id,
+  assets: [{ coin_type: "0x2::sui::SUI", amount: "1", side: "stake", usd }],
+  usd_net: usd,
+  method: "synthetic",
+  tier: "price-provider",
+  ...(usd === null ? { unpriced_reason: "no price" } : {}),
+});
 
-/** A StakedSui as the SDK's listOwnedObjects returns it with `include: { json: true }`. */
-function stakedSui(id: string, principal: string) {
-  return {
-    objectId: id,
-    version: "988732962",
-    digest: "AvQg6ywqWwqGo471qka7wvcMLWzwcwsiaaUiw6n9XbtP",
-    owner: { $kind: "AddressOwner", AddressOwner: "0xwallet" },
-    type: STAKED,
-    json: { id, pool_id: "0xpool", principal, stake_activation_epoch: "1240" },
-  };
-}
+let nftRuns = 0;
+registerValuer({ name: "stakes", value: async () => ({ positions: [position("0xa1", "Sui staking", 10), position("0xa2", "Sui staking", 2.5)], unread: [] }) });
+registerValuer({ name: "pools", value: async () => ({ positions: [position("0xb1", "Pool", null)], unread: [{ what: "0xb2", reason: "pool unreadable" }] }) });
+registerValuer({ name: "broken", value: async () => { throw new Error("service down"); } });
+registerValuer({ name: "nft", value: async () => { nftRuns++; return { positions: [position("0xc1", "Art", 1000)], unread: [] }; } });
+
+const run = async () => JSON.parse((await tools.get("get_defi_positions")!({ address: "0x00000000000000000000000000000000000000000000000000000000000000d1" })).content[0].text);
 
 describe("get_defi_positions", () => {
-  beforeEach(() => vi.clearAllMocks());
+  it("gives every position its usd, method and tier, most valuable first", async () => {
+    const data = await run();
+    expect(data.positions.map((p: { object_id: string }) => p.object_id)).toEqual(["0xa1", "0xa2", "0xb1"]);
+    for (const p of data.positions) {
+      expect(p).toHaveProperty("usd");
+      expect(p.method).toBeTruthy();
+      expect(p.tier).toBeTruthy();
+    }
+  });
 
-  it("reads every page of a protocol's positions", async () => {
-    // One page of 50 was the whole answer, flagged or not.
-    mockSui.listOwnedObjects.mockImplementation(async ({ type, cursor }: { type: string; cursor: string | null }) => {
-      if (type !== "0x3::staking_pool::StakedSui") return { objects: [], hasNextPage: false, cursor: null };
-      return cursor === null
-        ? { objects: [stakedSui("0xs1", "1"), stakedSui("0xs2", "2")], hasNextPage: true, cursor: "c1" }
-        : { objects: [stakedSui("0xs3", "3")], hasNextPage: false, cursor: null };
-    });
+  it("sums priced positions only and counts the unpriced apart", async () => {
+    const data = await run();
+    expect(data.total_usd).toBe(12.5);
+    expect(data.priced_positions).toBe(2);
+    expect(data.unpriced_positions).toBe(1);
+    expect(data.by_protocol["Sui staking"]).toEqual({ count: 2, usd: 12.5, unpriced: 0 });
+    expect(data.by_protocol.Pool).toEqual({ count: 1, usd: 0, unpriced: 1 });
+  });
 
-    const data = JSON.parse((await tools.get("get_defi_positions")!({ address: "0xwallet" })).content[0].text);
-
+  it("states what a reader could not read, and a failed reader, without losing the rest", async () => {
+    const data = await run();
+    expect(data.unread.map((u: { what: string }) => u.what).sort()).toEqual(["0xb2", "broken"]);
     expect(data.total_positions).toBe(3);
-    expect(data.positions.staked_sui.map((p: { object_id: string }) => p.object_id)).toEqual(["0xs1", "0xs2", "0xs3"]);
-    expect(data.positions.staked_sui[2].summary.principal).toBe("3");
-    expect(data.truncated_protocols).toBeUndefined();
+  });
+
+  it("leaves NFTs to the wallet overview", async () => {
+    nftRuns = 0;
+    const data = await run();
+    expect(nftRuns).toBe(0);
+    expect(data.positions.some((p: { object_id: string }) => p.object_id === "0xc1")).toBe(false);
   });
 });

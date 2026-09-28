@@ -1,409 +1,21 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
-import { gqlQuery } from "../clients/graphql.js";
-import { registerCollection } from "../discovery-nft.js";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { numArg, addressArg, boolArg } from "./args.js";
+import { canonicalType } from "../utils/nft-sales.js";
+import { MARKET_WINDOW_DAYS } from "../utils/nft-market.js";
+import { capPayload, capRows, type ListCap } from "../utils/output-cap.js";
+import { readerFor, valueObjects, valuePositions, type ValuedPosition, type ValuerResult } from "../utils/position-value.js";
+import "../utils/valuers/index.js";
+import { isFrameworkType, NFT_VALUER } from "../utils/valuers/nft.js";
+import {
+  discoverKiosks,
+  listDirectNftsPage,
+  readHeldCollections,
+  scanKioskPage,
+  type NftEntry,
+} from "../utils/nft-holdings.js";
 import { clampPageSize } from "../utils/pagination.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-// GraphQL returns canonical (zero-padded) addresses, so type checks use
-// substring matches that work for both short and canonical forms.
-const KIOSK_CAP_TYPE = "0x2::kiosk::KioskOwnerCap";
-const KIOSK_CAP_TYPE_SUBSTR = "::kiosk::KioskOwnerCap";
-const KIOSK_ITEM_TYPE_SUBSTR = "::kiosk::Item";
-const STAKED_SUI_TYPE_SUBSTR = "::staking_pool::StakedSui";
-const COIN_TYPE_SUBSTR = "::coin::Coin<";
-// PersonalKioskCap wraps a KioskOwnerCap inside a `cap` field. The inner
-// KioskOwnerCap is owned by the PersonalKioskCap object, NOT the user's
-// address — so the address-filtered KioskOwnerCap query misses it. We must
-// query PersonalKioskCap separately and dereference `cap.for` to get the
-// underlying kiosk id.
-const PERSONAL_KIOSK_CAP_TYPE =
-  "0x0cb4bcc0560340eb1a1b929cabe56b33fc6449820ec8c1980d69bb98b649b802::personal_kiosk::PersonalKioskCap";
-const PERSONAL_KIOSK_CAP_TYPE_SUBSTR = "::personal_kiosk::PersonalKioskCap";
-
-interface NftEntry {
-  object_id: string;
-  type: string;
-  collection: string;
-  kiosk_id: string | null;
-  name: string | null;
-  description: string | null;
-  image_url: string | null;
-  content: unknown;
-}
-
-/**
- * Pull display fields out of either:
- *  - the rendered on-chain Display object (`value.contents.display.output`), preferred
- *  - the raw Move struct fields (`value.contents.json`), as fallback for NFTs without a Display
- */
-function pickDisplay(
-  display: Record<string, unknown> | null | undefined,
-  rawJson: unknown,
-): { name: string | null; description: string | null; image_url: string | null } {
-  const out = { name: null as string | null, description: null as string | null, image_url: null as string | null };
-  if (display && typeof display === "object") {
-    if (typeof display.name === "string") out.name = display.name;
-    if (typeof display.description === "string") out.description = display.description;
-    for (const k of ["image_url", "img_url", "url", "thumbnail"]) {
-      if (typeof display[k] === "string" && !out.image_url) out.image_url = display[k] as string;
-    }
-  }
-  if ((!out.name || !out.description || !out.image_url) && rawJson && typeof rawJson === "object") {
-    const j = rawJson as Record<string, unknown>;
-    if (!out.name && typeof j.name === "string") out.name = j.name;
-    if (!out.description && typeof j.description === "string") out.description = j.description;
-    if (!out.image_url) {
-      for (const k of ["image_url", "img_url", "url", "thumbnail"]) {
-        if (typeof j[k] === "string") {
-          out.image_url = j[k] as string;
-          break;
-        }
-      }
-    }
-  }
-  return out;
-}
-
-const KIOSK_CAPS_QUERY = `query($owner: SuiAddress!, $cursor: String) {
-  address(address: $owner) {
-    objects(first: 50, after: $cursor, filter: { type: "${KIOSK_CAP_TYPE}" }) {
-      pageInfo { hasNextPage endCursor }
-      nodes { contents { json } }
-    }
-  }
-}`;
-
-const PERSONAL_KIOSK_CAPS_QUERY = `query($owner: SuiAddress!, $cursor: String) {
-  address(address: $owner) {
-    objects(first: 50, after: $cursor, filter: { type: "${PERSONAL_KIOSK_CAP_TYPE}" }) {
-      pageInfo { hasNextPage endCursor }
-      nodes { contents { json } }
-    }
-  }
-}`;
-
-interface KioskCapsResponse {
-  address: {
-    objects: {
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      nodes: Array<{ contents: { json: { for?: string } } | null }>;
-    };
-  } | null;
-}
-
-interface PersonalKioskCapsResponse {
-  address: {
-    objects: {
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      nodes: Array<{ contents: { json: { cap?: { for?: string } } } | null }>;
-    };
-  } | null;
-}
-
-async function discoverKiosks(owner: string): Promise<string[]> {
-  const ids = new Set<string>();
-
-  // Standard KioskOwnerCap (directly address-owned)
-  let cursor: string | null = null;
-  do {
-    const data: KioskCapsResponse = await gqlQuery<KioskCapsResponse>(KIOSK_CAPS_QUERY, { owner, cursor });
-    const conn = data.address?.objects;
-    if (!conn) break;
-    for (const node of conn.nodes) {
-      const forField = node.contents?.json?.for;
-      if (typeof forField === "string") ids.add(forField);
-    }
-    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
-  } while (cursor);
-
-  // PersonalKioskCap (wraps a KioskOwnerCap; kiosk id is at cap.for)
-  cursor = null;
-  do {
-    const data: PersonalKioskCapsResponse = await gqlQuery<PersonalKioskCapsResponse>(
-      PERSONAL_KIOSK_CAPS_QUERY,
-      { owner, cursor },
-    );
-    const conn = data.address?.objects;
-    if (!conn) break;
-    for (const node of conn.nodes) {
-      const forField = node.contents?.json?.cap?.for;
-      if (typeof forField === "string") ids.add(forField);
-    }
-    cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
-  } while (cursor);
-
-  return [...ids];
-}
-
-/** GraphQL's largest page. */
-const GQL_PAGE = 50;
-
-const KIOSK_FIELDS_QUERY = `query($kioskId: SuiAddress!, $cursor: String, $first: Int!) {
-  object(address: $kioskId) {
-    dynamicFields(first: $first, after: $cursor) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        name { type { repr } }
-        value {
-          __typename
-          ... on MoveObject {
-            address
-            contents {
-              type { repr }
-              json
-              display { output }
-            }
-          }
-        }
-      }
-    }
-  }
-}`;
-
-interface KioskFieldsResponse {
-  object: {
-    dynamicFields: {
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      nodes: Array<{
-        name: { type: { repr: string } };
-        value:
-          | {
-              __typename: "MoveObject";
-              address: string;
-              contents: {
-                type: { repr: string };
-                json: unknown;
-                display: { output: Record<string, unknown> | null } | null;
-              } | null;
-            }
-          | { __typename: "MoveValue" };
-      }>;
-    };
-  } | null;
-}
-
-type KioskDynamicFieldNode = NonNullable<KioskFieldsResponse["object"]>["dynamicFields"]["nodes"][number];
-
-function buildKioskNftEntry(
-  node: KioskDynamicFieldNode,
-  kioskId: string,
-  withDetails: boolean,
-): NftEntry | null {
-  if (!node.name.type.repr.includes(KIOSK_ITEM_TYPE_SUBSTR)) return null;
-  if (node.value.__typename !== "MoveObject") return null;
-  const objectId = node.value.address;
-  const contents = node.value.contents;
-  const collection = contents?.type.repr ?? "unknown";
-  if (collection !== "unknown") registerCollection(collection);
-  if (!withDetails) {
-    return {
-      object_id: objectId,
-      type: collection,
-      collection,
-      kiosk_id: kioskId,
-      name: null,
-      description: null,
-      image_url: null,
-      content: null,
-    };
-  }
-  const display = pickDisplay(contents?.display?.output ?? null, contents?.json);
-  return {
-    object_id: objectId,
-    type: collection,
-    collection,
-    kiosk_id: kioskId,
-    name: display.name,
-    description: display.description,
-    image_url: display.image_url,
-    content: contents?.json ?? null,
-  };
-}
-
-/**
- * Walk a single kiosk's `dynamicFields` until at least `target` items are
- * collected or the kiosk is exhausted. Returns whatever the GraphQL page
- * boundary contained — may overshoot `target` (we don't break mid-page).
- *
- * `innerCursor` is the GraphQL cursor inside this kiosk; pass `null` to start
- * from the beginning. The returned `nextInnerCursor` is null when the kiosk
- * is fully drained.
- */
-async function scanKioskPage(
-  kioskId: string,
-  innerCursor: string | null,
-  target: number,
-  withDetails: boolean,
-): Promise<{ items: NftEntry[]; nextInnerCursor: string | null }> {
-  const items: NftEntry[] = [];
-  let cursor = innerCursor;
-  while (items.length < target) {
-    // Nearly every field of a kiosk is an item, so asking for what is still
-    // missing keeps a page at `target` instead of a fixed 50.
-    const first = Math.min(GQL_PAGE, target - items.length);
-    const data: KioskFieldsResponse = await gqlQuery<KioskFieldsResponse>(KIOSK_FIELDS_QUERY, { kioskId, cursor, first });
-    const conn = data.object?.dynamicFields;
-    if (!conn) {
-      cursor = null;
-      break;
-    }
-    for (const node of conn.nodes) {
-      const entry = buildKioskNftEntry(node, kioskId, withDetails);
-      if (entry) items.push(entry);
-    }
-    if (!conn.pageInfo.hasNextPage) {
-      cursor = null;
-      break;
-    }
-    cursor = conn.pageInfo.endCursor;
-    // Another page claimed with no cursor restarts the walk, so the same items
-    // would be collected again until the target filled with duplicates.
-    if (!cursor) break;
-  }
-  return { items, nextInnerCursor: cursor };
-}
-
-/**
- * Drain a kiosk fully. Used by `list_nft_collections` where we always want
- * complete counts.
- */
-async function scanKioskAll(kioskId: string, withDetails: boolean): Promise<NftEntry[]> {
-  const out: NftEntry[] = [];
-  let cursor: string | null = null;
-  do {
-    const { items, nextInnerCursor } = await scanKioskPage(kioskId, cursor, Number.POSITIVE_INFINITY, withDetails);
-    out.push(...items);
-    cursor = nextInnerCursor;
-  } while (cursor);
-  return out;
-}
-
-const DIRECT_OBJECTS_QUERY = `query($owner: SuiAddress!, $cursor: String, $withDetails: Boolean!) {
-  address(address: $owner) {
-    objects(first: 50, after: $cursor) {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        cursor
-        node {
-          address
-          contents {
-            type { repr }
-            json @include(if: $withDetails)
-            display @include(if: $withDetails) { output }
-          }
-        }
-      }
-    }
-  }
-}`;
-
-interface DirectObjectsResponse {
-  address: {
-    objects: {
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      edges: Array<{
-        cursor: string;
-        node: {
-          address: string;
-          contents: {
-            type: { repr: string };
-            json?: unknown;
-            display?: { output: Record<string, unknown> | null } | null;
-          } | null;
-        };
-      }>;
-    };
-  } | null;
-}
-
-function isLikelyNft(typeRepr: string): boolean {
-  if (typeRepr.includes(COIN_TYPE_SUBSTR)) return false;
-  if (typeRepr.includes(STAKED_SUI_TYPE_SUBSTR)) return false;
-  if (typeRepr.includes(KIOSK_CAP_TYPE_SUBSTR)) return false;
-  if (typeRepr.includes(PERSONAL_KIOSK_CAP_TYPE_SUBSTR)) return false;
-  return true;
-}
-
-/**
- * Walk directly-owned (non-kiosk) objects until at least `target` NFTs are
- * collected or the address is exhausted. Excludes coins, KioskOwnerCaps,
- * PersonalKioskCaps, and staked SUI. Stops at exactly `target`: when it fills
- * mid-page, the next cursor is the last kept object's edge cursor. Returning
- * the whole page would send every NFT on it, SVG images included, for
- * `limit: 1`.
- */
-async function listDirectNftsPage(
-  owner: string,
-  startCursor: string | null,
-  target: number,
-  withDetails: boolean,
-): Promise<{ items: NftEntry[]; nextCursor: string | null }> {
-  const out: NftEntry[] = [];
-  let cursor = startCursor;
-  while (out.length < target) {
-    const data: DirectObjectsResponse = await gqlQuery<DirectObjectsResponse>(DIRECT_OBJECTS_QUERY, {
-      owner,
-      cursor,
-      withDetails,
-    });
-    const conn = data.address?.objects;
-    if (!conn) {
-      cursor = null;
-      break;
-    }
-    for (const [i, { node }] of conn.edges.entries()) {
-      if (out.length >= target) {
-        // Full mid-page: resume after the last object kept.
-        return { items: out, nextCursor: conn.edges[i - 1].cursor };
-      }
-      const typeRepr = node.contents?.type.repr ?? "unknown";
-      if (typeRepr === "unknown" || !isLikelyNft(typeRepr)) continue;
-      registerCollection(typeRepr);
-      if (!withDetails) {
-        out.push({
-          object_id: node.address,
-          type: typeRepr,
-          collection: typeRepr,
-          kiosk_id: null,
-          name: null,
-          description: null,
-          image_url: null,
-          content: null,
-        });
-      } else {
-        const display = pickDisplay(node.contents?.display?.output ?? null, node.contents?.json);
-        out.push({
-          object_id: node.address,
-          type: typeRepr,
-          collection: typeRepr,
-          kiosk_id: null,
-          name: display.name,
-          description: display.description,
-          image_url: display.image_url,
-          content: node.contents?.json ?? null,
-        });
-      }
-    }
-    if (!conn.pageInfo.hasNextPage) {
-      cursor = null;
-      break;
-    }
-    cursor = conn.pageInfo.endCursor;
-    // Another page claimed with no cursor restarts the walk, so the same items
-    // would be collected again until the target filled with duplicates.
-    if (!cursor) break;
-  }
-  return { items: out, nextCursor: cursor };
-}
-
-/**
- * Drain all directly-owned NFTs for an address. Used by `list_nft_collections`.
- */
-async function listDirectNftsAll(owner: string, withDetails: boolean): Promise<NftEntry[]> {
-  const { items } = await listDirectNftsPage(owner, null, Number.POSITIVE_INFINITY, withDetails);
-  return items;
-}
 
 // ---------------------------------------------------------------------------
 // Cursor encoding for resumable list_nfts
@@ -450,7 +62,7 @@ function decodeCursor(s: string): ListNftsCursor {
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper count-only summary.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Each NFT carries an estimated value, `est_usd` (tier heuristic, from its collection's lowest active listing and last sale, explained per collection under `valuation`); an object another reader values, such as a liquidity position, carries `value_usd` and the reader's tier instead. `value: false` skips the valuation. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper per-collection summary with a wallet total.",
     {
       address: addressArg().describe("Owner wallet address (0x...)"),
       limit: numArg()
@@ -467,11 +79,15 @@ export function registerNftTools(server: McpServer) {
         .enum(["summary", "full"])
         .optional()
         .describe("'summary' (default): display fields only, and `omitted` counts the NFTs whose raw contents were left out. 'full' adds each NFT's raw Move struct contents."),
+      value: boolArg()
+        .optional()
+        .default(true)
+        .describe("Estimate each NFT's value from its collection's market (default true). Costs a few requests per collection on the page."),
     },
-    async ({ address, limit, cursor, detail }) => {
+    async ({ address, limit, cursor, detail, value }) => {
       const target = clampPageSize(limit);
-      const buildResponse = (state: ListNftsCursor, nfts: NftEntry[], done: boolean) =>
-        nftPage(address, state, nfts, done, detail === "full");
+      const buildResponse = async (state: ListNftsCursor, nfts: NftEntry[], done: boolean) =>
+        nftPage(address, state, nfts, done, detail === "full", value === false ? null : await valueNfts(address, nfts));
 
       // Initialize state: either resume from cursor or discover kiosks fresh.
       let state: ListNftsCursor;
@@ -550,56 +166,138 @@ export function registerNftTools(server: McpServer) {
 
   server.tool(
     "list_nft_collections",
-    "Get a lightweight summary of NFT collections owned by a wallet. Walks all kiosks plus direct-owned objects and returns deduplicated collection types with counts. Backed by GraphQL.",
+    `Summary of the NFT collections a wallet holds: every kiosk plus directly owned objects, one row per collection type with its count. Each collection carries an estimated value (tier heuristic): per item, the lower of the collection's lowest active listing and its last sale in the ${MARKET_WINDOW_DAYS} days before now, or whichever of the two exists (a listing alone only if placed in that window), with zero-price sales, sales within one address or kiosk, and sales where one side first funded the other left out; unpriced otherwise. \`estimated_value\` totals every collection; the default view keeps every priced collection and caps the rest, and \`detail: 'full'\` returns all rows. \`value: false\` skips the valuation.`,
     {
       address: addressArg().describe("Owner wallet address (0x...)"),
+      value: boolArg()
+        .optional()
+        .default(true)
+        .describe("Estimate each collection's value from its market (default true). Costs a few requests per collection that has a market."),
+      detail: z
+        .enum(["summary", "full"])
+        .optional()
+        .describe("'summary' (default): priced collections plus the most-held others that fit, the rest counted under `omitted`. 'full': every collection."),
     },
-    async ({ address }) => {
-      const kioskIds = await discoverKiosks(address);
-      const [kioskScans, directNfts] = await Promise.all([
-        Promise.allSettled(kioskIds.map((id) => scanKioskAll(id, false))),
-        listDirectNftsAll(address, false),
-      ]);
-
-      const counts = new Map<string, number>();
-      const bump = (type: string) => counts.set(type, (counts.get(type) ?? 0) + 1);
-      for (const r of kioskScans) {
-        if (r.status === "fulfilled") {
-          for (const item of r.value) bump(item.collection);
-        }
-      }
-      for (const item of directNfts) bump(item.collection);
-
-      const collections = Array.from(counts.entries())
+    async ({ address, value, detail }) => {
+      const held = await readHeldCollections(address);
+      type Row = { collection: string; count: number; value?: Record<string, unknown> };
+      const rows: Row[] = [...held.counts]
         .map(([collection, count]) => ({ collection, count }))
         .sort((a, b) => b.count - a.count);
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                address,
-                collections,
-                total_collections: collections.length,
-                total_nfts: collections.reduce((sum, c) => sum + c.count, 0),
-                kiosk_count: kioskIds.length,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
+      const totals = {
+        total_collections: rows.length,
+        total_nfts: rows.reduce((sum, c) => sum + c.count, 0),
+        kiosk_count: held.kiosk_count,
+        ...(held.kiosks_unread ? { kiosks_unread: held.kiosks_unread } : {}),
       };
+
+      let estimated: Record<string, unknown> | null = null;
+      if (value !== false) {
+        const valued = await valuePositions({ owner: address }, [NFT_VALUER]);
+        const byType = new Map(valued.positions.map((p) => [canonicalType(p.assets[0].coin_type), p]));
+        let usd = 0;
+        const priced = { collections: 0, nfts: 0 };
+        const unpriced = { collections: 0, nfts: 0 };
+        const notValued = { collections: 0, nfts: 0 };
+        let suiUsd: unknown = null;
+        for (const row of rows) {
+          const p = byType.get(canonicalType(row.collection));
+          if (!p) {
+            const other = readerFor(row.collection);
+            row.value =
+              other && other !== NFT_VALUER
+                ? { valued_by: other }
+                : { not_valued: isFrameworkType(row.collection) ? "a Sui framework object, not an NFT" : "left out of the valuation: see estimated_value.unread" };
+            notValued.collections++;
+            notValued.nfts += row.count;
+            continue;
+          }
+          row.value = collectionValue(p);
+          suiUsd ??= p.detail?.sui_usd ?? null;
+          const bucket = p.usd_net === null ? unpriced : priced;
+          bucket.collections++;
+          bucket.nfts += row.count;
+          if (p.usd_net !== null) usd += p.usd_net;
+        }
+        estimated = {
+          usd: Math.round(usd * 100) / 100,
+          estimate: true,
+          tier: "heuristic",
+          priced_collections: priced.collections,
+          priced_nfts: priced.nfts,
+          unpriced_collections: unpriced.collections,
+          unpriced_nfts: unpriced.nfts,
+          ...(notValued.collections ? { not_valued_collections: notValued.collections, not_valued_nfts: notValued.nfts } : {}),
+          method: NFT_ESTIMATE_METHOD,
+          ...(suiUsd ? { sui_usd: suiUsd } : {}),
+          ...(valued.unread.length ? { unread: valued.unread } : {}),
+        };
+      }
+
+      const usdOf = (r: Row) => (typeof r.value?.usd === "number" ? r.value.usd : null);
+      const { payload } = capPayload(
+        "list_nft_collections",
+        { address, value },
+        { address, ...totals, ...(estimated ? { estimated_value: estimated } : {}), collections: rows },
+        {
+          collections: {
+            budget: 12_000,
+            keep: (r: Row) => usdOf(r) !== null,
+            rank: (a: Row, b: Row) => (usdOf(b) ?? -1) - (usdOf(a) ?? -1) || b.count - a.count,
+            usd: usdOf,
+            brief: (r: Row) => ({ collection: r.collection, count: r.count }),
+          } satisfies ListCap<Row>,
+        },
+        { full: detail === "full", next_call: { tool: "list_nft_collections", repeat_with: { detail: "full" } } },
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     },
   );
+}
+
+/** How every NFT estimate here is made, stated once per response. */
+const NFT_ESTIMATE_METHOD = `Per item, the lower of the collection's lowest active listing and its last sale in the ${MARKET_WINDOW_DAYS} days before now, or whichever of the two exists; a listing prices an item alone only if placed or repriced in that window, and an item with neither is unpriced. Sales at zero, within one address or one kiosk, or where one side first funded the other are left out. Listings are read from the TradePort orderbook, TradePort kiosk listings, OriginByte orderbooks and kiosk listings; BlueMove listings and TradePort's older non-kiosk listings are not read.`;
+
+type PageValuation = ValuerResult & { unhandled: string[] };
+
+/** Value one page's NFTs, each by the reader that handles its type. A failed valuation leaves the page listed. */
+async function valueNfts(owner: string, nfts: NftEntry[]): Promise<PageValuation> {
+  try {
+    return await valueObjects(
+      nfts.map((n) => ({
+        object_id: n.object_id,
+        type: n.type,
+        json: n.content && typeof n.content === "object" ? (n.content as Record<string, unknown>) : null,
+      })),
+      // One memo for the page, so its NFTs share one market read and its prices are asked once.
+      { owner, memo: new Map() },
+    );
+  } catch (err) {
+    return { positions: [], unread: [{ what: "valuation", reason: err instanceof Error ? err.message : String(err) }], unhandled: [] };
+  }
+}
+
+/** A collection's valuation facts from its position, without the method it shares with every other row. */
+function collectionValue(p: ValuedPosition): Record<string, unknown> {
+  const d = p.detail ?? {};
+  return {
+    usd: p.usd_net,
+    unit_sui: d.unit_sui,
+    unit_usd: d.unit_usd,
+    basis: d.basis,
+    floor: d.floor,
+    last_sale: d.last_sale,
+    ...(d.excluded_sales_count ? { excluded_sales: d.excluded_sales, excluded_sales_count: d.excluded_sales_count } : {}),
+    ...(d.wash_check ? { wash_check: d.wash_check } : {}),
+    ...(p.unpriced_reason ? { unpriced: p.unpriced_reason } : {}),
+  };
 }
 
 /**
  * One page of list_nfts. A row's `collection` is its struct type, and fields
  * with no value are left out. The summary view leaves out raw contents and
- * counts them under `omitted`, naming the same call with detail: 'full'.
+ * each collection's valuation evidence, and counts both under `omitted` with
+ * the call that returns them.
  */
 function nftPage(
   address: string,
@@ -607,8 +305,17 @@ function nftPage(
   nfts: NftEntry[],
   done: boolean,
   full: boolean,
+  valuation: PageValuation | null,
 ) {
   const withContent = nfts.filter((n) => n.content !== null).length;
+  const byObject = new Map((valuation?.positions ?? []).filter((p) => p.object_id).map((p) => [normalizeSuiAddress(p.object_id!), p]));
+  const rowValue = (n: NftEntry) => {
+    const p = byObject.get(normalizeSuiAddress(n.object_id));
+    if (!p) return {};
+    // An estimate states four significant figures; more would claim a precision it does not have.
+    if (p.kind === "nft") return { est_usd: p.usd_net === null ? null : Number(p.usd_net.toPrecision(4)) };
+    return { value_usd: p.usd_net, valued_as: p.kind, ...(p.protocol ? { protocol: p.protocol } : {}), tier: p.tier };
+  };
   const rows = nfts.map((n) => ({
     object_id: n.object_id,
     collection: n.collection,
@@ -616,23 +323,113 @@ function nftPage(
     ...(n.name !== null ? { name: n.name } : {}),
     ...(n.description !== null ? { description: n.description } : {}),
     ...(n.image_url !== null ? { image_url: n.image_url } : {}),
+    ...rowValue(n),
     ...(full && n.content !== null ? { content: n.content } : {}),
   }));
+  const page = valuation ? pageValuation(address, nfts, byObject, valuation, full) : null;
+  const omitted = {
+    ...(!full && withContent ? { content: { count: withContent } } : {}),
+    ...(page?.omitted ?? {}),
+  };
   const payload = {
-    ...(!full && withContent
-      ? {
-          truncated: true,
-          omitted: {
-            content: { count: withContent },
-            next_call: { tool: "list_nfts", repeat_with: { detail: "full" } },
-          },
-        }
+    ...(Object.keys(omitted).length
+      ? { truncated: true, omitted: { ...omitted, next_call: { tool: "list_nfts", repeat_with: { detail: "full" } } } }
       : {}),
     address,
+    ...(page ? { valuation: page.valuation } : {}),
     nfts: rows,
     page_size: nfts.length,
     kiosk_count: state.n ?? state.kiosks.length,
     ...(done ? {} : { next_cursor: encodeCursor(state) }),
   };
   return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
+}
+
+/** Characters the summary view's per-collection estimates may take. */
+const PAGE_ESTIMATES_BUDGET = 3_000;
+
+/**
+ * The page's value: its total over the items with a value, how many have
+ * none, and each NFT collection's estimate once rather than on every row.
+ * The summary view lists priced collections by their unit value and basis,
+ * most page value first within {@link PAGE_ESTIMATES_BUDGET}; the evidence
+ * (floor, last sale, wash check, why a collection is unpriced) is in the full
+ * view and in list_nft_collections.
+ */
+function pageValuation(
+  address: string,
+  nfts: NftEntry[],
+  byObject: Map<string, ValuedPosition>,
+  valuation: PageValuation,
+  full: boolean,
+) {
+  let usd = 0;
+  let priced = 0;
+  let unpriced = 0;
+  const collections = new Map<string, { position: ValuedPosition; page_usd: number | null }>();
+  for (const n of nfts) {
+    const p = byObject.get(normalizeSuiAddress(n.object_id));
+    if (!p) continue;
+    if (p.usd_net === null) unpriced++;
+    else {
+      usd += p.usd_net;
+      priced++;
+    }
+    if (p.kind !== "nft") continue;
+    const seen = collections.get(n.collection);
+    if (!seen) collections.set(n.collection, { position: p, page_usd: p.usd_net });
+    else if (seen.page_usd !== null && p.usd_net !== null) seen.page_usd += p.usd_net;
+  }
+  const reasons = new Map<string, number>();
+  for (const u of valuation.unread) reasons.set(u.reason, (reasons.get(u.reason) ?? 0) + 1);
+  const all = [...collections];
+  const pricedCollections = all.filter(([, c]) => c.page_usd !== null);
+  let estimates: Array<Record<string, unknown>>;
+  let omitted: Record<string, unknown> | null = null;
+  if (full) {
+    estimates = all.map(([collection, c]) => {
+      const { usd: _one, ...facts } = collectionValue(c.position);
+      return { collection, ...facts };
+    });
+  } else {
+    type Brief = { collection: string; unit_sui: unknown; basis: unknown; page_usd: number };
+    const briefs: Brief[] = pricedCollections.map(([collection, c]) => ({
+      collection,
+      unit_sui: c.position.detail?.unit_sui,
+      basis: c.position.detail?.basis,
+      page_usd: Number(c.page_usd!.toPrecision(4)),
+    }));
+    const capped = capRows(briefs, {
+      budget: PAGE_ESTIMATES_BUDGET,
+      rank: (a, b) => b.page_usd - a.page_usd,
+      usd: (b) => b.page_usd,
+      brief: (b) => ({ collection: b.collection, page_usd: b.page_usd }),
+    });
+    estimates = capped.rows;
+    if (all.length > 0) {
+      omitted = {
+        valuation_evidence: {
+          collections: all.length,
+          ...(capped.omitted ? { priced_collections_not_listed: capped.omitted } : {}),
+          next_call: { tool: "list_nft_collections", args: { address } },
+        },
+      };
+    }
+  }
+  return {
+    valuation: {
+      usd: Math.round(usd * 100) / 100,
+      priced,
+      unpriced,
+      not_valued: nfts.length - priced - unpriced,
+      nft_estimates: {
+        tier: "heuristic",
+        method: NFT_ESTIMATE_METHOD,
+        ...(full ? {} : { unpriced_collections: all.length - pricedCollections.length }),
+        collections: estimates,
+      },
+      ...(reasons.size ? { unread: [...reasons].map(([reason, count]) => ({ reason, count })) } : {}),
+    },
+    omitted,
+  };
 }

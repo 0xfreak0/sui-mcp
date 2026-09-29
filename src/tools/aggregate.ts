@@ -53,11 +53,11 @@ const PNL_DIGESTS = 5;
 export function registerAggregateTools(server: McpServer) {
   server.tool(
     "aggregate_events",
-    "(Analytics) Rank addresses or event types by activity across a time window — the 'who were the top wallets on this protocol today' question — in one call instead of paginating thousands of events yourself. " +
+    "(Incident investigation) Rank addresses or event types by activity across a time window, answering 'who were the top wallets on this protocol today', in one call instead of paginating thousands of events yourself. " +
       "Filter by event type, module or sender, bound by ISO timestamps or checkpoints, and group by sender or event type. " +
       "Call it WITHOUT value_field first: it returns counts plus a sample event and the numeric fields available, so you can see what the protocol emits (many carry their own USD valuation) and then re-run naming that field. " +
       "With group_pnl it also ranks the senders of the matched transactions by what their own balances did in them, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
-      "Always check `truncated` — a partial scan produces a confidently wrong ranking.",
+      "Always check `truncated`: a partial scan produces a confidently wrong ranking.",
     {
       event_type: z
         .string()
@@ -97,7 +97,7 @@ export function registerAggregateTools(server: McpServer) {
         .enum(["desc", "asc"])
         .optional()
         .describe(
-          "'desc' (default) returns the largest — whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view.",
+          "'desc' (default) returns the largest: whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view.",
         ),
       max_events: numArg()
         .int()

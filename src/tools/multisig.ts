@@ -78,7 +78,7 @@ interface SentPageResult {
 export function registerMultisigTools(server: McpServer) {
   server.tool(
     "analyze_multisig",
-    "(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction — this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.",
+    "(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction, and this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.",
     {
       address: addressArg().describe("The multisig wallet's address (0x...)"),
       max_transactions: numArg()
@@ -87,7 +87,7 @@ export function registerMultisigTools(server: McpServer) {
         .max(500)
         .optional()
         .describe(
-          "Sent transactions to examine, newest first (default 200). More is strictly better here — a key looks dormant until the one transaction it signed comes into view.",
+          "Sent transactions to examine, newest first (default 200). More is strictly better here: a key looks dormant until the one transaction it signed comes into view.",
         ),
     },
     async ({ address, max_transactions }) => {
@@ -267,13 +267,13 @@ export function registerMultisigTools(server: McpServer) {
 
   server.tool(
     "find_shared_multisig",
-    "(Multisig investigation) Given several addresses you already suspect are related, find any multisig wallet they jointly control — even one that never appeared in your trace. Works by deriving every committee those keys could form and checking which of those addresses exist on chain, so a hit is proof (the address IS the hash of its committee), not a guess. Use it when a trace links wallets and you want to know whether they also share a treasury. Each address must have SENT a transaction, since that is where its public key becomes visible.",
+    "(Multisig investigation) Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. Works by deriving every committee those keys could form and checking which of those addresses exist on chain, so a hit is proof (the address IS the hash of its committee), not a guess. Use it when a trace links wallets and you want to know whether they also share a treasury. Each address must have SENT a transaction, since that is where its public key becomes visible.",
     {
       addresses: addressListArg()
         .min(2)
         .max(5)
         .describe(
-          "2-5 addresses to test for a shared multisig. Member order is part of a multisig's address, so the search is factorial in committee size — 4 addresses is 192 candidates, 5 is 1,560, and 6 is refused.",
+          "2-5 addresses to test for a shared multisig. Member order is part of a multisig's address, so the search is factorial in committee size: 4 addresses is 192 candidates, 5 is 1,560, and 6 is refused.",
         ),
     },
     async ({ addresses }) => {

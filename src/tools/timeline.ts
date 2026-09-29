@@ -181,7 +181,7 @@ export function registerTimelineTools(server: McpServer) {
       activity_hours: boolArg()
         .optional()
         .describe(
-          "Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one — on Sui the common answer is 'flat, consistent with automation', which is itself a finding.",
+          "Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one. On Sui the common answer is 'flat, consistent with automation', which is itself a finding.",
         ),
       detail: z
         .enum(["summary", "full"])

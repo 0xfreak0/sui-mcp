@@ -100,7 +100,7 @@ async function caseFlowGraph(findings: Finding[]) {
 export function registerFindingsTools(server: McpServer) {
   server.tool(
     "save_finding",
-    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them — what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it — then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them: what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it. Then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
     {
       case_name: z
         .string()
@@ -137,7 +137,7 @@ export function registerFindingsTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe(
-          "What establishes it — tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted.",
+          "What establishes it: tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted.",
         ),
     },
     async ({ case_name, title, detail, confidence, evidence_tier, addresses, digests, evidence }) => {
@@ -231,7 +231,7 @@ export function registerFindingsTools(server: McpServer) {
 
   server.tool(
     "export_case",
-    "(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.",
     {
       case_name: z.string().describe("Case to render."),
       include_appendix: boolArg()
@@ -310,7 +310,7 @@ export function registerFindingsTools(server: McpServer) {
 
   server.tool(
     "delete_finding",
-    "(Incident investigation) Remove a finding by id — for retracting something that turned out to be wrong. Use list_findings to get ids. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Remove a finding by id, for retracting something that turned out to be wrong. Use list_findings to get ids. Requires SUI_STORE_PATH.",
     {
       finding_id: numArg().int().min(1).describe("Finding id from list_findings."),
     },

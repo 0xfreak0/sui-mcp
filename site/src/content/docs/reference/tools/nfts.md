@@ -24,7 +24,7 @@ NFT marketplace sales over a recent window, with volume and per-marketplace tota
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `hours` | number (1 to 168), default `24` | no | How far back to read, in hours (default 24, max 168) |
-| `collection_type` | string | no | Keep only sales of this Move type. Most marketplaces do not name the collection in the sale event, and those sales are reported as unattributable_sales rather than filtered out silently — a low count here is not evidence the collection did not trade. |
+| `collection_type` | string | no | Keep only sales of this Move type. Most marketplaces do not name the collection in the sale event, and those sales are reported as unattributable_sales rather than filtered out silently, so a low count here is not evidence the collection did not trade. |
 | `max_pages` | integer (1 to 200), default `40` | no | Request cap across all marketplaces (default 40, 50 events per request) |
 | `include_sales` | boolean, default `false` | no | Return the individual sales as well as the totals, each with its checkpoint and time. Off by default because a busy window is thousands of rows. The default view lists the newest that fit and counts the rest under `omitted`; `detail: 'full'` lists every one. |
 | `detail` | `summary` \| `full` | no | With include_sales: 'summary' (default) lists the newest sales that fit; 'full' lists every sale. |
@@ -36,7 +36,7 @@ NFT marketplace sales over a recent window, with volume and per-marketplace tota
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Advanced — slow, paginated scan) Scan objects of a given type and return top holders. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin&lt;T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. A scan stops after 35s and returns what it saw as a sample marked `time_budget_reached`. Results cached 24h.
+Scan objects of a given type and return top holders. The scan is slow and paginated. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin&lt;T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. A scan stops after 35s and returns what it saw as a sample marked `time_budget_reached`. Results cached 24h.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -68,7 +68,7 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Each NFT carries an estimated value, `est_usd` (tier heuristic, from its collection's lowest active listing and last sale, explained per collection under `valuation`); an object another reader values, such as a liquidity position, carries `value_usd` and the reader's tier instead. `value: false` skips the valuation. Backed by GraphQL — single query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper per-collection summary with a wallet total.
+(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Each NFT carries an estimated value, `est_usd` (tier heuristic, from its collection's lowest active listing and last sale, explained per collection under `valuation`); an object another reader values, such as a liquidity position, carries `value_usd` and the reader's tier instead. `value: false` skips the valuation. Backed by GraphQL: one query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper per-collection summary with a wallet total.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

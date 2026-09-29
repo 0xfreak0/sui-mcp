@@ -95,7 +95,7 @@ const OWNER_FRAGMENT =
   "owner{__typename ... on AddressOwner{address{address}} ... on ObjectOwner{address{address}} ... on ConsensusAddressOwner{address{address}}}";
 
 const DETAIL_SELECTION =
-  `effects{${BALANCE_CHANGES_SELECTION} ` +
+  `sender{address} effects{${BALANCE_CHANGES_SELECTION} ` +
   `objectChanges(first:50){pageInfo{hasNextPage} nodes{address idCreated idDeleted ` +
   `inputState{asMoveObject{contents{type{repr}}} ${OWNER_FRAGMENT}} ` +
   `outputState{asMoveObject{contents{type{repr}}} ${OWNER_FRAGMENT}}}}}`;
@@ -116,6 +116,8 @@ const DETAIL_BATCH = 5;
  * belong to several watched addresses and reading it twice would be waste.
  */
 export interface DeltaDetail {
+  /** Who sent the transaction: the only party of an object it created with no owner address, such as a shared cap. */
+  sender: string | null;
   balance_changes: NonNullable<DeltaTx["balance_changes"]>;
   object_movements: DeltaTx["object_movements"];
   /** A follow-up read failed, so `balance_changes` is partial. */
@@ -145,6 +147,7 @@ export async function fetchDeltaDetail(
       Record<
         string,
         {
+          sender?: { address?: string } | null;
           effects?: {
             balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
             objectChanges?: { pageInfo?: { hasNextPage?: boolean }; nodes: GqlObjectChange[] };
@@ -161,6 +164,7 @@ export async function fetchDeltaDetail(
       const fx = data[`t${i}`]?.effects;
       requests += completed[i].reads;
       detail.set(d, {
+        sender: data[`t${i}`]?.sender?.address ?? null,
         balance_changes: completed[i].balanceChanges.map((n) => ({
           address: n.owner?.address ?? "",
           amount: n.amount ?? "0",

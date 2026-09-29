@@ -275,6 +275,21 @@ describe("evaluate — objects, not just coins", () => {
     expect(hits[0]!.reasons).toContain("object_moved");
     expect(hits[0]!.reasons).not.toContain("capability_moved");
   });
+
+  // A capability can only be shared in the transaction that creates it, so it
+  // has no previous holder; the watched address is the one that sent it.
+  it("fires capability_moved when the watched address creates a shared TreasuryCap", () => {
+    const tx: DeltaTx = {
+      digest: "dpub",
+      checkpoint: 102,
+      sender: W,
+      balance_changes: [],
+      object_movements: readObjectMovements([
+        { address: "0xcap", idCreated: true, idDeleted: false, outputState: st(`${P2}::coin::TreasuryCap<0xa::t::T>`, { __typename: "Shared" }) },
+      ]),
+    };
+    expect(evaluate(entry(), [tx]).hits[0]!.reasons).toContain("capability_moved");
+  });
 });
 
 describe("flagLookalikes", () => {

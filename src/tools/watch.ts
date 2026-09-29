@@ -240,6 +240,7 @@ export function registerWatchTools(server: McpServer) {
           const d = detail.get(t.digest);
           return {
             ...t,
+            sender: d?.sender ?? null,
             balance_changes: d?.balance_changes ?? [],
             object_movements: d?.object_movements ?? [],
             balance_changes_truncated: d?.balance_changes_truncated,

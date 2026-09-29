@@ -54,9 +54,24 @@ describe("classifyCapabilityRisk — upgrade cap", () => {
     });
     expect(r.risk).toBe("low");
   });
-  it("shared upgrade cap is medium (governance)", () => {
-    const r = classifyCapabilityRisk({ kind: "upgrade", type: `${P2}::package::UpgradeCap`, owner: "shared", policyLabel: "compatible (any upgrade)" });
-    expect(r.risk).toBe("medium");
+  // package::authorize_upgrade, coin::mint and coin::deny_list_v2_add are
+  // public and take the cap by &mut; any transaction can pass a shared object
+  // that way.
+  it("rates a shared framework cap high: anyone can use it", () => {
+    const shared = (kind: "upgrade" | "treasury" | "deny", type: string) =>
+      classifyCapabilityRisk({ kind, type, owner: "shared", policyLabel: "compatible (any upgrade)" }).risk;
+    expect(shared("upgrade", `${P2}::package::UpgradeCap`)).toBe("high");
+    expect(shared("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("high");
+    expect(shared("deny", `${P2}::coin::DenyCapV2<0xabc::t::T>`)).toBe("high");
+  });
+
+  // A frozen object passes only by &: the &mut functions close, the & ones
+  // open to everyone.
+  it("rates a frozen UpgradeCap or DenyCap as renounced, and a frozen TreasuryCap as open to metadata changes", () => {
+    const frozen = (kind: "upgrade" | "treasury" | "deny", type: string) => classifyCapabilityRisk({ kind, type, owner: "immutable" }).risk;
+    expect(frozen("upgrade", `${P2}::package::UpgradeCap`)).toBe("info");
+    expect(frozen("deny", `${P2}::coin::DenyCapV2<0xabc::t::T>`)).toBe("info");
+    expect(frozen("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("medium");
   });
 });
 
@@ -200,6 +215,21 @@ describe("auditPackageCapabilities — destroyed UpgradeCap", () => {
     expect(cap.holder_status).toBeUndefined();
     expect(cap.note).not.toMatch(/can still upgrade/i);
     expect(cap.note).toMatch(/destroyed/i);
+  });
+
+  // authorize_upgrade takes &mut, which a frozen cap cannot give; the holder
+  // assessment's "whoever can reach it can still upgrade" would contradict it.
+  it("gives a frozen UpgradeCap no holder assessment", async () => {
+    const base = gqlQuery.getMockImplementation()!;
+    gqlQuery.mockImplementation(async (query: string, vars?: unknown) =>
+      query.includes("object(address: $id)")
+        ? { object: { owner: { __typename: "Immutable" }, asMoveObject: { contents: { json: { policy: 0 } } } } }
+        : base(query, vars),
+    );
+    const cap = (await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0];
+    expect(cap.owner).toBe("immutable");
+    expect(cap.risk).toBe("info");
+    expect(cap.holder_status).toBeUndefined();
   });
 
   it("gives a wrapped UpgradeCap no holder assessment", async () => {

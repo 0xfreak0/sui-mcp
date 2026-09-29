@@ -285,8 +285,8 @@ function buildSummary(
           return ref.kind;
         };
         const label = m.protocol ? `${m.type_short} (${m.protocol})` : (m.type_short ?? "unknown type");
-        const arrow = m.kind === "appeared" ? "(previous holder not recorded) ->" : "->";
-        lines.push(`  ${label}${mark}  ${m.kind === "appeared" ? "" : who(m.from) + " "}${arrow} ${who(m.to)}`);
+        const arrow = m.kind === "appeared" ? "(previous holder not recorded) ->" : m.kind === "created" ? "(created) ->" : "->";
+        lines.push(`  ${label}${mark}  ${m.kind === "appeared" || m.kind === "created" ? "" : who(m.from) + " "}${arrow} ${who(m.to)}`);
         if (m.note) lines.push(`    ${m.note}`);
       }
     }
@@ -1429,6 +1429,16 @@ export function registerTraceTools(server: McpServer) {
         );
         parts.push(lines.join("\n"));
       }
+      if (objectFlow && objectFlow.opened_capabilities.length > 0) {
+        const lines = ["⚠ Capability authority opened to every transaction in this trace:"];
+        for (const m of objectFlow.opened_capabilities) {
+          const from = m.kind === "created" ? "created" : addrLabel(m.from?.address ?? "?", nameMap);
+          lines.push(`  ${m.type_short} — ${from} -> ${m.to?.kind}`);
+          lines.push(`    object ${m.object_id}`);
+          if (m.note) lines.push(`    ${m.note}`);
+        }
+        parts.push(lines.join("\n"));
+      }
       // Renunciation is the opposite finding and must not borrow the warning.
       // Most UpgradeCap departures go to an unspendable address (see
       // upgrade-cap.ts), so treating those as handovers would make the
@@ -1437,7 +1447,7 @@ export function registerTraceTools(server: McpServer) {
         const lines = ["Capability rights renounced in this trace:"];
         for (const m of objectFlow.renounced_capabilities) {
           lines.push(
-            `  ${m.type_short} — ${addrLabel(m.from?.address ?? "?", nameMap)} -> ${m.to?.address} (unspendable)`,
+            `  ${m.type_short} — ${addrLabel(m.from?.address ?? "?", nameMap)} -> ${m.to?.kind === "immutable" ? "frozen" : `${m.to?.address} (unspendable)`}`,
           );
         }
         lines.push("  A reduction in risk, not a warning: nobody can exercise these rights again.");
@@ -1500,6 +1510,7 @@ export function registerTraceTools(server: McpServer) {
                 transfer_count: objectFlow.transfers.length,
                 capability_transfers: objectFlow.capability_transfers,
                 renounced_capabilities: objectFlow.renounced_capabilities,
+                opened_capabilities: objectFlow.opened_capabilities,
                 ...(objectFlow.truncated ? { truncated: true } : {}),
                 note: objectFlow.note,
               },

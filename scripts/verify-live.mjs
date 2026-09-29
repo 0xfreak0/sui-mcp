@@ -4,6 +4,7 @@
  *
  *   npm run build && npm run verify:live [-- --tier smoke|affected|full]
  *                                        [--range <git-range>] [--jobs <n>]
+ *                                        [--keep-summary <path>]
  *
  * The unit tests are offline by design — they pin real mainnet signatures and
  * shapes as fixtures so they stay fast and deterministic. That is exactly why
@@ -33,6 +34,9 @@
  * the full tier. `--tier smoke` runs `case-pass --smoke` and the fewest probe
  * scripts that reach every tool no case check names. `--jobs` goes to
  * case-pass. The choice of scripts is in scripts/probe/lib/tiers.mjs.
+ * `--keep-summary <path>` saves the case-pass summary after the run, including
+ * failed checks, without repeating any calls. The path is relative to the
+ * invoking directory; its parent must exist.
  *
  * `SUI_REPLAY_DIR` reaches case-pass, oracle-pass and detector-pass only;
  * every other script reads live.
@@ -42,7 +46,7 @@
  * teaches people to ignore failures.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +71,7 @@ function argValue(flag, allowed) {
 const tier = argValue("--tier", ["smoke", "affected", "full"]) ?? "full";
 const rangeArg = argValue("--range");
 const jobs = argValue("--jobs");
+const keepSummary = argValue("--keep-summary");
 if (rangeArg && tier !== "affected") {
   console.error("--range goes with --tier affected");
   process.exit(2);
@@ -199,6 +204,10 @@ console.log(`\n${"=".repeat(70)}`);
 console.log("case-pass output size against the budgets in scripts/probe/lib/size-budget.mjs (tokens ≈ chars / 4)");
 if (existsSync(caseSummary)) for (const line of sizeReport(JSON.parse(readFileSync(caseSummary, "utf8")))) console.log(`  ${line}`);
 else console.log("  not measured: case-pass wrote no summary");
+if (keepSummary && existsSync(caseSummary)) {
+  copyFileSync(caseSummary, keepSummary);
+  console.log(`  case-pass summary saved to ${keepSummary}`);
+}
 rmSync(scratch, { recursive: true, force: true });
 console.log("=".repeat(70));
 if (failed) {

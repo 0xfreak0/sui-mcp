@@ -27,3 +27,15 @@ no first funder is chosen or cached, and no funding edge rests on that lookup.
 The result reports `truncated: true` and explains the unread lookup in `notes`.
 This also applies to the first-funder checks used for expansion and for a
 sponsor/funder split. An unread lookup does not mean the wallet had no funder.
+
+For recent seed activity, an incomplete balance-change list supplies neither
+co-appearance nor payment evidence. Missing parties could hide a mass action,
+and partial payments cannot establish reciprocal flow or a sponsor/operator
+relationship. `notes` identifies the unread transactions; a failed history
+page identifies the unread seed scan. Both set `truncated: true`. Complete
+transactions still contribute signals, and gas sponsorship remains usable
+because it is read independently of balance changes.
+
+The small unpriced-coin grant check uses a bounded send window. If that window
+or any transaction's balance changes exceed one page, the send cannot qualify
+as a targeted grant. A partial recipient count is never proof of a small send.

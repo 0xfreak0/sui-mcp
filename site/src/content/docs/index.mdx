@@ -1,0 +1,59 @@
+---
+title: sui-mcp
+description: An MCP server that gives an AI assistant on-chain investigation tools for Sui. It is read-only and holds no wallet or keys.
+template: splash
+hero:
+  tagline: An MCP server that gives an AI assistant on-chain investigation tools for Sui. It is read-only and holds no wallet or keys.
+  actions:
+    - text: Install
+      link: /start/install/
+      icon: right-arrow
+    - text: Read the docs
+      link: /start/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What the tools do
+
+<CardGrid>
+	<Card title="Tracing funds">
+		`trace_funds` follows funds forward or backward across hops and swaps, and `trace_flow_graph` follows every branch. `resolve_bridge_transfer` follows funds across a bridge. `find_funding_sources` walks up to 100 addresses back to their funding sources, and `build_wallet_edges` finds addresses that may share an operator. [Incident investigation tools](/reference/tools/incident-investigation/)
+	</Card>
+	<Card title="Attack and exploit analysis">
+		`analyze_attack_tx` breaks down one exploit transaction: each address's net per coin and in USD at block time, flash-loan legs, swaps, and what each pool lost. `summarize_incident_losses` totals an attacker's take across many transactions. `compare_oracle_price` sets the Pyth oracle price against the price DeepBook traded at. [Incident investigation tools](/reference/tools/incident-investigation/)
+	</Card>
+	<Card title="Package and capability audits">
+		`analyze_package` summarizes a package's API with a heuristic risk scan and a capability audit, without an external binary. `get_upgrade_history` shows who published each version and who held the UpgradeCap. `diff_package_upgrade` shows what an upgrade changed. [Package tools](/reference/tools/packages/)
+	</Card>
+	<Card title="Wallet and token profiles">
+		`identify_address` says whether an address is a wallet, package, validator or object. `get_wallet_overview` lists every coin balance, the SuiNS name and recent transactions. `analyze_token` returns a token's metadata, price, 24h change, supply and top holders. [Recommended starting points](/reference/tools/starting-points/)
+	</Card>
+	<Card title="Everyday prompts">
+		`was_i_scammed`, `who_controls_this_token`, `who_controls_this_protocol` and `who_is_this_wallet` answer common questions. Each gives a plain answer of at most four sentences first, then a `How sure` line, then the digests and addresses behind it. [Prompts](/reference/prompts/)
+	</Card>
+</CardGrid>
+
+## Install
+
+Add this to your MCP client config (Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP over stdio):
+
+```json
+{
+  "mcpServers": {
+    "sui": {
+      "command": "npx",
+      "args": ["-y", "sui-analytics-mcp"]
+    }
+  }
+}
+```
+
+No account, API key, or config file is required. The server reads public Sui endpoints and defaults to mainnet. Requires Node.js >= 22.13.
+
+For investigative work, start with the forensics tools loaded:
+
+```json
+"env": { "SUI_TOOLS": "core,forensics" }
+```

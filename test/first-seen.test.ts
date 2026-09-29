@@ -29,7 +29,7 @@ function oldest(sender: string, changes: ReturnType<typeof change>[], hasNextPag
   });
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => gqlQuery.mockReset());
 
 describe("readFirstSeen", () => {
   it("marks another sender's payment to the wallet as its first inflow", async () => {
@@ -50,8 +50,44 @@ describe("readFirstSeen", () => {
     expect((await readFirstSeen(WALLET))?.first_inflow).toBe(false);
   });
 
-  it("says a gain is unknown, not absent, when the balance changes run past the page read", async () => {
+  it("reads a genesis gain that sorts past the first page of balance changes", async () => {
+    // Genesis has no sender and credits every initial holder in one
+    // transaction, so its balance changes run to several pages.
+    const others = Array.from({ length: 50 }, (_, i) => change(`0x${i.toString(16).padStart(64, "e")}`, "1000"));
+    gqlQuery.mockResolvedValueOnce({
+      transactions: {
+        nodes: [
+          {
+            digest: "GenesisDigest11111111111111111111111111111111",
+            sender: null,
+            effects: {
+              timestamp: "2023-04-12T17:00:00Z",
+              checkpoint: { sequenceNumber: 0 },
+              balanceChanges: { nodes: others, pageInfo: { hasNextPage: true, endCursor: "p1" } },
+            },
+          },
+        ],
+      },
+    });
+    gqlQuery.mockResolvedValueOnce({
+      transactionEffects: {
+        balanceChanges: { nodes: [change(OTHER, "7"), change(WALLET, "127000000000")], pageInfo: { hasNextPage: false, endCursor: null } },
+      },
+    });
+    const seen = await readFirstSeen(WALLET);
+    expect(seen).toEqual({
+      digest: "GenesisDigest11111111111111111111111111111111",
+      timestamp: "2023-04-12T17:00:00Z",
+      checkpoint: "0",
+      sender: null,
+      received: [{ coin_type: SUI, amount: "127000000000" }],
+      first_inflow: true,
+    });
+  });
+
+  it("says a gain is unknown, not absent, when the rest of the balance changes cannot be read", async () => {
     oldest(FUNDER, [change(OTHER, "10")], true);
+    gqlQuery.mockImplementationOnce(() => Promise.reject(new Error("timeout")));
     const seen = await readFirstSeen(WALLET);
     expect(seen?.received).toEqual([]);
     expect(seen?.first_inflow).toBeNull();

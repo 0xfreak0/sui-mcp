@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### Added
+- **Framework claims checked against the framework source.**
+  `test/sui-framework.test.ts` parses the Sui framework Move sources vendored
+  under `test/fixtures/sui-framework` (every non-test source at
+  mainnet-v1.80.1) and checks every
+  framework fact a rule relies on: how each function the capability rules
+  cite takes the cap, that `balance::destroy_supply` is package-private, that
+  `coin_registry::make_supply_fixed` and `make_supply_burn_only` consume the
+  TreasuryCap, the `coin_registry`, deny list and address alias layouts the
+  readers use, the DenyList and CoinRegistry ids and the UpgradeCap policy
+  values, and the recipient argument of each framework payout the PTB
+  anomaly check reads. For every high-consequence capability it fails on a
+  callable function that takes the cap in any mode, or consumes what a
+  function taking it by `&` returns, that the rules do not account for, on a
+  parameter naming a capability that does not resolve to its defining
+  module, and when the shared or frozen reading or note disagrees with what
+  those functions allow. `npm run sync:framework -- <ref>` re-vendors the
+  sources at another release.
 - **Exchange deposit addresses inferred from their sweeps.** `npm run
   sync:labels` reads the senders into every exchange wallet the disclosed set
   names and keeps an address when `classify_deposit_address` would read it
@@ -62,6 +79,26 @@
   Failed transactions and transactions without a loop are unchanged.
 
 ### Fixed
+- A shared `Publisher` and a shared `DenyCapV2` now say everything they let
+  any transaction do. `display_registry::new_with_publisher` and
+  `claim_with_publisher` take a Publisher by `&mut`, so a shared one lets
+  anyone create a registry Display, or claim an unclaimed DisplayCap, for the
+  package's types; `coin::deny_list_v2_enable_global_pause` takes a DenyCapV2
+  by `&mut`, so a shared one lets anyone pause the coin where the cap allows
+  it. A shared `DenyCap` says `coin::migrate_regulated_currency_to_v2` can
+  take it by value, so anyone can swap it for a DenyCapV2 of their own that
+  pauses the coin. A frozen `Publisher` no longer reads as closing the Display
+  registry: its `display::new` Display reaches
+  `display_registry::migrate_v1_to_v2` and `claim`. A frozen or shared
+  TreasuryCap's note names the registry setters its MetadataCap reaches, and
+  that a token policy anyone can create lets any holder confirm its own token
+  transfers and conversions to coins outside the coin's token rules
+  (`token::confirm_with_policy_cap`). A frozen or shared Publisher's note says
+  a TransferPolicy anyone can create clears a kiosk purchase of the package's
+  types without the creator's royalty or lock rules
+  (`transfer_policy::confirm_request`). The
+  `trace_funds` object-flow note and the `analyze_package` capability note
+  name them.
 - `analyze_package` no longer leaves out a coin whose TreasuryCap the
   publish transaction did not show at top level. The capability audit listed
   only caps among the objects version 1's publish created, so a cap stored
@@ -129,6 +166,14 @@
   route order: a path starts from the coin the route names and each hop takes
   in what the previous hop gave out. Swap function names spelled `a_to_b` and
   `b_to_a` now also count as a direction.
+
+### Changed
+- The capability notes in `analyze_package`, `trace_funds` and
+  `get_upgrade_history` name the framework functions from one table
+  (`CAPABILITY_USES`), the same one that decides whether sharing or freezing
+  a cap opens or renounces it. A frozen or shared TreasuryCap, UpgradeCap or
+  deny cap reads the same in every tool, and a frozen cap's note says which
+  functions freezing closes and which stay open.
 
 ## 1.23.0 (2026-09-27)
 

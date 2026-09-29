@@ -5,6 +5,13 @@ description: "Descriptions, profiles and parameters of the 4 tools in the NFTs g
 sidebar:
   order: 108
 ---
+| Tool | Summary |
+|---|---|
+| [`get_nft_sales`](#get_nft_sales) | NFT marketplace sales over a recent window, with volume and per-marketplace totals. |
+| [`get_top_holders`](#get_top_holders) | Scan objects of a given type and return top holders. |
+| [`list_nft_collections`](#list_nft_collections) | Summary of the NFT collections a wallet holds: every kiosk plus directly owned objects, one row per collection type with its count. |
+| [`list_nfts`](#list_nfts) | List NFTs owned by a wallet, including kiosk-stored NFTs. |
+
 ## get_nft_sales
 
 - Title: Get NFT sales

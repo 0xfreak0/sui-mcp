@@ -5,6 +5,16 @@ description: "Descriptions, profiles and parameters of the 7 tools in the Packag
 sidebar:
   order: 112
 ---
+| Tool | Summary |
+|---|---|
+| [`analyze_package`](#analyze_package) | Analyze a Sui Move package. |
+| [`decompile_module`](#decompile_module) | Decompile Move module(s) from a Sui package into readable source code. |
+| [`diff_package_upgrade`](#diff_package_upgrade) | Diff two versions of a Move package to spot what an upgrade changed, the classic malicious-upgrade / backdoor vector. |
+| [`disassemble_module`](#disassemble_module) | Disassemble Move module(s) from a Sui package into Move bytecode assembly, using the GraphQL endpoint. |
+| [`get_move_function`](#get_move_function) | Get a specific Move function signature from a Sui package. |
+| [`get_package`](#get_package) | Get a Sui Move package by its ID. |
+| [`get_package_dependency_graph`](#get_package_dependency_graph) | Get the dependency graph of a Sui Move package from its linkage table. |
+
 ## analyze_package
 
 - Title: Analyze package

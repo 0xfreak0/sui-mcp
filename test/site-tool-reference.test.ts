@@ -5,15 +5,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerAllTools } from "../src/tools/index.js";
 import { registerAllPrompts } from "../src/prompts.js";
-import { DEFAULT_PROFILES, PROFILES } from "../src/tools/profiles.js";
+import { DEFAULT_PROFILES, PROFILES, PROFILE_SUMMARIES } from "../src/tools/profiles.js";
 import { PROMPTS_PAGE, TOOLS_DIR, renderReference } from "../site/scripts/tool-reference.mjs";
 
 /**
- * The docs site's tool and prompt reference is generated from the server's
- * tools/list and prompts/list and committed (site/scripts/gen-tools.mjs), so
- * the site builds without the server. A tool, parameter or description change
- * that is not regenerated would publish a reference that no longer matches
- * what clients receive.
+ * The docs site's tool and prompt reference, and the profile list the tool
+ * profiles guide imports, are generated from the server's tools/list,
+ * prompts/list and profiles and committed (site/scripts/gen-tools.mjs), so the
+ * site builds without the server. A tool, parameter, description or profile
+ * change that is not regenerated would publish a reference that no longer
+ * matches what clients receive.
  */
 
 const DOCS = new URL("../site/src/content/docs/", import.meta.url);
@@ -35,7 +36,13 @@ beforeAll(async () => {
   const { tools } = await client.listTools();
   const { prompts } = await client.listPrompts();
   await client.close();
-  pages = renderReference({ tools, prompts, profiles: PROFILES, defaultProfiles: DEFAULT_PROFILES });
+  pages = renderReference({
+    tools,
+    prompts,
+    profiles: PROFILES,
+    defaultProfiles: DEFAULT_PROFILES,
+    profileSummaries: PROFILE_SUMMARIES,
+  });
 });
 
 afterAll(() => {
@@ -57,7 +64,7 @@ describe("site tool reference", () => {
     expect(stale.map(([path]) => path), `stale reference pages: ${REGENERATE}`).toEqual([]);
   });
 
-  it("has no page for a tool group that no longer exists", () => {
+  it("has no file for a tool group that no longer exists", () => {
     const committed = readdirSync(new URL(`${TOOLS_DIR}/`, DOCS)).map((f) => `${TOOLS_DIR}/${f}`);
     const expected = [...pages.keys()].filter((p) => p !== PROMPTS_PAGE);
     expect(committed.sort(), REGENERATE).toEqual(expected.sort());

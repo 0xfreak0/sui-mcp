@@ -2,6 +2,7 @@
 title: Multisig
 description: Read a multisig wallet's committee from its address, see which keys sign, and find treasuries a set of keys controls.
 sidebar:
+  label: Multisig wallets
   order: 5
 ---
 
@@ -68,7 +69,7 @@ find_shared_multisig([0xafe2fafa…, 0xc848c5cc…])
 
 ## See who else can spend it
 
-A wallet can authorize up to eight other addresses to act for it through
+A wallet can authorize other addresses to act for it through
 `0x2::address_alias`. `identify_address` returns that set, so a fixed
 committee does not have to be read as the only way to move the funds.
 
@@ -86,20 +87,19 @@ authorized.
 
 The set replaces the signer rather than extending it, so `owner_can_authorize`
 decides who controls the wallet. When it is false the wallet's own key can no
-longer sign for it and only `delegated_to` can move the funds. Measured across
-all 63 mainnet sets, 50 are in that state.
+longer sign for it and only `delegated_to` can move the funds.
 
 An alias is control read from chain state, so you may write that the address
 can authorize for the wallet. It is not evidence of shared ownership, since a
 custodian holds authority for a client. A key acting for many wallets is a
-service, and two mainnet keys already act for 22 each. The set is mutable, so
-it is true as of the read, and most wallets have never enabled the feature.
+service. The set is mutable, so it is true as of the read, and most wallets
+have never enabled the feature.
 
 The reverse answer, which wallets name a given key (`alias_delegate_for` on
 `identify_address`, `signed_as_alias` on `get_transaction_history`), comes from
-a scan reused for up to five minutes, and `alias_scan_as_of` says when that
-scan read the chain. When the scan could not finish,
-`signed_as_alias_unavailable` says so, also beside rows it did find.
+a cached scan, and `alias_scan_as_of` says when that scan read the chain. When
+the scan could not finish, `signed_as_alias_unavailable` says so, also beside
+rows it did find.
 
 ## Clustering
 

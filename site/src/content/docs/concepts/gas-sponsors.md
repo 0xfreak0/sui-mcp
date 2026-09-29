@@ -2,7 +2,7 @@
 title: Gas sponsors
 description: How get_address_fanout classifies an address that pays other people's gas, and which classes are proven.
 sidebar:
-  order: 5
+  order: 6
 ---
 
 `get_address_fanout` reports `sponsor_shape` for an address that pays other

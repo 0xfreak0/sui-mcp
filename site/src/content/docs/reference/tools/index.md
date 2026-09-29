@@ -3,7 +3,7 @@
 title: "Tools"
 description: "Every tool the server registers, grouped by task, with its profile and parameters."
 sidebar:
-  label: "Overview"
+  label: "All tools"
   order: 100
 ---
 These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 77 tools. 76 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.
@@ -31,82 +31,82 @@ These pages are generated from the `tools/list` response of the server started w
 
 ## All tools
 
-| Tool | Title | Group | Profile |
+| Tool | Summary | Group | Profile |
 |---|---|---|---|
-| [`aggregate_events`](/reference/tools/incident-investigation/#aggregate_events) | Aggregate events | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`analyze_attack_tx`](/reference/tools/incident-investigation/#analyze_attack_tx) | Analyze attack transaction | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`analyze_multisig`](/reference/tools/incident-investigation/#analyze_multisig) | Analyze multisig | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`analyze_package`](/reference/tools/packages/#analyze_package) | Analyze package | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
-| [`analyze_token`](/reference/tools/starting-points/#analyze_token) | Analyze token | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
-| [`build_staking`](/reference/tools/transaction-building/#build_staking) | Build staking | [Transaction building](/reference/tools/transaction-building/) | `developer` |
-| [`build_timeline`](/reference/tools/incident-investigation/#build_timeline) | Build timeline | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`build_transfer`](/reference/tools/transaction-building/#build_transfer) | Build transfer | [Transaction building](/reference/tools/transaction-building/) | `developer` |
-| [`build_wallet_edges`](/reference/tools/incident-investigation/#build_wallet_edges) | Build wallet edges | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`check_activity`](/reference/tools/advanced/#check_activity) | Check activity | [Advanced](/reference/tools/advanced/) | `forensics` |
-| [`check_coin_restrictions`](/reference/tools/incident-investigation/#check_coin_restrictions) | Check coin restrictions | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`classify_deposit_address`](/reference/tools/incident-investigation/#classify_deposit_address) | Classify deposit address | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`compare_oracle_price`](/reference/tools/deepbook/#compare_oracle_price) | Compare oracle price | [DeepBook](/reference/tools/deepbook/) | `forensics` |
-| [`decode_ptb`](/reference/tools/advanced/#decode_ptb) | Decode PTB | [Advanced](/reference/tools/advanced/) | `developer` |
-| [`decompile_module`](/reference/tools/packages/#decompile_module) | Decompile module | [Packages](/reference/tools/packages/) | `developer` |
-| [`deepbook_orderbook`](/reference/tools/deepbook/#deepbook_orderbook) | DeepBook orderbook | [DeepBook](/reference/tools/deepbook/) | `market` |
-| [`deepbook_trades`](/reference/tools/deepbook/#deepbook_trades) | DeepBook trades | [DeepBook](/reference/tools/deepbook/) | `market` |
-| [`delete_finding`](/reference/tools/incident-investigation/#delete_finding) | Delete finding | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`diff_package_upgrade`](/reference/tools/packages/#diff_package_upgrade) | Diff package upgrade | [Packages](/reference/tools/packages/) | `developer` |
-| [`disassemble_module`](/reference/tools/packages/#disassemble_module) | Disassemble module | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
-| [`enable_tools`](/reference/tools/profile-switching/#enable_tools) | Enable tool profiles | [Profile switching](/reference/tools/profile-switching/) | always on |
-| [`export_case`](/reference/tools/incident-investigation/#export_case) | Export case | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`find_flow_path`](/reference/tools/incident-investigation/#find_flow_path) | Find flow path | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`find_funding_source`](/reference/tools/incident-investigation/#find_funding_source) | Find funding source | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`find_funding_sources`](/reference/tools/incident-investigation/#find_funding_sources) | Find funding sources | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`find_pools`](/reference/tools/defi/#find_pools) | Find pools | [DeFi](/reference/tools/defi/) | `core` (default) |
-| [`find_shared_multisig`](/reference/tools/incident-investigation/#find_shared_multisig) | Find shared multisig | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`get_address_fanout`](/reference/tools/incident-investigation/#get_address_fanout) | Get address fanout | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`get_balance`](/reference/tools/coins-and-tokens/#get_balance) | Get balance | [Coins and tokens](/reference/tools/coins-and-tokens/) | `core` (default) |
-| [`get_chain_info`](/reference/tools/chain-and-network/#get_chain_info) | Get chain info | [Chain and network](/reference/tools/chain-and-network/) | `core` (default) |
-| [`get_checkpoint`](/reference/tools/chain-and-network/#get_checkpoint) | Get checkpoint | [Chain and network](/reference/tools/chain-and-network/) | `developer` |
-| [`get_coin_info`](/reference/tools/coins-and-tokens/#get_coin_info) | Get coin info | [Coins and tokens](/reference/tools/coins-and-tokens/) | `market` |
-| [`get_defi_positions`](/reference/tools/defi/#get_defi_positions) | Get DeFi positions | [DeFi](/reference/tools/defi/) | `core` (default) |
-| [`get_move_function`](/reference/tools/packages/#get_move_function) | Get move function | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
-| [`get_nft_sales`](/reference/tools/nfts/#get_nft_sales) | Get NFT sales | [NFTs](/reference/tools/nfts/) | `forensics` |
-| [`get_object`](/reference/tools/objects/#get_object) | Get object | [Objects](/reference/tools/objects/) | `core` (default) |
-| [`get_package`](/reference/tools/packages/#get_package) | Get package | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
-| [`get_package_dependency_graph`](/reference/tools/packages/#get_package_dependency_graph) | Get package dependency graph | [Packages](/reference/tools/packages/) | `developer` |
-| [`get_pool_stats`](/reference/tools/defi/#get_pool_stats) | Get pool stats | [DeFi](/reference/tools/defi/) | `market` |
-| [`get_staking_summary`](/reference/tools/staking/#get_staking_summary) | Get staking summary | [Staking](/reference/tools/staking/) | `core` (default) |
-| [`get_token_prices`](/reference/tools/coins-and-tokens/#get_token_prices) | Get token prices | [Coins and tokens](/reference/tools/coins-and-tokens/) | `core` (default) |
-| [`get_top_holders`](/reference/tools/nfts/#get_top_holders) | Get top holders | [NFTs](/reference/tools/nfts/) | `forensics` |
-| [`get_transaction`](/reference/tools/transactions-and-events/#get_transaction) | Get transaction | [Transactions and events](/reference/tools/transactions-and-events/) | `core` (default) |
-| [`get_transaction_history`](/reference/tools/starting-points/#get_transaction_history) | Get transaction history | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
-| [`get_transactions`](/reference/tools/transactions-and-events/#get_transactions) | Get transactions | [Transactions and events](/reference/tools/transactions-and-events/) | `core` (default) |
-| [`get_upgrade_history`](/reference/tools/incident-investigation/#get_upgrade_history) | Get upgrade history | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`get_validators`](/reference/tools/staking/#get_validators) | Get validators | [Staking](/reference/tools/staking/) | `market` |
-| [`get_wallet_overview`](/reference/tools/starting-points/#get_wallet_overview) | Get wallet overview | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
-| [`identify_address`](/reference/tools/starting-points/#identify_address) | Identify address | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
-| [`list_dynamic_fields`](/reference/tools/objects/#list_dynamic_fields) | List dynamic fields | [Objects](/reference/tools/objects/) | `developer` |
-| [`list_findings`](/reference/tools/incident-investigation/#list_findings) | List findings | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`list_nft_collections`](/reference/tools/nfts/#list_nft_collections) | List NFT collections | [NFTs](/reference/tools/nfts/) | `core` (default) |
-| [`list_nfts`](/reference/tools/nfts/#list_nfts) | List NFTs | [NFTs](/reference/tools/nfts/) | `core` (default) |
-| [`list_owned_objects`](/reference/tools/objects/#list_owned_objects) | List owned objects | [Objects](/reference/tools/objects/) | `core` (default) |
-| [`manage_labels`](/reference/tools/incident-investigation/#manage_labels) | Manage address labels | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`mvr_get_package_info`](/reference/tools/move-registry/#mvr_get_package_info) | MVR get package info | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
-| [`mvr_resolve`](/reference/tools/move-registry/#mvr_resolve) | MVR resolve | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
-| [`mvr_resolve_struct`](/reference/tools/move-registry/#mvr_resolve_struct) | MVR resolve struct | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
-| [`mvr_reverse_resolve`](/reference/tools/move-registry/#mvr_reverse_resolve) | MVR reverse resolve | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
-| [`mvr_search`](/reference/tools/move-registry/#mvr_search) | MVR search | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
-| [`poll_watch`](/reference/tools/advanced/#poll_watch) | Poll watched addresses | [Advanced](/reference/tools/advanced/) | `forensics` |
-| [`query_events`](/reference/tools/transactions-and-events/#query_events) | Query events | [Transactions and events](/reference/tools/transactions-and-events/) | `forensics` |
-| [`query_transactions`](/reference/tools/transactions-and-events/#query_transactions) | Query transactions | [Transactions and events](/reference/tools/transactions-and-events/) | `core` (default) |
-| [`resolve_bridge_transfer`](/reference/tools/incident-investigation/#resolve_bridge_transfer) | Resolve bridge transfer | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`resolve_name`](/reference/tools/names/#resolve_name) | Resolve name | [Names](/reference/tools/names/) | `core` (default) |
-| [`resolve_protocol_packages`](/reference/tools/incident-investigation/#resolve_protocol_packages) | Resolve protocol packages | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`sample_control_addresses`](/reference/tools/incident-investigation/#sample_control_addresses) | Sample control addresses | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`save_finding`](/reference/tools/incident-investigation/#save_finding) | Save finding | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`screen_address`](/reference/tools/incident-investigation/#screen_address) | Screen address | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`search_token`](/reference/tools/coins-and-tokens/#search_token) | Search token | [Coins and tokens](/reference/tools/coins-and-tokens/) | `market` |
-| [`simulate_transaction`](/reference/tools/transaction-building/#simulate_transaction) | Simulate transaction | [Transaction building](/reference/tools/transaction-building/) | `developer` |
-| [`summarize_address_flows`](/reference/tools/incident-investigation/#summarize_address_flows) | Summarize address flows | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`summarize_incident_losses`](/reference/tools/incident-investigation/#summarize_incident_losses) | Summarize incident losses | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`trace_flow_graph`](/reference/tools/incident-investigation/#trace_flow_graph) | Trace flow graph | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`trace_funds`](/reference/tools/incident-investigation/#trace_funds) | Trace funds | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`trace_object_history`](/reference/tools/incident-investigation/#trace_object_history) | Trace object history | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
-| [`watch_addresses`](/reference/tools/advanced/#watch_addresses) | Watch addresses | [Advanced](/reference/tools/advanced/) | `forensics` |
+| [`aggregate_events`](/reference/tools/incident-investigation/#aggregate_events) | Rank addresses or event types by activity across a time window — the 'who were the top wallets on this protocol today' question — in one call instead of paginating thousands of events yourself. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`analyze_attack_tx`](/reference/tools/incident-investigation/#analyze_attack_tx) | Break down one exploit transaction. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`analyze_multisig`](/reference/tools/incident-investigation/#analyze_multisig) | For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`analyze_package`](/reference/tools/packages/#analyze_package) | Analyze a Sui Move package. | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
+| [`analyze_token`](/reference/tools/starting-points/#analyze_token) | Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
+| [`build_staking`](/reference/tools/transaction-building/#build_staking) | Build an unsigned transaction to stake or unstake SUI. | [Transaction building](/reference/tools/transaction-building/) | `developer` |
+| [`build_timeline`](/reference/tools/incident-investigation/#build_timeline) | Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`build_transfer`](/reference/tools/transaction-building/#build_transfer) | Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. | [Transaction building](/reference/tools/transaction-building/) | `developer` |
+| [`build_wallet_edges`](/reference/tools/incident-investigation/#build_wallet_edges) | Find addresses that appear to share an operator with the ones you give it, and say why. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`check_activity`](/reference/tools/advanced/#check_activity) | Stateless one-shot check for new activity on a Sui address or object since a known checkpoint, timestamp, cursor or version. | [Advanced](/reference/tools/advanced/) | `forensics` |
+| [`check_coin_restrictions`](/reference/tools/incident-investigation/#check_coin_restrictions) | Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`classify_deposit_address`](/reference/tools/incident-investigation/#classify_deposit_address) | Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`compare_oracle_price`](/reference/tools/deepbook/#compare_oracle_price) | Compare the Pyth oracle price against the price DeepBook actually traded at, over a time window. | [DeepBook](/reference/tools/deepbook/) | `forensics` |
+| [`decode_ptb`](/reference/tools/advanced/#decode_ptb) | Decode a Programmable Transaction Block (PTB) from base64 BCS bytes, or an executed transaction's PTB from its digest. | [Advanced](/reference/tools/advanced/) | `developer` |
+| [`decompile_module`](/reference/tools/packages/#decompile_module) | Decompile Move module(s) from a Sui package into readable source code. | [Packages](/reference/tools/packages/) | `developer` |
+| [`deepbook_orderbook`](/reference/tools/deepbook/#deepbook_orderbook) | Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. | [DeepBook](/reference/tools/deepbook/) | `market` |
+| [`deepbook_trades`](/reference/tools/deepbook/#deepbook_trades) | Recent fills for a DeepBook v3 pool, with the maker and taker balance manager IDs behind each trade. | [DeepBook](/reference/tools/deepbook/) | `market` |
+| [`delete_finding`](/reference/tools/incident-investigation/#delete_finding) | Remove a finding by id — for retracting something that turned out to be wrong. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`diff_package_upgrade`](/reference/tools/packages/#diff_package_upgrade) | Diff two versions of a Move package to spot what an upgrade changed, the classic malicious-upgrade / backdoor vector. | [Packages](/reference/tools/packages/) | `developer` |
+| [`disassemble_module`](/reference/tools/packages/#disassemble_module) | Disassemble Move module(s) from a Sui package into Move bytecode assembly, using the GraphQL endpoint. | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
+| [`enable_tools`](/reference/tools/profile-switching/#enable_tools) | Turn on more Sui tool profiles for this session. | [Profile switching](/reference/tools/profile-switching/) | always on |
+| [`export_case`](/reference/tools/incident-investigation/#export_case) | Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`find_flow_path`](/reference/tools/incident-investigation/#find_flow_path) | Is there a value path from one address to another? | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`find_funding_source`](/reference/tools/incident-investigation/#find_funding_source) | Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`find_funding_sources`](/reference/tools/incident-investigation/#find_funding_sources) | Trace many addresses back to their funding sources in one call, sharing work between them. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`find_pools`](/reference/tools/defi/#find_pools) | Find DeFi liquidity pools by token pair. | [DeFi](/reference/tools/defi/) | `core` (default) |
+| [`find_shared_multisig`](/reference/tools/incident-investigation/#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control — even one that never appeared in your trace. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`get_address_fanout`](/reference/tools/incident-investigation/#get_address_fanout) | Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`get_balance`](/reference/tools/coins-and-tokens/#get_balance) | Get the liquid balance of one coin type for a Sui address or object (defaults to SUI), now or at a past time or checkpoint. | [Coins and tokens](/reference/tools/coins-and-tokens/) | `core` (default) |
+| [`get_chain_info`](/reference/tools/chain-and-network/#get_chain_info) | Get current Sui network info: chain ID, epoch, checkpoint height, timestamp, and reference gas price. | [Chain and network](/reference/tools/chain-and-network/) | `core` (default) |
+| [`get_checkpoint`](/reference/tools/chain-and-network/#get_checkpoint) | Get a Sui checkpoint by sequence number, digest or timestamp, or the latest if none is given. | [Chain and network](/reference/tools/chain-and-network/) | `developer` |
+| [`get_coin_info`](/reference/tools/coins-and-tokens/#get_coin_info) | Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). | [Coins and tokens](/reference/tools/coins-and-tokens/) | `market` |
+| [`get_defi_positions`](/reference/tools/defi/#get_defi_positions) | Find and value the DeFi positions a Sui wallet holds. | [DeFi](/reference/tools/defi/) | `core` (default) |
+| [`get_move_function`](/reference/tools/packages/#get_move_function) | Get a specific Move function signature from a Sui package. | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
+| [`get_nft_sales`](/reference/tools/nfts/#get_nft_sales) | NFT marketplace sales over a recent window, with volume and per-marketplace totals. | [NFTs](/reference/tools/nfts/) | `forensics` |
+| [`get_object`](/reference/tools/objects/#get_object) | Get a Sui object by its ID. | [Objects](/reference/tools/objects/) | `core` (default) |
+| [`get_package`](/reference/tools/packages/#get_package) | Get a Sui Move package by its ID. | [Packages](/reference/tools/packages/) | `forensics`, `developer` |
+| [`get_package_dependency_graph`](/reference/tools/packages/#get_package_dependency_graph) | Get the dependency graph of a Sui Move package from its linkage table. | [Packages](/reference/tools/packages/) | `developer` |
+| [`get_pool_stats`](/reference/tools/defi/#get_pool_stats) | Get stats for a DeFi liquidity pool on Sui given its object ID. | [DeFi](/reference/tools/defi/) | `market` |
+| [`get_staking_summary`](/reference/tools/staking/#get_staking_summary) | Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. | [Staking](/reference/tools/staking/) | `core` (default) |
+| [`get_token_prices`](/reference/tools/coins-and-tokens/#get_token_prices) | Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. | [Coins and tokens](/reference/tools/coins-and-tokens/) | `core` (default) |
+| [`get_top_holders`](/reference/tools/nfts/#get_top_holders) | Scan objects of a given type and return top holders. | [NFTs](/reference/tools/nfts/) | `forensics` |
+| [`get_transaction`](/reference/tools/transactions-and-events/#get_transaction) | Get a Sui transaction by its digest. | [Transactions and events](/reference/tools/transactions-and-events/) | `core` (default) |
+| [`get_transaction_history`](/reference/tools/starting-points/#get_transaction_history) | Get decoded transaction history for a Sui wallet. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
+| [`get_transactions`](/reference/tools/transactions-and-events/#get_transactions) | Read up to 50 Sui transactions in ONE call, given their digests. | [Transactions and events](/reference/tools/transactions-and-events/) | `core` (default) |
+| [`get_upgrade_history`](/reference/tools/incident-investigation/#get_upgrade_history) | Upgrade governance across a package's whole lineage. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`get_validators`](/reference/tools/staking/#get_validators) | List current Sui validators (stake, commission, voting power), or — when `address` is given — return detailed info for that one validator (credentials, staking stats, network addresses). | [Staking](/reference/tools/staking/) | `market` |
+| [`get_wallet_overview`](/reference/tools/starting-points/#get_wallet_overview) | Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
+| [`identify_address`](/reference/tools/starting-points/#identify_address) | Identify what a Sui address is: wallet, package, validator, or object. | [Recommended starting points](/reference/tools/starting-points/) | `core` (default) |
+| [`list_dynamic_fields`](/reference/tools/objects/#list_dynamic_fields) | List dynamic fields of a Sui object. | [Objects](/reference/tools/objects/) | `developer` |
+| [`list_findings`](/reference/tools/incident-investigation/#list_findings) | List recorded findings, or every case with its finding count. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`list_nft_collections`](/reference/tools/nfts/#list_nft_collections) | Summary of the NFT collections a wallet holds: every kiosk plus directly owned objects, one row per collection type with its count. | [NFTs](/reference/tools/nfts/) | `core` (default) |
+| [`list_nfts`](/reference/tools/nfts/#list_nfts) | List NFTs owned by a wallet, including kiosk-stored NFTs. | [NFTs](/reference/tools/nfts/) | `core` (default) |
+| [`list_owned_objects`](/reference/tools/objects/#list_owned_objects) | List raw objects owned by a Sui address with optional type filter and pagination. | [Objects](/reference/tools/objects/) | `core` (default) |
+| [`manage_labels`](/reference/tools/incident-investigation/#manage_labels) | Manage the address-label registry used for incident investigation and fund tracing. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`mvr_get_package_info`](/reference/tools/move-registry/#mvr_get_package_info) | Get the full Move Registry record for a single package name. | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
+| [`mvr_resolve`](/reference/tools/move-registry/#mvr_resolve) | Resolve one or more Move Registry (MVR) names to their on-chain package IDs. | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
+| [`mvr_resolve_struct`](/reference/tools/move-registry/#mvr_resolve_struct) | Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
+| [`mvr_reverse_resolve`](/reference/tools/move-registry/#mvr_reverse_resolve) | Reverse-lookup MVR names from one or more package addresses. | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
+| [`mvr_search`](/reference/tools/move-registry/#mvr_search) | Browse or search the Move Registry for packages. | [Move Registry (MVR)](/reference/tools/move-registry/) | `developer` |
+| [`poll_watch`](/reference/tools/advanced/#poll_watch) | Return what has happened to watched addresses since the last poll, and nothing else. | [Advanced](/reference/tools/advanced/) | `forensics` |
+| [`query_events`](/reference/tools/transactions-and-events/#query_events) | Query Sui events with filters (type, sender, emitting module, time or checkpoint range). | [Transactions and events](/reference/tools/transactions-and-events/) | `forensics` |
+| [`query_transactions`](/reference/tools/transactions-and-events/#query_transactions) | Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). | [Transactions and events](/reference/tools/transactions-and-events/) | `core` (default) |
+| [`resolve_bridge_transfer`](/reference/tools/incident-investigation/#resolve_bridge_transfer) | Follow funds across a bridge. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`resolve_name`](/reference/tools/names/#resolve_name) | Resolve a SuiNS name (.sui domain) to an address, or reverse-lookup an address to its SuiNS name. | [Names](/reference/tools/names/) | `core` (default) |
+| [`resolve_protocol_packages`](/reference/tools/incident-investigation/#resolve_protocol_packages) | Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`sample_control_addresses`](/reference/tools/incident-investigation/#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing — other addresses that used the same protocol over the same window. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`save_finding`](/reference/tools/incident-investigation/#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`screen_address`](/reference/tools/incident-investigation/#screen_address) | Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`search_token`](/reference/tools/coins-and-tokens/#search_token) | Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). | [Coins and tokens](/reference/tools/coins-and-tokens/) | `market` |
+| [`simulate_transaction`](/reference/tools/transaction-building/#simulate_transaction) | Dry-run a Sui transaction without signing, sending, or spending anything. | [Transaction building](/reference/tools/transaction-building/) | `developer` |
+| [`summarize_address_flows`](/reference/tools/incident-investigation/#summarize_address_flows) | What one address took in and paid out over a window, in one call. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`summarize_incident_losses`](/reference/tools/incident-investigation/#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`trace_flow_graph`](/reference/tools/incident-investigation/#trace_flow_graph) | Follow ALL of the funds, not one branch. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`trace_funds`](/reference/tools/incident-investigation/#trace_funds) | Trace fund flow from a transaction. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`trace_object_history`](/reference/tools/incident-investigation/#trace_object_history) | Trace the provenance of a Sui object. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`watch_addresses`](/reference/tools/advanced/#watch_addresses) | Add, remove or list addresses watched for new activity during an investigation. | [Advanced](/reference/tools/advanced/) | `forensics` |

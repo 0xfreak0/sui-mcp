@@ -4,7 +4,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { registerAllTools } from "../src/tools/index.js";
-import { PROFILES } from "../src/tools/profiles.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -12,20 +11,12 @@ const readJson = (name: string) => JSON.parse(readFileSync(join(root, name), "ut
 
 const pkg = readJson("package.json");
 const serverJson = readJson("server.json");
-const readme = readFileSync(join(root, "README.md"), "utf8");
-const docsDir = join(root, "site/src/content/docs");
-const profilesPage = readFileSync(join(docsDir, "guides/tool-profiles.md"), "utf8");
-const decompilerPage = readFileSync(join(docsDir, "guides/decompiler.md"), "utf8");
 const indexSrc = readFileSync(join(root, "src/index.ts"), "utf8");
 
 /**
- * Every capability tool `registerAllTools` registers. Uses the same
- * recording-fake technique as with-network.test.ts: the real McpServer would
- * need a transport, and all we want is the registration list.
- *
- * `enable_tools` is excluded. It is the profile switch, not a Sui capability,
- * and counting it would inflate the number the README and package description
- * advertise. See src/tools/profiles.ts.
+ * Every tool `registerAllTools` registers. Uses the same recording-fake
+ * technique as with-network.test.ts: the real McpServer would need a
+ * transport, and all we want is the registration list.
  */
 function registeredToolNames(): string[] {
   const names: string[] = [];
@@ -37,7 +28,7 @@ function registeredToolNames(): string[] {
     server: { setRequestHandler() {} },
   } as unknown as McpServer;
   registerAllTools(fake);
-  return names.filter((n) => n !== "enable_tools");
+  return names;
 }
 
 describe("npm tarball contents", () => {
@@ -169,37 +160,17 @@ describe("MCP registry metadata", () => {
     // there's only one string to edit.
     expect(serverJson.description).toBe(pkg.description);
   });
+
+  // Directory pages show the description and nothing regenerates it, so a
+  // tool count in it is wrong from the next tool on until someone notices.
+  it("states no tool count in the description", () => {
+    expect(pkg.description).not.toMatch(/\d+\s+tools\b/i);
+  });
 });
 
-describe("advertised tool count", () => {
-  const toolCount = registeredToolNames().length;
-
+describe("tool registration", () => {
   it("registers each tool name exactly once", () => {
     const names = registeredToolNames();
     expect(new Set(names).size).toBe(names.length);
-  });
-
-  it("matches the count in the package description", () => {
-    expect(pkg.description).toContain(`${toolCount} tools`);
-  });
-
-  it("matches the count in the README intro and the docs pages that state it", () => {
-    expect(readme).toContain(`${toolCount} tools`);
-    expect(profilesPage).toContain(`All ${toolCount} tools`);
-    expect(decompilerPage).toContain(`of the ${toolCount} tools`);
-  });
-
-  // The per-profile rows are hand-written and were the one advertised number
-  // nothing checked: adding a tool to a profile silently left the table wrong,
-  // and the table is what someone reads to decide which profile to set.
-  it("matches the per-profile counts in the tool profiles table", () => {
-    for (const [name, tools] of Object.entries(PROFILES)) {
-      const row = new RegExp(`^\\| \`${name}\`[^|]*\\|\\s*(\\d+)\\s*\\|`, "m").exec(profilesPage);
-      expect(row, `guides/tool-profiles.md has no row for \`${name}\``).not.toBeNull();
-      expect(Number(row![1]), `guides/tool-profiles.md says ${name} has ${row![1]} tools, PROFILES has ${tools.length}`)
-        .toBe(tools.length);
-    }
-    const all = /^\| `all`[^|]*\|\s*(\d+)\s*\|/m.exec(profilesPage);
-    expect(Number(all?.[1]), "guides/tool-profiles.md `all` row").toBe(toolCount);
   });
 });

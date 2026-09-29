@@ -9,6 +9,9 @@ hero:
     - text: Install
       link: /start/install/
       icon: right-arrow
+    - text: See an example
+      link: /examples/
+      variant: secondary
     - text: Read the docs
       link: /start/
       variant: minimal
@@ -16,11 +19,22 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+## Start here
+
+- **Install the server**: [Install](/start/install/)
+- **Investigate a hack or exploit**: [Cetus exploit example](/examples/protocol-exploit/)
+- **Check who controls a token or protocol**: [KONG rug pull example](/examples/token-rug/), [Typus authority example](/examples/package-authority/)
+- **Check a wallet or a suspect address**: [drainer kit example](/examples/wallet-drainer/), [everyday prompts](/guides/everyday-prompts/)
+- **Trace where funds went**: [Fund flows](/concepts/fund-flows/)
+- **Read a result's warnings**: [How to read results](/concepts/)
+
+More tasks are listed on [Start here](/start/).
+
 ## What the tools do
 
 <CardGrid>
 	<Card title="Tracing funds">
-		`trace_funds` follows funds forward or backward across hops and swaps, and `trace_flow_graph` follows every branch. `resolve_bridge_transfer` follows funds across a bridge. `find_funding_sources` walks up to 100 addresses back to their funding sources, and `build_wallet_edges` finds addresses that may share an operator.
+		`trace_funds` follows funds forward or backward across hops and swaps, and `trace_flow_graph` follows every branch. `resolve_bridge_transfer` follows funds across a bridge. `find_funding_sources` walks many addresses back to their funding sources in one call, and `build_wallet_edges` finds addresses that may share an operator.
 
 		[Incident investigation tools](/reference/tools/incident-investigation/)
 	</Card>
@@ -40,7 +54,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		[Recommended starting points](/reference/tools/starting-points/)
 	</Card>
 	<Card title="Everyday prompts">
-		`was_i_scammed`, `who_controls_this_token`, `who_controls_this_protocol` and `who_is_this_wallet` answer common questions. Each gives a plain answer of at most four sentences first, then a `How sure` line, then the digests and addresses behind it.
+		`was_i_scammed`, `who_controls_this_token`, `who_controls_this_protocol` and `who_is_this_wallet` answer common questions. Each gives a short plain answer first, then a `How sure` line, then the digests and addresses behind it.
 
 		[Prompts](/reference/prompts/)
 	</Card>

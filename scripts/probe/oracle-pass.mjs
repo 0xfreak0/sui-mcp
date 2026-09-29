@@ -499,9 +499,11 @@ async function invoke(tool, args) {
   const joined = texts.join("\n");
   if (msg.timedOut) return { error: `${tool}: no answer in 240s` };
   if (msg.error) return { error: `${tool}: JSON-RPC error ${msg.error.message}` };
-  // The public endpoint is shared. A tool that retried and said it was
-  // rate-limited gave no answer to compare, so the sample is skipped.
-  if (msg.result?.isError) return /Rate-limited by .*HTTP 429/.test(joined) ? { limited: `${tool}: ${joined.slice(0, 200)}` } : { error: `${tool}: ${joined.slice(0, 600)}` };
+  // The public endpoints are shared. A tool that says it was rate-limited, or
+  // that the node told it to back off (gRPC RESOURCE_EXHAUSTED, an HTTP/2
+  // GOAWAY), gave no answer to compare, so the sample is skipped.
+  const refused = /Rate-limited by .*HTTP 429|resource has been exhausted|RESOURCE_EXHAUSTED|ENHANCE_YOUR_CALM/i;
+  if (msg.result?.isError) return refused.test(joined) ? { limited: `${tool}: ${joined.slice(0, 200)}` } : { error: `${tool}: ${joined.slice(0, 600)}` };
   const json = texts.find((t) => t.trim().startsWith("{"));
   try {
     return json ? { json: JSON.parse(json) } : { error: `${tool}: no JSON in the answer: ${joined.slice(0, 200)}` };
@@ -532,7 +534,7 @@ function record(oracle, key, subject, status, detail = {}) {
 const skip = (oracle, key, subject, reason) => record(oracle, key, subject, "skip", { reason });
 /** A tool answer's JSON, or null after recording why there is none. A tool error on a valid subject is a disagreement. */
 function answerOf(oracle, key, subject, res) {
-  if (res.limited) return skip(oracle, key, subject, `rate-limited: ${res.limited}`), null;
+  if (res.limited) return skip(oracle, key, subject, `the endpoint refused the tool's reads: ${res.limited}`), null;
   if (res.error) return record(oracle, key, subject, "disagree", { ours: `error: ${res.error}`, truth: "a valid subject" }), null;
   return res.json;
 }

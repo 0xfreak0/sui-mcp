@@ -133,9 +133,7 @@ function uses(type: string): Map<string, TakenBy> {
   return out;
 }
 
-/** `tx_context::TxContext` is the one non-object a `&mut` parameter takes everywhere; it lives in an unvendored module. */
-const NOT_AN_OBJECT = new Set(["tx_context::TxContext"]);
-const isObjectType = (base: string) => structs.get(base)?.abilities.includes("key") ?? (base.includes("::") && !NOT_AN_OBJECT.has(base));
+const isObjectType = (base: string) => structs.get(base)?.abilities.includes("key") ?? base.includes("::");
 
 /**
  * Callable functions that turn what a `&` grant returns into something more:

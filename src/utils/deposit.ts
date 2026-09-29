@@ -15,7 +15,8 @@ import { isSponsorGasChange, isSuiCoinType } from "./sponsor-gas.js";
  *
  *   1. Every outflow goes to one destination D, and each outflow is a
  *      full-balance sweep: the coin's balance is zero right after it, apart
- *      from a small SUI gas reserve on a sweep the address paid gas for.
+ *      from a small SUI gas reserve on a sweep the address paid gas for, or a
+ *      deposit that arrived while the sweep was pending and is swept next.
  *   2. The sweep's gas is paid by a sponsor that pays for many unrelated
  *      senders (relayer-shaped). Exchanges sponsor sweeps so deposit addresses
  *      never need SUI of their own.
@@ -81,6 +82,15 @@ export interface Sweep {
   full_balance: boolean | null;
   /** SUI left behind as the gas reserve, when full_balance holds only because of it. */
   kept_for_gas?: string;
+  /**
+   * A balance left behind that counts as the next sweep's deposit, when
+   * full_balance holds only because of it. `arrived_in` are the latest
+   * deposits it equals; `swept_by` is the next transfer of the coin, to the
+   * same destination, that took this balance (the coin reached zero then or
+   * in a later sweep), absent while no later outflow of the coin is in the
+   * window.
+   */
+  left_for_next_sweep?: { left: string; arrived_in: string[]; swept_by?: string };
   /** Gas payer when it is not the address itself. */
   sponsor: string | null;
 }
@@ -126,12 +136,19 @@ function netFor(tx: ScannedTx, owner: string): Map<string, bigint> {
  * Balance after each transaction is reconstructed backwards from the current
  * balance, so it does not need the address's whole history, only a window
  * that runs up to now.
+ *
+ * A sweep that leaves a balance is still full when that balance equals the
+ * latest deposits of the coin since its previous outflow, and the next
+ * outflow of the coin is a transfer to the same destination that empties it
+ * or is not in the window yet. An exchange sweeps credited deposits, so one
+ * that arrives while a sweep is pending stays behind until the next one.
  */
 export function readDepositPattern(scan: DepositScan): DepositPattern {
   const { address } = scan;
-  const sweeps: Sweep[] = [];
+  const drafts: Array<{ index: number; tx: ScannedTx; destination: string; coins: SweepCoin[]; sponsor: string | null }> = [];
   const otherOutflows: OtherOutflow[] = [];
   const deposits: Deposit[] = [];
+  const nets = scan.txs.map((tx) => netFor(tx, address));
 
   // balanceAfter[i] for each coin: current minus every later change.
   const after: Array<Map<string, bigint> | null> = new Array(scan.txs.length).fill(null);
@@ -146,7 +163,7 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
   }
 
   scan.txs.forEach((tx, i) => {
-    const own = netFor(tx, address);
+    const own = nets[i]!;
     const sponsor = tx.gasSponsor && tx.gasSponsor !== address ? tx.gasSponsor : null;
     const lost = [...own].filter(([, d]) => d < 0n);
     const gained = [...own].filter(([, d]) => d > 0n);
@@ -190,25 +207,7 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
             balance_after_raw: after[i] ? String(bal ?? 0n) : null,
           };
         });
-      // A self-paid sweep keeps its gas reserve; see SWEEP_GAS_RESERVE_MIST.
-      const selfPaid = sponsor === null && tx.sender === address;
-      let full: boolean | null = after[i] ? true : null;
-      let reserve: string | undefined;
-      for (const c of coins) {
-        const left = BigInt(c.balance_after_raw ?? "0");
-        if (left === 0n) continue;
-        if (selfPaid && isSuiCoinType(c.coin_type) && left <= SWEEP_GAS_RESERVE_MIST) reserve = human(left, c.coin_type);
-        else if (full) full = false;
-      }
-      sweeps.push({
-        digest: tx.digest,
-        timestamp: tx.timestamp,
-        destination,
-        coins,
-        full_balance: full,
-        ...(full && reserve ? { kept_for_gas: reserve } : {}),
-        sponsor,
-      });
+      drafts.push({ index: i, tx, destination, coins, sponsor });
       return;
     }
 
@@ -232,6 +231,72 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
     }
   });
 
+  // Walk back so each sweep knows the next outflow of every coin it swept:
+  // that outflow's digest and destination, and the sweep that finally
+  // emptied the coin, null when nothing did.
+  const nextOutflow = new Map<string, { digest: string; destination: string | null; emptiedBy: string | null }>();
+  const built = new Map<number, Sweep>();
+  let d = drafts.length - 1;
+  for (let i = scan.txs.length - 1; i >= 0; i--) {
+    const draft = drafts[d]?.index === i ? drafts[d--]! : null;
+    if (!draft) {
+      for (const [coin, delta] of nets[i]!) if (delta < 0n) nextOutflow.set(coin, { digest: scan.txs[i]!.digest, destination: null, emptiedBy: null });
+      continue;
+    }
+    const { tx, destination, coins, sponsor } = draft;
+    // A self-paid sweep keeps its gas reserve; see SWEEP_GAS_RESERVE_MIST.
+    const selfPaid = sponsor === null && tx.sender === address;
+    let full: boolean | null = after[i] ? true : null;
+    let reserve: string | undefined;
+    const carried: string[] = [];
+    let sweptBy: string | undefined;
+    const arrivedIn: string[] = [];
+    for (const c of coins) {
+      const left = BigInt(c.balance_after_raw ?? "0");
+      let emptiedBy: string | null = full === null ? null : tx.digest;
+      if (left !== 0n) {
+        // Only a balance of zero empties the coin: a gas reserve is still there.
+        emptiedBy = null;
+        const next = nextOutflow.get(c.coin_type);
+        const isReserve = selfPaid && isSuiCoinType(c.coin_type) && left <= SWEEP_GAS_RESERVE_MIST;
+        const sweptNext = next ? (next.destination === destination ? next.emptiedBy : null) : undefined;
+        const pending = !isReserve && sweptNext !== null ? depositsEqualTo(scan.txs, nets, i, c.coin_type, left) : null;
+        if (isReserve) {
+          reserve = human(left, c.coin_type);
+        } else if (pending) {
+          carried.push(human(left, c.coin_type));
+          arrivedIn.push(...pending);
+          if (sweptNext) {
+            sweptBy ??= next!.digest;
+            emptiedBy = sweptNext;
+          }
+        } else if (full) {
+          full = false;
+        }
+      }
+      nextOutflow.set(c.coin_type, { digest: tx.digest, destination, emptiedBy });
+    }
+    built.set(i, {
+      digest: tx.digest,
+      timestamp: tx.timestamp,
+      destination,
+      coins,
+      full_balance: full,
+      ...(full && reserve ? { kept_for_gas: reserve } : {}),
+      ...(full && carried.length
+        ? {
+            left_for_next_sweep: {
+              left: carried.join(", "),
+              arrived_in: arrivedIn,
+              ...(sweptBy ? { swept_by: sweptBy } : {}),
+            },
+          }
+        : {}),
+      sponsor,
+    });
+  }
+  const sweeps = drafts.map((s) => built.get(s.index)!);
+
   return {
     sweeps,
     otherOutflows,
@@ -239,6 +304,24 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
     destinations: [...new Set(sweeps.map((s) => s.destination))],
     sponsors: [...new Set(sweeps.map((s) => s.sponsor).filter((s): s is string => !!s))],
   };
+}
+
+/**
+ * Digests of the latest deposits of `coin` before transaction `index`, back
+ * to its previous outflow, whose amounts add up to exactly `amount`; null
+ * when no run of them does.
+ */
+function depositsEqualTo(txs: readonly ScannedTx[], nets: ReadonlyArray<Map<string, bigint>>, index: number, coin: string, amount: bigint): string[] | null {
+  const digests: string[] = [];
+  let sum = 0n;
+  for (let j = index - 1; j >= 0 && sum < amount; j--) {
+    const delta = nets[j]!.get(coin) ?? 0n;
+    if (delta < 0n) return null;
+    if (delta === 0n) continue;
+    sum += delta;
+    digests.push(txs[j]!.digest);
+  }
+  return sum === amount ? digests.reverse() : null;
 }
 
 export type DepositVerdict = "likely" | "no" | "unknown";
@@ -349,11 +432,19 @@ export function decideDepositVerdict(
         "The balance after each transfer could not be reconstructed (the current balance list was unreadable or did not fit one page).";
     } else {
       const reserved = sweeps.filter((s) => s.kept_for_gas).length;
+      const carried = sweeps.filter((s) => s.left_for_next_sweep);
+      const next = carried[0]?.left_for_next_sweep;
+      const carriedText = next
+        ? ` ${carried.length} of them left a balance that is a deposit the next sweep takes (left_for_next_sweep; e.g. ${carried[0]!.digest} left ${next.left}, which arrived in ${next.arrived_in.join(", ")} just before it and ${
+            next.swept_by ? `was swept into the same destination by ${next.swept_by}` : "is not swept yet in the window"
+          }). An exchange sweeps credited deposits, so a deposit that arrives while a sweep is pending waits for the next one.`
+        : "";
       reasons.push(
-        `All ${sweeps.length} transfer(s) emptied the swept coin${into}` +
+        `All ${sweeps.length} transfer(s)${into} ${next ? "were full-balance sweeps" : `emptied the swept coin`}` +
           (reserved
             ? `; ${reserved} of them paid their own gas and left only SUI within the ${RESERVE_TEXT} gas reserve (kept_for_gas), which reads as gas for the next sweep.`
-            : "."),
+            : ".") +
+          carriedText,
       );
     }
 

@@ -632,17 +632,22 @@ task and the order of tool calls, followed by the skill sections that govern it:
 | `attribute_cluster` | `addresses` (comma-separated), optional `network`, `case_name` | Whether several addresses share an operator, with a control group |
 
 Four more prompts answer the questions people without investigation experience
-ask. Each gives a plain answer of two to four sentences first, then a
-`How sure: high|medium|low` line naming what was and was not checked, then the
+ask. Each gives a plain answer of at most four sentences in everyday words first,
+then a `How sure: high|medium|low` line naming what was and was not checked, then the
 digests and addresses behind it. They treat every flag as a lead, never as a
 verdict, never name a private person, keep to default detail levels, and call
-`enable_tools` only when a step needs a tool outside `core`:
+`enable_tools` only when a step needs a tool outside `core`. The two control
+prompts report facts only, each as of the checkpoint or time read: they never
+call a coin or protocol safe or unsafe and never recommend buying, selling,
+depositing or holding, and every answer ends by saying it is not an audit or
+financial advice. The other two limit next steps to protecting the wallet,
+keeping evidence and whom to report to:
 
 | Prompt | Arguments | For |
 |---|---|---|
 | `was_i_scammed` | optional `address`, `digest`, `network` | What left the wallet, where it went, whether a blocklisted drainer package or a lookalike address was involved, and whom to report to |
-| `is_this_token_safe` | `coin_type`, optional `network` | Who can mint, freeze or upgrade the coin, how concentrated its holders are, where it trades, and whether a scam list flags it |
-| `is_this_protocol_safe` | `protocol` (package ID, MVR name or protocol name), optional `network` | Who can upgrade the code or use the admin caps, how they sign, and what changed recently |
+| `who_controls_this_token` | `coin_type`, optional `network` | Who can mint, freeze or upgrade the coin, how concentrated its holders are, which pools trade it, and whether the Sui wallet blocklist lists it |
+| `who_controls_this_protocol` | `protocol` (package ID, MVR name or protocol name), optional `network` | Who can upgrade the code or use the admin caps, how they sign, and what changed recently |
 | `who_is_this_wallet` | `address` (or SuiNS name), optional `network` | What kind of account it is, its labels and their evidence, its funding, activity and exchange deposit behaviour |
 
 ## Tool profiles
@@ -983,7 +988,7 @@ The [Move Registry](https://www.moveregistry.com) maps human-readable package na
 | `sample_control_addresses` | Draw a random, reproducible control group from the same protocol and window, so a cohort's rate can be compared against chance |
 | `resolve_protocol_packages` | Find which of a protocol's package versions are actually emitting now — the bundled registry is a decode map full of historical IDs, and querying one returns nothing |
 | `get_address_fanout` | How many distinct addresses a funder pays. Tells an exchange hot wallet apart from a real common origin |
-| `classify_deposit_address` | Whether an address is an exchange deposit address (verdict likely/no/unknown, tier heuristic): full-balance sweeps to one hot wallet (a self-paid sweep may keep up to 1 SUI for gas), relayer-sponsored gas, a labelled or hub-shaped destination. Every check runs, and `checks_not_run` says why any is null. Returns the hot wallet, exchange label with its source_url, sweep sponsor, sweep digests and a deposits sample |
+| `classify_deposit_address` | Whether an address is an exchange deposit address (verdict likely/no/unknown, tier heuristic): full-balance sweeps to one hot wallet (a self-paid sweep may keep up to 1 SUI for gas, and a deposit that arrived just before a sweep may wait for the next one), relayer-sponsored gas, a labelled or hub-shaped destination. Every check runs, and `checks_not_run` says why any is null. Returns the hot wallet, exchange label with its source_url, sweep sponsor, sweep digests and a deposits sample |
 | `screen_address` | Direct and indirect exposure (default 2 hops) to labelled malicious, exchange, bridge and mixer accounts and to OFAC-listed accounts on the far side of bridge exits (every chain-derived `resolve_bridge_transfer` beneficiary), with path digests, amounts, each label's source_url, and the coverage of the label and sanctions lists. Each bridge exit counts once, under the protocol that carried it, with the bridges it settled over in `route` (a Mayan order over Wormhole and CCTP) and any other bridge the same transaction used in `also_exited` |
 | `build_wallet_edges` | Finds addresses that may share an operator with the ones you give it, and shows the evidence. Multisig co-signature (read from the address hash, not inferred), shared first funder, direct funding, shared gas sponsor, or a third party paying both. Exchanges and relayers are measured and discarded first (a funder's recipients count only when paid at least 0.01 SUI or $0.10), one the budget could not reach or whose read failed is excluded rather than assumed narrow (a failed read also sets `truncated`), and a sponsor that also first-funded the address it sponsors is kept as an operator link regardless of how widely it also sponsors strangers. So is a sponsor whose other sponsored wallets were mostly first funded by the seeds' own funder, when that funder is narrow and unlabelled (`role_split`: at least 3 of up to 6 read, and half), one operator funding from one address and paying gas from another. `format: mermaid\|graph_json\|csv` draws the clusters |
 | `analyze_multisig` | For a multisig wallet, which committee keys are actually live and which have never signed, across its history. The committee is fixed for the life of the address; only who signs varies. A key written by hand, which nobody can sign with, is marked `unsignable` and the threshold restated in `effective_committee` |

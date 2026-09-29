@@ -224,6 +224,18 @@ function movementOut(m: ObjectMovement) {
     ...(m.note ? { note: m.note } : {}),
   };
 }
+
+/**
+ * An event that puts an order on the book, where it can fill later: DeepBook's
+ * OrderPlaced, or a wrapper's event that says so with `maker_injected` true.
+ * A taker or market order filled at once emits OrderFilled and no OrderPlaced.
+ */
+function placesOrder(eventType: string | undefined, json: unknown): boolean {
+  const name = eventType?.split("<")[0]!.split("::").at(-1) ?? "";
+  if (/orderplaced/i.test(name)) return true;
+  return json !== null && typeof json === "object" && (json as Record<string, unknown>).maker_injected === true;
+}
+
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
@@ -504,6 +516,7 @@ export function registerTransactionTools(server: McpServer) {
         const signed = signedFieldReadings(json);
         return { ...base, parsed: json, ...(signed ? { signed_readings: signed } : {}) };
       });
+      const orderEvents = rawEvents.some((e, i) => placesOrder(e.eventType, parsedUsable ? parsed![i].json : null));
 
       if (eventPackages.length > 0) await prefetchProtocolNames(eventPackages);
       const fromEvents = [
@@ -689,6 +702,12 @@ export function registerTransactionTools(server: McpServer) {
         epoch: bigintToString(effects?.epoch),
         checkpoint: bigintToString(tx?.checkpoint),
         event_count: events.length,
+        ...(orderEvents
+          ? {
+              order_events_note:
+                "Order events here describe this transaction only: a filled amount is what matched in it. An order that rests on the book fills later in other traders' transactions, which do not touch the owner's account object, so this transaction cannot say whether the order has filled, been cancelled or been withdrawn since. query_transactions with affected_object set to the account object (the event's owner or balance manager) and after_checkpoint set to this checkpoint lists the owner's later transactions with it, such as a cancel or a withdrawal.",
+            }
+          : {}),
         ...(fieldsOmitted
           ? {
               event_fields_omitted: fieldsOmitted,

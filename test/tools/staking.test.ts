@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage, gqlPages } from "../helpers/service-shapes.js";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_NETWORK, getNetwork } from "../../src/config.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readStoredResult } from "../../src/utils/output-cap.js";
+import { resetStore } from "../../src/utils/store.js";
 
 const mockSui = createMockClient();
 const mockGqlQuery = createMockGraphql();
@@ -14,20 +21,22 @@ vi.mock("../../src/clients/graphql.js", () => ({
   gqlQuery: mockGqlQuery,
 }));
 
+// Load after the client mocks: the network wrapper imports the gRPC proxy.
 const { registerStakingTools } = await import("../../src/tools/staking.js");
+const { withNetworkParam } = await import("../../src/tools/with-network.js");
 
 const tools = new Map<string, Function>();
 const mockServer = {
   tool: (name: string, _desc: string, _schema: unknown, handler: Function) => {
     tools.set(name, handler);
   },
-} as any;
+} as unknown as McpServer;
 
 registerStakingTools(mockServer);
 
 function makeValidator(name: string, stake: string, commission: string) {
   return {
-    atRisk: null,
+    atRisk: 0,
     contents: {
       json: {
         metadata: { sui_address: `0x${name}`, name, description: `Validator ${name}` },
@@ -112,9 +121,9 @@ describe("get_validators", () => {
         return { epoch: { epochId: 900, validatorSet: { activeValidators: pages[index], contents: { json: { total_stake: "1830000000000" } } } } };
       });
 
-    it("lists every active validator by default", async () => {
+    it("lists every active validator in full detail", async () => {
       serve();
-      const data = JSON.parse((await tools.get("get_validators")!({})).content[0].text);
+      const data = JSON.parse((await tools.get("get_validators")!({ detail: "full" })).content[0].text);
 
       expect(data.active_validator_count).toBe(60);
       expect(data.validator_count).toBe(60);
@@ -141,8 +150,83 @@ describe("get_validators", () => {
       expect(omitted.count).toBe(50);
       expect(omitted.from).toBe(10);
       expect(omitted.first).toMatchObject({ name: "v10", commission_rate_bps: 110 });
-      // The call that lists the rest drops `limit` and keeps the order.
-      expect(data.omitted.next_call).toEqual({ tool: "get_validators", args: { sort_by: "commission" } });
+      const full = JSON.parse((await tools.get("get_validators")!(data.omitted.next_call.args)).content[0].text);
+      expect(full.validators.slice(10).map((v: { name: string }) => v.name)).toEqual(
+        all.slice(10).map((v) => v.contents.json.metadata.name),
+      );
+    });
+
+    it("caps summary rows after ranking and keeps at-risk validators beyond the budget", async () => {
+      serve();
+      all[0].atRisk = 1;
+      try {
+        const data = JSON.parse((await tools.get("get_validators")!({})).content[0].text);
+        expect(data.validators[0].name).toBe("v59");
+        expect(data.validators.at(-1)).toMatchObject({ name: "v00", at_risk: 1 });
+        expect(data.validators[0]).toEqual({
+          name: "v59", address: "0xv59", staking_pool_sui_balance: "60000000000",
+          commission_rate_bps: 159, voting_power: 100, at_risk: 0,
+        });
+        expect(JSON.stringify(data.validators).length).toBeLessThanOrEqual(6000);
+        expect(data.validator_count).toBe(data.validators.length);
+        expect(data.active_validator_count).toBe(60);
+        expect(data.total_stake).toBe("1830000000000");
+        expect(data.omitted.lists.validators.count).toBe(60 - data.validators.length);
+        expect(data.omitted.fields).toEqual(["validators.description", "validators.next_epoch_commission_rate_bps", "validators.gas_price"]);
+        const full = JSON.parse((await tools.get("get_validators")!(data.omitted.next_call.args)).content[0].text);
+        expect(full.validators).toHaveLength(60);
+        expect(full.validators[0].description).toBe("Validator v59");
+        const limited = JSON.parse((await tools.get("get_validators")!({ limit: 1 })).content[0].text);
+        expect(limited.validators.map((v: { name: string }) => v.name)).toEqual(["v59", "v00"]);
+      } finally {
+        all[0].atRisk = 0;
+      }
+    });
+
+    it("stores full rows with their own count rather than the displayed count", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "validators-store-"));
+      const previous = process.env.SUI_STORE_PATH;
+      process.env.SUI_STORE_PATH = join(dir, "store.db");
+      resetStore();
+      try {
+        serve();
+        const data = JSON.parse((await tools.get("get_validators")!({ limit: 2 })).content[0].text);
+        const id = data.omitted.result.uri.split("/").at(-1);
+        const stored = readStoredResult(id, { path: "validator_count" });
+        expect(stored.value).toBe(60);
+        const rows = readStoredResult(id, { path: "validators", limit: "100" });
+        expect(rows.total).toBe(60);
+        expect(rows.rows).toEqual(expect.arrayContaining([
+          { index: 0, row: expect.objectContaining({ name: "v59", description: "Validator v59", gas_price: "750" }) },
+        ]));
+        expect(data.validator_count).toBe(data.validators.length);
+        expect(data.validator_count).toBe(2);
+      } finally {
+        if (previous === undefined) delete process.env.SUI_STORE_PATH;
+        else process.env.SUI_STORE_PATH = previous;
+        resetStore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("executes the continuation on the original non-default network", async () => {
+      const wrapped = new Map<string, Function>();
+      registerStakingTools(withNetworkParam({
+        registerTool: (name: string, _config: unknown, handler: Function) => wrapped.set(name, handler),
+      } as unknown as McpServer));
+      const network = DEFAULT_NETWORK === "testnet" ? "mainnet" : "testnet";
+      mockGqlQuery.mockImplementation(async () => ({
+        epoch: { epochId: getNetwork() === network ? 900 : 500, validatorSet: {
+          activeValidators: gqlPage(getNetwork() === network ? all.slice(0, 4) : [makeValidator("other-chain", "1", "1")]),
+          contents: { json: { total_stake: "10000000000" } },
+        } },
+      }));
+      const call = wrapped.get("get_validators")!;
+      const limited = JSON.parse((await call({ network, limit: 2, sort_by: "commission" })).content[0].text);
+      const continued = JSON.parse((await call(limited.omitted.next_call.args)).content[0].text);
+      expect(continued.epoch).toBe(900);
+      expect(continued.validators.map((v: { name: string }) => v.name)).toEqual(["v00", "v01", "v02", "v03"]);
+      expect(continued.validators[2].address).toBe(limited.omitted.lists.validators.first.address);
     });
   });
 });

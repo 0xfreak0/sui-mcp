@@ -7,6 +7,7 @@ import {
 } from "../utils/validators.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { capPayload } from "../utils/output-cap.js";
+import { getNetwork } from "../config.js";
 import { listOwnedWithJson } from "../utils/owned-objects.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -17,7 +18,7 @@ const MAX_STAKE_POSITIONS = 1000;
 export function registerStakingTools(server: McpServer) {
   server.tool(
     "get_validators",
-    "List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Listing returns every active validator, sorted by stake or commission; `limit` returns only the first N of that order, and the rest are counted under `omitted` with the call that lists them.",
+    "List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). The default summary shows name, address, stake, commission, voting power and at-risk status within a compact output budget; at-risk validators are always kept. Ranking, active_validator_count and total_stake cover the whole set; validator_count counts the rows shown. `detail: full` returns every full row unless `limit` is set. Omitted rows and fields name a same-network full call without a limit.",
     {
       address: addressArg()
         .optional()
@@ -27,13 +28,15 @@ export function registerStakingTools(server: McpServer) {
         .min(1)
         .max(150)
         .optional()
-        .describe("When listing, return only the first N validators of the sort order; the rest are counted under `omitted`. Default: every active validator."),
+        .describe("When listing, keep at most N validators, plus any at-risk rows in summary. The summary output budget still applies; omitted rows name an unlimited full call."),
       sort_by: z
         .enum(["stake", "commission"])
         .optional()
         .describe("Sort field when listing: stake (default) or commission"),
+      detail: z.enum(["summary", "full"]).optional()
+        .describe("Listing detail: summary (default) caps compact rows and keeps at-risk validators; full returns all fields without a size cap. Does not affect address lookup."),
     },
-    async ({ address, limit, sort_by }) => {
+    async ({ address, limit, sort_by, detail }) => {
       // Detail branch — a single validator.
       if (address) {
         const set = await fetchActiveValidators();
@@ -109,42 +112,71 @@ export function registerStakingTools(server: McpServer) {
         );
       }
 
-      // Sorted over the whole set, then cut to `limit` if one was asked for,
-      // so "top N by stake" is the real top N. The counts cover the whole
-      // set and the cut rows are stated under `omitted`.
-      type Row = (typeof validators)[number];
-      const { payload } = capPayload(
+      const summary = detail !== "full";
+      const fullPayload = {
+        epoch: set.epochId,
+        total_stake: set.totalStake,
+        active_validator_count: validators.length,
+        ...(set.truncated
+          ? {
+              truncated: true,
+              note: "Validator set pagination hit its page budget; counts and ranking cover only what was fetched.",
+            }
+          : {}),
+        validator_count: validators.length,
+        validators,
+      };
+      const rows = summary
+        ? validators.map((v) => ({
+            name: v.name,
+            address: v.address,
+            staking_pool_sui_balance: v.staking_pool_sui_balance,
+            commission_rate_bps: v.commission_rate_bps,
+            voting_power: v.voting_power,
+            at_risk: v.at_risk,
+          }))
+        : validators;
+      const nextCall = {
+        tool: "get_validators",
+        args: { network: getNetwork(), sort_by: sortField, detail: "full" },
+      };
+      type Row = (typeof rows)[number];
+      const { payload, resultId } = capPayload(
         "get_validators",
-        { limit, sort_by },
+        { network: getNetwork(), limit, sort_by, detail },
+        { ...fullPayload, validators: rows },
         {
-          epoch: set.epochId,
-          total_stake: set.totalStake,
-          active_validator_count: validators.length,
-          ...(set.truncated
-            ? {
-                truncated: true,
-                note: "Validator set pagination hit its page budget; counts and ranking cover only what was fetched.",
-              }
-            : {}),
-          validator_count: Math.min(limit ?? validators.length, validators.length),
-          validators,
+          validators: {
+            budget: summary ? 6_000 : Number.POSITIVE_INFINITY,
+            limit,
+            keep: summary ? (v: Row) => (v.at_risk ?? 0) > 0 : undefined,
+            brief: (v: Row) => ({
+              name: v.name,
+              address: v.address,
+              staking_pool_sui_balance: v.staking_pool_sui_balance,
+              commission_rate_bps: v.commission_rate_bps,
+            }),
+          },
         },
-        limit === undefined
-          ? {}
-          : {
-              validators: {
-                budget: Number.POSITIVE_INFINITY,
-                limit,
-                brief: (v: Row) => ({
-                  name: v.name,
-                  address: v.address,
-                  staking_pool_sui_balance: v.staking_pool_sui_balance,
-                  commission_rate_bps: v.commission_rate_bps,
-                }),
-              },
-            },
-        { full: false, next_call: { tool: "get_validators", args: sort_by ? { sort_by } : {} } },
+        {
+          full: false,
+          stored: fullPayload,
+          next_call: nextCall,
+          ...(summary ? { paged: { validators: validators.map((_, i) => i) } } : {}),
+        },
       );
+      payload.validator_count = (payload.validators as Row[]).length;
+      if (summary) {
+        payload.truncated = true;
+        payload.omitted = {
+          ...(payload.omitted as Record<string, unknown> | undefined),
+          fields: ["validators.description", "validators.next_epoch_commission_rate_bps", "validators.gas_price"],
+          next_call: nextCall,
+          ...(resultId && !payload.omitted
+            ? { result: { uri: `sui://results/${resultId}` } }
+            : {}),
+        };
+      }
       return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     }
   );

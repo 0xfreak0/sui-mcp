@@ -649,11 +649,11 @@ export async function auditPackageCapabilities(
       // An UpgradeCap's holder means nothing on its own. Compared against the
       // publisher it says whether upgrade authority changed hands, which is
       // the question worth asking about the most consequential capability on
-      // the chain. Skipped when the object is gone from top level: the note
-      // above already says whether it was destroyed or wrapped, and
-      // `assessCapHolder` reads a missing holder as "shared, immutable or
-      // wrapped", which is wrong for a destroyed cap.
-      const held = kind === "upgrade" && !gone ? assessCapHolder(ownerAddress, publisher) : null;
+      // the chain. Skipped when no address holds it: the note above already
+      // says who can upgrade a destroyed, wrapped, shared or frozen cap, and
+      // `assessCapHolder` reads a missing holder as "whoever can reach it can
+      // still upgrade", which a frozen cap contradicts.
+      const held = kind === "upgrade" && (owner === "address" || owner === "consensus") ? assessCapHolder(ownerAddress, publisher) : null;
 
       return {
         kind,

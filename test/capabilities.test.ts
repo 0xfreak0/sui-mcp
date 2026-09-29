@@ -217,6 +217,21 @@ describe("auditPackageCapabilities — destroyed UpgradeCap", () => {
     expect(cap.note).toMatch(/destroyed/i);
   });
 
+  // authorize_upgrade takes &mut, which a frozen cap cannot give; the holder
+  // assessment's "whoever can reach it can still upgrade" would contradict it.
+  it("gives a frozen UpgradeCap no holder assessment", async () => {
+    const base = gqlQuery.getMockImplementation()!;
+    gqlQuery.mockImplementation(async (query: string, vars?: unknown) =>
+      query.includes("object(address: $id)")
+        ? { object: { owner: { __typename: "Immutable" }, asMoveObject: { contents: { json: { policy: 0 } } } } }
+        : base(query, vars),
+    );
+    const cap = (await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0];
+    expect(cap.owner).toBe("immutable");
+    expect(cap.risk).toBe("info");
+    expect(cap.holder_status).toBeUndefined();
+  });
+
   it("gives a wrapped UpgradeCap no holder assessment", async () => {
     withArchiveFallback.mockResolvedValue({
       transaction: { effects: { changedObjects: [{ objectId: CAP, idOperation: 0 }] } },

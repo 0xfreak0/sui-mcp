@@ -812,7 +812,7 @@ export interface ObjectFlowSummary {
   transfers: ObjectMovement[];
   /** Transfers of a capability object (category "capability") that were not renunciations. Includes protocol-specific caps (an OperatorCap, an ObligationOwnerCap), not only the curated 0x2 framework types `high_consequence` names. */
   capability_transfers: ObjectMovement[];
-  /** Capabilities sent somewhere unspendable — a risk reduction, not a warning. */
+  /** Capabilities sent to an address nobody holds a key for, or frozen when every exercising function takes them by `&mut`: a risk reduction, not a warning. */
   renounced_capabilities: ObjectMovement[];
   /** Capabilities made shared or frozen while still usable: open to every transaction. */
   opened_capabilities: ObjectMovement[];
@@ -845,9 +845,16 @@ export function summarizeObjectFlow(
       `${caps.length} object${caps.length === 1 ? "" : "s"} carrying control changed hands (${names}). A transfer like this moves authority, not value, so it produces no balance change and is invisible to fund tracing. Follow the recipient: what they can now do is the finding, and any coin movement may come later.`,
     );
   }
-  if (renounced.length > 0) {
+  const frozenAway = renounced.filter((m) => m.to?.kind === "immutable").length;
+  const burnedAway = renounced.length - frozenAway;
+  if (burnedAway > 0) {
     parts.push(
-      `${renounced.length} capability object${renounced.length === 1 ? " was" : "s were"} sent to an address nobody holds a key for. Those rights are renounced rather than transferred — a deliberate act and a reduction in risk, not a warning.`,
+      `${burnedAway} capability object${burnedAway === 1 ? " was" : "s were"} sent to an address nobody holds a key for. Those rights are renounced rather than transferred — a deliberate act and a reduction in risk, not a warning.`,
+    );
+  }
+  if (frozenAway > 0) {
+    parts.push(
+      `${frozenAway} capability object${frozenAway === 1 ? " was" : "s were"} frozen, and every function that exercises ${frozenAway === 1 ? "it" : "them"} takes ${frozenAway === 1 ? "it" : "them"} by &mut, which a frozen object cannot give. Those rights are renounced: a reduction in risk, not a warning.`,
     );
   }
   if (opened.length > 0) {

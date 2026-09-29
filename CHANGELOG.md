@@ -29,9 +29,11 @@
   UpgradeCap or DenyCap is renounced, but a frozen TreasuryCap leaves its
   metadata setters and token policy open to anyone (medium), and a frozen
   Publisher or custom cap stays usable through functions that take it by
-  `&`. Object traces, `get_transaction` and watches report these as
-  `opened_capabilities`, including a cap shared in the transaction that
-  created it, which they previously did not show at all.
+  `&`. Object traces list these under `opened_capabilities`,
+  `get_transaction` marks them `opened: true` in `object_transfers`, and
+  `poll_watch` reports `capability_moved` for them, including a cap shared or
+  frozen in the transaction that created it, which none of them showed
+  before.
 - `get_transaction` and the other decoded views named a router's own
   bookkeeping type as a coin in swaps routed through Aftermath's router
   (`Swap RouterDataV1 → USDC`). Each hop now shows the coins it traded, in

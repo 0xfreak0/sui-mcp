@@ -380,6 +380,13 @@ describe("giving up a capability: who can use it afterwards", () => {
     expect(flow.renounced_capabilities).toHaveLength(0);
   });
 
+  // display_registry::claim_with_publisher and coin::deny_list_v2_enable_global_pause
+  // take the cap by &mut, so sharing opens them too.
+  it("names every power a shared Publisher or DenyCapV2 opens", () => {
+    expect(createdShared(`${P2}::package::Publisher`).note).toMatch(/display_registry::new_with_publisher and claim_with_publisher/);
+    expect(createdShared(`${P2}::coin::DenyCapV2<0xa::t::T>`).note).toMatch(/deny_list_v2_enable_global_pause/);
+  });
+
   it("still treats a transfer to a live address as a handover", () => {
     expect(summarizeObjectFlow([to(TREASURY, addrOwner(B))])!.capability_transfers).toHaveLength(1);
   });

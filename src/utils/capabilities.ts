@@ -284,7 +284,7 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `Denylist/freeze authority (${shortType}) is a shared object. coin::deny_list_v2_add and deny_list_add are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can freeze holders of this coin.`,
+        note: `Denylist/freeze authority (${shortType}) is a shared object. coin::deny_list_v2_add, deny_list_v2_enable_global_pause and deny_list_add are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can freeze holders of this coin, and pause it for everyone where the cap allows a global pause.`,
       };
     }
     if (owner === "immutable") {

@@ -137,8 +137,8 @@ const OPENED_BY_SHARING: Record<string, string> = {
   [`${ADDR2}::package::UpgradeCap`]: "package::authorize_upgrade and commit_upgrade take it by &mut, so anyone can upgrade the package.",
   [`${ADDR2}::coin::TreasuryCap`]: "coin::mint and mint_balance take it by &mut, so anyone can mint.",
   [`${ADDR2}::coin::DenyCap`]: "coin::deny_list_add takes it by &mut, so anyone can freeze holders.",
-  [`${ADDR2}::coin::DenyCapV2`]: "coin::deny_list_v2_add takes it by &mut, so anyone can freeze holders.",
-  [`${ADDR2}::package::Publisher`]: "display::new and transfer_policy::new take it by &, so anyone can create Display and TransferPolicy objects for the package's types.",
+  [`${ADDR2}::coin::DenyCapV2`]: "coin::deny_list_v2_add and deny_list_v2_enable_global_pause take it by &mut, so anyone can freeze holders, and pause the coin for everyone where the cap allows a global pause.",
+  [`${ADDR2}::package::Publisher`]: "display_registry::new_with_publisher and claim_with_publisher take it by &mut, so anyone can create a registry Display, or claim an unclaimed DisplayCap, for any of the package's types, which sets how its objects are shown. display::new and transfer_policy::new take it by &, so anyone can create Display and TransferPolicy objects for the package's types.",
 };
 
 /** What anyone can do with a frozen high-consequence type, through the functions that take it by `&`. */

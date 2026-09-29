@@ -58,10 +58,20 @@ function decodeSegmentCursor(cursor: string | undefined): { segIdx: number; inne
   return { segIdx: Number.isInteger(segIdx) ? segIdx : 0, inner: inner || undefined };
 }
 
+/**
+ * Reads one call makes to fill a page. The service reads a bounded range per
+ * request, so a request can return fewer events than asked, or none, while
+ * more remain: `sender` with `event_type` returned an empty page and
+ * `hasPreviousPage` while the matches sat further back. Reading continues until
+ * the page is full, the list ends or this many reads are spent, and a call the
+ * budget stopped short says so in `scan`.
+ */
+export const QUERY_EVENTS_MAX_READS = 10;
+
 export function registerEventTools(server: McpServer) {
   server.tool(
     "query_events",
-    "Query Sui events with filters (type, sender, emitting module, time or checkpoint range). Returns each event's type AND its DECODED FIELDS, so there is no need to hand-write a GraphQL query to read event values; the GraphQL Event has neither `type` nor `json` at its top level (both sit under `contents`). Use this to measure per-protocol flow: a transaction's balance changes cover the whole PTB and over-attribute, while a protocol's own events do not. Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order`. An event carries the ID of the package version that DEFINED its struct, so an `event_type` written with an upgraded package ID is rewritten to the defining one and `event_type_resolution` says so. A module's emitting id depends on when the call happened: before mainnet checkpoint 69,982,635 (2024-10-17) Sui anchored it to the package's ORIGINAL id for the life of the lineage regardless of the version called; from that checkpoint on it is the id of the version that was actually called. A `module` filter is queried at whichever id (or both, merged, for a window spanning the cutover) the window needs, and `module_scope` reports how. A framework package upgraded in place (0x2, 0x3…) keeps one ID for every version, so its filter already covers the whole lineage. For the events of ONE known transaction, use get_transaction instead: it returns them already decoded.",
+    "Query Sui events with filters (type, sender, emitting module, time or checkpoint range). Returns each event's type AND its DECODED FIELDS, so there is no need to hand-write a GraphQL query to read event values; the GraphQL Event has neither `type` nor `json` at its top level (both sit under `contents`). Use this to measure per-protocol flow: a transaction's balance changes cover the whole PTB and over-attribute, while a protocol's own events do not. Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order`. A page is filled to `limit` across several reads when the service returns short pages; if the read budget runs out first, `scan` says so and names the call that continues. An event carries the ID of the package version that DEFINED its struct, so an `event_type` written with an upgraded package ID is rewritten to the defining one and `event_type_resolution` says so. A module's emitting id depends on when the call happened: before mainnet checkpoint 69,982,635 (2024-10-17) Sui anchored it to the package's ORIGINAL id for the life of the lineage regardless of the version called; from that checkpoint on it is the id of the version that was actually called. A `module` filter is queried at whichever id (or both, merged, for a window spanning the cutover) the window needs, and `module_scope` reports how. A framework package upgraded in place (0x2, 0x3…) keeps one ID for every version, so its filter already covers the whole lineage. For the events of ONE known transaction, use get_transaction instead: it returns them already decoded.",
     {
       event_type: z
         .string()
@@ -114,69 +124,63 @@ export function registerEventTools(server: McpServer) {
         if (typeFilter) baseFilter.type = typeFilter.filter;
         if (sender) baseFilter.sender = sender;
 
-        let rawNodes: EventsPage["events"]["nodes"];
-        let hasNextPage: boolean;
-        let nextCursor: string | null;
-
-        if (moduleFilter && moduleFilter.segments.length > 1) {
-          // The window spans the relocate_event_module cutover: this module's
-          // events are indexed under different package ids on each side, so
-          // reading it takes two disjoint queries merged into one page
-          // sequence. Segments are chronological (oldest first); read order
-          // follows display order, and a composite cursor resumes on the
-          // right side of the cutover.
+        // One connection per segment. A window spanning the
+        // relocate_event_module cutover indexes this module's events under
+        // different package ids on each side, so reading it takes two
+        // disjoint queries merged into one page sequence. Segments are
+        // chronological (oldest first); read order follows display order, and
+        // a composite cursor resumes on the right side of the cutover. Any
+        // other filter is one segment and passes the service's cursor through.
+        const split = moduleFilter !== null && moduleFilter.segments.length > 1;
+        let segmentFilters: Array<Record<string, unknown>>;
+        if (split) {
           const readOrder = direction === "newest" ? [...moduleFilter.segments].reverse() : moduleFilter.segments;
-          const decoded = decodeSegmentCursor(cursor);
-          let segIdx = decoded.segIdx;
-          let innerCursor = decoded.inner;
-          let remaining = pageSize;
-          const collected: EventsPage["events"]["nodes"] = [];
-          hasNextPage = false;
-          nextCursor = null;
-
-          while (segIdx < readOrder.length && remaining > 0) {
-            const seg = readOrder[segIdx];
+          segmentFilters = readOrder.map((seg) => {
             const filterParts: Record<string, unknown> = { ...baseFilter, module: seg.filter };
             if (seg.afterCheckpoint != null) filterParts.afterCheckpoint = seg.afterCheckpoint;
             if (seg.beforeCheckpoint != null) filterParts.beforeCheckpoint = seg.beforeCheckpoint;
-            const segData = await gqlQuery<EventsPage>(EVENTS_QUERY, {
-              filter: filterParts,
-              ...orderedPageArgs(direction, remaining, innerCursor),
-            });
-            const segPage = orderedPage(segData.events.nodes, segData.events.pageInfo, direction);
-            collected.push(...segPage.nodes);
-            remaining -= segPage.nodes.length;
-            if (segPage.has_next_page) {
-              hasNextPage = true;
-              nextCursor = encodeSegmentCursor(segIdx, segPage.next_cursor);
-              break;
-            }
-            segIdx += 1;
-            innerCursor = undefined;
-            if (segIdx < readOrder.length) {
-              hasNextPage = true;
-              nextCursor = encodeSegmentCursor(segIdx, null);
-            } else {
-              hasNextPage = false;
-              nextCursor = null;
-            }
-          }
-          rawNodes = collected;
+            return filterParts;
+          });
         } else {
           const filterParts: Record<string, unknown> = { ...baseFilter };
           if (moduleFilter) filterParts.module = moduleFilter.segments[0].filter;
           if (window.after?.checkpoint != null) filterParts.afterCheckpoint = window.after.checkpoint;
           if (window.before?.checkpoint != null) filterParts.beforeCheckpoint = window.before.checkpoint;
+          segmentFilters = [filterParts];
+        }
 
+        const start = split ? decodeSegmentCursor(cursor) : { segIdx: 0, inner: cursor };
+        let segIdx = start.segIdx;
+        let innerCursor = start.inner;
+        // Oldest first, a single connection returns its cursor at the end of
+        // the list too, so a later call with it reads only what came after.
+        let endCursor: string | null = null;
+        let reads = 0;
+        const rawNodes: EventsPage["events"]["nodes"] = [];
+        while (segIdx < segmentFilters.length && rawNodes.length < pageSize && reads < QUERY_EVENTS_MAX_READS) {
+          const filterParts = segmentFilters[segIdx];
           const data = await gqlQuery<EventsPage>(EVENTS_QUERY, {
             filter: Object.keys(filterParts).length > 0 ? filterParts : undefined,
-            ...orderedPageArgs(direction, pageSize, cursor),
+            ...orderedPageArgs(direction, pageSize - rawNodes.length, innerCursor),
           });
+          reads += 1;
           const page = orderedPage(data.events.nodes, data.events.pageInfo, direction);
-          rawNodes = page.nodes;
-          hasNextPage = page.has_next_page;
-          nextCursor = page.next_cursor;
+          rawNodes.push(...page.nodes);
+          if (!page.has_next_page) {
+            endCursor = page.next_cursor;
+            segIdx += 1;
+            innerCursor = undefined;
+            continue;
+          }
+          innerCursor = page.next_cursor ?? undefined;
+          // A claimed next page with no cursor would re-read this one.
+          if (innerCursor === undefined) break;
         }
+        const hasNextPage = segIdx < segmentFilters.length;
+        let nextCursor: string | null;
+        if (split) nextCursor = hasNextPage ? encodeSegmentCursor(segIdx, innerCursor ?? null) : null;
+        else nextCursor = hasNextPage ? (innerCursor ?? null) : endCursor;
+        const budgetSpent = hasNextPage && rawNodes.length < pageSize && reads >= QUERY_EVENTS_MAX_READS;
 
         const events = rawNodes.map((n) => ({
           // The event struct's own type (`0xpkg::module::EventName`).
@@ -207,6 +211,15 @@ export function registerEventTools(server: McpServer) {
                   events,
                   has_next_page: hasNextPage,
                   next_cursor: nextCursor,
+                  ...(budgetSpent
+                    ? {
+                        scan: {
+                          reads,
+                          note: `The service reads a bounded range per request and can return fewer events than asked, or none, while more remain. This call spent its ${reads} reads with ${events.length} of ${pageSize} events found; the list continues at next_call.`,
+                          next_call: { tool: "query_events", repeat_with: { order: direction, cursor: nextCursor } },
+                        },
+                      }
+                    : {}),
                 },
                 null,
                 2

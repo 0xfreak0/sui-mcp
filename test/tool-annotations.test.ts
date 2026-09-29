@@ -213,6 +213,16 @@ describe("server instructions", () => {
 const promptArgs = (name: string, all = false) =>
   Object.fromEntries(PROMPTS[name].args.filter((a) => all || a.required).map((a) => [a.name, ADDR]));
 
+/** A prompt task's numbered steps, each with the indented lines under it. */
+function numberedSteps(task: string): string[] {
+  const steps: string[] = [];
+  for (const line of task.split("\n")) {
+    if (/^\d+\. /.test(line)) steps.push(line);
+    else if (/^\s+\S/.test(line) && steps.length > 0) steps[steps.length - 1] += `\n${line}`;
+  }
+  return steps;
+}
+
 describe("prompts", () => {
   it("lists the investigation and everyday prompts", async () => {
     const { prompts } = await client.listPrompts();
@@ -221,6 +231,7 @@ describe("prompts", () => {
       "investigate_address",
       "trace_incident",
       "was_i_scammed",
+      "what_happened_to_my_funds",
       "who_controls_this_protocol",
       "who_controls_this_token",
       "who_is_this_wallet",
@@ -228,16 +239,46 @@ describe("prompts", () => {
   });
 
   it("requires only the arguments a prompt marks required", async () => {
-    await expect(client.getPrompt({ name: "was_i_scammed", arguments: { digest: ADDR } })).resolves.toBeDefined();
-    await expect(client.getPrompt({ name: "was_i_scammed", arguments: {} })).resolves.toBeDefined();
+    await expect(client.getPrompt({ name: "what_happened_to_my_funds", arguments: { digest: ADDR } })).resolves.toBeDefined();
+    await expect(client.getPrompt({ name: "what_happened_to_my_funds", arguments: {} })).resolves.toBeDefined();
     await expect(client.getPrompt({ name: "who_controls_this_token", arguments: {} })).rejects.toThrow();
   });
 
   // The protocol makes `arguments` optional in prompts/get.
   it("renders a prompt whose arguments are all optional when the request has no arguments field", async () => {
-    const res = await client.getPrompt({ name: "was_i_scammed" });
+    const res = await client.getPrompt({ name: "what_happened_to_my_funds" });
     expect(res.messages).toHaveLength(1);
     await expect(client.getPrompt({ name: "who_is_this_wallet" })).rejects.toThrow();
+  });
+
+  // A client that saved the former name keeps getting the prompt for the
+  // release after the rename, told the new name in the first line.
+  it("renders what_happened_to_my_funds under its former name was_i_scammed, after a first line naming the new one", async () => {
+    const { prompts } = await client.listPrompts();
+    const text = async (name: string, args: Record<string, string>) => {
+      const content = (await client.getPrompt({ name, arguments: args })).messages[0].content;
+      return content.type === "text" ? content.text : "";
+    };
+    const former = prompts.find((p) => p.name === "was_i_scammed");
+    expect(former?.arguments).toEqual(prompts.find((p) => p.name === "what_happened_to_my_funds")?.arguments);
+    for (const args of [{ address: ADDR, digest: ADDR }, {}]) {
+      const [first, ...rest] = (await text("was_i_scammed", args)).split("\n");
+      expect(first).toMatch(/\bwhat_happened_to_my_funds\b/);
+      expect(rest.join("\n").trimStart()).toBe(await text("what_happened_to_my_funds", args));
+    }
+  });
+
+  // Someone asking has usually lost funds already, so what can still be lost
+  // is settled before how it happened and where the funds went.
+  it("walks what_happened_to_my_funds from stopping further loss to how it happened, then where the funds went", () => {
+    const steps = numberedSteps(PROMPTS.what_happened_to_my_funds.task({ digest: ADDR }));
+    const stepOf = (pattern: RegExp) => steps.findIndex((s) => pattern.test(s));
+    const standingAccess = stepOf(/`delegated_to`/);
+    const drainerCheck = stepOf(/\banalyze_attack_tx\b/);
+    const trace = stepOf(/\btrace_funds\b/);
+    expect(standingAccess).toBeGreaterThanOrEqual(0);
+    expect(standingAccess).toBeLessThan(drainerCheck);
+    expect(drainerCheck).toBeLessThan(trace);
   });
 
   it("renders the task with the skill's method", async () => {
@@ -302,11 +343,7 @@ describe("prompts", () => {
   it("mark each step outside the default profile with a profile that holds its tools", () => {
     const defaultTools = toolsForProfiles(DEFAULT_PROFILES);
     for (const name of Object.keys(PROMPTS)) {
-      const steps: string[] = [];
-      for (const line of PROMPTS[name].task(promptArgs(name, true)).split("\n")) {
-        if (/^\d+\. /.test(line)) steps.push(line);
-        else if (/^\s+\S/.test(line) && steps.length > 0) steps[steps.length - 1] += `\n${line}`;
-      }
+      const steps = numberedSteps(PROMPTS[name].task(promptArgs(name, true)));
       for (const step of steps) {
         const marks = [...step.matchAll(/\((forensics|developer|market)\b/g)].map((m) => m[1] as ProfileName);
         for (const call of toolCallsIn(step)) {

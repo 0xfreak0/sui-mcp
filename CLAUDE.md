@@ -4467,6 +4467,46 @@ must be answerable from these tools, and no case check calls
   is defined at v1 while the pinned check audits v10), so scanning the
   requested id instead finds nothing. The origins are read once, before the
   per-struct fan-out, through `fetchTypeOrigins`, which throws.
+- **A coin with no TreasuryCap in the publish transaction is still audited.**
+  A cap stored inside another object during `init` never exists at top level,
+  so the publish scan misses it. Checked live: wUSDC's went into Wormhole's
+  `WrappedAssetSetup`, SRT's sits in its shared `TreasuryAccess`, and
+  CLOWNPEPE's was turned into the `Supply` its shared `Storage` keeps.
+  `auditPackageCapabilities` takes the package's coins from the publish
+  transaction's created `CoinMetadata`, `TreasuryCap`, `Coin` and registry
+  `Currency` of the lineage root's own types, and from the registry. A coin
+  made through a one-time witness comes from `init`, which runs only at
+  publish, but its effects show no coin object when `init` stored both the
+  TreasuryCap and the CoinMetadata inside another object (live:
+  `0x014fcd3b…::hopeless::HOPELESS`, both inside a
+  `0x5c8657a6…::connector::Connector<HOPELESS>`; the cap is now frozen at
+  top level). A coin made later comes only from `coin_registry::new_currency<T:
+  key>`, called in the module defining `T`. A registered `Currency<T>` of
+  either kind is shared at an id derived under `0xc` from `CurrencyKey<T>`
+  (key BCS `[0]`, the dummy field; checked live against HFROG and wUSDC), so
+  every non-generic `key` struct and every witness-shaped struct (module
+  name in capitals, `drop` only) is read in one multi-get (live:
+  `0x08f0b496…::currency::COIN`, cap created after publish). A witness the
+  registry does not know is asked of `getCoinInfo`, one request each, since
+  a coin nobody registered has no entry. A generic `key` struct's id depends
+  on its type argument, so one in a module whose own functions take
+  `CoinRegistry` (the only way it reaches a module) is named in
+  `incomplete_scans` instead, under the id of the version that defined it
+  (typeOrigins; the requested id only when they cannot be read, so the
+  entry merges with step 1b's). That list holds one entry per type, with
+  every reason a scan gave. For each coin
+  without a cap it reads the registry's `treasury_cap_id`, then scans
+  `TreasuryCap<T>` by type (`found_by`); GraphQL's type filter matches
+  nothing for a partly instantiated type (`Currency<…::FToken>`), so it
+  cannot stand in for the derivation. What is left is named in
+  `coins_without_located_mint_authority` with what was checked; its `risk`
+  says what the entry means: medium, who can mint is unknown; info, nothing
+  can mint. A registry `Fixed`/`BurnOnly` supply means the cap was consumed
+  (`make_supply_fixed` takes it by value), so that cap is reported destroyed
+  without reading it: a cap created and consumed in one transaction appears
+  in no effects and `readObjectEnd` cannot place it. SUI is an `info`
+  entry: `sui::new` destroyed its Supply at genesis, and its registry entry
+  records neither a cap nor a fixed supply.
 - **A package upgrade can change behaviour through its linkage alone.**
   `diff_package_upgrade` reads each version's `linkage` and reports relinked
   dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no

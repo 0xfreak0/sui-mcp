@@ -1,11 +1,14 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
+import { sui } from "../clients/grpc.js";
+import { isNotFound } from "./errors.js";
 import { assessCapHolder, isUnspendableAddress, type CapHolderStatus } from "./upgrade-cap.js";
 import { fetchTypeOrigins, type TypeOrigin } from "./package-versions.js";
 import { describeAddresses } from "./identity.js";
 import { schemeLabel } from "./upgrade-history.js";
 import { readObjectEnd } from "./object-end.js";
-import { readRegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
+import { readDerivedCurrencies, readRegistryCurrency, type RegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
+import { normalizeCoinType } from "./coin-registry.js";
 
 /**
  * Capability auditing for a Move package: who holds the powerful capabilities
@@ -53,6 +56,12 @@ export interface CapabilityInfo {
   signing_scheme?: string;
   /** `wrapped` only: the transaction that stored the cap inside another object. */
   wrapped_in_tx?: string;
+  /**
+   * TreasuryCap only, when the publish transaction did not create it: how it
+   * was found. `coin_registry` is the id `coin_registry::Currency<T>` records,
+   * `type_scan` a live top-level object of type `TreasuryCap<T>`.
+   */
+  found_by?: "coin_registry" | "type_scan";
   risk: CapRisk;
   note: string;
 }
@@ -69,12 +78,29 @@ export interface CapabilityAudit {
    */
   user_held_types?: Array<{ type: string; count: number; truncated: boolean }>;
   /**
-   * Authority-named struct types whose instance scan failed outright (a
-   * timeout, a 429 after retries). Absence here is not evidence the type has
-   * no live instances: the scan never completed.
+   * Struct types a scan could not complete: an authority-named type whose
+   * instance scan failed outright (a timeout, a 429 after retries), or a
+   * `key` struct that could not be checked for a coin. Absence here is not
+   * evidence the type has no live instances or no coin: the check never
+   * completed.
    */
   incomplete_scans?: Array<{ type: string; reason: string }>;
+  /**
+   * Coin types the package defines whose TreasuryCap was not located, each
+   * with what was checked. `risk` says what that means: `medium`, who can
+   * mint is unknown; `info`, nothing can mint (the registry records a Fixed
+   * or BurnOnly supply, or the coin is SUI, whose Supply was destroyed at
+   * genesis).
+   */
+  coins_without_located_mint_authority?: UnlocatedMintAuthority[];
   note?: string;
+}
+
+/** A coin the package defines whose TreasuryCap was not found. */
+export interface UnlocatedMintAuthority {
+  coin_type: string;
+  risk: CapRisk;
+  reason: string;
 }
 
 /** UpgradeCap.policy (u8) → human label. Higher = more restrictive. */
@@ -299,6 +325,7 @@ export function classifyCapabilityRisk(input: {
 interface PublishScanResult {
   package: {
     packageAt: {
+      address?: string;
       previousTransaction: {
         effects: {
           objectChanges: {
@@ -317,6 +344,7 @@ interface PublishScanResult {
 const PUBLISH_SCAN_QUERY = `query ($p: SuiAddress!, $after: String) {
   package(address: $p) {
     packageAt(version: 1) {
+      address
       previousTransaction {
         effects {
           objectChanges(first: 50, after: $after) {
@@ -374,10 +402,12 @@ const AUTHORITY_NAME = /(Cap|Admin|Operator|Owner|Manager|Authority)$/;
  */
 const STRONG_AUTHORITY_NAME = /(Admin|Operator|Authority)/;
 
-/** A package's modules, reduced to what finding authority structs needs. */
+/** A package's modules, reduced to what finding authority structs and coin types needs. */
 export interface CapCandidateModule {
   name: string;
-  structs: { name: string; abilities: string[] }[];
+  structs: { name: string; abilities: string[]; typeParameters?: number }[];
+  /** Each function's parameter types, as `analyze_package` formats them. */
+  functions?: { params: string[] }[];
 }
 
 /**
@@ -470,18 +500,181 @@ async function scanTypeInstances(type: string): Promise<ScanTypeInstancesResult>
   return { instances, truncated: true };
 }
 
+/** A capability found by one of the scans, before step 2 reads its state. */
+interface CapObject {
+  id: string;
+  type: string;
+  kind: CapKind;
+  /** State the scan that found it already read, so step 2 does not read it again. */
+  known?: { owner: OwnerKind; ownerAddress?: string; gone?: boolean; supplyState?: SupplyState };
+  foundBy?: CapabilityInfo["found_by"];
+}
+
+/** An object whose type argument is a coin type. One created in the publish transaction shows a coin of that type exists. */
+const COIN_OBJECT = /^0x0*2::(?:coin::(?:CoinMetadata|TreasuryCap|Coin)|coin_registry::Currency)<(.+)>$/;
+
+/** The coin type a `TreasuryCap`, `CoinMetadata`, `Coin` or registry `Currency` is for, canonical, or null for any other type. */
+function coinTypeOf(repr: string): string | null {
+  const m = COIN_OBJECT.exec(repr);
+  return m ? normalizeCoinType(m[1]) : null;
+}
+
+/**
+ * A coin of the package's own type comes from `init` through a one-time
+ * witness (`coin::create_currency`, `coin_registry::new_currency_with_otw`),
+ * or, any time after publish, from `coin_registry::new_currency<T: key>`
+ * called in the module defining `T`. `init` runs only at publish, so the
+ * first kind shows in version 1's publish effects unless `init` stored both
+ * the TreasuryCap and the CoinMetadata inside another object (HOPELESS's
+ * went into a `connector::Connector<HOPELESS>` another package defines).
+ * Both kinds end up at a registry id derived from `T` once registered, so
+ * every non-generic `key` struct and every witness-shaped struct is a
+ * candidate, checked there in one multi-get.
+ */
+const MAX_REGISTRY_PROBES = 200;
+
+/**
+ * Witness-shaped structs the registry does not know, asked of the node one
+ * request each: a coin made through a one-time witness and never registered
+ * has no registry entry. Past this they are counted in the note.
+ */
+const MAX_WITNESS_CHECKS = 12;
+
+/**
+ * `new_currency` takes `&mut CoinRegistry`, a shared object a function can
+ * only receive as a parameter.
+ */
+const COIN_REGISTRY_PARAM = /0x0*2::coin_registry::CoinRegistry\b/;
+
+/** A one-time witness's shape: named after its module in capitals, with `drop` only. */
+function isWitnessShaped(module: string, s: { name: string; abilities: string[] }): boolean {
+  return s.name === module.toUpperCase() && s.abilities.length === 1 && s.abilities[0] === "drop";
+}
+
+/**
+ * Whether a coin of `coinType` exists: the node knows its `CoinMetadata`,
+ * its registry `Currency` or its `TreasuryCap`. The service answers NOT_FOUND
+ * for a type with none of them; any other failure throws.
+ */
+async function coinExists(coinType: string): Promise<boolean> {
+  try {
+    const { response } = await sui.stateService.getCoinInfo({ coinType });
+    return !!(response.metadata || response.treasury || response.regulatedMetadata);
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * Find the `TreasuryCap<T>` of a coin the publish transaction did not show
+ * holding one: the id the on-chain registry records (`knownRegistry` when
+ * the caller already read the entry), then any live top-level object of that
+ * type. When neither finds it, the answer says what was checked. A cap stored
+ * inside another object when it was created never exists at top level and is
+ * absent from both, so an empty search leaves mint authority unknown rather
+ * than renounced.
+ */
+async function locateTreasuryCap(
+  coinType: string,
+  knownRegistry?: RegistryCurrency,
+): Promise<{ caps: CapObject[] } | { unlocated: UnlocatedMintAuthority }> {
+  const capType = `${ADDR2}::coin::TreasuryCap<${coinType}>`;
+  const short = coinType.split("::").slice(-2).join("::");
+  const checked: string[] = [];
+  // `sui::new` runs once, at genesis: it turns SUI's TreasuryCap into a
+  // Supply, mints the total and destroys the Supply, so no SUI can be minted.
+  // The registry's entry for SUI records neither a cap nor a fixed supply.
+  if (coinType === `${ADDR2}::sui::SUI`) {
+    return {
+      unlocated: {
+        coin_type: coinType,
+        risk: "info",
+        reason: "SUI has no TreasuryCap: sui::new, run once at genesis, turned it into a Supply, minted the total supply and destroyed the Supply, so nothing can mint SUI.",
+      },
+    };
+  }
+
+  let registry: RegistryCurrency | null = knownRegistry ?? null;
+  if (!registry) {
+    try {
+      registry = await readRegistryCurrency(coinType);
+      if (!registry) checked.push("the on-chain coin registry has no entry for it");
+    } catch (err) {
+      checked.push(`the on-chain coin registry could not be read (${(err as Error).message})`);
+    }
+  }
+  if (registry) {
+    // `make_supply_fixed` and `make_supply_burn_only` take the cap by value
+    // and turn it into the registry's Supply, so a Fixed or BurnOnly entry
+    // means the cap no longer exists and nothing can mint.
+    const consumed = registry.supply === "fixed" || registry.supply === "burn_only" ? registry.supply : null;
+    if (registry.treasury_cap_id) {
+      return {
+        caps: [
+          {
+            id: registry.treasury_cap_id,
+            type: capType,
+            kind: "treasury",
+            foundBy: "coin_registry",
+            ...(consumed ? { known: { owner: "burned" as const, gone: true, supplyState: consumed } } : {}),
+          },
+        ],
+      };
+    }
+    if (consumed) {
+      return {
+        unlocated: {
+          coin_type: coinType,
+          risk: "info",
+          reason: `The on-chain coin registry names no TreasuryCap for ${short} but records its supply as ${consumed === "fixed" ? "fixed" : "burn-only"}. Recording that consumes the cap, so nothing can mint.`,
+        },
+      };
+    }
+    checked.push("the on-chain coin registry's entry names no TreasuryCap");
+  }
+
+  try {
+    const scan = await scanTypeInstances(capType);
+    if (scan.instances.length) {
+      return {
+        caps: scan.instances.map((inst) => ({
+          id: inst.id,
+          type: capType,
+          kind: "treasury" as const,
+          foundBy: "type_scan" as const,
+          known: { owner: inst.owner, ownerAddress: inst.owner_address },
+        })),
+      };
+    }
+    checked.push(`no top-level TreasuryCap<${short}> exists`);
+  } catch (err) {
+    checked.push(`the search for a top-level TreasuryCap<${short}> failed (${(err as Error).message})`);
+  }
+
+  return {
+    unlocated: {
+      coin_type: coinType,
+      risk: "medium",
+      reason: `Mint authority for ${short} was not located: ${checked.join("; ")}. The TreasuryCap may be stored inside another object, at creation or later, or turned into a Supply kept inside one, and whatever module owns that object decides who can mint. Who can mint is unknown.`,
+    },
+  };
+}
+
 /**
  * Audit the capabilities of a package. Best-effort: if the publish transaction
  * is unavailable (pruned) or GraphQL fails, returns { checked: false } with a
  * note rather than throwing, because capability info should never break
  * analyze_package.
  *
- * Two ways a capability is found: the package's publish transaction (the
+ * Three ways a capability is found: the package's publish transaction (the
  * common case: UpgradeCap always, plus caps created in module `init`), and,
  * when the caller passes `modules`, every other `key`-ability struct whose
  * name marks it as an authority, whether or not a live instance was minted at
  * publish. The second pass finds a cap minted after publish, such as an
- * OperatorCap handed to one address.
+ * OperatorCap handed to one address. The third looks for the TreasuryCap of
+ * every coin the package defines that the publish transaction did not show at
+ * top level, and names each coin whose cap it cannot find.
  */
 export async function auditPackageCapabilities(
   packageId: string,
@@ -500,23 +693,31 @@ export async function auditPackageCapabilities(
   /** The package's own modules, for the authority-struct scan. Omit to skip it. */
   modules?: CapCandidateModule[],
 ): Promise<CapabilityAudit> {
-  // 1. Scan the publish tx for created cap-like objects (paginating a few pages).
-  const capObjects: Array<{ id: string; type: string; kind: CapKind; knownOwner?: { owner: OwnerKind; ownerAddress?: string } }> = [];
+  // 1. Scan the publish tx for created cap-like objects (paginating a few pages),
+  // and for the coins it created: a CoinMetadata, TreasuryCap, Coin or
+  // registry Currency of a type this package defines.
+  const capObjects: CapObject[] = [];
+  const publishedCoins = new Set<string>();
+  let rootId = normalizeSuiAddress(packageId);
   let after: string | null = null;
   let pages = 0;
   try {
     for (; pages < 6; pages++) {
       const data: PublishScanResult = await gqlQuery<PublishScanResult>(PUBLISH_SCAN_QUERY, { p: packageId, after });
-      const changes = data.package?.packageAt?.previousTransaction?.effects?.objectChanges;
+      const published = data.package?.packageAt;
+      const changes = published?.previousTransaction?.effects?.objectChanges;
       if (!changes) {
         return { checked: false, capabilities: [], note: "Publish transaction unavailable (pruned or not found) — cannot audit capabilities." };
       }
+      if (published?.address) rootId = normalizeSuiAddress(published.address);
       for (const n of changes.nodes) {
         const repr = n.outputState?.asMoveObject?.contents?.type?.repr;
         const id = n.outputState?.address;
         if (!n.idCreated || !repr || !id) continue;
         const kind = classifyCapType(repr);
         if (kind) capObjects.push({ id, type: repr, kind });
+        const coin = coinTypeOf(repr);
+        if (coin) publishedCoins.add(coin);
       }
       if (!changes.pageInfo.hasNextPage) break;
       after = changes.pageInfo.endCursor;
@@ -533,13 +734,22 @@ export async function auditPackageCapabilities(
   // entry per holder: DeepBook's `TradeCap`, 0x2's `KioskOwnerCap` and
   // Suilend's `ObligationOwnerCap` all match `AUTHORITY_NAME` and every user
   // of the protocol holds one. A struct whose scan fails is reported in
-  // `incompleteScans` rather than silently dropped: the answer must say the
+  // `incomplete` rather than silently dropped: the answer must say the
   // check did not run, never render identically to "no such capability".
   let structsSkipped = 0;
   const userHeldTypes: Array<{ type: string; count: number; truncated: boolean }> = [];
-  const incompleteScans: Array<{ type: string; reason: string }> = [];
+  // One entry per type: a struct both scans could not check carries both reasons.
+  const incomplete = new Map<string, string[]>();
+  const markIncomplete = (type: string, reason: string) => {
+    const reasons = incomplete.get(type);
+    if (reasons) reasons.push(reason);
+    else incomplete.set(type, [reason]);
+  };
+  // Read at most once, by whichever scan below needs it first.
+  let originsRead: Promise<TypeOrigin[] | null> | undefined;
+  const readOrigins = () => (originsRead ??= fetchTypeOrigins(packageId));
+  const seen = new Set(capObjects.map((c) => c.id));
   if (modules?.length) {
-    const seen = new Set(capObjects.map((c) => c.id));
     const candidates = findAuthorityStructs(modules);
     structsSkipped = Math.max(0, candidates.length - MAX_AUTHORITY_STRUCTS);
     const scanned = candidates.slice(0, MAX_AUTHORITY_STRUCTS);
@@ -553,7 +763,7 @@ export async function auditPackageCapabilities(
     let originsError: string | null = null;
     if (scanned.length) {
       try {
-        origins = await fetchTypeOrigins(packageId);
+        origins = await readOrigins();
       } catch (err) {
         originsError = (err as Error).message;
       }
@@ -562,10 +772,7 @@ export async function auditPackageCapabilities(
       scanned.map(async ({ module, name }) => {
         const requested = `${packageId}::${module}::${name}`;
         if (originsError !== null) {
-          incompleteScans.push({
-            type: requested,
-            reason: `type origins unreadable (${originsError}), so the package version defining this struct is unknown`,
-          });
+          markIncomplete(requested, `type origins unreadable (${originsError}), so the package version defining this struct is unknown`);
           return;
         }
         const definingId = origins?.find((o) => o.module === module && o.struct === name)?.definingId;
@@ -577,7 +784,7 @@ export async function auditPackageCapabilities(
         try {
           scan = await scanTypeInstances(type);
         } catch (err) {
-          incompleteScans.push({ type, reason: (err as Error).message });
+          markIncomplete(type, (err as Error).message);
           return;
         }
         if (scan.instances.length > USER_HELD_MIN_INSTANCES || scan.truncated) {
@@ -591,26 +798,148 @@ export async function auditPackageCapabilities(
           // reusing it here skips an otherwise-redundant CAP_STATE_QUERY per
           // instance (up to MAX_AUTHORITY_STRUCTS * MAX_INSTANCES_PER_STRUCT
           // of them).
-          capObjects.push({ id: inst.id, type, kind: "admin", knownOwner: { owner: inst.owner, ownerAddress: inst.owner_address } });
+          capObjects.push({ id: inst.id, type, kind: "admin", known: { owner: inst.owner, ownerAddress: inst.owner_address } });
         }
       }),
     );
   }
 
+  // 1c. Mint authority for every coin the package defines. The publish
+  // transaction shows the coins version 1's `init` created at top level. A
+  // coin whose `init` stored both the TreasuryCap and the CoinMetadata inside
+  // another object, or one `new_currency` created later, is found at the
+  // registry id derived from its type. Only coins of this lineage's own types
+  // count: a coin another package's call created in the same transaction is
+  // that package's.
+  let registryProbesSkipped = 0;
+  let witnessChecksSkipped = 0;
+  const coinTypes = new Set([...publishedCoins].filter((t) => t.startsWith(`${rootId}::`)));
+  const registryEntries = new Map<string, RegistryCurrency>();
+  if (modules?.length) {
+    // The registry id depends on the type argument, so a generic struct's
+    // coins cannot be derived. `new_currency` takes only a `T` defined in the
+    // calling module, and `CoinRegistry` reaches a module only through its
+    // own functions' parameters, so a generic key struct is named only in a
+    // module one of whose functions takes it.
+    const generic = modules.flatMap((m) =>
+      m.functions?.some((f) => f.params.some((p) => COIN_REGISTRY_PARAM.test(p)))
+        ? m.structs.filter((k) => k.abilities.includes("key") && (k.typeParameters ?? 0) > 0).map((s) => ({ module: m.name, name: s.name }))
+        : [],
+    );
+    let plain = modules.flatMap((m) =>
+      m.structs
+        .filter((s) => !(s.typeParameters ?? 0) && (s.abilities.includes("key") || isWitnessShaped(m.name, s)))
+        .map((s) => ({ module: m.name, name: s.name, witness: !s.abilities.includes("key") })),
+    );
+    // A type is named by the version that defined it. Version 1 defines every
+    // struct it has, so only a later version needs the origins. When they
+    // cannot be read, a struct keeps the requested id, as step 1b names it,
+    // so both reasons land on one entry.
+    let origins: TypeOrigin[] | null = null;
+    let originsError: string | null = null;
+    if ((plain.length || generic.length) && normalizeSuiAddress(packageId) !== rootId) {
+      try {
+        origins = await readOrigins();
+      } catch (err) {
+        originsError = (err as Error).message;
+      }
+    }
+    const definedAt = (module: string, name: string) =>
+      originsError !== null
+        ? packageId
+        : normalizeSuiAddress(origins?.find((o) => o.module === module && o.struct === name)?.definingId ?? rootId);
+    for (const s of generic) {
+      const type = `${definedAt(s.module, s.name)}::${s.module}::${s.name}`;
+      markIncomplete(
+        type,
+        "a generic key struct in a module whose functions take the CoinRegistry: coin_registry::new_currency can make a coin of any instantiation of it, and no coin of this type was looked up, since a registry entry's id depends on the type argument",
+      );
+      if (originsError !== null) {
+        markIncomplete(type, `type origins unreadable (${originsError}), so this name uses the requested version's id, which may not be the one that defined it`);
+      }
+    }
+    if (originsError !== null) {
+      for (const s of plain) {
+        markIncomplete(
+          `${packageId}::${s.module}::${s.name}`,
+          `type origins unreadable (${originsError}), so whether this struct is a coin was not checked`,
+        );
+      }
+      plain = [];
+    }
+    const candidates = plain
+      .map((s) => ({
+        type: normalizeCoinType(`${definedAt(s.module, s.name)}::${s.module}::${s.name}`),
+        witness: s.witness,
+      }))
+      .filter((c): c is { type: string; witness: boolean } => !!c.type && !coinTypes.has(c.type));
+    registryProbesSkipped = Math.max(0, candidates.length - MAX_REGISTRY_PROBES);
+    const probed = candidates.slice(0, MAX_REGISTRY_PROBES);
+    let registryRead = false;
+    if (probed.length) {
+      try {
+        for (const [type, entry] of await readDerivedCurrencies(probed.map((c) => c.type))) {
+          coinTypes.add(type);
+          registryEntries.set(type, entry);
+        }
+        registryRead = true;
+      } catch (err) {
+        for (const { type } of probed) {
+          markIncomplete(type, `whether this struct is a coin could not be read from the coin registry (${(err as Error).message})`);
+        }
+      }
+    }
+    // A coin made through a one-time witness is in the registry only once
+    // someone registers or migrates it, so a witness the registry does not
+    // know is asked of the node, which also knows a coin by its top-level
+    // CoinMetadata or TreasuryCap.
+    const unregistered = registryRead ? probed.filter((c) => c.witness && !coinTypes.has(c.type)) : [];
+    witnessChecksSkipped = Math.max(0, unregistered.length - MAX_WITNESS_CHECKS);
+    await Promise.all(
+      unregistered.slice(0, MAX_WITNESS_CHECKS).map(async ({ type }) => {
+        try {
+          if (await coinExists(type)) coinTypes.add(type);
+        } catch (err) {
+          markIncomplete(type, `whether this one-time witness names a coin could not be read (${(err as Error).message})`);
+        }
+      }),
+    );
+  }
+  const minted = new Set(capObjects.filter((c) => c.kind === "treasury").map((c) => coinTypeOf(c.type)));
+  const unlocated: UnlocatedMintAuthority[] = [];
+  await Promise.all(
+    [...coinTypes]
+      .filter((t) => !minted.has(t))
+      .map(async (coinType) => {
+        const found = await locateTreasuryCap(coinType, registryEntries.get(coinType));
+        if ("unlocated" in found) {
+          unlocated.push(found.unlocated);
+          return;
+        }
+        for (const cap of found.caps) {
+          if (seen.has(cap.id)) continue;
+          seen.add(cap.id);
+          capObjects.push(cap);
+        }
+      }),
+  );
+  unlocated.sort((a, b) => (a.coin_type < b.coin_type ? -1 : a.coin_type > b.coin_type ? 1 : 0));
+
   // 2. Resolve each cap's current state (owner / policy / burned) in
-  // parallel, except one already known from the authority-struct scan
-  // above, which read it live moments ago.
+  // parallel, except one whose state the scan that found it already read.
   const capabilities = await Promise.all(
-    capObjects.map(async ({ id, type, kind, knownOwner }): Promise<CapabilityInfo> => {
+    capObjects.map(async ({ id, type, kind, known, foundBy }): Promise<CapabilityInfo> => {
       let owner: OwnerKind = "unknown";
       let ownerAddress: string | undefined;
       let policyLabel: string | undefined;
       let wrappedInTx: string | undefined;
       let gone = false;
       let supplyState: SupplyState | "unread" | undefined;
-      if (knownOwner) {
-        owner = knownOwner.owner;
-        ownerAddress = knownOwner.ownerAddress;
+      if (known) {
+        owner = known.owner;
+        ownerAddress = known.ownerAddress;
+        gone = known.gone ?? false;
+        supplyState = known.supplyState;
       } else {
         try {
           const state: CapStateResult = await gqlQuery<CapStateResult>(CAP_STATE_QUERY, { id });
@@ -663,6 +992,7 @@ export async function auditPackageCapabilities(
         ...(ownerAddress ? { owner_address: ownerAddress } : {}),
         ...(policyLabel ? { upgrade_policy: policyLabel } : {}),
         ...(wrappedInTx ? { wrapped_in_tx: wrappedInTx } : {}),
+        ...(foundBy ? { found_by: foundBy } : {}),
         ...(held ? { holder_status: held.status } : {}),
         ...(held?.publisher ? { publisher: held.publisher } : {}),
         risk,
@@ -694,11 +1024,29 @@ export async function auditPackageCapabilities(
       `${structsSkipped} additional authority-named struct type(s) were not scanned (capped at ${MAX_AUTHORITY_STRUCTS}); their instances may be missing.`,
     );
   }
+  if (registryProbesSkipped > 0) {
+    noteParts.push(
+      `${registryProbesSkipped} additional struct type(s) were not checked for a coin (capped at ${MAX_REGISTRY_PROBES}); a coin one of them names, and its mint authority, may be missing.`,
+    );
+  }
+  if (witnessChecksSkipped > 0) {
+    noteParts.push(
+      `${witnessChecksSkipped} additional one-time-witness struct type(s) the coin registry does not know were not asked of the node (capped at ${MAX_WITNESS_CHECKS}); a coin one of them names, and its mint authority, may be missing.`,
+    );
+  }
+  const incompleteScans = [...incomplete].map(([type, reasons]) => ({ type, reason: reasons.join("; ") }));
   if (incompleteScans.length) {
     noteParts.push(
-      `${incompleteScans.length} authority-named struct type(s) could not be scanned: ${incompleteScans
+      `${incompleteScans.length} struct type(s) could not be scanned: ${incompleteScans
         .map((s) => s.type.split("::").slice(-2).join("::"))
-        .join(", ")}. Their instances may be missing from this audit — see incomplete_scans.`,
+        .join(", ")}. Their instances, or a coin of that type and its mint authority, may be missing from this audit — see incomplete_scans.`,
+    );
+  }
+  if (unlocated.length) {
+    noteParts.push(
+      `No TreasuryCap was located for ${unlocated.length} coin type(s) this package defines: ${unlocated
+        .map((u) => u.coin_type.split("::").slice(-2).join("::"))
+        .join(", ")}. See coins_without_located_mint_authority for what was checked.`,
     );
   }
 
@@ -707,6 +1055,7 @@ export async function auditPackageCapabilities(
     capabilities,
     ...(userHeldTypes.length ? { user_held_types: userHeldTypes } : {}),
     ...(incompleteScans.length ? { incomplete_scans: incompleteScans } : {}),
+    ...(unlocated.length ? { coins_without_located_mint_authority: unlocated } : {}),
     ...(noteParts.length ? { note: noteParts.join(" ") } : {}),
   };
 }

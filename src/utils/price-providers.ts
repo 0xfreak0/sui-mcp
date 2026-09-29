@@ -12,9 +12,9 @@
  *   - **Free by default.** Aftermath and DefiLlama need no key. Aftermath
  *     covers current prices; DefiLlama covers current and historical prices,
  *     so block-time valuation works out of the box.
- *   - **Paid sources are opt-in.** Pyth and CoinMarketCap engage only when
- *     their key is set. Nothing degrades for someone who sets neither, and
- *     nobody is billed by accident.
+ *   - **Paid sources are opt-in.** Pyth engages only when its key is set.
+ *     Nothing degrades for someone who does not set it, and nobody is billed
+ *     by accident.
  *   - **The answer says where it came from.** A price is evidence like anything
  *     else here, and "Aftermath, current" supports a different claim than
  *     "Pyth, at block time".
@@ -79,11 +79,14 @@ export const pythApiKey = (): string | null => process.env.PYTH_API_KEY?.trim() 
 /** CoinMarketCap key. Unset means CMC is skipped entirely. */
 export const cmcApiKey = (): string | null => process.env.CMC_API_KEY?.trim() || null;
 
-/** Which sources are usable right now, cheapest first. */
+/**
+ * Which sources are usable right now, cheapest first. CoinMarketCap is not
+ * listed: no tool reads its prices, so naming it would misreport where a
+ * price came from.
+ */
 export function availableSources(): PriceSource[] {
   const out: PriceSource[] = ["aftermath", "defillama"];
   if (pythApiKey()) out.push("pyth");
-  if (cmcApiKey()) out.push("coinmarketcap");
   return out;
 }
 

@@ -13,6 +13,6 @@ sidebar:
 - **Move package analysis** — disassembly, heuristic risk scan, capability audit, publisher attribution, upgrade-cap holder status, and upgrade diffing, none of which need an external binary. See [Packages and upgrade authority](/concepts/packages/).
 - **Asset verification** — a curated coin registry, so a trace says whether the asset it followed is the real one rather than an imitator wearing its symbol. See [Coin identity and scale](/concepts/coins/).
 - **Multi-source architecture** — gRPC for low-latency reads, GraphQL for filtered queries, archive node fallback for historical data
-- **Price aggregation** — Aftermath, DefiLlama, Pyth and CoinMarketCap behind one interface, current or at a past block time, with no key required for the default sources. See [Price sources](/guides/configuration/#price-sources).
+- **Price aggregation** — Aftermath, DefiLlama and Pyth behind one interface, current or at a past block time. Aftermath and DefiLlama need no key; Pyth is used only when `PYTH_API_KEY` is set. See [Price sources](/guides/configuration/#price-sources).
 - **Kiosk-aware** — resolves NFT ownership through Sui's kiosk system to actual wallet addresses. See [Kiosk-held NFTs](/concepts/nft-ownership/).
 - **Move Registry (MVR)** — resolves names like `@deepbook/core` to package addresses, and back. See the [Move Registry tools](/reference/tools/move-registry/).

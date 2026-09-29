@@ -81,17 +81,22 @@ describe("opt-in providers", () => {
     expect(cmcApiKey()).toBeNull();
   });
 
-  it("adds a paid source only once its key is present", () => {
+  it("adds Pyth only once its key is present", () => {
     process.env.PYTH_API_KEY = "k1";
     expect(availableSources()).toEqual(["aftermath", "defillama", "pyth"]);
+  });
+
+  it("never lists CoinMarketCap, which no tool reads prices from", () => {
     process.env.CMC_API_KEY = "k2";
-    expect(availableSources()).toEqual(["aftermath", "defillama", "pyth", "coinmarketcap"]);
+    expect(availableSources()).toEqual(["aftermath", "defillama"]);
   });
 
   it("treats a blank key as unset, so whitespace does not enable a paid call", () => {
+    process.env.PYTH_API_KEY = "   ";
     process.env.CMC_API_KEY = "   ";
+    expect(pythApiKey()).toBeNull();
     expect(cmcApiKey()).toBeNull();
-    expect(availableSources()).not.toContain("coinmarketcap");
+    expect(availableSources()).toEqual(["aftermath", "defillama"]);
   });
 
   it("does not call CoinMarketCap without a key", async () => {

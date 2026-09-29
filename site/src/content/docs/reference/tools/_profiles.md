@@ -18,4 +18,4 @@
 
 - **`all`**: every profile, which is every tool in the [tool reference](/reference/tools/).
 
-[`enable_tools`](/reference/tools/profile-switching/#enable_tools) is on whatever the profile.
+[`enable_tools`](/reference/tools/profile-switching/#enable_tools) is loaded in every profile.

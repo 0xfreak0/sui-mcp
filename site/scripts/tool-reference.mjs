@@ -403,7 +403,7 @@ function profilesPartial(groups, profiles, defaultProfiles, profileSummaries) {
   const parts = [`<!-- ${GENERATED_BY} -->`, items.join("\n\n")];
   if (alwaysOn.length) {
     const names = alwaysOn.map(({ tool, group }) => toolLink(tool, group));
-    parts.push(`${names.join(", ")} ${names.length === 1 ? "is" : "are"} on whatever the profile.`);
+    parts.push(`${names.join(", ")} ${names.length === 1 ? "is" : "are"} loaded in every profile.`);
   }
   return parts.join("\n\n") + "\n";
 }

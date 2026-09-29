@@ -70,22 +70,18 @@ export function registerMonitorTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  object_id: obj?.objectId,
-                  current_version: currentVersion,
-                  since_version: since_version ?? null,
-                  has_changed: hasChanged,
-                  ...(hasChanged === null
-                    ? { note: "No since_version given, so there is no baseline to compare. Pass current_version as since_version on the next check." }
-                    : {}),
-                  type: obj?.objectType,
-                  owner: formatOwner(obj?.owner),
-                  digest: obj?.digest,
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                object_id: obj?.objectId,
+                current_version: currentVersion,
+                since_version: since_version ?? null,
+                has_changed: hasChanged,
+                ...(hasChanged === null
+                  ? { note: "No since_version given, so there is no baseline to compare. Pass current_version as since_version on the next check." }
+                  : {}),
+                type: obj?.objectType,
+                owner: formatOwner(obj?.owner),
+                digest: obj?.digest,
+              }),
             },
           ],
         };
@@ -173,30 +169,26 @@ export function registerMonitorTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  address,
-                  mode: hasBaseline ? "since" : "latest",
-                  order: direction,
-                  since_checkpoint: since_checkpoint ?? null,
-                  since_timestamp: since_timestamp ?? null,
-                  after_checkpoint: afterCheckpoint ?? null,
-                  new_transaction_count: transactions.length,
-                  latest_checkpoint: latestCheckpoint,
-                  transactions,
-                  // Only meaningful with a baseline: more new transactions wait
-                  // past this page. Without one these are already the newest.
-                  has_more: hasBaseline ? page.has_next_page : false,
-                  next_cursor: nextCursor,
-                  ...(!hasBaseline
-                    ? {
-                        note: "No since_checkpoint, since_timestamp or cursor was given, so these are the most recent transactions, newest first. Pass next_cursor as cursor on the next check to see only what came after them.",
-                      }
-                    : {}),
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                address,
+                mode: hasBaseline ? "since" : "latest",
+                order: direction,
+                since_checkpoint: since_checkpoint ?? null,
+                since_timestamp: since_timestamp ?? null,
+                after_checkpoint: afterCheckpoint ?? null,
+                new_transaction_count: transactions.length,
+                latest_checkpoint: latestCheckpoint,
+                transactions,
+                // Only meaningful with a baseline: more new transactions wait
+                // past this page. Without one these are already the newest.
+                has_more: hasBaseline ? page.has_next_page : false,
+                next_cursor: nextCursor,
+                ...(!hasBaseline
+                  ? {
+                      note: "No since_checkpoint, since_timestamp or cursor was given, so these are the most recent transactions, newest first. Pass next_cursor as cursor on the next check to see only what came after them.",
+                    }
+                  : {}),
+              }),
             },
           ],
         };

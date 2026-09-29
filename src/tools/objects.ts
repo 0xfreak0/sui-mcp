@@ -246,15 +246,11 @@ export function registerObjectTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                dynamic_fields: fields,
-                has_next_page: res.hasNextPage,
-                next_cursor: res.cursor,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              dynamic_fields: fields,
+              has_next_page: res.hasNextPage,
+              next_cursor: res.cursor,
+            }),
           },
         ],
       };

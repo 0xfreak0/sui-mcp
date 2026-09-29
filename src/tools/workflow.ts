@@ -325,7 +325,7 @@ export function registerWorkflowTools(server: McpServer) {
         },
         { full: detail === "full", next_call: { tool: "get_wallet_overview", repeat_with: { detail: "full" } } },
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     },
   );
 }

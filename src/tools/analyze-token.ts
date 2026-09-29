@@ -222,7 +222,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
                     coin_type: c.coin_type, symbol: c.symbol, name: c.name, decimals: c.decimals,
                   })),
                 };
-          return { content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }] };
+          return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
         }
         if (detailed.status === "not_found") return errorResult(notFoundMessage(query, detailed));
         symbolVerified = detailed.status === "resolved";
@@ -441,7 +441,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       return {
         content: [{
           type: "text" as const,
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify(result),
         }],
       };
     }

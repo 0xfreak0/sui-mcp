@@ -72,7 +72,7 @@ export function registerStakingTools(server: McpServer) {
         } else {
           result.note = "Validator not found in active set. They may be pending, inactive, or the address may not be a validator.";
         }
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       }
 
       // Ranking needs the whole set. Asking for `first: N` and sorting the
@@ -209,24 +209,20 @@ export function registerStakingTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                address,
-                total_staked_mist: summed ? totalStakedMist.toString() : null,
-                ...(summed
-                  ? {}
-                  : {
-                      total_unavailable: complete
-                        ? "A position's principal could not be read, so no total is given."
-                        : `The wallet holds more than ${MAX_STAKE_POSITIONS} StakedSui objects; these are the first ${positions.length} and no total is given.`,
-                    }),
-                position_count: positions.length,
-                truncated: !complete,
-                positions,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              address,
+              total_staked_mist: summed ? totalStakedMist.toString() : null,
+              ...(summed
+                ? {}
+                : {
+                    total_unavailable: complete
+                      ? "A position's principal could not be read, so no total is given."
+                      : `The wallet holds more than ${MAX_STAKE_POSITIONS} StakedSui objects; these are the first ${positions.length} and no total is given.`,
+                  }),
+              position_count: positions.length,
+              truncated: !complete,
+              positions,
+            }),
           },
         ],
       };

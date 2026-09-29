@@ -377,10 +377,10 @@ function formatted(
   if (format === "mermaid") return { content: [text(summary), text(toMermaid(exportGraph(engines, ids)))] };
   if (format === "graph_json") {
     const graph = { ...toGraphJson(exportGraph(engines, ids)), address_poisoning: poisoning };
-    return { content: [text(JSON.stringify(graph, null, 2))] };
+    return { content: [text(JSON.stringify(graph))] };
   }
   if (format === "csv") return { content: [text(summary), text(edgeCsv(engines, ids))] };
-  return { content: [text(summary), text(JSON.stringify(json, null, 2))] };
+  return { content: [text(summary), text(JSON.stringify(json))] };
 }
 
 /**
@@ -725,12 +725,12 @@ export function registerFlowGraphTools(server: McpServer) {
         method:
           "Forward from `from` and backward from `to` on the trace_flow_graph engine, one node at a time, expanding whichever side has the smaller frontier and, on each side, the queued node carrying the most value first. A path joins at an address both sides reached, where the forward side arrived no later than the backward side paid on toward `to`. Each step is a transfer with its digests.",
       };
-      if ((format ?? "json") === "json") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: JSON.stringify(json, null, 2) }] };
+      if ((format ?? "json") === "json") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: JSON.stringify(json) }] };
       // Diagrams draw the paths only: the explored graph is in the JSON.
       const onPath = new Set(paths.slice(0, 5).flatMap((p) => p.steps.flatMap((s) => [s.step.from, s.step.to])));
       const g = exportGraph(engines, ids, onPath.size ? onPath : undefined);
       if (format === "mermaid") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: toMermaid(g) }] };
-      if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(g), null, 2) }] };
+      if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(g)) }] };
       return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: edgeCsv(engines, ids) }] };
     },
   );

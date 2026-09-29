@@ -529,27 +529,23 @@ export function registerFundingTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  ...result,
-                  ...(existing ? { existing_label: existing } : {}),
-                  ...(suggestion ?? {}),
-                  ...(deposit
-                    ? {
-                        deposit_address: {
-                          verdict: deposit.verdict,
-                          tier: deposit.tier,
-                          hot_wallet: deposit.hot_wallet,
-                          exchange: deposit.exchange,
-                          reasons: deposit.reasons,
-                          next_step: "classify_deposit_address measures the sweep sponsor and destination and lists sweeps and deposits.",
-                        },
-                      }
-                    : {}),
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify({
+                ...result,
+                ...(existing ? { existing_label: existing } : {}),
+                ...(suggestion ?? {}),
+                ...(deposit
+                  ? {
+                      deposit_address: {
+                        verdict: deposit.verdict,
+                        tier: deposit.tier,
+                        hot_wallet: deposit.hot_wallet,
+                        exchange: deposit.exchange,
+                        reasons: deposit.reasons,
+                        next_step: "classify_deposit_address measures the sweep sponsor and destination and lists sweeps and deposits.",
+                      },
+                    }
+                  : {}),
+              }),
             },
           ],
         };
@@ -1090,44 +1086,40 @@ export function registerFundingTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  address,
-                  origin: labelFor(origin),
-                  hops: chain.length,
-                  stop_reason: stopReason,
-                  ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
-                  ...(sponsoredBy.length
-                    ? { sponsored_by: sponsoredBy, sponsored_by_note: sponsoredByNote(sponsoredBy, deadEnd) }
-                    : {}),
-                  ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
-                  ...(unpricedHops.length
-                    ? { prices_unavailable_at: unpricedHops, prices_unavailable_note: PRICES_UNAVAILABLE_NOTE }
-                    : {}),
-                  ...(originUnread.length ? { origin_unread_at: originUnread, origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
-                  ...(chain.some((s) => s.unpriced_funding) ? { unpriced_funding_note: UNPRICED_FUNDING_NOTE } : {}),
-                  ...(stoppedAtHub && originPopularity ? { origin_popularity: originPopularity } : {}),
-                  ...(originFanout
-                    ? {
-                        origin_fanout: {
-                          recipient_count: originFanout.recipient_count,
-                          sender_count: originFanout.sender_count,
-                          counterparty_count: originFanout.counterparty_count,
-                          scanned_transactions: originFanout.scanned_transactions,
-                          max_transactions: originFanout.max_transactions,
-                          truncated: originFanout.truncated,
-                          classification: originFanout.classification,
-                          ...(originFanout.classification_provisional ? { classification_provisional: true } : {}),
-                          interpretation: originFanout.interpretation,
-                        },
-                      }
-                    : {}),
-                  summary: summaryParts.join(" "),
-                  chain: chain.map((s) => ({ ...s, address_label: labelFor(s.address), funder_label: labelFor(s.funded_by) })),
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify({
+                address,
+                origin: labelFor(origin),
+                hops: chain.length,
+                stop_reason: stopReason,
+                ...(dustSkipped.length ? { dust_skipped: dustSkipped } : {}),
+                ...(sponsoredBy.length
+                  ? { sponsored_by: sponsoredBy, sponsored_by_note: sponsoredByNote(sponsoredBy, deadEnd) }
+                  : {}),
+                ...(incompleteReads.length ? { incomplete_balance_changes: incompleteReads } : {}),
+                ...(unpricedHops.length
+                  ? { prices_unavailable_at: unpricedHops, prices_unavailable_note: PRICES_UNAVAILABLE_NOTE }
+                  : {}),
+                ...(originUnread.length ? { origin_unread_at: originUnread, origin_unread_note: ORIGIN_UNREAD_NOTE } : {}),
+                ...(chain.some((s) => s.unpriced_funding) ? { unpriced_funding_note: UNPRICED_FUNDING_NOTE } : {}),
+                ...(stoppedAtHub && originPopularity ? { origin_popularity: originPopularity } : {}),
+                ...(originFanout
+                  ? {
+                      origin_fanout: {
+                        recipient_count: originFanout.recipient_count,
+                        sender_count: originFanout.sender_count,
+                        counterparty_count: originFanout.counterparty_count,
+                        scanned_transactions: originFanout.scanned_transactions,
+                        max_transactions: originFanout.max_transactions,
+                        truncated: originFanout.truncated,
+                        classification: originFanout.classification,
+                        ...(originFanout.classification_provisional ? { classification_provisional: true } : {}),
+                        interpretation: originFanout.interpretation,
+                      },
+                    }
+                  : {}),
+                summary: summaryParts.join(" "),
+                chain: chain.map((s) => ({ ...s, address_label: labelFor(s.address), funder_label: labelFor(s.funded_by) })),
+              }),
             },
           ],
         };

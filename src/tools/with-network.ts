@@ -103,11 +103,7 @@ function reportResolved(result: ToolResult, resolved: ResolvedName[]): ToolResul
     try {
       const parsed: unknown = JSON.parse(first.text);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const text = JSON.stringify(
-          { ...parsed, resolved_from: resolvedFrom, resolved_from_note: RESOLVED_NOTE },
-          null,
-          first.text.includes("\n") ? 2 : undefined,
-        );
+        const text = JSON.stringify({ ...parsed, resolved_from: resolvedFrom, resolved_from_note: RESOLVED_NOTE });
         return { ...result, content: [{ ...first, text }, ...rest] };
       }
     } catch {

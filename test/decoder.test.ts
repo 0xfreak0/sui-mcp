@@ -417,6 +417,27 @@ describe("router integrations that pass a bookkeeping type", () => {
     ).toEqual(["Swap SUI → TOK", "Swap TOK → USDC"]);
   });
 
+  it("takes a hop's input from its function name when a routed call that is no swap changed the path's coin", () => {
+    // The route of 5piHz9Vwv2zWjzBj2njVfSfSPumoUDdwSnG4JKeuqj3n: withdraw_w1
+    // turns the path's superSUI into afSUI, and the Cetus pool's SwapEvent for
+    // the next hop (pool 0xa528b26e…, Pool<AFSUI, SUI>, atob true) swaps afSUI
+    // for SUI, then pool 0x51e883ba… (Pool<USDC, SUI>, atob false) SUI for USDC.
+    const SUPER_SUI = "0x790f258062909e3a0ffc78b3c53ac2f62d7084c3bab95644bdeb05add7250001::super_sui::SUPER_SUI";
+    const AFSUI = "0xf325ce1300e8dac124071d3152c5c5ee6174914f8bc2161e88329cf579246efc::afsui::AFSUI";
+    const META_STABLE_INT = "0x7ca2b6a3241764817175cfa99c2cd3e973a2025071e7c83ec7338ce52a893413";
+    const swaps = decodeTransaction(
+      [
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUPER_SUI]),
+        makeCommand(META_STABLE_INT, "router", "withdraw_w1", [RD, SUPER_SUI, SUPER_SUI, AFSUI]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUPER_SUI, AFSUI, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, SUPER_SUI, USDC, SUI]),
+      ],
+      [makeBalanceChange(SENDER, SUPER_SUI, "-3321535211"), makeBalanceChange(SENDER, USDC, "3297226")],
+      SENDER,
+    ).actions.filter((a) => a.startsWith("Swap"));
+    expect(swaps.map((a) => a.replace(/ on .*$/, ""))).toEqual(["Swap AFSUI → SUI", "Swap SUI → USDC"]);
+  });
+
   it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {
     const CETUS = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
     const TURBOS = "0x1a3c42ded7b75cdf4ebc7c7b7da9d1e1db49f16fcdca934fac003f35f39ecad9";

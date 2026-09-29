@@ -114,8 +114,11 @@ let unavailableReason: string | null = null;
  * 6 marks `sponsor_shape` weighing how many sponsored addresses the sponsor
  * also paid (`sponsored_and_paid_count`, a new column). A v5 row can call a
  * sponsor that paid every address it sponsored a relayer.
+ *
+ * 7 requires complete balance changes for every sampled transaction. Earlier
+ * rows may omit recipients and misclassify fan-out, flow shape and sponsorship.
  */
-export const FANOUT_METHOD_VERSION = 6;
+export const FANOUT_METHOD_VERSION = 7;
 
 /**
  * Stamp for cached first-funder answers.
@@ -135,8 +138,11 @@ export const FANOUT_METHOD_VERSION = 6;
  * every non-SUI inflow read as unpriced and a later SUI sender was named.
  * Because a row now involves SUI alone, a change to how non-SUI inflows are
  * judged (prices, or an unpriced coin's share of supply) cannot alter one.
+ *
+ * 4 requires complete balance changes through the chosen first inflow. Earlier
+ * rows may name a later funder after missing an inflow beyond the first page.
  */
-export const FUNDING_METHOD_VERSION = 3;
+export const FUNDING_METHOD_VERSION = 4;
 
 /**
  * Stamped into every cached transaction, and checked on read.

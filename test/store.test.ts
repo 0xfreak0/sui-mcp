@@ -7,6 +7,7 @@ import {
   deleteFinding,
   deleteLabel,
   getCachedFanout,
+  getCachedFirstFunder,
   initStore,
   loadLabels,
   resetStore,
@@ -15,6 +16,7 @@ import {
   FANOUT_METHOD_VERSION,
   saveFanout,
   saveFinding,
+  saveFirstFunder,
   saveLabel,
   storeStatus,
   getCachedTransaction,
@@ -403,6 +405,45 @@ describe("fan-out cache invalidation across method changes", () => {
 
     resetStore();
     expect(getCachedFanout(ADDR)).toBeNull();
+  });
+
+  it("discards fan-out rows that may have classified incomplete balance changes", () => {
+    const path = join(dir, "v6.db");
+    process.env.SUI_STORE_PATH = path;
+    resetStore();
+    saveFanout(fanout({ account: ADDR, recipient_count: 0, sender_count: 1, sponsor_shape: "relayer" }));
+    saveLabel(label({ label: "Keep this label" }));
+    resetStore();
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(path);
+    raw.exec(`PRAGMA user_version = 6`);
+    raw.close();
+
+    expect(getCachedFanout(ADDR)).toBeNull();
+    expect(loadLabels().find((row) => row.account === "sui:mainnet:0xabc")?.label).toBe("Keep this label");
+  });
+});
+
+describe("first-funder cache invalidation across method changes", () => {
+  it("rejects a first funder selected without complete earlier balance changes", () => {
+    enable();
+    const account = "sui:mainnet:0xaaa";
+    saveFirstFunder(account, "sui:mainnet:0xbbb", "later-inflow");
+    resetStore();
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+    const raw = new DatabaseSync(join(dir, "store.db"));
+    raw.exec(`UPDATE first_funders SET method_version = 3`);
+    raw.close();
+
+    expect(getCachedFirstFunder(account)).toBeNull();
+    saveFirstFunder(account, "sui:mainnet:0xccc", "earliest-inflow");
+    resetStore();
+    expect(getCachedFirstFunder(account)).toEqual({
+      funder_account: "sui:mainnet:0xccc",
+      digest: "earliest-inflow",
+    });
   });
 });
 

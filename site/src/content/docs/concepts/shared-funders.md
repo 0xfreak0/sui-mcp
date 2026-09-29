@@ -33,6 +33,13 @@ history reports `truncated: true`. Its count is a lower bound, so a `narrow`
 or `distributor` reading from it carries `classification_provisional: true`.
 A `hub` reading is never provisional: what was seen already proves it.
 
+Every sampled transaction's balance changes are read to the end, including
+payments with more recipients than fit on one page. If a continuation cannot
+be read, `get_address_fanout` returns an incomplete-measurement error rather
+than counts, a classification, flow shape or sponsor shape. No partial
+measurement is cached. Retry the call once the read succeeds; increasing
+`max_transactions` does not resolve missing rows within a transaction.
+
 ## Shape
 
 Breadth alone does not separate an exchange from a sybil funder, since the two

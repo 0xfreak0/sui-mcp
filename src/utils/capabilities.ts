@@ -849,10 +849,14 @@ export async function auditPackageCapabilities(
         ? packageId
         : normalizeSuiAddress(origins?.find((o) => o.module === module && o.struct === name)?.definingId ?? rootId);
     for (const s of generic) {
+      const type = `${definedAt(s.module, s.name)}::${s.module}::${s.name}`;
       markIncomplete(
-        `${definedAt(s.module, s.name)}::${s.module}::${s.name}`,
+        type,
         "a generic key struct in a module whose functions take the CoinRegistry: coin_registry::new_currency can make a coin of any instantiation of it, and no coin of this type was looked up, since a registry entry's id depends on the type argument",
       );
+      if (originsError !== null) {
+        markIncomplete(type, `type origins unreadable (${originsError}), so this name uses the requested version's id, which may not be the one that defined it`);
+      }
     }
     if (originsError !== null) {
       for (const s of plain) {

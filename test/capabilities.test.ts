@@ -880,6 +880,27 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     expect(audit.incomplete_scans?.map((s) => s.type)).toEqual([`${PKG}::lending_state::FToken`]);
   });
 
+  // Without the type origins the name falls back to the requested id, which
+  // may not be the defining one; the entry must say why.
+  it("says a generic struct's name may be wrong when the type origins are unreadable", async () => {
+    const V2 = `0x${"d4".repeat(32)}`;
+    mockChain({});
+    const base = gqlQuery.getMockImplementation()!;
+    gqlQuery.mockImplementation(async (query: string, vars?: Record<string, unknown>) => {
+      if (query.includes("typeOrigins")) throw new Error("HTTP 429");
+      return base(query, vars);
+    });
+    const audit = await auditPackageCapabilities(V2, HOLDER, [
+      {
+        name: "lending_state",
+        structs: [{ name: "FToken", abilities: ["key", "store"], typeParameters: 1 }],
+        functions: [{ params: [`&mut ${P2}::coin_registry::CoinRegistry`] }],
+      },
+    ]);
+    const entry = audit.incomplete_scans?.find((s) => s.type === `${V2}::lending_state::FToken`);
+    expect(entry?.reason).toMatch(/type origins unreadable \(HTTP 429\)/);
+  });
+
   // SUI's genesis destroyed its Supply; its registry entry records no cap and
   // no fixed supply, which read as unknown mint authority.
   it("reads SUI as a coin nothing can mint", async () => {

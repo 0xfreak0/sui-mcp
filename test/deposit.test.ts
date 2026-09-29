@@ -154,6 +154,20 @@ describe("a deposit that arrives while a sweep is pending", () => {
     expect(decideDepositVerdict(p, { cexLabel: true, hub: null }, "relayer").verdict).toBe("no");
   });
 
+  it("names the next sweep as the one that took the balance, when that sweep also leaves the next deposit", () => {
+    const p = readDepositPattern(
+      scan([
+        deposit("d1", 100n, "2026-01-01T00:00:00Z"),
+        deposit("d2", 50n, "2026-01-01T00:00:10Z"),
+        sweep("s1", 100n, "2026-01-01T00:00:20Z"),
+        deposit("d3", 30n, "2026-01-01T00:00:30Z"),
+        sweep("s2", 50n, "2026-01-01T00:00:40Z"),
+        sweep("s3", 30n, "2026-01-01T00:00:50Z"),
+      ]),
+    );
+    expect(p.sweeps.map((s) => s.left_for_next_sweep?.swept_by)).toEqual(["s2", "s3", undefined]);
+  });
+
   it("counts a waiting balance that is not the latest deposits", () => {
     const p = readDepositPattern(scan([...pending.slice(0, 4), sweep("s1", 250n, "2026-01-01T15:16:55Z")], 117n));
     expect(p.sweeps[0]!.full_balance).toBe(false);

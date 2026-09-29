@@ -85,9 +85,10 @@ export interface Sweep {
   /**
    * A balance left behind that counts as the next sweep's deposit, when
    * full_balance holds only because of it. `arrived_in` are the latest
-   * deposits it equals; `swept_by` is the later transfer to the same
-   * destination that emptied the coin, absent while no later outflow of the
-   * coin is in the window.
+   * deposits it equals; `swept_by` is the next transfer of the coin, to the
+   * same destination, that took this balance (the coin reached zero then or
+   * in a later sweep), absent while no later outflow of the coin is in the
+   * window.
    */
   left_for_next_sweep?: { left: string; arrived_in: string[]; swept_by?: string };
   /** Gas payer when it is not the address itself. */
@@ -231,14 +232,15 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
   });
 
   // Walk back so each sweep knows the next outflow of every coin it swept:
-  // its destination and the sweep that emptied the coin, or null for either.
-  const nextOutflow = new Map<string, { destination: string | null; emptiedBy: string | null }>();
+  // that outflow's digest and destination, and the sweep that finally
+  // emptied the coin, null when nothing did.
+  const nextOutflow = new Map<string, { digest: string; destination: string | null; emptiedBy: string | null }>();
   const built = new Map<number, Sweep>();
   let d = drafts.length - 1;
   for (let i = scan.txs.length - 1; i >= 0; i--) {
     const draft = drafts[d]?.index === i ? drafts[d--]! : null;
     if (!draft) {
-      for (const [coin, delta] of nets[i]!) if (delta < 0n) nextOutflow.set(coin, { destination: null, emptiedBy: null });
+      for (const [coin, delta] of nets[i]!) if (delta < 0n) nextOutflow.set(coin, { digest: scan.txs[i]!.digest, destination: null, emptiedBy: null });
       continue;
     }
     const { tx, destination, coins, sponsor } = draft;
@@ -265,14 +267,14 @@ export function readDepositPattern(scan: DepositScan): DepositPattern {
           carried.push(human(left, c.coin_type));
           arrivedIn.push(...pending);
           if (sweptNext) {
-            sweptBy ??= sweptNext;
+            sweptBy ??= next!.digest;
             emptiedBy = sweptNext;
           }
         } else if (full) {
           full = false;
         }
       }
-      nextOutflow.set(c.coin_type, { destination, emptiedBy });
+      nextOutflow.set(c.coin_type, { digest: tx.digest, destination, emptiedBy });
     }
     built.set(i, {
       digest: tx.digest,

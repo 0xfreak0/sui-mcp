@@ -5,6 +5,17 @@ sidebar:
   order: 3
 ---
 
+## Historical object flows
+
+`summarize_address_flows` lists valued objects a transaction deleted or wrapped,
+including transactions from before about March 2024, when effects did not record
+their owners. It reads the holder at the version the transaction read and values
+the object for the address that held it. An object whose holder cannot be read
+is listed under `objects_unread`.
+
+A stake withdrawal has a `StakedSui` row with direction `out` and a separate SUI
+inflow in the same digest. Both legs remain separate in the output.
+
 ## Following every branch
 
 `trace_funds` follows one branch. `trace_flow_graph` follows every branch and

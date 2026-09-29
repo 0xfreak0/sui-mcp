@@ -71,6 +71,22 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **`summarize_address_flows` lists the StakedSui an old withdrawal
+  deleted.** gRPC renders effects version 1 (before about March 2024) with no
+  owner on either side of an object they deleted or wrapped, and those
+  changes were dropped as ownerless. A 2023 `request_withdraw_stake` counted
+  its SUI as inflow while the StakedSui it ended was missing from `objects`
+  and from `objects_out`. Such a change is now reported as `deleted` or
+  `wrapped` with `source_unrecorded`, and its holder is read at the input
+  version: the address that held it is debited. A holder identified as another
+  object, shared or immutable is excluded from direct-address valuation; a
+  missing holder or unrecognised owner kind is listed in `objects_unread`.
+  `analyze_attack_tx` and `summarize_incident_losses` value these objects
+  through the same path. `trace_funds` can value them through its archive
+  path; its GraphQL path can still omit historical deleted objects when their
+  type is absent. A tracked object deleted or wrapped under effects v1 ends
+  the object trail. A wrap with no recorded holder names no party, so
+  `get_transaction` still does not report it as a custody change.
 - **`query_events` no longer returns an empty page while matches remain.**
   The GraphQL service reads a bounded range per request, so a filter combining
   `sender` with `event_type` could answer with no events and `has_next_page:

@@ -226,16 +226,14 @@ function movementOut(m: ObjectMovement) {
 }
 
 /**
- * An event that places an order which can rest on the book: its struct name
- * mentions both placing and an order (DeepBook's OrderPlaced, a wrapper's
- * PlaceLimitOrderEvent). A taker order filled at once emits OrderFilled and
- * no OrderPlaced; a wrapper event that says its order was not put on the
- * book (`maker_injected` false) does not count.
+ * An event that puts an order on the book, where it can fill later: DeepBook's
+ * OrderPlaced, or a wrapper's event that says so with `maker_injected` true.
+ * A taker or market order filled at once emits OrderFilled and no OrderPlaced.
  */
 function placesOrder(eventType: string | undefined, json: unknown): boolean {
   const name = eventType?.split("<")[0]!.split("::").at(-1) ?? "";
-  if (!/order/i.test(name) || !/place/i.test(name)) return false;
-  return !(json !== null && typeof json === "object" && (json as Record<string, unknown>).maker_injected === false);
+  if (/orderplaced/i.test(name)) return true;
+  return json !== null && typeof json === "object" && (json as Record<string, unknown>).maker_injected === true;
 }
 
 export function registerTransactionTools(server: McpServer) {

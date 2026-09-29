@@ -159,6 +159,11 @@ describe("order events", () => {
     expect((await run()).order_events_note).toBeUndefined();
   });
 
+  it("stays quiet for a market order placed through a wrapper", async () => {
+    withEvent(`${WRAPPER_PKG}::utils::PlaceMarktetOrderEvent`, { is_bid: true, base_input: "0", quote_input: "5", base_output: "1", quote_output: "0" });
+    expect((await run()).order_events_note).toBeUndefined();
+  });
+
   it("stays quiet for a wrapper whose order never went on the book", async () => {
     withEvent(`${WRAPPER_PKG}::utils::PlaceLimitOrderEvent`, { base_filled: "10", maker_injected: false });
     expect((await run()).order_events_note).toBeUndefined();

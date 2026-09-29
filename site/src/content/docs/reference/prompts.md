@@ -5,7 +5,7 @@ description: "The MCP prompts the server registers, with their arguments."
 sidebar:
   order: 90
 ---
-This page is generated from the server's `prompts/list` response. The server registers 7 prompts.
+This page is generated from the server's `prompts/list` response. The server registers 8 prompts.
 
 ## attribute_cluster
 
@@ -45,9 +45,21 @@ Reconstruct an exploit or theft from its transaction or the attacker's address: 
 
 ## was_i_scammed
 
-- Title: Was I scammed?
+- Title: Was I scammed? (renamed)
 
-For someone who thinks they lost funds: what left the wallet, where it went, whether a known drainer or a lookalike address was involved, and what to do next.
+Former name of what_happened_to_my_funds, which it renders. This name will be removed in a later release.
+
+| Argument | Required | Description |
+|---|---|---|
+| `address` | no | Your wallet address (0x…) or SuiNS name. |
+| `digest` | no | The digest of the transaction you suspect. |
+| `network` | no | mainnet (default), testnet or devnet. |
+
+## what_happened_to_my_funds
+
+- Title: What happened to my funds?
+
+For someone who lost funds or thinks they did: whether anyone else can still move what is left, how the funds left (a leaked key, a drainer transaction, a lookalike address), where they went, and whom to report to with which evidence.
 
 | Argument | Required | Description |
 |---|---|---|

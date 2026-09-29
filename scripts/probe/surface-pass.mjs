@@ -192,6 +192,7 @@ try {
     investigate_address: { address: NEMO_ATTACKER },
     trace_incident: { subject: NEMO_EXPLOIT },
     attribute_cluster: { addresses: `${NEMO_ATTACKER},${NEMO_FUNDER}` },
+    what_happened_to_my_funds: { digest: NEMO_EXPLOIT },
     was_i_scammed: { digest: NEMO_EXPLOIT },
     who_controls_this_token: { coin_type: USDC },
     who_controls_this_protocol: { protocol: NEMO_ROOT },

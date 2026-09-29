@@ -113,7 +113,7 @@ const CONTROL_ANSWER = [
 
 /** The line for steps that need a tool outside the default profile. */
 const enableLine = (...profiles: Array<"forensics" | "developer">) =>
-  `Steps marked ${profiles.map((p) => `(${p})`).join(" or ")} use tools outside the default set. When you reach the first step of a profile and its tool is missing from your list, enable that profile once: ${profiles.map((p) => `\`enable_tools(profile: '${p}')\``).join(" or ")}. Enabling a profile adds its tools to every later request, so do not enable it for a step you skip.`;
+  `If a tool in a ${profiles.map((p) => `(${p})`).join(" or ")} step is missing, call ${profiles.map((p) => `\`enable_tools(profile: '${p}')\``).join(" or ")} for that profile once when reaching it; enabled tools persist, so skip enabling for skipped steps.`;
 
 export const PROMPTS: Record<string, PromptSpec> = {
   investigate_address: {
@@ -191,10 +191,10 @@ export const PROMPTS: Record<string, PromptSpec> = {
         "The method follows.",
       ].join("\n"),
   },
-  was_i_scammed: {
-    title: "Was I scammed?",
+  what_happened_to_my_funds: {
+    title: "What happened to my funds?",
     description:
-      "For someone who thinks they lost funds: what left the wallet, where it went, whether a known drainer or a lookalike address was involved, and what to do next.",
+      "For someone who lost funds or thinks they did: whether anyone else can still move what is left, how the funds left (a leaked key, a drainer transaction, a lookalike address), where they went, and whom to report to with which evidence.",
     args: [
       { name: "address", description: "Your wallet address (0x…) or SuiNS name.", required: false },
       { name: "digest", description: "The digest of the transaction you suspect.", required: false },
@@ -203,19 +203,23 @@ export const PROMPTS: Record<string, PromptSpec> = {
     task: ({ address, digest, network }) =>
       [
         address || digest
-          ? `Work out whether the user lost funds to a scam, from ${[address && `their wallet ${address}`, digest && `the transaction ${digest}`].filter(Boolean).join(" and ")}. ${networkLine(network)}`
-          : "The user thinks they were scammed but gave neither a wallet address nor a transaction digest. Ask for either one, and wait for the answer before calling any tool.",
+          ? `Find out what happened to the user's funds, from ${[address && `their wallet ${address}`, digest && `the transaction ${digest}`].filter(Boolean).join(" and ")}. ${networkLine(network)}`
+          : "The user thinks they lost funds but gave neither a wallet address nor a transaction digest. Ask for either one, and wait for the answer before calling any tool.",
         enableLine("forensics"),
         "",
-        "1. Find the transaction. With a digest, go to step 2. With only a wallet, `get_transaction_history(address, limit: 20)` lists its recent transactions, newest first: look for value leaving that the user did not expect, and read `address_poisoning` for a lookalike of an address the user pays. When several transactions fit, ask the user which one.",
-        "2. What moved: `get_transaction(digest)`. `balance_changes` gives the coins each address lost or gained, and `object_transfers` each object that changed hands (an NFT, staked SUI, a capability such as a KioskOwnerCap or an AdminCap) and where it went. `authorization` says who signed. The user's wallet is the address they gave. With only a digest, it is the address that lost coins or objects beyond gas here, never the sender by default; when that address sent the same coin or NFT to several addresses (a drop), or no address lost anything beyond gas, ask the user which address is theirs before going on.",
-        "   - When the wallet only received something (an unknown coin or NFT) and lost nothing but gas, nothing was taken in this transaction. For a coin, `analyze_token(query, include_holders: false)` gives `flagged_by`; for an NFT, `identify_address(address)` on its object id does. Tell the user not to follow a link or claim made in its name, then answer and skip steps 3 to 5.",
+        "1. Use the digest, or `get_transaction_history(address, limit: 20)`, newest first, to find unexpected outflows and read `address_poisoning`; ask which transaction if several fit.",
+        "2. What moved: `get_transaction(digest)` gives coin gains/losses in `balance_changes`, object custody changes in `object_transfers` (NFTs, staked SUI, capabilities), and signers in `authorization`. The user's wallet is the address they gave. With only a digest, it is the address that lost coins or objects beyond gas here, never the sender by default; when that address sent the same coin or NFT to several addresses (a drop), or no address lost anything beyond gas, ask the user which address is theirs before going on. Two outcomes mean nothing was taken in this transaction:",
+        "   - A drop: the wallet only received something (an unknown coin or NFT) and lost nothing but gas. For a coin, `analyze_token(query, include_holders: false)` gives `flagged_by`; for an NFT, `identify_address(address)` on its object id does. Tell the user not to follow a link or claim made in its name, then answer and skip steps 3 to 5.",
+        "   - The user's own order or position: the coins went into the user's own account or position in a protocol that `get_transaction` names in `protocols` (an order on an exchange such as DeepBook, a liquidity position, a lending deposit), no other address gained them, and an event or `mutated_capabilities` names the account object the user's wallet owns. Nothing was taken here, but where the coins are now depends on what happened after: an order fills later in other traders' transactions, and the filled amounts in this transaction's events cover this transaction alone. Read the current state before advising: `query_transactions(affected_object, after_checkpoint, order: 'oldest')`, with that account object and this transaction's checkpoint, lists the user's later transactions with it (a cancel, a withdrawal, a claim), and `get_transactions(digests)` says what each moved. Fills are not in that list. When the read is skipped, or shows no withdrawal of what the order bought or the position holds, say the current state was not read, tell the user to check the order or position in the protocol's app, and keep How sure at medium or lower. When every `actions` entry names a protocol, do step 3, then answer; skip steps 4 and 5. When an entry shows a package address or a name starting with @ instead (a wrapper, or a package posing as the protocol), run the drainer check in step 4 first, and follow this branch only when it finds no blocklisted package and no transfer to another address; then do step 3, answer and skip step 5.",
+        "3. Stop further loss: `identify_address(address)` on the user's wallet. Sui has no ERC-20 style allowance: an owned coin or object moves only in a transaction the owner's account authorizes, with its own key or through an address in its alias set. `delegated_to` lists those addresses, and one the user did not add can still move what is left. If the user did not approve the transaction that took the funds and no such address signed it, someone else holds the wallet's key (its recovery phrase or private key) and can move what is left at any time: tell the user to make a new wallet on a clean device and move what is left to it, since a new phrase made on the device or app that leaked the old one can leak the same way.",
+        "4. How it happened:",
+        "   - A leaked key (step 3): work out with the user how the key leaked (a device, a browser extension, a wallet app, or a phrase saved online, photographed or typed into a site).",
+        "   - Drainer check (forensics), only when the transaction calls a package that is neither the Sui framework (0x1, 0x2, 0x3) nor a protocol `get_transaction` names (an `actions` entry shows a package address instead of a name, or a name starting with @, which is a Move Registry name anyone can register), or when the user approved something on a website or app just before the loss: `analyze_attack_tx(digest)`. In `anomalies`, `blocklisted-package-call` means the transaction called a package on the Sui wallet scam blocklist, and `transfers-to-non-sender` names the coins and objects it handed to another address. A plain transfer or a deposit into a named protocol needs no drainer check: step 2 already shows where everything went.",
         "   - When it is a plain transfer the user sent to an address they believed they knew, check for address poisoning: `get_transaction_history(address, limit: 20)` on the user's wallet compares every address on that page in `address_poisoning`, and the user can compare the address they meant to pay with the recipient in full.",
-        "   - When the coins went into the user's own account or position in a protocol that `get_transaction` names in `protocols` (an order on an exchange such as DeepBook, a liquidity position, a lending deposit), no other address gained them, and an event or `mutated_capabilities` names the account object the user's wallet owns. Nothing was taken here, but where the coins are now depends on what happened after: an order fills later in other traders' transactions, and the filled amounts in this transaction's events cover this transaction alone. Read the current state before advising: `query_transactions(affected_object, after_checkpoint, order: 'oldest')`, with that account object and this transaction's checkpoint, lists the user's later transactions with it (a cancel, a withdrawal, a claim), and `get_transactions(digests)` says what each moved. Fills are not in that list. When the read is skipped, or shows no withdrawal of what the order bought or the position holds, say the current state was not read, tell the user to check the order or position in the protocol's app, and keep How sure at medium or lower. When every `actions` entry names a protocol, answer and skip steps 3 and 5. When an entry shows a package address or a name starting with @ instead (a wrapper, or a package posing as the protocol), run step 3 first, and follow this branch only when step 3 finds no blocklisted package and no transfer to another address; then answer and skip step 5.",
-        "3. Drainer check (forensics), only when the transaction calls a package that is neither the Sui framework (0x1, 0x2, 0x3) nor a protocol `get_transaction` names (an `actions` entry shows a package address instead of a name, or a name starting with @, which is a Move Registry name anyone can register), or when the user approved something on a website or app just before the loss: `analyze_attack_tx(digest)`. In `anomalies`, `blocklisted-package-call` means the transaction called a package on the Sui wallet scam blocklist, and `transfers-to-non-sender` names the coins and objects it handed to another address. A plain transfer or a deposit into a named protocol needs no drainer check: step 2 already shows where everything went.",
-        "4. Standing access: `identify_address(address)` on the user's wallet. Sui has no ERC-20 style allowance: an owned coin or object moves only in a transaction the owner's account authorizes, with its own key or through an address in its alias set. `delegated_to` lists those addresses, and one the user did not add can still move what is left.",
-        "5. Where it went (forensics): `trace_funds(digest, direction: 'forward', hops: 5)` follows the largest flow hop by hop. Read `address_poisoning` and `stop_reason`: an exchange, a bridge exit, a hub, an address that has not moved the funds yet, or the hop limit. The hop limit means the funds kept moving: trace again from the last hop's transaction before saying where they went. At a bridge exit, `resolve_bridge_transfer(digest)` names the account on the other chain. When the trace stops at an exchange, `classify_deposit_address(address)` on the last address before it says whether that is the exchange's deposit address. Optional: `screen_address(address, direction: 'out')` on the first recipient for its exposure to labelled scam, exchange and bridge accounts.",
-        "6. What the user can do: keep every digest above; report to the exchange the funds reached, with the deposit address and the digests; and if `delegated_to` names an address the user did not add, that address can still move funds. If the user did not approve the transaction that took the funds and no such address signed it, someone else holds the wallet's key (its recovery phrase or private key): tell the user to make a new wallet on a clean device and move what is left to it, since a new phrase made on the device or app that leaked the old one can leak the same way, and to work out how the key leaked (a device, a browser extension, a wallet app, or a phrase saved online, photographed or typed into a site). A transfer on Sui cannot be reversed, wherever the funds went; say that plainly, never as a consequence of where they went.",
+        "5. Where it went (forensics), up to the first exchange deposit address or bridge: `trace_funds(digest, direction: 'forward', hops: 5)` follows the largest flow hop by hop. Read `address_poisoning` and `stop_reason`: an exchange, a bridge exit, a hub, an address that has not moved the funds yet, or the hop limit. The hop limit means the funds kept moving: trace again from the last hop's transaction before saying where they went. At a bridge exit, `resolve_bridge_transfer(digest)` names the account on the other chain. When the trace stops at an exchange, `classify_deposit_address(address)` on the last address before it says whether that is the exchange's deposit address. Optional: `screen_address(address, direction: 'out')` on the first recipient for its exposure to labelled scam, exchange and bridge accounts.",
+        "6. Whom to report to and what evidence to send: report to the exchange the funds reached, with the deposit address and the digests, and keep every digest and address above. A transfer on Sui cannot be reversed, wherever the funds went; say that plainly, never as a consequence of where they went.",
+        "",
+        "Plain answer: follow steps 3 to 6; for a drop or own order/position, first explain that nothing was taken.",
         "",
         HELP_ANSWER,
       ].join("\n"),
@@ -309,6 +313,15 @@ export const PROMPTS: Record<string, PromptSpec> = {
   },
 };
 
+/**
+ * Former prompt names. A renamed prompt keeps its old name registered for one
+ * release, so a client that saved the old name still gets the prompt. The old
+ * name renders the current prompt after a first line naming the new one.
+ */
+const RENAMED_PROMPTS: Record<string, { to: string; title: string }> = {
+  was_i_scammed: { to: "what_happened_to_my_funds", title: "Was I scammed?" },
+};
+
 /** The skill sections a prompt carries. Throws when the skill file is not where it ships. */
 export function skillText(sections: string[]): string {
   let markdown: string;
@@ -343,23 +356,28 @@ function defaultPromptArguments(server: McpServer): void {
 
 export function registerAllPrompts(server: McpServer): void {
   defaultPromptArguments(server);
-  for (const [name, spec] of Object.entries(PROMPTS)) {
+  const register = (name: string, spec: PromptSpec, title: string, description: string, lead?: string) => {
     const argsSchema: Record<string, z.ZodString | z.ZodOptional<z.ZodString>> = {};
     for (const arg of spec.args) {
       argsSchema[arg.name] = arg.required ? z.string().describe(arg.description) : z.string().optional().describe(arg.description);
     }
     argsSchema.network = z.string().optional().describe("mainnet (default), testnet or devnet.");
-    server.registerPrompt(name, { title: spec.title, description: spec.description, argsSchema }, (args) => ({
-      description: spec.description,
-      messages: [
-        {
-          role: "user" as const,
-          content: {
-            type: "text" as const,
-            text: spec.sections.length > 0 ? `${spec.task(args)}\n\n${skillText(spec.sections)}` : spec.task(args),
-          },
-        },
-      ],
-    }));
+    server.registerPrompt(name, { title, description, argsSchema }, (args) => {
+      const text = spec.sections.length > 0 ? `${spec.task(args)}\n\n${skillText(spec.sections)}` : spec.task(args);
+      return {
+        description,
+        messages: [{ role: "user" as const, content: { type: "text" as const, text: lead ? `${lead}\n\n${text}` : text } }],
+      };
+    });
+  };
+  for (const [name, spec] of Object.entries(PROMPTS)) register(name, spec, spec.title, spec.description);
+  for (const [name, { to, title }] of Object.entries(RENAMED_PROMPTS)) {
+    register(
+      name,
+      PROMPTS[to],
+      `${title} (renamed)`,
+      `Former name of ${to}, which it renders. This name will be removed in a later release.`,
+      `This prompt was renamed ${to}. The name ${name} will be removed in a later release.`,
+    );
   }
 }

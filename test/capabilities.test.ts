@@ -707,6 +707,8 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     capObject?: Record<string, unknown> | null;
     /** Registry `Currency` JSON at each derived id a multi-get reads. */
     derived?: Record<string, Record<string, unknown>>;
+    /** The package's typeOrigins, for a later version. */
+    origins?: Array<{ module: string; struct: string; definingId: string }>;
   }
 
   const mockChain = (chain: Chain) => {
@@ -719,6 +721,7 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
         }));
         return { package: { packageAt: { address: PKG, previousTransaction: { effects: { objectChanges: gqlPage(created) } } } } };
       }
+      if (query.includes("typeOrigins")) return { package: { typeOrigins: chain.origins ?? [] } };
       if (typeof vars.type === "string" && vars.type.includes("coin_registry::Currency")) {
         return { objects: { nodes: chain.registry ? [{ asMoveObject: { contents: { json: chain.registry } } }] : [] } };
       }
@@ -816,13 +819,14 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
   });
 
   /**
-   * hop.fun-style `init` stores both the TreasuryCap and the CoinMetadata
-   * inside its own object, so version 1's publish shows only that object.
-   * The coin's registry entry, once migrated, sits at the derived id.
+   * An `init` that stores both the TreasuryCap and the CoinMetadata inside
+   * another object (HOPELESS's went into a `connector::Connector<HOPELESS>`)
+   * leaves version 1's publish showing only that object. The coin's registry
+   * entry, once migrated, sits at the derived id.
    */
   it("finds a one-time-witness coin whose init wrapped both the cap and the metadata", async () => {
     mockChain({
-      created: [`${PKG}::hfrog::CreateTicket`],
+      created: [`0x${"5c".repeat(32)}::connector::Connector<${COIN}>`],
       derived: { [CURRENCY_ID]: { decimals: 9, supply: { "@variant": "Unknown" }, treasury_cap_id: null } },
       capInstances: [{ address: CAP, owner: { __typename: "Immutable" } }],
     });
@@ -859,6 +863,21 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
       { name: "rewards", structs: [ftoken], functions: [{ params: ["u8"] }] },
     ]);
     expect(otherModule.incomplete_scans).toBeUndefined();
+  });
+
+  // A type is named by the version that defined it; the requested later
+  // version's id names no type, so a coin lookup under it finds nothing.
+  it("names a flagged generic key struct by the version that defined it", async () => {
+    const V2 = `0x${"c2".repeat(32)}`;
+    mockChain({ origins: [{ module: "lending_state", struct: "FToken", definingId: PKG }] });
+    const audit = await auditPackageCapabilities(V2, HOLDER, [
+      {
+        name: "lending_state",
+        structs: [{ name: "FToken", abilities: ["key", "store"], typeParameters: 1 }],
+        functions: [{ params: [`&mut ${P2}::coin_registry::CoinRegistry`] }],
+      },
+    ]);
+    expect(audit.incomplete_scans?.map((s) => s.type)).toEqual([`${PKG}::lending_state::FToken`]);
   });
 
   // SUI's genesis destroyed its Supply; its registry entry records no cap and

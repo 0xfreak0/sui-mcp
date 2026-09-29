@@ -87,8 +87,10 @@ export interface CapabilityAudit {
   incomplete_scans?: Array<{ type: string; reason: string }>;
   /**
    * Coin types the package defines whose TreasuryCap was not located, each
-   * with what was checked. Mint authority for these is unknown unless the
-   * reason says the registry holds the supply.
+   * with what was checked. `risk` says what that means: `medium`, who can
+   * mint is unknown; `info`, nothing can mint (the registry records a Fixed
+   * or BurnOnly supply, or the coin is SUI, whose Supply was destroyed at
+   * genesis).
    */
   coins_without_located_mint_authority?: UnlocatedMintAuthority[];
   note?: string;
@@ -523,10 +525,11 @@ function coinTypeOf(repr: string): string | null {
  * or, any time after publish, from `coin_registry::new_currency<T: key>`
  * called in the module defining `T`. `init` runs only at publish, so the
  * first kind shows in version 1's publish effects unless `init` stored both
- * the TreasuryCap and the CoinMetadata inside another object (hop.fun's
- * `CreateTicket`). Both kinds end up at a registry id derived from `T` once
- * registered, so every non-generic `key` struct and every witness-shaped
- * struct is a candidate, checked there in one multi-get.
+ * the TreasuryCap and the CoinMetadata inside another object (HOPELESS's
+ * went into a `connector::Connector<HOPELESS>` another package defines).
+ * Both kinds end up at a registry id derived from `T` once registered, so
+ * every non-generic `key` struct and every witness-shaped struct is a
+ * candidate, checked there in one multi-get.
  */
 const MAX_REGISTRY_PROBES = 200;
 
@@ -818,38 +821,51 @@ export async function auditPackageCapabilities(
     // calling module, and `CoinRegistry` reaches a module only through its
     // own functions' parameters, so a generic key struct is named only in a
     // module one of whose functions takes it.
-    for (const m of modules) {
-      if (!m.functions?.some((f) => f.params.some((p) => COIN_REGISTRY_PARAM.test(p)))) continue;
-      for (const s of m.structs.filter((k) => k.abilities.includes("key") && (k.typeParameters ?? 0) > 0)) {
-        markIncomplete(
-          `${packageId}::${m.name}::${s.name}`,
-          "a generic key struct in a module whose functions take the CoinRegistry: coin_registry::new_currency can make a coin of any instantiation of it, and no coin of this type was looked up, since a registry entry's id depends on the type argument",
-        );
-      }
-    }
+    const generic = modules.flatMap((m) =>
+      m.functions?.some((f) => f.params.some((p) => COIN_REGISTRY_PARAM.test(p)))
+        ? m.structs.filter((k) => k.abilities.includes("key") && (k.typeParameters ?? 0) > 0).map((s) => ({ module: m.name, name: s.name }))
+        : [],
+    );
     let plain = modules.flatMap((m) =>
       m.structs
         .filter((s) => !(s.typeParameters ?? 0) && (s.abilities.includes("key") || isWitnessShaped(m.name, s)))
         .map((s) => ({ module: m.name, name: s.name, witness: !s.abilities.includes("key") })),
     );
-    // Version 1 defines every struct it has, so only a later version needs the origins.
+    // A type is named by the version that defined it. Version 1 defines every
+    // struct it has, so only a later version needs the origins. When they
+    // cannot be read, a struct keeps the requested id, as step 1b names it,
+    // so both reasons land on one entry.
     let origins: TypeOrigin[] | null = null;
-    if (plain.length && normalizeSuiAddress(packageId) !== rootId) {
+    let originsError: string | null = null;
+    if ((plain.length || generic.length) && normalizeSuiAddress(packageId) !== rootId) {
       try {
         origins = await readOrigins();
       } catch (err) {
-        for (const s of plain) {
-          markIncomplete(
-            `${packageId}::${s.module}::${s.name}`,
-            `type origins unreadable (${(err as Error).message}), so whether this struct is a coin was not checked`,
-          );
-        }
-        plain = [];
+        originsError = (err as Error).message;
       }
+    }
+    const definedAt = (module: string, name: string) =>
+      originsError !== null
+        ? packageId
+        : normalizeSuiAddress(origins?.find((o) => o.module === module && o.struct === name)?.definingId ?? rootId);
+    for (const s of generic) {
+      markIncomplete(
+        `${definedAt(s.module, s.name)}::${s.module}::${s.name}`,
+        "a generic key struct in a module whose functions take the CoinRegistry: coin_registry::new_currency can make a coin of any instantiation of it, and no coin of this type was looked up, since a registry entry's id depends on the type argument",
+      );
+    }
+    if (originsError !== null) {
+      for (const s of plain) {
+        markIncomplete(
+          `${packageId}::${s.module}::${s.name}`,
+          `type origins unreadable (${originsError}), so whether this struct is a coin was not checked`,
+        );
+      }
+      plain = [];
     }
     const candidates = plain
       .map((s) => ({
-        type: normalizeCoinType(`${origins?.find((o) => o.module === s.module && o.struct === s.name)?.definingId ?? rootId}::${s.module}::${s.name}`),
+        type: normalizeCoinType(`${definedAt(s.module, s.name)}::${s.module}::${s.name}`),
         witness: s.witness,
       }))
       .filter((c): c is { type: string; witness: boolean } => !!c.type && !coinTypes.has(c.type));

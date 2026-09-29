@@ -4477,9 +4477,10 @@ must be answerable from these tools, and no case check calls
   `Currency` of the lineage root's own types, and from the registry. A coin
   made through a one-time witness comes from `init`, which runs only at
   publish, but its effects show no coin object when `init` stored both the
-  TreasuryCap and the CoinMetadata inside another object (hop.fun's
-  `CreateTicket`; live: `0x014fcd3b…::hopeless::HOPELESS`, frozen cap at top
-  level). A coin made later comes only from `coin_registry::new_currency<T:
+  TreasuryCap and the CoinMetadata inside another object (live:
+  `0x014fcd3b…::hopeless::HOPELESS`, both inside a
+  `0x5c8657a6…::connector::Connector<HOPELESS>`; the cap is now frozen at
+  top level). A coin made later comes only from `coin_registry::new_currency<T:
   key>`, called in the module defining `T`. A registered `Currency<T>` of
   either kind is shared at an id derived under `0xc` from `CurrencyKey<T>`
   (key BCS `[0]`, the dummy field; checked live against HFROG and wUSDC), so
@@ -4490,14 +4491,17 @@ must be answerable from these tools, and no case check calls
   a coin nobody registered has no entry. A generic `key` struct's id depends
   on its type argument, so one in a module whose own functions take
   `CoinRegistry` (the only way it reaches a module) is named in
-  `incomplete_scans` instead. That list holds one entry per type, with every
-  reason a scan gave. For each coin
+  `incomplete_scans` instead, under the id of the version that defined it
+  (typeOrigins; the requested id only when they cannot be read, so the
+  entry merges with step 1b's). That list holds one entry per type, with
+  every reason a scan gave. For each coin
   without a cap it reads the registry's `treasury_cap_id`, then scans
   `TreasuryCap<T>` by type (`found_by`); GraphQL's type filter matches
   nothing for a partly instantiated type (`Currency<…::FToken>`), so it
   cannot stand in for the derivation. What is left is named in
-  `coins_without_located_mint_authority` at medium risk with what was
-  checked. A registry `Fixed`/`BurnOnly` supply means the cap was consumed
+  `coins_without_located_mint_authority` with what was checked; its `risk`
+  says what the entry means: medium, who can mint is unknown; info, nothing
+  can mint. A registry `Fixed`/`BurnOnly` supply means the cap was consumed
   (`make_supply_fixed` takes it by value), so that cap is reported destroyed
   without reading it: a cap created and consumed in one transaction appears
   in no effects and `readObjectEnd` cannot place it. SUI is an `info`

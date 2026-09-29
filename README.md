@@ -227,12 +227,13 @@ wrapped both its TreasuryCap and its CoinMetadata. A one-time witness the
 registry does not know is asked of the node. A generic `key` struct in a
 module whose functions take the CoinRegistry is named in `incomplete_scans`,
 since its coins cannot be looked up. For each coin the audit reads the
-TreasuryCap id the registry
-records, then searches for a live `TreasuryCap<T>` by type, and marks a cap
-found this way with `found_by`. A coin whose cap neither finds is named in
-`coins_without_located_mint_authority` with what was checked, at medium risk:
-who can mint it is unknown. A registry entry recording the supply as fixed or
-burn-only settles it, since recording that consumes the cap.
+TreasuryCap id the registry records, then searches for a live
+`TreasuryCap<T>` by type, and marks a cap found this way with `found_by`. A
+coin whose cap neither finds is named in `coins_without_located_mint_authority`
+with what was checked, and its `risk` says what that means. At medium, who
+can mint it is unknown. At info, nothing can mint it: the registry records
+its supply as fixed or burn-only (recording that consumes the cap), or the
+coin is SUI, whose Supply was destroyed at genesis.
 
 `analyze_package` also reports `upgrade_cap`, the cap's owner-change count and
 latest change. `get_upgrade_history` joins every version to its publisher, the

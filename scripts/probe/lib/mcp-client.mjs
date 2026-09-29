@@ -16,14 +16,15 @@ const GRAPHQL = "https://graphql.mainnet.sui.io/graphql";
 /**
  * Start the built server with every profile on and a throwaway store.
  * `env` is merged over the process environment. The server replays fixed
- * chain reads from `SUI_REPLAY_DIR` only when `replay` is set: case-pass and
- * detector-pass opt in, and every other probe reads live.
+ * chain reads from `SUI_REPLAY_DIR` only when `replay` is set: case-pass,
+ * detector-pass and oracle-pass opt in, and every other probe reads live.
+ * `entry` runs another build's `dist/index.js` instead of this checkout's.
  */
-export async function startServer({ name = "probe", env = {}, replay = false } = {}) {
+export async function startServer({ name = "probe", env = {}, replay = false, entry = join(ROOT, "dist", "index.js") } = {}) {
   const store = mkdtempSync(join(tmpdir(), `sui-${name}-`));
   const base = { ...process.env };
   if (!replay) delete base.SUI_REPLAY_DIR;
-  const child = spawn(process.execPath, [join(ROOT, "dist", "index.js")], {
+  const child = spawn(process.execPath, [entry], {
     env: { ...base, SUI_TOOLS: "all", SUI_STORE_PATH: join(store, "store.db"), ...env },
     stdio: ["pipe", "pipe", "inherit"],
   });

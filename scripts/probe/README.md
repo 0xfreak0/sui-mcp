@@ -1,6 +1,6 @@
 # Live checks
 
-Twelve scripts, run together by `npm run verify:live` from the repo root. Build
+Thirteen scripts, run together by `npm run verify:live` from the repo root. Build
 first — they drive the built tools, not the source.
 
 ```bash
@@ -20,6 +20,7 @@ npm run build && npm run verify:live && npm test
 | `surface-pass.mjs` | The stateful tools (labels, findings, watches, `enable_tools`), the prompts and the `sui://case` resource, and the core, market and developer tools, each against a raw read of the same fact taken in the same run: staking principal vs raw StakedSui objects, pools vs a raw walk of every pool type, a decoded PTB vs the raw transaction, a simulated transfer vs its amount, MVR names vs the PackageInfo on chain. Every tool also gets one malformed call that must be refused, and each call's latency and size are checked. |
 | `case-pass.mjs` | Replays every case in `cases/incidents/` (and in `$SUI_CASES_DIR` when set): each check's tool call through the built server, its answer against the value the incident's post-mortem or the chain gives. Validates each file against the format in `cases/README.md` first. A check marked `known_defect` that fails is reported as known; one that passes fails the run until the marker is removed. Prints each call's latency, size and estimated tokens, a total per case, and the tools/list size for the default profile and `SUI_TOOLS=all`; a call over its tool's budget in `lib/size-budget.mjs` fails. `--smoke` runs one check per tool plus the `critical` ones, and `--affected <git-range>` the checks a change can reach (see "Tiers" below). `--jobs <n>` runs n cases at once through one server, sharing its request budget; a check that fails there runs again alone before it counts. `--case <slug>` and `--check <id>` narrow any tier to one; `--summary <file>` writes the tallies, sizes, budgets and wall time as JSON, which `verify:live` turns into the size report in its closing summary. |
 | `invariant-pass.mjs` | A seeded random sample of mainnet: transactions from checkpoints spread over the whole chain, plus the kinds random checkpoints rarely hold (system, failed, sponsored, multisig, zkLogin, address-balance, 100+ command PTBs, packages, shared objects, kiosks, bridge exits). Each is run through the tools and checked against rules that hold for any input, every value against a raw GraphQL read: balance changes against the effects, coin conservation, batch against single reads, balances against coin objects plus the address balance and against a forward sum at a past checkpoint, history and timeline pages against the raw query, flow totals, fan-out recounts, trace and attack nets, identity types, holder balances and bridge beneficiaries against the event bytes. Prints the seed; `--seed S --n N --tip T` redraws the same sample. Default n is 12, four to seven minutes; n 30 takes about ten. |
+| `oracle-pass.mjs` | Tool answers on subjects drawn at random each run, each against the same fact read from the chain by another path, never through the helper the tool uses. Transactions come from three eras (effects version 1, before checkpoint 23,897,141; later; the newest million checkpoints), with Aftermath router transactions and coins from the on-chain coin registry. Six oracles: `get_transaction` swap labels against each pool's own swap event and the pool's type arguments, compared by coin type; the end of an object no longer at top level in `trace_object_history` and `get_upgrade_history` against `idDeleted` in its last transaction; `get_transaction` object changes against GraphQL `objectChanges`, and under effects version 1 against the effects' own BCS lists; `analyze_package` mint authority against the registry's `treasury_cap_id` and a `TreasuryCap<T>` type query; `token_flow` and `balance_changes` against GraphQL `balanceChanges`; capability owners against each object's live owner. Prints the seed and tip (`--seed S --tip T` redraws the same subjects), then per oracle the samples checked, the agreements, each disagreement with our answer, the truth and how it was read, and each skip with its reason. A disagreement fails the run unless `KNOWN_DEFECTS` in the script lists it. `--subjects` pins subjects instead of drawing them and `--dist` runs another build, so a fixed bug's subjects can be run against the build before the fix. |
 | `detector-pass.mjs` | Scores the anomaly detectors on the labelled set in `cases/detectors.json`: exploit and attack transactions from `cases/incidents/` as positives, and ordinary mainnet transactions as negatives, each in two splits, `tuning` (seen by rule authors) and `holdout` (incidents labelled after every current rule was written, and negatives drawn at random afterwards, never shown to them). Runs `analyze_attack_tx`, `decode_ptb` by digest and `decode_ptb` on the transaction's own BCS (the pre-sign mode) on each, and prints per tool and anomaly code the true positives, the false positives and their rate on each split, and a leave-one-out table: which detectors fire on each incident, and which of those were neither designed from it nor tuned while it was labelled, then every medium or high flag with its evidence on each holdout positive. Fails when a tuning negative gets a medium or high flag not listed in `accepted_fps`, when an accepted false positive stops firing, when a positive loses a `detected_by` detection, or, on a run of the whole holdout split, when any kind's medium-or-high count there differs from `holdout_ceilings`. `--write-ceilings` records the measured counts; `--json` prints the report as JSON; `--split`, `--only`, `--incident` and `--digest` run a subset. Reads through `SUI_REPLAY_DIR` when it is set, as case-pass does. |
 
 `sample-negatives.mjs` is not a check: it draws fresh holdout negatives for
@@ -50,7 +51,9 @@ npm run verify:live -- --tier smoke
   runs `case-pass --affected` (the checks calling a reached tool, every check
   of a changed case file, and the `critical` checks), each probe script that
   changed or that calls a reached tool no case check names (by the rule
-  `test/live-coverage.test.ts` credits a probe with), and `detector-pass` when
+  `test/live-coverage.test.ts` credits a probe with), `oracle-pass` when a
+  tool it checks was reached (`ORACLE_PROBES` in `lib/tiers.mjs`, since its
+  random samples reach states no case does), and `detector-pass` when
   a tool it scores was reached or `cases/detectors.json` changed. A change it
   cannot place (a source file nothing imports, `package.json`, the lock file,
   `tsconfig.json`, `case-pass.mjs`, anything in `lib/` or `verify-live.mjs`)
@@ -66,7 +69,7 @@ three moments below.
 
 ## Replaying fixed reads
 
-`SUI_REPLAY_DIR=<dir>` makes case-pass and detector-pass read through a
+`SUI_REPLAY_DIR=<dir>` makes case-pass, oracle-pass and detector-pass read through a
 recording of every chain read whose answer cannot change: a transaction by
 digest once it is in a checkpoint, an object at a version or as of a past
 checkpoint, a package at a version (GraphQL resolves a package asked for by
@@ -79,8 +82,9 @@ live. A GraphQL query replays only when every field it selects is fixed under
 its root, so a latest balance asked for under a transaction's sender still
 goes out. A read that fails or finds nothing is never recorded. Entries are
 keyed by the endpoint and the exact request, so a changed query or SDK
-encoding records afresh. `verify:live` passes the variable to those two
-scripts only. The rules are in `src/clients/replay.ts`.
+encoding records afresh. `verify:live` passes the variable to those three
+scripts only; oracle-pass sends its own raw reads of fixed data through the
+same recording. The rules are in `src/clients/replay.ts`.
 
 Replay cannot see a change on Mysten's side, such as a renamed GraphQL field,
 so the full tier before a release runs without it.
@@ -112,7 +116,7 @@ They need the network and mainnet's current state, so they would be flaky on a
 schedule nobody chose. A flaky required check teaches people to ignore failures,
 which costs more than the check is worth.
 
-## Why there are only twelve
+## Why there are only thirteen
 
 There were seventy. The rest were one-off measurements — symbol-collision
 counts, deny-list base rates, upgrade-cap destinations — and each produced a

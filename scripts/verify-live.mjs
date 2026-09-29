@@ -25,17 +25,17 @@
  *
  * `--tier full` (the default) runs every script. `--tier affected` runs the
  * case checks a change can reach (`case-pass --affected`), each probe script
- * that changed or that calls a reached tool no case check names, and
- * detector-pass when a tool it scores was reached or its labels changed;
- * `--range` is the change, anything `git diff` takes, by default everything
- * since this branch left main, uncommitted work included. A change the file
- * map cannot place runs the full tier. `--tier smoke` runs `case-pass
- * --smoke` and the fewest probe scripts that reach every tool no case check
- * names. `--jobs` goes to case-pass. The choice of scripts is in
- * scripts/probe/lib/tiers.mjs.
+ * that changed or that calls a reached tool no case check names,
+ * oracle-pass when a tool it checks was reached, and detector-pass when a
+ * tool it scores was reached or its labels changed; `--range` is the change,
+ * anything `git diff` takes, by default everything since this branch left
+ * main, uncommitted work included. A change the file map cannot place runs
+ * the full tier. `--tier smoke` runs `case-pass --smoke` and the fewest probe
+ * scripts that reach every tool no case check names. `--jobs` goes to
+ * case-pass. The choice of scripts is in scripts/probe/lib/tiers.mjs.
  *
- * `SUI_REPLAY_DIR` reaches case-pass and detector-pass only; every other
- * script reads live.
+ * `SUI_REPLAY_DIR` reaches case-pass, oracle-pass and detector-pass only;
+ * every other script reads live.
  *
  * Deliberately NOT in CI. It needs the network and mainnet's current state, so
  * it would be flaky on a schedule nobody chose, and a flaky required check
@@ -95,10 +95,11 @@ const CHECKS = [
   ["probe/surface-pass", "stateful, prompt, core, market and developer tools against raw chain reads, plus malformed input"],
   ["probe/case-pass", "every case in cases/incidents, against the answers its sources and the chain give"],
   ["probe/invariant-pass", "a seeded random sample of mainnet through the tools, against rules that hold for any input"],
+  ["probe/oracle-pass", "random subjects from every era: swap labels, object ends and changes, mint authority, flows and cap owners against the chain read another way"],
   ["probe/detector-pass", "the anomaly detectors on labelled exploit and ordinary transactions: false positives, lost detections, leave one incident out"],
 ];
 /** The scripts that read through SUI_REPLAY_DIR when it is set. */
-const REPLAYING = new Set(["probe/case-pass", "probe/detector-pass"]);
+const REPLAYING = new Set(["probe/case-pass", "probe/oracle-pass", "probe/detector-pass"]);
 
 // case-pass writes its sizes and token counts here for the closing summary.
 const scratch = mkdtempSync(join(tmpdir(), "verify-live-"));

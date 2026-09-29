@@ -61,7 +61,7 @@ export function registerLabelTools(server: McpServer) {
       "otherwise; 'remove' deletes the stored copy too. Only those labels can be removed: the " +
       "override file (SUI_LABELS_FILE) and the shipped set are read-only here. Precedence: labels " +
       "added here > override file > shipped disclosed set > shipped inferred exchange deposit " +
-      "addresses (source 'inferred'). Labels are chain-qualified: a label added while " +
+      "addresses (source 'inferred'), which 'export' leaves out. Labels are chain-qualified: a label added while " +
       "querying one chain does not apply on another.",
     {
       action: z
@@ -217,10 +217,16 @@ export function registerLabelTools(server: McpServer) {
           // would re-file an Ethereum label as a zero-padded Sui address. Since
           // `bridge` and `cex` are sink categories, that phantom would silently
           // terminate later Sui traces at an address belonging to nobody.
+          //
+          // Inferred labels are left out: every machine ships them, and an
+          // imported copy would become a session label, the top tier, without
+          // the evidence that marks it inferred.
           const all = allLabels();
+          const exported = all.filter((l) => l.source !== "inferred");
           return jsonResult({
-            count: all.length,
-            labels: all.map((l) => ({
+            count: exported.length,
+            inferred_not_exported: all.length - exported.length,
+            labels: exported.map((l) => ({
               address: l.account,
               label: l.label,
               category: l.category,

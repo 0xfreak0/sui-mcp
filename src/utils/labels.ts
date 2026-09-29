@@ -110,7 +110,8 @@ export function inferredLabelNote(label: AddressLabel): string | undefined {
   if (!from) return undefined;
   return (
     `Inferred, not disclosed: it swept its whole balance into ${label.entity ?? "the exchange"}'s disclosed wallet ${from.swept_to} ` +
-    `${from.sweep_count} times (latest ${from.evidence_txs.at(-1) ?? "unknown"}); classify_deposit_address re-reads the pattern.`
+    `${from.sweep_count} times (latest ${from.evidence_txs.at(-1) ?? "unknown"}); classify_deposit_address re-reads the pattern. ` +
+    "If it does not read likely, label the address with manage_labels (category other) and trace again to follow it."
   );
 }
 

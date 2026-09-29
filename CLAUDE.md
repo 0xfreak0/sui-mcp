@@ -935,7 +935,7 @@ npm run verify:live          # live mainnet checks — see below
 npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
 npm run sync:coin-symbols    # regenerate src/data/coin-symbols.json (about 13 minutes)
-npm run sync:labels          # build, then regenerate src/data/deposit-labels.json (inferred deposit addresses)
+npm run sync:labels -- --exclude FILE   # build, then regenerate src/data/deposit-labels.json; FILE lists private case addresses
 ```
 
 ### Live checks
@@ -3474,16 +3474,32 @@ change is likely to break:
   `classify_deposit_address` would read it `likely` against that disclosed
   wallet (the same `readDepositPattern` and `decideDepositVerdict`, so every
   outflow is a full-balance sweep into one wallet) with at least two sweeps.
-  A disclosed or curated address, an object, a curated protocol and an address
+  Sweeping whole balances into an exchange is also what a poisoner's
+  lookalike does with dust and what an exchange's own operational addresses
+  do, so a candidate is also dropped when it is one side of a lookalike pair
+  among the wallet's counterparties (`lookalikeSuspects`), when everything it
+  received came from its own sweep sponsor, the same exchange's wallets or
+  where the swept-to wallet itself sweeps, and when a sweep sponsor measures
+  as anything but a relayer (`sponsorRejection`; the exchange's own wallet
+  may pay the gas, an unmeasured sponsor fails). A disclosed wallet that is
+  deposit-shaped itself (`isDepositShaped`) is never a sweep target. A
+  disclosed or curated address, an object, a curated protocol and an address
   sweeping to two exchanges are never labelled. The label names the exchange
   only (`<Exchange> deposit address (inferred)`, category `cex`, confidence
   medium, source `inferred`, evidence `sweep-pattern`) and carries
   `inferred_from` (the wallet, sweep count, latest sweep digests); an entry
   without it is not loaded. Precedence: session > override > curated >
   disclosed > inferred. It is a sink, and a stop at one says it was inferred
-  (`inferredLabelNote`). `classify_deposit_address` never counts an inferred
-  label as an exchange destination, or a wallet paying into a deposit address
-  would read as one. Keys are `sui:mainnet:`. No private case address goes in.
+  and how to trace past it (`inferredLabelNote`). `classify_deposit_address`
+  never counts an inferred label as an exchange destination, or a wallet
+  paying into a deposit address would read as one, and `manage_labels export`
+  leaves inferred labels out, since an import would make them session labels.
+  Keys are `sui:mainnet:`. No private case address goes in: `--exclude FILE`
+  drops the addresses in FILE before anything is read, so they are never
+  stored in the progress file or counted per exchange, and the script refuses
+  to run without `--exclude` or `--no-exclude` once a file was built with
+  exclusions. The progress file is owner-only and reused only on the same
+  day with the same bounds and rule inputs.
 - **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
   the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
   change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and

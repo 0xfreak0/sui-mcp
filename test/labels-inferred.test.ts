@@ -8,6 +8,12 @@ const { addSessionLabel, allLabels, describeLabel, getLabel, inferredLabelNote, 
   await import("../src/utils/labels.js");
 const { classifyDepositAddress } = await import("../src/utils/deposit.js");
 const { runWithNetwork } = await import("../src/config.js");
+const { registerLabelTools } = await import("../src/tools/labels.js");
+
+const tools = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>();
+registerLabelTools({ tool: (name: string, _d: string, _s: unknown, h: never) => tools.set(name, h) } as never);
+const manageLabels = async (args: Record<string, unknown>) =>
+  JSON.parse((await runWithNetwork("mainnet", () => tools.get("manage_labels")!(args))).content[0]!.text);
 
 const shipped = JSON.parse(readFileSync(new URL("../src/data/deposit-labels.json", import.meta.url), "utf8"));
 const disclosed = JSON.parse(readFileSync(new URL("../src/data/disclosed-labels.json", import.meta.url), "utf8"));
@@ -91,6 +97,14 @@ describe("inferred deposit labels", () => {
 
   it("say they are inferred in a one-line rendering", () => {
     expect(describeLabel(getLabel(DEPOSIT)!)).toBe("ExchangeA deposit address (inferred) [cex; ExchangeA; sweep-pattern]");
+  });
+
+  it("are not exported, so an import cannot turn one into a top-tier session label", async () => {
+    const exported = await manageLabels({ action: "export" });
+    const accounts = exported.labels.map((l: { address: string }) => l.address);
+    expect(accounts).not.toContain(`sui:mainnet:${DEPOSIT}`);
+    expect(accounts).toContain(DISCLOSED_KEY);
+    expect(exported.inferred_not_exported).toBeGreaterThan(0);
   });
 });
 

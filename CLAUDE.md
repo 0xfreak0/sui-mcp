@@ -936,6 +936,7 @@ npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
 npm run sync:coin-symbols    # regenerate src/data/coin-symbols.json (about 13 minutes)
 npm run sync:labels -- --exclude FILE   # build, then regenerate src/data/deposit-labels.json; FILE lists private case addresses
+npm run sync:framework -- REF   # vendor the Sui framework sources test/sui-framework.test.ts checks claims against
 ```
 
 ### Live checks
@@ -3060,7 +3061,13 @@ Seven rules, every one of them a bug that shipped to `main` first:
   DenyCap or UpgradeCap lets anyone mint, freeze or upgrade. Sharing only
   works in the creating transaction, so an opened cap is often a `created`
   change, and `custodyChanges` must keep it. `capabilities.ts` and
-  `object-flow.ts` apply the same rule.
+  `object-flow.ts` apply the same rule, both from `CAPABILITY_USES`: each
+  framework function that takes a high-consequence type by reference, what it
+  grants, and the reviewed ones that grant nothing more. Notes name the
+  functions from that table. `test/sui-framework.test.ts` checks it against
+  the vendored framework source and fails on a callable function the table
+  does not list; a claim about the framework without a `FrameworkClaim` is
+  not checked by anything.
 - **Classify a capability BEFORE a position name.** `POSITION_NAME` is
   unanchored and matches `Account`, `Obligation`, `Receipt`, `Vault` — testing
   it first turned `custodian_v2::AccountCap` and

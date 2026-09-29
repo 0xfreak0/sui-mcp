@@ -43,6 +43,7 @@
 import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { normalizeCoinType } from "./coin-registry.js";
+import type { FrameworkClaim } from "./framework-claims.js";
 
 /** Whether an issuer can freeze holders of this coin, as the registry states it. */
 export type RegulatedState = "regulated" | "unregulated" | "unknown";
@@ -90,6 +91,22 @@ interface CurrencyJson {
   supply?: { "@variant"?: unknown } | null;
   treasury_cap_id?: unknown;
 }
+
+/**
+ * The registry layout this reader relies on: `Currency`'s field names, the
+ * variant names of its supply and regulated states, and `CurrencyKey<T>()`
+ * having no fields, so its BCS is the compiler's one dummy byte.
+ */
+export const REGISTRY_LAYOUT_CLAIMS: FrameworkClaim[] = [
+  {
+    struct: "coin_registry::Currency",
+    fields: ["id", "decimals", "name", "symbol", "description", "icon_url", "supply", "regulated", "treasury_cap_id", "metadata_cap_id", "extra_fields"],
+    why: "a registry entry is read by field name",
+  },
+  { struct: "coin_registry::SupplyState", fields: ["Fixed", "BurnOnly", "Unknown"], why: "supply state is read by variant name" },
+  { struct: "coin_registry::RegulatedState", fields: ["Regulated", "Unregulated", "Unknown"], why: "regulated state is read by variant name" },
+  { struct: "coin_registry::CurrencyKey", abilities: ["copy", "drop", "store"], fields: [], why: "a Currency's derived id uses the one-byte BCS of an empty key" },
+];
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;

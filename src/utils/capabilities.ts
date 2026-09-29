@@ -9,6 +9,8 @@ import { schemeLabel } from "./upgrade-history.js";
 import { readObjectEnd } from "./object-end.js";
 import { readDerivedCurrencies, readRegistryCurrency, type RegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
 import { normalizeCoinType } from "./coin-registry.js";
+import type { FrameworkClaim } from "./framework-claims.js";
+import { freezeRenounces, frozenCapabilityPowers, sharedCapabilityPowers } from "./object-flow.js";
 
 /**
  * Capability auditing for a Move package: who holds the powerful capabilities
@@ -127,6 +129,31 @@ export function classifyCapType(repr: string): CapKind | null {
   return null;
 }
 
+/** The framework function that mints through a `Supply`. */
+const MINT_THROUGH_SUPPLY = "balance::increase_supply";
+
+/**
+ * Framework facts the destroyed-TreasuryCap rule rests on. Deleting a
+ * TreasuryCap goes through `coin::treasury_into_supply`, which hands back its
+ * Supply. A Supply has no `drop` and `balance::destroy_supply` is
+ * package-private, so the Supply is kept somewhere, and whatever keeps it can
+ * mint through `balance::increase_supply`. `coin_registry::make_supply_fixed`
+ * and `make_supply_burn_only` consume the cap by value into the registry,
+ * where nothing can mint. `sui::new`, run once at genesis, destroyed SUI's.
+ */
+export const SUPPLY_CLAIMS: FrameworkClaim[] = [
+  { fn: "coin::treasury_into_supply", visibility: "public", takes: { "coin::TreasuryCap": "value" }, why: "deleting a TreasuryCap hands back its Supply" },
+  { struct: "balance::Supply", abilities: ["store"], why: "a Supply cannot be dropped, so deleting its cap leaves it somewhere" },
+  { fn: "balance::destroy_supply", visibility: "public(package)", why: "no package outside the framework can destroy a Supply" },
+  { fn: MINT_THROUGH_SUPPLY, visibility: "public", takes: { "balance::Supply": "&mut" }, why: "whatever keeps a Supply can mint through it" },
+  { fn: "coin_registry::make_supply_fixed", visibility: "public", takes: { "coin_registry::Currency": "&mut", "coin::TreasuryCap": "value" }, calls: ["into_supply"], why: "a Fixed registry supply means the cap was consumed" },
+  { fn: "coin_registry::make_supply_burn_only", visibility: "public", takes: { "coin_registry::Currency": "&mut", "coin::TreasuryCap": "value" }, calls: ["into_supply"], why: "a BurnOnly registry supply means the cap was consumed" },
+  { fn: "coin_registry::make_supply_fixed_init", visibility: "public", takes: { "coin::TreasuryCap": "value" }, calls: ["make_supply_fixed"], why: "a Fixed registry supply means the cap was consumed" },
+  { fn: "coin_registry::make_supply_burn_only_init", visibility: "public", takes: { "coin::TreasuryCap": "value" }, calls: ["make_supply_burn_only"], why: "a BurnOnly registry supply means the cap was consumed" },
+  { fn: "sui::new", visibility: "private", calls: ["treasury_into_supply", "destroy_supply"], why: "nothing can mint SUI" },
+];
+
+
 /**
  * Assess the risk of a capability given its kind, current owner, and (for
  * upgrade caps) its policy. Pure — the security opinion lives here so it's
@@ -202,24 +229,21 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `UpgradeCap is a shared object (policy: ${policyLabel ?? "unread"}). package::authorize_upgrade and commit_upgrade are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can upgrade this package.`,
+        note: `UpgradeCap is a shared object (policy: ${policyLabel ?? "unread"}). Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers(type)}`,
       };
     }
     if (owner === "immutable") {
-      return {
-        risk: "info",
-        note: "UpgradeCap is frozen. package::authorize_upgrade and commit_upgrade take it by &mut, which a frozen object cannot give, so nobody can upgrade this package.",
-      };
+      return { risk: freezeRenounces(type) ? "info" : "medium", note: `UpgradeCap is frozen. ${frozenCapabilityPowers(type)}` };
     }
     return { risk: "medium", note: `UpgradeCap owner is ${owner}${policyLabel ? ` (policy: ${policyLabel})` : ""}.` };
   }
 
   if (kind === "treasury") {
     if (owner === "burned") {
-      // Deleting a TreasuryCap always leaves its Supply<T>: `balance::destroy_supply`
-      // is package-private. `coin_registry::make_supply_fixed` and
-      // `make_supply_burn_only` store it where nothing can mint; anywhere else,
-      // `balance::increase_supply` mints through it.
+      // Deleting a TreasuryCap always leaves its Supply<T> (SUPPLY_CLAIMS).
+      // `coin_registry::make_supply_fixed` and `make_supply_burn_only` store
+      // it where nothing can mint; anywhere else, `balance::increase_supply`
+      // mints through it.
       if (supplyState === "fixed") {
         return { risk: "info", note: `The TreasuryCap for ${shortType} was destroyed and the on-chain coin registry records its supply as fixed.` };
       }
@@ -234,7 +258,7 @@ export function classifyCapabilityRisk(input: {
       }
       return {
         risk: "medium",
-        note: `The TreasuryCap for ${shortType} was destroyed, and the on-chain coin registry does not record its supply as fixed. Destroying the cap leaves its Supply, which can still mint through balance::increase_supply for whatever holds it; supply is fixed only if that holder's module cannot mint with it.`,
+        note: `The TreasuryCap for ${shortType} was destroyed, and the on-chain coin registry does not record its supply as fixed. Destroying the cap leaves its Supply, which can still mint through ${MINT_THROUGH_SUPPLY} for whatever holds it; supply is fixed only if that holder's module cannot mint with it.`,
       };
     }
     if (owner === "wrapped") {
@@ -255,13 +279,13 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `Mint authority (${shortType}) is a shared object. coin::mint and mint_balance are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can mint this coin.`,
+        note: `Mint authority (${shortType}) is a shared object. Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers(type)}`,
       };
     }
     if (owner === "immutable") {
       return {
-        risk: "medium",
-        note: `Mint authority (${shortType}) is frozen. Minting needs it by &mut, so supply is fixed, but coin::update_name, update_symbol, update_description and update_icon_url, coin_registry::claim_metadata_cap and token::new_policy take it by &, so anyone can change this coin's metadata where it is not frozen or claimed, and create its token policy.`,
+        risk: freezeRenounces(type) ? "info" : "medium",
+        note: `Mint authority (${shortType}) is frozen. ${frozenCapabilityPowers(type)}`,
       };
     }
     return { risk: "medium", note: `Mint authority (${shortType}) owner is ${owner}.` };
@@ -284,13 +308,13 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `Denylist/freeze authority (${shortType}) is a shared object. coin::deny_list_v2_add, deny_list_v2_enable_global_pause and deny_list_add are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can freeze holders of this coin, and pause it for everyone where the cap allows a global pause.`,
+        note: `Denylist/freeze authority (${shortType}) is a shared object. Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers(type)}`,
       };
     }
     if (owner === "immutable") {
       return {
-        risk: "info",
-        note: `Denylist/freeze authority (${shortType}) is frozen. coin::deny_list_v2_add and deny_list_add take it by &mut, which a frozen object cannot give, so nobody can freeze holders with it.`,
+        risk: freezeRenounces(type) ? "info" : "medium",
+        note: `Denylist/freeze authority (${shortType}) is frozen. ${frozenCapabilityPowers(type)}`,
       };
     }
     return { risk: "low", note: `Denylist/freeze authority (${shortType}) owner is ${owner}.` };
@@ -545,6 +569,25 @@ const MAX_WITNESS_CHECKS = 12;
  * only receive as a parameter.
  */
 const COIN_REGISTRY_PARAM = /0x0*2::coin_registry::CoinRegistry\b/;
+
+/**
+ * Framework facts mint discovery rests on: the constructors that make a
+ * TreasuryCap, and that `new_currency` needs the `CoinRegistry`, which has no
+ * `store`, so no module keeps it and code reaches it only as a parameter.
+ */
+export const MINT_DISCOVERY_CLAIMS: FrameworkClaim[] = [
+  {
+    fn: "coin_registry::new_currency",
+    visibility: "public",
+    typeParams: { T: ["key"] },
+    takes: { "coin_registry::CoinRegistry": "&mut" },
+    doc: "called from the module that defines `T` any time after it has been published",
+    why: "a coin can be created after publish by the module defining its key type",
+  },
+  { struct: "coin_registry::CoinRegistry", abilities: ["key"], why: "a module reaches the registry only as a parameter" },
+  { fn: "coin_registry::new_currency_with_otw", visibility: "public", typeParams: { T: ["drop"] }, calls: ["is_one_time_witness"], why: "a one-time-witness coin comes from init" },
+  { fn: "coin::create_currency", visibility: "public", typeParams: { T: ["drop"] }, calls: ["is_one_time_witness"], why: "a one-time-witness coin comes from init" },
+];
 
 /** A one-time witness's shape: named after its module in capitals, with `drop` only. */
 function isWitnessShaped(module: string, s: { name: string; abilities: string[] }): boolean {

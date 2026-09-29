@@ -120,6 +120,46 @@ describe("readDepositPattern", () => {
   });
 });
 
+// Shape of a Bybit deposit address on mainnet: three deposits were credited
+// and swept while a fourth was pending; the fourth went in the next sweep to
+// the same wallet 21 minutes later.
+describe("a deposit that arrives while a sweep is pending", () => {
+  const pending = [
+    deposit("d1", 100n, "2026-01-01T15:13:00Z"),
+    deposit("d2", 100n, "2026-01-01T15:13:30Z"),
+    deposit("d3", 100n, "2026-01-01T15:14:00Z"),
+    deposit("d4", 67n, "2026-01-01T15:14:44Z"),
+    sweep("s1", 300n, "2026-01-01T15:16:55Z"),
+  ];
+
+  it("does not count as a balance left behind when a later sweep to the same wallet empties it", () => {
+    const p = readDepositPattern(scan([...pending, sweep("s2", 67n, "2026-01-01T15:37:36Z")]));
+    expect(p.sweeps[0]).toMatchObject({ full_balance: true, left_for_next_sweep: { arrived_in: ["d4"], swept_by: "s2" } });
+    expect(decideDepositVerdict(p, { cexLabel: true, hub: null }, "relayer").verdict).toBe("likely");
+  });
+
+  it("does not count when it is still waiting and equals the deposits that arrived last", () => {
+    const p = readDepositPattern(scan(pending, 67n));
+    expect(p.sweeps[0]).toMatchObject({ full_balance: true, left_for_next_sweep: { arrived_in: ["d4"] } });
+  });
+
+  it("counts when the next outflow of the coin goes somewhere else", () => {
+    const p = readDepositPattern(scan([...pending, sweep("s2", 67n, "2026-01-01T15:37:36Z", OTHER)]));
+    expect(p.sweeps[0]!.full_balance).toBe(false);
+  });
+
+  it("counts when a later transfer to the same wallet does not empty the coin", () => {
+    const p = readDepositPattern(scan([...pending, sweep("s2", 60n, "2026-01-01T15:37:36Z")], 7n));
+    expect(p.sweeps.map((s) => s.full_balance)).toEqual([false, false]);
+    expect(decideDepositVerdict(p, { cexLabel: true, hub: null }, "relayer").verdict).toBe("no");
+  });
+
+  it("counts a waiting balance that is not the latest deposits", () => {
+    const p = readDepositPattern(scan([...pending.slice(0, 4), sweep("s1", 250n, "2026-01-01T15:16:55Z")], 117n));
+    expect(p.sweeps[0]!.full_balance).toBe(false);
+  });
+});
+
 describe("decideDepositVerdict", () => {
   it("is likely for full sponsored sweeps into a cex-labelled wallet paid by a relayer", () => {
     const v = decideDepositVerdict(readDepositPattern(BINANCE_CASE), { cexLabel: true, hub: null }, "relayer");

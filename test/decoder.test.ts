@@ -417,7 +417,11 @@ describe("router integrations that pass a bookkeeping type", () => {
     ).toEqual(["Swap SUI → TOK", "Swap TOK → USDC"]);
   });
 
-  it("takes a hop's input from its function name when a routed call that is no swap changed the path's coin", () => {
+  it("passes the path's coin through a routed call that is no decoded swap", () => {
+    const hops = (cmds: GrpcTypes.Command[]) =>
+      decodeTransaction(cmds, [], SENDER)
+        .actions.filter((a) => a.startsWith("Swap"))
+        .map((a) => a.replace(/ on .*$/, ""));
     // The route of 5piHz9Vwv2zWjzBj2njVfSfSPumoUDdwSnG4JKeuqj3n: withdraw_w1
     // turns the path's superSUI into afSUI, and the Cetus pool's SwapEvent for
     // the next hop (pool 0xa528b26e…, Pool<AFSUI, SUI>, atob true) swaps afSUI
@@ -425,17 +429,29 @@ describe("router integrations that pass a bookkeeping type", () => {
     const SUPER_SUI = "0x790f258062909e3a0ffc78b3c53ac2f62d7084c3bab95644bdeb05add7250001::super_sui::SUPER_SUI";
     const AFSUI = "0xf325ce1300e8dac124071d3152c5c5ee6174914f8bc2161e88329cf579246efc::afsui::AFSUI";
     const META_STABLE_INT = "0x7ca2b6a3241764817175cfa99c2cd3e973a2025071e7c83ec7338ce52a893413";
-    const swaps = decodeTransaction(
-      [
+    expect(
+      hops([
         makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUPER_SUI]),
         makeCommand(META_STABLE_INT, "router", "withdraw_w1", [RD, SUPER_SUI, SUPER_SUI, AFSUI]),
         makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUPER_SUI, AFSUI, SUI]),
         makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, SUPER_SUI, USDC, SUI]),
-      ],
-      [makeBalanceChange(SENDER, SUPER_SUI, "-3321535211"), makeBalanceChange(SENDER, USDC, "3297226")],
-      SENDER,
-    ).actions.filter((a) => a.startsWith("Swap"));
-    expect(swaps.map((a) => a.replace(/ on .*$/, ""))).toEqual(["Swap AFSUI → SUI", "Swap SUI → USDC"]);
+      ]),
+    ).toEqual(["Swap AFSUI → SUI", "Swap SUI → USDC"]);
+    // The route of GGNbQpSKZAqEw2td7vdRLv1VFX1zNgyL6AgzYENtjdE1: sell_w1 sells
+    // the path's SUI for USDC (SwapExecutedV2, is_buy false), and the Bluefin
+    // pool's AssetSwap for the next hop (pool 0xcd8294c7…, Pool<SUI, USDC>,
+    // a2b false) swaps USDC for SUI.
+    const BLUE = "0xe1b45a0e641b9955a20aa0ad1c1f4ad86aad8afb07296d4085e349a50e90bdca::blue::BLUE";
+    const SELL_INT = "0x7e7288d64dcd011720bb22c4f106635d1d60e026bb51ba3ef5d06f907d07189d";
+    const BLUEFIN_INT = "0x8cd0b2cbaf9d39f457f2d6a6fca0c96500a4d5654b99e1ba86d74a518c68017a";
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, BLUE]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, BLUE, BLUE, SUI]),
+        makeCommand(SELL_INT, "router", "sell_w1", [RD, BLUE, SUI, USDC]),
+        makeCommand(BLUEFIN_INT, "router", "swap_b_to_a_w1", [RD, BLUE, SUI, USDC]),
+      ]),
+    ).toEqual(["Swap BLUE → SUI", "Swap USDC → SUI"]);
   });
 
   it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {

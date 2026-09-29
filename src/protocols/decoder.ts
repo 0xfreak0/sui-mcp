@@ -332,16 +332,11 @@ function routeMarkers(commands: GrpcTypes.Command[], hasCoinEvidence: (t: string
  * hop's own types in each integration's order, so position says nothing about
  * direction. The hop takes in the coin the path holds (the previous hop's
  * output, or the start coin) and gives out another of its own types: the last
- * one the transaction shows to be a coin, else the last one. A routed call
- * that is no swap (Meta Stable's `withdraw_w1` turning superSUI into afSUI)
- * can leave the path holding a coin the hop does not name; a hop of two own
- * types then takes in the one its function name says goes in.
+ * one the transaction shows to be a coin, else the last one.
  */
-function routeHop(typeArgs: string[], pathCoin: string | null, hasCoinEvidence: (t: string) => boolean, fn: string): [string, string] | null {
+function routeHop(typeArgs: string[], pathCoin: string | null, hasCoinEvidence: (t: string) => boolean): [string, string] | null {
   const own = typeArgs.slice(2);
-  const named = own.length === 2 ? directionFromFunctionName(fn) : null;
-  const input =
-    pathCoin !== null && own.includes(pathCoin) ? pathCoin : named === "a2b" ? own[0] : named === "b2a" ? own[1] : typeArgs[1];
+  const input = pathCoin !== null && own.includes(pathCoin) ? pathCoin : typeArgs[1];
   const rest = own.filter((t) => t !== input).reverse();
   const output = rest.find(hasCoinEvidence) ?? rest[0];
   return output ? [input, output] : null;
@@ -435,10 +430,19 @@ export function decodeTransaction(
           }
         }
 
+        // A routed step that is no decoded swap (Meta Stable's `withdraw_w1`
+        // turning superSUI into afSUI, or a swap under a function name the
+        // registry does not know) takes the coin the path holds and passes on
+        // its other own type, so the next hop starts from that coin.
+        if (routed && typeArgs.length === 4 && op?.action !== "swap" && pathCoin !== null) {
+          const own = typeArgs.slice(2);
+          if (own.includes(pathCoin)) pathCoin = own[0] === pathCoin ? own[1] : own[0];
+        }
+
         if (op) {
           let args = typeArgs;
           if (op.action === "swap" && routed) {
-            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, fn);
+            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence);
             args = hop ?? typeArgs.slice(1);
             if (hop) {
               pathCoin = hop[1];

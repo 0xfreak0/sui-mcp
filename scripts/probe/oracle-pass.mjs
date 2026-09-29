@@ -30,7 +30,10 @@
  *    UpgradeCap, against the object's live state (gRPC), or against
  *    `idDeleted` in the objectChanges of the transaction that ended it. That
  *    transaction is the drawn one when it read the object's newest version in
- *    `objectVersions`; otherwise, and for a pinned object, it is the newest
+ *    `objectVersions` and either deleted it or wrapped it and is also the
+ *    newest `affectedObject` transaction (a later transaction can unwrap and
+ *    delete a wrapped object without a live version in between); otherwise,
+ *    and for a pinned object, it is the newest
  *    `affectedObject` transaction, the query the tool also runs, which the
  *    report counts. A package given here stands for the UpgradeCap its
  *    lineage's version-1 publish created, or for the cap it destroyed when
@@ -121,7 +124,7 @@ const ORACLES = {
   },
   b: {
     title: "object end",
-    how: "gRPC getObject for a live object; otherwise idDeleted and outputState of the object in GraphQL objectChanges of the transaction that ended it: the drawn one when it read the newest version objectVersions lists, else the newest affectedObject transaction, the query the tool also runs (effects version 1: cross-checked with the effects BCS lists)",
+    how: "gRPC getObject for a live object; otherwise idDeleted and outputState of the object in GraphQL objectChanges of the transaction that ended it: the drawn one when it read the newest version objectVersions lists and deleted the object (a drawn wrap only when the index names it too), else the newest affectedObject transaction, the query the tool also runs (effects version 1: cross-checked with the effects BCS lists)",
   },
   c: {
     title: "object changes",
@@ -441,10 +444,11 @@ async function grpcObject(id) {
  * `affectedObject` index plus gRPC effects, so the truth goes the other way
  * round: liveness, owner and type from the fullnode over gRPC (the holder of
  * an object-owned object walked the same way), and the end's kind from
- * GraphQL objectChanges. The end transaction is the drawn one when the
- * object's newest version in `objectVersions` is the version that
- * transaction read; otherwise it comes from the `affectedObject` index, the
- * query the tool uses too, and `end_tx_from` says so.
+ * GraphQL objectChanges. The end transaction is the drawn one when that
+ * transaction read the object's newest version in `objectVersions` and
+ * either deleted it or is also the index's newest; otherwise it comes from
+ * the `affectedObject` index, the query the tool uses too, and
+ * `end_tx_from` says so.
  */
 function objectTruth(id, endTx = null) {
   const key = `${normAddr(id)}|${endTx ?? ""}`;
@@ -475,10 +479,17 @@ async function readObjectTruth(id, endTx) {
   let from = "the affectedObject index (the query the tool also uses)";
   if (endTx && lastVersion !== undefined) {
     const drawn = await rawTx(endTx);
-    const read = drawn.changes.get(id)?.input?.version ?? drawn.v1?.versions.get(id);
-    if (read !== undefined && String(read) === String(lastVersion)) {
+    const change = drawn.changes.get(id);
+    const read = change?.input?.version ?? drawn.v1?.versions.get(id);
+    // A deletion ends an object for good; a later transaction can unwrap and
+    // delete a wrapped one without giving it a live version first, so a drawn
+    // wrap counts only when the index names it as the newest transaction too.
+    const final = change?.deleted === true || d.last.nodes[0]?.digest === endTx;
+    if (read !== undefined && String(read) === String(lastVersion) && final) {
       last = endTx;
-      from = "the drawn transaction, which read the object's newest version in objectVersions";
+      from = change?.deleted
+        ? "the drawn transaction, which deleted the object after reading its newest version in objectVersions"
+        : "the drawn transaction, which wrapped the newest version in objectVersions and is the newest affectedObject transaction too";
     }
   }
   last ??= d.last.nodes[0]?.digest;

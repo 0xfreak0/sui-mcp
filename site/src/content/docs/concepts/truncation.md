@@ -11,7 +11,7 @@ can still have more pages.
 
 For `query_events`, continue while `has_next_page` is true, even when `events`
 is empty. `scan` reports a read-budget stop, and `scan.next_call.repeat_with`
-continues the same query with its filters and network unchanged.
+continues the same query with its filters, order and network unchanged.
 
 `summarize_address_flows`, `find_funding_sources`, `get_transaction` and
 `decode_ptb` list the rows that fit a fixed size budget and compute every
@@ -44,3 +44,15 @@ counts any dropped rows. Follow `omitted.next_call` for full rows on the same
 network, in the same order, without a limit. `detail: "full"` has no size cap;
 an explicit `limit` still applies. An `address` lookup always returns the
 single validator's details.
+
+## Scan-limited transaction pages
+
+`query_transactions` fills a page to `limit` across several reads when the
+service returns short pages. Continue while `has_next_page` is true, even when
+`transactions` is empty. `scan` reports a read-budget stop, and
+`scan.next_call.repeat_with` continues the same query with its filters, order
+and network unchanged.
+
+With `all_versions: true`, rows wait until the next rows or exhaustion of
+every version stream establish their global order. The cursor retains progress
+through empty reads as well as transactions already returned.

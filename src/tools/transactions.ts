@@ -149,6 +149,9 @@ interface QueriedTx {
  */
 const versionAliasesPerRequest = (includeFunctions: boolean) => (includeFunctions ? 5 : 10);
 
+/** Connection reads per call, including aliased version reads. */
+const QUERY_TRANSACTIONS_MAX_READS = 10;
+
 function queriedTxFragment(includeFunctions: boolean): string {
   // Commands are only selected on request: they multiply response size on a
   // page of 50, and most callers only want the digest list.
@@ -157,8 +160,8 @@ function queriedTxFragment(includeFunctions: boolean): string {
 }
 
 /**
- * Read one page per package version with aliased connections, `fn`'s package
- * swapped for each version's address.
+ * Fill each version's candidate page before merging. A short connection
+ * read does not establish the next global row in the other streams.
  */
 async function readVersionPages(
   streams: VersionStream[],
@@ -167,37 +170,54 @@ async function readVersionPages(
   order: ListOrder,
   size: number,
   includeFunctions: boolean,
-): Promise<Array<VersionPage<QueriedTx> | null>> {
+): Promise<{ pages: Array<VersionPage<QueriedTx> | null>; reads: number }> {
   const rest = fn.split("::").slice(1);
   const pages: Array<VersionPage<QueriedTx> | null> = streams.map(() => null);
-  const active = streams.map((s, i) => ({ s, i })).filter(({ s }) => !s.done);
   const perRequest = versionAliasesPerRequest(includeFunctions);
-  for (let start = 0; start < active.length; start += perRequest) {
-    const chunk = active.slice(start, start + perRequest);
-    const decls = chunk.map((_, k) => `$f${k}: TransactionFilter, $c${k}: String`).join(", ");
-    const paging = order === "newest" ? (k: number) => `last: $n, before: $c${k}` : (k: number) => `first: $n, after: $c${k}`;
-    const fields = chunk
-      .map((_, k) => `v${k}: transactions(filter: $f${k}, ${paging(k)}) { edges { cursor node { ...T } } ${BOTH_WAYS_PAGE_INFO} }`)
-      .join(" ");
-    const variables: Record<string, unknown> = { n: size };
-    chunk.forEach(({ s }, k) => {
-      variables[`f${k}`] = { ...filter, function: [s.address, ...rest].join("::") };
-      variables[`c${k}`] = s.cursor;
-    });
-    const r = await gqlQuery<Record<string, { edges: Array<{ cursor: string; node: QueriedTx }>; pageInfo: BothWaysPageInfo } | null>>(
-      `query ($n: Int, ${decls}) { ${fields} } ${queriedTxFragment(includeFunctions)}`,
-      variables,
+  // Every active stream must get an initial read before any global row is
+  // known. Large lineages get enough aliased reads for that first pass.
+  const maxReads = Math.max(QUERY_TRANSACTIONS_MAX_READS, Math.ceil(streams.filter((s) => !s.done).length / perRequest));
+  let reads = 0;
+  while (reads < maxReads) {
+    const active = streams.map((s, i) => ({ s, i })).filter(({ s, i }) =>
+      !s.done && (!pages[i] || (pages[i]!.hasMore && pages[i]!.edges.length < size)),
     );
-    chunk.forEach(({ i }, k) => {
-      const conn = r[`v${k}`];
-      if (!conn) return;
-      pages[i] = {
-        edges: conn.edges,
-        hasMore: order === "newest" ? conn.pageInfo.hasPreviousPage : conn.pageInfo.hasNextPage,
-      };
-    });
+    if (!active.length) break;
+    for (let start = 0; start < active.length && reads < maxReads; start += perRequest) {
+      const chunk = active.slice(start, start + perRequest);
+      const decls = chunk.map((_, k) => `$f${k}: TransactionFilter, $c${k}: String, $n${k}: Int`).join(", ");
+      const paging = order === "newest" ? (k: number) => `last: $n${k}, before: $c${k}` : (k: number) => `first: $n${k}, after: $c${k}`;
+      const fields = chunk
+        .map((_, k) => `v${k}: transactions(filter: $f${k}, ${paging(k)}) { edges { cursor node { ...T } } ${BOTH_WAYS_PAGE_INFO} }`)
+        .join(" ");
+      const variables: Record<string, unknown> = {};
+      chunk.forEach(({ s, i }, k) => {
+        variables[`f${k}`] = { ...filter, function: [s.address, ...rest].join("::") };
+        variables[`c${k}`] = pages[i]?.nextCursor ?? s.cursor;
+        variables[`n${k}`] = size - (pages[i]?.edges.length ?? 0);
+      });
+      const r = await gqlQuery<Record<string, { edges: Array<{ cursor: string; node: QueriedTx }>; pageInfo: BothWaysPageInfo } | null>>(
+        `query (${decls}) { ${fields} } ${queriedTxFragment(includeFunctions)}`,
+        variables,
+      );
+      reads += 1;
+      chunk.forEach(({ i }, k) => {
+        const conn = r[`v${k}`];
+        if (!conn) throw new Error("A package version's transaction connection was not returned.");
+        const page = orderedPage([], conn.pageInfo, order);
+        if (page.has_next_page && !page.next_cursor) {
+          throw new Error("The transaction connection reports more rows without a continuation cursor.");
+        }
+        const previous = pages[i]?.edges ?? [];
+        pages[i] = {
+          edges: order === "newest" ? [...conn.edges, ...previous] : [...previous, ...conn.edges],
+          hasMore: page.has_next_page,
+          nextCursor: page.next_cursor,
+        };
+      });
+    }
   }
-  return pages;
+  return { pages, reads };
 }
 
 /** One object movement as `get_transaction` reports it. */
@@ -998,7 +1018,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order` and filters. For human-readable wallet activity, prefer get_transaction_history instead.\n\nVERSIONS: a `function` filter matches calls made through that exact package version, and each version of an upgraded package sees its own share of the calls. `function_scope` names the lineage when the package has other versions; `all_versions: true` reads every version as one merged list.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes: a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
+    "Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order` and filters. A page is filled to `limit` across several reads when the service returns short pages; if the read budget runs out first, `scan` says so and names the call that continues. Continue while `has_next_page` is true, even when `transactions` is empty. For human-readable wallet activity, prefer get_transaction_history instead.\n\nVERSIONS: a `function` filter matches calls made through that exact package version, and each version of an upgraded package sees its own share of the calls. `function_scope` names the lineage when the package has other versions; `all_versions: true` reads every version as one merged list. Rows wait until every stream's next rows or exhaustion establish their global order.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes: a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
     {
       sender: addressArg().optional().describe("Filter by sender address"),
       affected_address: addressArg()
@@ -1084,6 +1104,7 @@ export function registerTransactionTools(server: McpServer) {
         let nodes: QueriedTx[];
         let hasNextPage: boolean;
         let nextCursor: string | null;
+        let reads = 0;
         let versions: PackageVersion[] | null = null;
         let functionScope: VersionScope | null = null;
 
@@ -1100,10 +1121,11 @@ export function registerTransactionTools(server: McpServer) {
               "cursor is not an all_versions cursor for this order. Pass the next_cursor of a previous all_versions page, with the same order.",
             );
           }
-          const pages = await readVersionPages(streams, filterParts, fn, direction, size, !!include_functions);
+          const read = await readVersionPages(streams, filterParts, fn, direction, size, !!include_functions);
+          reads = read.reads;
           const merged = mergeVersionPages(
             streams,
-            pages,
+            read.pages,
             direction,
             size,
             (n) => n.digest,
@@ -1113,8 +1135,12 @@ export function registerTransactionTools(server: McpServer) {
           hasNextPage = merged.has_next_page;
           nextCursor = merged.has_next_page ? encodeFanoutCursor(direction, merged.streams) : null;
         } else {
-          const [data, scope] = await Promise.all([
-            gqlQuery<{ transactions: { nodes: QueriedTx[]; pageInfo: BothWaysPageInfo } }>(
+          nodes = [];
+          hasNextPage = true;
+          nextCursor = cursor ?? null;
+          functionScope = fn && !all_versions ? await versionScopeNote(fn, "function") : null;
+          while (hasNextPage && nodes.length < size && reads < QUERY_TRANSACTIONS_MAX_READS) {
+            const data = await gqlQuery<{ transactions: { nodes: QueriedTx[]; pageInfo: BothWaysPageInfo } }>(
               `query($filter: TransactionFilter, $first: Int, $after: String, $last: Int, $before: String) {
                 transactions(filter: $filter, first: $first, after: $after, last: $last, before: $before) {
                   nodes { ...T }
@@ -1123,16 +1149,18 @@ export function registerTransactionTools(server: McpServer) {
               } ${queriedTxFragment(!!include_functions)}`,
               {
                 filter: Object.keys(filterParts).length > 0 ? filterParts : undefined,
-                ...orderedPageArgs(direction, size, cursor),
+                ...orderedPageArgs(direction, size - nodes.length, nextCursor ?? undefined),
               },
-            ),
-            fn && !all_versions ? versionScopeNote(fn, "function") : Promise.resolve(null),
-          ]);
-          functionScope = scope;
-          const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
-          nodes = page.nodes;
-          hasNextPage = page.has_next_page;
-          nextCursor = page.next_cursor;
+            );
+            reads += 1;
+            const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, direction);
+            nodes.push(...page.nodes);
+            hasNextPage = page.has_next_page;
+            nextCursor = page.next_cursor;
+            if (hasNextPage && !nextCursor) {
+              throw new Error("The transaction connection reports more rows without a continuation cursor.");
+            }
+          }
         }
 
         // Every Move call, not the first page of 50 commands: a PTB split
@@ -1201,6 +1229,15 @@ export function registerTransactionTools(server: McpServer) {
                 transactions,
                 has_next_page: hasNextPage,
                 next_cursor: nextCursor,
+                ...(hasNextPage && nodes.length < size && reads >= QUERY_TRANSACTIONS_MAX_READS
+                  ? {
+                      scan: {
+                        reads,
+                        note: `The service reads a bounded range per request and can return fewer transactions than asked, or none, while more remain. This call spent its ${reads} reads with ${transactions.length} of ${size} transactions found; the list continues at next_call. With all_versions, rows wait until every stream's next rows or exhaustion establish their global order.`,
+                        next_call: { tool: "query_transactions", repeat_with: { order: direction, cursor: nextCursor } },
+                      },
+                    }
+                  : {}),
               }),
             },
           ],

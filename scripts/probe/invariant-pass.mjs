@@ -863,12 +863,34 @@ async function checkTimeline(address, history) {
   }
 }
 
+/**
+ * summarize_address_flows over a closed window against the raw balance
+ * changes. The default view lists the coins that fit its budget and counts the
+ * rest in `omitted`; `detail: "full"` lists every coin, and the raw totals are
+ * compared with that view. The default view must be the full view's coins in
+ * order, with the same raw totals, and exactly `omitted` coins left out.
+ */
 async function checkFlows(address, history) {
   const w = history.window;
   if (!w) return skip(I.flows, "no shared window");
-  const args = { address, from: String(w.after), to: String(w.before), max_transactions: 200 };
+  const args = { address, from: String(w.after), to: String(w.before), max_transactions: 200, detail: "full" };
   const f = await call("summarize_address_flows", args);
   if (!f) return;
+  const { detail: _, ...sArgs } = args;
+  const s = await call("summarize_address_flows", sArgs);
+  if (s) {
+    const full = (f.coins ?? []).map((c) => normType(c.coin_type));
+    const listed = s.coins ?? [];
+    const left = s.omitted?.lists?.coins?.count ?? 0;
+    const byType = new Map((f.coins ?? []).map((c) => [normType(c.coin_type), c]));
+    const inOrder = listed.every((c, i) => i === 0 || full.indexOf(normType(c.coin_type)) > full.indexOf(normType(listed[i - 1].coin_type)));
+    const sameTotals = listed.every((c) => JSON.stringify(c.raw) === JSON.stringify(byType.get(normType(c.coin_type))?.raw));
+    check(I.flows, inOrder && sameTotals && listed.length + left === full.length, {
+      seed: SEED, tool: "summarize_address_flows", args: sArgs,
+      got: { listed: listed.map((c) => `${c.symbol}:${c.raw?.in}/${c.raw?.out}`), omitted: left },
+      raw: `the full view's ${full.length} coins`,
+    });
+  }
   const after = f.window?.after_checkpoint ?? w.after;
   const before = f.window?.before_checkpoint ?? w.before;
   const win = await rawAddressWindow(address, after, before, 250);

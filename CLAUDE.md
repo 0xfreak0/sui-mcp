@@ -3058,7 +3058,10 @@ Seven rules, every one of them a bug that shipped to `main` first:
   TransferPolicy, and through a legacy Display the registry Display) or
   custom cap (`_: &AdminCap` checks) is `opened`: usable by every
   transaction. What a `&` function returns counts too: `display::new`'s
-  Display reaches `display_registry::migrate_v1_to_v2` and `claim`.
+  Display reaches `display_registry::migrate_v1_to_v2` and `claim`, a
+  `transfer_policy::new` policy clears any kiosk purchase of the type
+  (`transfer_policy::confirm_request`), and a `token::new_policy` cap
+  confirms any holder's token actions (`token::confirm_with_policy_cap`).
   Sharing (→ Shared) is always `opened`: any transaction can pass a shared
   object by `&mut`, or by value to a function that deletes it, so a shared
   TreasuryCap, DenyCap or UpgradeCap lets anyone mint, freeze or upgrade,

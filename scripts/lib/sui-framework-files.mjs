@@ -1,6 +1,8 @@
 /**
- * Which Sui framework sources `npm run sync:framework` vendors into
- * `test/fixtures/sui-framework/sources`, shared with the test that reads them.
+ * Where `npm run sync:framework` reads the Sui framework sources from. It
+ * vendors every non-test source into `test/fixtures/sui-framework/sources`,
+ * so the completeness checks see every module; these are the files a claim
+ * cites, which must exist at any ref synced.
  */
 
 export const REPO = "MystenLabs/sui";
@@ -25,11 +27,3 @@ export const CITED_FILES = [
   "token.move",
   "transfer.move",
 ];
-
-/**
- * The capability structs whose every callable use the rules must account
- * for. Any other framework source naming one of them is vendored too, so a
- * function added in a module no claim cites still reaches the completeness
- * check.
- */
-export const CAPABILITY_STRUCTS = ["TreasuryCap", "UpgradeCap", "DenyCap", "DenyCapV2", "Publisher"];

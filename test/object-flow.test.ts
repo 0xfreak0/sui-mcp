@@ -402,6 +402,14 @@ describe("giving up a capability: who can use it afterwards", () => {
     expect(createdShared(`${P2}::coin::DenyCap<0xa::t::T>`).note).toMatch(/coin::migrate_regulated_currency_to_v2 takes it by value/);
   });
 
+  // token::confirm_with_policy_cap never reads its cap, and any TransferPolicy
+  // can confirm a TransferRequest: the policies a frozen cap still creates
+  // settle requests outside the rules the issuer set.
+  it("says a frozen TreasuryCap or Publisher lets anyone settle requests outside the issuer's rules", () => {
+    expect(to(TREASURY, IMMUTABLE).note).toMatch(/token::confirm_with_policy_cap/);
+    expect(to(`${P2}::package::Publisher`, IMMUTABLE).note).toMatch(/transfer_policy::confirm_request/);
+  });
+
   it("still treats a transfer to a live address as a handover", () => {
     expect(summarizeObjectFlow([to(TREASURY, addrOwner(B))])!.capability_transfers).toHaveLength(1);
   });

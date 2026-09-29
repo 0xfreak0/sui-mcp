@@ -134,11 +134,11 @@ export interface CapabilityGrant {
   /** `&mut` only: what nobody can do once the capability is frozen. Omitted when a `&` path still reaches the same power. */
   closes?: string;
   /**
-   * Functions that turn what `fns` return into something more, with what
-   * that allows. For a `&` grant a frozen capability reaches them too, so
-   * the note states them.
+   * Functions that turn what `fns` return into something more, each group
+   * with what it allows. For a `&` grant a frozen capability reaches them
+   * too, so the note states them.
    */
-  unlocks?: { fns: string[]; opens: string };
+  unlocks?: Array<{ fns: string[]; opens: string }>;
 }
 
 /**
@@ -198,10 +198,16 @@ export const CAPABILITY_USES: Record<string, CapabilityUses> = {
         ],
         takes: "&",
         opens: "anyone can change this coin's CoinMetadata where it is not frozen, claim the MetadataCap of its registry entry where no one has, and create its token policy",
-        unlocks: {
-          fns: ["coin_registry::set_name", "coin_registry::set_description", "coin_registry::set_icon_url"],
-          opens: "change the coin's registry name, description and icon",
-        },
+        unlocks: [
+          {
+            fns: ["coin_registry::set_name", "coin_registry::set_description", "coin_registry::set_icon_url"],
+            opens: "change the coin's registry name, description and icon",
+          },
+          {
+            fns: ["token::confirm_with_policy_cap", "token::confirm_request", "token::confirm_request_mut"],
+            opens: "confirm token actions such as transfer and to_coin without the coin's own token rules, so any holder can move its tokens or turn them into coins",
+          },
+        ],
       },
     ],
     covered: {
@@ -265,10 +271,16 @@ export const CAPABILITY_USES: Record<string, CapabilityUses> = {
         fns: ["display::new", "transfer_policy::new"],
         takes: "&",
         opens: "anyone can create Display and TransferPolicy objects for the package's types",
-        unlocks: {
-          fns: ["display_registry::migrate_v1_to_v2", "display_registry::claim"],
-          opens: "create a type's registry Display where it has none, or claim its DisplayCap where none was claimed, which sets how the type's objects are shown",
-        },
+        unlocks: [
+          {
+            fns: ["display_registry::migrate_v1_to_v2", "display_registry::claim"],
+            opens: "create a type's registry Display where it has none, or claim its DisplayCap where none was claimed, which sets how the type's objects are shown",
+          },
+          {
+            fns: ["transfer_policy::confirm_request"],
+            opens: "clear a kiosk purchase of the package's types without the creator's royalty or lock rules",
+          },
+        ],
       },
     ],
     covered: {
@@ -277,6 +289,9 @@ export const CAPABILITY_USES: Record<string, CapabilityUses> = {
       "transfer_policy::default": "transfer_policy::new, shared, its cap kept by the sender",
       "package::burn_publisher": "destroys it, which ends the powers the grants state",
       "transfer_policy::destroy_and_withdraw": "destroys a TransferPolicy transfer_policy::new created",
+      "kiosk::lock": "needs only that a TransferPolicy for the type exists, which transfer_policy::new allows, and writes the caller's own Kiosk",
+      "kiosk_extension::place": "needs only that a TransferPolicy for the type exists, which transfer_policy::new allows, and writes a Kiosk that installed the extension",
+      "kiosk_extension::lock": "needs only that a TransferPolicy for the type exists, which transfer_policy::new allows, and writes a Kiosk that installed the extension",
     },
     inert: {
       "display::is_authorized": "getter",
@@ -310,9 +325,10 @@ export const OBJECT_FLOW_CLAIMS: FrameworkClaim[] = [
 function grantSentence(g: CapabilityGrant, frozen: boolean): string {
   const verb = `${citeFunctions(g.fns)} ${g.fns.length === 1 ? "takes" : "take"} it by ${g.takes}`;
   if (frozen && g.takes === "&mut") return g.closes ? `${verb}, which a frozen object cannot give, so ${g.closes}.` : `${verb}, which a frozen object cannot give.`;
-  const then = g.unlocks
-    ? ` With what ${g.fns.length === 1 ? "it returns" : "those return"}, ${citeFunctions(g.unlocks.fns)} ${g.unlocks.fns.length === 1 ? "lets" : "let"} anyone ${g.unlocks.opens}.`
-    : "";
+  const returned = g.fns.length === 1 ? "it returns" : "those return";
+  const then = (g.unlocks ?? [])
+    .map((u) => ` With what ${returned}, ${citeFunctions(u.fns)} ${u.fns.length === 1 ? "lets" : "let"} anyone ${u.opens}.`)
+    .join("");
   return `${verb}, so ${g.opens}.${then}`;
 }
 

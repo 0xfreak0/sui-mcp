@@ -12,7 +12,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isCallable, parseMoveModule, type MoveFunction, type MoveModule, type MoveStruct } from "./helpers/move-source.js";
-import { CAPABILITY_STRUCTS } from "../scripts/lib/sui-framework-files.mjs";
 import { citeFunctions, type FrameworkClaim, type FunctionClaim, type StructClaim, type TakenBy } from "../src/utils/framework-claims.js";
 import {
   CAPABILITY_USES,
@@ -142,8 +141,10 @@ const isObjectType = (base: string) => structs.get(base)?.abilities.includes("ke
  * Callable functions that turn what a `&` grant returns into something more:
  * they take one of its outputs by value, or take an output and also write
  * (`&mut`) another object that was not among the outputs, such as a shared
- * registry. A function that only reads or edits the objects the grant made
- * is what making them already allows.
+ * registry or a Kiosk, or settle a hot potato (a by-value struct with no
+ * abilities, such as a request to confirm) with it. A function that only
+ * reads or edits the objects the grant made is what making them already
+ * allows.
  */
 function outputConsumers(cap: string, grantFns: string[]): Set<string> {
   const outputs = new Set(
@@ -154,7 +155,8 @@ function outputConsumers(cap: string, grantFns: string[]): Set<string> {
     if (!isCallable(f) || !f.params.some((p) => outputs.has(p.base))) continue;
     const consumes = f.params.some((p) => outputs.has(p.base) && p.takes === "value");
     const writesOther = f.params.some((p) => p.takes === "&mut" && !outputs.has(p.base) && p.base !== cap && isObjectType(p.base));
-    if (consumes || writesOther) out.add(name);
+    const settles = f.params.some((p) => p.takes === "value" && structs.get(p.base)?.abilities.length === 0);
+    if (consumes || writesOther || settles) out.add(name);
   }
   return out;
 }
@@ -184,6 +186,9 @@ const CLAIM_SETS: Record<string, FrameworkClaim[]> = {
   "ptb-anomalies FRAMEWORK_TRANSFER_RECIPIENT_ARG": payoutClaims,
 };
 
+/** Struct names of the high-consequence capabilities: `TreasuryCap`, `Publisher`, … */
+const CAPABILITY_STRUCTS = Object.keys(HIGH_CONSEQUENCE_TYPES).map((t) => t.split("::").pop()!);
+
 /** Every high-consequence type with its CAPABILITY_USES entry, an empty one when it has none. */
 const highConsequenceUses = Object.keys(HIGH_CONSEQUENCE_TYPES).map(
   (type) => [type, CAPABILITY_USES[type] ?? { grants: [], covered: {}, inert: {} }] as const,
@@ -206,12 +211,11 @@ describe("framework claims hold in the pinned source", () => {
 });
 
 describe("CAPABILITY_USES accounts for every callable function that takes a capability", () => {
-  it("covers exactly the high-consequence types, and the sync script vendors every module naming them", () => {
+  it("covers exactly the high-consequence types", () => {
     const uncovered = Object.keys(HIGH_CONSEQUENCE_TYPES).filter((t) => !(t in CAPABILITY_USES)).map(short);
     expect(uncovered, `high-consequence types CAPABILITY_USES does not cover: ${uncovered.join(", ")}`).toEqual([]);
     const extra = Object.keys(CAPABILITY_USES).filter((t) => !(t in HIGH_CONSEQUENCE_TYPES)).map(short);
     expect(extra, `CAPABILITY_USES types that are not high-consequence: ${extra.join(", ")}`).toEqual([]);
-    for (const type of Object.keys(CAPABILITY_USES)) expect(CAPABILITY_STRUCTS).toContain(type.split("::").pop());
   });
 
   // A parameter whose type the parser could not resolve would be skipped by
@@ -240,7 +244,7 @@ describe("CAPABILITY_USES accounts for every callable function that takes a capa
       const refGrants = entry.grants.filter((g) => g.takes === "&");
       const consumers = outputConsumers(short(type), [...refGrants.flatMap((g) => g.fns), ...Object.keys(entry.covered).filter((fn) => found.get(fn) === "&")]);
       const listed = new Set([
-        ...entry.grants.flatMap((g) => [...g.fns, ...(g.unlocks?.fns ?? [])]),
+        ...entry.grants.flatMap((g) => [...g.fns, ...(g.unlocks ?? []).flatMap((u) => u.fns)]),
         ...Object.keys(entry.covered),
         ...Object.keys(entry.inert),
       ]);
@@ -251,7 +255,7 @@ describe("CAPABILITY_USES accounts for every callable function that takes a capa
       const stale = [...listed].filter((fn) => !found.has(fn) && !consumers.has(fn));
       expect(stale, `listed in CAPABILITY_USES for ${short(type)}, but neither takes it nor consumes a & grant's output: ${stale.join(", ")}`).toEqual([]);
       for (const g of entry.grants) {
-        for (const fn of g.unlocks?.fns ?? []) {
+        for (const fn of (g.unlocks ?? []).flatMap((u) => u.fns)) {
           expect(consumers.has(fn), `${fn} is listed as unlocked by ${g.fns.join(", ")} but takes none of what they return`).toBe(true);
         }
       }
@@ -273,7 +277,7 @@ describe("the capability rules agree with what the framework lets any transactio
   const shared = (type: string): GqlObjectChange => ({ address: "0xcap", idCreated: true, idDeleted: false, outputState: state(type, { __typename: "Shared" }) });
   /** Each grant as a note must cite it, whole: `coin::mint and mint_balance`. */
   const citations = (grants: CapabilityGrant[]) =>
-    grants.flatMap((g) => [citeFunctions(g.fns), ...(g.takes === "&" && g.unlocks ? [citeFunctions(g.unlocks.fns)] : [])]);
+    grants.flatMap((g) => [citeFunctions(g.fns), ...(g.takes === "&" ? (g.unlocks ?? []).map((u) => citeFunctions(u.fns)) : [])]);
 
   for (const [type, entry] of highConsequenceUses) {
     const struct = structs.get(short(type));

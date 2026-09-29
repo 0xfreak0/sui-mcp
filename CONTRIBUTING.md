@@ -246,10 +246,11 @@ capability by `&` or `&mut`, a function being package-private, a struct's
 abilities or field names) states that as a claim beside the rule: a
 `FrameworkClaim` from `src/utils/framework-claims.ts`, or an entry in
 `CAPABILITY_USES` in `src/utils/object-flow.ts`. `test/sui-framework.test.ts`
-parses the framework sources vendored under `test/fixtures/sui-framework` and
-fails on any claim the source contradicts. For each high-consequence
-capability it also fails on a callable function that takes it in any mode,
-or that consumes what a function taking it by `&` returns, when
+parses every non-test framework source, vendored under
+`test/fixtures/sui-framework`, and fails on any claim the source
+contradicts. For each high-consequence capability it also fails on a
+callable function that takes it in any mode, or that consumes what a
+function taking it by `&` returns (settling a request with it counts), when
 `CAPABILITY_USES` neither grants, covers nor marks it inert, and it checks
 that the shared and frozen readings, and the notes, follow from those
 functions. It also fails when a parameter naming a capability does not

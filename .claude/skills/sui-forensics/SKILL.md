@@ -38,9 +38,14 @@ holds one for a client.
 ## Opening a case
 
 1. **Set your sinks first.** Labels decide where a trace stops. The shipped
-   set is first-party disclosures only (exchange proof-of-reserves wallets,
+   set is first-party disclosures (exchange proof-of-reserves wallets,
    bridge objects from deployment docs, attackers named in the victim's own
-   incident report), each with its `source_url`. Everything case-specific is
+   incident report), each with its `source_url`, plus exchange deposit
+   addresses inferred from their sweeps into those exchange wallets: label
+   "<Exchange> deposit address (inferred)", evidence `sweep-pattern`,
+   `inferred_from` with the sweep digests, ranked below every other label.
+   Report an inferred one as a lead and re-check it with
+   `classify_deposit_address`. Everything case-specific is
    yours to add with `manage_labels`, or point `SUI_LABELS_FILE` at a private
    file for a whole case. A trace that runs past a known exchange, or stops at
    one you never told it about, is usually this. Traces keep following a wallet

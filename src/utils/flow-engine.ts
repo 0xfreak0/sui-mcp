@@ -30,7 +30,7 @@ import type { SuiEventNode } from "./bridge/wormhole.js";
 import { fetchEventJson } from "./event-json.js";
 import { readAttackTransactions } from "./attack-read.js";
 import { measureFanout, type FanoutResult } from "./fanout.js";
-import { getLabel, isSink } from "./labels.js";
+import { getLabel, inferredLabelNote, isSink } from "./labels.js";
 import { assignSignerRoles } from "./multisig.js";
 import { prefetchCoinScale, priceUsdAtTime, pricingScale, usdValue, type PricePoint } from "./valuation.js";
 import { availabilityKey, coinKey, type CandidateTx, type GasCharge, type HopChange, type RemainingEntry } from "./trace-hop.js";
@@ -398,7 +398,8 @@ export class FlowEngine {
       if (label?.category === "bridge") {
         return { code: "bridge_exit", detail: `Labeled as a bridge (${label.label}). No curated marker was checked here; run resolve_bridge_transfer on the arriving transaction.`, nodeLevel: true };
       }
-      return { code: "sink", detail: `${label?.label ?? address} (${label?.category ?? "sink"}).`, nodeLevel: true };
+      const inferred = label ? inferredLabelNote(label) : undefined;
+      return { code: "sink", detail: `${label?.label ?? address} (${label?.category ?? "sink"}).${inferred ? ` ${inferred}` : ""}`, nodeLevel: true };
     }
     if (!startAddress && isPassThroughAddress(address)) {
       return {

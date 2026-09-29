@@ -28,6 +28,7 @@
     "sync:protocol-roots": "node scripts/sync-protocol-roots.mjs",
     "sync:verified-coins": "node scripts/sync-verified-coins.mjs",
     "sync:disclosed-labels": "node scripts/sync-disclosed-labels.mjs",
+    "sync:labels": "npm run build && node scripts/sync-deposit-labels.mjs",
     "sync:sanctions": "node scripts/sync-sanctions.mjs",
     "sync:guardians": "node scripts/sync-guardians.mjs",
     "sync:coin-symbols": "node scripts/sync-coin-symbols.mjs",

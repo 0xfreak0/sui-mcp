@@ -118,20 +118,50 @@ describe("protocols from events", () => {
 });
 
 describe("order events", () => {
-  it("says an order event's fills cover this transaction only", async () => {
-    grpcResponse = txWithEvents(1);
-    mockGqlQuery.mockResolvedValue(gqlEvents(1));
+  /** A one-event transaction whose event has this type and decoded fields. */
+  const withEvent = (type: string, json: Record<string, unknown>) => {
+    const tx = txWithEvents(1);
+    tx.transaction.events.events[0]!.eventType = type;
+    grpcResponse = tx;
+    mockGqlQuery.mockResolvedValue({
+      transaction: { effects: { events: { pageInfo: { hasNextPage: false }, nodes: [{ contents: { type: { repr: type }, json } }] } } },
+    });
+  };
+
+  it("says a placed order's fills cover this transaction only", async () => {
+    withEvent(`${DEEPBOOK_PKG}::order_info::OrderPlaced`, { order_id: "1" });
     expect((await run()).order_events_note).toBeDefined();
   });
 
-  it("says the same when only a field counts what filled", async () => {
-    const tx = txWithEvents(1);
-    tx.transaction.events.events[0]!.eventType = `${WRAPPER_PKG}::h0d1a7::PlaceEvent`;
+  it("says so for a wrapper that put its order on the book", async () => {
+    withEvent(`${WRAPPER_PKG}::utils::PlaceLimitOrderEvent`, { base_filled: "0", maker_injected: true });
+    expect((await run()).order_events_note).toBeDefined();
+  });
+
+  it("stays quiet for a swap whose order filled at once", async () => {
+    const tx = txWithEvents(2);
+    tx.transaction.events.events[0]!.eventType = `${DEEPBOOK_PKG}::order_info::OrderFilled`;
+    tx.transaction.events.events[1]!.eventType = `${DEEPBOOK_PKG}::order_info::OrderFullyFilled`;
     grpcResponse = tx;
     mockGqlQuery.mockResolvedValue({
-      transaction: { effects: { events: { pageInfo: { hasNextPage: false }, nodes: [{ contents: { type: { repr: `${WRAPPER_PKG}::h0d1a7::PlaceEvent` }, json: { base_filled: "0" } } }] } } },
+      transaction: {
+        effects: {
+          events: {
+            pageInfo: { hasNextPage: false },
+            nodes: [
+              { contents: { type: { repr: `${DEEPBOOK_PKG}::order_info::OrderFilled` }, json: { base_quantity: "5" } } },
+              { contents: { type: { repr: `${DEEPBOOK_PKG}::order_info::OrderFullyFilled` }, json: { order_id: "1" } } },
+            ],
+          },
+        },
+      },
     });
-    expect((await run()).order_events_note).toBeDefined();
+    expect((await run()).order_events_note).toBeUndefined();
+  });
+
+  it("stays quiet for a wrapper whose order never went on the book", async () => {
+    withEvent(`${WRAPPER_PKG}::utils::PlaceLimitOrderEvent`, { base_filled: "10", maker_injected: false });
+    expect((await run()).order_events_note).toBeUndefined();
   });
 });
 

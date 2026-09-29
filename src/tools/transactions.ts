@@ -225,11 +225,17 @@ function movementOut(m: ObjectMovement) {
   };
 }
 
-/** An event about an order: its struct name mentions an order, or a field counts what filled. */
-function isOrderEvent(eventType: string | undefined, json: unknown): boolean {
+/**
+ * An event that places an order which can rest on the book: its struct name
+ * mentions both placing and an order (DeepBook's OrderPlaced, a wrapper's
+ * PlaceLimitOrderEvent). A taker order filled at once emits OrderFilled and
+ * no OrderPlaced; a wrapper event that says its order was not put on the
+ * book (`maker_injected` false) does not count.
+ */
+function placesOrder(eventType: string | undefined, json: unknown): boolean {
   const name = eventType?.split("<")[0]!.split("::").at(-1) ?? "";
-  if (/order/i.test(name)) return true;
-  return json !== null && typeof json === "object" && Object.keys(json).some((k) => /fill/i.test(k));
+  if (!/order/i.test(name) || !/place/i.test(name)) return false;
+  return !(json !== null && typeof json === "object" && (json as Record<string, unknown>).maker_injected === false);
 }
 
 export function registerTransactionTools(server: McpServer) {
@@ -512,7 +518,7 @@ export function registerTransactionTools(server: McpServer) {
         const signed = signedFieldReadings(json);
         return { ...base, parsed: json, ...(signed ? { signed_readings: signed } : {}) };
       });
-      const orderEvents = rawEvents.some((e, i) => isOrderEvent(e.eventType, parsedUsable ? parsed![i].json : null));
+      const orderEvents = rawEvents.some((e, i) => placesOrder(e.eventType, parsedUsable ? parsed![i].json : null));
 
       if (eventPackages.length > 0) await prefetchProtocolNames(eventPackages);
       const fromEvents = [

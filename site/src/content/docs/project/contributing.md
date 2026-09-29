@@ -25,3 +25,9 @@ in the repository. It covers:
 
 To build and run the server from a clone, see
 [Running from source](/start/install/#running-from-source).
+
+For context-size comparisons, build the server, then run
+`node scripts/probe/token-baseline.mjs --summary <case-pass.json> --out <prefix>`.
+This measures the current tool definitions and reports answer sizes from the
+saved case run without repeating its tool calls. Token counts are estimates.
+The script is a manual comparison tool, not a verify:live check.

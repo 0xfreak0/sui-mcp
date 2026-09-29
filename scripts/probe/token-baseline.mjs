@@ -31,9 +31,9 @@
  * `--summary` reads again. Without `--out` the Markdown goes to stdout.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { startServer, ROOT } from "./lib/mcp-client.mjs";
 import { tokens } from "./lib/size-budget.mjs";
@@ -137,6 +137,11 @@ if (!summaryPath) {
   }
 }
 const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+const outputProvenance = {
+  summary_path: resolve(summaryPath),
+  summary_mtime: statSync(summaryPath).mtime.toISOString(),
+  build_identity: summary.build_identity ?? summary.commit ?? "unknown",
+};
 if (scratch) rmSync(scratch, { recursive: true, force: true });
 
 // Case files by slug, from the same directories case-pass reads.
@@ -152,7 +157,7 @@ for (const dir of caseDirs)
     }
   }
 const schemaOf = new Map(allTools.map((t) => [t.name, t.inputSchema ?? null]));
-/** The args case-pass sent for one check, or null when its case file is not here. */
+/** Reconstruct args from today's case files; saved runs may have used different args. */
 function argsOf(slug, checkId, tool) {
   const c = casesBySlug.get(slug);
   const ck = c?.checks?.find((k) => k.id === checkId);
@@ -199,13 +204,16 @@ const git = (...args) => execFileSync("git", args, { cwd: ROOT, encoding: "utf8"
 const report = {
   generated_at: new Date().toISOString(),
   version: JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version,
-  commit: git("rev-parse", "HEAD"),
-  uncommitted_changes: git("status", "--porcelain", "--untracked-files=no") !== "",
+  definitions_run: {
+    commit: git("rev-parse", "HEAD"),
+    uncommitted_changes: git("status", "--porcelain", "--untracked-files=no") !== "",
+  },
   token_estimate: "chars / 4",
   tools_list: toolsList,
   tool_definitions: definitions,
   outputs: {
     source,
+    provenance: outputProvenance,
     tier: summary.tier,
     cases: summary.cases,
     calls: summary.calls.length,
@@ -225,7 +233,7 @@ const n = (v) => v.toLocaleString("en-US");
 const md = [];
 md.push(`# Token baseline, sui-analytics-mcp ${report.version}`, "");
 md.push(
-  `Commit \`${report.commit.slice(0, 12)}\`${report.uncommitted_changes ? " with uncommitted changes" : ""}, measured ${report.generated_at}. ` +
+  `Definitions checkout commit \`${report.definitions_run.commit.slice(0, 12)}\`${report.definitions_run.uncommitted_changes ? " with uncommitted changes" : ""}, measured ${report.generated_at}. ` +
     "Tokens are estimated as characters / 4.",
   "",
 );
@@ -249,6 +257,10 @@ const o = report.outputs;
 md.push(
   "## Answer size per tool, over case-pass calls",
   "",
+  `Output summary: \`${o.provenance.summary_path}\`; file modified ${o.provenance.summary_mtime}. ` +
+    `Output build identity: \`${JSON.stringify(o.provenance.build_identity)}\`. ` +
+    "This provenance is separate from the definitions checkout above; the file modification time is not necessarily the run time.",
+  "",
   `Source: ${o.source}. Tier \`${o.tier}\`, ${o.cases} case(s), ${o.calls} call(s) (${o.tally.pass} pass, ${o.tally.FAIL} FAIL, ${o.tally.known} known defect, ${o.tally.fixed} fixed). ` +
     `${o.measured_calls} measured, ${n(o.measured_chars)} chars ≈ ${n(o.measured_tokens)} tokens. Sorted by the largest call.`,
   "",
@@ -265,7 +277,14 @@ md.push(
     : "Every listed tool has a measured call.",
   "",
 );
-md.push("## Ten largest single answers", "", "| # | Tool | Call | Chars | ≈ Tokens | Budget | Args |", "|--:|---|---|--:|--:|--:|---|");
+md.push(
+  "## Ten largest single answers",
+  "",
+  "Arguments are reconstructed from the current case files and tool schemas, not recorded by the saved run.",
+  "",
+  "| # | Tool | Call | Chars | ≈ Tokens | Budget | Args |",
+  "|--:|---|---|--:|--:|--:|---|",
+);
 largest.forEach((c, i) => {
   const args = c.args === null ? "case file not found" : `\`${JSON.stringify(c.args).replaceAll("|", "\\|")}\``;
   md.push(`| ${i + 1} | \`${c.tool}\` | ${c.case}/${c.check} | ${n(c.chars)} | ${n(c.tokens)} | ${n(c.budget)} | ${args} |`);

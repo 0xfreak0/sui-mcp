@@ -108,6 +108,12 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
   number in a commit message or `CLAUDE.md`. A script kept to rediscover a
   number you already wrote down just rots against live mainnet.
 
+For context-size comparisons, build the server, then run
+`node scripts/probe/token-baseline.mjs --summary <case-pass.json> --out <prefix>`.
+This measures the current tool definitions and reports answer sizes from the
+saved case run without repeating its tool calls. Token counts are estimates.
+The script is a manual comparison tool, not a verify:live check.
+
 ## Running a blind investigation
 
 A blind investigation tests the tools the way a user meets them: a real

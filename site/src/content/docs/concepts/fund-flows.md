@@ -102,3 +102,45 @@ fund-flow diagram of the transfers in the case's cited transactions.
 Graph JSON retains terminal reasons and coverage (`explored` for
 `find_flow_path`). Mermaid and CSV responses state unread reasons in the
 accompanying summary, without adding them to the diagram or CSV data.
+
+## Resolving a bridge transfer
+
+`resolve_bridge_transfer` takes a Sui transaction digest and reads every
+supported bridge transfer in it. Cross-chain message identities are quoted
+on both chains, so follow-up compares identifiers rather than guessing from
+amounts and timing.
+
+| Protocol | Identity and destination data |
+|---|---|
+| Wormhole | VAA emitter chain, emitter address and sequence; destination transaction where Wormholescan has indexed a redemption |
+| Sui native bridge | Chain-derived transfer identity and beneficiary; inbound claims carry their origin identity |
+| Circle CCTP | Source domain and nonce identify the transfer; beneficiary decoded from Sui data |
+| LayerZero V2 | Destination endpoint, GUID and destination OApp; LayerZero Scan's delivery transaction |
+| Axelar ITS, Allbridge Core, Celer cBridge | Chain-derived transfer data and beneficiaries |
+| Meson | Recognized, but its destination is not in Sui data |
+
+`beneficiaries` names who is paid on the far side, decoded from the Sui
+transaction for Wormhole Token Bridge (including Token Bridge Relayer),
+Wormhole NTT, Mayan MCTP and Swift, Circle CCTP, Sui's native bridge,
+LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge. A contract
+receiving a redemption or message is separate: `redeemed_via_contract`
+or `destination_oapp`.
+
+Transfers arriving on Sui include native-bridge claims and Wormhole Token
+Bridge and NTT redemptions. `fulfilment_inbound` also covers any package whose
+events quote the cross-chain message consumed, a CCTP source domain and
+nonce or a VAA passed in, while the transaction credits an address. It lists
+origin chain, CCTP transfer ID and VAA ID, amounts, and a beneficiary only
+when the credited amount exactly matches an event amount. The package name
+comes from the registry or a bridge label on the package or an object it defines.
+
+`carriers` names a package outside a bridge's lineage whose PTB call emitted
+that bridge's event, with its function and its own events, such as an adapter
+order ID. `cross_chain_leads` lists uncovered packages' events that have a
+chain field beside a foreign-address-sized byte string. These are heuristic
+leads for possible exits through an unrecognized bridge, never exits by themselves.
+
+Evidence tiers distinguish values read from Sui from delivery asserted by an
+indexer. Confirm indexer delivery on the destination chain before relying on
+it. `include_destination` defaults to true and queries Wormholescan and
+LayerZero Scan; false keeps the read strictly on-chain.

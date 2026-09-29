@@ -136,7 +136,12 @@ export function inferDepositLabel(scan: DepositScan, ctx: InferenceContext): Can
   // Who paid in. A customer's deposit address is paid by customers; one paid
   // only by whoever runs its sweeps, by the exchange itself, or by the address
   // the exchange wallet forwards to is someone else's operational address.
-  const funders = new Set(pattern.deposits.flatMap((d) => d.from));
+  // Only payments in a coin the address later swept count: a gas top-up in SUI
+  // it never swept is not what was deposited.
+  const swept = new Set(sweeps.flatMap((s) => s.coins.map((c) => c.coin_type)));
+  const funders = new Set(
+    pattern.deposits.filter((d) => d.coins.some((c) => swept.has(c.coin_type))).flatMap((d) => d.from),
+  );
   if (funders.size > 0) {
     const sponsors = new Set(pattern.sponsors);
     const sameExchange = (a: string) => exchangeWallets.get(a) === entity;

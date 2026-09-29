@@ -10,7 +10,7 @@
     "wallet_page_transactions": 50,
     "max_candidates_per_exchange": 1000,
     "sponsor_fanout_transactions": 300,
-    "previous_labels_rechecked": 336,
+    "previous_labels_rechecked": 337,
     "excluded_addresses": 21
   },
   "exchanges": [
@@ -20,12 +20,12 @@
       "wallets_deposit_shaped": 0,
       "wallet_transactions_read": 3406,
       "wallets_read_to_first_transaction": 10,
-      "senders": 264,
-      "senders_read": 264,
+      "senders": 250,
+      "senders_read": 250,
       "senders_not_read": 0,
       "rejected": {
         "exchange-funded": 4,
-        "few-sweeps": 42,
+        "few-sweeps": 39,
         "lookalike": 8,
         "other-outflow": 11,
         "several-exchanges": 3,
@@ -33,7 +33,7 @@
         "sponsor-not-relayer": 2,
         "sweeps-elsewhere": 71
       },
-      "labels": 132
+      "labels": 134
     },
     {
       "entity": "Bybit",
@@ -41,17 +41,17 @@
       "wallets_deposit_shaped": 0,
       "wallet_transactions_read": 679,
       "wallets_read_to_first_transaction": 1,
-      "senders": 264,
-      "senders_read": 264,
+      "senders": 262,
+      "senders_read": 262,
       "senders_not_read": 0,
       "rejected": {
-        "few-sweeps": 168,
+        "few-sweeps": 164,
         "lookalike": 2,
         "partial-sweep": 27,
         "sponsor-not-relayer": 1,
         "sweeps-elsewhere": 1
       },
-      "labels": 71
+      "labels": 74
     },
     {
       "entity": "KuCoin",
@@ -59,14 +59,14 @@
       "wallets_deposit_shaped": 0,
       "wallet_transactions_read": 3069,
       "wallets_read_to_first_transaction": 2,
-      "senders": 123,
-      "senders_read": 123,
+      "senders": 121,
+      "senders_read": 121,
       "senders_not_read": 0,
       "rejected": {
         "few-sweeps": 13,
         "lookalike": 1,
         "other-outflow": 2,
-        "partial-sweep": 14,
+        "partial-sweep": 13,
         "several-exchanges": 7,
         "sweeps-elsewhere": 44
       },
@@ -76,21 +76,22 @@
       "entity": "OKX",
       "wallets": 118,
       "wallets_deposit_shaped": 16,
-      "wallet_transactions_read": 9725,
+      "wallet_transactions_read": 9728,
       "wallets_read_to_first_transaction": 104,
-      "senders": 387,
-      "senders_read": 387,
+      "senders": 385,
+      "senders_read": 385,
       "senders_not_read": 0,
       "rejected": {
         "balance-unknown": 1,
+        "exchange-funded": 1,
         "few-sweeps": 91,
         "lookalike": 43,
         "other-outflow": 11,
         "partial-sweep": 8,
         "several-wallets": 4,
-        "sweeps-elsewhere": 139
+        "sweeps-elsewhere": 137
       },
-      "labels": 90
+      "labels": 89
     }
   ],
   "labels": {
@@ -105,12 +106,12 @@
         "swept_to": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
         "sweep_count": 24,
         "evidence_txs": [
-          "J2YwvVpG6NtZanzXr4bYUE569z7n8qZiVBc285Kirrxj",
           "GmX4W1LcjLLekhrDi75PXa3WLjaqggbVm7CYic4aaaiP",
-          "F4wtHy6DrX1F3nMFKCcY3acNXhhiFUdNHfhiZtQ3xYTT"
+          "F4wtHy6DrX1F3nMFKCcY3acNXhhiFUdNHfhiZtQ3xYTT",
+          "2yYEFsqPfrqGFtRHfBQTXWQB39S8PvzLMYJw3LwgvmbV"
         ],
-        "first_sweep_at": "2026-09-28T01:35:47.047Z",
-        "last_sweep_at": "2026-09-29T02:40:47.187Z"
+        "first_sweep_at": "2026-09-28T02:11:00.733Z",
+        "last_sweep_at": "2026-09-29T03:22:00.965Z"
       }
     },
     "sui:mainnet:0x00a8df613c1fa2bc980f2f2a3bde291dc73b4d67eb6869425b760d87ec459e15": {
@@ -177,13 +178,13 @@
       "retrieved_at": "2026-09-29",
       "inferred_from": {
         "swept_to": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
-        "sweep_count": 14,
+        "sweep_count": 13,
         "evidence_txs": [
           "9gKdXLowjLbFwxAukvBrqovxssGC598E6pudYqwUSw8B",
           "7LYPy1VciqJPZ6ic8qqf4493mBfMWBZv5hjUKshz3gdt",
           "wqHKA25rR3tLtKv6oeHUySLZBQMeUhZ4j81ME1cJqtA"
         ],
-        "first_sweep_at": "2026-09-28T06:35:47.129Z",
+        "first_sweep_at": "2026-09-28T06:44:01Z",
         "last_sweep_at": "2026-09-28T23:35:46.816Z"
       }
     },
@@ -638,6 +639,25 @@
         "last_sweep_at": "2026-09-29T02:40:54.687Z"
       }
     },
+    "sui:mainnet:0x13cf4e3776cece18e2e20b350c85fe8af789d065f9112e02aa71048a4df76d5f": {
+      "label": "Bybit deposit address (inferred)",
+      "category": "cex",
+      "entity": "Bybit",
+      "evidence": "sweep-pattern",
+      "confidence": "medium",
+      "retrieved_at": "2026-09-29",
+      "inferred_from": {
+        "swept_to": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
+        "sweep_count": 3,
+        "evidence_txs": [
+          "B8PuDBaZZDqTikYeYZvnhvEXKa2dxac6TCqM5NhbU8Bc",
+          "6y6f5DYMoojXyDa4FDHNjKYcDcbzky4LGWUUkWjtaiQp",
+          "GfHKSdzJ3Yz5FRGD6MiGq3hXN8Tz7fEKeRT8cBQ6f5NY"
+        ],
+        "first_sweep_at": "2026-09-28T06:34:42.906Z",
+        "last_sweep_at": "2026-09-29T03:35:47.482Z"
+      }
+    },
     "sui:mainnet:0x149b591e48518c73cc8463d8fbc5609b9febfc4786032051f0b4636bffce303b": {
       "label": "OKX deposit address (inferred)",
       "category": "cex",
@@ -919,6 +939,25 @@
         "last_sweep_at": "2026-09-28T19:35:54.263Z"
       }
     },
+    "sui:mainnet:0x1fdad591e36b1fe1ca048967cccf22d5a181b96278a2f6811b9ac65f5cd65d28": {
+      "label": "Binance deposit address (inferred)",
+      "category": "cex",
+      "entity": "Binance",
+      "evidence": "sweep-pattern",
+      "confidence": "medium",
+      "retrieved_at": "2026-09-29",
+      "inferred_from": {
+        "swept_to": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
+        "sweep_count": 25,
+        "evidence_txs": [
+          "He2yYT12s56nqixEkvjhUPbQjPKU5BCtVT6MpWLXAqMo",
+          "3kQoxrybp5Tdohku7TJt4KpFtrMZqtmRm3QhEof1paiq",
+          "3MPf8g8G1CmKVNfut1fh5ZyPXH7MYs1LFsB57jWV66LW"
+        ],
+        "first_sweep_at": "2026-09-21T02:44:00.826Z",
+        "last_sweep_at": "2026-09-29T03:22:00.965Z"
+      }
+    },
     "sui:mainnet:0x200b0e0ad99b86203f46d6cd9cbac3e03f3bdeb90d8ece4fd1ef6c65f8820614": {
       "label": "Binance deposit address (inferred)",
       "category": "cex",
@@ -957,6 +996,25 @@
         "last_sweep_at": "2026-09-26T10:27:31.280Z"
       }
     },
+    "sui:mainnet:0x248d42e98ba44f3f675d0b88d0a8d66d7e9fd30ae63e1ee23b63ce138a54eb6e": {
+      "label": "Binance deposit address (inferred)",
+      "category": "cex",
+      "entity": "Binance",
+      "evidence": "sweep-pattern",
+      "confidence": "medium",
+      "retrieved_at": "2026-09-29",
+      "inferred_from": {
+        "swept_to": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
+        "sweep_count": 25,
+        "evidence_txs": [
+          "AxGVv2kr2CKYM6R1GfwiWRM7v2njTnRJeNmsbi9i1jTE",
+          "FgcBaTMCBAKzreaVjh8ty4ZvUXyeaWfN922Gxeq8idTV",
+          "569eKNAH2dipD5SMTjvsQjJebYk8LckDCxvq8FknG2Ye"
+        ],
+        "first_sweep_at": "2026-09-14T18:22:00.841Z",
+        "last_sweep_at": "2026-09-29T03:33:00.718Z"
+      }
+    },
     "sui:mainnet:0x25fac70be8a1c1978d9b1285bcf8d01bdf7f7e9166147013b173159364fe2880": {
       "label": "Binance deposit address (inferred)",
       "category": "cex",
@@ -966,13 +1024,13 @@
       "retrieved_at": "2026-09-29",
       "inferred_from": {
         "swept_to": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
-        "sweep_count": 18,
+        "sweep_count": 17,
         "evidence_txs": [
           "3EvC8wxqYHTxvwSSYzJz43JWkXo68swD3i9EB7d6tCzy",
           "5t167WtjcRYoSexQK2sqCYh5JWsSWSFPU6ca296FcKYc",
           "5CNtPKFrp1Ak98mALNxfv2D31sbHrMKNHABaQzKdwPrc"
         ],
-        "first_sweep_at": "2026-09-27T21:44:01.040Z",
+        "first_sweep_at": "2026-09-27T23:35:49.906Z",
         "last_sweep_at": "2026-09-29T03:11:01.043Z"
       }
     },
@@ -1896,24 +1954,6 @@
         "last_sweep_at": "2026-09-29T01:44:00.900Z"
       }
     },
-    "sui:mainnet:0x4bd74abba5130e81d101fcf2363d036429b4930a38bc3f61ef5417bc182219fa": {
-      "label": "OKX deposit address (inferred)",
-      "category": "cex",
-      "entity": "OKX",
-      "evidence": "sweep-pattern",
-      "confidence": "medium",
-      "retrieved_at": "2026-09-29",
-      "inferred_from": {
-        "swept_to": "0xdf7c04c9bebf4b35bd8c66a92469f0b66cf77ce8586b6262709a897659f4e772",
-        "sweep_count": 2,
-        "evidence_txs": [
-          "5PX9npQBsCNkr7psUkSsNT9p62hrAaATy9xjXDf6ov5z",
-          "E2UUtNcdHxuWrnQxThvCNREcHKMJJ4DgLCG4nfgsE8uE"
-        ],
-        "first_sweep_at": "2026-09-28T14:18:30.878Z",
-        "last_sweep_at": "2026-09-28T14:27:30.763Z"
-      }
-    },
     "sui:mainnet:0x4c9ffd21271f5d009f717ca73f0878aee465a5eb3e788ab3bc2a548a60aed3d6": {
       "label": "OKX deposit address (inferred)",
       "category": "cex",
@@ -2025,6 +2065,25 @@
         ],
         "first_sweep_at": "2026-09-24T16:35:47.036Z",
         "last_sweep_at": "2026-09-29T02:40:47.187Z"
+      }
+    },
+    "sui:mainnet:0x53d03a41d60a1d7e21001f14e656a06329a32d8f5e17dbac758511f8e7372142": {
+      "label": "Bybit deposit address (inferred)",
+      "category": "cex",
+      "entity": "Bybit",
+      "evidence": "sweep-pattern",
+      "confidence": "medium",
+      "retrieved_at": "2026-09-29",
+      "inferred_from": {
+        "swept_to": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
+        "sweep_count": 4,
+        "evidence_txs": [
+          "E2VxEFk9VJeTCcMcsQREiqMR5bMH1EEYVPxLN2npc2D3",
+          "CcFX1XQFyD1hx5nqUsJSibWPbnzjmFaNvWZrxwaQQHWP",
+          "3GZgRccPdz2NMcnjuvMBa9CnfcmRd8VmWoheygns6NJE"
+        ],
+        "first_sweep_at": "2024-06-03T02:36:02.028Z",
+        "last_sweep_at": "2026-09-29T03:15:48.473Z"
       }
     },
     "sui:mainnet:0x54650b87afe805e4cd9ba20e3a269e93d88efef7be533562ba6643d1d0763d26": {
@@ -3354,12 +3413,12 @@
         "swept_to": "0x935029ca5219502a47ac9b69f556ccf6e2198b5e7815cf50f68846f723739cbd",
         "sweep_count": 17,
         "evidence_txs": [
-          "9T5JJb7edGarBy4TRJLxnYH5nf12afRYdKs4dSX5FnNG",
           "3rCfCq24xtqZUtk3VuVRG8GCeVCtgnZKjm9xPATMXzWM",
-          "599WsEtSFXqPpThoQ5uVj6uqwF3DUpJbMrAiAG9jAxMa"
+          "599WsEtSFXqPpThoQ5uVj6uqwF3DUpJbMrAiAG9jAxMa",
+          "FHJnihUG8SZTjWKz2oxXBJyn7yUzu6bn78P6ybwmfQd9"
         ],
-        "first_sweep_at": "2026-09-27T16:35:50.896Z",
-        "last_sweep_at": "2026-09-29T01:45:44.801Z"
+        "first_sweep_at": "2026-09-27T19:35:52.626Z",
+        "last_sweep_at": "2026-09-29T03:22:00.965Z"
       }
     },
     "sui:mainnet:0x83e7c0b490f34c2b4de666ff4c1f0f11fd43a535ac5faf832b0283dd47e72c5e": {
@@ -3731,12 +3790,12 @@
         "swept_to": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
         "sweep_count": 23,
         "evidence_txs": [
-          "CCCogef1QLcL1CkXktM7V6JQtFAt7dThRzGkf3zynjhU",
           "J6Ens64MkmX3FZTPncXR7qSEeh2NqosZffLvmzUypLBa",
-          "FwJXDTmLV6nXVL8ZZwdAC5DR2SdGLfmb3KT6fatnUmcy"
+          "FwJXDTmLV6nXVL8ZZwdAC5DR2SdGLfmb3KT6fatnUmcy",
+          "9xLah2nmpnTs6qthfaaUSmeuYC2m35CGvQ37aUrYLau5"
         ],
-        "first_sweep_at": "2026-07-26T05:01:39.375Z",
-        "last_sweep_at": "2026-09-28T20:15:43.929Z"
+        "first_sweep_at": "2026-07-26T07:21:49.172Z",
+        "last_sweep_at": "2026-09-29T03:16:28.782Z"
       }
     },
     "sui:mainnet:0x8eadd4dd6490d7ef7fe872daac4ba3d454947aa7dced16509cb5398976d7c239": {
@@ -4226,6 +4285,24 @@
         ],
         "first_sweep_at": "2026-01-12T12:55:00.567Z",
         "last_sweep_at": "2026-09-28T19:35:55.137Z"
+      }
+    },
+    "sui:mainnet:0x9f6b3649e9feb763bd461820f67642009971983f4ca68bb97873367c415102cd": {
+      "label": "Bybit deposit address (inferred)",
+      "category": "cex",
+      "entity": "Bybit",
+      "evidence": "sweep-pattern",
+      "confidence": "medium",
+      "retrieved_at": "2026-09-29",
+      "inferred_from": {
+        "swept_to": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
+        "sweep_count": 2,
+        "evidence_txs": [
+          "3ihdpPAzzKoQwTugzzexV14FMS3gmALJC6PxoYrs26ff",
+          "EKRyLnMBYuAGHWdTYcgMQGCa2wEC7gDgvR3BUNLEQg4c"
+        ],
+        "first_sweep_at": "2025-09-04T17:56:52.334Z",
+        "last_sweep_at": "2026-09-29T03:25:43.460Z"
       }
     },
     "sui:mainnet:0xa03339225c18d6e843c02ca876a8048aa6105a5d904cabb501a38491ab37f539": {
@@ -4895,13 +4972,13 @@
       "retrieved_at": "2026-09-29",
       "inferred_from": {
         "swept_to": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d",
-        "sweep_count": 25,
+        "sweep_count": 24,
         "evidence_txs": [
           "2oDLAxq5jH7BLMRopkErN58xorh2N99HqiUsbqG7PLfW",
           "3EHQtqXvzYJayWwfw6RYda3KVMYGzojW1Jx1JThmKtc5",
           "CwykRtLUjyM9zPcp1qbAdNRCxvtnvBBjkkNrMdkKJ9Ej"
         ],
-        "first_sweep_at": "2026-09-26T11:22:40.434Z",
+        "first_sweep_at": "2026-09-26T12:32:39.493Z",
         "last_sweep_at": "2026-09-29T01:55:39.998Z"
       }
     },

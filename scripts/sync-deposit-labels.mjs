@@ -283,10 +283,21 @@ for (const s of sponsors) {
   try {
     state.sponsors[s] = (await measureFanout(s, SPONSOR_FANOUT_TRANSACTIONS)).sponsor_shape;
   } catch (err) {
-    // Unmeasured: its deposits are rejected this run and it is retried next run.
     console.warn(`sponsor ${s}: ${err.message}`);
   }
   save();
+}
+
+// The next run rechecks only what this file labels, so a label left out
+// because a read failed would be lost for good. Nothing is written until every
+// candidate and every sponsor was read; a same-day rerun retries only those.
+const unread = [...toScan].filter((a) => !state.candidates[a]);
+const unmeasured = sponsors.filter((s) => !(s in state.sponsors));
+if (unread.length > 0 || unmeasured.length > 0) {
+  throw new Error(
+    `${unread.length} candidate(s) could not be read and ${unmeasured.length} sponsor(s) could not be measured; ` +
+      `nothing was written. Run again today to retry only those (progress is in ${flags.state}).`,
+  );
 }
 const shapes = new Map(Object.entries(state.sponsors));
 const objects = await objectsAmong(passing);

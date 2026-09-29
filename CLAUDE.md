@@ -3478,7 +3478,8 @@ change is likely to break:
   lookalike does with dust and what an exchange's own operational addresses
   do, so a candidate is also dropped when it is one side of a lookalike pair
   among the wallet's counterparties (`lookalikeSuspects`), when everything it
-  received came from its own sweep sponsor, the same exchange's wallets or
+  received in a coin it later swept (a SUI gas top-up does not count) came
+  from its own sweep sponsor, the same exchange's wallets or
   where the swept-to wallet itself sweeps, and when a sweep sponsor measures
   as anything but a relayer (`sponsorRejection`; the exchange's own wallet
   may pay the gas, an unmeasured sponsor fails). A disclosed wallet that is
@@ -3499,7 +3500,9 @@ change is likely to break:
   stored in the progress file or counted per exchange, and the script refuses
   to run without `--exclude` or `--no-exclude` once a file was built with
   exclusions. The progress file is owner-only and reused only on the same
-  day with the same bounds and rule inputs.
+  day with the same bounds and rule inputs. A run with any candidate unread
+  or sponsor unmeasured writes nothing, since the next run rechecks only the
+  labels in the file; a same-day rerun retries only the failures.
 - **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
   the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
   change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and

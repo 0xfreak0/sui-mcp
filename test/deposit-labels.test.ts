@@ -170,6 +170,22 @@ describe("inferDepositLabel: who paid the candidate", () => {
     expect(inferDepositLabel(scan(txs), CTX)).toEqual({ kind: "rejected", reason: "exchange-funded" });
   });
 
+  it("does not count a gas top-up in a coin it never swept as a customer payment", () => {
+    const GAS_FUNDER = addr("9a");
+    const txs = [
+      pay(20_000_000n, SUI, GAS_FUNDER),
+      pay(5n, USDC, A2),
+      sweep("s0", 5n, A1, USDC),
+      pay(7n, USDC, A2),
+      sweep("s1", 7n, A1, USDC),
+    ];
+    const balances = new Map([
+      [SUI, 20_000_000n],
+      [USDC, 0n],
+    ]);
+    expect(inferDepositLabel(scan(txs, balances), CTX)).toEqual({ kind: "rejected", reason: "exchange-funded" });
+  });
+
   it("rejects an address paid only by where the swept-to wallet sweeps", () => {
     const txs = [pay(5n, SUI, ELSEWHERE), sweep("s0", 5n, A1), pay(7n, SUI, ELSEWHERE), sweep("s1", 7n, A1)];
     const ctx = { ...CTX, walletSweepsInto: new Map([[A1, [ELSEWHERE]]]) };

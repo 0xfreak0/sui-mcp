@@ -5,11 +5,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import { leadsWithBinaryTool, unknownToolsIn } from "./helpers/tool-names.js";
+import { leadsWithBinaryTool, toolCallsIn, unknownToolsIn } from "./helpers/tool-names.js";
 import { registerAllTools } from "../src/tools/index.js";
 import { registerAllResources } from "../src/resources.js";
 import { PROMPTS, SKILL_URL, registerAllPrompts } from "../src/prompts.js";
 import { serverInstructions } from "../src/tools/toolset.js";
+import { DEFAULT_PROFILES, PROFILES, allProfiledTools, toolsForProfiles, type ProfileName } from "../src/tools/profiles.js";
 
 /**
  * The MCP metadata every tool carries (annotations, title, the injected
@@ -208,10 +209,35 @@ describe("server instructions", () => {
   });
 });
 
+/** Arguments rendering a prompt: every required one, or every one with `all`. */
+const promptArgs = (name: string, all = false) =>
+  Object.fromEntries(PROMPTS[name].args.filter((a) => all || a.required).map((a) => [a.name, ADDR]));
+
 describe("prompts", () => {
-  it("lists the three investigation prompts", async () => {
+  it("lists the investigation and everyday prompts", async () => {
     const { prompts } = await client.listPrompts();
-    expect(prompts.map((p) => p.name).sort()).toEqual(["attribute_cluster", "investigate_address", "trace_incident"]);
+    expect(prompts.map((p) => p.name).sort()).toEqual([
+      "attribute_cluster",
+      "investigate_address",
+      "is_this_protocol_safe",
+      "is_this_token_safe",
+      "trace_incident",
+      "was_i_scammed",
+      "who_is_this_wallet",
+    ]);
+  });
+
+  it("requires only the arguments a prompt marks required", async () => {
+    await expect(client.getPrompt({ name: "was_i_scammed", arguments: { digest: ADDR } })).resolves.toBeDefined();
+    await expect(client.getPrompt({ name: "was_i_scammed", arguments: {} })).resolves.toBeDefined();
+    await expect(client.getPrompt({ name: "is_this_token_safe", arguments: {} })).rejects.toThrow();
+  });
+
+  // The protocol makes `arguments` optional in prompts/get.
+  it("renders a prompt whose arguments are all optional when the request has no arguments field", async () => {
+    const res = await client.getPrompt({ name: "was_i_scammed" });
+    expect(res.messages).toHaveLength(1);
+    await expect(client.getPrompt({ name: "who_is_this_wallet" })).rejects.toThrow();
   });
 
   it("renders the task with the skill's method", async () => {
@@ -225,13 +251,71 @@ describe("prompts", () => {
   it("name only tools that exist, and no binary-only tool ahead of one every install has", async () => {
     const names = new Set(tools.map((t) => t.name));
     for (const name of Object.keys(PROMPTS)) {
-      const res = await client.getPrompt({ name, arguments: { [PROMPTS[name].subject.name]: ADDR } });
+      const res = await client.getPrompt({ name, arguments: promptArgs(name) });
       const content = res.messages[0].content;
       const text = content.type === "text" ? content.text : "";
       expect(unknownToolsIn(text, names), name).toEqual([]);
       expect(leadsWithBinaryTool(text), name).toBe(false);
     }
     expect(leadsWithBinaryTool(readFileSync(SKILL_URL, "utf8"))).toBe(false);
+  });
+
+  // A prompt that names a tool the server lacks, an argument its schema
+  // rejects, or a tool whose profile is off without saying how to turn it on
+  // sends the model into a failed call.
+  it("call only registered tools, with arguments and values their schemas accept, enabling each tool's profile", async () => {
+    const defaultTools = toolsForProfiles(DEFAULT_PROFILES);
+    const profiled = allProfiledTools();
+    const mentions = (text: string) => tools.map((t) => t.name).filter((t) => new RegExp(`\\b${t}\\b`).test(text));
+    for (const name of Object.keys(PROMPTS)) {
+      const task = PROMPTS[name].task(promptArgs(name, true));
+      const calls = toolCallsIn(task);
+      if (calls.length === 0) continue;
+      // Every tool the task mentions is spelled as a call, so every one is checked.
+      expect(mentions(task).filter((t) => !calls.some((c) => c.tool === t)), name).toEqual([]);
+      for (const call of calls) {
+        const tool = tools.find((t) => t.name === call.tool);
+        expect(tool, `${name}: ${call.tool}`).toBeDefined();
+        const props = (tool!.inputSchema.properties ?? {}) as Record<string, { enum?: unknown[] }>;
+        for (const arg of call.args) {
+          expect(props[arg.name], `${name}: ${call.tool}(${arg.name})`).toBeDefined();
+          const allowed = props[arg.name]?.enum;
+          if (allowed && arg.value !== undefined) expect(allowed, `${name}: ${call.tool}(${arg.name}: ${arg.value})`).toContain(arg.value);
+        }
+      }
+      // Every tool the rendered prompt names, carried skill text included, is
+      // reachable through the profiles it enables.
+      const enabled = calls
+        .filter((c) => c.tool === "enable_tools")
+        .flatMap((c) => c.args.filter((a) => a.name === "profile").map((a) => a.value as ProfileName));
+      const reachable = new Set([...defaultTools, ...enabled.flatMap((p) => PROFILES[p] ?? [])]);
+      const res = await client.getPrompt({ name, arguments: promptArgs(name, true) });
+      const content = res.messages[0].content;
+      const rendered = content.type === "text" ? content.text : "";
+      const unreachable = mentions(rendered).filter((t) => profiled.has(t) && !reachable.has(t));
+      expect(unreachable, `${name} names tools it never enables`).toEqual([]);
+    }
+  });
+
+  // A step marks the profile its tools need, and the model enables only that
+  // one when it reaches the step, so a wrong mark leaves the call unavailable.
+  it("mark each step outside the default profile with a profile that holds its tools", () => {
+    const defaultTools = toolsForProfiles(DEFAULT_PROFILES);
+    for (const name of Object.keys(PROMPTS)) {
+      const steps: string[] = [];
+      for (const line of PROMPTS[name].task(promptArgs(name, true)).split("\n")) {
+        if (/^\d+\. /.test(line)) steps.push(line);
+        else if (/^\s+\S/.test(line) && steps.length > 0) steps[steps.length - 1] += `\n${line}`;
+      }
+      for (const step of steps) {
+        const marks = [...step.matchAll(/\((forensics|developer|market)\b/g)].map((m) => m[1] as ProfileName);
+        for (const call of toolCallsIn(step)) {
+          if (defaultTools.has(call.tool)) continue;
+          const covered = marks.some((p) => (PROFILES[p] as readonly string[]).includes(call.tool));
+          expect(covered, `${name}: ${call.tool} in a step marked ${marks.join(",") || "nothing"}`).toBe(true);
+        }
+      }
+    }
   });
 
   // The flaw is found by reading the code the exploit ran, and a fixing or
@@ -257,7 +341,7 @@ describe("prompts", () => {
   it("carry no address or digest from an incident case", async () => {
     const served = [client.getInstructions() ?? "", readFileSync(SKILL_URL, "utf8")];
     for (const name of Object.keys(PROMPTS)) {
-      const res = await client.getPrompt({ name, arguments: { [PROMPTS[name].subject.name]: ADDR } });
+      const res = await client.getPrompt({ name, arguments: promptArgs(name, true) });
       const content = res.messages[0].content;
       served.push(content.type === "text" ? content.text : "");
     }

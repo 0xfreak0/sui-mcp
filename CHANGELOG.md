@@ -3,6 +3,25 @@
 ## Unreleased
 
 ### Added
+- **Four everyday prompts for people who are not investigators.**
+  `was_i_scammed` (a wallet, a digest or both) finds what left the wallet,
+  where it went, whether a blocklisted drainer package or a lookalike address
+  was involved, and whom to report to. `is_this_token_safe` (a coin type)
+  reads who can mint, freeze or upgrade the coin, its holders, its pools and
+  its deployer. `is_this_protocol_safe` (a package ID, MVR name or protocol
+  name) reads who holds the UpgradeCap and admin caps, how they sign and what
+  changed recently. `who_is_this_wallet` (an address or SuiNS name) reads what
+  kind of account it is, its labels and their evidence, its funding, activity
+  and exchange deposit behaviour. Each asks for a plain answer of two to four
+  sentences, then a `How sure: high|medium|low` line naming what was and was
+  not checked, then the digests and addresses behind it. Flags are reported
+  as leads, an empty result clears nothing, no private person is named, and
+  each step names the one profile outside `core` it needs, so a profile is
+  enabled only when a step runs. A test checks every tool call a prompt
+  spells out against the registered tools, their argument names and enum
+  values, the profile its step names, and the profiles the prompt enables.
+- `prompts/get` without an `arguments` field renders a prompt whose
+  arguments are all optional, as the protocol allows.
 - **`get_transaction` explains a round trip inside a swap route.** When a
   router path swaps a coin away and back (USDC → USDT → USDC, then USDC →
   ZUK), the result carries `route_loops`: the `actions` indices of the loop,

@@ -24,7 +24,8 @@ The person handing this out fills in:
 ## Rules
 
 1. Use only the MCP tools, as a user would. Do not read the code in `src/`,
-   `test/` or `scripts/`; running the snippet below is fine. `README.md`,
+   `test/` or `scripts/`; running the snippet below is fine. `README.md`, the
+   docs pages under `site/src/content/docs/`,
    `.claude/skills/sui-forensics/SKILL.md`, `cases/README.md`, this brief and
    the server's `tools/list` are allowed.
 2. Raw GraphQL and block explorers are allowed only to verify an answer after

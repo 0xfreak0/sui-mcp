@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage } from "./helpers/service-shapes.js";
 
-const { gqlQuery, withArchiveFallback, getCoinInfo } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn(), getCoinInfo: vi.fn() }));
+const { gqlQuery, withArchiveFallback, getCoinInfo, neverSigned } = vi.hoisted(() => ({
+  gqlQuery: vi.fn(),
+  withArchiveFallback: vi.fn(),
+  getCoinInfo: vi.fn(),
+  neverSigned: new Set<string>(),
+}));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
 vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback }));
 vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo } }, archive: {}, getClients: vi.fn() }));
@@ -13,10 +18,17 @@ beforeEach(() => {
 });
 vi.mock("../src/utils/identity.js", () => ({
   describeAddresses: async (addrs: string[]) =>
-    new Map(addrs.map((a) => [a, { address: a, kind: "wallet" as const, authentication: { scheme: "ed25519" as const, verified: true } }])),
+    new Map(
+      addrs.map((a) => [
+        a,
+        neverSigned.has(a)
+          ? { address: a, kind: "wallet" as const }
+          : { address: a, kind: "wallet" as const, authentication: { scheme: "ed25519" as const, verified: true } },
+      ]),
+    ),
 }));
 
-const { auditPackageCapabilities, classifyCapType, classifyCapabilityRisk } = await import(
+const { auditPackageCapabilities, classifyCapType, classifyCapabilityRisk, NEVER_SIGNED } = await import(
   "../src/utils/capabilities.js"
 );
 
@@ -460,6 +472,20 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
     expect(opCap?.kind).toBe("admin");
     expect(opCap?.owner_address).toBe(HOT_KEY);
     expect(opCap?.signing_scheme).toBe("ed25519");
+  });
+
+  it("says when a cap's holder has never signed, rather than leaving its scheme out", async () => {
+    neverSigned.add(HOT_KEY);
+    try {
+      const audit = await auditPackageCapabilities(PKG, MULTISIG, [
+        { name: "vault", structs: [{ name: "OperatorCap", abilities: ["key", "store"] }] },
+      ]);
+      const opCap = audit.capabilities.find((c) => c.type.endsWith("::vault::OperatorCap"));
+      expect(opCap).toHaveProperty("signing_scheme");
+      expect(opCap?.signing_scheme).toBe(NEVER_SIGNED);
+    } finally {
+      neverSigned.clear();
+    }
   });
 
   it("does not scan standard framework cap names as authority structs", async () => {

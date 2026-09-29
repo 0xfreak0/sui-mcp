@@ -151,7 +151,7 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
             type: head.type,
             owner: head.owner,
             ownerAddress:
-              sharedAddress ?? (head.owner_address && head.owner !== "object" ? "the holder of each object in holders" : undefined),
+              sharedAddress ?? (head.owner_address && head.owner !== "object" ? `the ${addresses.size} addresses listed in holders` : undefined),
             ownerType: sharedAddress && head.owner === "object" ? head.owner_type : undefined,
           }).note,
     };

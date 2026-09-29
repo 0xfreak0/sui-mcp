@@ -66,7 +66,11 @@ export interface CapabilityInfo {
   holder_status?: CapHolderStatus;
   /** UpgradeCap only: the publisher it was compared against. */
   publisher?: string;
-  /** How the holder authenticates (single-key scheme, or a multisig m-of-n), when known. */
+  /**
+   * How the holder authenticates (single-key scheme, or a multisig m-of-n),
+   * or {@link NEVER_SIGNED} for an account that has never sent a transaction.
+   * Absent when it could not be read.
+   */
   signing_scheme?: string;
   /** `wrapped` only: the transaction that stored the cap inside another object. */
   wrapped_in_tx?: string;
@@ -141,6 +145,9 @@ export const UPGRADE_POLICY_CLAIMS: FrameworkClaim[] = [
 ];
 
 const ADDR2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
+
+/** A holder's `signing_scheme` when the account has never sent a transaction, so no key is on chain yet. */
+export const NEVER_SIGNED = "unknown: this account has never sent a transaction, so its key is not on chain yet";
 
 /** Classify a struct type as a capability kind, or null if it isn't cap-like. */
 export function classifyCapType(repr: string): CapKind | null {
@@ -1154,6 +1161,7 @@ export async function auditPackageCapabilities(
     for (const cap of capabilities) {
       const id = cap.owner_address ? identities.get(cap.owner_address) : undefined;
       if (id?.authentication) cap.signing_scheme = schemeLabel(id.authentication);
+      else if (id?.kind === "wallet" && !id.authentication_unavailable && !id.foreign_authorization) cap.signing_scheme = NEVER_SIGNED;
     }
   }
 

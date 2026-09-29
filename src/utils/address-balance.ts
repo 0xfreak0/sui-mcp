@@ -24,6 +24,7 @@ import { normalizeCoinType } from "./coin-registry.js";
 import { baseType, type GrpcChangedObject } from "./object-flow.js";
 import { formatCoinAmount } from "./coin-amount.js";
 import { prefetchCoinScale } from "./valuation.js";
+import type { FrameworkClaim } from "./framework-claims.js";
 
 const ADDR2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
 const BALANCE_TYPE = `${ADDR2}::balance::Balance`;
@@ -38,6 +39,19 @@ const ID_DELETED = 3;
 const OWNER_ADDRESS = 1;
 /** `sui.rpc.v2.FundsWithdrawal.Source` */
 const WITHDRAW_SOURCE: Record<number, "sender" | "sponsor"> = { 1: "sender", 2: "sponsor" };
+
+/**
+ * Framework facts the module comment states: how an address balance is
+ * credited and spent, and that withdrawing from an object's own balance
+ * needs that object's `&mut UID`, which only its defining module holds.
+ */
+export const ADDRESS_BALANCE_CLAIMS: FrameworkClaim[] = [
+  { fn: "balance::send_funds", visibility: "public", takes: { "balance::Balance": "value" }, paramAt: { 1: "address" }, why: "an address balance is credited with send_funds" },
+  { fn: "coin::send_funds", visibility: "public", takes: { "coin::Coin": "value" }, paramAt: { 1: "address" }, why: "a coin can be folded into an address balance" },
+  { fn: "balance::redeem_funds", visibility: "public", takes: { "funds_accumulator::Withdrawal": "value" }, why: "a FundsWithdrawal input is redeemed into a Balance" },
+  { fn: "coin::redeem_funds", visibility: "public", takes: { "funds_accumulator::Withdrawal": "value" }, why: "a FundsWithdrawal input is redeemed into a Coin" },
+  { fn: "balance::withdraw_funds_from_object", visibility: "public", takes: { "object::UID": "&mut" }, why: "only code holding an object's &mut UID can withdraw its address balance" },
+];
 
 /**
  * `T` of `framework<T>`, or null when `type` is anything else. The framework

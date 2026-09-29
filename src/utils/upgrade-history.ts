@@ -26,6 +26,7 @@
 
 import { ownerKey, type OwnerDesc } from "./object-history.js";
 import { isUnspendableAddress } from "./upgrade-cap.js";
+import { frozenCapabilityPowers, sharedCapabilityPowers } from "./object-flow.js";
 import type { Authentication, AuthScheme } from "./multisig.js";
 
 /** Where on the chain something happened. */
@@ -411,14 +412,14 @@ export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
       flags.push({
         kind: "cap_frozen",
         severity: "info",
-        summary: `The UpgradeCap was frozen at ${at.timestamp}. An immutable object cannot be passed by mutable reference, so authorize_upgrade can no longer be called with it.`,
+        summary: `The UpgradeCap was frozen at ${at.timestamp}. ${frozenCapabilityPowers("0x2::package::UpgradeCap")}`,
         txs,
       });
     } else if (h.kind === "shared") {
       flags.push({
         kind: "cap_shared",
         severity: "high",
-        summary: `The UpgradeCap is a shared object (since ${at.timestamp}). 0x2::package::authorize_upgrade is public and takes the cap by mutable reference, and any transaction can pass a shared object that way, so any sender can upgrade this package.`,
+        summary: `The UpgradeCap is a shared object (since ${at.timestamp}). Any transaction can pass a shared object to the functions that take it: ${sharedCapabilityPowers("0x2::package::UpgradeCap")}`,
         txs,
       });
     }

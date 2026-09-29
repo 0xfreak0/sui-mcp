@@ -72,9 +72,10 @@ export interface FormattedCommand {
  *
  * All of them target a system package, so a drainer routing its payout
  * through one of these instead of TransferObjects is not caught by
- * `unverified-package-call` either.
+ * `unverified-package-call` either. `test/sui-framework.test.ts` checks each
+ * index against the framework source.
  */
-const FRAMEWORK_TRANSFER_RECIPIENT_ARG: Record<string, number> = {
+export const FRAMEWORK_TRANSFER_RECIPIENT_ARG: Record<string, number> = {
   "transfer::public_transfer": 1,
   "pay::split_and_transfer": 2,
   "pay::join_vec_and_transfer": 1,

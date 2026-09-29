@@ -31,6 +31,7 @@ import {
 } from "./multisig.js";
 import { BALANCE_CHANGES_SELECTION, type GqlConnection } from "./tx-connections.js";
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
+import type { FrameworkClaim } from "./framework-claims.js";
 
 /** GraphQL page cap, and the natural chunk size for a keyed multi-get. */
 const CHUNK = 50;
@@ -49,6 +50,18 @@ const AUTH_BATCH_SIZE = 20;
 
 /** Padded, so it matches the form the chain reports. */
 const ALIAS_TYPE = `${normalizeSuiAddress("0x2")}::address_alias::AddressAliases`;
+
+/**
+ * Framework facts the alias reading rests on: an `AddressAliases` object has
+ * `key` without `store`, so it never leaves its owner and one owner has at
+ * most one; its set is the `aliases` field; and the set can change.
+ */
+export const ALIAS_CLAIMS: FrameworkClaim[] = [
+  { struct: "address_alias::AddressAliases", abilities: ["key"], fields: ["id", "aliases"], why: "one owner has at most one alias set, read from its aliases field" },
+  { struct: "address_alias::AliasKey", fields: ["0"], why: "an alias set sits at an id derived from (0xa, AliasKey(owner))" },
+  { fn: "address_alias::remove", entry: true, takes: { "address_alias::AddressAliases": "&mut" }, why: "an alias set is mutable, so it is true only as of the read" },
+  { fn: "address_alias::replace_all", entry: true, takes: { "address_alias::AddressAliases": "&mut" }, why: "an alias set is mutable, so it is true only as of the read" },
+];
 
 /**
  * Aliases per alias-lookup request. NOT `AUTH_BATCH_SIZE`.

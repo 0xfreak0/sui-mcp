@@ -28,6 +28,19 @@ npm run build && npm run verify:live && npm test
 `--function`), skipping every labelled sender, when the holdout split has to
 be rotated.
 
+`token-baseline.mjs` is not a check either: it measures what the server costs
+a model's context, so a change meant to shrink it can be compared before and
+after. It reports tools/list in characters and estimated tokens (chars / 4)
+for `core`, `core` plus each other profile, and `all`; each tool's
+definition (description, input schema, whole entry), largest first; each
+tool's median and largest answer over case-pass calls; and the ten largest
+answers with their args. The answer sizes come from a case-pass `--summary`
+file (`--summary <file>`), or from a case-pass run it starts, `--smoke`
+unless `--full` is given, reading through `SUI_REPLAY_DIR` when set.
+`--out <prefix>` writes `<prefix>.json` and `<prefix>.md`, and keeps the
+summary of a run it started as `<prefix>.case-pass.json` for a later
+`--summary`; otherwise the Markdown goes to stdout.
+
 `test/live-coverage.test.ts` runs with `npm test` and fails when a registered
 tool is called by none of these scripts and named by no check in
 `cases/incidents/`. `adversarial.mjs` does not count toward it: it proves input

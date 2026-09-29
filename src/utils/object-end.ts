@@ -111,13 +111,14 @@ const FRAMEWORK = normalizeSuiAddress("0x2");
 
 /**
  * Whether a publish transaction made its package immutable in the same PTB:
- * it has exactly one Publish command, and a Move call to
- * `0x2::package::make_immutable` takes that command's result, the new
- * UpgradeCap, which `make_immutable` takes by value and deletes. A cap
- * created and destroyed in one transaction appears in no object change, so
- * the effects alone cannot tell this package from one whose cap went
- * unrecorded. Read failures throw, and so does a command list that could
- * not be read to its end.
+ * a Move call to `0x2::package::make_immutable` takes the result of each of
+ * its Publish commands, the new UpgradeCaps, which `make_immutable` takes by
+ * value and deletes. Which Publish made which package is not stated, so a
+ * PTB that publishes several counts only when every Publish result went to
+ * make_immutable. A cap created and destroyed in one transaction appears in
+ * no object change, so the effects alone cannot tell this package from one
+ * whose cap went unrecorded. Read failures throw, and so does a command list
+ * that could not be read to its end.
  */
 export async function madeImmutableAtPublish(digest: string): Promise<boolean> {
   const nodes: CommandNode[] = [];
@@ -135,14 +136,16 @@ export async function madeImmutableAtPublish(digest: string): Promise<boolean> {
     if (!after) throw new Error(`the commands of ${digest} could not be read to their end`);
   }
   const publishes = nodes.flatMap((n, i) => (n.__typename === "PublishCommand" ? [i] : []));
-  if (publishes.length !== 1) return false;
-  return nodes.some(
-    (n) =>
+  const destroyed = new Set(
+    nodes.flatMap((n) =>
       n.__typename === "MoveCallCommand" &&
       n.function?.name === "make_immutable" &&
       n.function.module.name === "package" &&
       normalizeSuiAddress(n.function.module.package.address) === FRAMEWORK &&
-      n.arguments?.[0]?.__typename === "TxResult" &&
-      n.arguments[0].cmd === publishes[0],
+      n.arguments?.[0]?.__typename === "TxResult"
+        ? [n.arguments[0].cmd]
+        : [],
+    ),
   );
+  return publishes.length > 0 && publishes.every((i) => destroyed.has(i));
 }

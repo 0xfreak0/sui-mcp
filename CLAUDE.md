@@ -4566,8 +4566,10 @@ must be answerable from these tools, and no case check calls
   its Publish command's result to `0x2::package::make_immutable` creates and
   destroys the UpgradeCap in one transaction, so no object change shows a cap
   (`0xeb195778…::suipump`, publish `4nDW27Ki…`). `madeImmutableAtPublish`
-  (`object-end.ts`) reads the publish's commands and claims this only for one
-  Publish command whose result `make_immutable` takes. `get_upgrade_history`
+  (`object-end.ts`) reads the publish's commands and claims this only when
+  `make_immutable` takes the result of every Publish command: a PTB may publish
+  several packages (`6Uf8naj2…` publishes three and destroys each cap, one of
+  them `0x17fa0d81…`), and which Publish made which package is not stated. `get_upgrade_history`
   then reports state `deleted` with `cap_end` at the publish, and the
   capability audit an UpgradeCap entry with `object_id: null`, owner `burned`
   and `destroyed_in_tx`. A package whose publish shows no cap and made no such

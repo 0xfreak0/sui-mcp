@@ -64,12 +64,24 @@ function chain(commands: Array<Record<string, unknown>> | null) {
 }
 
 describe("madeImmutableAtPublish", () => {
-  it("is true only for make_immutable on the result of the transaction's one Publish command", async () => {
+  it("is true when make_immutable takes the result of every Publish command, and only then", async () => {
     chain([PUBLISH_CMD, makeImmutable({ __typename: "TxResult", cmd: 0 })]);
     expect(await madeImmutableAtPublish(PUBLISH)).toBe(true);
     chain([PUBLISH_CMD, makeImmutable({ __typename: "Input" })]);
     expect(await madeImmutableAtPublish(PUBLISH)).toBe(false);
     chain([PUBLISH_CMD, PUBLISH_CMD, makeImmutable({ __typename: "TxResult", cmd: 1 })]);
+    expect(await madeImmutableAtPublish(PUBLISH)).toBe(false);
+    chain([makeImmutable({ __typename: "Input" })]);
+    expect(await madeImmutableAtPublish(PUBLISH)).toBe(false);
+  });
+
+  // 6Uf8naj2FyqhkTxXfW3VFMeqYvahtNyVkMoLY7ER3Nhs (read live) publishes three
+  // packages, 0x17fa0d81… among them, and destroys each UpgradeCap in turn.
+  it("is true for a PTB that publishes several packages and destroys every UpgradeCap", async () => {
+    const cmds = [0, 2, 4].flatMap((cmd) => [PUBLISH_CMD, makeImmutable({ __typename: "TxResult", cmd })]);
+    chain(cmds);
+    expect(await madeImmutableAtPublish(PUBLISH)).toBe(true);
+    chain(cmds.slice(0, 5));
     expect(await madeImmutableAtPublish(PUBLISH)).toBe(false);
   });
 

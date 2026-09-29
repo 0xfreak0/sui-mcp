@@ -34,7 +34,8 @@
  *    its TreasuryCap<T> or name T in `coins_without_located_mint_authority`.
  *    A cap the registry's `treasury_cap_id` or a TreasuryCap<T> type query
  *    finds must be listed, and every listed cap must have the owner the chain
- *    gives (deleted reads `burned`).
+ *    gives: one deleted, or consumed by a registry supply of Fixed or
+ *    BurnOnly, reads `burned`, and `unknown` never matches.
  * e. Flows. get_transaction's `token_flow` summed per coin against the
  *    sender's GraphQL balanceChanges, and `balance_changes` summed per owner
  *    and coin against all of them.
@@ -71,9 +72,11 @@
  *
  * The report gives, per oracle, the samples checked, the agreements, each
  * disagreement with its subject, our answer, the truth and how the truth was
- * read, and each skip with its reason. A skip is never a pass. A
- * disagreement not in KNOWN_DEFECTS fails the run, and so does a drawn
- * oracle that checked nothing.
+ * read, and each skip with its reason. A skip is never a pass. A tool error
+ * on a valid subject is a disagreement; a state the tool itself says it could
+ * not read, or a rate limit it reports, is a skip. A disagreement not in
+ * KNOWN_DEFECTS fails the run, and so does a drawn oracle that checked
+ * nothing.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

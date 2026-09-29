@@ -18,6 +18,57 @@ export interface DecodedTransaction {
     formatted: string | null;
     raw_type: string;
   }[];
+  /** The swap hops of router routes, in PTB order ({@link RouteHop}). */
+  route_hops: RouteHop[];
+}
+
+/**
+ * One swap hop of a router route. A path runs from one path-starting call to
+ * the next, so hops of different paths never chain into each other.
+ */
+export interface RouteHop {
+  /** Index of the hop's line in `actions`. */
+  action: number;
+  /** Index of the hop's command in the PTB. */
+  command: number;
+  /** The route path it belongs to, counted in PTB order from 0; -1 before any path start. */
+  path: number;
+  coin_in: string;
+  coin_out: string;
+}
+
+/** A run of consecutive hops in one path that starts from a coin and returns to it. */
+export interface RouteLoop {
+  /** The loop's hops, in order: the first takes the coin in, the last gives it back. */
+  hops: RouteHop[];
+}
+
+/**
+ * The round trips inside router paths: within one path, a run of consecutive
+ * hops, each taking in the coin the previous one gave out, whose last hop
+ * gives out the coin its first hop took in. From each hop the shortest such
+ * run is taken, and the search resumes after it, so loops never overlap.
+ */
+export function routeLoops(hops: RouteHop[]): RouteLoop[] {
+  const loops: RouteLoop[] = [];
+  let i = 0;
+  while (i < hops.length) {
+    let end = -1;
+    for (let j = i; j < hops.length && hops[j].path === hops[i].path; j++) {
+      if (j > i && hops[j].coin_in !== hops[j - 1].coin_out) break;
+      if (hops[j].coin_out === hops[i].coin_in) {
+        end = j;
+        break;
+      }
+    }
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    loops.push({ hops: hops.slice(i, end + 1) });
+    i = end + 1;
+  }
+  return loops;
 }
 
 /** One address's net change in one coin, signed: negative means it paid. */
@@ -321,8 +372,10 @@ export function decodeTransaction(
   const markers = routeMarkers(commands, hasCoinEvidence);
   // The coin a route's path holds: its start coin, then each hop's output.
   let pathCoin: string | null = null;
+  let path = -1;
+  const routeHops: RouteHop[] = [];
 
-  for (const cmd of commands) {
+  for (const [index, cmd] of commands.entries()) {
     const c = cmd.command;
     switch (c.oneofKind) {
       case "moveCall": {
@@ -347,14 +400,20 @@ export function decodeTransaction(
         }
 
         const routed = typeArgs.length >= 2 && markers.has(typeArgs[0]);
-        if (routed && typeArgs.length === 2 && !op) pathCoin = typeArgs[1];
+        if (routed && typeArgs.length === 2 && !op) {
+          pathCoin = typeArgs[1];
+          path++;
+        }
 
         if (op) {
           let args = typeArgs;
           if (op.action === "swap" && routed) {
             const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence);
             args = hop ?? typeArgs.slice(1);
-            if (hop) pathCoin = hop[1];
+            if (hop) {
+              pathCoin = hop[1];
+              routeHops.push({ action: actions.length, command: index, path, coin_in: hop[0], coin_out: hop[1] });
+            }
           } else if (op.action === "swap") {
             args = swapDirection(
               typeArgs,
@@ -411,5 +470,6 @@ export function decodeTransaction(
     protocols: [...protocols],
     actions,
     token_flow: tokenFlow,
+    route_hops: routeHops,
   };
 }

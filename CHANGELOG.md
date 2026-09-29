@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Changed
+- **The docs site has investigation examples and task-based navigation.**
+  Five worked examples (a protocol exploit, a token rug, a drainer kit, a
+  claim farm and a package authority check) show each tool call with its
+  arguments and a trimmed excerpt of the answer. "Start here" lists common
+  tasks and links each to an example or page, and the front page links to the
+  examples. Pages no longer state counts or sizes that change with the
+  product; the profile list and each tool group's summary table are generated
+  with the tool reference.
 - **The README is an overview; the documentation moved to a docs site.**
   The README keeps the install snippet, one investigation example and links.
   Every other section moved to pages under `site/src/content/docs/` (an

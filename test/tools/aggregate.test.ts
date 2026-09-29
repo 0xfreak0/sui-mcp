@@ -37,13 +37,10 @@ const page = {
 describe("aggregate_events with a value_field no event carries", () => {
   // A path nothing carries sums to 0 for every group, and a ranking of zeros
   // would read as a measured one.
-  it("is an error that lists the numeric fields the events do carry", async () => {
+  it("rejects an all-missing field after reading the complete window", async () => {
     mockGqlQuery.mockResolvedValue(page);
     const r = await tools.get("aggregate_events")!({ sender: SENDER, max_events: 50, value_field: "no_such_field" });
     expect(r.isError).toBe(true);
-    expect(JSON.parse(r.content[0].text).error).toBe(
-      'value_field "no_such_field" is not a number in any of the 2 events scanned. Numeric fields they carry: amount_in.',
-    );
   });
 
   it("still sums a field the events carry", async () => {
@@ -328,5 +325,45 @@ describe("aggregate_events MCP continuation arguments", () => {
       { sender: SENDER, afterCheckpoint: 0, beforeCheckpoint: 100 },
       { sender: SENDER, afterCheckpoint: 0, beforeCheckpoint: 100 },
     ]);
+  });
+});
+
+describe("aggregate_events value fields across slices", () => {
+  it("counts missing values and preserves continuation through partial and resumed all-missing slices", async () => {
+    mockGqlQuery.mockReset();
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const index = Number(vars?.after ?? 0);
+      return {
+        events: {
+          nodes: index === 1 ? page.events.nodes : [{
+            sender: { address: SENDER },
+            contents: { type: { repr: TYPE }, json: { msg: "synthetic" } },
+          }],
+          pageInfo: { hasNextPage: index < 3, endCursor: String(index + 1) },
+        },
+      };
+    });
+    const args = { sender: SENDER, value_field: "amount_in", max_reads: 1 };
+    let cursor: string | undefined;
+    for (const expected of [
+      { event_count: 1, missing_value_count: 1, value_sum: 0 },
+      { event_count: 2, missing_value_count: 0, value_sum: 300 },
+      { event_count: 1, missing_value_count: 1, value_sum: 0 },
+      { event_count: 1, missing_value_count: 1, value_sum: 0 },
+    ]) {
+      const response = await tools.get("aggregate_events")!({ ...args, cursor });
+      expect(response.isError).toBeUndefined();
+      const slice = JSON.parse(response.content[0].text);
+      expect(slice.groups).toEqual([{ key: SENDER, ...expected }]);
+      expect(slice.truncated).toBe(true);
+      if (slice.has_next_page) {
+        cursor = slice.scan.next_call.repeat_with.cursor;
+        expect(cursor).toBe(slice.next_cursor);
+      } else {
+        expect(slice.scan.stop_reason).toBe("exhausted");
+        expect(slice.next_cursor).toBeNull();
+      }
+    }
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars?.after)).toEqual([undefined, "1", "2", "3"]);
   });
 });

@@ -75,6 +75,11 @@ Top-N rankings, `distinct_keys`, `distribution` and `group_pnl` are not additive
 One transaction's events can span slices, so adding slice P&L can count that
 transaction more than once.
 
+An all-missing `value_field` in a partial or resumed slice is counted under
+each group's `missing_value_count`; the scan can still continue. The tool
+rejects a field absent from every event only after reading the complete window
+in one call.
+
 For example, a stopped call can return:
 
 ```json

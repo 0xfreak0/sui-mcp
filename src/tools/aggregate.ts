@@ -249,9 +249,9 @@ export function registerAggregateTools(server: McpServer) {
         // the end. It never supplies the full original window's ranking.
         const truncated = hasNextPage || !!cursor;
 
-        // A path no event carries sums to 0 for every group, and a ranking of
-        // zeros reads as a measured one.
-        if (value_field && events.length > 0 && events.every((e) => readNumericPath(e.data, value_field) === null)) {
+        // Only a complete window can establish that no event carries the
+        // field. Partial and resumed slices report missing_value_count.
+        if (!truncated && value_field && events.length > 0 && events.every((e) => readNumericPath(e.data, value_field) === null)) {
           const fields = [...new Set([...samplesByType.values()].flatMap((d) => suggestValueFields(d)))];
           return errorResult(
             `value_field ${JSON.stringify(value_field.slice(0, 80))} is not a number in any of the ${events.length} events scanned. ` +

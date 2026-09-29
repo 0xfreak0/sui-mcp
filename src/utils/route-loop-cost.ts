@@ -49,6 +49,12 @@ export interface RouteLoopReport {
   /** Sent minus returned, formatted; negative when more came back. Null when unknown. */
   cost: string | null;
   cost_method: "pool_events" | "unknown";
+  /**
+   * Why the cost is unknown, present only then: the transaction emitted no
+   * events, their fields were not read, a hop matched no verified pool swap
+   * event, or the matched amounts do not carry from hop to hop.
+   */
+  cost_unknown?: "no_events" | "fields_unread" | "unmatched" | "amounts_do_not_chain";
   /** Present when the loop is its path's whole share of a route that starts and ends in the loop's coin. */
   whole_trade?: true;
   note: string;
@@ -154,27 +160,31 @@ export function describeRouteLoops(
     const span = `actions ${first.action} to ${last.action}`;
     const base = { hops: [first.action, last.action] as [number, number], coins, ...(whole_trade ? { whole_trade: true as const } : {}) };
 
-    let reason: string | null = null;
+    let unknown: { code: NonNullable<RouteLoopReport["cost_unknown"]>; reason: string } | null = null;
     const missing = hops.filter((h) => !matched.has(h));
-    if (unread !== null) reason = unread;
-    else if (events.length === 0) reason = "the transaction emitted no events";
+    if (unread !== null) unknown = { code: "fields_unread", reason: unread };
+    else if (events.length === 0) unknown = { code: "no_events", reason: "the transaction emitted no events" };
     else if (missing.length)
-      reason = `no pool swap event of a verified shape matched action${missing.length > 1 ? "s" : ""} ${missing.map((h) => h.action).join(", ")} by command, coins and direction`;
+      unknown = {
+        code: "unmatched",
+        reason: `no pool swap event of a verified shape matched action${missing.length > 1 ? "s" : ""} ${missing.map((h) => h.action).join(", ")} by command, coins and direction`,
+      };
     else if (hops.some((h, k) => k > 0 && matched.get(hops[k - 1])!.amount_out !== matched.get(h)!.amount_in))
-      reason = "the matched pool events' amounts do not carry from one hop to the next";
+      unknown = { code: "amounts_do_not_chain", reason: "the matched pool events' amounts do not carry from one hop to the next" };
 
     const trade = `The route starts and ends in ${symbol}, so the round trip ${coins} (${span}) is its path's whole share of the routed trade`;
-    if (reason) {
-      const unknown = `because ${reason}, and the sender's balance changes cannot stand in since they net the whole transaction.`;
+    if (unknown) {
+      const because = `because ${unknown.reason}, and the sender's balance changes cannot stand in since they net the whole transaction.`;
       return {
         ...base,
         sent: null,
         returned: null,
         cost: null,
         cost_method: "unknown",
+        cost_unknown: unknown.code,
         note: whole_trade
-          ? `${trade}; its result is unknown ${unknown}`
-          : `The route sent ${symbol} through a loop, ${coins} (${span}), that came back to ${symbol}; what it cost is unknown ${unknown} ${LEAD}`,
+          ? `${trade}; its result is unknown ${because}`
+          : `The route sent ${symbol} through a loop, ${coins} (${span}), that came back to ${symbol}; what it cost is unknown ${because} ${LEAD}`,
       };
     }
     const inAmount = matched.get(first)!.amount_in;
@@ -185,8 +195,15 @@ export function describeRouteLoops(
     const diff = formatCoinAmount(outAmount > inAmount ? outAmount - inAmount : inAmount - outAmount, coin);
     const moved = `${sent} went in and ${returned} came back by the pools' own swap events`;
     if (whole_trade) {
-      const result = outAmount > inAmount ? `a gain of ${diff}` : outAmount < inAmount ? `a loss of ${diff}` : "no change";
-      return { ...base, sent, returned, cost, cost_method: "pool_events", note: `${trade}: ${moved}, ${result} before gas.` };
+      const result = outAmount > inAmount ? `${diff} more than went in` : outAmount < inAmount ? `${diff} less than went in` : "exactly what went in";
+      return {
+        ...base,
+        sent,
+        returned,
+        cost,
+        cost_method: "pool_events",
+        note: `${trade}: ${moved}, ${result}. Gas and any fee the router charged outside the pools are not counted.`,
+      };
     }
     const outcome = outAmount < inAmount ? `so the loop cost ${diff}` : outAmount === inAmount ? "so the loop cost nothing" : `so ${diff} more came back than went in`;
     return {

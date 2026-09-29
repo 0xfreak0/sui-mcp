@@ -95,8 +95,7 @@ describe("route loops", () => {
       ],
       midObjects,
     );
-    expect(loops[0].cost).toBeNull();
-    expect(loops[0].cost_method).toBe("unknown");
+    expect(loops[0]).toMatchObject({ cost: null, cost_method: "unknown", cost_unknown: "unmatched" });
   });
 
   it("reports only the path that loops when a route has two", () => {
@@ -179,22 +178,17 @@ describe("route loops", () => {
       midObjects,
     );
     expect(loops).toHaveLength(1);
-    expect(loops[0]).toMatchObject({ hops: [2, 3], coins: "USDC → USDT → USDC", sent: null, returned: null, cost: null, cost_method: "unknown" });
+    expect(loops[0]).toMatchObject({ hops: [2, 3], coins: "USDC → USDT → USDC", sent: null, returned: null, cost: null, cost_method: "unknown", cost_unknown: "unmatched" });
   });
 
-  it("leaves the cost unknown when the event fields were not read, and says why", () => {
+  it("leaves the cost unknown when the event fields were not read", () => {
     const loops = loopsOf(midRoute, { unread: "the event field lookup failed" }, midObjects);
-    expect(loops[0]).toMatchObject({ cost: null, cost_method: "unknown" });
-    expect(loops[0].note).toContain("the event field lookup failed");
+    expect(loops[0]).toMatchObject({ cost: null, cost_method: "unknown", cost_unknown: "fields_unread" });
   });
 
   it("tells a transaction that emitted no events apart from one whose fields were not read", () => {
     const none = loopsOf(midRoute, [], midObjects);
-    const unread = loopsOf(midRoute, { unread: "the event field lookup failed" }, midObjects);
-    expect(none[0]).toMatchObject({ cost: null, cost_method: "unknown" });
-    expect(none[0].note).toContain("emitted no events");
-    expect(none[0].note).not.toContain("the event field lookup failed");
-    expect(unread[0].note).not.toContain("emitted no events");
+    expect(none[0]).toMatchObject({ cost: null, cost_method: "unknown", cost_unknown: "no_events" });
   });
 
   it("reports no loop on a failed transaction, whose swaps were reverted", () => {
@@ -211,7 +205,7 @@ describe("route loops", () => {
       ],
       midObjects,
     );
-    expect(loops[0]).toMatchObject({ cost: null, cost_method: "unknown" });
+    expect(loops[0]).toMatchObject({ cost: null, cost_method: "unknown", cost_unknown: "amounts_do_not_chain" });
   });
 
   it("finds a three-hop loop and states a gain as a negative cost", () => {

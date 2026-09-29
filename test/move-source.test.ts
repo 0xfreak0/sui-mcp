@@ -54,7 +54,7 @@ describe("parseMoveModule", () => {
   it("reads declarations and skips method aliases, comments and literals", () => {
     expect(m.name).toBe("demo");
     expect(m.functions.map((f) => f.name)).toEqual(["take_ref", "consume", "private_entry", "each", "for_testing"]);
-    expect(m.constants.map((c) => c.name)).toEqual(["ENope"]);
+    expect(m.constants.map((c) => [c.name, c.value])).toEqual([["ENope", 'b"fun (not) a function"']]);
   });
 
   it("reads visibility, entry, parameter modes and types resolved through use lines", () => {

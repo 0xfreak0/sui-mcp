@@ -116,6 +116,13 @@ function upgradePolicyLabel(policy: number | undefined): string {
   }
 }
 
+/** The policy values `upgradePolicyLabel` names, as `package.move` declares them. */
+export const UPGRADE_POLICY_CLAIMS: FrameworkClaim[] = [
+  { constant: "package::COMPATIBLE", value: "0", why: "policy 0 reads as compatible" },
+  { constant: "package::ADDITIVE", value: "128", why: "policy 128 reads as additive-only" },
+  { constant: "package::DEP_ONLY", value: "192", why: "policy 192 reads as dependency-only" },
+];
+
 const ADDR2 = "0x0000000000000000000000000000000000000000000000000000000000000002";
 
 /** Classify a struct type as a capability kind, or null if it isn't cap-like. */

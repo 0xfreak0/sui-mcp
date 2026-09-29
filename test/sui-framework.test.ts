@@ -21,11 +21,18 @@ import {
   readObjectMovements,
   type GqlObjectChange,
 } from "../src/utils/object-flow.js";
-import { MINT_DISCOVERY_CLAIMS, SUPPLY_CLAIMS, classifyCapType, classifyCapabilityRisk } from "../src/utils/capabilities.js";
+import {
+  MINT_DISCOVERY_CLAIMS,
+  SUPPLY_CLAIMS,
+  UPGRADE_POLICY_CLAIMS,
+  classifyCapType,
+  classifyCapabilityRisk,
+} from "../src/utils/capabilities.js";
 import { REGISTRY_LAYOUT_CLAIMS } from "../src/utils/onchain-coin-registry.js";
 import { DENY_LIST_LAYOUT_CLAIMS } from "../src/utils/deny-list.js";
 import { ADDRESS_BALANCE_CLAIMS } from "../src/utils/address-balance.js";
 import { ALIAS_CLAIMS } from "../src/utils/identity.js";
+import { DENY_LIST_ID_CLAIMS } from "../src/utils/deny-list-probe.js";
 import { FRAMEWORK_TRANSFER_RECIPIENT_ARG } from "../src/utils/ptb-anomalies.js";
 
 const SOURCES =
@@ -42,11 +49,11 @@ function moveFiles(dir: string): string[] {
 const modules: MoveModule[] = moveFiles(SOURCES).map((f) => parseMoveModule(readFileSync(f, "utf8")));
 const functions = new Map<string, MoveFunction>();
 const structs = new Map<string, MoveStruct>();
-const constants = new Set<string>();
+const constants = new Map<string, string>();
 for (const m of modules) {
   for (const f of m.functions) if (!f.testOnly) functions.set(`${m.name}::${f.name}`, f);
   for (const s of m.structs) if (!s.testOnly) structs.set(`${m.name}::${s.name}`, s);
-  for (const c of m.constants) constants.add(`${m.name}::${c.name}`);
+  for (const c of m.constants) constants.set(`${m.name}::${c.name}`, c.value);
 }
 
 /** `module::Name` of a full `0x…::module::Name` type. */
@@ -56,7 +63,15 @@ const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /** What is wrong with a claim against the source; empty when it holds. */
 function problems(claim: FrameworkClaim): string[] {
-  if ("constant" in claim) return constants.has(claim.constant) ? [] : ["no such constant"];
+  if ("constant" in claim) {
+    const value = constants.get(claim.constant);
+    if (value === undefined) return ["no such constant"];
+    if (claim.address && !(/^@0x[0-9a-f]+$/i.test(value) && BigInt(value.slice(1)) === BigInt(claim.address))) {
+      return [`holds ${value}, claimed @${claim.address}`];
+    }
+    if (claim.value !== undefined && value !== claim.value) return [`holds ${value}, claimed ${claim.value}`];
+    return [];
+  }
   if ("struct" in claim) return structProblems(claim);
   return functionProblems(claim);
 }
@@ -134,8 +149,10 @@ const CLAIM_SETS: Record<string, FrameworkClaim[]> = {
   "object-flow OBJECT_FLOW_CLAIMS": OBJECT_FLOW_CLAIMS,
   "capabilities SUPPLY_CLAIMS": SUPPLY_CLAIMS,
   "capabilities MINT_DISCOVERY_CLAIMS": MINT_DISCOVERY_CLAIMS,
+  "capabilities UPGRADE_POLICY_CLAIMS": UPGRADE_POLICY_CLAIMS,
   "onchain-coin-registry REGISTRY_LAYOUT_CLAIMS": REGISTRY_LAYOUT_CLAIMS,
   "deny-list DENY_LIST_LAYOUT_CLAIMS": DENY_LIST_LAYOUT_CLAIMS,
+  "deny-list-probe DENY_LIST_ID_CLAIMS": DENY_LIST_ID_CLAIMS,
   "address-balance ADDRESS_BALANCE_CLAIMS": ADDRESS_BALANCE_CLAIMS,
   "identity ALIAS_CLAIMS": ALIAS_CLAIMS,
   "ptb-anomalies FRAMEWORK_TRANSFER_RECIPIENT_ARG": payoutClaims,

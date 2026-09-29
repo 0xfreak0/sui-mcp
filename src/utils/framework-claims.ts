@@ -44,6 +44,10 @@ export interface StructClaim {
 /** A named constant the framework declares, `module::NAME`. */
 export interface ConstantClaim {
   constant: string;
+  /** The address the constant holds, in any spelling. */
+  address?: string;
+  /** The value as the source writes it, for a number. */
+  value?: string;
   why: string;
 }
 

@@ -27,6 +27,7 @@ A failure names the claim or the function that no longer holds.
 | `deny_list.move` | cited by a claim |
 | `display.move` | cited by a claim |
 | `kiosk/transfer_policy.move` | cited by a claim |
+| `object.move` | cited by a claim |
 | `package.move` | cited by a claim |
 | `party.move` | cited by a claim |
 | `pay.move` | cited by a claim |

@@ -15,6 +15,7 @@ export const CITED_FILES = [
   "deny_list.move",
   "display.move",
   "kiosk/transfer_policy.move",
+  "object.move",
   "package.move",
   "party.move",
   "pay.move",

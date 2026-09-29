@@ -92,12 +92,20 @@ interface CurrencyJson {
   treasury_cap_id?: unknown;
 }
 
+/** The `CoinRegistry` object, the parent every derived `Currency` id is computed under. */
+const COIN_REGISTRY_ID = "0xc";
+
 /**
- * The registry layout this reader relies on: `Currency`'s field names, the
- * variant names of its supply and regulated states, and `CurrencyKey<T>()`
- * having no fields, so its BCS is the compiler's one dummy byte.
+ * The registry layout this reader relies on: the registry's id, a `Currency`
+ * from `new_currency` or `finalize_registration` claiming the id derived from
+ * `CurrencyKey<T>()` under it, `Currency`'s field names, the variant names of
+ * its supply and regulated states, and `CurrencyKey<T>()` having no fields,
+ * so its BCS is the compiler's one dummy byte.
  */
 export const REGISTRY_LAYOUT_CLAIMS: FrameworkClaim[] = [
+  { constant: "object::SUI_COIN_REGISTRY_OBJECT_ID", address: COIN_REGISTRY_ID, why: "Currency ids are derived under the CoinRegistry" },
+  { fn: "coin_registry::new_currency", calls: ["derived_object::claim"], why: "a new_currency Currency sits at the id derived from its type" },
+  { fn: "coin_registry::finalize_registration", calls: ["derived_object::claim"], why: "a registered one-time-witness Currency sits at the id derived from its type" },
   {
     struct: "coin_registry::Currency",
     fields: ["id", "decimals", "name", "symbol", "description", "icon_url", "supply", "regulated", "treasury_cap_id", "metadata_cap_id", "extra_fields"],
@@ -178,7 +186,7 @@ export async function readDerivedCurrencies(coinTypes: string[]): Promise<Map<st
   for (const t of coinTypes) {
     const canonical = normalizeCoinType(t);
     if (!canonical) continue;
-    byId.set(normalizeSuiAddress(deriveObjectID("0xc", `0x2::coin_registry::CurrencyKey<${canonical}>`, new Uint8Array([0]))), canonical);
+    byId.set(normalizeSuiAddress(deriveObjectID(COIN_REGISTRY_ID, `0x2::coin_registry::CurrencyKey<${canonical}>`, new Uint8Array([0]))), canonical);
   }
   const ids = [...byId.keys()];
   const out = new Map<string, RegistryCurrency>();

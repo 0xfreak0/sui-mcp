@@ -62,6 +62,8 @@ export interface MoveStruct {
 export interface MoveConstant {
   module: string;
   name: string;
+  /** The value expression as written. */
+  value: string;
   line: number;
 }
 
@@ -313,8 +315,10 @@ export function parseMoveModule(src: string): MoveModule {
     });
   }
 
-  for (const m of code.matchAll(/(?:^|[\s;{}])const\s+(\w+)\s*:/g)) {
-    constants.push({ module: moduleName, name: m[1]!, line: lineAt(m.index! + m[0].indexOf("const")) });
+  for (const m of code.matchAll(/(?:^|[\s;{}])const\s+(\w+)\s*:[^=]*=/g)) {
+    const from = m.index! + m[0].length;
+    const value = squash(src.slice(from, code.indexOf(";", from)));
+    constants.push({ module: moduleName, name: m[1]!, value, line: lineAt(m.index! + m[0].indexOf("const")) });
   }
 
   const FUN = /\b(?:(public)\s*(\(\s*(?:package|friend)\s*\))?\s+)?(?:(entry)\s+)?(?:(native)\s+)?(?:(macro)\s+)?fun\s+(`?\w+`?)/g;

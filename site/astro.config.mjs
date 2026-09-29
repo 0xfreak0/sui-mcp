@@ -5,6 +5,7 @@ import starlightLinksValidator from "starlight-links-validator";
 
 // https://starlight.astro.build/reference/configuration/
 export default defineConfig({
+  site: "https://sui-mcp.vercel.app",
   integrations: [
     starlight({
       title: "sui-mcp",
@@ -17,6 +18,8 @@ export default defineConfig({
       plugins: [starlightLinksValidator()],
       // Labels the reference/tools/ sidebar group; see the file.
       routeMiddleware: "./src/routeData.ts",
+      // Table cells wrap long text so tables fit the content column.
+      customCss: ["./src/styles/custom.css"],
       sidebar: [
         { label: "Getting started", items: [{ autogenerate: { directory: "start" } }] },
         { label: "Guides", items: [{ autogenerate: { directory: "guides" } }] },

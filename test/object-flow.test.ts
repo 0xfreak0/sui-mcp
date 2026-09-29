@@ -245,6 +245,39 @@ describe("readGrpcObjectChanges — the archive CAN report object changes", () =
   });
 });
 
+describe("readGrpcObjectChanges — an object effects v1 deleted or wrapped", () => {
+  /**
+   * Effects version 1 record no owners for an object they end: the input
+   * existed, the output does not, and a wrap is listed as DELETED with the
+   * wrapped marker as its output digest.
+   */
+  const stake: GrpcChangedObject = {
+    objectId: `0x${"5".repeat(64)}`,
+    objectType: "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui",
+    inputState: 2, // EXISTS
+    inputVersion: 15n,
+    outputState: 1, // DOES_NOT_EXIST
+    outputDigest: "7gyGAp71YXQRoxmFBaHxofQXAipvgHyBKPyxmdSJxyvz",
+    idOperation: 3, // DELETED
+  };
+  const WRAPPED = "6ws1bVyu3F8wGy1fPHhrc2v8UyWiGbRAAuek8SwikKPD";
+
+  it("reports a deletion with its holder unrecorded", () => {
+    const [m] = readGrpcObjectChanges([stake]);
+    expect(m).toMatchObject({ kind: "deleted", from: null, to: null, source_unrecorded: true });
+  });
+
+  it("reports a wrap as wrapped, and not as a custody change with nobody at either end", () => {
+    const m = readGrpcObjectChanges([{ ...stake, outputDigest: WRAPPED }]);
+    expect(m).toMatchObject([{ kind: "wrapped", from: null, to: null, source_unrecorded: true }]);
+    expect(custodyChanges(m)).toEqual([]);
+  });
+
+  it("leaves out an object unwrapped and deleted in the same transaction, which no one held", () => {
+    expect(readGrpcObjectChanges([{ ...stake, inputState: 1, inputVersion: undefined }])).toEqual([]);
+  });
+});
+
 describe("classifyKind edge cases", () => {
   it("prefers deleted over created on a contradictory entry", () => {
     const [m] = readObjectMovements([

@@ -3065,6 +3065,13 @@ Seven rules, every one of them a bug that shipped to `main` first:
   changes at checkpoint 20,000,000. Reading that as "unwrapped" and dropping it
   loses every object transfer over the chain's first year, the era a backward
   trace reaches. It is reported as `appeared` with the ambiguity stated.
+  gRPC renders the same effects (version 1) with no owner on EITHER side of
+  an object they deleted or wrapped, and dropping those as ownerless lost
+  every StakedSui a 2023 withdrawal deleted from `summarize_address_flows`
+  while its SUI still counted as inflow. An existing input with no output is
+  reported as `deleted` or `wrapped` (`isDeletion`: effects v1 lists a wrap
+  as DELETED with the wrapped marker digest) with `source_unrecorded`. Such a
+  wrap names no party, so it is not a custody change.
 - **`appeared` is custody ONLY when it lands on a party** — an address, an
   object or a consensus owner. Admitting every `appeared` turned ordinary
   shared-object traffic into custody changes: a live Pyth price update reported
@@ -3736,10 +3743,13 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   withdrawal reads as a loss or a gain of the whole position.
 - **An object whose previous holder went unrecorded is resolved first.**
   Before about March 2024 effects stored no input owner, so every changed
-  object reads `appeared`. Its holder is read at the input version: the same
-  address makes it a kept object, another address a transfer, and an object
-  or an unreadable version a `custody` row (`prior_holder_unknown` or
-  `unwrapped`).
+  object reads `appeared`, and one they deleted or wrapped carries
+  `source_unrecorded`. Its holder is read at the input version: for
+  `appeared`, the same address makes it a kept object, another address a
+  transfer, and an object or an unreadable version a `custody` row
+  (`prior_holder_unknown` or `unwrapped`); a deleted or wrapped one left
+  the address that held it, left no address when an object held it, and is
+  listed as unread when that version's holder could not be read.
 - **A kept object counts the change in its amounts, at one set of prices.**
   An object its holder kept but the transaction changed (liquidity added,
   a deposit into an obligation) is read after the transaction and before

@@ -240,7 +240,9 @@ its supply as fixed or burn-only (recording that consumes the cap), or the
 coin is SUI, whose Supply was destroyed at genesis.
 
 `analyze_package` also reports `upgrade_cap`, the cap's owner-change count and
-latest change. `get_upgrade_history` joins every version to its publisher, the
+latest change. A package whose publish transaction passed its new UpgradeCap
+to `0x2::package::make_immutable` never had a cap object: both tools say it is
+immutable and name that transaction. `get_upgrade_history` joins every version to its publisher, the
 publisher's signing scheme and the cap holder at that moment, and `as_of`
 answers who held upgrade authority at a given time:
 

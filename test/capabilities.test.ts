@@ -257,6 +257,45 @@ describe("auditPackageCapabilities — destroyed UpgradeCap", () => {
   });
 });
 
+// SUIPUMP 0xeb195778…'s publish 4nDW27KiRYFacgfKLVBU5yBTDHmFrDaZhCy2QEYaTcQ6
+// runs Publish, then 0x2::package::make_immutable(Result(0)) (read live): the
+// cap is created and destroyed in one transaction and no object change shows it.
+describe("auditPackageCapabilities — a package made immutable in its publish transaction", () => {
+  const PUBLISHER = "0xa19c3be9e4a8a85ca40def19932a2867ff0f33f27bcacdd1d8bf2c01e8ab3a31";
+  const PUBLISH = "4nDW27KiRYFacgfKLVBU5yBTDHmFrDaZhCy2QEYaTcQ6";
+  const makeImmutable = (argument: Record<string, unknown>) => ({
+    __typename: "MoveCallCommand",
+    function: { name: "make_immutable", module: { name: "package", package: { address: P2 } } },
+    arguments: [argument],
+  });
+  const chain = (commands: Array<Record<string, unknown>>) => {
+    gqlQuery.mockReset();
+    gqlQuery.mockImplementation(async (query: string) => {
+      if (query.includes("packageAt(version: 1)")) {
+        return { package: { packageAt: { previousTransaction: { digest: PUBLISH, effects: { objectChanges: gqlPage([]) } } } } };
+      }
+      if (query.includes("commands(first: 50")) {
+        return { transaction: { kind: { commands: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: commands } } } };
+      }
+      throw new Error(`unexpected query in test: ${query}`);
+    });
+  };
+
+  it("reports the UpgradeCap the publish destroyed, citing the transaction", async () => {
+    chain([{ __typename: "PublishCommand" }, makeImmutable({ __typename: "TxResult", cmd: 0 })]);
+    const [cap] = (await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities;
+    expect(cap).toMatchObject({ kind: "upgrade", object_id: null, owner: "burned", destroyed_in_tx: PUBLISH, risk: "info" });
+    expect(cap.note).toContain(`made immutable in its publish transaction ${PUBLISH}`);
+  });
+
+  it("claims nothing when make_immutable takes another cap, or the transaction publishes twice", async () => {
+    chain([{ __typename: "PublishCommand" }, makeImmutable({ __typename: "Input" })]);
+    expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities).toEqual([]);
+    chain([{ __typename: "PublishCommand" }, { __typename: "PublishCommand" }, makeImmutable({ __typename: "TxResult", cmd: 0 })]);
+    expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities).toEqual([]);
+  });
+});
+
 describe("auditPackageCapabilities — wrapped TreasuryCap", () => {
   const CAP = "0x9945b2f35c85dffbb1c6f289c7cef8f7d253771d803d79f9df680f588153590e";
   const PUBLISHER = "0xdd7126a71c9c29145dd71bd28ef0db7d986cde112641d4b659e8144d86e9c2ec";

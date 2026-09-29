@@ -10,7 +10,7 @@ import { findRedeploys, REDEPLOY_CAP_PAGES, REDEPLOY_MAX_PACKAGE_READS, type Fun
 import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
 import { describeSignatures, readAuthentication, type Authentication } from "../utils/multisig.js";
 import { ownerDesc, type OwnerDesc } from "../utils/object-history.js";
-import { readObjectEnd } from "../utils/object-end.js";
+import { madeImmutableAtPublish, readObjectEnd } from "../utils/object-end.js";
 import { diffLinkage, type LinkageEntry } from "../utils/package-diff.js";
 import { SYSTEM_PACKAGE } from "../utils/system-packages.js";
 import {
@@ -23,6 +23,7 @@ import {
   upgradeFlags,
   upgradePolicyName,
   usualHolder,
+  type CapEnd,
   type CapVersion,
   type ChainPoint,
   type PublishedVersion,
@@ -358,13 +359,19 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         // unreadable, the newest upgrade also wrote it.
         let capId: string | null = null;
         let capNote: string | undefined;
+        // The publish itself passed its new UpgradeCap to make_immutable, so
+        // no cap object ever existed: the package is immutable from birth.
+        let immutableAtPublish = false;
         if (systemPackage) {
           capNote = "This is a framework package. It upgrades in place at protocol version boundaries and has no UpgradeCap.";
         } else {
           if (root.tx) capId = await findCapIn(root.tx, root.package_id);
           const newest = versions[versions.length - 1];
           if (!capId && newest !== root && newest.tx) capId = await findCapIn(newest.tx, newest.package_id);
-          if (!capId) {
+          if (!capId && root.tx) immutableAtPublish = await madeImmutableAtPublish(root.tx).catch(() => false);
+          if (immutableAtPublish) {
+            capNote = `The package was made immutable in its publish transaction ${root.tx}: it passed the UpgradeCap its Publish command returned to 0x2::package::make_immutable, which destroyed it, so no UpgradeCap object ever existed and nobody can upgrade this package.`;
+          } else if (!capId) {
             capNote =
               "No UpgradeCap was found in the publish transaction or the newest upgrade, so cap custody is unknown. This is not evidence the package is immutable.";
           }
@@ -376,12 +383,14 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         // An end that cannot be read leaves the state unknown, never "exists".
         const gone = !!capId && !!cap && !cap.exists && caps.length > 0;
         let endError: string | null = null;
-        const end = gone
-          ? await readObjectEnd(capId!).catch((e: unknown) => {
-              endError = e instanceof Error ? e.message : String(e);
-              return null;
-            })
-          : null;
+        const end: CapEnd | null = immutableAtPublish
+          ? { kind: "deleted", tx: root.tx, timestamp: root.timestamp, checkpoint: root.checkpoint, sender: root.sender }
+          : gone
+            ? await readObjectEnd(capId!).catch((e: unknown) => {
+                endError = e instanceof Error ? e.message : String(e);
+                return null;
+              })
+            : null;
         if (gone && !end) {
           capNote = `The UpgradeCap no longer exists at top level, and whether it was destroyed or wrapped could not be read${endError ? `: ${endError}` : ""}. Its last recorded holder no longer holds it at top level.`;
         }
@@ -490,7 +499,10 @@ export function registerUpgradeHistoryTools(server: McpServer) {
                         "The cap's history does not reach back to its creation, so custody before the first version shown is unknown and holders at early versions may be missing.",
                     }),
               }
-            : null,
+            : immutableAtPublish
+              ? // Created and destroyed by the publish: it never existed as an object, so it has no id or holder.
+                { object_id: null, state: "deleted", current_holder: null, policy: null, owner_change_count: 0, history_complete: true }
+              : null,
           ...(capNote ? { upgrade_cap_note: capNote } : {}),
           usual_holder: usual
             ? { ...describeHolder(usual.holder, auth, ids), share_of_time: usual.share_of_time }

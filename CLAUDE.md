@@ -4562,6 +4562,16 @@ must be answerable from these tools, and no case check calls
   holder at an upgrade is the cap's INPUT owner, and `get_upgrade_history`'s
   usual holder is measured in time held, not versions, so an eleven-minute
   loan that shipped one version does not become the norm.
+- **A package can be immutable from its publish.** A publish PTB that passes
+  its Publish command's result to `0x2::package::make_immutable` creates and
+  destroys the UpgradeCap in one transaction, so no object change shows a cap
+  (`0xeb195778…::suipump`, publish `4nDW27Ki…`). `madeImmutableAtPublish`
+  (`object-end.ts`) reads the publish's commands and claims this only for one
+  Publish command whose result `make_immutable` takes. `get_upgrade_history`
+  then reports state `deleted` with `cap_end` at the publish, and the
+  capability audit an UpgradeCap entry with `object_id: null`, owner `burned`
+  and `destroyed_in_tx`. A package whose publish shows no cap and made no such
+  call keeps "custody unknown": that is not evidence of immutability.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

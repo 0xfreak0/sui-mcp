@@ -6,7 +6,7 @@ import { assessCapHolder, isUnspendableAddress, type CapHolderStatus } from "./u
 import { fetchTypeOrigins, type TypeOrigin } from "./package-versions.js";
 import { describeAddresses } from "./identity.js";
 import { schemeLabel } from "./upgrade-history.js";
-import { readObjectEnd } from "./object-end.js";
+import { madeImmutableAtPublish, readObjectEnd } from "./object-end.js";
 import { readDerivedCurrencies, readRegistryCurrency, type RegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
 import { normalizeCoinType } from "./coin-registry.js";
 import type { FrameworkClaim } from "./framework-claims.js";
@@ -42,7 +42,11 @@ export type CapRisk = "high" | "medium" | "low" | "info";
 export interface CapabilityInfo {
   kind: CapKind;
   type: string;
-  object_id: string;
+  /**
+   * Null only for an UpgradeCap its package's publish transaction created and
+   * destroyed (`destroyed_in_tx`): it never existed as a stored object.
+   */
+  object_id: string | null;
   owner: OwnerKind;
   owner_address?: string;
   /**
@@ -66,6 +70,11 @@ export interface CapabilityInfo {
   signing_scheme?: string;
   /** `wrapped` only: the transaction that stored the cap inside another object. */
   wrapped_in_tx?: string;
+  /**
+   * UpgradeCap only: the publish transaction that passed the cap its Publish
+   * command returned to `0x2::package::make_immutable`, destroying it there.
+   */
+  destroyed_in_tx?: string;
   /**
    * TreasuryCap only, when the publish transaction did not create it: how it
    * was found. `coin_registry` is the id `coin_registry::Currency<T>` records,
@@ -184,12 +193,14 @@ export function classifyCapabilityRisk(input: {
   wrappedInTx?: string;
   /** `object` only: the type of the object that holds the cap (`ownerAddress`). */
   ownerType?: string;
+  /** `burned` UpgradeCap only: the publish transaction that destroyed it with `package::make_immutable`. */
+  destroyedInTx?: string;
   /** The cap no longer exists at top level. */
   gone?: boolean;
   /** `burned` TreasuryCap only: the on-chain coin registry's supply state, or `unread` when the read failed. */
   supplyState?: SupplyState | "unread";
 }): { risk: CapRisk; note: string } {
-  const { kind, type, owner, ownerAddress, policyLabel, wrappedInTx, ownerType, gone, supplyState } = input;
+  const { kind, type, owner, ownerAddress, policyLabel, wrappedInTx, ownerType, destroyedInTx, gone, supplyState } = input;
   // A party object has exactly one owner, so it is held the way an
   // address-owned object is. Reading it as shared would say anyone might
   // reach a capability that only its owner can use.
@@ -230,6 +241,12 @@ export function classifyCapabilityRisk(input: {
 
   if (kind === "upgrade") {
     if (owner === "burned") {
+      if (destroyedInTx) {
+        return {
+          risk: "info",
+          note: `The package was made immutable in its publish transaction ${destroyedInTx}: it passed the UpgradeCap its Publish command returned to 0x2::package::make_immutable, which destroyed it, so no UpgradeCap object ever existed and nobody can upgrade this package.`,
+        };
+      }
       return { risk: "info", note: "UpgradeCap has been destroyed — the package is immutable and can never be changed." };
     }
     if (contained) {
@@ -378,6 +395,7 @@ interface PublishScanResult {
     packageAt: {
       address?: string;
       previousTransaction: {
+        digest?: string;
         effects: {
           objectChanges: {
             pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -397,6 +415,7 @@ const PUBLISH_SCAN_QUERY = `query ($p: SuiAddress!, $after: String) {
     packageAt(version: 1) {
       address
       previousTransaction {
+        digest
         effects {
           objectChanges(first: 50, after: $after) {
             pageInfo { hasNextPage endCursor }
@@ -806,6 +825,7 @@ export async function auditPackageCapabilities(
   const capObjects: CapObject[] = [];
   const publishedCoins = new Set<string>();
   let rootId = normalizeSuiAddress(packageId);
+  let publishDigest: string | undefined;
   let after: string | null = null;
   let pages = 0;
   try {
@@ -817,6 +837,7 @@ export async function auditPackageCapabilities(
         return { checked: false, capabilities: [], note: "Publish transaction unavailable (pruned or not found) — cannot audit capabilities." };
       }
       if (published?.address) rootId = normalizeSuiAddress(published.address);
+      publishDigest ??= published?.previousTransaction?.digest;
       for (const n of changes.nodes) {
         const repr = n.outputState?.asMoveObject?.contents?.type?.repr;
         const id = n.outputState?.address;
@@ -832,6 +853,11 @@ export async function auditPackageCapabilities(
   } catch (err) {
     return { checked: false, capabilities: [], note: `Capability audit failed: ${(err as Error).message}` };
   }
+  // A publish that passed its new UpgradeCap to make_immutable created and
+  // destroyed it in one transaction, so no object change shows it. Read only
+  // when the scan found no UpgradeCap; a read that fails claims nothing.
+  const immutableAtPublish =
+    !!publishDigest && !capObjects.some((c) => c.kind === "upgrade") && (await madeImmutableAtPublish(publishDigest).catch(() => false));
 
   // 1b. Every other authority-named struct the package defines, whether or
   // not a live instance was minted at publish. Object ids the publish scan
@@ -1112,6 +1138,12 @@ export async function auditPackageCapabilities(
       };
     }),
   );
+
+  if (immutableAtPublish) {
+    const type = `${ADDR2}::package::UpgradeCap`;
+    const { risk, note } = classifyCapabilityRisk({ kind: "upgrade", type, owner: "burned", destroyedInTx: publishDigest });
+    capabilities.push({ kind: "upgrade", type, object_id: null, owner: "burned", destroyed_in_tx: publishDigest, risk, note });
+  }
 
   // 3. Signing scheme for every held cap, one batched identity lookup.
   const ownerAddrs = [

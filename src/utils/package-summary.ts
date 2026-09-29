@@ -79,7 +79,7 @@ export interface CapabilityGroup {
   risk: CapabilityInfo["risk"];
   count: number;
   holders: Array<{
-    object_id: string;
+    object_id: CapabilityInfo["object_id"];
     owner_address?: string;
     owner_type?: string;
     signing_scheme?: string;

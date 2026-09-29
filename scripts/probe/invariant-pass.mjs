@@ -884,11 +884,18 @@ async function checkFlows(address, history) {
     const left = s.omitted?.lists?.coins?.count ?? 0;
     const byType = new Map((f.coins ?? []).map((c) => [normType(c.coin_type), c]));
     const inOrder = listed.every((c, i) => i === 0 || full.indexOf(normType(c.coin_type)) > full.indexOf(normType(listed[i - 1].coin_type)));
-    const sameTotals = listed.every((c) => JSON.stringify(c.raw) === JSON.stringify(byType.get(normType(c.coin_type))?.raw));
-    check(I.flows, inOrder && sameTotals && listed.length + left === full.length, {
+    const sameTotals = listed.every((c) => byType.has(normType(c.coin_type)) && JSON.stringify(c.raw) === JSON.stringify(byType.get(normType(c.coin_type)).raw));
+    // Coins are ranked by USD value, which each call reads from a price
+    // service. Under a stable sort two coins keep the same relative order when
+    // their USD values are the same in both views.
+    const usdOf = (c) => JSON.stringify(c?.usd ?? null);
+    const samePrices = listed.every((c) => usdOf(c) === usdOf(byType.get(normType(c.coin_type))));
+    if (!samePrices) skip(I.flows, "a coin's USD value differed between the full and default reads, so their order is not compared");
+    const coinsOf = (xs) => xs.map((c) => `${c.symbol}:${c.raw?.in}/${c.raw?.out}`);
+    check(I.flows, (inOrder || !samePrices) && sameTotals && listed.length + left === full.length, {
       seed: SEED, tool: "summarize_address_flows", args: sArgs,
-      got: { listed: listed.map((c) => `${c.symbol}:${c.raw?.in}/${c.raw?.out}`), omitted: left },
-      raw: `the full view's ${full.length} coins`,
+      got: { in_order: inOrder, same_prices: samePrices, same_totals: sameTotals, count: `${listed.length} listed + ${left} omitted`, listed: coinsOf(listed) },
+      raw: { full_count: full.length, full: coinsOf(f.coins ?? []) },
     });
   }
   const after = f.window?.after_checkpoint ?? w.after;

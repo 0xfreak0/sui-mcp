@@ -56,3 +56,38 @@ and network unchanged.
 With `all_versions: true`, rows wait until the next rows or exhaustion of
 every version stream establish their global order. The cursor retains progress
 through empty reads as well as transactions already returned.
+
+## Partial event rankings
+
+`aggregate_events` scans oldest first, stopping at either `max_events` or
+`max_reads`. Empty reads count against `max_reads` across every module segment.
+At a budget stop, `truncated` is true and `scan.stop_reason` is `event_budget`
+or `read_budget`. Continue with `scan.next_call.repeat_with` on
+`aggregate_events`, keeping the same filters and network. The opaque cursor
+records the module segment and scan boundary, including empty reads; it does
+not identify a covered checkpoint range.
+
+Each call ranks a disjoint event slice. A resumed ranking remains `truncated`
+even when `has_next_page` becomes false, because it excludes earlier slices.
+Per-key event counts and `value_sum` add only when every group was retained in
+every slice (`scan.groups_complete`); values retain each slice's rounding.
+Top-N rankings, `distinct_keys`, `distribution` and `group_pnl` are not additive.
+One transaction's events can span slices, so adding slice P&L can count that
+transaction more than once.
+
+For example, a stopped call can return:
+
+```json
+{
+  "truncated": true,
+  "has_next_page": true,
+  "scan": {
+    "reads": 3,
+    "stop_reason": "read_budget",
+    "next_call": {
+      "tool": "aggregate_events",
+      "repeat_with": { "cursor": "opaque-next-cursor" }
+    }
+  }
+}
+```

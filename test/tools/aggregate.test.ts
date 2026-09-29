@@ -169,3 +169,132 @@ describe("aggregate_events module filter resolution", () => {
     expect(data.no_results_hint).not.toMatch(/event_type/);
   });
 });
+
+describe("aggregate_events bounded event slices", () => {
+  beforeEach(() => { mockGqlQuery.mockReset(); });
+
+  const event = (amount: number) => ({
+    sender: { address: "0x1" },
+    transaction: { digest: `tx${amount}` },
+    contents: { type: { repr: "0x2::test::Event" }, json: { amount } },
+  });
+  const result = async (args: Record<string, unknown>) => {
+    const response = await tools.get("aggregate_events")!(args);
+    expect(response.isError).toBeUndefined();
+    return JSON.parse(response.content[0].text);
+  };
+
+  it("stops short and empty reads independently of event count, then resumes disjoint counts and sums", async () => {
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const n = Number(vars?.after ?? 0);
+      const nodes = n === 0 ? [event(100)] : n === 2 ? [event(200)] : n === 3 ? [event(300)] : [];
+      return { events: { nodes, pageInfo: { hasNextPage: n < 3, endCursor: String(n + 1) } } };
+    });
+    const args = { sender: "0x1", value_field: "amount", max_events: 50, max_reads: 3 };
+    const first = await result(args);
+    expect(first.events_scanned).toBe(2);
+    expect(first.groups[0]).toMatchObject({ key: "0x1", event_count: 2, value_sum: 300 });
+    expect(first.truncated).toBe(true);
+    expect(first.has_next_page).toBe(true);
+    expect(first.scan.stop_reason).toBe("read_budget");
+    expect(first.scan.reads).toBe(3);
+    expect(first.scan.next_call.tool).toBe("aggregate_events");
+    const second = await result({ ...args, ...first.scan.next_call.repeat_with });
+    expect(second.groups[0]).toMatchObject({ key: "0x1", event_count: 1, value_sum: 300 });
+    expect(second.has_next_page).toBe(false);
+    expect(second.truncated).toBe(true);
+    expect(second.scan.stop_reason).toBe("exhausted");
+    expect(second.scan.start_cursor).toBe(first.next_cursor);
+  });
+
+  it("bounds empty reads without declaring an empty window", async () => {
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const n = Number(vars?.after ?? 0);
+      return { events: { nodes: [], pageInfo: { hasNextPage: n < 4, endCursor: String(n + 1) } } };
+    });
+    const first = await result({ sender: "0x1", max_reads: 2 });
+    expect(first.events_scanned).toBe(0);
+    expect(first.truncated).toBe(true);
+    expect(first.has_next_page).toBe(true);
+    expect(first.scan.stop_reason).toBe("read_budget");
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+    expect(first.next_cursor).toBe("0|2");
+  });
+
+  it("shares the read cap across cutover segments and resumes in the unfinished segment", async () => {
+    const original = `0x${"a".repeat(64)}`;
+    const upgraded = `0x${"b".repeat(64)}`;
+    const cut = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    mockGqlQuery.mockImplementation(async (q, vars) => {
+      if (q?.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: original, version: 1 }, { address: upgraded, version: 2 }], pageInfo: { hasNextPage: false } } };
+      }
+      const filter = vars?.filter as { module: string };
+      const before = filter.module.startsWith(original);
+      const n = Number(vars?.after ?? 0);
+      return { events: { nodes: n ? [event(before ? 10 : 20)] : [], pageInfo: { hasNextPage: n === 0, endCursor: String(n + 1) } } };
+    });
+    const args = { module: `${upgraded}::test`, from: cut - 100, to: cut + 100, max_reads: 3, value_field: "amount" };
+    const first = await result(args);
+    expect(first.events_scanned).toBe(1);
+    expect(first.scan.stop_reason).toBe("read_budget");
+    expect(first.scan.reads).toBe(3);
+    expect(first.next_cursor).toBe("1|1");
+    const second = await result({ ...args, ...first.scan.next_call.repeat_with });
+    expect(second.events_scanned).toBe(1);
+    expect(second.groups[0].value_sum).toBe(20);
+    expect(second.has_next_page).toBe(false);
+    expect(second.scan.reads).toBe(1);
+  });
+
+  it("distinguishes an event-budget stop at a segment boundary and continues in the next segment", async () => {
+    const original = `0x${"c".repeat(64)}`;
+    const upgraded = `0x${"d".repeat(64)}`;
+    const cut = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    mockGqlQuery.mockImplementation(async (q, vars) => {
+      if (q?.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: original, version: 1 }, { address: upgraded, version: 2 }], pageInfo: { hasNextPage: false } } };
+      }
+      const filter = vars?.filter as { module: string };
+      const before = filter.module.startsWith(original);
+      return { events: { nodes: before ? Array.from({ length: 50 }, (_, i) => event(i)) : [event(100)], pageInfo: { hasNextPage: false, endCursor: "end" } } };
+    });
+    const args = { module: `${upgraded}::test`, from: cut - 100, to: cut + 100, max_reads: 5, max_events: 50 };
+    const first = await result(args);
+    expect(first.events_scanned).toBe(50);
+    expect(first.scan.stop_reason).toBe("event_budget");
+    expect(first.next_cursor).toBe("1|");
+    const second = await result({ ...args, ...first.scan.next_call.repeat_with });
+    expect(second.events_scanned).toBe(1);
+    expect(second.has_next_page).toBe(false);
+  });
+
+  it("marks a top-N slice's omitted groups so its rows cannot be treated as an additive total", async () => {
+    mockGqlQuery.mockResolvedValue({
+      events: {
+        nodes: [event(100), { ...event(200), contents: { type: { repr: "0x2::test::Other" }, json: { amount: 200 } } }],
+        pageInfo: { hasNextPage: true, endCursor: "next" },
+      },
+    });
+    const page = await result({ sender: "0x1", group_by: "event_type", max_reads: 1, top: 1, value_field: "amount" });
+    expect(page.groups).toEqual([{ key: "0x2::test::Other", event_count: 1, value_sum: 200, missing_value_count: 0 }]);
+    expect(page.distinct_keys).toBe(2);
+    expect(page.scan.groups_complete).toBe(false);
+  });
+});
+
+describe("aggregate_events default read bound", () => {
+  it("stops empty reads even when max_reads was not supplied", async () => {
+    mockGqlQuery.mockReset();
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const n = Number(vars?.after ?? 0);
+      return { events: { nodes: [], pageInfo: { hasNextPage: n < 201, endCursor: String(n + 1) } } };
+    });
+    const response = await tools.get("aggregate_events")!({ sender: "0x1" });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.truncated).toBe(true);
+    expect(result.scan.stop_reason).toBe("read_budget");
+    expect(result.scan.reads).toBe(200);
+    expect(result.next_cursor).toBe("0|200");
+  });
+});

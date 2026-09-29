@@ -46,6 +46,8 @@ interface EventPage {
 /** GraphQL caps a page at 50, so a big window is a lot of round trips. */
 const PAGE_SIZE = 50;
 const DEFAULT_MAX_EVENTS = 10_000;
+/** Independent of matching-event count; empty reads spend this budget too. */
+const DEFAULT_MAX_READS = 200;
 const DEFAULT_PNL_TRANSACTIONS = 500;
 /** P&L rows listed per sender. The row says how many more digests there are. */
 const PNL_DIGESTS = 5;
@@ -57,7 +59,7 @@ export function registerAggregateTools(server: McpServer) {
       "Filter by event type, module or sender, bound by ISO timestamps or checkpoints, and group by sender or event type. " +
       "Call it WITHOUT value_field first: it returns counts plus a sample event and the numeric fields available, so you can see what the protocol emits (many carry their own USD valuation) and then re-run naming that field. " +
       "With group_pnl it also ranks the senders of the matched transactions by what their own balances did in them, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
-      "Always check `truncated`: a partial scan produces a confidently wrong ranking.",
+      "Always check `truncated`: a partial scan cannot establish the full-window ranking. The scan stops at max_events or max_reads, including empty reads; `scan.stop_reason` distinguishes the budgets and `scan.next_call` continues with aggregate_events itself. Pass its opaque cursor with the same filters and network. Each call ranks a disjoint event slice, not a cumulative window; a resumed ranking remains truncated even at exhaustion. Per-key event counts and value_sum add only when every group was retained in every slice (`scan.groups_complete`), subject to value rounding. Top-N rankings, distinct_keys, distribution and group_pnl are not additive.",
     {
       event_type: z
         .string()
@@ -105,6 +107,15 @@ export function registerAggregateTools(server: McpServer) {
         .max(50_000)
         .optional()
         .describe(`Scan budget (default ${DEFAULT_MAX_EVENTS}). Raise for busy protocols, or narrow the window.`),
+      max_reads: numArg()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .describe(`Event-connection read budget across all segments (default ${DEFAULT_MAX_READS}). Short or empty reads count too. A read-budget stop is truncated and scan.next_call continues the unread event slice.`),
+      cursor: z.string()
+        .optional()
+        .describe("Opaque next_cursor from a previous aggregate_events call. Keep the same filters and network. Reads the next disjoint event slice; counts are not cumulative and the ranking remains truncated for the original window."),
       group_pnl: boolArg()
         .optional()
         .describe(
@@ -133,6 +144,8 @@ export function registerAggregateTools(server: McpServer) {
       top,
       sort_order,
       max_events,
+      max_reads,
+      cursor,
       group_pnl,
       pnl_max_transactions,
       detail,
@@ -166,13 +179,16 @@ export function registerAggregateTools(server: McpServer) {
             : [{ afterCheckpoint: window.after?.checkpoint ?? null, beforeCheckpoint: window.before?.checkpoint ?? null }];
 
         const budget = max_events ?? DEFAULT_MAX_EVENTS;
+        const readBudget = max_reads ?? DEFAULT_MAX_READS;
+        const bar = cursor?.indexOf("|") ?? -1;
+        let segIdx = cursor ? Number(cursor.slice(0, bar)) : 0;
+        let innerCursor = cursor ? cursor.slice(bar + 1) || undefined : undefined;
+        if (cursor && (bar < 1 || !Number.isInteger(segIdx) || segIdx < 0 || segIdx >= segments.length)) {
+          return errorResult("cursor is not an aggregate_events continuation for this window. Keep the same filters and pass next_cursor from the previous call.");
+        }
         const events: AggregatableEvent[] = [];
         let pages = 0;
-        // Truncation is reported because a ranking built from a partial scan
-        // looks exactly like a complete one. True when any segment stopped
-        // mid-scan on budget, or a later segment was skipped entirely because
-        // budget was already spent.
-        let truncated = false;
+        let cursorUnavailable = false;
         // One sample per event type, not just the first event seen. A protocol
         // emits bookkeeping events (reward refreshes, rate updates) far more
         // often than user actions, so a single sample almost always describes
@@ -182,11 +198,8 @@ export function registerAggregateTools(server: McpServer) {
         // Distinct transactions behind the events, oldest first, for group_pnl.
         const txDigests = new Set<string>();
 
-        for (const seg of segments) {
-          if (events.length >= budget) {
-            truncated = true;
-            break;
-          }
+        while (segIdx < segments.length && events.length < budget && pages < readBudget) {
+          const seg = segments[segIdx];
           const filter: Record<string, unknown> = {};
           if (typeFilter) filter.type = typeFilter.filter;
           if (seg.module) filter.module = seg.module;
@@ -194,38 +207,47 @@ export function registerAggregateTools(server: McpServer) {
           if (seg.afterCheckpoint != null) filter.afterCheckpoint = seg.afterCheckpoint;
           if (seg.beforeCheckpoint != null) filter.beforeCheckpoint = seg.beforeCheckpoint;
 
-          let cursor: string | undefined;
-          let hasNext = true;
-          while (hasNext && events.length < budget) {
-            const page: EventPage = await gqlQuery(PAGE_QUERY, {
-              filter,
-              first: Math.min(PAGE_SIZE, budget - events.length),
-              after: cursor,
-            });
-            pages++;
+          const page: EventPage = await gqlQuery(PAGE_QUERY, {
+            filter,
+            first: Math.min(PAGE_SIZE, budget - events.length),
+            after: innerCursor,
+          });
+          pages++;
 
-            for (const n of page.events.nodes) {
-              const t = n.contents?.type?.repr;
-              if (t) {
-                countsByType.set(t, (countsByType.get(t) ?? 0) + 1);
-                if (!samplesByType.has(t) && n.contents?.json) samplesByType.set(t, n.contents.json);
-              }
-              if (n.transaction?.digest) txDigests.add(n.transaction.digest);
-              events.push({
-                sender: n.sender?.address ?? null,
-                type: n.contents?.type?.repr ?? null,
-                data: n.contents?.json,
-              });
+          for (const n of page.events.nodes) {
+            const t = n.contents?.type?.repr;
+            if (t) {
+              countsByType.set(t, (countsByType.get(t) ?? 0) + 1);
+              if (!samplesByType.has(t) && n.contents?.json) samplesByType.set(t, n.contents.json);
             }
-
-            hasNext = page.events.pageInfo.hasNextPage;
-            cursor = page.events.pageInfo.endCursor;
-            // A claimed next page with no cursor would re-read page one and
-            // double-count those events in the ranking.
-            if (!cursor) break;
+            if (n.transaction?.digest) txDigests.add(n.transaction.digest);
+            events.push({
+              sender: n.sender?.address ?? null,
+              type: n.contents?.type?.repr ?? null,
+              data: n.contents?.json,
+            });
           }
-          if (hasNext) truncated = true;
+
+          if (!page.events.pageInfo.hasNextPage) {
+            segIdx += 1;
+            innerCursor = undefined;
+            continue;
+          }
+          innerCursor = page.events.pageInfo.endCursor;
+          // A claimed next page without its boundary cannot be resumed
+          // without re-reading and double-counting events.
+          if (!innerCursor) {
+            cursorUnavailable = true;
+            break;
+          }
         }
+        const hasNextPage = segIdx < segments.length;
+        const nextCursor = hasNextPage && !cursorUnavailable ? `${segIdx}|${innerCursor ?? ""}` : null;
+        const stopReason = !hasNextPage ? "exhausted" : cursorUnavailable ? "cursor_unavailable"
+          : events.length >= budget ? "event_budget" : "read_budget";
+        // A resumed call ranks only its unread slice, even when it reaches
+        // the end. It never supplies the full original window's ranking.
+        const truncated = hasNextPage || !!cursor;
 
         // A path no event carries sums to 0 for every group, and a ranking of
         // zeros reads as a measured one.
@@ -268,17 +290,38 @@ export function registerAggregateTools(server: McpServer) {
           events_scanned: events.length,
           pages_fetched: pages,
           truncated,
+          has_next_page: hasNextPage,
+          next_cursor: nextCursor,
           ...(truncated
             ? {
-                truncation_warning:
-                  `Hit the ${budget}-event budget with more available. This ranking is INCOMPLETE — ` +
-                  "narrow from/to or raise max_events before drawing conclusions.",
+                truncation_warning: hasNextPage
+                  ? `The scan stopped at ${stopReason}. This ranking covers only the events read in this call, not the full window.`
+                  : "This resumed ranking covers only the remaining event slice, not the full window.",
+                scan: {
+                  reads: pages,
+                  stop_reason: stopReason,
+                  start_cursor: cursor ?? null,
+                  groups_complete: result.groups.length === result.distinct_keys,
+                  note: "The service reads a bounded range per request and can return fewer events than asked, or none, while more remain. Continuations read disjoint event slices with the same filters and network; cursors do not expose checkpoint coverage. Per-key event counts and value_sum add only when every group was retained in every slice (groups_complete), subject to value rounding. Top-N rankings, distinct_keys, distribution and group_pnl are not additive.",
+                  ...(nextCursor
+                    ? {
+                        next_call: {
+                          tool: "aggregate_events",
+                          repeat_with: {
+                            cursor: nextCursor,
+                            ...(window.after?.checkpoint != null ? { from: window.after.checkpoint } : {}),
+                            ...(window.before?.checkpoint != null ? { to: window.before.checkpoint } : {}),
+                          },
+                        },
+                      }
+                    : {}),
+                },
               }
             : {}),
           ...(events.length === 0
             ? {
                 no_results_hint: [
-                  "No events matched.",
+                  truncated ? "No matching events were found in this scan slice; the full window has not been ranked." : "No events matched.",
                   ...(event_type
                     ? [
                         "`event_type` filters on the struct's DEFINING package, which for many protocols differs from the package you call, so try `module` with the same address instead.",
@@ -347,7 +390,7 @@ export function registerAggregateTools(server: McpServer) {
         };
         const { payload: out } = capPayload(
           "aggregate_events",
-          { event_type, module, sender, from, to, group_by, value_field, value_scale, top, sort_order, max_events, group_pnl, pnl_max_transactions },
+          { event_type, module, sender, from, to, group_by, value_field, value_scale, top, sort_order, max_events, max_reads, cursor, group_pnl, pnl_max_transactions },
           payload,
           {
             ...Object.fromEntries((pnl?.senders ?? []).map((_, i) => [`pnl.senders.${i}.net`, coinCap])),

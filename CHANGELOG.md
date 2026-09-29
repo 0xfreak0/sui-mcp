@@ -31,9 +31,9 @@
   Publisher or custom cap stays usable through functions that take it by
   `&`. Object traces list these under `opened_capabilities`,
   `get_transaction` marks them `opened: true` in `object_transfers`, and
-  `poll_watch` reports `capability_moved` for them, including a cap shared or
-  frozen in the transaction that created it, which none of them showed
-  before.
+  `poll_watch` reports `capability_moved` for a framework cap and
+  `object_moved` for a custom one, including a cap shared or frozen in the
+  transaction that created it, which none of them showed before.
 - `get_transaction` and the other decoded views named a router's own
   bookkeeping type as a coin in swaps routed through Aftermath's router
   (`Swap RouterDataV1 → USDC`). Each hop now shows the coins it traded, in

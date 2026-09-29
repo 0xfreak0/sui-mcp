@@ -20,10 +20,10 @@
  * transactions, a PTB with 100+ commands or balance changes, a package, shared
  * and owned objects, a kiosk, an object holding an address balance, and a bridge
  * exit. Every tool answer is compared with a raw GraphQL read taken in the same
- * run. A value that moves while it is read (a balance, an object's version) is
- * read before and after the tool call, and the tool must equal one of the two.
- * An address's page is compared with the raw page read up to the checkpoint of
- * the tool's newest row.
+ * run. A value that moves while it is read is read before and after the tool
+ * call: a balance must equal one of the two reads, and an object's version must
+ * lie between them. An address's page is compared with the raw page read up to
+ * the checkpoint of the tool's newest row.
  *
  * Prints pass/fail counts per invariant and, for every failure, the seed, the
  * tool call and the raw value. Exits 1 on any failure.
@@ -705,9 +705,9 @@ async function checkpointsOf(digests, known) {
  * are in later checkpoints. Both tools page the same `transactions` connection
  * as the raw read (newest first reverses it), so within a checkpoint too the
  * order is the connection's on both sides, and the two pages must be equal row
- * for row. The tool's newest row is no older than the newest row of the raw
- * page read before the call: a row already there when the tool read is on its
- * page. Returns the verdict, the raw page compared with, and what differs.
+ * for row. The tool read after the raw page passed as `before`, so its newest
+ * row is no older than that page's newest row. Returns the verdict, the raw
+ * page compared with, and what differs.
  */
 async function pageAtToolRead(address, order, limit, digests, before, known) {
   const beforeNewest = Math.max(-1, ...before.rows.map((r) => r.checkpoint));

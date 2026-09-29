@@ -219,10 +219,10 @@ describe("prompts", () => {
     expect(prompts.map((p) => p.name).sort()).toEqual([
       "attribute_cluster",
       "investigate_address",
-      "is_this_protocol_safe",
-      "is_this_token_safe",
       "trace_incident",
       "was_i_scammed",
+      "who_controls_this_protocol",
+      "who_controls_this_token",
       "who_is_this_wallet",
     ]);
   });
@@ -230,7 +230,7 @@ describe("prompts", () => {
   it("requires only the arguments a prompt marks required", async () => {
     await expect(client.getPrompt({ name: "was_i_scammed", arguments: { digest: ADDR } })).resolves.toBeDefined();
     await expect(client.getPrompt({ name: "was_i_scammed", arguments: {} })).resolves.toBeDefined();
-    await expect(client.getPrompt({ name: "is_this_token_safe", arguments: {} })).rejects.toThrow();
+    await expect(client.getPrompt({ name: "who_controls_this_token", arguments: {} })).rejects.toThrow();
   });
 
   // The protocol makes `arguments` optional in prompts/get.

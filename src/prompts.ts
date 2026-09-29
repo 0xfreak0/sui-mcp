@@ -56,20 +56,58 @@ const caseLine = (caseName?: string) =>
     : "Record each established claim with save_finding under one case name, and render the case with export_case at the end.";
 
 /**
- * How an everyday prompt answers. The reader is not an investigator, so the
- * answer they can act on comes first and the evidence after it.
+ * The line every answer of a control prompt ends with. The answerer fills in
+ * the checkpoint or time its reads describe.
  */
-const EVERYDAY_ANSWER = [
-  "Answer in this order:",
-  "1. The plain answer: at most 4 sentences, which someone new to crypto can act on. Count them before you send. Use everyday words: no key-scheme names (ed25519, secp256k1), no tool, field or check names, and no terms such as proof-of-reserves or escrow without saying what they mean; say one key, or a group of N keys of which M must sign. When How sure is high, state the finding directly, without hedging it.",
-  "2. One line `How sure: high|medium|low`, then one sentence, in the same everyday words, naming the evidence it rests on and what was not checked. High means chain data answers the question directly; medium means it rests on a label, a blocklist or a heuristic; low means a read the answer depends on failed, was skipped or found nothing. When the advice depends on something not read, the level covers that part too.",
-  "3. The key evidence: the digests and addresses behind the answer, one short line each.",
-  "",
-  "Rules:",
+export const CONTROL_LIMITS =
+  "This describes who controls it as of <checkpoint or time>. It is not an audit or financial advice; code bugs, economic design, oracles and audits were not checked.";
+
+const HOW_SURE =
+  "High means chain data answers the question directly; medium means it rests on a label, a blocklist or a heuristic; low means a read the answer depends on failed, was skipped or found nothing.";
+
+const PLAIN_WORDS =
+  "Count them before you send. Use everyday words: no key-scheme names (ed25519, secp256k1), no tool, field or check names, and no term such as proof-of-reserves without saying what it means; say one key, or a group of N keys of which M must sign. When How sure is high, state the finding directly, without hedging it.";
+
+const COMMON_RULES = [
   "- A flag (a label, a blocklist entry, a lookalike pair, a risk note, a bytecode lead) is a lead, not a verdict. Say so when you report one.",
   "- An empty result clears nothing. No flag found means none was found in what was read, never that the subject is safe.",
   "- Never name or guess the real-world identity of a private person. Name only an organisation that a label names with its source, such as an exchange, a protocol or a bridge.",
   "- Keep tokens low: keep each tool's default detail level, never ask for detail: 'full', and skip a step marked optional unless the answer depends on it.",
+];
+
+/**
+ * How a prompt for someone who needs help (a loss, a payment) answers. The
+ * reader is not an investigator, so the answer they can act on comes first
+ * and the evidence after it; the only steps offered protect the wallet, keep
+ * evidence or name whom to report to.
+ */
+const HELP_ANSWER = [
+  "Answer in this order:",
+  `1. The plain answer: at most 4 sentences, which someone new to crypto can act on. ${PLAIN_WORDS}`,
+  `2. One line \`How sure: high|medium|low\`, then one sentence, in the same everyday words, naming the evidence it rests on and what was not checked. ${HOW_SURE} When the advice depends on something not read, the level covers that part too.`,
+  "3. The key evidence: the digests and addresses behind the answer, one short line each.",
+  "",
+  "Rules:",
+  "- Never give investment or legal advice. Next steps are limited to protecting the wallet, keeping evidence and whom to report to.",
+  ...COMMON_RULES,
+].join("\n");
+
+/**
+ * How a control prompt answers: who controls a coin or a protocol, as facts
+ * at the time read. Whether to use it is the reader's decision, so the answer
+ * judges nothing and recommends nothing.
+ */
+const CONTROL_ANSWER = [
+  "Answer in this order:",
+  `1. The plain answer: at most 4 sentences. Its first sentence names who controls it. ${PLAIN_WORDS}`,
+  `2. One line \`How sure: high|medium|low\`, about the facts reported, never about safety, then one sentence, in the same everyday words, naming the evidence it rests on and what was not checked. ${HOW_SURE}`,
+  "3. The key evidence: the digests and addresses behind the answer, one short line each.",
+  `4. This line, with the checkpoint or time your reads describe in place of the brackets (a read's \`checkpoint\` or \`timestamp\`, or the current date and time when no read gives one): "${CONTROL_LIMITS}"`,
+  "",
+  "Rules:",
+  "- Report facts only, each as of the checkpoint or time it was read: who can upgrade the code, mint, freeze, pause or use admin powers, what changed recently, how concentrated the holdings are, and which pools exist.",
+  "- Never say or imply that it is safe, unsafe, trustworthy or a scam, and never recommend buying, selling, depositing, holding or any amount, including putting in only what the user can afford to lose. The user decides.",
+  ...COMMON_RULES,
 ].join("\n");
 
 /** The line for steps that need a tool outside the default profile. */
@@ -178,18 +216,18 @@ export const PROMPTS: Record<string, PromptSpec> = {
         "5. Where it went (forensics): `trace_funds(digest, direction: 'forward', hops: 5)` follows the largest flow hop by hop. Read `address_poisoning` and `stop_reason`: an exchange, a bridge exit, a hub, an address that has not moved the funds yet, or the hop limit. The hop limit means the funds kept moving: trace again from the last hop's transaction before saying where they went. At a bridge exit, `resolve_bridge_transfer(digest)` names the account on the other chain. When the trace stops at an exchange, `classify_deposit_address(address)` on the last address before it says whether that is the exchange's deposit address. Optional: `screen_address(address, direction: 'out')` on the first recipient for its exposure to labelled scam, exchange and bridge accounts.",
         "6. What the user can do: keep every digest above; report to the exchange the funds reached, with the deposit address and the digests; and if `delegated_to` names an address the user did not add, that address can still move funds. If the user did not approve the transaction that took the funds and no such address signed it, someone else holds the wallet's key (its recovery phrase or private key): tell the user to make a new wallet on a clean device and move what is left to it, since a new phrase made on the device or app that leaked the old one can leak the same way, and to work out how the key leaked (a device, a browser extension, a wallet app, or a phrase saved online, photographed or typed into a site). A transfer on Sui cannot be reversed, wherever the funds went; say that plainly, never as a consequence of where they went.",
         "",
-        EVERYDAY_ANSWER,
+        HELP_ANSWER,
       ].join("\n"),
   },
-  is_this_token_safe: {
-    title: "Is this token a rug?",
+  who_controls_this_token: {
+    title: "Who controls this token?",
     description:
-      "For someone deciding whether to buy or hold a coin: who can mint or freeze it, whether its code can change, who holds it, whether it trades, and whether a scam list flags it.",
+      "Who can mint or freeze a coin and whether its code can change, how concentrated its holders are, which pools trade it, and whether the Sui wallet blocklist lists it: facts as of the time read, not an audit or advice.",
     args: [{ name: "coin_type", description: "The coin type (0x…::module::NAME). A symbol works but may match several coins.", required: true }],
     sections: ["A holder scan is not a ranking unless it finished"],
     task: ({ coin_type, network }) =>
       [
-        `Assess whether the coin ${coin_type} carries the risks of a rug pull, for a user deciding whether to buy or hold it. ${networkLine(network)}`,
+        `Report who controls the coin ${coin_type}: who can mint more, freeze holders or change its code, how concentrated its holdings are and where it trades. ${networkLine(network)}`,
         enableLine("developer", "forensics"),
         "",
         "1. `analyze_token(query)`: `verified` (a curated list names this coin type as the real coin for its symbol; it says nothing about who controls or holds it), `flagged_by` (the Sui wallet scam blocklist), supply, price, `deny_list`, and a sample of holders. A symbol several coins use returns `candidates`: ask the user which coin type they mean, and never pick one for them.",
@@ -210,32 +248,32 @@ export const PROMPTS: Record<string, PromptSpec> = {
           : "6. Liquidity: `find_pools(token_a, token_b: 'SUI')` searches Cetus, DeepBook and Turbos for pools against SUI. Say pools against USDC and every other venue were not searched.",
         "7. Deployer: `identify_address(address)` on `root_publisher` for its age (`first_seen`) and any label. Optional: `get_transaction_history(address, limit: 10)` on it, to see whether it recently sold or moved the coin.",
         "",
-        "In the plain answer, say who can mint more, freeze holders or change the code (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown), and how concentrated the holdings are.",
+        "In the plain answer, the first sentence says who can mint more, freeze holders or change the code (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown); then how concentrated the holdings are and which pools were found.",
         "",
-        EVERYDAY_ANSWER,
+        CONTROL_ANSWER,
       ].join("\n"),
   },
-  is_this_protocol_safe: {
-    title: "Is this protocol safe?",
+  who_controls_this_protocol: {
+    title: "Who controls this protocol?",
     description:
-      "For someone deciding whether to deposit into a protocol: who can upgrade its code or use its admin powers, whether that changed recently, and what its bytecode scan flags.",
+      "Who can upgrade a protocol's code or use its admin powers, how they sign, whether that changed recently, and what its bytecode scan flags: facts as of the time read, not an audit or advice.",
     args: [{ name: "protocol", description: "A package ID (0x…), an MVR name (@org/app), or a protocol name such as Cetus.", required: true }],
     sections: [],
     task: ({ protocol, network }) =>
       [
-        `Assess who controls the protocol or package ${protocol}, for a user deciding whether to deposit into it. ${networkLine(network)}`,
+        `Report who controls the protocol or package ${protocol}: who can upgrade its code or use its admin powers, and what changed recently. ${networkLine(network)}`,
         enableLine("forensics"),
         "",
         "1. Given a protocol name rather than a package ID (forensics): `resolve_protocol_packages(protocol)` lists the package versions of that protocol that emit events now. Continue with the one or two the user would call. An MVR name (@org/app) can be passed wherever a package is asked for.",
-        "2. Upgrade authority (forensics): `get_upgrade_history(package)`. `upgrade_cap` gives its `state` (exists, deleted, wrapped or unknown) and `current_holder`: an address with its signing `scheme` (one key, or a multisig with its threshold), shared (anyone can upgrade), immutable (frozen: nobody can) or an object (the rules of the contract holding it decide). Deleted, or sent to an address nobody holds a key for, means the code can no longer change, which lowers the risk, and so does a deleted cap with no `object_id`: the publish itself destroyed it; wrapped means the rules of the contract holding it decide; unknown means it could not be read, never that nobody holds it. Read the most recent entries of `versions` (when the code last changed and who signed) and `flags`: a cap round trip, a single-key upgrade while the cap is usually multisig-held, a policy change, or a cap destroyed, wrapped, frozen or shared.",
+        "2. Upgrade authority (forensics): `get_upgrade_history(package)`. `upgrade_cap` gives its `state` (exists, deleted, wrapped or unknown) and `current_holder`: an address with its signing `scheme` (one key, or a multisig with its threshold), shared (anyone can upgrade), immutable (frozen: nobody can) or an object (the rules of the contract holding it decide). Deleted, or sent to an address nobody holds a key for, means the code can no longer change, and so does a deleted cap with no `object_id`: the publish itself destroyed it; wrapped means the rules of the contract holding it decide; unknown means it could not be read, never that nobody holds it. Read the most recent entries of `versions` (when the code last changed and who signed) and `flags`: a cap round trip, a single-key upgrade while the cap is usually multisig-held, a policy change, or a cap destroyed, wrapped, frozen or shared.",
         "3. Admin powers (forensics): `analyze_package(package_id)` on the newest version. `capabilities` lists the admin caps with each holder, owner kind and risk note; a cap with owner `consensus` is held by its one owner address. A cap type minted several times is one entry with `count` and a `holders` list, and every entry of that list is a holder with its own address: report them all. A holder whose `signing_scheme` says it has never sent a transaction is still a holder; only its key is not on chain yet. `upgrade_cap` gives `owner_change_count` and `last_owner_change`; `flagged_by` is the Sui wallet scam blocklist. The `bytecode_scan` leads are hints for a reviewer, graded strong, medium or weak, and never evidence of a flaw by themselves.",
         "4. For each address holding the UpgradeCap or a single admin cap, `identify_address(address)`: a multisig committee and its members, a label, or one key. For the addresses in a `holders` list, their `signing_scheme` in step 3 is enough unless the answer turns on one of them. Optional: `analyze_multisig(address)` (forensics) says which committee keys actually sign.",
         "5. Custody (forensics): for each admin cap listed with its own `object_id` and held by an address, `trace_object_history(object_id, order: 'newest', limit: 10)` lists its recent owner changes (the UpgradeCap's are in step 3's `upgrade_cap.last_owner_change`). Say when an admin cap or the UpgradeCap changed hands recently, and from whom to whom.",
         "6. Past incidents: this server keeps no incident list for a protocol. Mention an incident only with a source you can cite, such as the protocol's own post-mortem; otherwise say past incidents were not checked.",
         "",
-        "In the plain answer, say who can change the code or use the admin powers (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown) and whether that changed recently.",
+        "In the plain answer, the first sentence says who can change the code or use the admin powers (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown); then whether that changed recently.",
         "",
-        EVERYDAY_ANSWER,
+        CONTROL_ANSWER,
       ].join("\n"),
   },
   who_is_this_wallet: {
@@ -249,7 +287,7 @@ export const PROMPTS: Record<string, PromptSpec> = {
         `Describe what the Sui account ${address} is, for a user deciding whether to trust or pay it. ${networkLine(network)}`,
         enableLine("forensics"),
         "",
-        "1. `identify_address(address)`, which takes a SuiNS name too. `type` says what it is: a wallet, a package, an object or a validator (for a package, the is_this_protocol_safe prompt answers the rest; for an object, say what it is and stop). Read:",
+        "1. `identify_address(address)`, which takes a SuiNS name too. `type` says what it is: a wallet, a package, an object or a validator (for a package, the who_controls_this_protocol prompt answers the rest; for an object, say what it is and stop). Read:",
         "   - the `label` with its `source` and `evidence`;",
         "   - `sui_name` and `names_held`: handles anyone can buy, never identity, and a name another address sent it (`provenance` received_from_third_party) says nothing about the holder;",
         "   - `authentication`: one key, a `multisig` committee, `zklogin` or `passkey`. Null means it has never sent a transaction, so how it signs is unknown. A committee is fixed by the address; a member marked `unsignable` can never sign;",
@@ -261,9 +299,9 @@ export const PROMPTS: Record<string, PromptSpec> = {
         "5. Exchange deposit behaviour (forensics, when the history shows it sending its whole balance to one address): `classify_deposit_address(address)` checks whether it behaves like an exchange's deposit address, with the exchange's label and source. Its verdict is a heuristic lead, not a ruling: read `checks` and `reasons` with it. When every outflow you saw goes to one wallet an exchange label names, say so and say the address probably belongs to a customer of that exchange, whatever the verdict; a `no` then names in `reasons` a check that failed, and does not make it a private wallet.",
         "6. Optional (forensics): `screen_address(address)` for exposure to labelled scam, sanctioned, exchange and bridge accounts within two hops; `summarize_address_flows(address)` for its main counterparties with their labels; `analyze_multisig(address)` for which keys of a multisig actually sign.",
         "",
-        "In the plain answer, describe it by what the data shows: an exchange wallet, or an exchange deposit address, which one customer of the exchange uses (with the label's source; the exchange knows the customer, so a payment that goes wrong can be reported to it with the address and the digest); a protocol or bridge account; a multisig treasury; or, only when its outflows reach no labelled exchange, an unlabelled wallet with its age and activity.",
+        "In the plain answer, describe it by what the data shows: an exchange wallet, or an exchange deposit address, which one customer of the exchange uses (with the label's source; the exchange knows the customer, so a payment that goes wrong can be reported to it with the address and the digest); a protocol or bridge account; a multisig treasury; or, only when its outflows reach no labelled exchange, an unlabelled wallet with its age and activity. Say as a fact that a payment on Sui cannot be reversed; whether and how to pay is the user's decision, so suggest no way of paying (such as escrow, paying in parts or paying only what they can afford to lose).",
         "",
-        EVERYDAY_ANSWER,
+        HELP_ANSWER,
       ].join("\n"),
   },
 };

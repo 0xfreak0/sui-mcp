@@ -10,7 +10,7 @@ sidebar:
 code question can be answered without it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint;
-  `function_name` returns one function.
+  its `function_name` argument returns one function.
 - `get_move_function` returns a function's signature and visibility.
 - `diff_package_upgrade` diffs two versions of a package, function by function.
 - `analyze_package` summarizes a package's API and runs a heuristic risk scan.

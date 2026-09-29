@@ -28,6 +28,24 @@ npm run build && npm run verify:live && npm test
 `--function`), skipping every labelled sender, when the holdout split has to
 be rotated.
 
+`token-baseline.mjs` is not a check either: it measures what the server costs
+a model's context, so a change meant to shrink it can be compared before and
+after. It reports tools/list in characters and estimated tokens (chars / 4)
+for `core`, `core` plus each other profile, and `all`; each tool's
+definition (description, input schema, whole entry), largest first; each
+tool's median and largest answer over case-pass calls; and the ten largest
+answers with their args. The answer sizes come from a case-pass `--summary`
+file (`--summary <file>`), or from a case-pass run it starts, `--smoke`
+unless `--full` is given, reading through `SUI_REPLAY_DIR` when set.
+`--out <prefix>` writes `<prefix>.json` and `<prefix>.md`, and keeps the
+summary of a run it started as `<prefix>.case-pass.json` for a later
+`--summary`; otherwise the Markdown goes to stdout.
+The definitions checkout commit is separate from the output run's provenance:
+the summary's absolute path, file modification time and `build_identity` (or
+`commit` if present). A summary without a build identity reports `unknown`;
+its file modification time need not be the run time. Arguments are reconstructed
+from the current case files and schemas, not recorded by the saved run.
+
 `test/live-coverage.test.ts` runs with `npm test` and fails when a registered
 tool is called by none of these scripts and named by no check in
 `cases/incidents/`. `adversarial.mjs` does not count toward it: it proves input
@@ -42,6 +60,13 @@ npm run verify:live -- --tier affected                  # what this branch chang
 npm run verify:live -- --tier affected --range main..HEAD
 npm run verify:live -- --tier smoke
 ```
+
+Add `--keep-summary <path>` to retain that run's case-pass summary for
+`token-baseline.mjs --summary <path>`, without repeating its calls. The path
+is relative to the invoking directory and its parent must exist. The file is
+overwritten if present. A summary is saved even when checks fail; if case-pass
+writes none, no file is saved. Without this option the temporary summary is
+deleted after the closing size report.
 
 - `affected` maps each changed file to the tools it can reach and runs only
   their checks. `lib/tiers.mjs` reads which tools each `src/tools/*.ts` file

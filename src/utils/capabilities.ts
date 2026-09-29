@@ -31,9 +31,12 @@ export type CapKind = "upgrade" | "treasury" | "deny" | "admin";
  *
  * `burned` means the object was deleted. `wrapped` means it stopped existing
  * at top level because a transaction stored it inside another object: it is
- * still live, and whatever code owns the wrapper can use it.
+ * still live, and whatever code owns the wrapper can use it. `object` means it
+ * is live and owned by another object (`ObjectOwner`), as a dynamic object
+ * field or a child object: reaching it takes the parent's `UID`, so the module
+ * that defines the parent decides who can use it, as for a wrapper.
  */
-export type OwnerKind = "address" | "consensus" | "shared" | "immutable" | "burned" | "wrapped" | "unknown";
+export type OwnerKind = "address" | "consensus" | "shared" | "immutable" | "object" | "burned" | "wrapped" | "unknown";
 export type CapRisk = "high" | "medium" | "low" | "info";
 
 export interface CapabilityInfo {
@@ -42,6 +45,11 @@ export interface CapabilityInfo {
   object_id: string;
   owner: OwnerKind;
   owner_address?: string;
+  /**
+   * `object` only: the type of the object `owner_address` names, the one that
+   * holds the cap (through a `dynamic_field::Field` for a dynamic object field).
+   */
+  owner_type?: string;
   /** UpgradeCap only: on-chain upgrade policy. */
   upgrade_policy?: string;
   /**
@@ -174,12 +182,14 @@ export function classifyCapabilityRisk(input: {
   policyLabel?: string;
   /** `wrapped` only: the transaction that stored the cap inside another object. */
   wrappedInTx?: string;
+  /** `object` only: the type of the object that holds the cap (`ownerAddress`). */
+  ownerType?: string;
   /** The cap no longer exists at top level. */
   gone?: boolean;
   /** `burned` TreasuryCap only: the on-chain coin registry's supply state, or `unread` when the read failed. */
   supplyState?: SupplyState | "unread";
 }): { risk: CapRisk; note: string } {
-  const { kind, type, owner, ownerAddress, policyLabel, wrappedInTx, gone, supplyState } = input;
+  const { kind, type, owner, ownerAddress, policyLabel, wrappedInTx, ownerType, gone, supplyState } = input;
   // A party object has exactly one owner, so it is held the way an
   // address-owned object is. Reading it as shared would say anyone might
   // reach a capability that only its owner can use.
@@ -198,7 +208,17 @@ export function classifyCapabilityRisk(input: {
     : owner;
   const shortType = type.replace(/>+$/, "").split("::").slice(-2).join("::").split("<")[0];
   const capName = type.split("<")[0].split("::").slice(-2).join("::");
-  const inside = `stored inside another object${wrappedInTx ? ` by transaction ${wrappedInTx}` : ""}, not destroyed`;
+  // A cap stored inside another object and one another object owns (a
+  // dynamic object field, a child object) are both reached only through the
+  // container's own module, so both read the same way.
+  const contained = owner === "wrapped" || owner === "object";
+  const inside =
+    owner === "object"
+      ? ownerAddress
+        ? `is held by object ${ownerAddress}${ownerType ? ` (${ownerType.split("<")[0]})` : ""}`
+        : "is held by another object"
+      : `was stored inside another object${wrappedInTx ? ` by transaction ${wrappedInTx}` : ""}, not destroyed`;
+  const container = owner === "object" ? "that object" : "the wrapper";
 
   if (owner === "unknown" && gone) {
     return {
@@ -212,10 +232,10 @@ export function classifyCapabilityRisk(input: {
     if (owner === "burned") {
       return { risk: "info", note: "UpgradeCap has been destroyed — the package is immutable and can never be changed." };
     }
-    if (owner === "wrapped") {
+    if (contained) {
       return {
         risk: "medium",
-        note: `UpgradeCap was ${inside}. The module that owns the wrapper decides who can upgrade (a governance or timelock contract, or custody); read that object and its code.`,
+        note: `UpgradeCap ${inside}. The module that owns ${container} decides who can upgrade (a governance or timelock contract, or custody); read that object and its code.`,
       };
     }
     if (unspendable) {
@@ -268,10 +288,10 @@ export function classifyCapabilityRisk(input: {
         note: `The TreasuryCap for ${shortType} was destroyed, and the on-chain coin registry does not record its supply as fixed. Destroying the cap leaves its Supply, which can still mint through ${MINT_THROUGH_SUPPLY} for whatever holds it; supply is fixed only if that holder's module cannot mint with it.`,
       };
     }
-    if (owner === "wrapped") {
+    if (contained) {
       return {
         risk: "medium",
-        note: `Mint authority (${shortType}) was ${inside}. Supply is fixed only if the module owning the wrapper cannot mint with it and cannot be upgraded into code that can; read that module and who holds its UpgradeCap.`,
+        note: `Mint authority (${shortType}) ${inside}. Supply is fixed only if the module owning ${container} cannot mint with it and cannot be upgraded into code that can; read that module and who holds its UpgradeCap.`,
       };
     }
     if (unspendable) {
@@ -300,8 +320,8 @@ export function classifyCapabilityRisk(input: {
 
   if (kind === "deny") {
     if (owner === "burned") return { risk: "info", note: `Deny/freeze authority (${shortType}) has been destroyed.` };
-    if (owner === "wrapped") {
-      return { risk: "medium", note: `Denylist/freeze authority (${shortType}) was ${inside}; the module owning the wrapper decides who can freeze.` };
+    if (contained) {
+      return { risk: "medium", note: `Denylist/freeze authority (${shortType}) ${inside}; the module owning ${container} decides who can freeze.` };
     }
     if (unspendable) {
       return {
@@ -329,7 +349,7 @@ export function classifyCapabilityRisk(input: {
 
   // admin / other *Cap
   if (owner === "burned") return { risk: "info", note: `Capability ${shortType} has been destroyed.` };
-  if (owner === "wrapped") return { risk: "low", note: `Capability ${shortType} was ${inside}; the module owning the wrapper decides who can use it.` };
+  if (contained) return { risk: "low", note: `Capability ${shortType} ${inside}; the module owning ${container} decides who can use it.` };
   if (unspendable) {
     return {
       risk: "info",
@@ -391,20 +411,38 @@ const PUBLISH_SCAN_QUERY = `query ($p: SuiAddress!, $after: String) {
   }
 }`;
 
+/** A GraphQL object owner as `CAP_OWNER` selects it. */
+interface CapOwnerNode {
+  __typename: string;
+  address?: {
+    address: string;
+    asObject?: { asMoveObject?: { contents?: { type?: { repr: string } } | null } | null; owner?: CapOwnerNode | null } | null;
+  };
+}
+
+/**
+ * An owner, with the object that owns an object-owned cap and its type, and
+ * that object's own owner: a dynamic object field is owned by a
+ * `dynamic_field::Field`, which the object holding the field owns.
+ */
+const CAP_OWNER = `owner {
+      __typename
+      ... on AddressOwner { address { address } }
+      ... on ConsensusAddressOwner { address { address } }
+      ... on ObjectOwner { address { address asObject { asMoveObject { contents { type { repr } } }
+        owner { __typename ... on ObjectOwner { address { address asObject { asMoveObject { contents { type { repr } } } } } } } } } }
+    }`;
+
 interface CapStateResult {
   object: {
-    owner: { __typename: string; address?: { address: string } } | null;
+    owner: CapOwnerNode | null;
     asMoveObject: { contents: { json: Record<string, unknown> | null } | null } | null;
   } | null;
 }
 
 const CAP_STATE_QUERY = `query ($id: SuiAddress!) {
   object(address: $id) {
-    owner {
-      __typename
-      ... on AddressOwner { address { address } }
-      ... on ConsensusAddressOwner { address { address } }
-    }
+    ${CAP_OWNER}
     asMoveObject { contents { json } }
   }
 }`;
@@ -415,8 +453,28 @@ function ownerKindOf(typename: string | undefined): OwnerKind {
     case "ConsensusAddressOwner": return "consensus";
     case "Shared": return "shared";
     case "Immutable": return "immutable";
+    case "ObjectOwner": return "object";
     default: return "unknown";
   }
+}
+
+const DYNAMIC_FIELD = `${ADDR2}::dynamic_field::Field<`;
+
+/**
+ * The kind of a cap's owner and who it is: the address, or for an
+ * object-owned cap the object that holds it and that object's type. A
+ * dynamic object field's direct owner is its `dynamic_field::Field`, so the
+ * object that owns the field is named instead.
+ */
+function readCapOwner(o: CapOwnerNode | null | undefined): { owner: OwnerKind; ownerAddress?: string; ownerType?: string } {
+  const owner = ownerKindOf(o?.__typename);
+  if (owner !== "object") return { owner, ownerAddress: o?.address?.address };
+  const direct = o?.address;
+  const directType = direct?.asObject?.asMoveObject?.contents?.type?.repr;
+  const field = directType?.startsWith(DYNAMIC_FIELD) && direct?.asObject?.owner?.__typename === "ObjectOwner";
+  const holder = field ? direct?.asObject?.owner?.address : direct;
+  const holderType = holder?.asObject?.asMoveObject?.contents?.type?.repr;
+  return { owner, ownerAddress: holder?.address, ...(holderType ? { ownerType: holderType } : {}) };
 }
 
 /** Struct names already classified by `classifyCapType`; the authority scan below skips them. */
@@ -483,7 +541,7 @@ const USER_HELD_MIN_INSTANCES = 20;
 interface TypeInstancesResult {
   objects: {
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    nodes: Array<{ address: string; owner: { __typename: string; address?: { address: string } } | null }>;
+    nodes: Array<{ address: string; owner: CapOwnerNode | null }>;
   };
 }
 
@@ -492,11 +550,7 @@ const TYPE_INSTANCES_QUERY = `query ($t: String!, $after: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       address
-      owner {
-        __typename
-        ... on AddressOwner { address { address } }
-        ... on ConsensusAddressOwner { address { address } }
-      }
+      ${CAP_OWNER}
     }
   }
 }`;
@@ -506,6 +560,8 @@ export interface CapInstance {
   id: string;
   owner: OwnerKind;
   owner_address?: string;
+  /** `object` only: the type of the object that holds it. */
+  owner_type?: string;
 }
 
 export interface ScanTypeInstancesResult {
@@ -521,7 +577,8 @@ async function scanTypeInstances(type: string): Promise<ScanTypeInstancesResult>
   while (scanned < MAX_INSTANCES_PER_STRUCT) {
     const data: TypeInstancesResult = await gqlQuery<TypeInstancesResult>(TYPE_INSTANCES_QUERY, { t: type, after });
     for (const n of data.objects.nodes) {
-      instances.push({ id: n.address, owner: ownerKindOf(n.owner?.__typename), owner_address: n.owner?.address?.address });
+      const { owner, ownerAddress, ownerType } = readCapOwner(n.owner);
+      instances.push({ id: n.address, owner, owner_address: ownerAddress, ...(ownerType ? { owner_type: ownerType } : {}) });
     }
     scanned += data.objects.nodes.length;
     if (!data.objects.pageInfo.hasNextPage) return { instances, truncated: false };
@@ -537,7 +594,7 @@ interface CapObject {
   type: string;
   kind: CapKind;
   /** State the scan that found it already read, so step 2 does not read it again. */
-  known?: { owner: OwnerKind; ownerAddress?: string; gone?: boolean; supplyState?: SupplyState };
+  known?: { owner: OwnerKind; ownerAddress?: string; ownerType?: string; gone?: boolean; supplyState?: SupplyState };
   foundBy?: CapabilityInfo["found_by"];
 }
 
@@ -693,7 +750,7 @@ async function locateTreasuryCap(
           type: capType,
           kind: "treasury" as const,
           foundBy: "type_scan" as const,
-          known: { owner: inst.owner, ownerAddress: inst.owner_address },
+          known: { owner: inst.owner, ownerAddress: inst.owner_address, ownerType: inst.owner_type },
         })),
       };
     }
@@ -848,7 +905,7 @@ export async function auditPackageCapabilities(
           // reusing it here skips an otherwise-redundant CAP_STATE_QUERY per
           // instance (up to MAX_AUTHORITY_STRUCTS * MAX_INSTANCES_PER_STRUCT
           // of them).
-          capObjects.push({ id: inst.id, type, kind: "admin", known: { owner: inst.owner, ownerAddress: inst.owner_address } });
+          capObjects.push({ id: inst.id, type, kind: "admin", known: { owner: inst.owner, ownerAddress: inst.owner_address, ownerType: inst.owner_type } });
         }
       }),
     );
@@ -981,6 +1038,7 @@ export async function auditPackageCapabilities(
     capObjects.map(async ({ id, type, kind, known, foundBy }): Promise<CapabilityInfo> => {
       let owner: OwnerKind = "unknown";
       let ownerAddress: string | undefined;
+      let ownerType: string | undefined;
       let policyLabel: string | undefined;
       let wrappedInTx: string | undefined;
       let gone = false;
@@ -988,6 +1046,7 @@ export async function auditPackageCapabilities(
       if (known) {
         owner = known.owner;
         ownerAddress = known.ownerAddress;
+        ownerType = known.ownerType;
         gone = known.gone ?? false;
         supplyState = known.supplyState;
       } else {
@@ -1012,8 +1071,7 @@ export async function auditPackageCapabilities(
               wrappedInTx = end.tx;
             }
           } else {
-            owner = ownerKindOf(state.object.owner?.__typename);
-            ownerAddress = state.object.owner?.address?.address;
+            ({ owner, ownerAddress, ownerType } = readCapOwner(state.object.owner));
             if (kind === "upgrade") {
               const policy = state.object.asMoveObject?.contents?.json?.policy;
               policyLabel = upgradePolicyLabel(typeof policy === "number" ? policy : undefined);
@@ -1023,7 +1081,7 @@ export async function auditPackageCapabilities(
           owner = "unknown";
         }
       }
-      const { risk, note } = classifyCapabilityRisk({ kind, type, owner, ownerAddress, policyLabel, wrappedInTx, gone, supplyState });
+      const { risk, note } = classifyCapabilityRisk({ kind, type, owner, ownerAddress, policyLabel, wrappedInTx, ownerType, gone, supplyState });
 
       // An UpgradeCap's holder means nothing on its own. Compared against the
       // publisher it says whether upgrade authority changed hands, which is
@@ -1040,6 +1098,7 @@ export async function auditPackageCapabilities(
         object_id: id,
         owner,
         ...(ownerAddress ? { owner_address: ownerAddress } : {}),
+        ...(ownerType ? { owner_type: ownerType } : {}),
         ...(policyLabel ? { upgrade_policy: policyLabel } : {}),
         ...(wrappedInTx ? { wrapped_in_tx: wrappedInTx } : {}),
         ...(foundBy ? { found_by: foundBy } : {}),
@@ -1055,7 +1114,9 @@ export async function auditPackageCapabilities(
   );
 
   // 3. Signing scheme for every held cap, one batched identity lookup.
-  const ownerAddrs = [...new Set(capabilities.filter((c) => c.owner_address).map((c) => c.owner_address!))];
+  const ownerAddrs = [
+    ...new Set(capabilities.filter((c) => c.owner_address && (c.owner === "address" || c.owner === "consensus")).map((c) => c.owner_address!)),
+  ];
   if (ownerAddrs.length) {
     const identities = await describeAddresses(ownerAddrs, { authentication: true }).catch(() => new Map());
     for (const cap of capabilities) {

@@ -3088,6 +3088,17 @@ Seven rules, every one of them a bug that shipped to `main` first:
   checks it against the vendored framework source and fails on a callable
   function the table does not list; a claim about the framework without a
   `FrameworkClaim` is not checked by anything.
+- **A capability another object owns reads like a wrapped one.** An
+  `ObjectOwner` cap (a dynamic object field, a child object) is live, and
+  reaching it takes the parent's `UID`, which only the parent's module can
+  give, so that module decides who can use it: `capabilities.ts` reports
+  owner `object` with the same risk a wrapped cap of that kind gets, and
+  names the holder in `owner_address` and its type in `owner_type`. A dynamic
+  object field's direct owner is its `dynamic_field::Field`, so the object
+  that owns the field is named instead: SUIPUMP's TreasuryCap
+  (`0xeb195778…::suipump::SUIPUMP`, cap `0x6f47e074…`) is a field of the
+  shared `bonding_curve::Curve<SUIPUMP>` `0x89fc98c1…`. `object-flow.ts`
+  already reads an object owner as a party.
 - **Classify a capability BEFORE a position name.** `POSITION_NAME` is
   unanchored and matches `Account`, `Obligation`, `Receipt`, `Vault` — testing
   it first turned `custodian_v2::AccountCap` and

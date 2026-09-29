@@ -214,7 +214,11 @@ TradeCap` or 0x2's `kiosk::KioskOwnerCap`, is reported as a count in
 `user_held_types` instead of one entry per holder. A struct whose instance
 scan fails outright (a timeout, a 429 after retries), or whose defining
 package version cannot be read, is named in `incomplete_scans` rather than
-silently read as having no live instances.
+silently read as having no live instances. A cap another object holds, such as a
+TreasuryCap a launchpad keeps as a dynamic object field of its bonding curve,
+reads owner `object`, with the holding object in `owner_address` and its type
+in `owner_type`, and is rated like a wrapped cap: that object's module decides
+who can use it.
 
 Mint authority is looked up for the coins the package defines, including one
 whose TreasuryCap the publish transaction never showed at top level:

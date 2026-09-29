@@ -81,6 +81,7 @@ export interface CapabilityGroup {
   holders: Array<{
     object_id: string;
     owner_address?: string;
+    owner_type?: string;
     signing_scheme?: string;
     wrapped_in_tx?: string;
     found_by?: CapabilityInfo["found_by"];
@@ -135,19 +136,23 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
       holders: members.map((c) => ({
         object_id: c.object_id,
         ...(c.owner_address ? { owner_address: c.owner_address } : {}),
+        ...(c.owner_type ? { owner_type: c.owner_type } : {}),
         ...(c.signing_scheme ? { signing_scheme: c.signing_scheme } : {}),
         ...(c.wrapped_in_tx ? { wrapped_in_tx: c.wrapped_in_tx } : {}),
         ...(c.found_by ? { found_by: c.found_by } : {}),
       })),
       // One note for every member when they all read the same; otherwise a
-      // note without any one member's address.
+      // note without any one member's address. Caps held by different
+      // objects name none: "held by object <holder of each>" says nothing.
       note: members.every((c) => c.note === head.note)
         ? head.note
         : classifyCapabilityRisk({
             kind: head.kind,
             type: head.type,
             owner: head.owner,
-            ownerAddress: sharedAddress ?? (head.owner_address ? "the holder of each object in holders" : undefined),
+            ownerAddress:
+              sharedAddress ?? (head.owner_address && head.owner !== "object" ? "the holder of each object in holders" : undefined),
+            ownerType: sharedAddress && head.owner === "object" ? head.owner_type : undefined,
           }).note,
     };
   });

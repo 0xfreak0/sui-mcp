@@ -29,7 +29,7 @@ import {
   readAuthentication,
   type Authentication,
 } from "./multisig.js";
-import { BALANCE_CHANGES_SELECTION, type GqlConnection } from "./tx-connections.js";
+import { BALANCE_CHANGES_SELECTION, readAllBalanceChanges, type GqlConnection } from "./tx-connections.js";
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 import type { FrameworkClaim } from "./framework-claims.js";
 
@@ -1203,34 +1203,37 @@ export interface FirstSeen {
   received: Array<{ coin_type: string; amount: string }>;
   /**
    * Another address sent it and this address gained coins in it, so it is
-   * the address's first inflow. Null when the balance-change list ran past
-   * one page without a gain for this address, so a gain may be unread.
+   * the address's first inflow. The genesis transaction has no sender and
+   * counts as an inflow. Null when the rest of the balance changes could not
+   * be read, so a gain may be unread.
    */
   first_inflow: boolean | null;
 }
 
 /**
- * The oldest transaction affecting `address`, in one request: null when
- * none does. Throws when the read fails, so a caller can say the age is
- * unknown instead of omitting it.
+ * The oldest transaction affecting `address`: null when none does. Throws
+ * when the first read fails, so a caller can say the age is unknown instead
+ * of omitting it.
+ *
+ * The balance changes are read to the end: genesis credits every initial
+ * holder in one transaction, so a holder's gain can sort past the first page.
  */
 export async function readFirstSeen(address: string): Promise<FirstSeen | null> {
   const data = await gqlQuery<FirstSeenResult>(FIRST_SEEN_QUERY, { addr: address });
   const node = data.transactions.nodes[0];
   if (!node) return null;
   const self = normalizeSuiAddress(address);
-  const changes = node.effects?.balanceChanges;
-  const received = (changes?.nodes ?? [])
+  const changes = await readAllBalanceChanges(node.digest, node.effects?.balanceChanges);
+  const received = changes.nodes
     .filter((c) => c.owner?.address && normalizeSuiAddress(c.owner.address) === self && c.amount && BigInt(c.amount) > 0n)
     .map((c) => ({ coin_type: c.coinType?.repr ?? "", amount: c.amount! }));
   const sender = node.sender?.address ? normalizeSuiAddress(node.sender.address) : null;
-  const unreadRows = changes?.pageInfo?.hasNextPage === true;
   return {
     digest: node.digest,
     timestamp: node.effects?.timestamp ?? null,
     checkpoint: node.effects?.checkpoint?.sequenceNumber != null ? String(node.effects.checkpoint.sequenceNumber) : null,
     sender,
     received,
-    first_inflow: received.length > 0 ? sender !== self : unreadRows ? null : false,
+    first_inflow: received.length > 0 ? sender !== self : changes.truncated ? null : false,
   };
 }

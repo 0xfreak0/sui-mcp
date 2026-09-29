@@ -203,6 +203,12 @@ the 75% collector:
 The 75% collector's first inflow was 1,570 SUI from the 25% collector, twenty
 days before the drain.
 
+`first_seen.received` is read across all balance-change pages of the first
+transaction, not just its first page. A system-created genesis allocation has
+`checkpoint: "0"`, `sender: null` and `first_inflow: true`; it does not identify
+a funding wallet. If no gain was found and a continuation could not be read,
+`first_inflow` is null.
+
 ## What this shows and what it does not
 
 - A dry run at signing reads shared objects as they are at that moment. A

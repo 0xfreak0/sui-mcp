@@ -50,6 +50,18 @@
   there, `package.json`'s `homepage` points to it, and the site sets its
   address for canonical links and a sitemap.
 
+### Fixed
+- **`identify_address` reports what an address received at genesis.**
+  `first_seen` read one page of its transaction's balance changes. The
+  mainnet genesis transaction credits every initial holder and runs past one
+  page, so a holder whose row sorted later showed `received: []` and
+  `first_inflow: null` while `get_balance` and `summarize_address_flows`
+  showed the genesis balance. The balance changes are now read to the end:
+  `received` lists the genesis amount, `first_inflow` is true (genesis has no
+  sender), and `first_inflow` is null only when a continuation read fails.
+  The tool description and site explain that genesis allocations are
+  system-created: `sender` remains null and does not identify a funding wallet.
+
 ## 1.24.0 (2026-09-29)
 
 Everyday questions get guided answers, and answers are checked against the

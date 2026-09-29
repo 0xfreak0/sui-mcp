@@ -5,6 +5,8 @@ sidebar:
   order: 1
 ---
 
+import { Content as CurrentRelease } from '../project/_current-release.md';
+
 sui-mcp is a read-only MCP server for investigating activity on Sui. It gives
 an AI assistant tools to trace funds, attribute wallets, read who controls a
 token or a package, and decode transactions. It holds no keys and never
@@ -13,6 +15,8 @@ submits a transaction; see [Security model](/concepts/security/).
 The npm package is `sui-analytics-mcp`, MIT licensed. It runs over stdio in any
 MCP client, needs no account or API key, reads public Sui endpoints and
 defaults to mainnet.
+
+<CurrentRelease />
 
 ## Common tasks
 

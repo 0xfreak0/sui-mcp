@@ -7,7 +7,7 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "gen:tools": "node scripts/gen-tools.mjs"
+    "gen:tools": "node scripts/gen-tools.mjs && node scripts/gen-release-pages.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.42.4",

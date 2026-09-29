@@ -13,7 +13,7 @@ vi.mock("../../src/clients/graphql.js", () => ({
   gqlQuery: mockGqlQuery,
 }));
 
-const { registerEventTools } = await import("../../src/tools/events.js");
+const { registerEventTools, QUERY_EVENTS_MAX_READS } = await import("../../src/tools/events.js");
 const { RELOCATE_EVENT_MODULE_CHECKPOINT } = await import("../../src/utils/package-versions.js");
 
 const tools = new Map<string, Function>();
@@ -352,5 +352,126 @@ describe("query_events", () => {
     const eventsCalls = mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("events("));
     expect(eventsCalls).toHaveLength(1);
     expect(eventsCalls[0][1].filter.module).toBe(`${V1}::swap_router`);
+  });
+
+  /**
+   * The service reads a bounded range per request, so `sender` with
+   * `event_type` can come back as an empty page that still has more before
+   * it. One read is not a page: reading continues until `limit` is filled.
+   */
+  describe("pages the service returns short", () => {
+    const PKG = `0x${"ab".repeat(32)}`;
+    const TYPE = `${PKG}::pool::SwapEvent`;
+    const SENDER = `0x${"5e".repeat(32)}`;
+    const event = (digest: string, timestamp: string) => ({
+      contents: { type: { repr: TYPE }, json: {} },
+      sender: { address: SENDER },
+      timestamp,
+      transaction: { digest },
+    });
+    const olderPage = (nodes: unknown[], startCursor: string | null) => ({
+      nodes,
+      pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: startCursor !== null, startCursor },
+    });
+    const eventReads = () => mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("events("));
+
+    it("fills the page when the matches start on the third read", async () => {
+      // Keyed by the `before` cursor of each newest-first read; nodes ascend, as the service returns them.
+      const pages: Record<string, unknown> = {
+        start: olderPage([], "c1"),
+        c1: olderPage([], "c2"),
+        c2: olderPage([event("Tx2", "2024-03-02T00:00:00Z"), event("Tx3", "2024-03-03T00:00:00Z")], "c3"),
+        c3: olderPage([event("Tx1", "2024-03-01T00:00:00Z")], "c4"),
+      };
+      mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+        String(q).includes("events(") ? { events: pages[(v.before as string | undefined) ?? "start"] } : {},
+      );
+
+      const handler = tools.get("query_events")!;
+      const data = JSON.parse((await handler({ sender: SENDER, event_type: TYPE, limit: 3 })).content[0].text);
+
+      expect(data.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["Tx3", "Tx2", "Tx1"]);
+      expect(data.has_next_page).toBe(true);
+      expect(data.next_cursor).toBe("c4");
+      expect(data.scan).toBeUndefined();
+      const reads = eventReads();
+      expect(reads.map(([, v]) => [v.before, v.last])).toEqual([
+        [undefined, 3],
+        ["c1", 3],
+        ["c2", 3],
+        ["c3", 1],
+      ]);
+      for (const [, v] of reads) expect(v.filter).toMatchObject({ sender: SENDER, type: TYPE });
+    });
+
+    it("stops at the read budget and names the call that continues", async () => {
+      let n = 0;
+      mockGqlQuery.mockImplementation(async (q: string) =>
+        String(q).includes("events(") ? { events: olderPage([], `c${++n}`) } : {},
+      );
+
+      const handler = tools.get("query_events")!;
+      const data = JSON.parse((await handler({ sender: SENDER, event_type: TYPE, limit: 50 })).content[0].text);
+
+      expect(eventReads()).toHaveLength(QUERY_EVENTS_MAX_READS);
+      expect(data.events).toEqual([]);
+      expect(data.has_next_page).toBe(true);
+      expect(data.next_cursor).toBe(`c${QUERY_EVENTS_MAX_READS}`);
+      expect(data.scan).toMatchObject({
+        reads: QUERY_EVENTS_MAX_READS,
+        next_call: { tool: "query_events", repeat_with: { order: "newest", cursor: `c${QUERY_EVENTS_MAX_READS}` } },
+      });
+    });
+
+    it("reads on oldest first until the list ends and keeps the end cursor", async () => {
+      const pages: Record<string, unknown> = {
+        start: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "e1", hasPreviousPage: false, startCursor: null } },
+        e1: {
+          nodes: [event("Tx1", "2024-03-01T00:00:00Z")],
+          pageInfo: { hasNextPage: false, endCursor: "e2", hasPreviousPage: true, startCursor: "e1" },
+        },
+      };
+      mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+        String(q).includes("events(") ? { events: pages[(v.after as string | undefined) ?? "start"] } : {},
+      );
+
+      const handler = tools.get("query_events")!;
+      const data = JSON.parse((await handler({ sender: SENDER, event_type: TYPE, order: "oldest", limit: 5 })).content[0].text);
+
+      expect(data.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["Tx1"]);
+      expect(data.has_next_page).toBe(false);
+      expect(data.next_cursor).toBe("e2");
+      expect(data.scan).toBeUndefined();
+    });
+
+    it("reads on inside a cutover segment before moving to the next one", async () => {
+      const V1 = `0x${"1".repeat(64)}`;
+      const V9 = `0x${"9".repeat(64)}`;
+      const CUT = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+      mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) => {
+        if (q.includes("packageVersions")) {
+          return { packageVersions: { nodes: [{ address: V1, version: 1 }, { address: V9, version: 9 }], pageInfo: { hasNextPage: false, endCursor: null } } };
+        }
+        const filter = v.filter as { module: string };
+        if (filter.module === `${V9}::swap_router`) {
+          return { events: v.before === "p1" ? olderPage([event("PostTx", "2025-01-01T00:00:00Z")], null) : olderPage([], "p1") };
+        }
+        return { events: olderPage([event("PreTx1", "2024-09-26T06:00:00Z"), event("PreTx2", "2024-09-26T08:00:00Z")], null) };
+      });
+
+      const handler = tools.get("query_events")!;
+      const data = JSON.parse(
+        (await handler({ module: `${V9}::swap_router`, sender: SENDER, after_checkpoint: CUT - 2000, before_checkpoint: CUT + 1000, limit: 3 })).content[0].text,
+      );
+
+      expect(data.events.map((e: { tx_digest: string }) => e.tx_digest)).toEqual(["PostTx", "PreTx2", "PreTx1"]);
+      expect(data.has_next_page).toBe(false);
+      expect(data.next_cursor).toBeNull();
+      expect(eventReads().map(([, v]) => [v.filter.module, v.before, v.last])).toEqual([
+        [`${V9}::swap_router`, undefined, 3],
+        [`${V9}::swap_router`, "p1", 3],
+        [`${V1}::swap_router`, undefined, 2],
+      ]);
+    });
   });
 });

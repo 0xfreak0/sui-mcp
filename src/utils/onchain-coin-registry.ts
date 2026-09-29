@@ -48,7 +48,15 @@ export interface RegistryCurrency {
   regulated: RegulatedState;
   /** The cap that can freeze addresses, when the registry names one. */
   regulated_cap_id?: string;
+  /**
+   * The registry's supply state. `fixed` and `burn_only` mean the TreasuryCap
+   * was consumed into the registry, so nothing can mint; `unknown` says
+   * nothing either way.
+   */
+  supply: SupplyState;
 }
+
+export type SupplyState = "fixed" | "burn_only" | "unknown";
 
 const CURRENCY_QUERY = `
   query($type: String!) {
@@ -65,6 +73,7 @@ interface CurrencyJson {
   description?: unknown;
   icon_url?: unknown;
   regulated?: { "@variant"?: unknown; cap?: unknown };
+  supply?: { "@variant"?: unknown } | null;
 }
 
 function str(v: unknown): string | undefined {
@@ -102,6 +111,9 @@ export async function fetchRegistryCurrency(
     const regulated: RegulatedState =
       variant === "Regulated" ? "regulated" : variant === "Unregulated" ? "unregulated" : "unknown";
 
+    const supplyVariant = str(json.supply?.["@variant"]);
+    const supply: SupplyState = supplyVariant === "Fixed" ? "fixed" : supplyVariant === "BurnOnly" ? "burn_only" : "unknown";
+
     return {
       decimals,
       ...(str(json.symbol) ? { symbol: str(json.symbol) } : {}),
@@ -109,6 +121,7 @@ export async function fetchRegistryCurrency(
       ...(str(json.description) ? { description: str(json.description) } : {}),
       ...(str(json.icon_url) ? { icon_url: str(json.icon_url) } : {}),
       regulated,
+      supply,
       ...(regulated === "regulated" && str(json.regulated?.cap)
         ? { regulated_cap_id: str(json.regulated?.cap) }
         : {}),

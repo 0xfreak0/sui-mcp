@@ -1,17 +1,16 @@
 import { z } from "zod";
-import type { GrpcTypes } from "@mysten/sui/grpc";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { boolArg, numArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
-import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { resolvePackageId } from "../utils/move-package.js";
 import { resolvePublisher } from "../utils/publisher.js";
 import { findRedeploys, REDEPLOY_CAP_PAGES, REDEPLOY_MAX_PACKAGE_READS, type FunctionOrigin } from "../utils/redeploys.js";
 import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
 import { describeSignatures, readAuthentication, type Authentication } from "../utils/multisig.js";
 import { ownerDesc, type OwnerDesc } from "../utils/object-history.js";
+import { readObjectEnd } from "../utils/object-end.js";
 import { diffLinkage, type LinkageEntry } from "../utils/package-diff.js";
 import { SYSTEM_PACKAGE } from "../utils/system-packages.js";
 import {
@@ -24,7 +23,6 @@ import {
   upgradeFlags,
   upgradePolicyName,
   usualHolder,
-  type CapEnd,
   type CapVersion,
   type ChainPoint,
   type PublishedVersion,
@@ -132,17 +130,6 @@ interface CapVersionsResult {
   } | null;
 }
 
-const LAST_TOUCH_QUERY = `query ($id: SuiAddress!) {
-  transactions(filter: { affectedObject: $id }, last: 1) {
-    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } } }
-  }
-}`;
-
-interface LastTouchResult {
-  transactions: { nodes: Array<Omit<TxGql, "signatures">> };
-}
-
-/** `sui.rpc.v2.ChangedObject.IdOperation.DELETED` */
 const ID_DELETED = 3;
 
 const point = (tx: Omit<TxGql, "signatures"> | null): ChainPoint & { sender: string | null } => ({
@@ -248,26 +235,6 @@ export async function fetchCapHistory(capId: string): Promise<CapHistory> {
     if (!after) break;
   }
   return { versions, signatures, exists, complete: false };
-}
-
-/**
- * How a cap that no longer exists as an object stopped existing. The last
- * transaction to touch it either deleted it (only `package::make_immutable`
- * can) or wrapped it inside another object. gRPC reports every changed object
- * in one read, where GraphQL would page them.
- */
-async function capEnd(capId: string): Promise<CapEnd | null> {
-  const r = await gqlQuery<LastTouchResult>(LAST_TOUCH_QUERY, { id: capId });
-  const last = r.transactions.nodes[0];
-  if (!last) return null;
-  const res = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
-    (client) => client.ledgerService.getTransaction({ digest: last.digest, readMask: { paths: ["effects"] } }),
-    (x) => !x.transaction?.effects,
-  );
-  const change = res.transaction?.effects?.changedObjects?.find(
-    (c) => c.objectId !== undefined && normalizeSuiAddress(c.objectId) === capId,
-  );
-  return { kind: change?.idOperation === ID_DELETED ? "deleted" : "wrapped", ...point(last) };
 }
 
 function describeHolder(
@@ -407,7 +374,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
 
         const cap = capId ? await fetchCapHistory(capId) : null;
         const caps = cap?.versions ?? [];
-        const end = capId && cap && !cap.exists && caps.length > 0 ? await capEnd(capId) : null;
+        const end = capId && cap && !cap.exists && caps.length > 0 ? await readObjectEnd(capId).catch(() => null) : null;
         const capComplete = !!cap && cap.complete && caps[0]?.tx === root.tx;
 
         // How every sender authenticates, read from the transactions already

@@ -2,7 +2,7 @@
 title: Packages and upgrade authority
 description: Who deployed a package, who can still change it, which capabilities and mint authority exist, and what its bytecode does.
 sidebar:
-  order: 8
+  order: 9
 ---
 
 ## Publisher and UpgradeCap holder
@@ -13,8 +13,8 @@ attributed to the lineage root. `analyze_package` reports it as
 created the version you passed.
 
 The UpgradeCap carries `holder_status`, judged against the root: `burned`
-means upgrade rights were renounced, which reduces risk, and is what 27 of
-every 30 departing caps did. A cap sent to an unspendable address (0x0,
+means upgrade rights were renounced, which reduces risk, and is what most
+departing caps did. A cap sent to an unspendable address (0x0,
 0x2…) reads the same way even when the object itself still exists: nobody
 holds a key for it, so the risk it once carried is gone.
 

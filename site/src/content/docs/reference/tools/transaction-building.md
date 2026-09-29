@@ -5,6 +5,12 @@ description: "Descriptions, profiles and parameters of the 3 tools in the Transa
 sidebar:
   order: 113
 ---
+| Tool | Summary |
+|---|---|
+| [`build_staking`](#build_staking) | Build an unsigned transaction to stake or unstake SUI. |
+| [`build_transfer`](#build_transfer) | Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. |
+| [`simulate_transaction`](#simulate_transaction) | Dry-run a Sui transaction without signing, sending, or spending anything. |
+
 ## build_staking
 
 - Title: Build staking

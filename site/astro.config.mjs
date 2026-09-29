@@ -20,11 +20,14 @@ export default defineConfig({
       routeMiddleware: "./src/routeData.ts",
       // Table cells wrap long text so tables fit the content column.
       customCss: ["./src/styles/custom.css"],
+      // In reading order: prev/next links follow it from Getting started to Project.
       sidebar: [
         { label: "Getting started", items: [{ autogenerate: { directory: "start" } }] },
+        { label: "Examples", items: [{ autogenerate: { directory: "examples" } }] },
         { label: "Guides", items: [{ autogenerate: { directory: "guides" } }] },
         { label: "How to read results", items: [{ autogenerate: { directory: "concepts" } }] },
-        { label: "Reference", items: [{ autogenerate: { directory: "reference" } }] },
+        // The Tools subgroup starts collapsed; it opens on its own pages.
+        { label: "Reference", items: [{ autogenerate: { directory: "reference", collapsed: true } }] },
         { label: "Project", items: [{ autogenerate: { directory: "project" } }] },
       ],
     }),

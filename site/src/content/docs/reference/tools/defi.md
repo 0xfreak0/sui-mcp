@@ -5,6 +5,12 @@ description: "Descriptions, profiles and parameters of the 3 tools in the DeFi g
 sidebar:
   order: 106
 ---
+| Tool | Summary |
+|---|---|
+| [`find_pools`](#find_pools) | Find DeFi liquidity pools by token pair. |
+| [`get_defi_positions`](#get_defi_positions) | Find and value the DeFi positions a Sui wallet holds. |
+| [`get_pool_stats`](#get_pool_stats) | Get stats for a DeFi liquidity pool on Sui given its object ID. |
+
 ## find_pools
 
 - Title: Find pools

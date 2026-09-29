@@ -2,12 +2,12 @@
 title: Move decompiler (optional)
 description: Build Revela's move-decompiler and point SUI_DECOMPILER_PATH at it to enable decompile_module.
 sidebar:
+  label: Move decompiler
   order: 7
 ---
 
-72 of the 76 tools need nothing beyond the [install](/start/install/). Only
-`decompile_module` requires an external binary, and every code question can be
-answered without it:
+`decompile_module` is the only tool that needs an external binary, and every
+code question can be answered without it:
 
 - `disassemble_module` returns Move bytecode assembly via the GraphQL endpoint;
   `function_name` returns one function.

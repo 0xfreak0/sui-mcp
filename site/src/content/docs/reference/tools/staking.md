@@ -5,6 +5,11 @@ description: "Descriptions, profiles and parameters of the 2 tools in the Stakin
 sidebar:
   order: 109
 ---
+| Tool | Summary |
+|---|---|
+| [`get_staking_summary`](#get_staking_summary) | Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. |
+| [`get_validators`](#get_validators) | List current Sui validators (stake, commission, voting power), or — when `address` is given — return detailed info for that one validator (credentials, staking stats, network addresses). |
+
 ## get_staking_summary
 
 - Title: Get staking summary

@@ -1,0 +1,52 @@
+---
+title: Tool profiles
+description: The server starts with a core set of tools and loads the rest on demand; SUI_TOOLS sets the starting profiles.
+sidebar:
+  order: 1
+---
+
+import { Content as ProfileList } from '../reference/tools/_profiles.md';
+
+The server starts with the `core` profile and keeps every other tool one call
+away. MCP sends the whole tool list with every request, so each loaded tool
+costs context before any work starts, and a long list of similar tools makes
+a model more likely to pick the wrong one.
+
+## Switching at runtime
+
+When you ask for something outside the current set, such as "trace where these
+funds went", the model calls `enable_tools` and the tracing tools appear
+immediately, with no restart. You never have to pick a profile.
+`enable_tools` names every tool that is still off, and the server's
+`instructions` name the profiles and the main investigation tools, so a client
+that shows them to the model knows what to ask for. Profile names are
+case-insensitive.
+
+## Setting profiles at startup
+
+To start with more, set `SUI_TOOLS` to a comma-separated list of profiles, or
+to `all`:
+
+```json
+"env": { "SUI_TOOLS": "core,forensics" }
+```
+
+An unknown name is ignored. When no name is recognised the server starts with
+`core`.
+
+The list is generated from the server's profile definitions. Each tool links
+to its entry in the [tool reference](/reference/tools/).
+
+<ProfileList />
+
+## Clients that cache the tool list
+
+Runtime switching relies on `notifications/tools/list_changed`, sent once per
+`enable_tools` call. Claude Code and Claude Desktop honour it; some clients
+cache the tool list and will only see the change after a restart. `SUI_TOOLS`
+always works, so set it explicitly if your client doesn't refresh.
+
+## Upgrading from 1.1.x
+
+Version 1.1.x loaded every tool at startup. Set `SUI_TOOLS=all` to keep that
+behaviour.

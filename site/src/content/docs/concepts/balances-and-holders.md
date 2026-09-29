@@ -2,7 +2,8 @@
 title: Historical balances and top holders
 description: How get_balance reconstructs a balance at a past moment, and when get_top_holders returns a real ranking.
 sidebar:
-  order: 6
+  label: Balances and holders
+  order: 7
 ---
 
 ## Balance at a past moment
@@ -22,8 +23,9 @@ get_balance(owner: 0x01229b3c…c724, at: 2025-09-07T16:00:00Z)
     anchor: { checkpoint: 326856716, balance: 93.696806819 SUI, … }
 ```
 
-The scan reads at most `max_transactions` (default 1,000, max 10,000). When
-that runs out, `complete` is false, `balance` is null, and
+The scan reads at most `max_transactions` transactions; its default and range
+are in the [tool reference](/reference/tools/coins-and-tokens/#get_balance).
+When that runs out, `complete` is false, `balance` is null, and
 `reached_checkpoint` is the oldest checkpoint the scan got back to: every
 transaction after it was read. A reconstructed balance has no coin/address
 split, so `coin_balance` and `address_balance` are null and `anchor` carries
@@ -35,16 +37,16 @@ the split at the anchor.
 walks two things in object-id order, which is unrelated to balance:
 `Coin<T>` objects, and address balances (funds credited to an owner's address
 rather than held as a coin object). A scan that stops early returns the
-largest holder it happened to see. On SUI the reported top holder goes from
-66 SUI at `max_scan` 200 to 3,454 at 800, with no overlap in the top five.
+largest holder it happened to see, and on SUI a larger `max_scan` names a
+different top holder with no overlap in the top five.
 
 A truncated scan therefore returns `sampled_holders`, without a rank or a
 percentage of supply, along with a caveat naming which walk stopped. Raise
 `max_scan` (applied to each walk) until `truncated` is false to get a real
 ranking; that is only practical for coins with few enough objects to
-enumerate. A scan also stops at 35s, marked `time_budget_reached`, and the
-caveat reports how far the scan got and whether a retry or a smaller
-`max_scan` would help.
+enumerate. A scan also stops when it runs out of time, marked
+`time_budget_reached`, and the caveat reports how far the scan got and whether
+a retry or a smaller `max_scan` would help.
 
 In a sample, each holder's `balance` is read directly for that address, since
 the walk saw only some of its coins, and `balance_in_sample` is the walk's own

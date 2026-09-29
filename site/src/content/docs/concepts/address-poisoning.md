@@ -9,8 +9,8 @@ sidebar:
 `summarize_address_flows` compare every address they touch and always report
 `address_poisoning`: `addresses_compared` and the `pairs` close enough to be
 mistaken for one another. An empty `pairs` covers only the addresses in that
-result. The two tracing tools also print the pairs in their summary, so a
-Mermaid or CSV export carries the warning:
+result. `trace_funds` and `trace_flow_graph` also print the pairs in their
+summary, so a Mermaid or CSV export carries the warning:
 
 ```
 ⚠ Addresses in this trace close enough to be mistaken for one another:

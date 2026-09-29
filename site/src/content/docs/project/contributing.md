@@ -13,8 +13,8 @@ in the repository. It covers:
   `npm run hooks:install` for the commit hooks.
 - What must never be published: session URLs and a maintainer's own wallet
   addresses or SuiNS names, and the hooks that block them.
-- Adding a new tool: argument helpers, profiles, advertised counts, the
-  generated tool reference, store overrides, tests and a live check.
+- Adding a new tool: argument helpers, profiles, the generated tool
+  reference, store overrides, tests and a live check.
 - Running a blind investigation and writing a case file.
 - Changing an anomaly detector.
 - Keeping the protocol registry and the coin symbol index current.

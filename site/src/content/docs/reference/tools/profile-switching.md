@@ -5,6 +5,10 @@ description: "Descriptions, profiles and parameters of the 1 tool in the Profile
 sidebar:
   order: 116
 ---
+| Tool | Summary |
+|---|---|
+| [`enable_tools`](#enable_tools) | Turn on more Sui tool profiles for this session. |
+
 ## enable_tools
 
 - Title: Enable tool profiles

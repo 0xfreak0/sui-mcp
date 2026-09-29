@@ -5,6 +5,13 @@ description: "Descriptions, profiles and parameters of the 4 tools in the Transa
 sidebar:
   order: 105
 ---
+| Tool | Summary |
+|---|---|
+| [`get_transaction`](#get_transaction) | Get a Sui transaction by its digest. |
+| [`get_transactions`](#get_transactions) | Read up to 50 Sui transactions in ONE call, given their digests. |
+| [`query_events`](#query_events) | Query Sui events with filters (type, sender, emitting module, time or checkpoint range). |
+| [`query_transactions`](#query_transactions) | Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). |
+
 ## get_transaction
 
 - Title: Get transaction

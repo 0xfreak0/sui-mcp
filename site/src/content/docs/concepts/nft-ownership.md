@@ -2,17 +2,16 @@
 title: Kiosk-held NFTs
 description: Who holds a kiosk-stored NFT, how get_nft_sales learns kiosk owners, and how kiosk_cap_holder resolves one kiosk.
 sidebar:
-  order: 7
+  order: 8
 ---
 
 ## The kiosk owner field
 
 A kiosk-held NFT is owned by the Kiosk object, and a kiosk carries an `owner`
 field that `set_owner` writes. That field does not follow the
-`KioskOwnerCap`, so it names whoever set it last. Measured over 300 mainnet
-kiosks it disagreed with the real cap holder 40% of the time, and one address
-was declared by 82 different kiosks, which is enough to invent a top holder out
-of a platform address.
+`KioskOwnerCap`, so it names whoever set it last. On mainnet it often
+disagrees with the real cap holder, and a single address can be declared by
+many kiosks, which is enough to invent a top holder out of a platform address.
 
 ## Owners learned from sales
 
@@ -66,7 +65,7 @@ at once, where reading each one's creation transaction is not practical.
 ## Filtering by collection
 
 `collection_type` narrows the result, but only for marketplaces that name the
-collection in the event, which most do not: in one measured window 70 of 73
-sales carried no collection type at all. Those are counted in
+collection in the event, and most sales carry no collection type at all.
+Those are counted in
 `unattributable_sales` rather than filtered out quietly, so a small number of
 matches is never mistaken for a collection that did not trade.

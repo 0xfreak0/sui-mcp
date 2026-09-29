@@ -5,6 +5,11 @@ description: "Descriptions, profiles and parameters of the 2 tools in the Chain 
 sidebar:
   order: 102
 ---
+| Tool | Summary |
+|---|---|
+| [`get_chain_info`](#get_chain_info) | Get current Sui network info: chain ID, epoch, checkpoint height, timestamp, and reference gas price. |
+| [`get_checkpoint`](#get_checkpoint) | Get a Sui checkpoint by sequence number, digest or timestamp, or the latest if none is given. |
+
 ## get_chain_info
 
 - Title: Get chain info

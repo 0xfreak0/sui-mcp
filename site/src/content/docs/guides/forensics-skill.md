@@ -2,6 +2,7 @@
 title: The forensics skill
 description: Install the sui-forensics skill, or use the investigation prompts that carry its method in clients without skills.
 sidebar:
+  label: Forensics skill
   order: 3
 ---
 
@@ -39,6 +40,6 @@ it:
 | `trace_incident` | `subject` (attack digest or attacker address), optional `network`, `case_name` | What an exploit took, the flaw in the code it ran, and where the money went |
 | `attribute_cluster` | `addresses` (comma-separated), optional `network`, `case_name` | Whether several addresses share an operator, with a control group |
 
-Four more prompts answer the questions people without investigation
-experience ask; see [Everyday prompts](/guides/everyday-prompts/). The
+The [everyday prompts](/guides/everyday-prompts/) answer the questions people
+without investigation experience ask. The
 [prompt reference](/reference/prompts/) lists every prompt with its arguments.

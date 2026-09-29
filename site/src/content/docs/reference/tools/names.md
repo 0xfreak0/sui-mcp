@@ -5,6 +5,10 @@ description: "Descriptions, profiles and parameters of the 1 tool in the Names g
 sidebar:
   order: 110
 ---
+| Tool | Summary |
+|---|---|
+| [`resolve_name`](#resolve_name) | Resolve a SuiNS name (.sui domain) to an address, or reverse-lookup an address to its SuiNS name. |
+
 ## resolve_name
 
 - Title: Resolve name

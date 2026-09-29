@@ -1,5 +1,7 @@
 # sui-mcp
 
+**Documentation: [sui-mcp.vercel.app](https://sui-mcp.vercel.app/)**
+
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
 Read-only MCP server for investigating activity on Sui. Trace where funds went,
@@ -7,8 +9,8 @@ attribute wallets to their funding sources, rank addresses by protocol flow,
 work out who can actually sign for a multisig treasury, and tell a coordinated
 cluster from a crowd, then reconstruct it all on a timeline.
 
-It has 76 tools. They also cover the ordinary things: wallet overviews, DeFi
-positions, NFTs, prices and Move package analysis.
+It also covers the ordinary things: wallet overviews, DeFi positions, NFTs,
+prices and Move package analysis.
 
 ## Install
 
@@ -35,26 +37,29 @@ For investigative work, start with the forensics tools loaded:
 
 ## What an investigation looks like
 
-Testing whether a cluster of wallets is coordinated:
+The first two steps on the 22 May 2025 Cetus CLMM exploit, starting from the
+attacker wallet:
 
 ```
-find_funding_sources(addresses: [...25], depth: "first_hop")
-  → 23 of 25 share one funder, funded in three bursts of under a minute
+get_transaction_history(0xe28b50cef1d633ea43d3296a3f6b67ff0312a5f1a99f0af753c85b8b5de8ff06, order: "oldest")
+  → funded once with 9.98 SUI, one failed transaction, then the first
+    success: DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x at 10:30:50 UTC
 
-get_address_fanout(<that funder>)
-  → 1,623 recipients, classified "distributor", so shared funding alone
-    proves nothing here; the second-level timing clusters carry the case
+analyze_attack_tx(DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x)
+  → attacker gained 10,024,321.28 haSUI and 5,765,124.46 SUI
+    haSUI/SUI pool price moved -99.9999%
+    anomalies: outsized-mint (high), shared-state-jump (high), …
 ```
 
-Several wallets tracing back to one funder looks decisive until you measure the
-funder itself. Every funding result includes the fan-out measurement for this
-reason. The [full example](https://sui-mcp.vercel.app/start/first-investigation/)
-starts from ranking a protocol's wallets.
+Every value can be checked on chain. The
+[full example](https://sui-mcp.vercel.app/examples/protocol-exploit/) goes on to
+total the whole run, find where the proceeds left Sui, and check who funded the
+wallet.
 
 ## Documentation
 
-Full documentation: <https://sui-mcp.vercel.app/>
-
+- [Start here](https://sui-mcp.vercel.app/start/): common tasks and the page for each
+- [Examples](https://sui-mcp.vercel.app/examples/): real incidents worked through with the tools
 - [Install](https://sui-mcp.vercel.app/start/install/): clients, forensics profile, running from source
 - [Tool profiles](https://sui-mcp.vercel.app/guides/tool-profiles/): `SUI_TOOLS`, `enable_tools` and what each profile loads
 - [Configuration](https://sui-mcp.vercel.app/guides/configuration/): environment variables, price sources, the optional local store
@@ -62,7 +67,7 @@ Full documentation: <https://sui-mcp.vercel.app/>
 - [Multisig](https://sui-mcp.vercel.app/guides/multisig/): committees, signers, aliases
 - [Watching addresses](https://sui-mcp.vercel.app/guides/watching-addresses/)
 - [Move decompiler (optional)](https://sui-mcp.vercel.app/guides/decompiler/)
-- [What a result tells you about itself](https://sui-mcp.vercel.app/concepts/): verified coins, fund flows, lookalike addresses, truncated lists and more
+- [How to read results](https://sui-mcp.vercel.app/concepts/): verified coins, fund flows, lookalike addresses, truncated lists and more
 - [Tool reference](https://sui-mcp.vercel.app/reference/tools/) and [capabilities](https://sui-mcp.vercel.app/reference/capabilities/)
 
 ## Everyday prompts

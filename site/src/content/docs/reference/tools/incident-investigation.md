@@ -5,6 +5,36 @@ description: "Descriptions, profiles and parameters of the 27 tools in the Incid
 sidebar:
   order: 115
 ---
+| Tool | Summary |
+|---|---|
+| [`aggregate_events`](#aggregate_events) | Rank addresses or event types by activity across a time window — the 'who were the top wallets on this protocol today' question — in one call instead of paginating thousands of events yourself. |
+| [`analyze_attack_tx`](#analyze_attack_tx) | Break down one exploit transaction. |
+| [`analyze_multisig`](#analyze_multisig) | For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. |
+| [`build_timeline`](#build_timeline) | Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. |
+| [`build_wallet_edges`](#build_wallet_edges) | Find addresses that appear to share an operator with the ones you give it, and say why. |
+| [`check_coin_restrictions`](#check_coin_restrictions) | Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. |
+| [`classify_deposit_address`](#classify_deposit_address) | Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. |
+| [`delete_finding`](#delete_finding) | Remove a finding by id — for retracting something that turned out to be wrong. |
+| [`export_case`](#export_case) | Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. |
+| [`find_flow_path`](#find_flow_path) | Is there a value path from one address to another? |
+| [`find_funding_source`](#find_funding_source) | Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. |
+| [`find_funding_sources`](#find_funding_sources) | Trace many addresses back to their funding sources in one call, sharing work between them. |
+| [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control — even one that never appeared in your trace. |
+| [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. |
+| [`get_upgrade_history`](#get_upgrade_history) | Upgrade governance across a package's whole lineage. |
+| [`list_findings`](#list_findings) | List recorded findings, or every case with its finding count. |
+| [`manage_labels`](#manage_labels) | Manage the address-label registry used for incident investigation and fund tracing. |
+| [`resolve_bridge_transfer`](#resolve_bridge_transfer) | Follow funds across a bridge. |
+| [`resolve_protocol_packages`](#resolve_protocol_packages) | Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. |
+| [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing — other addresses that used the same protocol over the same window. |
+| [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
+| [`screen_address`](#screen_address) | Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. |
+| [`summarize_address_flows`](#summarize_address_flows) | What one address took in and paid out over a window, in one call. |
+| [`summarize_incident_losses`](#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. |
+| [`trace_flow_graph`](#trace_flow_graph) | Follow ALL of the funds, not one branch. |
+| [`trace_funds`](#trace_funds) | Trace fund flow from a transaction. |
+| [`trace_object_history`](#trace_object_history) | Trace the provenance of a Sui object. |
+
 ## aggregate_events
 
 - Title: Aggregate events

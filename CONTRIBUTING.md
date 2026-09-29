@@ -72,11 +72,16 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
    `toolArgsSchema`, so a new tool gets it without doing anything.
 5. Add the tool to a profile in `src/tools/profiles.ts`. A tool in no profile
    still exists but nobody loads it by default.
-6. Update the advertised tool counts: the heading and intro in `README.md`, the
-   per-profile table in `README.md`, and the `description` in both
-   `package.json` and `server.json`. `test/packaging.test.ts` checks these
-   against `PROFILES` and will fail the build if they drift.
-7. Add a row for the tool in the README's tool table, in its matching section.
+6. Update the advertised tool counts: the intro in `README.md`, the total and
+   the per-profile table in `site/src/content/docs/guides/tool-profiles.md`,
+   the total in `site/src/content/docs/guides/decompiler.md`, and the
+   `description` in both `package.json` and `server.json`.
+   `test/packaging.test.ts` checks these against `PROFILES` and will fail the
+   build if they drift.
+7. Regenerate the tool reference: run `npm run build`, then
+   `cd site && npm run gen:tools`, and commit the regenerated files under
+   `site/src/content/docs/reference/`. `test/site-tool-reference.test.ts`
+   fails when the committed reference is stale.
 8. If the tool writes a record to the store, or never reads the chain, add it
    to `OVERRIDES` in `src/tools/tool-meta.ts`. Every other tool registers as a
    read-only chain read with a `network` argument and a title derived from its

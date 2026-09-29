@@ -216,6 +216,17 @@ scan fails outright (a timeout, a 429 after retries), or whose defining
 package version cannot be read, is named in `incomplete_scans` rather than
 silently read as having no live instances.
 
+Mint authority is looked up for every coin the package defines, including
+one whose TreasuryCap the publish transaction never showed at top level:
+Wormhole's wrapped coins, and meme coins such as SRT and CLOWNPEPE, keep the
+cap (or the Supply it became) inside another object from `init` on. The
+audit reads the id the on-chain coin registry records, then
+searches for a live `TreasuryCap<T>` by type, and marks a cap found this way
+with `found_by`. A coin whose cap neither finds is named in
+`coins_without_located_mint_authority` with what was checked, at medium risk:
+who can mint it is unknown. A registry entry recording the supply as fixed or
+burn-only settles it, since recording that consumes the cap.
+
 `analyze_package` also reports `upgrade_cap`, the cap's owner-change count and
 latest change. `get_upgrade_history` joins every version to its publisher, the
 publisher's signing scheme and the cap holder at that moment, and `as_of`

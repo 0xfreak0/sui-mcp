@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage } from "./helpers/service-shapes.js";
 
-const { gqlQuery, withArchiveFallback } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn() }));
+const { gqlQuery, withArchiveFallback, getCoinInfo } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn(), getCoinInfo: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
 vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback }));
+vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo } }, archive: {}, getClients: vi.fn() }));
 vi.mock("../src/utils/identity.js", () => ({
   describeAddresses: async (addrs: string[]) =>
     new Map(addrs.map((a) => [a, { address: a, kind: "wallet" as const, authentication: { scheme: "ed25519" as const, verified: true } }])),
@@ -656,6 +657,132 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
     const strong = { name: "vault", structs: [{ name: "OperatorCap", abilities: ["key"] }] };
     const out = findAuthorityStructs([...generic, strong]).slice(0, 12);
     expect(out).toContainEqual({ module: "vault", name: "OperatorCap" });
+  });
+});
+
+/**
+ * A TreasuryCap the publish transaction did not create at top level (wrapped
+ * inside a package object in `init`, or created by a later transaction) was
+ * absent from the audit, which then read the same as a coin nobody can mint.
+ */
+describe("auditPackageCapabilities — mint authority the publish transaction did not show", () => {
+  const PKG = `0x${"c1".repeat(32)}`;
+  const COIN = `${PKG}::tok::TOK`;
+  const CAP_TYPE = `${P2}::coin::TreasuryCap<${COIN}>`;
+  const CAP = `0x${"ca".repeat(32)}`;
+  const UPGRADE_CAP = `0x${"0b".repeat(32)}`;
+  const HOLDER = `0x${"a1".repeat(32)}`;
+  const METADATA = `${P2}::coin::CoinMetadata<${COIN}>`;
+
+  interface Chain {
+    /** Types of the objects the publish transaction created besides the UpgradeCap. */
+    created?: string[];
+    registry?: Record<string, unknown> | null;
+    capInstances?: Array<{ address: string; owner: { __typename: string; address?: { address: string } } }>;
+    capScanFails?: boolean;
+    capObject?: Record<string, unknown> | null;
+  }
+
+  const mockChain = (chain: Chain) => {
+    gqlQuery.mockReset();
+    gqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      if (query.includes("packageAt(version: 1)")) {
+        const created = [`${P2}::package::UpgradeCap`, ...(chain.created ?? [])].map((repr, i) => ({
+          idCreated: true,
+          outputState: { address: i === 0 ? UPGRADE_CAP : `0x${String(i).padStart(64, "0")}`, asMoveObject: { contents: { type: { repr } } } },
+        }));
+        return { package: { packageAt: { address: PKG, previousTransaction: { effects: { objectChanges: gqlPage(created) } } } } };
+      }
+      if (typeof vars.type === "string" && vars.type.includes("coin_registry::Currency")) {
+        return { objects: { nodes: chain.registry ? [{ asMoveObject: { contents: { json: chain.registry } } }] : [] } };
+      }
+      if (vars.t === CAP_TYPE) {
+        if (chain.capScanFails) throw new Error("HTTP 429");
+        return { objects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: chain.capInstances ?? [] } };
+      }
+      if (vars.id === UPGRADE_CAP) {
+        return { object: { owner: { __typename: "AddressOwner", address: { address: HOLDER } }, asMoveObject: { contents: { json: { policy: 0 } } } } };
+      }
+      if (query.includes("affectedObject")) return { transactions: { nodes: [{ digest: "WrapTx" }] } };
+      if (vars.id === CAP) return { object: chain.capObject ?? null };
+      throw new Error(`unexpected query in test: ${query}`);
+    });
+  };
+  const treasury = (audit: { capabilities: Array<{ kind: string }> }) => audit.capabilities.filter((c) => c.kind === "treasury");
+
+  beforeEach(() => {
+    getCoinInfo.mockReset();
+    withArchiveFallback.mockReset();
+  });
+
+  it("reads the cap the coin registry records and reports its live holder", async () => {
+    mockChain({
+      created: [METADATA],
+      registry: { decimals: 9, supply: { "@variant": "Unknown" }, treasury_cap_id: CAP },
+      capObject: { owner: { __typename: "AddressOwner", address: { address: HOLDER } }, asMoveObject: { contents: { json: {} } } },
+    });
+    const audit = await auditPackageCapabilities(PKG, HOLDER);
+    expect(treasury(audit)).toEqual([
+      expect.objectContaining({ object_id: CAP, type: CAP_TYPE, owner: "address", owner_address: HOLDER, risk: "high", found_by: "coin_registry" }),
+    ]);
+    expect(audit.coins_without_located_mint_authority).toBeUndefined();
+  });
+
+  it("reports a registry-recorded cap that was stored inside another object as wrapped", async () => {
+    mockChain({ created: [METADATA], registry: { decimals: 9, supply: { "@variant": "Unknown" }, treasury_cap_id: CAP }, capObject: null });
+    withArchiveFallback.mockResolvedValue({ transaction: { effects: { changedObjects: [{ objectId: CAP, idOperation: 1 }] } } });
+    const [cap] = treasury(await auditPackageCapabilities(PKG, HOLDER));
+    expect(cap).toMatchObject({ object_id: CAP, owner: "wrapped", wrapped_in_tx: "WrapTx", risk: "medium", found_by: "coin_registry" });
+  });
+
+  // `make_supply_fixed` consumes the cap into the registry's Supply.
+  it("reads a registry entry with fixed supply as a destroyed cap without reading the cap", async () => {
+    mockChain({ created: [METADATA], registry: { decimals: 9, supply: { "@variant": "Fixed" }, treasury_cap_id: CAP } });
+    const [cap] = treasury(await auditPackageCapabilities(PKG, HOLDER));
+    expect(cap).toMatchObject({ object_id: CAP, owner: "burned", risk: "info", found_by: "coin_registry" });
+    expect(gqlQuery.mock.calls.some(([, vars]) => !!vars && typeof vars === "object" && "id" in vars && vars.id === CAP)).toBe(false);
+  });
+
+  it("finds a top-level cap by its type when the registry has no entry", async () => {
+    mockChain({ created: [METADATA], registry: null, capInstances: [{ address: CAP, owner: { __typename: "Shared" } }] });
+    const [cap] = treasury(await auditPackageCapabilities(PKG, HOLDER));
+    expect(cap).toMatchObject({ object_id: CAP, owner: "shared", risk: "high", found_by: "type_scan" });
+  });
+
+  it("names a coin whose cap is found nowhere, at medium risk, instead of leaving it out", async () => {
+    mockChain({ created: [METADATA], registry: null, capInstances: [] });
+    const audit = await auditPackageCapabilities(PKG, HOLDER);
+    expect(treasury(audit)).toEqual([]);
+    expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: COIN, risk: "medium" })]);
+  });
+
+  it("still names the coin when the search for its cap fails", async () => {
+    mockChain({ created: [METADATA], registry: null, capScanFails: true });
+    const audit = await auditPackageCapabilities(PKG, HOLDER);
+    expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: COIN, risk: "medium" })]);
+  });
+
+  // `package::claim` takes the same witness shape as `coin::create_currency`,
+  // so the shape alone does not make a coin: the node has to know one.
+  it("finds the coin of a one-time witness the publish transaction did not show, and adds nothing for a witness that names no coin", async () => {
+    mockChain({ registry: null, capInstances: [] });
+    getCoinInfo.mockImplementation(async ({ coinType }: { coinType: string }) => {
+      if (coinType === COIN) return { response: { metadata: { decimals: 9 } } };
+      throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
+    });
+    const audit = await auditPackageCapabilities(PKG, HOLDER, [
+      { name: "tok", structs: [{ name: "TOK", abilities: ["drop"] }] },
+      { name: "config", structs: [{ name: "CONFIG", abilities: ["drop"] }] },
+    ]);
+    expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: COIN, risk: "medium" })]);
+    expect(audit.capabilities.map((c) => c.kind)).toEqual(["upgrade"]);
+    expect(audit.incomplete_scans).toBeUndefined();
+  });
+
+  it("audits only the package's own coins among those the publish transaction created", async () => {
+    mockChain({ created: [METADATA, `${P2}::coin::CoinMetadata<0x${"d2".repeat(32)}::other::OTHER>`], registry: null, capInstances: [] });
+    const audit = await auditPackageCapabilities(PKG, HOLDER);
+    expect(audit.coins_without_located_mint_authority?.map((u) => u.coin_type)).toEqual([COIN]);
   });
 });
 

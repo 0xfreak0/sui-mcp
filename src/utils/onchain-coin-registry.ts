@@ -54,6 +54,12 @@ export interface RegistryCurrency {
    * nothing either way.
    */
   supply: SupplyState;
+  /**
+   * The TreasuryCap id the registry records. Set at creation for a coin made
+   * through `new_currency` or `new_currency_with_otw`; a coin migrated from
+   * `CoinMetadata` has one only after `set_treasury_cap_id`.
+   */
+  treasury_cap_id?: string;
 }
 
 export type SupplyState = "fixed" | "burn_only" | "unknown";
@@ -74,6 +80,7 @@ interface CurrencyJson {
   icon_url?: unknown;
   regulated?: { "@variant"?: unknown; cap?: unknown };
   supply?: { "@variant"?: unknown } | null;
+  treasury_cap_id?: unknown;
 }
 
 function str(v: unknown): string | undefined {
@@ -121,6 +128,7 @@ export async function readRegistryCurrency(
     ...(regulated === "regulated" && str(json.regulated?.cap)
       ? { regulated_cap_id: str(json.regulated?.cap) }
       : {}),
+    ...(str(json.treasury_cap_id) ? { treasury_cap_id: str(json.treasury_cap_id) } : {}),
   };
 }
 

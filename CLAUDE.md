@@ -4467,6 +4467,23 @@ must be answerable from these tools, and no case check calls
   is defined at v1 while the pinned check audits v10), so scanning the
   requested id instead finds nothing. The origins are read once, before the
   per-struct fan-out, through `fetchTypeOrigins`, which throws.
+- **A coin with no TreasuryCap in the publish transaction is still audited.**
+  A cap stored inside another object during `init` never exists at top level,
+  so the publish scan misses it. Checked live: wUSDC's went into Wormhole's
+  `WrappedAssetSetup`, SRT's sits in its shared `TreasuryAccess`, and
+  CLOWNPEPE's was turned into the `Supply` its shared `Storage` keeps.
+  `auditPackageCapabilities` takes the
+  package's coins from the publish transaction's created `CoinMetadata`,
+  `TreasuryCap`, `Coin` and registry `Currency` of the lineage root's own
+  types, plus each one-time-witness-shaped struct `getCoinInfo` knows a coin
+  for (a module added by an upgrade). For each coin without a cap it reads
+  the registry's `treasury_cap_id`, then scans `TreasuryCap<T>` by type
+  (`found_by`), and names what is left in
+  `coins_without_located_mint_authority` at medium risk with what was
+  checked. A registry `Fixed`/`BurnOnly` supply means the cap was consumed
+  (`make_supply_fixed` takes it by value), so that cap is reported destroyed
+  without reading it: a cap created and consumed in one transaction appears
+  in no effects and `readObjectEnd` cannot place it.
 - **A package upgrade can change behaviour through its linkage alone.**
   `diff_package_upgrade` reads each version's `linkage` and reports relinked
   dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no

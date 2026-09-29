@@ -51,6 +51,13 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **`get_validators` no longer silently cuts the active set.** The default
+  summary ranks the whole set, shows compact rows within an output budget and
+  keeps at-risk validators. Omitted rows and fields are stated, with a full
+  call on the same network and without a limit. `detail: "full"` returns all
+  fields and rows unless an explicit `limit` is set; address lookups are
+  unchanged. `active_validator_count` and `total_stake` cover the whole set,
+  while `validator_count` counts the rows in each displayed or stored result.
 - **`identify_address` reports what an address received at genesis.**
   `first_seen` read one page of its transaction's balance changes. The
   mainnet genesis transaction credits every initial holder and runs past one

@@ -8,7 +8,7 @@ sidebar:
 | Tool | Summary |
 |---|---|
 | [`get_staking_summary`](#get_staking_summary) | Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. |
-| [`get_validators`](#get_validators) | List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). |
+| [`get_validators`](#get_validators) | List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). |
 
 ## get_staking_summary
 
@@ -29,11 +29,12 @@ Get a wallet's staking positions: every StakedSui object with its validator pool
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.
+List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). The default summary shows name, address, stake, commission, voting power and at-risk status within a compact output budget; at-risk validators are always kept. Ranking, active_validator_count and total_stake cover the whole set; validator_count counts the rows shown. `detail: full` returns every full row unless `limit` is set. Omitted rows and fields name a same-network full call without a limit.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | no | If set, return details for this one validator instead of the full list (0x...) |
-| `limit` | integer (1 to 150) | no | Max validators to return when listing (default 50, max 150) |
+| `limit` | integer (1 to 150) | no | When listing, keep at most N validators, plus any at-risk rows in summary. The summary output budget still applies; omitted rows name an unlimited full call. |
 | `sort_by` | `stake` \| `commission` | no | Sort field when listing: stake (default) or commission |
+| `detail` | `summary` \| `full` | no | Listing detail: summary (default) caps compact rows and keeps at-risk validators; full returns all fields without a size cap. Does not affect address lookup. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

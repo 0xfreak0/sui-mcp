@@ -72,20 +72,28 @@
 - **Four everyday prompts for people who are not investigators.**
   `was_i_scammed` (a wallet, a digest or both) finds what left the wallet,
   where it went, whether a blocklisted drainer package or a lookalike address
-  was involved, and whom to report to. `is_this_token_safe` (a coin type)
-  reads who can mint, freeze or upgrade the coin, its holders, its pools and
-  its deployer. `is_this_protocol_safe` (a package ID, MVR name or protocol
-  name) reads who holds the UpgradeCap and admin caps, how they sign and what
-  changed recently. `who_is_this_wallet` (an address or SuiNS name) reads what
-  kind of account it is, its labels and their evidence, its funding, activity
-  and exchange deposit behaviour. Each asks for a plain answer of two to four
-  sentences, then a `How sure: high|medium|low` line naming what was and was
-  not checked, then the digests and addresses behind it. Flags are reported
-  as leads, an empty result clears nothing, no private person is named, and
-  each step names the one profile outside `core` it needs, so a profile is
-  enabled only when a step runs. A test checks every tool call a prompt
-  spells out against the registered tools, their argument names and enum
-  values, the profile its step names, and the profiles the prompt enables.
+  was involved, and whom to report to; after a key compromise it points to a
+  new wallet on a clean device, and coins that went into the user's own
+  protocol account get their current state read before any advice.
+  `who_is_this_wallet` (an address or SuiNS name) reads what kind of account
+  it is, its labels and their evidence, its funding, activity and exchange
+  deposit behaviour. Two control checks report facts, never a safety
+  verdict: `who_controls_this_token` (a coin type) reads who can mint,
+  freeze or upgrade the coin, its holders, its pools and its deployer, and
+  `who_controls_this_protocol` (a package ID, MVR name or protocol name)
+  reads who holds the UpgradeCap and admin caps, how they sign and what
+  changed recently. Neither calls anything safe or unsafe or recommends
+  buying, selling, depositing or holding, and each answer ends by saying,
+  as of the chain tip it read, that it is not an audit or financial advice.
+  No prompt gives investment or legal advice. Each asks for a plain answer
+  of at most four sentences in everyday words, then a `How sure:
+  high|medium|low` line naming what was and was not checked, then the
+  digests and addresses behind it. Flags are reported as leads, an empty
+  result clears nothing, no private person is named, and each step names
+  the one profile outside `core` it needs, so a profile is enabled only
+  when a step runs. A test checks every tool call a prompt spells out
+  against the registered tools, their argument names and enum values, the
+  profile its step names, and the profiles the prompt enables.
 - `prompts/get` without an `arguments` field renders a prompt whose
   arguments are all optional, as the protocol allows.
 - **`get_transaction` explains a round trip inside a swap route.** When a
@@ -104,6 +112,25 @@
   Failed transactions and transactions without a loop are unchanged.
 
 ### Fixed
+- **`classify_deposit_address` counts a deposit that arrives during a sweep
+  as the next sweep's.** An exchange sweeps credited deposits, so a deposit
+  that lands while a sweep is pending stays behind until the next one. A
+  sweep that leaves a balance equal to the latest deposits of that coin now
+  counts as full when the next outflow of the coin empties it into the same
+  destination, or has not happened yet in the window; the sweep carries
+  `left_for_next_sweep` with the deposits and the sweep that took them. A Bybit
+  customer deposit address read `no` before and reads `likely` now. The
+  deposit-labels rule uses the same reading, so the next `sync:labels` may
+  add addresses it rejected as `partial-sweep`.
+- **`analyze_package` says when a cap holder has never signed.** Such a
+  holder's `signing_scheme` says so rather than being absent, and a cap type
+  held by several addresses names how many in its note, so no holder reads
+  as unresolved.
+- **`get_transaction` says an order's fills cover that transaction only.**
+  `order_events_note` appears when an event places an order on the book
+  (not for a swap whose order filled at once): a resting order fills later
+  in other traders' transactions, and `query_transactions`
+  on the account object lists the owner's later cancels and withdrawals.
 - `get_transaction` named the wrong coins for a router swap that follows a
   routed call the decoder does not label as a swap. After Meta Stable's
   `withdraw_w1` turned superSUI into afSUI, the next hop read "Swap superSUI
@@ -185,7 +212,7 @@
   info, nothing can mint (a registry supply recorded as fixed or burn-only,
   or SUI, whose Supply `sui::new` destroyed at genesis). The audit note
   names these coins, and `incomplete_scans` lists each type once, with every
-  reason a scan gave. `is_this_token_safe` reads each entry by its risk.
+  reason a scan gave. `who_controls_this_token` reads each entry by its risk.
 - `classify_deposit_address` no longer counts an inferred deposit label on
   the destination as an exchange wallet, so a wallet that pays into an
   exchange deposit address is not read as a deposit address itself.

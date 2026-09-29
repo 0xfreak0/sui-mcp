@@ -193,8 +193,8 @@ try {
     trace_incident: { subject: NEMO_EXPLOIT },
     attribute_cluster: { addresses: `${NEMO_ATTACKER},${NEMO_FUNDER}` },
     was_i_scammed: { digest: NEMO_EXPLOIT },
-    is_this_token_safe: { coin_type: USDC },
-    is_this_protocol_safe: { protocol: NEMO_ROOT },
+    who_controls_this_token: { coin_type: USDC },
+    who_controls_this_protocol: { protocol: NEMO_ROOT },
     who_is_this_wallet: { address: NEMO_ATTACKER },
   };
   for (const [name, args] of Object.entries(promptArgs)) {

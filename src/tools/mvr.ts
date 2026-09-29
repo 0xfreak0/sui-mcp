@@ -167,7 +167,7 @@ export function registerMvrTools(server: McpServer) {
 
   server.tool(
     "mvr_resolve_struct",
-    "Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. No generics — for parameterized types include them as '<...>' and the registry will reject the request. Bulk-friendly.",
+    "Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. No generics: for parameterized types include them as '<...>' and the registry will reject the request. Bulk-friendly.",
     {
       types: z
         .array(mvrTypeArg())

@@ -29,6 +29,6 @@ user's own orders or positions, keeping evidence and whom to report to.
 | `who_controls_this_protocol` | `protocol` (package ID, MVR name or protocol name), optional `network` | Who can upgrade the code or use the admin caps, how they sign, and what changed recently |
 | `who_is_this_wallet` | `address` (or SuiNS name), optional `network` | What kind of account it is, its labels and their evidence, its funding, activity and exchange deposit behaviour |
 
-The investigation prompts are described in
-[The forensics skill](/guides/forensics-skill/#investigation-prompts). The
+The investigation prompts are described in the
+[Forensics skill](/guides/forensics-skill/#investigation-prompts) guide. The
 [prompt reference](/reference/prompts/) lists every prompt with its arguments.

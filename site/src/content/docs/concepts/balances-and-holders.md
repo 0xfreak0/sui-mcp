@@ -2,7 +2,6 @@
 title: Historical balances and top holders
 description: How get_balance reconstructs a balance at a past moment, and when get_top_holders returns a real ranking.
 sidebar:
-  label: Balances and holders
   order: 7
 ---
 
@@ -37,8 +36,9 @@ the split at the anchor.
 walks two things in object-id order, which is unrelated to balance:
 `Coin<T>` objects, and address balances (funds credited to an owner's address
 rather than held as a coin object). A scan that stops early returns the
-largest holder it happened to see, and on SUI a larger `max_scan` names a
-different top holder with no overlap in the top five.
+largest holder it happened to see. Raising `max_scan` can change who ranks
+first, because more coin objects and address balances are read; on SUI, the
+top five of two scans of different sizes can have no holder in common.
 
 A truncated scan therefore returns `sampled_holders`, without a rank or a
 percentage of supply, along with a caveat naming which walk stopped. Raise

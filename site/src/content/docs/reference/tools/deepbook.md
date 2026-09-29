@@ -36,7 +36,7 @@ DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread 
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(DeepBook) Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. DeepBook is a central limit order book, so this — not pool reserves — is its real liquidity picture. Omit pool_name to list available pools.
+(DeepBook) Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. DeepBook is a central limit order book, so this, not pool reserves, is its real liquidity picture. Omit pool_name to list available pools.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

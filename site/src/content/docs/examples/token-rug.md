@@ -1,8 +1,7 @@
 ---
-title: "Example: KONG SUI rug pull"
+title: "Token rug pull: KONG SUI"
 description: Checking whether a token's deployer could still mint or upgrade, confirming its sale into the pool, and following the proceeds to where they converged.
 sidebar:
-  label: Token rug pull
   order: 2
 ---
 

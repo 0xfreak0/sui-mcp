@@ -1,8 +1,7 @@
 ---
-title: Multisig
+title: Multisig wallets
 description: Read a multisig wallet's committee from its address, see which keys sign, and find treasuries a set of keys controls.
 sidebar:
-  label: Multisig wallets
   order: 5
 ---
 

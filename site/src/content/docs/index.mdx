@@ -18,6 +18,7 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Content as CurrentRelease } from './project/_current-release.md';
 
 ## Start here
 
@@ -61,6 +62,8 @@ More tasks are listed on [Start here](/start/).
 </CardGrid>
 
 ## Install
+
+<CurrentRelease />
 
 Add this to your MCP client config (Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP over stdio):
 

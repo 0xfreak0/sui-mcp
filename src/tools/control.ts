@@ -28,7 +28,7 @@ const DEFAULT_SCAN = 5000;
 export function registerControlTools(server: McpServer) {
   server.tool(
     "sample_control_addresses",
-    "(Incident investigation) Draw a random control group from the same population as a cohort you are testing — other addresses that used the same protocol over the same window. Shared funding, common ancestry and timing overlap all look damning until you measure how often they occur by chance; this is what you compare against. Excludes the cohort automatically, samples randomly rather than by size (top-N would compare against whales, which collide more than ordinary wallets), and accepts a seed so the draw can be reproduced by whoever checks the report.",
+    "(Incident investigation) Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. Shared funding, common ancestry and timing overlap all look damning until you measure how often they occur by chance; this is what you compare against. Excludes the cohort automatically, samples randomly rather than by size (top-N would compare against whales, which collide more than ordinary wallets), and accepts a seed so the draw can be reproduced by whoever checks the report.",
     {
       module: z
         .string()
@@ -48,7 +48,7 @@ export function registerControlTools(server: McpServer) {
         .max(100)
         .optional()
         .describe(
-          "Control group size (default 25). Match it to the cohort — an unequal comparison is hard to read.",
+          "Control group size (default 25). Match it to the cohort; an unequal comparison is hard to read.",
         ),
       exclude: addressListArg()
         .optional()
@@ -63,7 +63,7 @@ export function registerControlTools(server: McpServer) {
         .int()
         .optional()
         .describe(
-          "Integer seed. Makes the draw reproducible. Record it alongside the result — without it nobody can redraw your control.",
+          "Integer seed. Makes the draw reproducible. Record it alongside the result; without it nobody can redraw your control.",
         ),
       max_events: numArg()
         .int()

@@ -8,7 +8,7 @@ sidebar:
 | Tool | Summary |
 |---|---|
 | [`build_staking`](#build_staking) | Build an unsigned transaction to stake or unstake SUI. |
-| [`build_transfer`](#build_transfer) | Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. |
+| [`build_transfer`](#build_transfer) | Build an unsigned transaction to transfer a coin (SUI or any coin type) from one address to another. |
 | [`simulate_transaction`](#simulate_transaction) | Dry-run a Sui transaction without signing, sending, or spending anything. |
 
 ## build_staking
@@ -34,13 +34,13 @@ Build an unsigned transaction to stake or unstake SUI. action='stake' delegates 
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Build an unsigned transaction to transfer a coin — SUI or any coin type — from one address to another. For SUI it splits from the gas coin; for other coins it draws the amount from the sender's coin objects and address balance together, so a sender holding the coin only in its address balance can still send it. Returns base64-encoded BCS bytes for simulation via simulate_transaction.
+Build an unsigned transaction to transfer a coin (SUI or any coin type) from one address to another. For SUI it splits from the gas coin; for other coins it draws the amount from the sender's coin objects and address balance together, so a sender holding the coin only in its address balance can still send it. Returns base64-encoded BCS bytes for simulation via simulate_transaction.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `sender` | string | yes | Sender address (0x...) |
 | `recipient` | string | yes | Recipient address (0x...) |
-| `amount` | string | yes | Amount in the coin's smallest unit (raw, no decimals; for SUI this is MIST — 1 SUI = 1e9 MIST) |
+| `amount` | string | yes | Amount in the coin's smallest unit (raw, no decimals; for SUI this is MIST, 1 SUI = 1e9 MIST) |
 | `coin_type` | string | no | Full coin type string (default 0x2::sui::SUI) |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

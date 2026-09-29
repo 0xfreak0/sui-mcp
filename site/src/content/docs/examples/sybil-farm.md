@@ -1,8 +1,7 @@
 ---
-title: "Example: WAL claim farm"
+title: "Sybil farm: WAL claims"
 description: Testing whether wallets that claimed an airdrop and swept it to one address share a funder, against a control group drawn from the same claim window.
 sidebar:
-  label: Sybil farm
   order: 4
 ---
 
@@ -204,5 +203,5 @@ to one account.
 - [Fund flows](/concepts/fund-flows/#paths-between-two-addresses):
   `find_flow_path` confirms the path from a farm wallet to the reserve wallet
   in two hops.
-- [The forensics skill](/guides/forensics-skill/): the order to work in and
+- [Forensics skill](/guides/forensics-skill/): the order to work in and
   the conclusions to refuse.

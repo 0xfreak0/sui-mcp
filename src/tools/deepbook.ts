@@ -36,7 +36,7 @@ const INTERVAL_SECONDS: Record<(typeof INTERVALS)[number], number> = {
 export function registerDeepBookTools(server: McpServer) {
   server.tool(
     "deepbook_orderbook",
-    "(DeepBook) Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. DeepBook is a central limit order book, so this — not pool reserves — is its real liquidity picture. Omit pool_name to list available pools.",
+    "(DeepBook) Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. DeepBook is a central limit order book, so this, not pool reserves, is its real liquidity picture. Omit pool_name to list available pools.",
     {
       pool_name: z
         .string()

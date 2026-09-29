@@ -1,8 +1,7 @@
 ---
-title: The forensics skill
+title: Forensics skill
 description: Install the sui-forensics skill, or use the investigation prompts that carry its method in clients without skills.
 sidebar:
-  label: Forensics skill
   order: 3
 ---
 

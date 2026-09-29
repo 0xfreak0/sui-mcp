@@ -8,8 +8,11 @@ sidebar:
 ## Why a transaction failed
 
 `get_transaction` returns the abort code with the package, module and function
-that raised it, and a clever error's constant name where the author defined
-one.
+that raised it. A
+[clever error](https://move-book.com/reference/abort-and-assert/clever-errors/)
+is Move's name for an abort constant marked `#[error]`, which carries a
+readable message. When the abort is one, `get_transaction` also returns the
+constant's name, its message and the source line under `clever_error`.
 
 ## Objects that are not coins
 

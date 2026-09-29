@@ -73,7 +73,7 @@ export function registerLabelTools(server: McpServer) {
         .describe(
           "Address to lookup/add/remove (required for those actions). A bare address refers to " +
             "the network this call targets; a CAIP-10 id ('eip155:1:0x…') labels an account on " +
-            "another chain — useful for recording where funds landed after a bridge hop.",
+            "another chain, useful for recording where funds landed after a bridge hop.",
         ),
       label: z.string().optional().describe("Human-readable label (required for 'add')."),
       category: z

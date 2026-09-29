@@ -12,9 +12,9 @@
  *   - **Free by default.** Aftermath and DefiLlama need no key. Aftermath
  *     covers current prices; DefiLlama covers current and historical prices,
  *     so block-time valuation works out of the box.
- *   - **Paid sources are opt-in.** Pyth and CoinMarketCap engage only when
- *     their key is set. Nothing degrades for someone who sets neither, and
- *     nobody is billed by accident.
+ *   - **Paid sources are opt-in.** Pyth engages only when its key is set.
+ *     Nothing degrades for someone who does not set it, and nobody is billed
+ *     by accident.
  *   - **The answer says where it came from.** A price is evidence like anything
  *     else here, and "Aftermath, current" supports a different claim than
  *     "Pyth, at block time".
@@ -28,7 +28,7 @@
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { normalizeCoinType } from "./coin-registry.js";
 
-export type PriceSource = "aftermath" | "defillama" | "pyth" | "coinmarketcap";
+export type PriceSource = "aftermath" | "defillama" | "pyth";
 
 export interface PriceQuote {
   /** USD unit price. */
@@ -57,18 +57,6 @@ export interface PriceQuote {
   priced_as?: string;
 }
 
-/** Why a price is missing, so a null is never read as a zero. */
-export interface PriceGap {
-  reason: "no_provider" | "unsupported" | "unavailable";
-  detail: string;
-}
-
-export interface PriceLookup {
-  quotes: Map<string, PriceQuote>;
-  /** Present when something was asked for and could not be answered. */
-  gap?: PriceGap;
-}
-
 /* ------------------------------------------------------------------ *
  * Keys — opt-in, never required
  * ------------------------------------------------------------------ */
@@ -76,14 +64,10 @@ export interface PriceLookup {
 /** Pyth Hermes key. Unset means Pyth is skipped entirely, not attempted. */
 export const pythApiKey = (): string | null => process.env.PYTH_API_KEY?.trim() || null;
 
-/** CoinMarketCap key. Unset means CMC is skipped entirely. */
-export const cmcApiKey = (): string | null => process.env.CMC_API_KEY?.trim() || null;
-
 /** Which sources are usable right now, cheapest first. */
 export function availableSources(): PriceSource[] {
   const out: PriceSource[] = ["aftermath", "defillama"];
   if (pythApiKey()) out.push("pyth");
-  if (cmcApiKey()) out.push("coinmarketcap");
   return out;
 }
 
@@ -142,7 +126,7 @@ const DEFILLAMA_PERCENTAGE_URL = "https://coins.llama.fi/percentage";
  * Coins per request. Keys are ~90 characters, so 25 keeps the URL near 2.3 KB,
  * well inside what proxies accept.
  */
-export const DEFILLAMA_BATCH = 25;
+const DEFILLAMA_BATCH = 25;
 
 /**
  * DefiLlama's key for a Sui coin type: `sui:` plus the type with its address
@@ -352,49 +336,6 @@ export async function fetchDefiLlamaChange24h(coinTypes: string[]): Promise<Map<
     } catch {
       // Best-effort: these coins are left out, which the caller reports as null.
     }
-  }
-  return out;
-}
-
-/* ------------------------------------------------------------------ *
- * CoinMarketCap — opt-in, keyed by symbol
- * ------------------------------------------------------------------ */
-
-const CMC_QUOTES_URL = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest";
-
-/**
- * Current prices by ticker symbol.
- *
- * CMC keys on symbols rather than Sui coin types, which is a real weakness for
- * forensics: symbols are not unique and anyone can mint a coin called USDC.
- * The caller supplies the symbol→coinType mapping it already trusts, so this
- * never guesses which coin a ticker meant.
- */
-export async function fetchCoinMarketCap(
-  symbolToCoinType: Map<string, string>,
-): Promise<Map<string, PriceQuote>> {
-  const out = new Map<string, PriceQuote>();
-  const key = cmcApiKey();
-  if (!key || symbolToCoinType.size === 0) return out;
-
-  try {
-    const symbols = [...symbolToCoinType.keys()].join(",");
-    const resp = await fetch(`${CMC_QUOTES_URL}?symbol=${encodeURIComponent(symbols)}`, {
-      headers: { "X-CMC_PRO_API_KEY": key, accept: "application/json" },
-      signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
-    });
-    if (!resp.ok) return out;
-    const body = (await resp.json()) as {
-      data?: Record<string, Array<{ quote?: { USD?: { price?: number } } }>>;
-    };
-    for (const [symbol, entries] of Object.entries(body.data ?? {})) {
-      const price = entries?.[0]?.quote?.USD?.price;
-      const coinType = symbolToCoinType.get(symbol) ?? symbolToCoinType.get(symbol.toUpperCase());
-      if (typeof price !== "number" || !coinType) continue;
-      out.set(coinType, { price, source: "coinmarketcap" });
-    }
-  } catch {
-    /* opt-in source: never fail the caller */
   }
   return out;
 }

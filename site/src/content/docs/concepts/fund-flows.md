@@ -31,11 +31,17 @@ Terminals are grouped by reason (`bridge_exit`, `sink`, `hub`, `unspent`,
 `coverage.truncated` says whether a limit cut the graph short.
 
 A sale whose proceeds are worth under a tenth of what went in carries only
-what they are worth, whatever its calls are named. The rest is `consumed`
-when the seller holds a receipt or position for it, new or existing, or may
-hold an account in a table the transaction wrote, and `retained` by the shared
-objects the transaction wrote only when the object changes show it holds
-nothing.
+what the proceeds are worth, whatever its calls are named. The rest ends in
+one of two terminals:
+
+- `retained`: the counterparty kept it. This needs the transaction's object
+  changes read in full, and they must show that the seller was left owning no
+  object from the transaction other than coins and that no dynamic field was
+  written. The node names the shared objects the transaction wrote.
+- `consumed`: every other case. The seller was left owning a receipt or
+  position, new or existing, or the transaction wrote a dynamic field, where a
+  table keyed by address can hold the seller's account unseen, or the object
+  changes were not read in full.
 
 A labelled attacker is followed rather than treated as a sink.
 

@@ -54,7 +54,7 @@ Resolve one or more Move Registry (MVR) names to their on-chain package IDs. Nam
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. No generics — for parameterized types include them as '&lt;...>' and the registry will reject the request. Bulk-friendly.
+Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. No generics: for parameterized types include them as '&lt;...>' and the registry will reject the request. Bulk-friendly.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

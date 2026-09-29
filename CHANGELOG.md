@@ -3,6 +3,34 @@
 ## Unreleased
 
 ### Changed
+- **The unused CoinMarketCap price source is gone.** No tool read a
+  CoinMarketCap price, yet setting `CMC_API_KEY` added `coinmarketcap` to the
+  `price_sources` list `get_token_prices` returns for a past moment.
+  `fetchCoinMarketCap`, `CMC_API_KEY` and the `coinmarketcap` source are
+  removed, and the configuration guide, capabilities page, security model and
+  `.env.example` no longer offer the key. `price_sources` names only
+  Aftermath, DefiLlama and, with `PYTH_API_KEY`, Pyth.
+- **`get_token_prices` says when Pyth answers.** Current prices come from
+  Aftermath, then DefiLlama, then Pyth for a verified coin only when
+  `PYTH_API_KEY` is set; the description and the configuration guide now say
+  so.
+- Tool descriptions: `trace_funds` and `aggregate_events` are tagged
+  "(Incident investigation)", the group they are listed under, instead of
+  "(Advanced — multi-hop)" and "(Analytics)"; `get_top_holders` drops its
+  "(Advanced — slow, paginated scan)" tag. Em-dash asides in tool and
+  parameter descriptions are rewritten as plain clauses.
+- **The docs site's changelog page is generated.** `npm run gen:tools` in
+  `site/` also reads CHANGELOG.md and package.json and writes the changelog
+  page (each release's summary, with links to its entry and GitHub release)
+  and a "Current release" line on the front page and Start here.
+  `test/site-tool-reference.test.ts` fails while either is stale, and the
+  release steps in CONTRIBUTING.md regenerate them.
+- Docs fixes from a review: the Cetus example reconciles its step 4 totals
+  with step 3; the lookalike-address page states where a poisoning wallet
+  appears and lists the conditions of the timing rule; the fund-flow page
+  lists when a low-value sale's remainder is `retained` or `consumed`; clever
+  errors are defined where the term first appears; each page has one name in
+  its title and the sidebar.
 - **The docs site has investigation examples and task-based navigation.**
   Five worked examples (a protocol exploit, a token rug, a drainer kit, a
   claim farm and a package authority check) show each tool call with its

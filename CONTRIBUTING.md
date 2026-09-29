@@ -403,7 +403,8 @@ result from npm to confirm it starts.
 
 ```bash
 npm run set-version -- 1.1.0      # package.json + server.json + lockfile
-npm run build && npm test
+npm run build && (cd site && npm run gen:tools)   # docs changelog page and current release
+npm test
 git commit -am "Release 1.1.0"
 git tag -a v1.1.0 -m "v1.1.0"
 git push && git push --tags       # CI does the rest

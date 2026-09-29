@@ -33,12 +33,12 @@ argument; see [Capabilities](/reference/capabilities/).
 ## Requests and retries
 
 GraphQL and fullnode requests retry a rate limit (HTTP 429), a 5xx or a
-dropped connection up to four times with backoff, time out after 30 seconds,
-and run at most eight at a time per network. Requests to `*.sui.io` endpoints
-are also spaced per endpoint. `SUI_RATE_LIMIT` sets the number of requests per
-10 seconds allowed to each endpoint, including non-`sui.io` ones, and `0` turns
-the spacing off. If the public endpoint still rate-limits a heavy
-investigation, set `SUI_GRAPHQL_URL` to a private one.
+dropped connection with backoff, time out, and run a bounded number at a time
+per network. Requests to `*.sui.io` endpoints are also spaced per endpoint.
+`SUI_RATE_LIMIT` sets the number of requests per 10 seconds allowed to each
+endpoint, including non-`sui.io` ones, and `0` turns the spacing off. If the
+public endpoint still rate-limits a heavy investigation, set
+`SUI_GRAPHQL_URL` to a private one.
 
 ## Address arguments
 
@@ -74,8 +74,8 @@ DefiLlama and Aftermath key on the full coin type, so an impostor coin that
 copies a real coin's symbol is priced as itself or not at all. Pyth feeds are
 matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
-Two paid sources are opt-in and engage only when their key is set, so nobody
-is billed by accident and nothing degrades if you set neither:
+The paid sources are opt-in and engage only when their key is set, so nobody
+is billed by accident and nothing degrades if you set none:
 
 | Variable | Enables |
 |---|---|
@@ -108,8 +108,8 @@ A capped tool response (see [Truncated lists](/concepts/truncation/)) names
 its full result as `sui://results/{id}` when the store is on. Reading that URI
 lists the result's lists and their lengths. Each list's `page` URI,
 `?path=inflow_sources&omitted=1`, pages only the rows the response left out;
-`offset`, `limit` and `match=0xab` page any list, 20k characters at most per
-page.
+`offset`, `limit` and `match=0xab` page any list, and each page is capped in
+size.
 
 The finding tools (`save_finding`, `list_findings`, `export_case`,
 `delete_finding`) and the watch tools (`watch_addresses`, `poll_watch`) need

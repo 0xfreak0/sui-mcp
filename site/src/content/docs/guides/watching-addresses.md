@@ -12,7 +12,7 @@ sidebar:
 { "watched": 20, "active": 0, "hits": [], "requests": 1 }
 ```
 
-That empty answer is 13 tokens and one request, so it is cheap to call
+That empty answer is one short line and one request, so it is cheap to call
 repeatedly. Nothing triggers a poll on its own; the caller drives it. A hit
 names the address, digest, checkpoint and why it fired. It does not include
 the transaction, which you read separately with `get_transaction`:

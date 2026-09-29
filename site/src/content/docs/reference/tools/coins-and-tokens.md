@@ -5,6 +5,13 @@ description: "Descriptions, profiles and parameters of the 4 tools in the Coins 
 sidebar:
   order: 104
 ---
+| Tool | Summary |
+|---|---|
+| [`get_balance`](#get_balance) | Get the liquid balance of one coin type for a Sui address or object (defaults to SUI), now or at a past time or checkpoint. |
+| [`get_coin_info`](#get_coin_info) | Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). |
+| [`get_token_prices`](#get_token_prices) | Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. |
+| [`search_token`](#search_token) | Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). |
+
 ## get_balance
 
 - Title: Get balance

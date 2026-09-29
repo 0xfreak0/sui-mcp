@@ -5,6 +5,14 @@ description: "Descriptions, profiles and parameters of the 5 tools in the Move R
 sidebar:
   order: 111
 ---
+| Tool | Summary |
+|---|---|
+| [`mvr_get_package_info`](#mvr_get_package_info) | Get the full Move Registry record for a single package name. |
+| [`mvr_resolve`](#mvr_resolve) | Resolve one or more Move Registry (MVR) names to their on-chain package IDs. |
+| [`mvr_resolve_struct`](#mvr_resolve_struct) | Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') to their canonical type tag using the type's defining-package address. |
+| [`mvr_reverse_resolve`](#mvr_reverse_resolve) | Reverse-lookup MVR names from one or more package addresses. |
+| [`mvr_search`](#mvr_search) | Browse or search the Move Registry for packages. |
+
 The [Move Registry](https://www.moveregistry.com) maps human-readable package names like `@suins/core` or `@deepbook/core` to on-chain package addresses. Backed by `mainnet.mvr.mystenlabs.com/v1`, or `testnet.mvr.mystenlabs.com/v1` when the call's network is testnet. Devnet has no registry endpoint.
 
 Typical flows:

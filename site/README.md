@@ -21,17 +21,20 @@ The build fails on a broken internal link or heading anchor ([starlight-links-va
 | `astro.config.mjs` | Site title, GitHub link, sidebar, plugins |
 | `src/content/docs/index.mdx` | Front page |
 | `src/content/docs/start/` | Sidebar group "Getting started" |
+| `src/content/docs/examples/` | Sidebar group "Examples" |
 | `src/content/docs/guides/` | Sidebar group "Guides" |
 | `src/content/docs/concepts/` | Sidebar group "How to read results" |
 | `src/content/docs/reference/` | Sidebar group "Reference" |
 | `src/content/docs/project/` | Sidebar group "Project" |
-| `src/content/docs/reference/tools/`, `src/content/docs/reference/prompts.md` | Generated tool and prompt reference. Do not edit by hand. |
+| `src/content/docs/reference/tools/`, `src/content/docs/reference/prompts.md` | Generated tool and prompt reference, and `reference/tools/_profiles.md`, the profile list `guides/tool-profiles.mdx` imports. Do not edit by hand. |
 | `scripts/gen-tools.mjs` | Generator for the reference pages |
 | `scripts/tool-reference.mjs` | Tool groups and page rendering, shared with the root test |
 | `src/routeData.ts` | Labels the `reference/tools/` sidebar group |
 | `vercel.json` | Vercel project settings |
 
-The sidebar groups are generated from the directories. Every page needs `title` and `description` in its frontmatter; `sidebar.order` sets its position within the directory.
+The sidebar groups are generated from the directories, in the order `astro.config.mjs` lists them; prev/next links follow that order. Every page needs `title` and `description` in its frontmatter; `sidebar.order` sets its position within the directory, and `sidebar.label` gives it a short sidebar name when the title is long.
+
+No hand-written page states a count or size that changes with the product (tools, profiles, prompts, coins, labels, tool-list size). Where a count or list is needed, generate it with `gen:tools`.
 
 `npm run lint:prose` at the repo root checks every page under `src/content/docs/` except the generated reference.
 
@@ -45,9 +48,9 @@ cd site
 npm run gen:tools
 ```
 
-`gen:tools` starts `../dist/index.js` with `SUI_TOOLS=all`, reads `tools/list` and `prompts/list` with the MCP SDK client from the root `node_modules`, and rewrites `src/content/docs/reference/tools/` and `src/content/docs/reference/prompts.md`. It stops with an error when `../dist/index.js` is missing.
+`gen:tools` starts `../dist/index.js` with `SUI_TOOLS=all`, reads `tools/list` and `prompts/list` with the MCP SDK client from the root `node_modules`, imports the profiles from `../dist/tools/profiles.js`, and rewrites `src/content/docs/reference/tools/` and `src/content/docs/reference/prompts.md`. It stops with an error when `../dist/index.js` is missing.
 
-Run it after changing a tool's name, description or parameters, or a prompt, and commit the result. The root `npm test` includes `test/site-tool-reference.test.ts`, which fails while the committed pages differ from what the current source would generate.
+Run it after changing a tool's name, description or parameters, a prompt, or a profile in `src/tools/profiles.ts`, and commit the result. The root `npm test` includes `test/site-tool-reference.test.ts`, which fails while the committed files differ from what the current source would generate.
 
 A new tool has to be added to a group in `GROUPS` in `scripts/tool-reference.mjs`. Until it is, the generator and the test fail and name the tool.
 

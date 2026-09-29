@@ -5,6 +5,12 @@ description: "Descriptions, profiles and parameters of the 3 tools in the Object
 sidebar:
   order: 103
 ---
+| Tool | Summary |
+|---|---|
+| [`get_object`](#get_object) | Get a Sui object by its ID. |
+| [`list_dynamic_fields`](#list_dynamic_fields) | List dynamic fields of a Sui object. |
+| [`list_owned_objects`](#list_owned_objects) | List raw objects owned by a Sui address with optional type filter and pagination. |
+
 ## get_object
 
 - Title: Get object

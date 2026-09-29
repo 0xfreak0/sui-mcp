@@ -5,6 +5,13 @@ description: "Descriptions, profiles and parameters of the 4 tools in the Recomm
 sidebar:
   order: 101
 ---
+| Tool | Summary |
+|---|---|
+| [`analyze_token`](#analyze_token) | Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. |
+| [`get_transaction_history`](#get_transaction_history) | Get decoded transaction history for a Sui wallet. |
+| [`get_wallet_overview`](#get_wallet_overview) | Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. |
+| [`identify_address`](#identify_address) | Identify what a Sui address is: wallet, package, validator, or object. |
+
 ## analyze_token
 
 - Title: Analyze token

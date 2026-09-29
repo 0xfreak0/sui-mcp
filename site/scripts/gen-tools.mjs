@@ -5,7 +5,8 @@
  *
  * Starts the server over stdio with SUI_TOOLS=all, reads tools/list and
  * prompts/list with the MCP SDK client installed at the repo root, and writes
- * one page per tool group, the tools index and the prompts page. The output is
+ * one page per tool group, the tools index, the profile list partial that
+ * guides/tool-profiles.mdx imports, and the prompts page. The output is
  * committed; test/site-tool-reference.test.ts fails when it is stale.
  */
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -69,10 +70,16 @@ try {
   await client.close();
 }
 
-const { PROFILES, DEFAULT_PROFILES } = await import(pathToFileURL(profilesModule).href);
+const { PROFILES, DEFAULT_PROFILES, PROFILE_SUMMARIES } = await import(pathToFileURL(profilesModule).href);
 let pages;
 try {
-  pages = renderReference({ tools, prompts, profiles: PROFILES, defaultProfiles: DEFAULT_PROFILES });
+  pages = renderReference({
+    tools,
+    prompts,
+    profiles: PROFILES,
+    defaultProfiles: DEFAULT_PROFILES,
+    profileSummaries: PROFILE_SUMMARIES,
+  });
 } catch (err) {
   fail(err.message);
 }
@@ -84,4 +91,4 @@ for (const [path, content] of pages) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, content);
 }
-console.log(`gen-tools: ${tools.length} tools, ${prompts.length} prompts, ${pages.size} pages written to ${docsDir}/reference/`);
+console.log(`gen-tools: ${tools.length} tools, ${prompts.length} prompts, ${pages.size} files written to ${docsDir}/reference/`);

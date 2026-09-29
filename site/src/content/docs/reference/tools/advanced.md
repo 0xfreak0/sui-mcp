@@ -5,6 +5,13 @@ description: "Descriptions, profiles and parameters of the 4 tools in the Advanc
 sidebar:
   order: 114
 ---
+| Tool | Summary |
+|---|---|
+| [`check_activity`](#check_activity) | Stateless one-shot check for new activity on a Sui address or object since a known checkpoint, timestamp, cursor or version. |
+| [`decode_ptb`](#decode_ptb) | Decode a Programmable Transaction Block (PTB) from base64 BCS bytes, or an executed transaction's PTB from its digest. |
+| [`poll_watch`](#poll_watch) | Return what has happened to watched addresses since the last poll, and nothing else. |
+| [`watch_addresses`](#watch_addresses) | Add, remove or list addresses watched for new activity during an investigation. |
+
 ## check_activity
 
 - Title: Check activity

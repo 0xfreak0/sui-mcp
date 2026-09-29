@@ -5,6 +5,12 @@ description: "Descriptions, profiles and parameters of the 3 tools in the DeepBo
 sidebar:
   order: 107
 ---
+| Tool | Summary |
+|---|---|
+| [`compare_oracle_price`](#compare_oracle_price) | Compare the Pyth oracle price against the price DeepBook actually traded at, over a time window. |
+| [`deepbook_orderbook`](#deepbook_orderbook) | Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. |
+| [`deepbook_trades`](#deepbook_trades) | Recent fills for a DeepBook v3 pool, with the maker and taker balance manager IDs behind each trade. |
+
 DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread and traded price come from the [DeepBook indexer](https://docs.sui.io/standards/deepbookv3-indexer) rather than from a pool object. Mainnet and testnet only.
 
 ## compare_oracle_price

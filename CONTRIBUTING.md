@@ -239,6 +239,36 @@ which means it was cut short, and when the file would exceed the size budget
 stated at the top of the script. Raise the budget on purpose if the chain has
 outgrown it; the tarball carries the file.
 
+## Claims about the Sui framework cite its source
+
+A rule that depends on what the Sui framework does (a function taking a
+capability by `&` or `&mut`, a function being package-private, a struct's
+abilities or field names) states that as a claim beside the rule: a
+`FrameworkClaim` from `src/utils/framework-claims.ts`, or an entry in
+`CAPABILITY_USES` in `src/utils/object-flow.ts`. `test/sui-framework.test.ts`
+parses every non-test framework source, vendored under
+`test/fixtures/sui-framework`, and fails on any claim the source
+contradicts. For each high-consequence capability it also fails on a
+callable function that takes it in any mode, or that consumes what a
+function taking it by `&` returns (settling a request with it counts), when
+`CAPABILITY_USES` neither grants, covers nor marks it inert, and it checks
+that the shared and frozen readings, and the notes, follow from those
+functions. It also fails when a parameter naming a capability does not
+resolve to the capability's defining module, so a `use` form the parser
+misreads cannot hide a function.
+
+Move the pinned framework to a new release and run the test:
+
+```bash
+npm run sync:framework -- mainnet-v1.80.1   # rewrites test/fixtures/sui-framework
+npx vitest run test/sui-framework.test.ts
+```
+
+A failure names the claim or the function. Decide what the new function
+allows before listing it; a function that lets any transaction do something
+with a shared or frozen capability belongs in a grant, and the notes then say
+so.
+
 ## Mocks must be shapes the service can actually produce
 
 A mock is an assertion about the outside world. When it asserts something

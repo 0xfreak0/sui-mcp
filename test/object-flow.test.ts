@@ -380,6 +380,36 @@ describe("giving up a capability: who can use it afterwards", () => {
     expect(flow.renounced_capabilities).toHaveLength(0);
   });
 
+  // display_registry::claim_with_publisher and coin::deny_list_v2_enable_global_pause
+  // take the cap by &mut, so sharing opens them too.
+  it("names every power a shared Publisher or DenyCapV2 opens", () => {
+    expect(createdShared(`${P2}::package::Publisher`).note).toMatch(/display_registry::new_with_publisher and claim_with_publisher/);
+    expect(createdShared(`${P2}::coin::DenyCapV2<0xa::t::T>`).note).toMatch(/deny_list_v2_enable_global_pause/);
+  });
+
+  // display::new takes a Publisher by & and returns a legacy Display, which
+  // display_registry::migrate_v1_to_v2 and claim turn into the registry
+  // Display or its DisplayCap: freezing does not close the registry.
+  it("does not say a frozen Publisher closes the Display registry", () => {
+    const note = to(`${P2}::package::Publisher`, IMMUTABLE).note!;
+    expect(note).toMatch(/display_registry::migrate_v1_to_v2 and claim/);
+    expect(note).not.toMatch(/nobody can/i);
+  });
+
+  // coin::migrate_regulated_currency_to_v2 takes the DenyCap by value, and a
+  // transaction can pass a shared object by value to a function that deletes it.
+  it("says a shared DenyCap can be swapped for a pausing DenyCapV2", () => {
+    expect(createdShared(`${P2}::coin::DenyCap<0xa::t::T>`).note).toMatch(/coin::migrate_regulated_currency_to_v2 takes it by value/);
+  });
+
+  // token::confirm_with_policy_cap never reads its cap, and any TransferPolicy
+  // can confirm a TransferRequest: the policies a frozen cap still creates
+  // settle requests outside the rules the issuer set.
+  it("says a frozen TreasuryCap or Publisher lets anyone settle requests outside the issuer's rules", () => {
+    expect(to(TREASURY, IMMUTABLE).note).toMatch(/token::confirm_with_policy_cap/);
+    expect(to(`${P2}::package::Publisher`, IMMUTABLE).note).toMatch(/transfer_policy::confirm_request/);
+  });
+
   it("still treats a transfer to a live address as a handover", () => {
     expect(summarizeObjectFlow([to(TREASURY, addrOwner(B))])!.capability_transfers).toHaveLength(1);
   });

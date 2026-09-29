@@ -29,10 +29,15 @@ import {
   type DeniedAddress,
   type RawSetting,
 } from "./deny-list.js";
+import type { FrameworkClaim } from "./framework-claims.js";
 
 /** The shared DenyList object. Fixed by the framework. */
 export const DENY_LIST_ID =
   "0x0000000000000000000000000000000000000000000000000000000000000403";
+
+export const DENY_LIST_ID_CLAIMS: FrameworkClaim[] = [
+  { constant: "object::SUI_DENY_LIST_OBJECT_ID", address: DENY_LIST_ID, why: "deny state is read from the DenyList at this id" },
+];
 
 const PAGE = 50;
 

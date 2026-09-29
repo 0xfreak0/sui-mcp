@@ -22,12 +22,14 @@
  *   balance change" while producing no balance change, so it would appear in
  *   neither channel. `capabilities.ts` already pins `0x2::…` in full; this
  *   follows it.
- * - **A capability sent somewhere unspendable, or frozen, is renounced.**
- *   Most UpgradeCap departures go to `0x0` or `0x2` (see `upgrade-cap.ts`).
+ * - **A capability sent somewhere unspendable is renounced.** Most
+ *   UpgradeCap departures go to `0x0` or `0x2` (see `upgrade-cap.ts`).
  *   Reporting those as "control changed hands, follow the recipient" would be
  *   wrong most of the time for the type that motivated the feature. A shared
  *   capability is the opposite: any transaction can pass a shared object to a
- *   public function, so it is open to everyone.
+ *   public function, so it is open to everyone. A frozen one is renounced
+ *   only when no function taking it by `&` grants anything
+ *   ({@link CAPABILITY_USES}).
  * - **Custody is not only address-to-address.** A kiosk-held NFT is owned by
  *   the Kiosk object, so a normal NFT trade reads `object -> object`, and
  *   `ObjectOwner -> ObjectOwner` changes are common. Filtering to
@@ -44,6 +46,7 @@
 
 import { isUnspendableAddress } from "./upgrade-cap.js";
 import { isDeletion } from "./object-end.js";
+import { citeFunctions, type FrameworkClaim } from "./framework-claims.js";
 
 /** How an object is held. */
 export type OwnerKind = "address" | "object" | "shared" | "immutable" | "consensus" | "unknown";
@@ -120,32 +123,237 @@ export const HIGH_CONSEQUENCE_TYPES: Record<string, string> = {
     "Proof of publishing rights for the package, used to claim Display and other type-owned privileges.",
 };
 
+/** A power a capability gives whoever can pass it to these framework functions, which all take it the same way. */
+export interface CapabilityGrant {
+  /** `module::function` in `0x2`. */
+  fns: string[];
+  /** `value` applies to a shared capability only: a transaction can pass a shared object by value to a function that deletes it. */
+  takes: "&mut" | "&" | "value";
+  /** What any transaction can do once it can pass the capability this way. */
+  opens: string;
+  /** `&mut` only: what nobody can do once the capability is frozen. Omitted when a `&` path still reaches the same power. */
+  closes?: string;
+  /**
+   * Functions that turn what `fns` return into something more, each group
+   * with what it allows. For a `&` grant a frozen capability reaches them
+   * too, so the note states them.
+   */
+  unlocks?: Array<{ fns: string[]; opens: string }>;
+}
+
 /**
- * Framework capabilities whose every exercising function takes them by
- * `&mut`, which a frozen object cannot give: freezing one renounces it.
- * `package::authorize_upgrade` and `commit_upgrade`, `coin::deny_list_add`
- * and `deny_list_v2_add`.
+ * What each callable framework function that takes a high-consequence type
+ * lets a transaction do. A shared object can be passed by `&mut` or `&`, or
+ * by value to a function that deletes it; a frozen one only by `&`. So these
+ * decide what sharing and freezing open, and freezing renounces a type no
+ * `&` grant covers.
+ *
+ * `test/sui-framework.test.ts` checks each function against the pinned
+ * framework source and fails on a callable function that takes the type, or
+ * that consumes what a `&` grant returns, and appears in none of `grants`
+ * (with their `unlocks`), `covered` or `inert`.
  */
-const FREEZE_RENOUNCES = new Set([
-  `${ADDR2}::package::UpgradeCap`,
-  `${ADDR2}::coin::DenyCap`,
-  `${ADDR2}::coin::DenyCapV2`,
-]);
+export interface CapabilityUses {
+  /** The powers the notes state, with the functions that grant them. */
+  grants: CapabilityGrant[];
+  /** Functions granting a power a grant already states, or less, with why. */
+  covered: Record<string, string>;
+  /** Functions granting nothing (getters, registry bookkeeping), with why. */
+  inert: Record<string, string>;
+}
 
-/** What anyone can do with a shared high-consequence type: each function takes it by `&mut` or `&`. */
-const OPENED_BY_SHARING: Record<string, string> = {
-  [`${ADDR2}::package::UpgradeCap`]: "package::authorize_upgrade and commit_upgrade take it by &mut, so anyone can upgrade the package.",
-  [`${ADDR2}::coin::TreasuryCap`]: "coin::mint and mint_balance take it by &mut, so anyone can mint.",
-  [`${ADDR2}::coin::DenyCap`]: "coin::deny_list_add takes it by &mut, so anyone can freeze holders.",
-  [`${ADDR2}::coin::DenyCapV2`]: "coin::deny_list_v2_add takes it by &mut, so anyone can freeze holders.",
-  [`${ADDR2}::package::Publisher`]: "display::new and transfer_policy::new take it by &, so anyone can create Display and TransferPolicy objects for the package's types.",
+export const CAPABILITY_USES: Record<string, CapabilityUses> = {
+  [`${ADDR2}::package::UpgradeCap`]: {
+    grants: [
+      {
+        fns: ["package::authorize_upgrade", "package::commit_upgrade"],
+        takes: "&mut",
+        opens: "anyone can upgrade the package",
+        closes: "nobody can upgrade the package",
+      },
+    ],
+    covered: {
+      "package::only_additive_upgrades": "restricts the upgrade policy, a narrower use of upgrade authority",
+      "package::only_dep_upgrades": "restricts the upgrade policy, a narrower use of upgrade authority",
+      "package::make_immutable": "destroys it, ending upgrades, which upgrade authority already decides",
+    },
+    inert: {
+      "package::upgrade_package": "getter",
+      "package::version": "getter",
+      "package::upgrade_policy": "getter",
+      "package::original_package_id": "getter",
+    },
+  },
+  [`${ADDR2}::coin::TreasuryCap`]: {
+    grants: [
+      { fns: ["coin::mint", "coin::mint_balance"], takes: "&mut", opens: "anyone can mint", closes: "nobody can mint" },
+      {
+        fns: [
+          "coin::update_name",
+          "coin::update_symbol",
+          "coin::update_description",
+          "coin::update_icon_url",
+          "coin_registry::claim_metadata_cap",
+          "token::new_policy",
+        ],
+        takes: "&",
+        opens: "anyone can change this coin's CoinMetadata where it is not frozen, claim the MetadataCap of its registry entry where no one has, and create its token policy",
+        unlocks: [
+          {
+            fns: ["coin_registry::set_name", "coin_registry::set_description", "coin_registry::set_icon_url"],
+            opens: "change the coin's registry name, description and icon",
+          },
+          {
+            fns: ["token::confirm_with_policy_cap", "token::confirm_request", "token::confirm_request_mut"],
+            opens: "confirm token actions such as transfer and to_coin without the coin's own token rules, so any holder can move its tokens or turn them into coins",
+          },
+        ],
+      },
+    ],
+    covered: {
+      "coin::supply_mut": "hands out the &mut Supply that mints",
+      "coin::mint_and_transfer": "mints",
+      "token::mint": "mints",
+      "token::confirm_with_treasury_cap": "approves any token action request, less than minting already allows",
+      "coin::treasury_into_supply": "deletes the cap into its Supply, which the caller keeps and mints with",
+      "coin_registry::make_supply_fixed": "consumes the cap into a fixed registry supply, ending minting, which mint authority already decides",
+      "coin_registry::make_supply_burn_only": "consumes the cap into a burn-only registry supply, ending minting, which mint authority already decides",
+      "coin_registry::make_supply_fixed_init": "make_supply_fixed during the coin's creation",
+      "coin_registry::make_supply_burn_only_init": "make_supply_burn_only during the coin's creation",
+      "coin_registry::delete_metadata_cap": "deletes a MetadataCap claim_metadata_cap handed out, fixing the registry metadata the claim already controls",
+      "token::share_policy": "shares a token policy new_policy created",
+    },
+    inert: {
+      "coin::total_supply": "getter",
+      "coin::supply_immut": "returns &Supply, and minting through a Supply needs &mut",
+      "coin::supply": "deprecated getter returning &Supply",
+      "coin::burn": "burns only coins the caller supplies",
+      "token::burn": "burns only tokens the caller supplies",
+      "token::flush": "burns a token policy's spent balance",
+      "coin_registry::set_treasury_cap_id": "records the cap's id in the registry, once",
+    },
+  },
+  [`${ADDR2}::coin::DenyCap`]: {
+    grants: [
+      { fns: ["coin::deny_list_add"], takes: "&mut", opens: "anyone can freeze holders", closes: "nobody can freeze holders with it" },
+      {
+        fns: ["coin::migrate_regulated_currency_to_v2"],
+        takes: "value",
+        opens: "anyone can swap it for a DenyCapV2 of their own that can pause the coin for everyone",
+      },
+    ],
+    covered: { "coin::deny_list_remove": "unfreezes a holder, the other half of deny authority" },
+    inert: {},
+  },
+  [`${ADDR2}::coin::DenyCapV2`]: {
+    grants: [
+      {
+        fns: ["coin::deny_list_v2_add", "coin::deny_list_v2_enable_global_pause"],
+        takes: "&mut",
+        opens: "anyone can freeze holders, and pause the coin for everyone where the cap allows a global pause",
+        closes: "nobody can freeze holders or pause the coin with it",
+      },
+    ],
+    covered: {
+      "coin::deny_list_v2_remove": "unfreezes a holder, the other half of deny authority",
+      "coin::deny_list_v2_disable_global_pause": "lifts the pause, the other half of deny authority",
+    },
+    inert: { "coin_registry::migrate_regulated_state_by_cap": "records the cap's id and pause flag in the registry" },
+  },
+  [`${ADDR2}::package::Publisher`]: {
+    grants: [
+      {
+        fns: ["display_registry::new_with_publisher", "display_registry::claim_with_publisher"],
+        takes: "&mut",
+        opens: "anyone can create a registry Display, or claim an unclaimed DisplayCap, for any of the package's types, which sets how its objects are shown",
+      },
+      {
+        fns: ["display::new", "transfer_policy::new"],
+        takes: "&",
+        opens: "anyone can create Display and TransferPolicy objects for the package's types",
+        unlocks: [
+          {
+            fns: ["display_registry::migrate_v1_to_v2", "display_registry::claim"],
+            opens: "create a type's registry Display where it has none, or claim its DisplayCap where none was claimed, which sets how the type's objects are shown",
+          },
+          {
+            fns: ["transfer_policy::confirm_request"],
+            opens: "clear a kiosk purchase of the package's types without the creator's royalty or lock rules",
+          },
+        ],
+      },
+    ],
+    covered: {
+      "display::new_with_fields": "display::new with fields set",
+      "display::create_and_keep": "display::new, kept by the sender",
+      "transfer_policy::default": "transfer_policy::new, shared, its cap kept by the sender",
+      "package::burn_publisher": "destroys it, which ends the powers the grants state",
+      "transfer_policy::destroy_and_withdraw": "destroys a TransferPolicy transfer_policy::new created",
+      "kiosk::lock": "needs only that a TransferPolicy for the type exists, which transfer_policy::new allows, and writes the caller's own Kiosk",
+      "kiosk_extension::place": "needs only that a TransferPolicy for the type exists, which transfer_policy::new allows, and writes a Kiosk that installed the extension",
+      "kiosk_extension::lock": "needs only that a TransferPolicy for the type exists, which transfer_policy::new allows, and writes a Kiosk that installed the extension",
+    },
+    inert: {
+      "display::is_authorized": "getter",
+      "package::from_package": "getter",
+      "package::from_module": "getter",
+      "package::published_module": "getter",
+      "package::published_package": "getter",
+      "display_registry::delete_legacy": "deletes a legacy Display once its registry Display's cap is claimed",
+    },
+  },
 };
 
-/** What anyone can do with a frozen high-consequence type, through the functions that take it by `&`. */
-const OPENED_BY_FREEZING: Record<string, string> = {
-  [`${ADDR2}::coin::TreasuryCap`]: "Minting needs &mut, so it is closed, but coin::update_name, update_symbol, update_description and update_icon_url, coin_registry::claim_metadata_cap and token::new_policy take it by &, so anyone can change this coin's metadata where it is not frozen or claimed, and create its token policy.",
-  [`${ADDR2}::package::Publisher`]: "display::new and transfer_policy::new take it by &, so anyone can create Display and TransferPolicy objects for the package's types.",
-};
+/**
+ * Framework facts the custody rules rest on. Every high-consequence type has
+ * `store`, so any holder can transfer, share or freeze it through the
+ * `transfer::public_*` functions. Sharing aborts for an object the
+ * transaction did not create, so a capability is shared only at creation.
+ */
+export const OBJECT_FLOW_CLAIMS: FrameworkClaim[] = [
+  ...Object.keys(CAPABILITY_USES).map((type) => ({
+    struct: type.split("::").slice(1).join("::"),
+    abilities: ["key", "store"],
+    why: "any holder can transfer, share or freeze a high-consequence capability",
+  })),
+  { fn: "transfer::public_share_object", visibility: "public", typeParams: { T: ["key", "store"] }, doc: "ESharedNonNewObject", why: "sharing only works in the creating transaction" },
+  { constant: "transfer::ESharedNonNewObject", why: "sharing only works in the creating transaction" },
+  { fn: "transfer::public_freeze_object", visibility: "public", typeParams: { T: ["key", "store"] }, why: "any holder of a store object can freeze it" },
+];
+
+/** A grant as a note states it: which functions take the capability, how, and what that allows. */
+function grantSentence(g: CapabilityGrant, frozen: boolean): string {
+  const verb = `${citeFunctions(g.fns)} ${g.fns.length === 1 ? "takes" : "take"} it by ${g.takes}`;
+  if (frozen && g.takes === "&mut") return g.closes ? `${verb}, which a frozen object cannot give, so ${g.closes}.` : `${verb}, which a frozen object cannot give.`;
+  const returned = g.fns.length === 1 ? "it returns" : "those return";
+  const then = (g.unlocks ?? [])
+    .map((u) => ` With what ${returned}, ${citeFunctions(u.fns)} ${u.fns.length === 1 ? "lets" : "let"} anyone ${u.opens}.`)
+    .join("");
+  return `${verb}, so ${g.opens}.${then}`;
+}
+
+/** What any transaction can do with a shared capability of this type; empty for a type {@link CAPABILITY_USES} does not cover. */
+export function sharedCapabilityPowers(type: string): string {
+  return (CAPABILITY_USES[baseType(type)]?.grants ?? []).map((g) => grantSentence(g, false)).join(" ");
+}
+
+/**
+ * What freezing a capability of this type closes and leaves open; empty for
+ * a type {@link CAPABILITY_USES} does not cover. A frozen object cannot be
+ * passed by value, so `value` grants are left out.
+ */
+export function frozenCapabilityPowers(type: string): string {
+  return (CAPABILITY_USES[baseType(type)]?.grants ?? [])
+    .filter((g) => g.takes !== "value")
+    .map((g) => grantSentence(g, true))
+    .join(" ");
+}
+
+/** Freezing renounces a covered type when none of its grants takes it by `&`. */
+export function freezeRenounces(type: string): boolean {
+  const uses = CAPABILITY_USES[baseType(type)];
+  return !!uses && !uses.grants.some((g) => g.takes === "&");
+}
 
 /** `0x2::coin::Coin`, in full. A look-alike from another package is NOT this. */
 const COIN_TYPE = `${ADDR2}::coin::Coin`;
@@ -312,30 +520,32 @@ function finish(
   const full = m.type ? baseType(m.type) : null;
 
   // A capability is given up by a transfer to an address nobody holds a key
-  // for, or by public_freeze_object (-> Immutable) when every function that
-  // uses the type takes it by `&mut`. Sharing gives it to everyone: any
-  // transaction can pass a shared object by `&mut`. Freezing leaves the
-  // functions that take it by `&` open to every transaction.
+  // for, or by public_freeze_object (-> Immutable) when no function that
+  // takes the type by `&` grants anything (`freezeRenounces`). Sharing gives
+  // it to everyone: any transaction can pass a shared object by `&mut`, or
+  // by value to a function that deletes it.
+  // Freezing leaves the functions that take it by `&` open to every
+  // transaction.
   const frozen = m.to?.kind === "immutable";
   const shared = m.to?.kind === "shared";
   const sentToBurn =
     m.to?.kind === "address" && !!m.to.address && isUnspendableAddress(m.to.address);
   const isCap = m.category === "capability" || out.high_consequence;
-  if (sentToBurn || (frozen && full !== null && FREEZE_RENOUNCES.has(full))) out.renounced = true;
+  if (sentToBurn || (frozen && full !== null && freezeRenounces(full))) out.renounced = true;
   else if (isCap && (shared || frozen)) out.opened = true;
 
   if (out.high_consequence && full) {
     const power = HIGH_CONSEQUENCE_TYPES[full]!;
     if (out.opened) {
       out.note = shared
-        ? `Made shared. ${power} ${OPENED_BY_SHARING[full]} This opens it to everyone; it is not a renunciation.`
-        : `Frozen. ${OPENED_BY_FREEZING[full]} This leaves it open to everyone; it is not a renunciation.`;
+        ? `Made shared. ${power} ${sharedCapabilityPowers(full)} This opens it to everyone; it is not a renunciation.`
+        : `Frozen. ${frozenCapabilityPowers(full)} This leaves it open to everyone; it is not a renunciation.`;
     } else if (!out.renounced) {
       out.note = power;
     } else if (sentToBurn) {
       out.note = `Sent to ${m.to?.address}, an address nobody holds a key for. ${power} Those rights are RENOUNCED, not transferred — a deliberate act and a reduction in risk, not a warning.`;
     } else {
-      out.note = `Made ${m.to?.kind}. ${power} Every function that exercises it takes it by &mut, which a frozen object cannot give, so those rights are RENOUNCED rather than transferred: a reduction in risk, not a warning.`;
+      out.note = `Made ${m.to?.kind}. ${power} ${frozenCapabilityPowers(full)} Those rights are RENOUNCED rather than transferred: a reduction in risk, not a warning.`;
     }
   } else if (out.opened) {
     out.note = `Made ${m.to?.kind}: any transaction can now pass it to the functions that take it${frozen ? " by &" : ""}. What that grants depends on each function's own checks.`;

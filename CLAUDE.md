@@ -936,6 +936,7 @@ npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
 npm run sync:coin-symbols    # regenerate src/data/coin-symbols.json (about 13 minutes)
 npm run sync:labels -- --exclude FILE   # build, then regenerate src/data/deposit-labels.json; FILE lists private case addresses
+npm run sync:framework -- REF   # vendor the Sui framework sources test/sui-framework.test.ts checks claims against
 ```
 
 ### Live checks
@@ -3051,16 +3052,30 @@ Seven rules, every one of them a bug that shipped to `main` first:
   those 59.
 - **Who can use a capability after it leaves its holder.** Transfer to an
   unspendable address renounces it. Freezing (→ Immutable) renounces only a
-  type whose every exercising function takes it by `&mut` (UpgradeCap,
-  DenyCap, DenyCapV2); a frozen object still passes by `&`, so a frozen
+  type no function takes by `&` to any effect (UpgradeCap, DenyCap,
+  DenyCapV2); a frozen object still passes by `&`, so a frozen
   TreasuryCap (metadata setters, `token::new_policy`), Publisher (Display,
-  TransferPolicy) or custom cap (`_: &AdminCap` checks) is `opened`: usable
-  by every transaction. Sharing (→ Shared) is always `opened`: any
-  transaction can pass a shared object by `&mut`, so a shared TreasuryCap,
-  DenyCap or UpgradeCap lets anyone mint, freeze or upgrade. Sharing only
-  works in the creating transaction, so an opened cap is often a `created`
-  change, and `custodyChanges` must keep it. `capabilities.ts` and
-  `object-flow.ts` apply the same rule.
+  TransferPolicy, and through a legacy Display the registry Display) or
+  custom cap (`_: &AdminCap` checks) is `opened`: usable by every
+  transaction. What a `&` function returns counts too: `display::new`'s
+  Display reaches `display_registry::migrate_v1_to_v2` and `claim`, a
+  `transfer_policy::new` policy clears any kiosk purchase of the type
+  (`transfer_policy::confirm_request`), and a `token::new_policy` cap
+  confirms any holder's token actions (`token::confirm_with_policy_cap`).
+  Sharing (→ Shared) is always `opened`: any transaction can pass a shared
+  object by `&mut`, or by value to a function that deletes it, so a shared
+  TreasuryCap, DenyCap or UpgradeCap lets anyone mint, freeze or upgrade,
+  and a shared DenyCap can be swapped for a pausing DenyCapV2
+  (`coin::migrate_regulated_currency_to_v2`). Sharing only works in the
+  creating transaction, so an opened cap is often a `created` change, and
+  `custodyChanges` must keep it. `capabilities.ts` and `object-flow.ts`
+  apply the same rule, both from `CAPABILITY_USES`: each framework function
+  that takes a high-consequence type in any mode, what it grants, what a
+  `&` grant's output unlocks, and the reviewed ones that grant nothing more.
+  Notes name the functions from that table. `test/sui-framework.test.ts`
+  checks it against the vendored framework source and fails on a callable
+  function the table does not list; a claim about the framework without a
+  `FrameworkClaim` is not checked by anything.
 - **Classify a capability BEFORE a position name.** `POSITION_NAME` is
   unanchored and matches `Account`, `Obligation`, `Receipt`, `Vault` — testing
   it first turned `custodian_v2::AccountCap` and

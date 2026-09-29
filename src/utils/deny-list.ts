@@ -21,6 +21,8 @@
  * Everything here is pure. The caller does the walking.
  */
 
+import type { FrameworkClaim } from "./framework-claims.js";
+
 /**
  * A `config::Setting<bool>` as it comes back over GraphQL.
  *
@@ -112,6 +114,20 @@ export interface CoinRestrictions {
 /** Key type suffixes as they appear in a dynamic field's type. */
 export const ADDRESS_KEY = "deny_list::AddressKey";
 export const GLOBAL_PAUSE_KEY = "deny_list::GlobalPauseKey";
+
+/**
+ * The deny list layout the readers rely on, down to field order, since keys
+ * are looked up by their BCS: `ConfigKey { per_type_index, per_type_key }`,
+ * `AddressKey(address)`, an empty `GlobalPauseKey()`, and the fields of a
+ * `config::Setting`.
+ */
+export const DENY_LIST_LAYOUT_CLAIMS: FrameworkClaim[] = [
+  { struct: "deny_list::ConfigKey", fields: ["per_type_index", "per_type_key"], why: "a coin's Config is looked up by ConfigKey BCS" },
+  { struct: "deny_list::AddressKey", fields: ["0"], why: "an address entry is looked up by the address's 32 bytes" },
+  { struct: "deny_list::GlobalPauseKey", fields: [], why: "the pause entry is looked up by an empty key" },
+  { struct: "config::Setting", fields: ["data"], why: "a setting is read from its data field" },
+  { struct: "config::SettingData", fields: ["newer_value_epoch", "newer_value", "older_value_opt"], why: "a setting's value is read by field name" },
+];
 
 /**
  * A reading for someone who asked whether an address is frozen.

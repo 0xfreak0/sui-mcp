@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.24.0 (2026-09-29)
+
+Everyday questions get guided answers, and answers are checked against the
+chain itself. Four prompts walk a non-investigator through "was I scammed",
+"who is this wallet" and who controls a token or a protocol, answering in
+plain words with a How-sure line and never a safety verdict or financial
+advice. Capability audits now read wrapped, shared, frozen and object-held
+caps by who can still use them, and find mint authority the publish
+transaction did not show. Two new gates back this: every framework fact the
+capability rules rely on is checked against the vendored Sui framework
+source, and `verify:live` compares answers on random subjects from every era
+with the same facts read from the chain another way.
 
 ### Added
 - **Oracle checks on random subjects in `verify:live`.**

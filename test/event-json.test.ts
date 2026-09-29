@@ -117,6 +117,24 @@ describe("protocols from events", () => {
   });
 });
 
+describe("order events", () => {
+  it("says an order event's fills cover this transaction only", async () => {
+    grpcResponse = txWithEvents(1);
+    mockGqlQuery.mockResolvedValue(gqlEvents(1));
+    expect((await run()).order_events_note).toBeDefined();
+  });
+
+  it("says the same when only a field counts what filled", async () => {
+    const tx = txWithEvents(1);
+    tx.transaction.events.events[0]!.eventType = `${WRAPPER_PKG}::h0d1a7::PlaceEvent`;
+    grpcResponse = tx;
+    mockGqlQuery.mockResolvedValue({
+      transaction: { effects: { events: { pageInfo: { hasNextPage: false }, nodes: [{ contents: { type: { repr: `${WRAPPER_PKG}::h0d1a7::PlaceEvent` }, json: { base_filled: "0" } } }] } } },
+    });
+    expect((await run()).order_events_note).toBeDefined();
+  });
+});
+
 describe("parsed event fields", () => {
   it("attaches decoded contents, which gRPC does not carry", async () => {
     grpcResponse = txWithEvents(3);

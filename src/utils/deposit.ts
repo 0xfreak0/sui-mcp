@@ -248,6 +248,8 @@ export interface DestinationEvidence {
   cexLabel: boolean;
   /** Fan-out classification of the destination, or null when not measured. */
   hub: boolean | null;
+  /** The destination's own label is an inferred exchange deposit address, which never counts as `cexLabel`. */
+  inferredDeposit?: boolean;
 }
 
 export interface VerdictResult {
@@ -393,11 +395,13 @@ export function decideDepositVerdict(
     reasons.push(
       destination.cexLabel
         ? "The destination carries a cex label."
-        : destination.hub === true
-          ? "The destination is hub-shaped but carries no exchange label."
-          : destination.hub === false
-            ? "The destination is neither labelled as an exchange nor hub-shaped."
-            : "The destination is not labelled and its fan-out was not measured.",
+        : destination.inferredDeposit
+          ? "The destination is itself an inferred exchange deposit address, not a disclosed exchange wallet, so its label does not count as an exchange destination."
+          : destination.hub === true
+            ? "The destination is hub-shaped but carries no exchange label."
+            : destination.hub === false
+              ? "The destination is neither labelled as an exchange nor hub-shaped."
+              : "The destination is not labelled and its fan-out was not measured.",
     );
   }
 
@@ -417,23 +421,36 @@ export function decideDepositVerdict(
 // Network
 // ---------------------------------------------------------------------------
 
+/** Fields of one transaction node that {@link scannedTxOf} reads. */
+export const SCANNED_TX_FIELDS = `digest
+      sender { address }
+      gasInput { gasSponsor { address } }
+      effects {
+        timestamp
+        balanceChanges(first: 50) { nodes { amount owner { address } coinType { repr } } }
+      }`;
+
 const DEPOSIT_QUERY = `query ($addr: SuiAddress!, $last: Int!) {
   address(address: $addr) {
     balances(first: 50) { nodes { coinType { repr } totalBalance } pageInfo { hasNextPage } }
   }
   transactions(filter: { affectedAddress: $addr }, last: $last) {
     nodes {
-      digest
-      sender { address }
-      gasInput { gasSponsor { address } }
-      effects {
-        timestamp
-        balanceChanges(first: 50) { nodes { amount owner { address } coinType { repr } } }
-      }
+      ${SCANNED_TX_FIELDS}
     }
     pageInfo { hasPreviousPage }
   }
 }`;
+
+export interface ScannedTxNode {
+  digest: string;
+  sender?: { address?: string } | null;
+  gasInput?: { gasSponsor?: { address?: string } | null } | null;
+  effects?: {
+    timestamp?: string | null;
+    balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string } | null; coinType?: { repr: string } }> };
+  } | null;
+}
 
 interface DepositQueryResult {
   address: {
@@ -443,15 +460,7 @@ interface DepositQueryResult {
     } | null;
   } | null;
   transactions: {
-    nodes: Array<{
-      digest: string;
-      sender?: { address?: string } | null;
-      gasInput?: { gasSponsor?: { address?: string } | null } | null;
-      effects?: {
-        timestamp?: string | null;
-        balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string } | null; coinType?: { repr: string } }> };
-      } | null;
-    }>;
+    nodes: ScannedTxNode[];
     pageInfo: { hasPreviousPage: boolean };
   };
 }
@@ -464,11 +473,9 @@ const tag = (t: string) => {
   }
 };
 
-/** One request: the address's latest transactions and its balances right now. */
-export async function scanForDeposit(address: string, last = 50): Promise<DepositScan> {
-  const addr = normalizeSuiAddress(address);
-  const res = await gqlQuery<DepositQueryResult>(DEPOSIT_QUERY, { addr, last: Math.min(50, last) });
-  const txs: ScannedTx[] = res.transactions.nodes.map((n) => ({
+/** A transaction node read with {@link SCANNED_TX_FIELDS}, as the pattern reader takes it. */
+export function scannedTxOf(n: ScannedTxNode): ScannedTx {
+  return {
     digest: n.digest,
     timestamp: n.effects?.timestamp ?? null,
     sender: n.sender?.address ?? null,
@@ -476,7 +483,14 @@ export async function scanForDeposit(address: string, last = 50): Promise<Deposi
     changes: (n.effects?.balanceChanges?.nodes ?? [])
       .filter((c) => c.owner?.address && c.coinType?.repr && c.amount !== undefined)
       .map((c) => ({ owner: c.owner!.address!, coinType: tag(c.coinType!.repr), amount: BigInt(c.amount!) })),
-  }));
+  };
+}
+
+/** One request: the address's latest transactions and its balances right now. */
+export async function scanForDeposit(address: string, last = 50): Promise<DepositScan> {
+  const addr = normalizeSuiAddress(address);
+  const res = await gqlQuery<DepositQueryResult>(DEPOSIT_QUERY, { addr, last: Math.min(50, last) });
+  const txs = res.transactions.nodes.map(scannedTxOf);
   const balances = res.address?.balances;
   // A balance list that did not fit one page cannot anchor the reconstruction.
   const currentBalances =
@@ -511,7 +525,10 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
   let destinationFanout: FanoutResult | null = null;
   const unmeasured: Unmeasured = {};
   if (hotWallet) {
-    const cexLabel = hotLabel?.category === "cex";
+    // An inferred deposit label is not an exchange wallet: counting it would
+    // call a wallet that pays into a deposit address a deposit address itself.
+    const inferredDeposit = hotLabel?.inferred_from !== undefined;
+    const cexLabel = hotLabel?.category === "cex" && !inferredDeposit;
     if (!cexLabel && measureDestination) {
       destinationFanout = await measureFanout(hotWallet, 300).catch((err: unknown) => {
         unmeasured.destination = `The destination's fan-out could not be read: ${err instanceof Error ? err.message : String(err)}`;
@@ -520,7 +537,7 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
     } else if (!cexLabel) {
       unmeasured.destination = "The destination carries no exchange label and its fan-out is not measured in this call; classify_deposit_address measures it.";
     }
-    destination = { cexLabel, hub: destinationFanout ? destinationFanout.classification === "hub" : null };
+    destination = { cexLabel, hub: destinationFanout ? destinationFanout.classification === "hub" : null, inferredDeposit };
   }
 
   const sponsor = pattern.sponsors.length === 1 ? pattern.sponsors[0]! : null;

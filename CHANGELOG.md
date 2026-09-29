@@ -3,6 +3,30 @@
 ## Unreleased
 
 ### Added
+- **Exchange deposit addresses inferred from their sweeps.** `npm run
+  sync:labels` reads the senders into every exchange wallet the disclosed set
+  names and keeps an address when `classify_deposit_address` would read it
+  `likely` against that wallet, with at least two sweeps: every outflow in its
+  latest 50 transactions emptied the swept coin into that one disclosed
+  wallet. An address poisoner's lookalike and an exchange's own operational
+  address sweep the same way, so an address is also left out when it renders
+  like another counterparty of the wallet, when only its sweep sponsor, the
+  exchange's own wallets or the wallet's own forwarding address ever paid
+  it a coin it later swept, and when a sweep sponsor is not a relayer or the
+  exchange itself. A
+  disclosed wallet that is deposit-shaped itself is never a sweep target. The
+  set ships in `src/data/deposit-labels.json` as a tier below every other
+  label, so a disclosed, curated, override or session label always wins. A
+  label names the exchange only (`<Exchange> deposit address (inferred)`,
+  category `cex`, confidence medium, source `inferred`, evidence
+  `sweep-pattern`) and carries `inferred_from`: the wallet swept into, the
+  sweep count and the latest sweep digests. Every surface that shows a
+  label's provenance shows it, `screen_address` reports the set's coverage
+  per exchange, and a trace or flow graph that stops at one says the label
+  was inferred, names its latest sweep and says how to trace past it.
+  `manage_labels export` leaves inferred labels out. An address missing from
+  the set is not cleared: only recent senders into the disclosed wallets
+  were read.
 - **Four everyday prompts for people who are not investigators.**
   `was_i_scammed` (a wallet, a digest or both) finds what left the wallet,
   where it went, whether a blocklisted drainer package or a lookalike address
@@ -38,6 +62,9 @@
   Failed transactions and transactions without a loop are unchanged.
 
 ### Fixed
+- `classify_deposit_address` no longer counts an inferred deposit label on
+  the destination as an exchange wallet, so a wallet that pays into an
+  exchange deposit address is not read as a deposit address itself.
 - **A wrapped capability is no longer reported as destroyed.**
   `analyze_package` and the capability audit read a cap that no longer exists
   at top level from the last transaction that touched it: deleted is

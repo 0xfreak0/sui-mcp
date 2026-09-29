@@ -120,6 +120,14 @@
   arguments. It renders `what_happened_to_my_funds` after a first line
   naming the new name, and will be removed in a later release.
 
+### Added
+- **A context-cost measurement script for contributors.**
+  `scripts/probe/token-baseline.mjs` reports what the tool definitions cost
+  per profile selection and what each tool's answers cost, in characters and
+  estimated tokens, from a saved case-pass summary. It is a manual comparison
+  tool, not a `verify:live` check. `verify:live --keep-summary <path>` keeps
+  that run's case-pass summary for it.
+
 ## 1.24.0 (2026-09-29)
 
 Everyday questions get guided answers, and answers are checked against the

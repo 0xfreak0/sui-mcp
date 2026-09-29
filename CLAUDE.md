@@ -828,9 +828,10 @@ before the first tool registers.
 
 ## Writing documentation
 
-README, CONTRIBUTING and the forensics skill are **reference material**. They
-say what a tool does, what its arguments mean, what it returns, and when to
-reach for it. Someone lands on them to get work done.
+README, the docs site (`site/src/content/docs/`), CONTRIBUTING and the
+forensics skill are **reference material**. They say what a tool does, what
+its arguments mean, what it returns, and when to reach for it. Someone lands on
+them to get work done.
 
 - **Write capability and usage.** "`analyze_multisig` reports which committee
   keys have signed and which never have" — not the story of how that was

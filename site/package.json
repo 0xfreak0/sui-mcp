@@ -1,0 +1,17 @@
+{
+  "name": "sui-mcp-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "gen:tools": "node scripts/gen-tools.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.4",
+    "astro": "^7.3.5",
+    "starlight-links-validator": "^0.26.0"
+  }
+}

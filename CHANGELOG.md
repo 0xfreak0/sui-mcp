@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **The README is an overview; the documentation moved to a docs site.**
+  The README keeps the install snippet, one investigation example and links.
+  Every other section moved to pages under `site/src/content/docs/` (an
+  Astro Starlight site in `site/`, outside the npm package), and the tool
+  reference is generated from the server's own tool and prompt schemas;
+  `test/site-tool-reference.test.ts` fails when the committed reference is
+  stale. Tool counts are checked against the tool profiles page.
+
 ## 1.24.0 (2026-09-29)
 
 Everyday questions get guided answers, and answers are checked against the

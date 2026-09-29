@@ -13,6 +13,9 @@ const readJson = (name: string) => JSON.parse(readFileSync(join(root, name), "ut
 const pkg = readJson("package.json");
 const serverJson = readJson("server.json");
 const readme = readFileSync(join(root, "README.md"), "utf8");
+const docsDir = join(root, "site/src/content/docs");
+const profilesPage = readFileSync(join(docsDir, "guides/tool-profiles.md"), "utf8");
+const decompilerPage = readFileSync(join(docsDir, "guides/decompiler.md"), "utf8");
 const indexSrc = readFileSync(join(root, "src/index.ts"), "utf8");
 
 /**
@@ -180,20 +183,23 @@ describe("advertised tool count", () => {
     expect(pkg.description).toContain(`${toolCount} tools`);
   });
 
-  it("matches the count in the README heading and intro", () => {
-    expect(readme).toContain(`## Tools (${toolCount})`);
+  it("matches the count in the README intro and the docs pages that state it", () => {
     expect(readme).toContain(`${toolCount} tools`);
+    expect(profilesPage).toContain(`All ${toolCount} tools`);
+    expect(decompilerPage).toContain(`of the ${toolCount} tools`);
   });
 
   // The per-profile rows are hand-written and were the one advertised number
   // nothing checked: adding a tool to a profile silently left the table wrong,
   // and the table is what someone reads to decide which profile to set.
-  it("matches the per-profile counts in the README table", () => {
+  it("matches the per-profile counts in the tool profiles table", () => {
     for (const [name, tools] of Object.entries(PROFILES)) {
-      const row = new RegExp(`^\\| \`${name}\`[^|]*\\|\\s*(\\d+)\\s*\\|`, "m").exec(readme);
-      expect(row, `README profile table has no row for \`${name}\``).not.toBeNull();
-      expect(Number(row![1]), `README says ${name} has ${row![1]} tools, PROFILES has ${tools.length}`)
+      const row = new RegExp(`^\\| \`${name}\`[^|]*\\|\\s*(\\d+)\\s*\\|`, "m").exec(profilesPage);
+      expect(row, `guides/tool-profiles.md has no row for \`${name}\``).not.toBeNull();
+      expect(Number(row![1]), `guides/tool-profiles.md says ${name} has ${row![1]} tools, PROFILES has ${tools.length}`)
         .toBe(tools.length);
     }
+    const all = /^\| `all`[^|]*\|\s*(\d+)\s*\|/m.exec(profilesPage);
+    expect(Number(all?.[1]), "guides/tool-profiles.md `all` row").toBe(toolCount);
   });
 });

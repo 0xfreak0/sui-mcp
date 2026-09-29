@@ -7,9 +7,21 @@
  * rather than something to remember. Some hits will be legitimate — read them
  * and decide, do not rewrite on the count.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
-const FILES = ["README.md", "CONTRIBUTING.md", ".claude/skills/sui-forensics/SKILL.md"];
+// The docs site's pages, except the tool and prompt reference that
+// site/scripts/gen-tools.mjs generates from the server's own descriptions.
+const SITE_DOCS = "site/src/content/docs";
+const GENERATED = /^reference\/(tools\/|prompts\.md$)/;
+let siteDocs = [];
+try {
+  siteDocs = readdirSync(SITE_DOCS, { recursive: true })
+    .filter((f) => /\.mdx?$/.test(f) && !GENERATED.test(f))
+    .sort()
+    .map((f) => `${SITE_DOCS}/${f}`);
+} catch {}
+
+const FILES = ["README.md", "CONTRIBUTING.md", ".claude/skills/sui-forensics/SKILL.md", ...siteDocs];
 
 const RULES = [
   [/\b(That|This) (is|was) the (point|whole point|reason|difference)\b/i, "summarising closer"],

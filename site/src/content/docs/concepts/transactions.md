@@ -166,3 +166,52 @@ ties, then non-framework Move calls. Every anomaly lists its command indices.
 selects exact indices, such as `[3, 7]`. Each returned command carries its
 `index`. `commands_omitted` lists missing index ranges and the continuation
 `next_call`. Checks cover all commands, even when the displayed list is a page.
+
+## Investigating one exploit transaction
+
+`analyze_attack_tx` reads the whole transaction through gRPC with archive
+fallback, including PTBs with hundreds of commands and events. It reports
+gains and losses per address and coin in USD at block time, pairs flash-loan
+and flash-swap borrows with repayments, and lists each swap's coins and amounts.
+Before/after pool prices are included where the DEX event carries them.
+Pool, vault and market flows come from their own events, attributed to the
+changed shared object whose ID the event names.
+
+Oracle calls and updates are read from the PTB. Shared objects are read at
+their input and output versions under `state_deltas`. Reconciliation compares
+value leaving objects or mints for addresses against decoded events and the
+objects read. Address-to-address transfers cancel; objects left out by read
+caps are counted.
+
+The heuristic anomaly checks include:
+
+- A caller's argument written into shared state, or multiplied by an
+  event-stated number into its accounting, then used in the same PTB.
+- A stored number moving 100x, a drained balance, or a holder losing most of
+  its priced value to addresses.
+- Liquidity credited above what the event amounts buy over its tick range,
+  or shares minted far above the deposit's share of the holdings.
+- A public key held in a shared object replaced by another key.
+- An event or coin-keyed table price at least 5x from the provider price for
+  one coin while the same field agrees with the provider for other coins.
+- Shares or a position redeemed within a day for at least 1.1x the sender's
+  purchase cost.
+- A shared object rewritten by another address in the minute before the
+  transaction, flipping a flag or setting a recipient or amount it moved.
+
+The tool also runs `decode_ptb`'s checks, including effects-based payouts,
+superseded package versions and packages vouched for by neither the curated
+registry nor a curated protocol's publishing key. `flagged_commands` gives
+a `decode_ptb` call selecting the medium and high flags' commands.
+Flash legs, oracle touches and anomalies are leads; `checks_run` names every
+check, and no match clears nothing.
+
+USD prices need no API key: DefiLlama supplies them, with Pyth for verified
+coins when `PYTH_API_KEY` is set. Every unpriced coin is listed. `attacker`
+selects the profit address; a losing address is reported as a loss with the
+addresses that gained, as with a victim who signed a drain.
+
+The summary keeps rows within their shares of about 40,000 characters,
+preserving pools, holders and addresses named by anomalies or flash legs,
+the sender and the profit address. Totals and anomalies cover every row;
+`omitted` reports the rest and `detail: "full"` lists every row.

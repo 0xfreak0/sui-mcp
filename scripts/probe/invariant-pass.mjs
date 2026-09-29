@@ -20,9 +20,10 @@
  * transactions, a PTB with 100+ commands or balance changes, a package, shared
  * and owned objects, a kiosk, an object holding an address balance, and a bridge
  * exit. Every tool answer is compared with a raw GraphQL read taken in the same
- * run. A value that moves while it is read (a balance, the newest page of an
- * address) is read before and after the tool call, and the tool must equal one
- * of the two.
+ * run. A value that moves while it is read is read before and after the tool
+ * call: a balance must equal one of the two reads, and an object's version must
+ * lie between them. An address's page is compared with the raw page read up to
+ * the checkpoint of the tool's newest row.
  *
  * Prints pass/fail counts per invariant and, for every failure, the seed, the
  * tool call and the raw value. Exits 1 on any failure.
@@ -686,43 +687,88 @@ async function checkBalancePast(address, coinType, checkpoint) {
   });
 }
 
+/** The checkpoint of each digest, from raw rows already read or else a raw lookup; null when the chain has no such transaction. */
+async function checkpointsOf(digests, known) {
+  for (const d of digests) {
+    if (known.has(d)) continue;
+    const t = (await gql(`query($d:String!){ transaction(digest:$d){ effects{ checkpoint{ sequenceNumber } } } }`, { d })).transaction;
+    known.set(d, t ? Number(t.effects.checkpoint.sequenceNumber) : null);
+  }
+  return digests.map((d) => known.get(d));
+}
+
+/**
+ * A tool's page of an address's transactions against the raw query. The
+ * service answers a read at one checkpoint and shows a checkpoint's
+ * transactions all at once, so the raw page read with `beforeCheckpoint` one
+ * past the tool's newest row is the page the tool read; the rows it leaves out
+ * are in later checkpoints. Both tools page the same `transactions` connection
+ * as the raw read (newest first reverses it), so within a checkpoint too the
+ * order is the connection's on both sides, and the two pages must be equal row
+ * for row. The tool read after the raw page passed as `before`, so its newest
+ * row is no older than that page's newest row. Returns the verdict, the raw
+ * page compared with, and what differs.
+ */
+async function pageAtToolRead(address, order, limit, digests, before, known) {
+  const beforeNewest = Math.max(-1, ...before.rows.map((r) => r.checkpoint));
+  if (!digests.length) return { ok: before.rows.length === 0, raw: before, got: { rows: 0 }, want: { raw_rows_before_the_call: before.rows.length } };
+  const cps = await checkpointsOf(digests, known);
+  const at = (d, i) => `${d}@${cps[i] ?? "not on chain"}`;
+  if (cps.includes(null)) return { ok: false, raw: before, got: { not_on_chain: digests.filter((_, i) => cps[i] === null), digests }, want: {} };
+  const newest = Math.max(...cps);
+  const raw = await rawAddressPage(address, { order, limit, before: newest + 1 });
+  const rd = raw.rows.map((r) => r.digest);
+  for (const r of raw.rows) known.set(r.digest, r.checkpoint);
+  const first = digests.findIndex((d, i) => d !== rd[i]);
+  const differs = first >= 0 || digests.length !== rd.length;
+  return {
+    ok: !differs && newest >= beforeNewest,
+    raw,
+    got: {
+      newest_checkpoint: newest,
+      first_difference: differs ? (first >= 0 ? first : Math.min(digests.length, rd.length)) : null,
+      extra: digests.flatMap((d, i) => (rd.includes(d) ? [] : [at(d, i)])),
+      missing: raw.rows.filter((r) => !digests.includes(r.digest)).map((r) => `${r.digest}@${r.checkpoint}`),
+      digests: digests.map(at),
+    },
+    want: { newest_checkpoint_before_the_call: beforeNewest, at_the_tool_checkpoint: raw.rows.map((r) => `${r.digest}@${r.checkpoint}`) },
+  };
+}
+
 /**
  * get_transaction_history and query_transactions against the raw page, both
- * orders. History's default view lists the rows that fit its budget and counts
- * the rest in `omitted`; `detail: "full"` lists the whole page, which is what
- * the raw page is compared with. The default view must be the full page in
- * order with exactly `omitted` rows left out.
+ * orders, each by `pageAtToolRead`. History's default view lists the rows that
+ * fit its budget and counts the rest in `omitted`; `detail: "full"` lists the
+ * whole page, and the raw page is compared with that view. The default view
+ * must be the full page in order with exactly `omitted` rows left out.
  */
 async function checkHistory(address) {
   const out = {};
   for (const order of ["oldest", "newest"]) {
     const limit = 20;
     const hArgs = { address, limit, order, detail: "full" };
+    const sArgs = { address, limit, order };
     const qArgs = { affected_address: address, limit, order };
     const rawBefore = await rawAddressPage(address, { order, limit });
     const h = await call("get_transaction_history", hArgs);
-    const sArgs = { address, limit, order };
     const summary = await call("get_transaction_history", sArgs);
+    const rawBetween = await rawAddressPage(address, { order, limit });
     const q = await call("query_transactions", qArgs);
-    const rawAfter = order === "newest" ? await rawAddressPage(address, { order, limit }) : rawBefore;
+    const known = new Map([...rawBefore.rows, ...rawBetween.rows].map((r) => [r.digest, r.checkpoint]));
     const hd = (h?.transactions ?? []).map((t) => t.digest);
     const qd = (q?.transactions ?? []).map((t) => t.digest);
-    // A newest-first page on a busy address moves between the reads. The tool's
-    // page must then be a contiguous window of the combined newest-first
-    // sequence: the later raw page, followed by the older rows it pushed out.
-    const merged = [...rawAfter.rows.map((x) => x.digest), ...rawBefore.rows.map((x) => x.digest).filter((d) => !rawAfter.rows.some((x) => x.digest === d))];
-    const window = (xs) => {
-      if (order !== "newest" || xs.length === 0) return false;
-      const i = merged.indexOf(xs[0]);
-      return i >= 0 && xs.every((d, k) => merged[i + k] === d);
-    };
-    const same = (xs, r) => xs.join() === r.rows.map((x) => x.digest).join() || window(xs);
-    if (h) check(I.historyList, same(hd, rawBefore) || same(hd, rawAfter), { seed: SEED, tool: "get_transaction_history", args: hArgs, got: hd, raw: rawAfter.rows.map((x) => x.digest) });
-    if (q) check(I.historyList, same(qd, rawBefore) || same(qd, rawAfter), { seed: SEED, tool: "query_transactions", args: qArgs, got: qd, raw: rawAfter.rows.map((x) => x.digest) });
+    const hPage = h ? await pageAtToolRead(address, order, limit, hd, rawBefore, known) : null;
+    if (hPage) check(I.historyList, hPage.ok, { seed: SEED, tool: "get_transaction_history", args: hArgs, got: hPage.got, raw: hPage.want });
+    if (q) {
+      const qPage = await pageAtToolRead(address, order, limit, qd, rawBetween, known);
+      check(I.historyList, qPage.ok, { seed: SEED, tool: "query_transactions", args: qArgs, got: qPage.got, raw: qPage.want });
+    }
     if (summary && h) {
-      // A newest-first page of a busy address moves between two reads; the
-      // two views are compared only when the raw page did not move.
-      if (!same(hd, rawBefore) || !same(hd, rawAfter)) skip(I.historyList, "the newest page moved between the full and default reads");
+      // The two views read the same page when the raw page read before the full
+      // view and the one read after the default view are equal row for row,
+      // and the full view equals them.
+      const digestsOf = (r) => r.rows.map((x) => x.digest).join();
+      if (digestsOf(rawBefore) !== digestsOf(rawBetween) || hd.join() !== digestsOf(rawBefore)) skip(I.historyList, "the page moved between the full and default reads");
       else {
         const sd = (summary.transactions ?? []).map((t) => t.digest);
         const left = summary.omitted?.lists?.transactions?.count ?? 0;
@@ -732,7 +778,9 @@ async function checkHistory(address) {
     }
     out[order] = {
       rows: h?.transactions ?? [],
-      raw: same(hd, rawBefore) ? rawBefore : rawAfter,
+      // The raw page as of the full view's read, which the timeline check
+      // takes its window and expected rows from.
+      raw: hPage?.raw ?? rawBefore,
       args: hArgs,
       // Rows the tool itself names as read from part of their lists.
       incomplete: new Set((h?.incomplete_transactions ?? []).map((t) => t.digest)),
@@ -815,12 +863,41 @@ async function checkTimeline(address, history) {
   }
 }
 
+/**
+ * summarize_address_flows over a closed window against the raw balance
+ * changes. The default view lists the coins that fit its budget and counts the
+ * rest in `omitted`; `detail: "full"` lists every coin, and the raw totals are
+ * compared with that view. The default view must be the full view's coins in
+ * order, with the same raw totals, and exactly `omitted` coins left out.
+ */
 async function checkFlows(address, history) {
   const w = history.window;
   if (!w) return skip(I.flows, "no shared window");
-  const args = { address, from: String(w.after), to: String(w.before), max_transactions: 200 };
+  const args = { address, from: String(w.after), to: String(w.before), max_transactions: 200, detail: "full" };
   const f = await call("summarize_address_flows", args);
   if (!f) return;
+  const { detail: _, ...sArgs } = args;
+  const s = await call("summarize_address_flows", sArgs);
+  if (s) {
+    const full = (f.coins ?? []).map((c) => normType(c.coin_type));
+    const listed = s.coins ?? [];
+    const left = s.omitted?.lists?.coins?.count ?? 0;
+    const byType = new Map((f.coins ?? []).map((c) => [normType(c.coin_type), c]));
+    const inOrder = listed.every((c, i) => i === 0 || full.indexOf(normType(c.coin_type)) > full.indexOf(normType(listed[i - 1].coin_type)));
+    const sameTotals = listed.every((c) => byType.has(normType(c.coin_type)) && JSON.stringify(c.raw) === JSON.stringify(byType.get(normType(c.coin_type)).raw));
+    // Coins are ranked by USD value, which each call reads from a price
+    // service. Under a stable sort two coins keep the same relative order when
+    // their USD values are the same in both views.
+    const usdOf = (c) => JSON.stringify(c?.usd ?? null);
+    const samePrices = listed.every((c) => usdOf(c) === usdOf(byType.get(normType(c.coin_type))));
+    if (!samePrices) skip(I.flows, "a coin's USD value differed between the full and default reads, so their order is not compared");
+    const coinsOf = (xs) => xs.map((c) => `${c.symbol}:${c.raw?.in}/${c.raw?.out}`);
+    check(I.flows, (inOrder || !samePrices) && sameTotals && listed.length + left === full.length, {
+      seed: SEED, tool: "summarize_address_flows", args: sArgs,
+      got: { in_order: inOrder, same_prices: samePrices, same_totals: sameTotals, count: `${listed.length} listed + ${left} omitted`, listed: coinsOf(listed) },
+      raw: { full_count: full.length, full: coinsOf(f.coins ?? []) },
+    });
+  }
   const after = f.window?.after_checkpoint ?? w.after;
   const before = f.window?.before_checkpoint ?? w.before;
   const win = await rawAddressWindow(address, after, before, 250);

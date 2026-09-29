@@ -112,6 +112,24 @@
   Failed transactions and transactions without a loop are unchanged.
 
 ### Fixed
+- **`invariant-pass` no longer fails a history page that new transactions
+  moved.** On a busy address the newest page moves between reads.
+  `get_transaction_history` and `query_transactions` pages are now compared
+  with the raw page read up to the checkpoint of the tool's newest row, row
+  for row, in the order of the `transactions` connection both tools page, and
+  the tool's newest row must be no older than the raw page read before the
+  call. A wrong order, a missing or extra digest or a stale page still fails.
+  The default view is compared with the full view only when the raw pages
+  read before the full view and after the default view are equal, and
+  `build_timeline` takes its window from the raw page of the full view's own
+  read.
+- **`invariant-pass` compares `summarize_address_flows` totals with its full
+  view.** The check read the default view, which lists the coins that fit
+  its budget and counts the rest in `omitted`, and took an omitted coin as
+  zero. It now compares the raw totals with `detail: "full"` and checks that
+  the default view is the full view's coins in order (when both views priced
+  them alike), with the same raw totals and exactly `omitted` coins left
+  out.
 - **`classify_deposit_address` counts a deposit that arrives during a sweep
   as the next sweep's.** An exchange sweeps credited deposits, so a deposit
   that lands while a sweep is pending stays behind until the next one. A

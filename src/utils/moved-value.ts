@@ -262,7 +262,7 @@ export async function valueMovedObjects(
   // it before (changed in place), another address did (a transfer), or no
   // address did (it came out of another object), which is only listed. One
   // deleted or wrapped with no recorded holder left the address that held
-  // it, and left no address when an object or nobody held it.
+  // it, and left no address when held by an object, shared or immutable.
   const noAddress = new Set<MovedObject>();
   for (const m of readable) {
     if (!m.prior_version) continue;
@@ -273,7 +273,9 @@ export async function valueMovedObjects(
       m.before_version = m.prior_version;
     } else if (holder) m.from = holder;
     else if (m.to === null) {
-      if (!owner) unread.push({ what: m.object_id, reason: `its holder at version ${m.prior_version} could not be read` });
+      if (owner?.kind !== "object" && owner?.kind !== "shared" && owner?.kind !== "immutable") {
+        unread.push({ what: m.object_id, reason: `its holder at version ${m.prior_version} could not be read` });
+      }
       noAddress.add(m);
     } else m.custody = owner?.kind === "object" ? "unwrapped" : "prior_holder_unknown";
   }

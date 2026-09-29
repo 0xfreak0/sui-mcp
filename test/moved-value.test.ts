@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ObjectMovement } from "../src/utils/object-flow.js";
 import type { MovedObjectValue } from "../src/utils/moved-value.js";
+import type { ObjectState } from "../src/utils/valuers/common.js";
 
 // Only the synthetic readers registered below, and object states as read.
 vi.mock("../src/utils/valuers/index.js", () => ({}));
-/** Holder of an object at a version, by `id@version`; an address unless listed. */
-const owners = new Map<string, { kind: "address" | "object"; address: string }>();
+/** Holder of an object at a version, by `id@version`. */
+const owners = new Map<string, NonNullable<ObjectState["owner"]>>();
 vi.mock("../src/utils/valuers/common.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   prefetchCheckpoints: async () => undefined,
@@ -220,8 +221,8 @@ describe("valueMovedObjects", () => {
     expect(objectValueByAddress(r.rows).get(B)).toMatchObject({ usd_net: 0, usd_gained: 0 });
   });
 
-  it("drops an object effects v1 deleted from another object, and lists one whose holder could not be read", async () => {
-    owners.set(`${ID(21)}@15`, { kind: "object", address: ID(99) });
+  it.each(["object", "shared", "immutable"] as const)("excludes a deleted object with a %s owner, and lists one whose holder could not be read", async (kind) => {
+    owners.set(`${ID(21)}@15`, { kind, address: kind === "object" ? ID(99) : null });
     const r = await valueMovedObjects(
       [
         { object_id: ID(21), type: STAKE, from: null, to: null, version: "15", prior_version: "15" },
@@ -230,7 +231,17 @@ describe("valueMovedObjects", () => {
       "100",
     );
     expect(r.rows).toEqual([]);
-    expect(r.unread).toEqual([{ what: ID(22), reason: "its holder at version 15 could not be read" }]);
+    expect(r.unread.map((u) => u.what)).toEqual([ID(22)]);
+  });
+
+  it.each(["other", "address"] as const)("lists a deleted object's %s owner without a known address as unread", async (kind) => {
+    owners.set(`${ID(23)}@15`, { kind, address: null });
+    const r = await valueMovedObjects(
+      [{ object_id: ID(23), type: STAKE, from: null, to: null, version: "15", prior_version: "15" }],
+      "100",
+    );
+    expect(r.rows).toEqual([]);
+    expect(r.unread.map((u) => u.what)).toEqual([ID(23)]);
   });
 });
 

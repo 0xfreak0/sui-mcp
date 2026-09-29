@@ -3748,8 +3748,8 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   `appeared`, the same address makes it a kept object, another address a
   transfer, and an object or an unreadable version a `custody` row
   (`prior_holder_unknown` or `unwrapped`); a deleted or wrapped one left
-  the address that held it, left no address when an object held it, and is
-  listed as unread when that version's holder could not be read.
+  the address that held it, and left no address when its owner is an object,
+  shared or immutable. A missing holder or unrecognised owner kind is unread.
 - **A kept object counts the change in its amounts, at one set of prices.**
   An object its holder kept but the transaction changed (liquidity added,
   a deposit into an obligation) is read after the transaction and before

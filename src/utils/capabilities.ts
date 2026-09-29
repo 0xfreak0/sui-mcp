@@ -4,6 +4,8 @@ import { assessCapHolder, isUnspendableAddress, type CapHolderStatus } from "./u
 import { fetchTypeOrigins, type TypeOrigin } from "./package-versions.js";
 import { describeAddresses } from "./identity.js";
 import { schemeLabel } from "./upgrade-history.js";
+import { readObjectEnd } from "./object-end.js";
+import { readRegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
 
 /**
  * Capability auditing for a Move package: who holds the powerful capabilities
@@ -21,8 +23,12 @@ export type CapKind = "upgrade" | "treasury" | "deny" | "admin";
  * `consensus` is a party object (`ConsensusAddressOwner`): one address owns it,
  * and its transactions are ordered through consensus the way a shared object's
  * are. It is held by that address, not shared: only the owner can use it.
+ *
+ * `burned` means the object was deleted. `wrapped` means it stopped existing
+ * at top level because a transaction stored it inside another object: it is
+ * still live, and whatever code owns the wrapper can use it.
  */
-export type OwnerKind = "address" | "consensus" | "shared" | "immutable" | "burned" | "unknown";
+export type OwnerKind = "address" | "consensus" | "shared" | "immutable" | "burned" | "wrapped" | "unknown";
 export type CapRisk = "high" | "medium" | "low" | "info";
 
 export interface CapabilityInfo {
@@ -45,6 +51,8 @@ export interface CapabilityInfo {
   publisher?: string;
   /** How the holder authenticates (single-key scheme, or a multisig m-of-n), when known. */
   signing_scheme?: string;
+  /** `wrapped` only: the transaction that stored the cap inside another object. */
+  wrapped_in_tx?: string;
   risk: CapRisk;
   note: string;
 }
@@ -104,8 +112,14 @@ export function classifyCapabilityRisk(input: {
   owner: OwnerKind;
   ownerAddress?: string;
   policyLabel?: string;
+  /** `wrapped` only: the transaction that stored the cap inside another object. */
+  wrappedInTx?: string;
+  /** The cap no longer exists at top level. */
+  gone?: boolean;
+  /** `burned` TreasuryCap only: the on-chain coin registry's supply state, or `unread` when the read failed. */
+  supplyState?: SupplyState | "unread";
 }): { risk: CapRisk; note: string } {
-  const { kind, type, owner, ownerAddress, policyLabel } = input;
+  const { kind, type, owner, ownerAddress, policyLabel, wrappedInTx, gone, supplyState } = input;
   // A party object has exactly one owner, so it is held the way an
   // address-owned object is. Reading it as shared would say anyone might
   // reach a capability that only its owner can use.
@@ -122,11 +136,27 @@ export function classifyCapabilityRisk(input: {
       ? `${ownerAddress} (a party object: one owner, transactions ordered through consensus)`
       : ownerAddress
     : owner;
-  const shortType = type.split("::").slice(-2).join("::").split("<")[0];
+  const shortType = type.replace(/>+$/, "").split("::").slice(-2).join("::").split("<")[0];
+  const capName = type.split("<")[0].split("::").slice(-2).join("::");
+  const inside = `stored inside another object${wrappedInTx ? ` by transaction ${wrappedInTx}` : ""}, not destroyed`;
+
+  if (owner === "unknown" && gone) {
+    return {
+      // An admin cap reads low when wrapped and info when destroyed.
+      risk: kind === "admin" ? "low" : "medium",
+      note: `${capName}${type.includes("<") ? ` for ${shortType}` : ""} no longer exists at top level. Whether it was destroyed or stored inside another object could not be read.`,
+    };
+  }
 
   if (kind === "upgrade") {
     if (owner === "burned") {
       return { risk: "info", note: "UpgradeCap has been destroyed — the package is immutable and can never be changed." };
+    }
+    if (owner === "wrapped") {
+      return {
+        risk: "medium",
+        note: `UpgradeCap was ${inside}. The module that owns the wrapper decides who can upgrade (a governance or timelock contract, or custody); read that object and its code.`,
+      };
     }
     if (unspendable) {
       return {
@@ -146,12 +176,37 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return { risk: "medium", note: `UpgradeCap is a shared object (likely governance) with policy ${policyLabel} — review who can authorize an upgrade.` };
     }
-    return { risk: "medium", note: `UpgradeCap owner is ${owner} (policy: ${policyLabel}).` };
+    return { risk: "medium", note: `UpgradeCap owner is ${owner}${policyLabel ? ` (policy: ${policyLabel})` : ""}.` };
   }
 
   if (kind === "treasury") {
     if (owner === "burned") {
-      return { risk: "info", note: `Mint authority (${shortType}) has been renounced — token supply is fixed.` };
+      // Deleting a TreasuryCap always leaves its Supply<T>: `balance::destroy_supply`
+      // is package-private. `coin_registry::make_supply_fixed` and
+      // `make_supply_burn_only` store it where nothing can mint; anywhere else,
+      // `balance::increase_supply` mints through it.
+      if (supplyState === "fixed") {
+        return { risk: "info", note: `The TreasuryCap for ${shortType} was destroyed and the on-chain coin registry records its supply as fixed.` };
+      }
+      if (supplyState === "burn_only") {
+        return { risk: "info", note: `The TreasuryCap for ${shortType} was destroyed and the on-chain coin registry records its supply as burn-only: it can only decrease.` };
+      }
+      if (supplyState === "unread") {
+        return {
+          risk: "medium",
+          note: `The TreasuryCap for ${shortType} was destroyed. Destroying it leaves its Supply, which can still mint for whatever holds it, and the on-chain coin registry could not be read to tell whether that Supply was fixed.`,
+        };
+      }
+      return {
+        risk: "medium",
+        note: `The TreasuryCap for ${shortType} was destroyed, and the on-chain coin registry does not record its supply as fixed. Destroying the cap leaves its Supply, which can still mint through balance::increase_supply for whatever holds it; supply is fixed only if that holder's module cannot mint with it.`,
+      };
+    }
+    if (owner === "wrapped") {
+      return {
+        risk: "medium",
+        note: `Mint authority (${shortType}) was ${inside}. Supply is fixed only if the module owning the wrapper cannot mint with it and cannot be upgraded into code that can; read that module and who holds its UpgradeCap.`,
+      };
     }
     if (unspendable) {
       return {
@@ -170,6 +225,9 @@ export function classifyCapabilityRisk(input: {
 
   if (kind === "deny") {
     if (owner === "burned") return { risk: "info", note: `Deny/freeze authority (${shortType}) has been destroyed.` };
+    if (owner === "wrapped") {
+      return { risk: "medium", note: `Denylist/freeze authority (${shortType}) was ${inside}; the module owning the wrapper decides who can freeze.` };
+    }
     if (unspendable) {
       return {
         risk: "info",
@@ -184,6 +242,7 @@ export function classifyCapabilityRisk(input: {
 
   // admin / other *Cap
   if (owner === "burned") return { risk: "info", note: `Capability ${shortType} has been destroyed.` };
+  if (owner === "wrapped") return { risk: "low", note: `Capability ${shortType} was ${inside}; the module owning the wrapper decides who can use it.` };
   if (unspendable) {
     return {
       risk: "info",
@@ -507,6 +566,9 @@ export async function auditPackageCapabilities(
       let owner: OwnerKind = "unknown";
       let ownerAddress: string | undefined;
       let policyLabel: string | undefined;
+      let wrappedInTx: string | undefined;
+      let gone = false;
+      let supplyState: SupplyState | "unread" | undefined;
       if (knownOwner) {
         owner = knownOwner.owner;
         ownerAddress = knownOwner.ownerAddress;
@@ -514,7 +576,23 @@ export async function auditPackageCapabilities(
         try {
           const state: CapStateResult = await gqlQuery<CapStateResult>(CAP_STATE_QUERY, { id });
           if (!state.object) {
-            owner = "burned"; // object no longer exists → destroyed
+            // Gone from top level: deleted, or stored inside another object. A
+            // wrapped TreasuryCap can still mint through the wrapper's module.
+            gone = true;
+            const end = await readObjectEnd(id);
+            if (end?.kind === "deleted") {
+              owner = "burned";
+              if (kind === "treasury") {
+                const coinType = type.slice(type.indexOf("<") + 1, type.lastIndexOf(">"));
+                supplyState = await readRegistryCurrency(coinType).then(
+                  (c) => c?.supply ?? "unknown",
+                  () => "unread" as const,
+                );
+              }
+            } else if (end?.kind === "wrapped") {
+              owner = "wrapped";
+              wrappedInTx = end.tx;
+            }
           } else {
             owner = ownerKindOf(state.object.owner?.__typename);
             ownerAddress = state.object.owner?.address?.address;
@@ -527,16 +605,16 @@ export async function auditPackageCapabilities(
           owner = "unknown";
         }
       }
-      const { risk, note } = classifyCapabilityRisk({ kind, type, owner, ownerAddress, policyLabel });
+      const { risk, note } = classifyCapabilityRisk({ kind, type, owner, ownerAddress, policyLabel, wrappedInTx, gone, supplyState });
 
       // An UpgradeCap's holder means nothing on its own. Compared against the
       // publisher it says whether upgrade authority changed hands, which is
       // the question worth asking about the most consequential capability on
-      // the chain. Skipped when the object itself is gone: `assessCapHolder`
-      // reads a missing holder as "shared, immutable or wrapped", which is
-      // wrong for a cap that was destroyed outright and already has its own
-      // note above.
-      const held = kind === "upgrade" && owner !== "burned" ? assessCapHolder(ownerAddress, publisher) : null;
+      // the chain. Skipped when the object is gone from top level: the note
+      // above already says whether it was destroyed or wrapped, and
+      // `assessCapHolder` reads a missing holder as "shared, immutable or
+      // wrapped", which is wrong for a destroyed cap.
+      const held = kind === "upgrade" && !gone ? assessCapHolder(ownerAddress, publisher) : null;
 
       return {
         kind,
@@ -545,6 +623,7 @@ export async function auditPackageCapabilities(
         owner,
         ...(ownerAddress ? { owner_address: ownerAddress } : {}),
         ...(policyLabel ? { upgrade_policy: policyLabel } : {}),
+        ...(wrappedInTx ? { wrapped_in_tx: wrappedInTx } : {}),
         ...(held ? { holder_status: held.status } : {}),
         ...(held?.publisher ? { publisher: held.publisher } : {}),
         risk,

@@ -67,6 +67,8 @@ export interface CustodyPeriod {
   from: ChainPoint & { sender: string | null };
   /** The transaction that took it away; null while it is still there. */
   until: (ChainPoint & { sender: string | null }) | null;
+  /** The cap is gone from top level and how it ended could not be read, so when this period ended is unknown. */
+  until_unknown?: true;
 }
 
 /** Single-key schemes: one key, one signature, no committee. */
@@ -134,7 +136,7 @@ export function comparePoints(a: ChainPoint, b: ChainPoint): number | null {
 }
 
 /** Collapse the cap's version history into one period per consecutive holder. */
-export function custodyPeriods(caps: CapVersion[], end: CapEnd | null = null): CustodyPeriod[] {
+export function custodyPeriods(caps: CapVersion[], end: CapEnd | null = null, gone = false): CustodyPeriod[] {
   const out: CustodyPeriod[] = [];
   for (const c of caps) {
     const last = out[out.length - 1];
@@ -145,10 +147,13 @@ export function custodyPeriods(caps: CapVersion[], end: CapEnd | null = null): C
   }
   const last = out[out.length - 1];
   if (last && end) last.until = { tx: end.tx, timestamp: end.timestamp, checkpoint: end.checkpoint, sender: end.sender };
+  else if (last && gone) last.until_unknown = true;
   return out;
 }
 
+/** A period whose end is unknown counts no time: it may have ended moments after it began. */
 function periodMs(p: CustodyPeriod, nowMs: number): number {
+  if (p.until_unknown) return 0;
   const start = ms(p.from);
   const stop = p.until ? ms(p.until) : nowMs;
   return start === null || stop === null ? 0 : Math.max(0, stop - start);
@@ -295,6 +300,8 @@ export interface FlagInput {
   versions: PublishedVersion[];
   caps: CapVersion[];
   end: CapEnd | null;
+  /** The cap is gone from top level; `end` is null when how it ended could not be read. */
+  gone?: boolean;
   periods: CustodyPeriod[];
   excursions: CapExcursion[];
   usual: UsualHolder | null;
@@ -305,7 +312,7 @@ export interface FlagInput {
 }
 
 export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
-  const { versions, caps, end, periods, excursions, usual, signerByVersion, auth } = input;
+  const { versions, caps, end, gone, periods, excursions, usual, signerByVersion, auth } = input;
   const flags: UpgradeFlag[] = [];
   const byVersion = new Map(versions.map((v) => [v.version, v]));
 
@@ -389,7 +396,7 @@ export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
   }
 
   const current = periods[periods.length - 1];
-  if (current && !end) {
+  if (current && !end && !gone) {
     const at = current.from;
     const txs = at.tx ? [at.tx] : [];
     const h = current.holder;
@@ -450,7 +457,8 @@ export function atOrBefore(p: ChainPoint, at: AsOfPoint): boolean | null {
 export interface StateAsOf {
   /** The newest version published at or before the point. */
   latest_version: PublishedVersion | null;
-  cap_state: "not_created" | "held" | "deleted" | "wrapped";
+  /** `unknown`: after the cap's last recorded version, when it is gone and how it ended could not be read. */
+  cap_state: "not_created" | "held" | "deleted" | "wrapped" | "unknown";
   /** The cap's owner at the point; null when it did not exist then. */
   holder: OwnerDesc | null;
   /** The transaction that put the cap with that holder. */
@@ -465,6 +473,7 @@ export function stateAsOf(
   versions: PublishedVersion[],
   caps: CapVersion[],
   end: CapEnd | null,
+  gone = false,
 ): StateAsOf {
   let unordered = 0;
   let latest: PublishedVersion | null = null;
@@ -490,6 +499,9 @@ export function stateAsOf(
   }
   if (idx < 0) {
     return { latest_version: latest, cap_state: "not_created", holder: null, holder_since: null, policy: null, unordered };
+  }
+  if (gone && !end && idx === caps.length - 1) {
+    return { latest_version: latest, cap_state: "unknown", holder: null, holder_since: null, policy: null, unordered };
   }
   // Walk back to where this holder's custody began.
   let start = idx;

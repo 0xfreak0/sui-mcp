@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { groupCapabilities, selectModules, summarizeModule } from "../src/utils/package-summary.js";
-import type { CapabilityInfo } from "../src/utils/capabilities.js";
+import { classifyCapabilityRisk, type CapabilityInfo } from "../src/utils/capabilities.js";
 
 const fn = (name: string, visibility: string, isEntry = false) => ({ name, visibility, isEntry });
 
@@ -47,16 +47,20 @@ describe("selectModules", () => {
 });
 
 describe("groupCapabilities", () => {
-  const cap = (over: Partial<CapabilityInfo>): CapabilityInfo => ({
-    kind: "admin",
-    type: "0x3::validator_cap::UnverifiedValidatorOperationCap",
-    object_id: "0x1",
-    owner: "address",
-    owner_address: "0xa",
-    risk: "low",
-    note: "n",
-    ...over,
-  });
+  // Each member's note is what the audit writes for it.
+  const cap = (over: Partial<CapabilityInfo>): CapabilityInfo => {
+    const c: CapabilityInfo = {
+      kind: "admin",
+      type: "0x3::validator_cap::UnverifiedValidatorOperationCap",
+      object_id: "0x1",
+      owner: "address",
+      owner_address: "0xa",
+      risk: "low",
+      note: "",
+      ...over,
+    };
+    return { ...c, note: over.note ?? classifyCapabilityRisk({ kind: c.kind, type: c.type, owner: c.owner, ownerAddress: c.owner_address }).note };
+  };
 
   it("folds same-type caps into one entry that keeps every object and holder", () => {
     const caps = [

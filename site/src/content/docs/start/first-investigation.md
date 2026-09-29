@@ -2,7 +2,6 @@
 title: How an investigation runs
 description: A question, the tool calls that answer it, and the marks each answer carries, shown on the first two steps of the Cetus exploit.
 sidebar:
-  label: First investigation
   order: 3
 ---
 

@@ -3,7 +3,7 @@
 title: "Tools"
 description: "Every tool the server registers, grouped by task, with its profile and parameters."
 sidebar:
-  label: "All tools"
+  label: "Overview"
   order: 100
 ---
 These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`. The server registers 77 tools. 76 belong to one or more of the profiles `core`, `forensics`, `developer`, `market`, and `enable_tools` is always on.

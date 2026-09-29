@@ -356,7 +356,7 @@ function toolsIndex(groups, profiles, defaultProfiles) {
     title: "Tools",
     description: "Every tool the server registers, grouped by task, with its profile and parameters.",
     order: TOOLS_INDEX_ORDER,
-    label: "All tools",
+    label: "Overview",
   });
   const intro = [
     "These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`.",

@@ -1,8 +1,7 @@
 ---
-title: Move decompiler (optional)
+title: Move decompiler
 description: Build Revela's move-decompiler and point SUI_DECOMPILER_PATH at it to enable decompile_module.
 sidebar:
-  label: Move decompiler
   order: 7
 ---
 

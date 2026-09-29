@@ -2,7 +2,6 @@
 title: Historical balances and top holders
 description: How get_balance reconstructs a balance at a past moment, and when get_top_holders returns a real ranking.
 sidebar:
-  label: Balances and holders
   order: 7
 ---
 

@@ -2,7 +2,6 @@
 title: Start here
 description: What sui-mcp is, and which page to read for the task in hand.
 sidebar:
-  label: Start here
   order: 1
 ---
 

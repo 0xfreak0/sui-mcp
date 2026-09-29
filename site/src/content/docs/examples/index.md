@@ -1,5 +1,5 @@
 ---
-title: Investigation examples
+title: Examples
 description: Worked investigations of public Sui incidents, each as the tool calls in order with the part of each answer that matters.
 sidebar:
   label: Overview

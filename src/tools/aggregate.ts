@@ -309,8 +309,8 @@ export function registerAggregateTools(server: McpServer) {
                           tool: "aggregate_events",
                           repeat_with: {
                             cursor: nextCursor,
-                            ...(window.after?.checkpoint != null ? { from: window.after.checkpoint } : {}),
-                            ...(window.before?.checkpoint != null ? { to: window.before.checkpoint } : {}),
+                            ...(window.after?.checkpoint != null ? { from: String(window.after.checkpoint) } : {}),
+                            ...(window.before?.checkpoint != null ? { to: String(window.before.checkpoint) } : {}),
                           },
                         },
                       }

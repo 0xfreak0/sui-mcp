@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockGraphql } from "../helpers/mock-grpc.js";
+import type { ZodRawShape } from "zod";
+import { toolArgsSchema } from "../../src/tools/args.js";
 
 const mockGqlQuery = createMockGraphql();
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -9,8 +11,12 @@ const { RELOCATE_EVENT_MODULE_CHECKPOINT } = await import("../../src/utils/packa
 
 type Result = { isError?: boolean; content: { text: string }[] };
 const tools = new Map<string, (a: Record<string, unknown>) => Promise<Result>>();
+const schemas = new Map<string, ZodRawShape>();
 registerAggregateTools({
-  tool: (n: string, _d: string, _s: unknown, h: (a: Record<string, unknown>) => Promise<Result>) => tools.set(n, h),
+  tool: (n: string, _d: string, schema: ZodRawShape, h: (a: Record<string, unknown>) => Promise<Result>) => {
+    schemas.set(n, schema);
+    tools.set(n, h);
+  },
 } as never);
 
 const SENDER = "0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
@@ -296,5 +302,31 @@ describe("aggregate_events default read bound", () => {
     expect(result.scan.stop_reason).toBe("read_budget");
     expect(result.scan.reads).toBe(200);
     expect(result.next_cursor).toBe("0|200");
+  });
+});
+
+describe("aggregate_events MCP continuation arguments", () => {
+  it("continues bounded scans through the registered argument schema", async () => {
+    mockGqlQuery.mockReset();
+    mockGqlQuery.mockImplementation(async (_q, vars) => ({
+      events: {
+        nodes: vars?.after ? page.events.nodes : [],
+        pageInfo: { hasNextPage: !vars?.after, endCursor: vars?.after ? "end" : "boundary" },
+      },
+    }));
+    const schema = toolArgsSchema(schemas.get("aggregate_events")!);
+    const args = { sender: SENDER, from: "0", to: "100", max_reads: 1 };
+    const first = await tools.get("aggregate_events")!(schema.parse(args));
+    const partial = JSON.parse(first.content[0].text);
+    const continuation = schema.parse({ ...args, ...partial.scan.next_call.repeat_with });
+    const second = await tools.get("aggregate_events")!(continuation);
+    const remaining = JSON.parse(second.content[0].text);
+    expect(remaining.events_scanned).toBe(2);
+    expect(remaining.has_next_page).toBe(false);
+    expect(remaining.window).toMatchObject({ after_checkpoint: 0, before_checkpoint: 100 });
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars?.filter)).toEqual([
+      { sender: SENDER, afterCheckpoint: 0, beforeCheckpoint: 100 },
+      { sender: SENDER, afterCheckpoint: 0, beforeCheckpoint: 100 },
+    ]);
   });
 });

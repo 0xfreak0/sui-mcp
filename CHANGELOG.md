@@ -3,7 +3,24 @@
 ## Unreleased
 
 ### Fixed
-
+- **A wrapped capability is no longer reported as destroyed.**
+  `analyze_package` and the capability audit read a cap that no longer exists
+  at top level from the last transaction that touched it: deleted is
+  `burned`, stored inside another object is `wrapped` with `wrapped_in_tx`,
+  including wraps recorded by older transactions (effects version 1), which
+  gRPC lists as deletions. A TreasuryCap a launchpad keeps inside its own
+  shared object reads medium risk, with supply fixed only as far as the
+  wrapper's module and its UpgradeCap holder allow. A cap whose end cannot be
+  read is `unknown`. `get_upgrade_history` and `trace_object_history` use the
+  same reading, so Wormhole's wrapped UpgradeCaps no longer read destroyed,
+  and `get_transaction` lists an object an older transaction wrapped under
+  `wrapped`, not `deleted`. When how a cap ended cannot be read,
+  `get_upgrade_history` reports its state as `unknown` and names no current
+  holder.
+- **A destroyed TreasuryCap no longer means fixed supply on its own.**
+  Destroying the cap leaves its Supply, which can still mint wherever it is
+  kept. `analyze_package` reports fixed or burn-only supply when Sui's
+  on-chain coin registry records it, and medium risk otherwise.
 - `get_transaction` and the other decoded views named a router's own
   bookkeeping type as a coin in swaps routed through Aftermath's router
   (`Swap RouterDataV1 → USDC`). Each hop now shows the coins it traded, in

@@ -17,6 +17,7 @@ import {
   type TransitionBudget,
   type VersionEntry,
 } from "../utils/object-history.js";
+import { readObjectEnd } from "../utils/object-end.js";
 import { findEnclosingKiosk, resolveKioskCapHolder, unresolvedCapHolderNote, type KioskCapHolder } from "../utils/kiosk.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -132,17 +133,6 @@ const TX_AT_CHECKPOINT_QUERY = `query ($id: SuiAddress!, $cp: UInt53!) {
   }
 }`;
 
-/** The last transaction to touch an object, found even after it stops existing. */
-const LAST_TOUCH_QUERY = `query ($id: SuiAddress!) {
-  transactions(filter: { affectedObject: $id }, last: 1) {
-    nodes { digest effects { timestamp checkpoint { sequenceNumber } } }
-  }
-}`;
-
-interface LastTouchResult {
-  transactions: { nodes: Array<{ digest: string; effects?: { timestamp?: string; checkpoint?: { sequenceNumber: number } } }> };
-}
-
 function toEntry(n: VersionNodeGql): VersionEntry {
   return {
     version: n.version.toString(),
@@ -153,9 +143,8 @@ function toEntry(n: VersionNodeGql): VersionEntry {
   };
 }
 
-/** `sui.rpc.v2.ChangedObject.IdOperation` */
+/** `sui.rpc.v2.ChangedObject.IdOperation.CREATED` */
 const ID_CREATED = 2;
-const ID_DELETED = 3;
 
 /**
  * Did `digest` create `objectId`? True, false, or null when the transaction
@@ -181,39 +170,6 @@ async function createdIn(digest: string, objectId: string): Promise<boolean | nu
   } catch {
     return null;
   }
-}
-
-interface ObjectEnd {
-  kind: "deleted" | "wrapped";
-  tx: string;
-  timestamp: string | null;
-  checkpoint: number | null;
-}
-
-/**
- * How an object that no longer exists stopped existing. The last transaction
- * to touch it either deleted it or wrapped it inside another object; gRPC's
- * `changedObjects` states which via `idOperation`, where GraphQL's
- * `objectChanges` would need paging to find the same row.
- */
-async function findObjectEnd(objectId: string): Promise<ObjectEnd | null> {
-  const r = await gqlQuery<LastTouchResult>(LAST_TOUCH_QUERY, { id: objectId });
-  const last = r.transactions.nodes[0];
-  if (!last) return null;
-  const res = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
-    (client) => client.ledgerService.getTransaction({ digest: last.digest, readMask: { paths: ["effects"] } }),
-    (x) => !x.transaction?.effects,
-  );
-  const want = normalizeSuiAddress(objectId);
-  const change = res.transaction?.effects?.changedObjects?.find(
-    (c) => c.objectId !== undefined && normalizeSuiAddress(c.objectId) === want,
-  );
-  return {
-    kind: change?.idOperation === ID_DELETED ? "deleted" : "wrapped",
-    tx: last.digest,
-    timestamp: last.effects?.timestamp ?? null,
-    checkpoint: last.effects?.checkpoint?.sequenceNumber ?? null,
-  };
 }
 
 /** Most rows one GraphQL connection request may ask for. */
@@ -352,7 +308,7 @@ export function registerObjectHistoryTools(server: McpServer) {
         // The object no longer exists: find what ended it, even though we
         // cannot ask it directly. Old effects never recorded this any other
         // way than walking every transaction that ever touched the id.
-        const end = !current ? await findObjectEnd(object_id) : null;
+        const end = !current ? await readObjectEnd(object_id) : null;
 
         // Owner changes: exact from the page when the whole life fits in it.
         // Otherwise, exact for the page's own rows (`computeOwnerChanges`

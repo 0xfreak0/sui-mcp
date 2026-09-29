@@ -78,7 +78,7 @@ export interface CapabilityGroup {
   owner: CapabilityInfo["owner"];
   risk: CapabilityInfo["risk"];
   count: number;
-  holders: Array<{ object_id: string; owner_address?: string; signing_scheme?: string }>;
+  holders: Array<{ object_id: string; owner_address?: string; signing_scheme?: string; wrapped_in_tx?: string }>;
   note: string;
 }
 
@@ -130,13 +130,18 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
         object_id: c.object_id,
         ...(c.owner_address ? { owner_address: c.owner_address } : {}),
         ...(c.signing_scheme ? { signing_scheme: c.signing_scheme } : {}),
+        ...(c.wrapped_in_tx ? { wrapped_in_tx: c.wrapped_in_tx } : {}),
       })),
-      note: classifyCapabilityRisk({
-        kind: head.kind,
-        type: head.type,
-        owner: head.owner,
-        ownerAddress: sharedAddress ?? (head.owner_address ? "the holder of each object in holders" : undefined),
-      }).note,
+      // One note for every member when they all read the same; otherwise a
+      // note without any one member's address.
+      note: members.every((c) => c.note === head.note)
+        ? head.note
+        : classifyCapabilityRisk({
+            kind: head.kind,
+            type: head.type,
+            owner: head.owner,
+            ownerAddress: sharedAddress ?? (head.owner_address ? "the holder of each object in holders" : undefined),
+          }).note,
     };
   });
 }

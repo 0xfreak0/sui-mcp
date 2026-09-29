@@ -247,3 +247,17 @@ describe("listObjectChanges: every changed object's id, grouped by what happened
     expect(byKind.deleted).toHaveLength(summary.deleted);
   });
 });
+
+describe("an effects-v1 wrap", () => {
+  // gRPC lists an effects-v1 wrap with idOperation DELETED; the output digest
+  // is the wrapped marker.
+  const wrapped = change({ idOperation: ID_DELETED, outputState: 1, outputDigest: "6ws1bVyu3F8wGy1fPHhrc2v8UyWiGbRAAuek8SwikKPD", outputOwner: null });
+  const deleted = change({ idOperation: ID_DELETED, outputState: 1, outputDigest: "7gyGAp71YXQRoxmFBaHxofQXAipvgHyBKPyxmdSJxyvz", outputOwner: null });
+
+  it("is listed as wrapped, and a real deletion as deleted", () => {
+    const out = listObjectChanges([wrapped, deleted]);
+    expect(out.wrapped).toHaveLength(1);
+    expect(out.deleted).toHaveLength(1);
+    expect(summarizeObjectChanges([wrapped, deleted]).deleted).toBe(1);
+  });
+});

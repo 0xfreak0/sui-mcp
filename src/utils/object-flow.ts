@@ -41,6 +41,7 @@
  */
 
 import { isUnspendableAddress } from "./upgrade-cap.js";
+import { isDeletion } from "./object-end.js";
 
 /** How an object is held. */
 export type OwnerKind = "address" | "object" | "shared" | "immutable" | "consensus" | "unknown";
@@ -381,6 +382,8 @@ export interface GrpcChangedObject {
   objectType?: string;
   inputState?: number;
   idOperation?: number;
+  /** Carries the wrapped marker for an effects-v1 wrap that `idOperation` lists as DELETED. */
+  outputDigest?: string;
   inputOwner?: GrpcOwner | null;
   outputOwner?: GrpcOwner | null;
   /** `sui.rpc.v2.ChangedObject.OutputObjectState` */
@@ -465,7 +468,7 @@ export function writtenObjects(changes: { gql?: GqlObjectChange[]; grpc?: GrpcCh
     note(c.address, c.outputState.asMoveObject?.contents?.type?.repr ?? null, readOwner(c.outputState.owner));
   }
   for (const c of changes.grpc ?? []) {
-    if (c.outputState === OUTPUT_ACCUMULATOR_WRITE || c.outputState === OUTPUT_DOES_NOT_EXIST || c.idOperation === ID_DELETED) continue;
+    if (c.outputState === OUTPUT_ACCUMULATOR_WRITE || c.outputState === OUTPUT_DOES_NOT_EXIST || isDeletion(c)) continue;
     note(c.objectId, c.objectType ?? null, readGrpcOwner(c.outputOwner));
   }
   return { shared, owners: [...owners], ledger };
@@ -474,9 +477,8 @@ export function writtenObjects(changes: { gql?: GqlObjectChange[]; grpc?: GrpcCh
 /** `sui.rpc.v2.ChangedObject.InputObjectState` */
 const INPUT_DOES_NOT_EXIST = 1;
 const INPUT_EXISTS = 2;
-/** `sui.rpc.v2.ChangedObject.IdOperation` */
+/** `sui.rpc.v2.ChangedObject.IdOperation.CREATED` */
 const ID_CREATED = 2;
-const ID_DELETED = 3;
 /** `sui.rpc.v2.ChangedObject.OutputObjectState` */
 const OUTPUT_DOES_NOT_EXIST = 1;
 const OUTPUT_ACCUMULATOR_WRITE = 4;
@@ -508,7 +510,7 @@ export function summarizeObjectChanges(changes: GrpcChangedObject[]): ObjectChan
   return {
     changed: objects.length,
     created: objects.filter((c) => c.idOperation === ID_CREATED).length,
-    deleted: objects.filter((c) => c.idOperation === ID_DELETED).length,
+    deleted: objects.filter((c) => isDeletion(c)).length,
   };
 }
 
@@ -538,14 +540,14 @@ export function listObjectChanges(changes: GrpcChangedObject[]): ObjectChangesBy
     const kind =
       c.idOperation === ID_CREATED
         ? "created"
-        : c.idOperation === ID_DELETED
+        : isDeletion(c)
           ? "deleted"
           : outputGone
             ? "wrapped"
             : c.inputState === INPUT_DOES_NOT_EXIST
               ? "unwrapped"
               : "mutated";
-    const version = outputGone || c.idOperation === ID_DELETED ? c.inputVersion : c.outputVersion;
+    const version = outputGone || isDeletion(c) ? c.inputVersion : c.outputVersion;
     (out[kind] ??= []).push({
       object_id: c.objectId ?? "",
       type: c.objectType ?? null,
@@ -582,7 +584,7 @@ export function readGrpcObjectChanges(
     const kind = classifyKind(
       {
         created: change.idOperation === ID_CREATED,
-        deleted: change.idOperation === ID_DELETED,
+        deleted: isDeletion(change),
         hasInput,
         hasOutput: to !== null,
       },
@@ -654,7 +656,7 @@ export function mutatedCapabilities(
     const kind = classifyKind(
       {
         created: change.idOperation === ID_CREATED,
-        deleted: change.idOperation === ID_DELETED,
+        deleted: isDeletion(change),
         hasInput: from !== null,
         hasOutput: to !== null,
       },

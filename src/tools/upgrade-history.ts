@@ -1,17 +1,16 @@
 import { z } from "zod";
-import type { GrpcTypes } from "@mysten/sui/grpc";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { boolArg, numArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { errorResult } from "../utils/errors.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
-import { withArchiveFallback } from "../utils/archive-fallback.js";
 import { resolvePackageId } from "../utils/move-package.js";
 import { resolvePublisher } from "../utils/publisher.js";
 import { findRedeploys, REDEPLOY_CAP_PAGES, REDEPLOY_MAX_PACKAGE_READS, type FunctionOrigin } from "../utils/redeploys.js";
 import { describeAddresses, type AddressIdentity } from "../utils/identity.js";
 import { describeSignatures, readAuthentication, type Authentication } from "../utils/multisig.js";
 import { ownerDesc, type OwnerDesc } from "../utils/object-history.js";
+import { readObjectEnd } from "../utils/object-end.js";
 import { diffLinkage, type LinkageEntry } from "../utils/package-diff.js";
 import { SYSTEM_PACKAGE } from "../utils/system-packages.js";
 import {
@@ -24,7 +23,6 @@ import {
   upgradeFlags,
   upgradePolicyName,
   usualHolder,
-  type CapEnd,
   type CapVersion,
   type ChainPoint,
   type PublishedVersion,
@@ -132,19 +130,6 @@ interface CapVersionsResult {
   } | null;
 }
 
-const LAST_TOUCH_QUERY = `query ($id: SuiAddress!) {
-  transactions(filter: { affectedObject: $id }, last: 1) {
-    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } } }
-  }
-}`;
-
-interface LastTouchResult {
-  transactions: { nodes: Array<Omit<TxGql, "signatures">> };
-}
-
-/** `sui.rpc.v2.ChangedObject.IdOperation.DELETED` */
-const ID_DELETED = 3;
-
 const point = (tx: Omit<TxGql, "signatures"> | null): ChainPoint & { sender: string | null } => ({
   tx: tx?.digest ?? null,
   timestamp: tx?.effects?.timestamp ?? null,
@@ -248,26 +233,6 @@ export async function fetchCapHistory(capId: string): Promise<CapHistory> {
     if (!after) break;
   }
   return { versions, signatures, exists, complete: false };
-}
-
-/**
- * How a cap that no longer exists as an object stopped existing. The last
- * transaction to touch it either deleted it (only `package::make_immutable`
- * can) or wrapped it inside another object. gRPC reports every changed object
- * in one read, where GraphQL would page them.
- */
-async function capEnd(capId: string): Promise<CapEnd | null> {
-  const r = await gqlQuery<LastTouchResult>(LAST_TOUCH_QUERY, { id: capId });
-  const last = r.transactions.nodes[0];
-  if (!last) return null;
-  const res = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
-    (client) => client.ledgerService.getTransaction({ digest: last.digest, readMask: { paths: ["effects"] } }),
-    (x) => !x.transaction?.effects,
-  );
-  const change = res.transaction?.effects?.changedObjects?.find(
-    (c) => c.objectId !== undefined && normalizeSuiAddress(c.objectId) === capId,
-  );
-  return { kind: change?.idOperation === ID_DELETED ? "deleted" : "wrapped", ...point(last) };
 }
 
 function describeHolder(
@@ -407,7 +372,19 @@ export function registerUpgradeHistoryTools(server: McpServer) {
 
         const cap = capId ? await fetchCapHistory(capId) : null;
         const caps = cap?.versions ?? [];
-        const end = capId && cap && !cap.exists && caps.length > 0 ? await capEnd(capId) : null;
+        // Gone from top level: how it ended decides what the cap's state is.
+        // An end that cannot be read leaves the state unknown, never "exists".
+        const gone = !!capId && !!cap && !cap.exists && caps.length > 0;
+        let endError: string | null = null;
+        const end = gone
+          ? await readObjectEnd(capId!).catch((e: unknown) => {
+              endError = e instanceof Error ? e.message : String(e);
+              return null;
+            })
+          : null;
+        if (gone && !end) {
+          capNote = `The UpgradeCap no longer exists at top level, and whether it was destroyed or wrapped could not be read${endError ? `: ${endError}` : ""}. Its last recorded holder no longer holds it at top level.`;
+        }
         const capComplete = !!cap && cap.complete && caps[0]?.tx === root.tx;
 
         // How every sender authenticates, read from the transactions already
@@ -435,8 +412,8 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         const ids = await describeAddresses([...addresses], { authentication: true });
         for (const [addr, id] of ids) if (!auth.has(addr) && id.authentication) auth.set(addr, id.authentication);
 
-        const periods = custodyPeriods(caps, end);
-        const asOfState = at ? stateAsOf(at, versions, caps, end) : null;
+        const periods = custodyPeriods(caps, end, gone);
+        const asOfState = at ? stateAsOf(at, versions, caps, end, gone) : null;
         const asOf =
           at && asOfState
             ? {
@@ -468,7 +445,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         const nowMs = Date.now();
         const usual = usualHolder(periods, nowMs);
         const excursions = capExcursions(periods, versions, usual?.holder ?? null, windowHours);
-        const flags = upgradeFlags({ versions, caps, end, periods, excursions, usual, signerByVersion, auth });
+        const flags = upgradeFlags({ versions, caps, end, gone, periods, excursions, usual, signerByVersion, auth });
 
         const current = caps[caps.length - 1];
         const hoursOf = (from: ChainPoint, until: ChainPoint | null): number | null => {
@@ -479,7 +456,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
 
         // A redeploy mints an unrelated root, so no version walk reaches it;
         // the search starts from who could have published it.
-        const holderNow = !end && current && (current.owner.kind === "address" || current.owner.kind === "consensus") ? current.owner.address : null;
+        const holderNow = !end && !gone && current && (current.owner.kind === "address" || current.owner.kind === "consensus") ? current.owner.address : null;
         const searchFrom = [root.sender, holderNow].filter((a): a is string => !!a && !/^0x0+$/.test(a));
         const redeploys =
           find_redeploys && !systemPackage && searchFrom.length > 0 ? await findRedeploys(
@@ -501,8 +478,8 @@ export function registerUpgradeHistoryTools(server: McpServer) {
           upgrade_cap: capId
             ? {
                 object_id: capId,
-                state: end ? end.kind : current ? "exists" : "unknown",
-                current_holder: end ? null : describeHolder(current?.owner ?? null, auth, ids),
+                state: end ? end.kind : gone ? "unknown" : current ? "exists" : "unknown",
+                current_holder: end || gone ? null : describeHolder(current?.owner ?? null, auth, ids),
                 policy: upgradePolicyName(current?.policy),
                 owner_change_count: Math.max(0, periods.length - 1),
                 history_complete: capComplete,
@@ -558,7 +535,8 @@ export function registerUpgradeHistoryTools(server: McpServer) {
             holder: describeHolder(p.holder, auth, ids),
             from: p.from,
             until: p.until,
-            duration_hours: hoursOf(p.from, p.until),
+            duration_hours: p.until_unknown ? null : hoursOf(p.from, p.until),
+            ...(p.until_unknown ? { until_unknown: true } : {}),
           })),
           cap_excursions: excursions.map((x) => ({
             holders: x.holders.map((h) => describeHolder(h, auth, ids)),

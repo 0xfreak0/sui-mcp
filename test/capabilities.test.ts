@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage } from "./helpers/service-shapes.js";
 
-const { gqlQuery } = vi.hoisted(() => ({ gqlQuery: vi.fn() }));
+const { gqlQuery, withArchiveFallback } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
+vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback }));
 vi.mock("../src/utils/identity.js", () => ({
   describeAddresses: async (addrs: string[]) =>
     new Map(addrs.map((a) => [a, { address: a, kind: "wallet" as const, authentication: { scheme: "ed25519" as const, verified: true } }])),
@@ -59,16 +60,30 @@ describe("classifyCapabilityRisk — upgrade cap", () => {
   });
 });
 
+describe("classifyCapabilityRisk — a cap gone from top level with an unread end", () => {
+  // A gone admin cap is either wrapped (low) or destroyed (info).
+  it("rates an admin cap low and a mint authority medium", () => {
+    const gone = (kind: "admin" | "treasury", type: string) => classifyCapabilityRisk({ kind, type, owner: "unknown", gone: true }).risk;
+    expect(gone("admin", "0x1::vault::AdminCap")).toBe("low");
+    expect(gone("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("medium");
+  });
+});
+
 describe("classifyCapabilityRisk — treasury cap", () => {
   it("address-owned mint authority is high risk", () => {
     const r = classifyCapabilityRisk({ kind: "treasury", type: `${P2}::coin::TreasuryCap<0xabc::t::T>`, owner: "address", ownerAddress: "0xbad" });
     expect(r.risk).toBe("high");
     expect(r.note).toMatch(/mint/i);
   });
-  it("burned treasury cap = renounced mint (info)", () => {
-    const r = classifyCapabilityRisk({ kind: "treasury", type: `${P2}::coin::TreasuryCap<0xabc::t::T>`, owner: "burned" });
-    expect(r.risk).toBe("info");
-    expect(r.note).toMatch(/renounced|fixed/i);
+  // Destroying a TreasuryCap leaves its Supply, which mints wherever it is
+  // kept; only the registry's Fixed or BurnOnly state keeps it from minting.
+  it("reads a destroyed treasury cap as fixed supply only when the coin registry records it", () => {
+    const burned = (supplyState?: "fixed" | "burn_only" | "unknown") =>
+      classifyCapabilityRisk({ kind: "treasury", type: `${P2}::coin::TreasuryCap<0xabc::t::T>`, owner: "burned", supplyState }).risk;
+    expect(burned("fixed")).toBe("info");
+    expect(burned("burn_only")).toBe("info");
+    expect(burned("unknown")).toBe("medium");
+    expect(burned(undefined)).toBe("medium");
   });
 });
 
@@ -162,8 +177,14 @@ describe("auditPackageCapabilities — destroyed UpgradeCap", () => {
         // 0x2::package::make_immutable deletes the cap object outright: the
         // GraphQL object lookup returns null, exactly like a pruned or
         // nonexistent object.
-        : { object: null },
+        : query.includes("affectedObject")
+          ? { transactions: { nodes: [{ digest: "MakeImmutable" }] } }
+          : { object: null },
     );
+    withArchiveFallback.mockReset();
+    withArchiveFallback.mockResolvedValue({
+      transaction: { effects: { changedObjects: [{ objectId: CAP, idOperation: 3 }] } },
+    });
   });
 
   /**
@@ -179,6 +200,111 @@ describe("auditPackageCapabilities — destroyed UpgradeCap", () => {
     expect(cap.holder_status).toBeUndefined();
     expect(cap.note).not.toMatch(/can still upgrade/i);
     expect(cap.note).toMatch(/destroyed/i);
+  });
+
+  it("gives a wrapped UpgradeCap no holder assessment", async () => {
+    withArchiveFallback.mockResolvedValue({
+      transaction: { effects: { changedObjects: [{ objectId: CAP, idOperation: 0 }] } },
+    });
+    const cap = (await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0];
+    expect(cap.owner).toBe("wrapped");
+    expect(cap.holder_status).toBeUndefined();
+  });
+});
+
+describe("auditPackageCapabilities — wrapped TreasuryCap", () => {
+  const CAP = "0x9945b2f35c85dffbb1c6f289c7cef8f7d253771d803d79f9df680f588153590e";
+  const PUBLISHER = "0xdd7126a71c9c29145dd71bd28ef0db7d986cde112641d4b659e8144d86e9c2ec";
+
+  beforeEach(() => {
+    gqlQuery.mockReset();
+    gqlQuery.mockImplementation(async (query: string) =>
+      query.includes("packageAt(version: 1)")
+        ? {
+            package: {
+              packageAt: {
+                previousTransaction: {
+                  effects: {
+                    objectChanges: gqlPage([
+                      {
+                        idCreated: true,
+                        outputState: { address: CAP, asMoveObject: { contents: { type: { repr: `${P2}::coin::TreasuryCap<0xabc::t::T>` } } } },
+                      },
+                    ]),
+                  },
+                },
+              },
+            },
+          }
+        : query.includes("affectedObject")
+          ? { transactions: { nodes: [{ digest: "LaunchWrap" }] } }
+          : { object: null },
+    );
+    // A launchpad stored the cap inside its own shared object: the object is
+    // gone from top level, and the effects record no deletion.
+    withArchiveFallback.mockReset();
+    withArchiveFallback.mockResolvedValue({
+      transaction: { effects: { changedObjects: [{ objectId: CAP, idOperation: 1 }] } },
+    });
+  });
+
+  it("does not call a TreasuryCap stored inside another object renounced", async () => {
+    const audit = await auditPackageCapabilities("0xpkg", PUBLISHER);
+    const cap = audit.capabilities[0];
+    expect(cap.owner).toBe("wrapped");
+    expect(cap.wrapped_in_tx).toBe("LaunchWrap");
+    expect(cap.risk).toBe("medium");
+  });
+
+  it("reports an unknown owner when the end of the object cannot be read", async () => {
+    withArchiveFallback.mockRejectedValue(new Error("429"));
+    const audit = await auditPackageCapabilities("0xpkg", PUBLISHER);
+    expect(audit.capabilities[0].owner).toBe("unknown");
+    expect(audit.capabilities[0].risk).toBe("medium");
+  });
+
+  // Effects version 1 marks a wrapped object DELETED; its output digest is
+  // the wrapped marker.
+  it("reads an effects-v1 wrap, reported as DELETED with the wrapped digest, as wrapped", async () => {
+    withArchiveFallback.mockResolvedValue({
+      transaction: {
+        effects: { changedObjects: [{ objectId: CAP, idOperation: 3, outputDigest: "6ws1bVyu3F8wGy1fPHhrc2v8UyWiGbRAAuek8SwikKPD" }] },
+      },
+    });
+    expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0].owner).toBe("wrapped");
+  });
+
+  it("reads a transaction that does not list the cap as unknown, not wrapped", async () => {
+    withArchiveFallback.mockResolvedValue({ transaction: { effects: { changedObjects: [] } } });
+    expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0].owner).toBe("unknown");
+  });
+
+  describe("when the cap was deleted", () => {
+    const registry = (variant: string | null) => {
+      const base = gqlQuery.getMockImplementation()!;
+      gqlQuery.mockImplementation(async (query: string, vars?: { type?: string }) =>
+        vars?.type?.includes("coin_registry::Currency")
+          ? { objects: { nodes: variant ? [{ asMoveObject: { contents: { json: { decimals: 9, supply: { "@variant": variant } } } } }] : [] } }
+          : base(query, vars),
+      );
+      withArchiveFallback.mockResolvedValue({
+        transaction: { effects: { changedObjects: [{ objectId: CAP, idOperation: 3, outputDigest: "7gyGAp71YXQRoxmFBaHxofQXAipvgHyBKPyxmdSJxyvz" }] } },
+      });
+    };
+
+    it("reads fixed supply from the coin registry's Fixed state", async () => {
+      registry("Fixed");
+      const cap = (await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0];
+      expect(cap.owner).toBe("burned");
+      expect(cap.risk).toBe("info");
+    });
+
+    it("does not read fixed supply when the registry records none", async () => {
+      registry("Unknown");
+      expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0].risk).toBe("medium");
+      registry(null);
+      expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities[0].risk).toBe("medium");
+    });
   });
 });
 

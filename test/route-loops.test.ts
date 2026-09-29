@@ -21,12 +21,15 @@ const SENDER = "0xa11ce";
 
 const pool = (n: number) => `0x${n.toString(16).padStart(64, "0")}`;
 
-function call(pkg: string, fn: string, typeArgs: string[]): GrpcTypes.Command {
-  return { command: { oneofKind: "moveCall", moveCall: { package: pkg, module: "router", function: fn, typeArguments: typeArgs } } } as unknown as GrpcTypes.Command;
+function call(pkg: string, fn: string, typeArgs: string[], args: unknown[] = []): GrpcTypes.Command {
+  return { command: { oneofKind: "moveCall", moveCall: { package: pkg, module: "router", function: fn, typeArguments: typeArgs, arguments: args } } } as unknown as GrpcTypes.Command;
 }
 
+const RESULT = 3;
 const begin = (a: string, b: string) => call(ROUTER, "begin_router_tx_r1_w1_varied_in", [a, b]);
-const start = (coin: string) => call(ROUTER, "initiate_path_by_percent_w1", [RD, coin]);
+/** A path start; `opener` is the command whose result it takes (the route's opening call). */
+const start = (coin: string, opener?: number) =>
+  call(ROUTER, "initiate_path_by_percent_w1", [RD, coin], opener === undefined ? [] : [{ kind: RESULT, result: opener }]);
 const end = (a: string, b: string) => call(ROUTER, "end_router_tx_r1_w1", [a, b]);
 
 /** A pool swap event as the integration that called the pool emits it. */
@@ -34,9 +37,14 @@ function swapEvent(type: string, emitter: string, poolId: string, atob: boolean,
   return { type, package_id: emitter, module: "router", json: { atob, pool: poolId, amount_in: amountIn, amount_out: amountOut } };
 }
 
-function loopsOf(commands: GrpcTypes.Command[], events: LoopEvent[] | null, objects: Array<{ objectId: string; objectType: string }>) {
+function loopsOf(
+  commands: GrpcTypes.Command[],
+  events: LoopEvent[] | { unread: string },
+  objects: Array<{ objectId: string; objectType: string }>,
+  success = true,
+) {
   const decoded = decodeTransaction(commands, [], SENDER);
-  return describeRouteLoops(routeLoops(decoded.route_hops), decoded.route_hops, { commands, events, objects });
+  return describeRouteLoops(routeLoops(decoded.route_hops), decoded.route_hops, { success, commands, events, objects });
 }
 
 describe("route loops", () => {
@@ -174,9 +182,23 @@ describe("route loops", () => {
     expect(loops[0]).toMatchObject({ hops: [2, 3], coins: "USDC → USDT → USDC", sent: null, returned: null, cost: null, cost_method: "unknown" });
   });
 
-  it("leaves the cost unknown when the event fields were not read", () => {
-    const loops = loopsOf(midRoute, null, midObjects);
+  it("leaves the cost unknown when the event fields were not read, and says why", () => {
+    const loops = loopsOf(midRoute, { unread: "the event field lookup failed" }, midObjects);
     expect(loops[0]).toMatchObject({ cost: null, cost_method: "unknown" });
+    expect(loops[0].note).toContain("the event field lookup failed");
+  });
+
+  it("tells a transaction that emitted no events apart from one whose fields were not read", () => {
+    const none = loopsOf(midRoute, [], midObjects);
+    const unread = loopsOf(midRoute, { unread: "the event field lookup failed" }, midObjects);
+    expect(none[0]).toMatchObject({ cost: null, cost_method: "unknown" });
+    expect(none[0].note).toContain("emitted no events");
+    expect(none[0].note).not.toContain("the event field lookup failed");
+    expect(unread[0].note).not.toContain("emitted no events");
+  });
+
+  it("reports no loop on a failed transaction, whose swaps were reverted", () => {
+    expect(loopsOf(midRoute, [], midObjects, false)).toEqual([]);
   });
 
   it("leaves the cost unknown when the matched amounts do not carry from hop to hop", () => {
@@ -196,7 +218,7 @@ describe("route loops", () => {
     const loops = loopsOf(
       [
         begin(SUI, SUI),
-        start(SUI),
+        start(SUI, 0),
         call(CETUS_INT, "swap_a_to_b_w1", [RD, SUI, SUI, USDC]),
         call(CETUS_INT, "swap_a_to_b_w1", [RD, SUI, USDC, TOK]),
         call(CETUS_INT, "swap_a_to_b_w1", [RD, SUI, TOK, SUI]),
@@ -218,5 +240,59 @@ describe("route loops", () => {
     expect(loops[0].coins).toBe("SUI → USDC → TOK → SUI");
     expect(loops[0].cost).toBe("-0.0005 SUI");
     expect(loops[0].cost_method).toBe("pool_events");
+    // The route declares SUI in and SUI out and this path is the loop.
+    expect(loops[0].whole_trade).toBe(true);
+  });
+
+  describe("a loop that is the routed trade itself", () => {
+    const swapSui = (via: string) => [call(CETUS_INT, "swap_a_to_b_w1", [RD, SUI, SUI, via]), call(CETUS_INT, "swap_b_to_a_w1", [RD, SUI, SUI, via])];
+
+    it("marks every path of a route declared SUI in and SUI out, split over several paths", () => {
+      const decoded = decodeTransaction(
+        [begin(SUI, SUI), start(SUI, 0), ...swapSui(TOK), start(SUI, 0), ...swapSui(USDC), end(SUI, SUI)],
+        [],
+        SENDER,
+      );
+      expect(routeLoops(decoded.route_hops).map((l) => l.whole_trade)).toEqual([true, true]);
+    });
+
+    it("does not mark a loop in the middle of a route that trades one coin for another", () => {
+      const decoded = decodeTransaction(midRoute.map((c, i) => (i === 1 ? start(USDC, 0) : c)), [], SENDER);
+      expect(routeLoops(decoded.route_hops).map((l) => l.whole_trade)).toEqual([false]);
+    });
+
+    it("does not mark a loop that is only part of its path, even in a route declared SUI in and SUI out", () => {
+      const decoded = decodeTransaction(
+        [begin(SUI, SUI), start(SUI, 0), ...swapSui(TOK), call(CETUS_INT, "swap_a_to_b_w1", [RD, SUI, SUI, USDC]), call(CETUS_INT, "swap_b_to_a_w1", [RD, SUI, USDC, SUI]), end(SUI, SUI)],
+        [],
+        SENDER,
+      );
+      // SUI → TOK → SUI, then SUI → USDC → SUI: two loops, neither the whole path.
+      expect(routeLoops(decoded.route_hops).map((l) => l.whole_trade)).toEqual([false, false]);
+    });
+
+    it("does not mark a path loop when the path start names no route", () => {
+      const decoded = decodeTransaction([begin(SUI, SUI), start(SUI), ...swapSui(TOK), end(SUI, SUI)], [], SENDER);
+      expect(routeLoops(decoded.route_hops).map((l) => l.whole_trade)).toEqual([false]);
+    });
+
+    it("reports the round trip as the trade's result, with the same amounts", () => {
+      const loops = loopsOf(
+        [begin(SUI, SUI), start(SUI, 0), ...swapSui(TOK), end(SUI, SUI)],
+        [swapEvent(CETUS_SWAP, CETUS_INT, pool(1), true, "20069530", "2245385419"), swapEvent(CETUS_SWAP, CETUS_INT, pool(1), false, "2245385419", "21246999")],
+        [{ objectId: pool(1), objectType: `${CETUS_POOL}<${SUI}, ${TOK}>` }],
+      );
+      expect(loops).toHaveLength(1);
+      expect(loops[0]).toMatchObject({ whole_trade: true, cost: "-0.001177469 SUI", cost_method: "pool_events" });
+    });
+
+    it("does not mark a whole-path loop in a route that gives out another coin", () => {
+      const decoded = decodeTransaction(
+        [begin(SUI, USDC), start(SUI, 0), ...swapSui(TOK), start(SUI, 0), call(CETUS_INT, "swap_a_to_b_w1", [RD, SUI, SUI, USDC]), end(SUI, USDC)],
+        [],
+        SENDER,
+      );
+      expect(routeLoops(decoded.route_hops).map((l) => l.whole_trade)).toEqual([false]);
+    });
   });
 });

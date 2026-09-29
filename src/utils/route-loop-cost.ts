@@ -49,6 +49,8 @@ export interface RouteLoopReport {
   /** Sent minus returned, formatted; negative when more came back. Null when unknown. */
   cost: string | null;
   cost_method: "pool_events" | "unknown";
+  /** Present when the loop is its path's whole share of a route that starts and ends in the loop's coin. */
+  whole_trade?: true;
   note: string;
 }
 
@@ -121,45 +123,58 @@ function matchHops(hops: RouteHop[], swaps: Swap[]): Map<RouteHop, Swap> {
   return matched;
 }
 
-const LEAD =
-  "routers split and loop amounts while chasing a better price, so this is a lead about execution quality and says nothing about intent.";
+const LEAD = "A loop is a lead about execution quality and says nothing about intent.";
 
 /**
- * One report per loop. `events` null means the transaction's event fields
- * were not read, so no hop can be matched.
+ * One report per loop of a successful transaction; a failed one swapped
+ * nothing, since its effects were reverted. `events` is what the
+ * transaction emitted with its fields, or `{ unread }` saying why the fields
+ * are missing.
  */
 export function describeRouteLoops(
   loops: RouteLoop[],
   allHops: RouteHop[],
-  tx: { commands: GrpcTypes.Command[]; events: LoopEvent[] | null; objects: Array<{ objectId?: string; objectType?: string | null }> },
+  tx: {
+    success: boolean;
+    commands: GrpcTypes.Command[];
+    events: LoopEvent[] | { unread: string };
+    objects: Array<{ objectId?: string; objectType?: string | null }>;
+  },
 ): RouteLoopReport[] {
-  if (loops.length === 0) return [];
-  const matched = tx.events ? matchHops(allHops, poolSwaps(tx.commands, tx.events, tx.objects)) : new Map<RouteHop, Swap>();
-  return loops.map(({ hops }) => {
+  if (!tx.success || loops.length === 0) return [];
+  const events = Array.isArray(tx.events) ? tx.events : [];
+  const unread = Array.isArray(tx.events) ? null : tx.events.unread;
+  const matched = matchHops(allHops, poolSwaps(tx.commands, events, tx.objects));
+  return loops.map(({ hops, whole_trade }) => {
     const first = hops[0];
     const last = hops[hops.length - 1];
     const coin = first.coin_in;
+    const symbol = displayCoin(coin).symbol;
     const coins = [coin, ...hops.map((h) => h.coin_out)].map((t) => displayCoin(t).symbol).join(" → ");
-    // A loop holding every routed hop is the whole route starting and ending in one coin.
-    const where = `inside one route path (actions ${first.action} to ${last.action}${hops.length === allHops.length ? ", every swap hop the transaction routed" : ""})`;
+    const span = `actions ${first.action} to ${last.action}`;
+    const base = { hops: [first.action, last.action] as [number, number], coins, ...(whole_trade ? { whole_trade: true as const } : {}) };
 
     let reason: string | null = null;
     const missing = hops.filter((h) => !matched.has(h));
-    if (!tx.events) reason = "the transaction's event fields were not read";
+    if (unread !== null) reason = unread;
+    else if (events.length === 0) reason = "the transaction emitted no events";
     else if (missing.length)
       reason = `no pool swap event of a verified shape matched action${missing.length > 1 ? "s" : ""} ${missing.map((h) => h.action).join(", ")} by command, coins and direction`;
     else if (hops.some((h, k) => k > 0 && matched.get(hops[k - 1])!.amount_out !== matched.get(h)!.amount_in))
       reason = "the matched pool events' amounts do not carry from one hop to the next";
 
+    const trade = `The route starts and ends in ${symbol}, so the round trip ${coins} (${span}) is its path's whole share of the routed trade`;
     if (reason) {
+      const unknown = `because ${reason}, and the sender's balance changes cannot stand in since they net the whole transaction.`;
       return {
-        hops: [first.action, last.action],
-        coins,
+        ...base,
         sent: null,
         returned: null,
         cost: null,
         cost_method: "unknown",
-        note: `The router swapped ${displayCoin(coin).symbol} round ${coins} ${where}; the cost is unknown because ${reason}, and the sender's balance changes cannot stand in since they net the whole transaction; ${LEAD}`,
+        note: whole_trade
+          ? `${trade}; its result is unknown ${unknown}`
+          : `The route sent ${symbol} through a loop, ${coins} (${span}), that came back to ${symbol}; what it cost is unknown ${unknown} ${LEAD}`,
       };
     }
     const inAmount = matched.get(first)!.amount_in;
@@ -167,20 +182,20 @@ export function describeRouteLoops(
     const sent = formatCoinAmount(inAmount, coin);
     const returned = formatCoinAmount(outAmount, coin);
     const cost = formatCoinAmount(inAmount - outAmount, coin);
-    const outcome =
-      inAmount > outAmount
-        ? `so the loop cost ${cost}`
-        : inAmount === outAmount
-          ? "so the loop cost nothing"
-          : `so the loop returned ${formatCoinAmount(outAmount - inAmount, coin)} more than it took`;
+    const diff = formatCoinAmount(outAmount > inAmount ? outAmount - inAmount : inAmount - outAmount, coin);
+    const moved = `${sent} went in and ${returned} came back by the pools' own swap events`;
+    if (whole_trade) {
+      const result = outAmount > inAmount ? `a gain of ${diff}` : outAmount < inAmount ? `a loss of ${diff}` : "no change";
+      return { ...base, sent, returned, cost, cost_method: "pool_events", note: `${trade}: ${moved}, ${result} before gas.` };
+    }
+    const outcome = outAmount < inAmount ? `so the loop cost ${diff}` : outAmount === inAmount ? "so the loop cost nothing" : `so ${diff} more came back than went in`;
     return {
-      hops: [first.action, last.action],
-      coins,
+      ...base,
       sent,
       returned,
       cost,
       cost_method: "pool_events",
-      note: `The router sent ${sent} round ${coins} ${where} and ${returned} came back by the pools' own swap events, ${outcome}; ${LEAD}`,
+      note: `The route sent ${sent} through a loop, ${coins} (${span}), that came back to ${symbol}, and ${returned} returned by the pools' own swap events, ${outcome}. ${LEAD}`,
     };
   });
 }

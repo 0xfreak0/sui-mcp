@@ -530,14 +530,20 @@ export function registerTransactionTools(server: McpServer) {
       });
       const custodyUnread = publishers ? originIncomplete(publishers.unread) : null;
       // Round trips inside a router path and what each cost, from the pools'
-      // own swap events in this response. Absent when no path loops.
-      const loops = routeLoops(decoded.route_hops);
+      // own swap events in this response. Absent when no path loops or the
+      // transaction failed, since a failed one's swaps were reverted.
+      const succeeded = effects?.status?.success === true;
+      const loops = succeeded ? routeLoops(decoded.route_hops) : [];
       if (loops.length) await prefetchCoinScale(loops.map((l) => l.hops[0].coin_in));
       const routeLoopReports = describeRouteLoops(loops, decoded.route_hops, {
+        success: succeeded,
         commands: kind?.data.oneofKind === "programmableTransaction" ? kind.data.programmableTransaction.commands : [],
-        events: parsedUsable
-          ? rawEvents.map((e, i) => ({ type: e.eventType ?? "", package_id: e.packageId, module: e.module, json: parsed![i].json }))
-          : null,
+        events:
+          rawEvents.length === 0
+            ? []
+            : parsedUsable
+              ? rawEvents.map((e, i) => ({ type: e.eventType ?? "", package_id: e.packageId, module: e.module, json: parsed![i].json }))
+              : { unread: fieldBudget === 0 ? "max_event_field_bytes: 0 skipped the event fields" : "the transaction's event fields could not be read" },
         objects: changedObjects,
       });
 

@@ -10,8 +10,10 @@
  *   node scripts/probe/oracle-pass.mjs [--seed N] [--tip CHECKPOINT] [--scan N] [--txs N]
  *     [--ends N] [--router N] [--coins N] [--jobs N] [--subjects JSON|FILE] [--dist PATH]
  *
- * Truth never goes through the code under test: it is raw GraphQL, and for
- * effects version 1 the effects' own BCS, read in the same run.
+ * Truth never goes through the code under test: it is raw GraphQL, the
+ * fullnode over gRPC where the tool reads GraphQL, and for effects version 1
+ * the effects' own BCS, read in the same run. Where a truth read is the same
+ * query the tool makes, the report says so beside it.
  *
  * a. Swap labels. get_transaction's `Swap X → Y` actions on transactions
  *    calling Aftermath's router. Each event naming a pool and a direction is a
@@ -21,10 +23,18 @@
  *    label may name a type that is not a coin. A label carries symbols, so it
  *    is read back into the types it can name with the tested build's own
  *    `displayCoin` over every type the transaction carries, and the comparison
- *    is by coin type.
+ *    is by coin type. A label no event hop matches is checked only for naming
+ *    coins, and the report lists it (`labels_without_an_event`) and counts
+ *    how many labels were matched.
  * b. Object end. trace_object_history, and get_upgrade_history for an
- *    UpgradeCap, against the object's live state, or against `idDeleted` in
- *    the objectChanges of the newest transaction that touched it.
+ *    UpgradeCap, against the object's live state (gRPC), or against
+ *    `idDeleted` in the objectChanges of the transaction that ended it. That
+ *    transaction is the drawn one when it read the object's newest version in
+ *    `objectVersions`; otherwise, and for a pinned object, it is the newest
+ *    `affectedObject` transaction, the query the tool also runs, which the
+ *    report counts. A package given here stands for the UpgradeCap its
+ *    lineage's version-1 publish created, or for the cap it destroyed when
+ *    `make_immutable` took every Publish result there.
  * c. Object changes. get_transaction's `object_changes` against GraphQL
  *    objectChanges: `idCreated`, `idDeleted`, and whether an input and an
  *    output state exist. GraphQL gives no input state under effects version 1,
@@ -32,8 +42,10 @@
  *    cross-check the rest.
  * d. Mint authority. analyze_package on a registry coin's package must list
  *    its TreasuryCap<T> or name T in `coins_without_located_mint_authority`.
- *    A cap the registry's `treasury_cap_id` or a TreasuryCap<T> type query
- *    finds must be listed, and every listed cap must have the owner the chain
+ *    A cap the fullnode's coin index (gRPC getCoinInfo), the registry's
+ *    `treasury_cap_id` or a TreasuryCap<T> type query finds must be listed
+ *    (the last two are queries the audit runs too; each cap names its
+ *    sources), and every listed cap must have the owner the chain
  *    gives: one deleted, or consumed by a registry supply of Fixed or
  *    BurnOnly, reads `burned`, one another object owns names that object
  *    (the owner of its `dynamic_field::Field` for a dynamic object field),
@@ -42,7 +54,9 @@
  *    sender's GraphQL balanceChanges, and `balance_changes` summed per owner
  *    and coin against all of them.
  * f. Cap owners. The other capabilities analyze_package lists, and
- *    get_upgrade_history's current holder, against each object's live owner.
+ *    get_upgrade_history's current holder, against each object's live owner
+ *    read over gRPC, and an UpgradeCap the publish destroyed against that
+ *    publish.
  *
  * Sampling. `--seed` (default random) and `--tip` (default the latest
  * checkpoint) are printed first; `--seed S --tip T` redraws the same
@@ -84,7 +98,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bcs } from "@mysten/sui/bcs";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { startServer, gql as gqlOnce, ROOT } from "./lib/mcp-client.mjs";
+
+/** The fullnode over gRPC: the second transport truth is read through where the tool uses GraphQL. */
+const grpc = new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io" });
 
 /**
  * Disagreements already tracked. An entry names its oracles, a note saying
@@ -103,7 +121,7 @@ const ORACLES = {
   },
   b: {
     title: "object end",
-    how: "GraphQL object(address:) for a live object; otherwise idDeleted and outputState of the object in objectChanges of the newest transaction with it as affectedObject (effects version 1: cross-checked with the effects BCS lists)",
+    how: "gRPC getObject for a live object; otherwise idDeleted and outputState of the object in GraphQL objectChanges of the transaction that ended it: the drawn one when it read the newest version objectVersions lists, else the newest affectedObject transaction, the query the tool also runs (effects version 1: cross-checked with the effects BCS lists)",
   },
   c: {
     title: "object changes",
@@ -111,12 +129,12 @@ const ORACLES = {
   },
   d: {
     title: "mint authority",
-    how: "the registry's Currency<T> (GraphQL objects of that exact type): treasury_cap_id and supply; GraphQL objects of type TreasuryCap<T>; each cap's live owner, or idDeleted in its newest transaction",
+    how: "caps named by gRPC getCoinInfo (independent), by the registry Currency<T> treasury_cap_id and by a GraphQL TreasuryCap<T> type query (both queries the audit runs too); the registry supply; each cap's owner over gRPC, walked to the object holding it, or idDeleted in the transaction that ended it",
   },
   e: { title: "flows", how: "GraphQL balanceChanges of the transaction, every page" },
   f: {
     title: "cap owners",
-    how: "GraphQL object(address:) owner of each capability; for one no longer live, idDeleted in its newest transaction",
+    how: "gRPC getObject owner of each capability, walked to the object holding an object-owned one; for one no longer live, idDeleted in the transaction that ended it; for an UpgradeCap destroyed at publish, the publish's transactionJson",
   },
 };
 for (const o of Object.values(ORACLES)) o.rows = [];
@@ -219,7 +237,6 @@ const normType = (t) =>
 const ADDR2 = normAddr("0x2");
 const ZERO = normAddr("0x0");
 const UPGRADE_CAP = `${ADDR2}::package::UpgradeCap`;
-const OWNER_KIND = { AddressOwner: "address", ConsensusAddressOwner: "consensus", ObjectOwner: "object", Shared: "shared", Immutable: "immutable" };
 
 /** The top-level type arguments of a type. */
 function typeArgsOf(type) {
@@ -299,17 +316,6 @@ function collectTypeArgs(json, out = new Set()) {
   return out;
 }
 
-/** The `package::module::function` of every Move call under a transaction's JSON. */
-function collectCalls(json, out = new Set()) {
-  if (Array.isArray(json)) for (const x of json) collectCalls(x, out);
-  else if (json && typeof json === "object") {
-    const c = json.moveCall;
-    if (c?.package) out.add(`${normAddr(c.package)}::${c.module}::${c.function}`);
-    for (const v of Object.values(json)) collectCalls(v, out);
-  }
-  return out;
-}
-
 const txCache = new Map();
 /** One transaction as GraphQL reports it, every page read. */
 function rawTx(digest) {
@@ -359,7 +365,8 @@ async function readTx(digest) {
     balances: balances.map((n) => ({ owner: n.owner?.address ? normAddr(n.owner.address) : null, coin: normType(n.coinType?.repr), amount: BigInt(n.amount) })),
     events: events.map((n) => ({ type: n.contents?.type?.repr ?? "", json: n.contents?.json ?? {} })),
     typeArgs: collectTypeArgs(t.transactionJson),
-    calls: collectCalls(t.transactionJson),
+    /** The PTB's commands as the transaction's own JSON gives them; empty for another kind. */
+    commands: t.transactionJson?.kind?.programmableTransaction?.commands ?? [],
   };
 }
 
@@ -392,45 +399,89 @@ function truthKinds(tx) {
 }
 
 const objectCache = new Map();
+/** gRPC `Owner.OwnerKind`, as the fullnode numbers it. */
+const GRPC_OWNER = { 1: "address", 2: "object", 3: "shared", 4: "immutable", 5: "consensus" };
+/** A protobuf `Value` as plain JSON. */
+function fromValue(v) {
+  const k = v?.kind;
+  switch (k?.oneofKind) {
+    case "structValue":
+      return Object.fromEntries(Object.entries(k.structValue.fields ?? {}).map(([f, x]) => [f, fromValue(x)]));
+    case "listValue":
+      return (k.listValue.values ?? []).map(fromValue);
+    case "stringValue":
+    case "numberValue":
+    case "boolValue":
+      return k[k.oneofKind];
+    default:
+      return null;
+  }
+}
+/** One live object read from the fullnode over gRPC, or null when it does not exist at top level. */
+async function grpcObject(id) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { response } = await grpc.ledgerService.getObject({ objectId: id, readMask: { paths: ["object_id", "owner", "object_type", "json"] } });
+      return response.object ?? null;
+    } catch (err) {
+      if (err?.code === "NOT_FOUND") return null;
+      if (attempt >= 5) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+    }
+  }
+}
+
 /**
  * An object's state now: live with its owner, or gone with how it ended
  * (`deleted` or `wrapped`) and the transaction that ended it. `unreadable`
- * says why neither could be read.
+ * says why neither could be read. `endTx` is the transaction the sample
+ * found removing the object, when there is one.
+ *
+ * The tool reads liveness and owners through GraphQL and the end through the
+ * `affectedObject` index plus gRPC effects, so the truth goes the other way
+ * round: liveness, owner and type from the fullnode over gRPC (the holder of
+ * an object-owned object walked the same way), and the end's kind from
+ * GraphQL objectChanges. The end transaction is the drawn one when the
+ * object's newest version in `objectVersions` is the version that
+ * transaction read; otherwise it comes from the `affectedObject` index, the
+ * query the tool uses too, and `end_tx_from` says so.
  */
-function objectTruth(id) {
-  const key = normAddr(id);
-  if (!objectCache.has(key)) objectCache.set(key, readObjectTruth(key).catch((err) => (objectCache.delete(key), Promise.reject(err))));
+function objectTruth(id, endTx = null) {
+  const key = `${normAddr(id)}|${endTx ?? ""}`;
+  if (!objectCache.has(key)) objectCache.set(key, readObjectTruth(normAddr(id), endTx).catch((err) => (objectCache.delete(key), Promise.reject(err))));
   return objectCache.get(key);
 }
-async function readObjectTruth(id) {
-  const d = await gql(
-    `query($a:SuiAddress!){ object(address:$a){ version owner{ __typename ... on ObjectOwner{ address{ address } } } asMoveObject{ contents{ type{ repr } json } } asMovePackage{ address } }
-      last: transactions(filter:{ affectedObject:$a }, last:1){ nodes{ digest } } }`,
-    { a: id },
-  );
-  if (d.object?.asMovePackage) return { exists: true, package: true };
-  if (d.object) {
-    const typename = d.object.owner?.__typename;
+async function readObjectTruth(id, endTx) {
+  const live = await grpcObject(id);
+  if (live?.objectType === "package") return { exists: true, package: true };
+  if (live) {
+    const owner = GRPC_OWNER[live.owner?.kind] ?? `unread (${live.owner?.kind})`;
     // The object that holds an object-owned one. A dynamic object field is
     // owned by its dynamic_field::Field, which the object holding the field owns.
     let holder = null;
-    if (typename === "ObjectOwner") {
-      holder = normAddr(d.object.owner.address.address);
-      const direct = (
-        await gql(`query($a:SuiAddress!){ object(address:$a){ owner{ __typename ... on ObjectOwner{ address{ address } } } asMoveObject{ contents{ type{ repr } } } } }`, { a: holder })
-      ).object;
-      if (normType(direct?.asMoveObject?.contents?.type?.repr).startsWith(`${ADDR2}::dynamic_field::Field<`) && direct.owner?.__typename === "ObjectOwner")
-        holder = normAddr(direct.owner.address.address);
+    if (owner === "object") {
+      holder = normAddr(live.owner.address);
+      const direct = await grpcObject(holder);
+      if (normType(direct?.objectType).startsWith(`${ADDR2}::dynamic_field::Field<`) && GRPC_OWNER[direct.owner?.kind] === "object") holder = normAddr(direct.owner.address);
     }
-    return {
-      exists: true,
-      owner: OWNER_KIND[typename] ?? `unread (${typename})`,
-      ...(holder ? { holder } : {}),
-      type: normType(d.object.asMoveObject?.contents?.type?.repr),
-      json: d.object.asMoveObject?.contents?.json ?? null,
-    };
+    return { exists: true, owner, ...(holder ? { holder } : {}), type: normType(live.objectType), json: fromValue(live.json) };
   }
-  const last = d.last.nodes[0]?.digest;
+  const d = await gql(
+    `query($a:SuiAddress!){ versions: objectVersions(address:$a, last:1){ nodes{ version } } last: transactions(filter:{ affectedObject:$a }, last:1){ nodes{ digest } } }`,
+    { a: id },
+  );
+  const lastVersion = d.versions.nodes[0]?.version;
+  let last = null;
+  let from = "the affectedObject index (the query the tool also uses)";
+  if (endTx && lastVersion !== undefined) {
+    const drawn = await rawTx(endTx);
+    const read = drawn.changes.get(id)?.input?.version ?? drawn.v1?.versions.get(id);
+    if (read !== undefined && String(read) === String(lastVersion)) {
+      last = endTx;
+      from = "the drawn transaction, which read the object's newest version in objectVersions";
+    }
+  }
+  last ??= d.last.nodes[0]?.digest;
   if (!last) return { unreadable: "GraphQL has neither the object nor a transaction touching it" };
   const tx = await rawTx(last);
   const c = tx.changes.get(id);
@@ -447,38 +498,48 @@ async function readObjectTruth(id) {
     type ??= normType(at.object?.asMoveObject?.contents?.type?.repr) || null;
     json = at.object?.asMoveObject?.contents?.json ?? null;
   }
-  return { exists: false, kind, tx: last, type, json };
+  return { exists: false, kind, tx: last, end_tx_from: from, type, json };
 }
 /** The owner kind a capability audit names for an object's state. */
 const capOwner = (t) => (t.exists ? t.owner : t.kind === "deleted" ? "burned" : "wrapped");
 
 const upgradeCapCache = new Map();
 /**
- * The UpgradeCap a package's publish transaction created for it (`id`), or
- * `destroyedAtPublish` naming that transaction when it created none and
- * called `0x2::package::make_immutable`: a cap created and destroyed in one
- * transaction is in no object change, while one created and wrapped is, with
- * no output state, so the call can only have destroyed this package's cap.
+ * The UpgradeCap a package's lineage got at its version-1 publish (`id`), or
+ * `destroyedAtPublish` naming that transaction when it lists none and a
+ * `0x2::package::make_immutable` call took the result of every Publish
+ * command in it, the rule the tool applies: a cap created and destroyed in
+ * one transaction is in no object change. Read from the transaction's own
+ * JSON, not the command connection the tool reads.
  */
 function upgradeCapOf(pkg) {
   const key = normAddr(pkg);
-  if (!upgradeCapCache.has(key)) upgradeCapCache.set(key, readUpgradeCap(key));
+  if (!upgradeCapCache.has(key)) upgradeCapCache.set(key, readUpgradeCap(key).catch((err) => (upgradeCapCache.delete(key), Promise.reject(err))));
   return upgradeCapCache.get(key);
 }
 async function readUpgradeCap(pkg) {
-  const d = await gql(`query($a:SuiAddress!){ object(address:$a){ asMovePackage{ address } previousTransaction{ digest } } }`, { a: pkg });
+  const d = await gql(`query($a:SuiAddress!){ object(address:$a){ asMovePackage{ address } } package(address:$a){ packageAt(version:1){ address previousTransaction{ digest } } } }`, { a: pkg });
   if (!d.object?.asMovePackage) return { unreadable: `${pkg} is not a package` };
-  const publish = d.object.previousTransaction?.digest;
-  if (!publish) return { unreadable: "GraphQL names no publish transaction" };
+  const root = d.package?.packageAt;
+  const publish = root?.previousTransaction?.digest;
+  if (!root?.address || !publish) return { unreadable: "GraphQL names no version-1 publish transaction for its lineage" };
+  const rootId = normAddr(root.address);
   const tx = await rawTx(publish);
   const caps = [...tx.changes.values()].filter((c) => c.created && c.output?.type === UPGRADE_CAP);
   for (const c of caps) {
     const at = await gql(`query($a:SuiAddress!,$v:UInt53){ object(address:$a, version:$v){ asMoveObject{ contents{ json } } } }`, { a: c.id, v: Number(c.output.version) }, true);
-    if (normAddr(at.object?.asMoveObject?.contents?.json?.package ?? ZERO) === pkg) return { id: c.id, publish };
+    if (normAddr(at.object?.asMoveObject?.contents?.json?.package ?? ZERO) === rootId) return { id: c.id, publish, root: rootId };
   }
-  if (tx.calls.has(`${ADDR2}::package::make_immutable`) && ![...tx.changes.values()].some((c) => c.created && !c.output))
-    return { destroyedAtPublish: publish };
-  return { unreadable: `its publish transaction ${publish} lists no UpgradeCap for it` };
+  const publishes = tx.commands.flatMap((c, i) => (c.publish !== undefined ? [i] : []));
+  const destroyed = new Set(
+    tx.commands.flatMap((c) =>
+      c.moveCall && normAddr(c.moveCall.package) === ADDR2 && c.moveCall.module === "package" && c.moveCall.function === "make_immutable" && c.moveCall.arguments?.[0]?.kind === "RESULT"
+        ? [c.moveCall.arguments[0].result]
+        : [],
+    ),
+  );
+  if (publishes.length && publishes.every((i) => destroyed.has(i))) return { destroyedAtPublish: publish, root: rootId };
+  return { unreadable: `its lineage's version-1 publish ${publish} lists no UpgradeCap for it and did not destroy every Publish result` };
 }
 
 /** Which of `types` have a CoinMetadata GraphQL can read. */
@@ -496,6 +557,13 @@ async function coinsOnChain(types) {
 }
 
 // ---- the server and its answers ---------------------------------------------
+/**
+ * The public endpoints are shared. A tool that says it was rate-limited, or
+ * that the node told it to back off (gRPC RESOURCE_EXHAUSTED, an HTTP/2
+ * GOAWAY), gave no answer to compare, so the sample is skipped; so is an
+ * answer that says one of its own reads was refused that way.
+ */
+const REFUSED = /Rate-limited by .*HTTP 429|resource has been exhausted|RESOURCE_EXHAUSTED|ENHANCE_YOUR_CALM/i;
 const server = await startServer({ name: "oracle-pass", replay: true, entry: DIST });
 const toolCache = new Map();
 let toolCalls = 0;
@@ -512,11 +580,7 @@ async function invoke(tool, args) {
   const joined = texts.join("\n");
   if (msg.timedOut) return { error: `${tool}: no answer in 240s` };
   if (msg.error) return { error: `${tool}: JSON-RPC error ${msg.error.message}` };
-  // The public endpoints are shared. A tool that says it was rate-limited, or
-  // that the node told it to back off (gRPC RESOURCE_EXHAUSTED, an HTTP/2
-  // GOAWAY), gave no answer to compare, so the sample is skipped.
-  const refused = /Rate-limited by .*HTTP 429|resource has been exhausted|RESOURCE_EXHAUSTED|ENHANCE_YOUR_CALM/i;
-  if (msg.result?.isError) return refused.test(joined) ? { limited: `${tool}: ${joined.slice(0, 200)}` } : { error: `${tool}: ${joined.slice(0, 600)}` };
+  if (msg.result?.isError) return REFUSED.test(joined) ? { limited: `${tool}: ${joined.slice(0, 200)}` } : { error: `${tool}: ${joined.slice(0, 600)}` };
   const json = texts.find((t) => t.trim().startsWith("{"));
   try {
     return json ? { json: JSON.parse(json) } : { error: `${tool}: no JSON in the answer: ${joined.slice(0, 200)}` };
@@ -566,10 +630,15 @@ async function truthOf(oracle, key, subject, read) {
 const DIRECTION = ["atob", "a_to_b", "a2b", "x_for_y"];
 const SWAP_LABEL = /^Swap (.+?) → (.+?)(?: on (.+))?$/;
 
-/** The swap hops a transaction's events state, in emission order. */
+/**
+ * The swap hops a transaction's events state, in emission order. `unresolved`
+ * holds a swap event whose pool type could not be read, `undirected` one
+ * naming a pool but no direction field read here.
+ */
 function swapHops(tx) {
   const hops = [];
   const unresolved = [];
+  const undirected = [];
   tx.events.forEach((e, index) => {
     const j = e.json ?? {};
     if (Array.isArray(j.types_in) && Array.isArray(j.types_out)) {
@@ -580,6 +649,7 @@ function swapHops(tx) {
     const raw = j.pool ?? j.pool_id;
     const pool = typeof raw === "string" ? raw : raw?.id;
     const dir = DIRECTION.find((f) => typeof j[f] === "boolean");
+    if (pool && !dir && /swap/i.test(e.type.replace(/<.*/, "").split("::").pop())) undirected.push({ event: index, pool, type: e.type.replace(/<.*/, "") });
     if (!pool || !dir) return;
     const c = tx.changes.get(normAddr(pool));
     const args = typeArgsOf(c?.input?.type ?? c?.output?.type ?? "");
@@ -587,14 +657,14 @@ function swapHops(tx) {
     const [a, b] = args;
     hops.push({ event: index, pool: normAddr(pool), [dir]: j[dir], coin_in: j[dir] ? a : b, coin_out: j[dir] ? b : a });
   });
-  return { hops, unresolved };
+  return { hops, unresolved, undirected };
 }
 
 async function checkSwapLabels(key, digest) {
   const tx = await truthOf("a", key, digest, () => rawTx(digest));
   if (!tx) return;
   if (tx.status !== "SUCCESS") return skip("a", key, digest, "the transaction failed, so no swap ran");
-  const { hops, unresolved } = swapHops(tx);
+  const { hops, unresolved, undirected } = swapHops(tx);
   if (!hops.length)
     return skip("a", key, digest, `no event names a pool and a direction${unresolved.length ? ` whose pool type could be read (${unresolved.length} could not)` : ""}`);
   const ans = answerOf("a", key, digest, await callTool("get_transaction", { digest }));
@@ -613,7 +683,11 @@ async function checkSwapLabels(key, digest) {
     return m ? { label, from: bySymbol.get(m[1]) ?? [], to: bySymbol.get(m[2]) ?? [] } : { label, unparsed: true, from: [], to: [] };
   });
   const coin = new Map([...evidence].map((t) => [t, true]));
-  for (const [t, is] of await coinsOnChain([...new Set(decoded.flatMap((d) => [...d.from, ...d.to]))].filter((t) => !coin.has(t)))) coin.set(t, is);
+  try {
+    for (const [t, is] of await coinsOnChain([...new Set(decoded.flatMap((d) => [...d.from, ...d.to]))].filter((t) => !coin.has(t)))) coin.set(t, is);
+  } catch (err) {
+    return skip("a", key, digest, `truth unreadable: whether the labels name coins (${String(err?.message ?? err).slice(0, 200)})`);
+  }
   const problems = [];
   for (const d of decoded) {
     if (d.unparsed) {
@@ -625,6 +699,9 @@ async function checkSwapLabels(key, digest) {
       else if (!types.some((t) => coin.get(t))) problems.push(`"${d.label}": its ${side} names ${types.join(" or ")}, which is not a coin`);
     }
   }
+  // Each event hop takes the next label in order that names its coins. A
+  // label no hop takes was checked only for naming coins, and says so.
+  const matched = new Set();
   let at = 0;
   for (const [i, h] of hops.entries()) {
     while (at < decoded.length && !(decoded[at].from.includes(h.coin_in) && decoded[at].to.includes(h.coin_out))) at++;
@@ -632,15 +709,21 @@ async function checkSwapLabels(key, digest) {
       problems.push(`event ${h.event} (pool ${h.pool}: ${h.coin_in} → ${h.coin_out})${hops.length - i > 1 ? ` and the ${hops.length - i - 1} hop(s) after it` : ""} not among the decoded swaps in order`);
       break;
     }
+    matched.add(at);
     at++;
   }
+  const unmatched = labels.filter((_, i) => !matched.has(i));
   const ambiguous = [...new Set(decoded.flatMap((d) => [d.from, d.to]).filter((ts) => ts.length > 1).map((ts) => `${symbol(ts[0])}: ${ts.join(", ")}`))];
   record("a", key, digest, problems.length ? "disagree" : "agree", {
     ours: labels,
     truth: hops.map((h) => `${h.coin_in} → ${h.coin_out} (event ${h.event}, pool ${h.pool})`),
     ...(problems.length ? { problems } : {}),
     ...(ambiguous.length ? { symbols_naming_several_types: ambiguous } : {}),
+    labels_total: labels.length,
+    labels_matched: matched.size,
+    ...(unmatched.length ? { labels_without_an_event: unmatched } : {}),
     ...(unresolved.length ? { hops_without_a_pool_type: unresolved } : {}),
+    ...(undirected.length ? { swap_events_without_a_direction: undirected } : {}),
   });
 }
 
@@ -660,9 +743,9 @@ async function checkObjectEnd(key, subject) {
     if (cap.destroyedAtPublish) return checkDestroyedAtPublish(key, pkg, cap.destroyedAtPublish);
     id = cap.id;
   }
-  const t = await truthOf("b", key, label, () => objectTruth(id));
+  const t = await truthOf("b", key, label, () => objectTruth(id, subject.endTx));
   if (!t) return;
-  const truth = t.exists ? { live: true, owner: t.owner } : { live: false, end: t.kind, tx: t.tx };
+  const truth = t.exists ? { live: true, owner: t.owner } : { live: false, end: t.kind, tx: t.tx, end_tx_from: t.end_tx_from };
 
   const trace = answerOf("b", key, `trace_object_history ${id}`, await callTool("trace_object_history", { object_id: id }));
   if (trace) {
@@ -704,7 +787,10 @@ async function checkDestroyedAtPublish(key, pkg, publish) {
   const cap = hist.upgrade_cap;
   const ours = { upgrade_cap: cap ? { object_id: cap.object_id ?? null, state: cap.state ?? null } : null, cap_end: hist.cap_end ? { kind: hist.cap_end.kind, tx: hist.cap_end.tx } : null };
   const ok = cap?.object_id == null && cap?.state === "deleted" && hist.cap_end?.kind === "deleted" && hist.cap_end?.tx === publish;
-  record("b", key, subject, ok ? "agree" : "disagree", { ours, truth: { live: false, end: "deleted", tx: publish, how: "no UpgradeCap in the publish's objectChanges, and a make_immutable call in its PTB" } });
+  record("b", key, subject, ok ? "agree" : "disagree", {
+    ours,
+    truth: { live: false, end: "deleted", tx: publish, how: "no UpgradeCap in the publish's objectChanges, and make_immutable taking every Publish result in its transactionJson" },
+  });
 }
 
 // ---- c. object changes -------------------------------------------------------
@@ -802,35 +888,58 @@ function auditCaps(audit) {
 /** An owner as compared: its kind, and for an object-owned cap the object that holds it. */
 const ownerLabel = (owner, holder) => (owner === "object" ? `object ${holder}` : owner);
 
+/** The TreasuryCap id the fullnode's coin index names for `coinType` (gRPC getCoinInfo), or null. */
+async function grpcTreasuryId(coinType) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { response } = await grpc.stateService.getCoinInfo({ coinType });
+      return response.treasury?.id ? normAddr(response.treasury.id) : null;
+    } catch (err) {
+      if (err?.code === "NOT_FOUND") return null;
+      if (attempt >= 5) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+    }
+  }
+}
+
+/**
+ * The TreasuryCaps of `coinType` from three sources: the fullnode's coin
+ * index over gRPC (getCoinInfo, which the audit never asks for a cap), the
+ * registry's `treasury_cap_id` and a `TreasuryCap<T>` type query. The last
+ * two are the GraphQL queries the audit itself runs, so each cap says which
+ * source found it. Every cap's state is read by `objectTruth`: live owners
+ * over gRPC, walking an object owner to the object that holds it.
+ */
 async function mintTruth(coinType) {
   const d = await gql(
     `query($c:String!,$t:String!){ currency: objects(filter:{ type:$c }, first:2){ nodes{ address asMoveObject{ contents{ json } } } }
-      caps: objects(filter:{ type:$t }, first:50){ nodes{ address owner{ __typename } } } }`,
+      caps: objects(filter:{ type:$t }, first:50){ nodes{ address } } }`,
     { c: `${ADDR2}::coin_registry::Currency<${coinType}>`, t: `${ADDR2}::coin::TreasuryCap<${coinType}>` },
   );
   const json = d.currency.nodes[0]?.asMoveObject?.contents?.json;
   const registry = json
     ? { currency: normAddr(d.currency.nodes[0].address), treasury_cap_id: json.treasury_cap_id ? normAddr(json.treasury_cap_id) : null, supply: json.supply?.["@variant"] ?? null }
     : null;
+  const found = new Map();
+  const add = (id, source) => found.set(id, [...(found.get(id) ?? []), source]);
+  const indexed = await grpcTreasuryId(coinType);
+  if (indexed) add(indexed, "gRPC getCoinInfo (independent of the audit)");
+  if (registry?.treasury_cap_id) add(registry.treasury_cap_id, "registry treasury_cap_id (the audit reads it too)");
+  for (const n of d.caps.nodes) add(normAddr(n.address), "TreasuryCap<T> type query (the audit runs it too)");
+  // make_supply_fixed and make_supply_burn_only take the cap by value and
+  // turn it into the registry's Supply (coin_registry.move), deleting it:
+  // one consumed during the publish never appears in an object change.
+  const consumed = registry?.supply === "Fixed" || registry?.supply === "BurnOnly";
   const caps = new Map();
-  for (const n of d.caps.nodes) {
-    const id = normAddr(n.address);
-    const owner = OWNER_KIND[n.owner?.__typename] ?? n.owner?.__typename;
-    const holder = owner === "object" ? (await objectTruth(id)).holder : undefined;
-    caps.set(id, { owner, ...(holder ? { holder } : {}), found_by: "TreasuryCap<T> type query" });
-  }
-  if (registry?.treasury_cap_id && !caps.has(registry.treasury_cap_id)) {
-    const t = await objectTruth(registry.treasury_cap_id);
-    // make_supply_fixed and make_supply_burn_only take the cap by value and
-    // turn it into the registry's Supply (coin_registry.move), deleting it:
-    // one consumed during the publish never appears in an object change.
-    const consumed = registry.supply === "Fixed" || registry.supply === "BurnOnly";
+  for (const [id, sources] of found) {
+    const t = await objectTruth(id);
+    const found_by = sources.join("; ");
     let state;
-    if (consumed && (t.unreadable || (!t.exists && t.kind === "deleted")))
-      state = { owner: "burned", found_by: `registry treasury_cap_id, supply ${registry.supply}`, ...(t.tx ? { ended_in: t.tx } : {}) };
-    else if (consumed) state = { unreadable: `the registry records supply ${registry.supply}, yet the cap is ${t.exists ? "live" : t.kind}` };
-    else state = t.unreadable ? { unreadable: t.unreadable } : { owner: capOwner(t), ...(t.holder ? { holder: t.holder } : {}), found_by: "registry treasury_cap_id", ...(t.exists ? {} : { ended_in: t.tx }) };
-    caps.set(registry.treasury_cap_id, state);
+    if (consumed && id === registry.treasury_cap_id && (t.unreadable || (!t.exists && t.kind === "deleted")))
+      state = { owner: "burned", found_by: `${found_by}; supply ${registry.supply}`, ...(t.tx ? { ended_in: t.tx } : {}) };
+    else if (consumed && id === registry.treasury_cap_id) state = { unreadable: `the registry records supply ${registry.supply}, yet the cap is ${t.exists ? "live" : t.kind}` };
+    else state = t.unreadable ? { unreadable: t.unreadable } : { owner: capOwner(t), ...(t.holder ? { holder: t.holder } : {}), found_by, ...(t.exists ? {} : { ended_in: t.tx }) };
+    caps.set(id, state);
   }
   return { registry, caps };
 }
@@ -846,6 +955,8 @@ async function checkMintAuthority(key, coinType) {
   if (!audit?.checked) return skip("d", key, T, `the capability audit did not run: ${text(audit?.note ?? audit, 300)}`);
   const listed = auditCaps(audit).filter((c) => c.kind === "treasury" && typeArgsOf(c.type)[0] === T);
   const unlocated = (audit.coins_without_located_mint_authority ?? []).filter((u) => normType(u.coin_type) === T);
+  const refused = unlocated.find((u) => REFUSED.test(u.reason ?? ""));
+  if (refused) return skip("d", key, T, `the endpoint refused the audit's search for the cap: ${text(refused.reason, 300)}`);
   // Each problem is `{ cap, audit, chain }` or `{ coin, audit }`. An owner the
   // audit calls unknown is one: the chain states it.
   const problems = [];
@@ -864,7 +975,7 @@ async function checkMintAuthority(key, coinType) {
   }
   const extra = [];
   for (const l of listed.filter((x) => !truth.caps.has(x.id))) {
-    const t = await objectTruth(l.id);
+    const t = await objectTruth(l.id).catch((err) => ({ unreadable: String(err?.message ?? err).slice(0, 300) }));
     const chain = t.unreadable ? null : ownerLabel(capOwner(t), t.holder);
     extra.push({ id: l.id, audit: ownerLabel(l.owner, l.holder), chain: chain ?? `unreadable: ${t.unreadable}` });
     if (!chain) unread.push(`the state of listed cap ${l.id} could not be read: ${t.unreadable}`);
@@ -890,8 +1001,11 @@ async function checkCapOwners(key, pkgId) {
   const all = auditCaps(ans.capabilities).filter((c) => c.kind !== "treasury");
   // A publish that destroyed its own UpgradeCap: the audit must list it as
   // burned in that transaction, with no object id.
-  const upgrade = await upgradeCapOf(pkg).catch(() => null);
-  if (upgrade?.destroyedAtPublish) {
+  const upgrade = await upgradeCapOf(pkg).catch((err) => ({ unreadable: String(err?.message ?? err).slice(0, 300) }));
+  // With no cap object in the audit either, whether the publish destroyed one is the open question.
+  if (upgrade.unreadable && !all.some((c) => c.kind === "upgrade" && c.id !== null))
+    skip("f", key, `analyze_package ${pkg} UpgradeCap`, `truth unreadable: ${upgrade.unreadable}`);
+  if (upgrade.destroyedAtPublish) {
     const entry = all.find((c) => c.kind === "upgrade");
     const ours = entry ? { object_id: entry.id, owner: entry.owner, destroyed_in_tx: entry.destroyed_in_tx } : null;
     const ok = !!entry && entry.id === null && entry.owner === "burned" && entry.destroyed_in_tx === upgrade.destroyedAtPublish;
@@ -1137,7 +1251,7 @@ if (PINNED) {
       await checkFlows(k, d, "router");
     });
   }
-  for (const r of ends) task((k) => checkObjectEnd(k, { id: r.id, why: `${r.deleted ? "deleted" : "wrapped"} in ${r.tx}, ${r.era}` }));
+  for (const r of ends) task((k) => checkObjectEnd(k, { id: r.id, endTx: r.tx, why: `${r.deleted ? "deleted" : "wrapped"} in ${r.tx}, ${r.era}` }));
   for (const c of coins) {
     task(async (k) => {
       await checkMintAuthority(k, c.type);
@@ -1180,6 +1294,15 @@ for (const [id, o] of Object.entries(ORACLES)) {
   summary.push([id, o.title, checked, n("agree"), n("disagree"), n("known"), n("skip")]);
   console.log(`\n${id}. ${o.title}: checked ${checked}, agree ${n("agree")}, disagree ${n("disagree")}, known ${n("known")}, skipped ${n("skip")}`);
   console.log(`   truth: ${o.how}`);
+  // How much of each checked sample was compared, where a sample can be checked in part.
+  const compared = rows.filter((r) => r.status !== "skip");
+  if (id === "a" && compared.length) {
+    const total = compared.reduce((s, r) => s + (r.labels_total ?? 0), 0);
+    const matched = compared.reduce((s, r) => s + (r.labels_matched ?? 0), 0);
+    console.log(`   labels matched to an event hop: ${matched} of ${total}; the other ${total - matched} were checked only for naming coins`);
+  }
+  const byIndex = compared.filter((r) => r.truth?.end_tx_from?.startsWith("the affectedObject index")).length;
+  if (byIndex) console.log(`   end transaction taken from the affectedObject index the tool also queries: ${byIndex} of ${compared.length}`);
   for (const r of rows) {
     if (r.status === "skip") {
       console.log(`   skip  ${r.subject}: ${r.reason}`);
@@ -1187,6 +1310,8 @@ for (const [id, o] of Object.entries(ORACLES)) {
     }
     const mark = { agree: "ok", disagree: "!!", known: "known", stale: "stale" }[r.status];
     console.log(`   ${mark.padEnd(5)} ${r.subject}${r.known ? `  [${r.known}]` : ""}`);
+    // What a sample left unchecked is printed whatever its outcome.
+    for (const k of ["labels_without_an_event", "swap_events_without_a_direction"]) if (r[k]) console.log(`         ${k}: ${text(r[k])}`);
     if (r.status === "agree" && !process.env.VERBOSE) continue;
     console.log(`         ours:  ${text(r.ours)}`);
     console.log(`         truth: ${text(r.truth)}`);

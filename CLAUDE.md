@@ -4472,18 +4472,26 @@ must be answerable from these tools, and no case check calls
   so the publish scan misses it. Checked live: wUSDC's went into Wormhole's
   `WrappedAssetSetup`, SRT's sits in its shared `TreasuryAccess`, and
   CLOWNPEPE's was turned into the `Supply` its shared `Storage` keeps.
-  `auditPackageCapabilities` takes the package's coins from two places. The
-  publish transaction's created `CoinMetadata`, `TreasuryCap`, `Coin` and
-  registry `Currency` of the lineage root's own types cover every coin made
-  through a one-time witness: `init` runs only at publish (never for a module
-  an upgrade adds) and a witness cannot be packed. A coin made later comes
-  only from `coin_registry::new_currency<T: key>`, whose `Currency<T>` is
-  shared at an id derived under `0xc` from `CurrencyKey<T>` (key BCS `[0]`,
-  the dummy field; checked live against HFROG and wUSDC). Every non-generic
-  `key` struct's derived id is read in one multi-get (live:
-  `0x08f0b496…::currency::COIN`, cap created after publish). A generic `key`
-  struct's id depends on its type argument, so where a function takes
-  `CoinRegistry` it is named in `incomplete_scans` instead. For each coin
+  `auditPackageCapabilities` takes the package's coins from the publish
+  transaction's created `CoinMetadata`, `TreasuryCap`, `Coin` and registry
+  `Currency` of the lineage root's own types, and from the registry. A coin
+  made through a one-time witness comes from `init`, which runs only at
+  publish, but its effects show no coin object when `init` stored both the
+  TreasuryCap and the CoinMetadata inside another object (hop.fun's
+  `CreateTicket`; live: `0x014fcd3b…::hopeless::HOPELESS`, frozen cap at top
+  level). A coin made later comes only from `coin_registry::new_currency<T:
+  key>`, called in the module defining `T`. A registered `Currency<T>` of
+  either kind is shared at an id derived under `0xc` from `CurrencyKey<T>`
+  (key BCS `[0]`, the dummy field; checked live against HFROG and wUSDC), so
+  every non-generic `key` struct and every witness-shaped struct (module
+  name in capitals, `drop` only) is read in one multi-get (live:
+  `0x08f0b496…::currency::COIN`, cap created after publish). A witness the
+  registry does not know is asked of `getCoinInfo`, one request each, since
+  a coin nobody registered has no entry. A generic `key` struct's id depends
+  on its type argument, so one in a module whose own functions take
+  `CoinRegistry` (the only way it reaches a module) is named in
+  `incomplete_scans` instead. That list holds one entry per type, with every
+  reason a scan gave. For each coin
   without a cap it reads the registry's `treasury_cap_id`, then scans
   `TreasuryCap<T>` by type (`found_by`); GraphQL's type filter matches
   nothing for a partly instantiated type (`Currency<…::FToken>`), so it

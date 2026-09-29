@@ -1,5 +1,7 @@
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
+import { sui } from "../clients/grpc.js";
+import { isNotFound } from "./errors.js";
 import { assessCapHolder, isUnspendableAddress, type CapHolderStatus } from "./upgrade-cap.js";
 import { fetchTypeOrigins, type TypeOrigin } from "./package-versions.js";
 import { describeAddresses } from "./identity.js";
@@ -516,21 +518,50 @@ function coinTypeOf(repr: string): string | null {
 }
 
 /**
- * After publish, a coin of a package's own type comes only from
- * `coin_registry::new_currency<T: key>`, which the module defining `T` calls:
- * `init` never runs for a module an upgrade adds, and a one-time witness
- * cannot be packed, so every coin made through a one-time witness shows in
- * version 1's publish effects. Every non-generic `key` struct is therefore a
- * candidate, checked at its derived registry id.
+ * A coin of the package's own type comes from `init` through a one-time
+ * witness (`coin::create_currency`, `coin_registry::new_currency_with_otw`),
+ * or, any time after publish, from `coin_registry::new_currency<T: key>`
+ * called in the module defining `T`. `init` runs only at publish, so the
+ * first kind shows in version 1's publish effects unless `init` stored both
+ * the TreasuryCap and the CoinMetadata inside another object (hop.fun's
+ * `CreateTicket`). Both kinds end up at a registry id derived from `T` once
+ * registered, so every non-generic `key` struct and every witness-shaped
+ * struct is a candidate, checked there in one multi-get.
  */
 const MAX_REGISTRY_PROBES = 200;
 
 /**
+ * Witness-shaped structs the registry does not know, asked of the node one
+ * request each: a coin made through a one-time witness and never registered
+ * has no registry entry. Past this they are counted in the note.
+ */
+const MAX_WITNESS_CHECKS = 12;
+
+/**
  * `new_currency` takes `&mut CoinRegistry`, a shared object a function can
- * only receive as a parameter. A generic `key` struct in a package with no
- * such function cannot become a coin through this version's code.
+ * only receive as a parameter.
  */
 const COIN_REGISTRY_PARAM = /0x0*2::coin_registry::CoinRegistry\b/;
+
+/** A one-time witness's shape: named after its module in capitals, with `drop` only. */
+function isWitnessShaped(module: string, s: { name: string; abilities: string[] }): boolean {
+  return s.name === module.toUpperCase() && s.abilities.length === 1 && s.abilities[0] === "drop";
+}
+
+/**
+ * Whether a coin of `coinType` exists: the node knows its `CoinMetadata`,
+ * its registry `Currency` or its `TreasuryCap`. The service answers NOT_FOUND
+ * for a type with none of them; any other failure throws.
+ */
+async function coinExists(coinType: string): Promise<boolean> {
+  try {
+    const { response } = await sui.stateService.getCoinInfo({ coinType });
+    return !!(response.metadata || response.treasury || response.regulatedMetadata);
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
+  }
+}
 
 /**
  * Find the `TreasuryCap<T>` of a coin the publish transaction did not show
@@ -688,11 +719,17 @@ export async function auditPackageCapabilities(
   // entry per holder: DeepBook's `TradeCap`, 0x2's `KioskOwnerCap` and
   // Suilend's `ObligationOwnerCap` all match `AUTHORITY_NAME` and every user
   // of the protocol holds one. A struct whose scan fails is reported in
-  // `incompleteScans` rather than silently dropped: the answer must say the
+  // `incomplete` rather than silently dropped: the answer must say the
   // check did not run, never render identically to "no such capability".
   let structsSkipped = 0;
   const userHeldTypes: Array<{ type: string; count: number; truncated: boolean }> = [];
-  const incompleteScans: Array<{ type: string; reason: string }> = [];
+  // One entry per type: a struct both scans could not check carries both reasons.
+  const incomplete = new Map<string, string[]>();
+  const markIncomplete = (type: string, reason: string) => {
+    const reasons = incomplete.get(type);
+    if (reasons) reasons.push(reason);
+    else incomplete.set(type, [reason]);
+  };
   // Read at most once, by whichever scan below needs it first.
   let originsRead: Promise<TypeOrigin[] | null> | undefined;
   const readOrigins = () => (originsRead ??= fetchTypeOrigins(packageId));
@@ -720,10 +757,7 @@ export async function auditPackageCapabilities(
       scanned.map(async ({ module, name }) => {
         const requested = `${packageId}::${module}::${name}`;
         if (originsError !== null) {
-          incompleteScans.push({
-            type: requested,
-            reason: `type origins unreadable (${originsError}), so the package version defining this struct is unknown`,
-          });
+          markIncomplete(requested, `type origins unreadable (${originsError}), so the package version defining this struct is unknown`);
           return;
         }
         const definingId = origins?.find((o) => o.module === module && o.struct === name)?.definingId;
@@ -735,7 +769,7 @@ export async function auditPackageCapabilities(
         try {
           scan = await scanTypeInstances(type);
         } catch (err) {
-          incompleteScans.push({ type, reason: (err as Error).message });
+          markIncomplete(type, (err as Error).message);
           return;
         }
         if (scan.instances.length > USER_HELD_MIN_INSTANCES || scan.truncated) {
@@ -756,28 +790,36 @@ export async function auditPackageCapabilities(
   }
 
   // 1c. Mint authority for every coin the package defines. The publish
-  // transaction shows the coins version 1's `init` created; a `key` struct
-  // with a registry entry at its derived id adds one `new_currency` created
-  // later. Only coins of this lineage's own types count: a coin another
-  // package's call created in the same transaction is that package's.
+  // transaction shows the coins version 1's `init` created at top level. A
+  // coin whose `init` stored both the TreasuryCap and the CoinMetadata inside
+  // another object, or one `new_currency` created later, is found at the
+  // registry id derived from its type. Only coins of this lineage's own types
+  // count: a coin another package's call created in the same transaction is
+  // that package's.
   let registryProbesSkipped = 0;
+  let witnessChecksSkipped = 0;
   const coinTypes = new Set([...publishedCoins].filter((t) => t.startsWith(`${rootId}::`)));
   const registryEntries = new Map<string, RegistryCurrency>();
   if (modules?.length) {
-    const keyStructs = modules.flatMap((m) => m.structs.filter((s) => s.abilities.includes("key")).map((s) => ({ module: m.name, ...s })));
     // The registry id depends on the type argument, so a generic struct's
-    // coins cannot be derived. Named only where this version's code can
-    // reach `new_currency` at all.
-    if (modules.some((m) => m.functions?.some((f) => f.params.some((p) => COIN_REGISTRY_PARAM.test(p))))) {
-      for (const s of keyStructs.filter((k) => (k.typeParameters ?? 0) > 0)) {
-        incompleteScans.push({
-          type: `${packageId}::${s.module}::${s.name}`,
-          reason:
-            "a generic key struct in a package whose functions take the CoinRegistry: coin_registry::new_currency can make a coin of any instantiation of it, and no coin of this type was looked up, since a registry entry's id depends on the type argument",
-        });
+    // coins cannot be derived. `new_currency` takes only a `T` defined in the
+    // calling module, and `CoinRegistry` reaches a module only through its
+    // own functions' parameters, so a generic key struct is named only in a
+    // module one of whose functions takes it.
+    for (const m of modules) {
+      if (!m.functions?.some((f) => f.params.some((p) => COIN_REGISTRY_PARAM.test(p)))) continue;
+      for (const s of m.structs.filter((k) => k.abilities.includes("key") && (k.typeParameters ?? 0) > 0)) {
+        markIncomplete(
+          `${packageId}::${m.name}::${s.name}`,
+          "a generic key struct in a module whose functions take the CoinRegistry: coin_registry::new_currency can make a coin of any instantiation of it, and no coin of this type was looked up, since a registry entry's id depends on the type argument",
+        );
       }
     }
-    let plain = keyStructs.filter((k) => !(k.typeParameters ?? 0));
+    let plain = modules.flatMap((m) =>
+      m.structs
+        .filter((s) => !(s.typeParameters ?? 0) && (s.abilities.includes("key") || isWitnessShaped(m.name, s)))
+        .map((s) => ({ module: m.name, name: s.name, witness: !s.abilities.includes("key") })),
+    );
     // Version 1 defines every struct it has, so only a later version needs the origins.
     let origins: TypeOrigin[] | null = null;
     if (plain.length && normalizeSuiAddress(packageId) !== rootId) {
@@ -785,31 +827,51 @@ export async function auditPackageCapabilities(
         origins = await readOrigins();
       } catch (err) {
         for (const s of plain) {
-          incompleteScans.push({
-            type: `${packageId}::${s.module}::${s.name}`,
-            reason: `type origins unreadable (${(err as Error).message}), so whether this struct is a coin was not checked`,
-          });
+          markIncomplete(
+            `${packageId}::${s.module}::${s.name}`,
+            `type origins unreadable (${(err as Error).message}), so whether this struct is a coin was not checked`,
+          );
         }
         plain = [];
       }
     }
     const candidates = plain
-      .map((s) => normalizeCoinType(`${origins?.find((o) => o.module === s.module && o.struct === s.name)?.definingId ?? rootId}::${s.module}::${s.name}`))
-      .filter((t): t is string => !!t && !coinTypes.has(t));
+      .map((s) => ({
+        type: normalizeCoinType(`${origins?.find((o) => o.module === s.module && o.struct === s.name)?.definingId ?? rootId}::${s.module}::${s.name}`),
+        witness: s.witness,
+      }))
+      .filter((c): c is { type: string; witness: boolean } => !!c.type && !coinTypes.has(c.type));
     registryProbesSkipped = Math.max(0, candidates.length - MAX_REGISTRY_PROBES);
     const probed = candidates.slice(0, MAX_REGISTRY_PROBES);
+    let registryRead = false;
     if (probed.length) {
       try {
-        for (const [type, entry] of await readDerivedCurrencies(probed)) {
+        for (const [type, entry] of await readDerivedCurrencies(probed.map((c) => c.type))) {
           coinTypes.add(type);
           registryEntries.set(type, entry);
         }
+        registryRead = true;
       } catch (err) {
-        for (const type of probed) {
-          incompleteScans.push({ type, reason: `whether this key struct is a coin could not be read from the coin registry (${(err as Error).message})` });
+        for (const { type } of probed) {
+          markIncomplete(type, `whether this struct is a coin could not be read from the coin registry (${(err as Error).message})`);
         }
       }
     }
+    // A coin made through a one-time witness is in the registry only once
+    // someone registers or migrates it, so a witness the registry does not
+    // know is asked of the node, which also knows a coin by its top-level
+    // CoinMetadata or TreasuryCap.
+    const unregistered = registryRead ? probed.filter((c) => c.witness && !coinTypes.has(c.type)) : [];
+    witnessChecksSkipped = Math.max(0, unregistered.length - MAX_WITNESS_CHECKS);
+    await Promise.all(
+      unregistered.slice(0, MAX_WITNESS_CHECKS).map(async ({ type }) => {
+        try {
+          if (await coinExists(type)) coinTypes.add(type);
+        } catch (err) {
+          markIncomplete(type, `whether this one-time witness names a coin could not be read (${(err as Error).message})`);
+        }
+      }),
+    );
   }
   const minted = new Set(capObjects.filter((c) => c.kind === "treasury").map((c) => coinTypeOf(c.type)));
   const unlocated: UnlocatedMintAuthority[] = [];
@@ -932,9 +994,15 @@ export async function auditPackageCapabilities(
   }
   if (registryProbesSkipped > 0) {
     noteParts.push(
-      `${registryProbesSkipped} additional key struct type(s) were not checked for a coin (capped at ${MAX_REGISTRY_PROBES}); a coin one of them names, and its mint authority, may be missing.`,
+      `${registryProbesSkipped} additional struct type(s) were not checked for a coin (capped at ${MAX_REGISTRY_PROBES}); a coin one of them names, and its mint authority, may be missing.`,
     );
   }
+  if (witnessChecksSkipped > 0) {
+    noteParts.push(
+      `${witnessChecksSkipped} additional one-time-witness struct type(s) the coin registry does not know were not asked of the node (capped at ${MAX_WITNESS_CHECKS}); a coin one of them names, and its mint authority, may be missing.`,
+    );
+  }
+  const incompleteScans = [...incomplete].map(([type, reasons]) => ({ type, reason: reasons.join("; ") }));
   if (incompleteScans.length) {
     noteParts.push(
       `${incompleteScans.length} struct type(s) could not be scanned: ${incompleteScans

@@ -220,11 +220,14 @@ Mint authority is looked up for the coins the package defines, including one
 whose TreasuryCap the publish transaction never showed at top level:
 Wormhole's wrapped coins, and meme coins such as SRT and CLOWNPEPE, keep the
 cap (or the Supply it became) inside another object from `init` on. Coins
-come from the publish transaction and, for one created later through
-`coin_registry::new_currency`, from the registry entry each non-generic `key`
-struct would have. A generic `key` struct in a package that can call
-`new_currency` is named in `incomplete_scans`, since its coins cannot be
-looked up. For each coin the audit reads the TreasuryCap id the registry
+come from the publish transaction and from the registry entry each
+non-generic `key` struct and each one-time-witness struct would have: a coin
+created later through `coin_registry::new_currency`, or one whose `init`
+wrapped both its TreasuryCap and its CoinMetadata. A one-time witness the
+registry does not know is asked of the node. A generic `key` struct in a
+module whose functions take the CoinRegistry is named in `incomplete_scans`,
+since its coins cannot be looked up. For each coin the audit reads the
+TreasuryCap id the registry
 records, then searches for a live `TreasuryCap<T>` by type, and marks a cap
 found this way with `found_by`. A coin whose cap neither finds is named in
 `coins_without_located_mint_authority` with what was checked, at medium risk:

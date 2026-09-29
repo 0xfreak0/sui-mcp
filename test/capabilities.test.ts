@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage } from "./helpers/service-shapes.js";
 
-const { gqlQuery, withArchiveFallback } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn() }));
+const { gqlQuery, withArchiveFallback, getCoinInfo } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn(), getCoinInfo: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
 vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback }));
+vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo } }, archive: {}, getClients: vi.fn() }));
+const notFound = () => Object.assign(new Error("not found"), { code: "NOT_FOUND" });
+// By default the node knows no coin of any type.
+beforeEach(() => {
+  getCoinInfo.mockReset();
+  getCoinInfo.mockRejectedValue(notFound());
+});
 vi.mock("../src/utils/identity.js", () => ({
   describeAddresses: async (addrs: string[]) =>
     new Map(addrs.map((a) => [a, { address: a, kind: "wallet" as const, authentication: { scheme: "ed25519" as const, verified: true } }])),
@@ -598,8 +605,9 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
       let originReads = 0;
       gqlQuery.mockReset();
       gqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+        // Version 1's address: the audit runs on v10, the path a later version takes.
         if (query.includes("packageAt(version: 1)")) {
-          return { package: { packageAt: { previousTransaction: { effects: { objectChanges: gqlPage([]) } } } } };
+          return { package: { packageAt: { address: V1, previousTransaction: { effects: { objectChanges: gqlPage([]) } } } } };
         }
         if (query.includes("typeOrigins")) {
           originReads++;
@@ -633,7 +641,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
       expect(audit.capabilities).toEqual([]);
       expect(audit.incomplete_scans?.map((s) => s.type).sort()).toEqual([`${V10}::vault::AdminCap`, `${V10}::vault::OperatorCap`]);
       expect(audit.incomplete_scans?.[0].reason).toMatch(/type origins unreadable \(HTTP 429\)/);
-      expect(audit.note).toMatch(/could not be scanned/);
+      // Both scans need the origins; each struct is still listed once.
+      expect(audit.note).toMatch(/^2 struct type\(s\) could not be scanned/);
       expect(reads()).toBe(1);
     });
 
@@ -806,18 +815,50 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     expect(audit.incomplete_scans).toBeUndefined();
   });
 
+  /**
+   * hop.fun-style `init` stores both the TreasuryCap and the CoinMetadata
+   * inside its own object, so version 1's publish shows only that object.
+   * The coin's registry entry, once migrated, sits at the derived id.
+   */
+  it("finds a one-time-witness coin whose init wrapped both the cap and the metadata", async () => {
+    mockChain({
+      created: [`${PKG}::hfrog::CreateTicket`],
+      derived: { [CURRENCY_ID]: { decimals: 9, supply: { "@variant": "Unknown" }, treasury_cap_id: null } },
+      capInstances: [{ address: CAP, owner: { __typename: "Immutable" } }],
+    });
+    const audit = await auditPackageCapabilities(PKG, HOLDER, [{ name: "hfrog", structs: [{ name: "HFROG", abilities: ["drop"] }] }]);
+    expect(treasury(audit)).toEqual([expect.objectContaining({ object_id: CAP, owner: "immutable", risk: "medium", found_by: "type_scan" })]);
+  });
+
+  // A coin made through a one-time witness is in the registry only once someone registers it.
+  it("asks the node about a one-time witness the registry does not know, and adds nothing for one that names no coin", async () => {
+    mockChain({ registry: null, capInstances: [] });
+    getCoinInfo.mockImplementation(async ({ coinType }: { coinType: string }) => {
+      if (coinType === COIN) return { response: { metadata: { decimals: 9 } } };
+      throw notFound();
+    });
+    const audit = await auditPackageCapabilities(PKG, HOLDER, [
+      { name: "hfrog", structs: [{ name: "HFROG", abilities: ["drop"] }] },
+      { name: "pool", structs: [{ name: "POOL", abilities: ["drop"] }] },
+    ]);
+    expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: COIN, risk: "medium" })]);
+    expect(audit.incomplete_scans).toBeUndefined();
+  });
+
   // A registry entry's id depends on the type argument, so a generic key
-  // struct's coins cannot be looked up; where the code can call new_currency,
-  // the audit says so instead of passing over it.
-  it("names a generic key struct as unchecked when the package can call new_currency", async () => {
+  // struct's coins cannot be looked up. `new_currency` takes only a type the
+  // calling module defines, so only that module's generic structs are named.
+  it("names a generic key struct as unchecked only when its own module takes the CoinRegistry", async () => {
     mockChain({});
-    const modules = (params: string[]) => [
-      { name: "lending_state", structs: [{ name: "FToken", abilities: ["key", "store"], typeParameters: 1 }], functions: [{ params }] },
-    ];
-    const withRegistry = await auditPackageCapabilities(PKG, HOLDER, modules([`&mut ${P2}::coin_registry::CoinRegistry`, "u8"]));
-    expect(withRegistry.incomplete_scans).toEqual([expect.objectContaining({ type: `${PKG}::lending_state::FToken` })]);
-    const without = await auditPackageCapabilities(PKG, HOLDER, modules(["u8"]));
-    expect(without.incomplete_scans).toBeUndefined();
+    const REGISTRY = `&mut ${P2}::coin_registry::CoinRegistry`;
+    const ftoken = { name: "FToken", abilities: ["key", "store"], typeParameters: 1 };
+    const sameModule = await auditPackageCapabilities(PKG, HOLDER, [{ name: "lending_state", structs: [ftoken], functions: [{ params: [REGISTRY, "u8"] }] }]);
+    expect(sameModule.incomplete_scans).toEqual([expect.objectContaining({ type: `${PKG}::lending_state::FToken` })]);
+    const otherModule = await auditPackageCapabilities(PKG, HOLDER, [
+      { name: "admin", structs: [], functions: [{ params: [REGISTRY] }] },
+      { name: "rewards", structs: [ftoken], functions: [{ params: ["u8"] }] },
+    ]);
+    expect(otherModule.incomplete_scans).toBeUndefined();
   });
 
   /**

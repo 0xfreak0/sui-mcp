@@ -453,7 +453,13 @@ async function readObjectTruth(id) {
 const capOwner = (t) => (t.exists ? t.owner : t.kind === "deleted" ? "burned" : "wrapped");
 
 const upgradeCapCache = new Map();
-/** The UpgradeCap a package's publish transaction created for it. */
+/**
+ * The UpgradeCap a package's publish transaction created for it (`id`), or
+ * `destroyedAtPublish` naming that transaction when it created none and
+ * called `0x2::package::make_immutable`: a cap created and destroyed in one
+ * transaction is in no object change, while one created and wrapped is, with
+ * no output state, so the call can only have destroyed this package's cap.
+ */
 function upgradeCapOf(pkg) {
   const key = normAddr(pkg);
   if (!upgradeCapCache.has(key)) upgradeCapCache.set(key, readUpgradeCap(key));
@@ -470,10 +476,8 @@ async function readUpgradeCap(pkg) {
     const at = await gql(`query($a:SuiAddress!,$v:UInt53){ object(address:$a, version:$v){ asMoveObject{ contents{ json } } } }`, { a: c.id, v: Number(c.output.version) }, true);
     if (normAddr(at.object?.asMoveObject?.contents?.json?.package ?? ZERO) === pkg) return { id: c.id, publish };
   }
-  // An object created and destroyed in one transaction is in no object
-  // change; one created and wrapped is, with no output state.
   if (tx.calls.has(`${ADDR2}::package::make_immutable`) && ![...tx.changes.values()].some((c) => c.created && !c.output))
-    return { unreadable: `its publish transaction ${publish} lists no UpgradeCap and calls 0x2::package::make_immutable, so the cap was destroyed there and no UpgradeCap object ever existed` };
+    return { destroyedAtPublish: publish };
   return { unreadable: `its publish transaction ${publish} lists no UpgradeCap for it` };
 }
 
@@ -653,6 +657,7 @@ async function checkObjectEnd(key, subject) {
   if (!id) {
     const cap = await truthOf("b", key, label, () => upgradeCapOf(pkg));
     if (!cap) return;
+    if (cap.destroyedAtPublish) return checkDestroyedAtPublish(key, pkg, cap.destroyedAtPublish);
     id = cap.id;
   }
   const t = await truthOf("b", key, label, () => objectTruth(id));
@@ -689,6 +694,17 @@ async function checkObjectEnd(key, subject) {
       ...(holder === t.owner ? {} : { problems: [{ cap: id, audit: holder, chain: t.owner }] }),
     });
   }
+}
+
+/** get_upgrade_history on a package whose publish transaction destroyed its UpgradeCap. */
+async function checkDestroyedAtPublish(key, pkg, publish) {
+  const subject = `get_upgrade_history ${pkg} (UpgradeCap destroyed in its publish ${publish})`;
+  const hist = answerOf("b", key, subject, await callTool("get_upgrade_history", { package: pkg }));
+  if (!hist) return;
+  const cap = hist.upgrade_cap;
+  const ours = { upgrade_cap: cap ? { object_id: cap.object_id ?? null, state: cap.state ?? null } : null, cap_end: hist.cap_end ? { kind: hist.cap_end.kind, tx: hist.cap_end.tx } : null };
+  const ok = cap?.object_id == null && cap?.state === "deleted" && hist.cap_end?.kind === "deleted" && hist.cap_end?.tx === publish;
+  record("b", key, subject, ok ? "agree" : "disagree", { ours, truth: { live: false, end: "deleted", tx: publish, how: "no UpgradeCap in the publish's objectChanges, and a make_immutable call in its PTB" } });
 }
 
 // ---- c. object changes -------------------------------------------------------
@@ -774,7 +790,8 @@ async function checkFlows(key, digest, why) {
 function auditCaps(audit) {
   return (audit?.capabilities ?? []).flatMap((c) =>
     (c.holders ?? [{ object_id: c.object_id }]).map((h) => ({
-      id: normAddr(h.object_id),
+      id: h.object_id ? normAddr(h.object_id) : null,
+      destroyed_in_tx: c.destroyed_in_tx ?? null,
       kind: c.kind,
       type: normType(c.type),
       owner: c.owner,
@@ -870,8 +887,22 @@ async function checkCapOwners(key, pkgId) {
   const ans = answerOf("f", key, pkg, await callTool("analyze_package", { package_id: pkg }));
   if (!ans) return;
   if (!ans.capabilities?.checked) return skip("f", key, pkg, `the capability audit did not run: ${text(ans.capabilities?.note ?? ans.capabilities, 300)}`);
-  const caps = auditCaps(ans.capabilities).filter((c) => c.kind !== "treasury");
-  if (!caps.length) return skip("f", key, pkg, "the audit lists no capability besides TreasuryCaps");
+  const all = auditCaps(ans.capabilities).filter((c) => c.kind !== "treasury");
+  // A publish that destroyed its own UpgradeCap: the audit must list it as
+  // burned in that transaction, with no object id.
+  const upgrade = await upgradeCapOf(pkg).catch(() => null);
+  if (upgrade?.destroyedAtPublish) {
+    const entry = all.find((c) => c.kind === "upgrade");
+    const ours = entry ? { object_id: entry.id, owner: entry.owner, destroyed_in_tx: entry.destroyed_in_tx } : null;
+    const ok = !!entry && entry.id === null && entry.owner === "burned" && entry.destroyed_in_tx === upgrade.destroyedAtPublish;
+    record("f", key, `analyze_package ${pkg} UpgradeCap destroyed in its publish ${upgrade.destroyedAtPublish}`, ok ? "agree" : "disagree", {
+      ours: { upgrade_cap: ours },
+      truth: { owner: "burned", destroyed_in_tx: upgrade.destroyedAtPublish },
+      ...(ok ? {} : { problems: [{ cap: null, audit: ours ? ownerLabel(ours.owner) : "not listed", chain: "burned in the publish" }] }),
+    });
+  }
+  const caps = all.filter((c) => c.id !== null);
+  if (!caps.length) return skip("f", key, pkg, "the audit lists no capability object besides TreasuryCaps");
   // A generator of its own per subject: subjects run concurrently, and the draw must not depend on their order.
   const own = rng((SEED ^ Math.imul(key + 1, 0x9e3779b1)) >>> 0);
   const chosen = [...caps.filter((c) => c.kind === "upgrade" || c.kind === "deny"), ...shuffled(caps.filter((c) => c.kind === "admin"), own)].slice(0, CAPS_PER_PACKAGE);

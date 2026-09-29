@@ -179,6 +179,12 @@ export function classifyCapabilityRisk(input: {
         note: `UpgradeCap is a shared object (policy: ${policyLabel ?? "unread"}). package::authorize_upgrade and commit_upgrade are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can upgrade this package.`,
       };
     }
+    if (owner === "immutable") {
+      return {
+        risk: "info",
+        note: "UpgradeCap is frozen. package::authorize_upgrade and commit_upgrade take it by &mut, which a frozen object cannot give, so nobody can upgrade this package.",
+      };
+    }
     return { risk: "medium", note: `UpgradeCap owner is ${owner}${policyLabel ? ` (policy: ${policyLabel})` : ""}.` };
   }
 
@@ -226,6 +232,12 @@ export function classifyCapabilityRisk(input: {
         note: `Mint authority (${shortType}) is a shared object. coin::mint and mint_balance are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can mint this coin.`,
       };
     }
+    if (owner === "immutable") {
+      return {
+        risk: "medium",
+        note: `Mint authority (${shortType}) is frozen. Minting needs it by &mut, so supply is fixed, but coin::update_name, update_symbol, update_description and update_icon_url, coin_registry::claim_metadata_cap and token::new_policy take it by &, so anyone can change this coin's metadata where it is not frozen or claimed, and create its token policy.`,
+      };
+    }
     return { risk: "medium", note: `Mint authority (${shortType}) owner is ${owner}.` };
   }
 
@@ -249,6 +261,12 @@ export function classifyCapabilityRisk(input: {
         note: `Denylist/freeze authority (${shortType}) is a shared object. coin::deny_list_v2_add and deny_list_add are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can freeze holders of this coin.`,
       };
     }
+    if (owner === "immutable") {
+      return {
+        risk: "info",
+        note: `Denylist/freeze authority (${shortType}) is frozen. coin::deny_list_v2_add and deny_list_add take it by &mut, which a frozen object cannot give, so nobody can freeze holders with it.`,
+      };
+    }
     return { risk: "low", note: `Denylist/freeze authority (${shortType}) owner is ${owner}.` };
   }
 
@@ -264,10 +282,13 @@ export function classifyCapabilityRisk(input: {
   if (held) {
     return { risk: "low", note: `Privileged capability ${shortType} is held by ${who} — review what powers it grants.` };
   }
-  if (owner === "shared") {
+  if (owner === "shared" || owner === "immutable") {
     return {
       risk: "low",
-      note: `Capability ${shortType} is a shared object: any transaction can pass it to the functions that take it. What that grants depends on each function's own checks; read the ones that take this type.`,
+      note:
+        owner === "shared"
+          ? `Capability ${shortType} is a shared object: any transaction can pass it to the functions that take it. What that grants depends on each function's own checks; read the ones that take this type.`
+          : `Capability ${shortType} is frozen: any transaction can pass it to the functions that take it by &, which is how most capability checks are written. What that grants depends on each function's own checks; read the ones that take this type.`,
     };
   }
   return { risk: "info", note: `Capability ${shortType} owner is ${owner}.` };

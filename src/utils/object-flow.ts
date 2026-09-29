@@ -87,8 +87,10 @@ export interface ObjectMovement {
   category: ObjectCategory;
   /** A framework capability whose powers are stateable. Never suffix-matched. */
   high_consequence: boolean;
-  /** The destination is unspendable: this is renunciation, not a handover. */
+  /** The destination is unspendable, or frozen for a type used only by `&mut`: this is renunciation, not a handover. */
   renounced?: boolean;
+  /** A capability made shared, or frozen while functions take it by `&`: any transaction can now use it. */
+  opened?: true;
   /** The chain did not record the previous holder. See `appeared`. */
   source_unrecorded?: boolean;
   /** Protocol that defined this type, when the registry knows it. */
@@ -116,6 +118,33 @@ export const HIGH_CONSEQUENCE_TYPES: Record<string, string> = {
     "Authority to freeze addresses for this coin, via the deny list.",
   [`${ADDR2}::package::Publisher`]:
     "Proof of publishing rights for the package, used to claim Display and other type-owned privileges.",
+};
+
+/**
+ * Framework capabilities whose every exercising function takes them by
+ * `&mut`, which a frozen object cannot give: freezing one renounces it.
+ * `package::authorize_upgrade` and `commit_upgrade`, `coin::deny_list_add`
+ * and `deny_list_v2_add`.
+ */
+const FREEZE_RENOUNCES = new Set([
+  `${ADDR2}::package::UpgradeCap`,
+  `${ADDR2}::coin::DenyCap`,
+  `${ADDR2}::coin::DenyCapV2`,
+]);
+
+/** What anyone can do with a shared high-consequence type: each function takes it by `&mut` or `&`. */
+const OPENED_BY_SHARING: Record<string, string> = {
+  [`${ADDR2}::package::UpgradeCap`]: "package::authorize_upgrade and commit_upgrade take it by &mut, so anyone can upgrade the package.",
+  [`${ADDR2}::coin::TreasuryCap`]: "coin::mint and mint_balance take it by &mut, so anyone can mint.",
+  [`${ADDR2}::coin::DenyCap`]: "coin::deny_list_add takes it by &mut, so anyone can freeze holders.",
+  [`${ADDR2}::coin::DenyCapV2`]: "coin::deny_list_v2_add takes it by &mut, so anyone can freeze holders.",
+  [`${ADDR2}::package::Publisher`]: "display::new and transfer_policy::new take it by &, so anyone can create Display and TransferPolicy objects for the package's types.",
+};
+
+/** What anyone can do with a frozen high-consequence type, through the functions that take it by `&`. */
+const OPENED_BY_FREEZING: Record<string, string> = {
+  [`${ADDR2}::coin::TreasuryCap`]: "Minting needs &mut, so it is closed, but coin::update_name, update_symbol, update_description and update_icon_url, coin_registry::claim_metadata_cap and token::new_policy take it by &, so anyone can change this coin's metadata where it is not frozen or claimed, and create its token policy.",
+  [`${ADDR2}::package::Publisher`]: "display::new and transfer_policy::new take it by &, so anyone can create Display and TransferPolicy objects for the package's types.",
 };
 
 /** `0x2::coin::Coin`, in full. A look-alike from another package is NOT this. */
@@ -277,33 +306,39 @@ function classifyKind(
 }
 
 function finish(
-  m: Omit<ObjectMovement, "note" | "renounced">,
+  m: Omit<ObjectMovement, "note" | "renounced" | "opened">,
 ): ObjectMovement {
   const out: ObjectMovement = { ...m };
   const full = m.type ? baseType(m.type) : null;
 
-  // Two ways to give up a capability: transfer to an address nobody holds a
-  // key for, and public_freeze_object (-> Immutable), after which it passes
-  // only by `&`. public_share_object (-> Shared) gives it up to everyone: any
-  // transaction can pass a shared object by `&mut`, and the framework's
-  // coin::mint, deny_list_v2_add and package::authorize_upgrade are public.
+  // A capability is given up by a transfer to an address nobody holds a key
+  // for, or by public_freeze_object (-> Immutable) when every function that
+  // uses the type takes it by `&mut`. Sharing gives it to everyone: any
+  // transaction can pass a shared object by `&mut`. Freezing leaves the
+  // functions that take it by `&` open to every transaction.
   const frozen = m.to?.kind === "immutable";
   const shared = m.to?.kind === "shared";
   const sentToBurn =
     m.to?.kind === "address" && !!m.to.address && isUnspendableAddress(m.to.address);
-  if (sentToBurn || frozen) out.renounced = true;
+  const isCap = m.category === "capability" || out.high_consequence;
+  if (sentToBurn || (frozen && full !== null && FREEZE_RENOUNCES.has(full))) out.renounced = true;
+  else if (isCap && (shared || frozen)) out.opened = true;
 
   if (out.high_consequence && full) {
     const power = HIGH_CONSEQUENCE_TYPES[full]!;
-    if (shared) {
-      out.note = `Made shared. ${power} Any transaction can pass a shared object to the framework's public functions for this type, so anyone can now use that authority. This opens it to everyone; it is not a renunciation.`;
+    if (out.opened) {
+      out.note = shared
+        ? `Made shared. ${power} ${OPENED_BY_SHARING[full]} This opens it to everyone; it is not a renunciation.`
+        : `Frozen. ${OPENED_BY_FREEZING[full]} This leaves it open to everyone; it is not a renunciation.`;
     } else if (!out.renounced) {
       out.note = power;
     } else if (sentToBurn) {
       out.note = `Sent to ${m.to?.address}, an address nobody holds a key for. ${power} Those rights are RENOUNCED, not transferred — a deliberate act and a reduction in risk, not a warning.`;
     } else {
-      out.note = `Made ${m.to?.kind}. ${power} Nobody holds it exclusively any more, so those rights are RENOUNCED rather than transferred — a reduction in risk, not a warning.`;
+      out.note = `Made ${m.to?.kind}. ${power} Every function that exercises it takes it by &mut, which a frozen object cannot give, so those rights are RENOUNCED rather than transferred: a reduction in risk, not a warning.`;
     }
+  } else if (out.opened) {
+    out.note = `Made ${m.to?.kind}: any transaction can now pass it to the functions that take it${frozen ? " by &" : ""}. What that grants depends on each function's own checks.`;
   }
 
   if (out.kind === "appeared") {
@@ -725,6 +760,10 @@ export function custodyChanges(movements: ObjectMovement[]): ObjectMovement[] {
     // indistinguishable from one being shared, and the former is almost all of
     // them. A destination that is a party is still worth reporting.
     if (m.kind === "appeared") return isPartyOwner(m.to);
+    // A capability can only be shared in the transaction that creates it
+    // (transfer::public_share_object aborts on an older object), so opening
+    // one to everyone at creation is a change of control too.
+    if (m.kind === "created") return m.opened === true;
     return m.kind === "unwrapped" || m.kind === "wrapped";
   });
 }
@@ -775,6 +814,8 @@ export interface ObjectFlowSummary {
   capability_transfers: ObjectMovement[];
   /** Capabilities sent somewhere unspendable — a risk reduction, not a warning. */
   renounced_capabilities: ObjectMovement[];
+  /** Capabilities made shared or frozen while still usable: open to every transaction. */
+  opened_capabilities: ObjectMovement[];
   /** True when a transaction reported more object changes than were read. */
   truncated?: boolean;
   note: string;
@@ -793,8 +834,9 @@ export function summarizeObjectFlow(
   const transfers = custodyChanges(movements);
   if (transfers.length === 0 && !opts?.truncated) return null;
 
-  const caps = transfers.filter((m) => m.category === "capability" && !m.renounced);
+  const caps = transfers.filter((m) => m.category === "capability" && !m.renounced && !m.opened);
   const renounced = transfers.filter((m) => m.category === "capability" && m.renounced);
+  const opened = transfers.filter((m) => m.opened);
 
   const parts: string[] = [];
   if (caps.length > 0) {
@@ -808,7 +850,13 @@ export function summarizeObjectFlow(
       `${renounced.length} capability object${renounced.length === 1 ? " was" : "s were"} sent to an address nobody holds a key for. Those rights are renounced rather than transferred — a deliberate act and a reduction in risk, not a warning.`,
     );
   }
-  if (transfers.length > caps.length + renounced.length) {
+  if (opened.length > 0) {
+    const names = [...new Set(opened.map((c) => c.type_short))].join(", ");
+    parts.push(
+      `${opened.length} capability object${opened.length === 1 ? " was" : "s were"} made shared or frozen (${names}). Any transaction can now pass ${opened.length === 1 ? "it" : "them"} to the functions that take ${opened.length === 1 ? "it" : "them"}, so the authority is open to everyone rather than renounced; each movement's note says what that allows.`,
+    );
+  }
+  if (transfers.length > caps.length + renounced.length + opened.length) {
     parts.push(
       `Non-coin objects changed hands, which produces no balance change and so does not appear in the hop amounts. Value carried as an NFT, a kiosk item or a DeFi position moves this way.`,
     );
@@ -824,6 +872,7 @@ export function summarizeObjectFlow(
     transfers,
     capability_transfers: caps,
     renounced_capabilities: renounced,
+    opened_capabilities: opened,
     ...(opts?.truncated ? { truncated: true } : {}),
     note: parts.join(" "),
   };

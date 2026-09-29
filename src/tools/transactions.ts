@@ -214,6 +214,7 @@ function movementOut(m: ObjectMovement) {
     category: m.category,
     ...(m.high_consequence ? { high_consequence: true } : {}),
     ...(m.renounced ? { renounced: true } : {}),
+    ...(m.opened ? { opened: true } : {}),
     ...(m.source_unrecorded ? { source_unrecorded: true } : {}),
     ...(m.protocol ? { protocol: m.protocol } : {}),
     // The note states what a capability actually grants. `high_consequence:

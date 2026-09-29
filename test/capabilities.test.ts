@@ -64,6 +64,15 @@ describe("classifyCapabilityRisk — upgrade cap", () => {
     expect(shared("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("high");
     expect(shared("deny", `${P2}::coin::DenyCapV2<0xabc::t::T>`)).toBe("high");
   });
+
+  // A frozen object passes only by &: the &mut functions close, the & ones
+  // open to everyone.
+  it("rates a frozen UpgradeCap or DenyCap as renounced, and a frozen TreasuryCap as open to metadata changes", () => {
+    const frozen = (kind: "upgrade" | "treasury" | "deny", type: string) => classifyCapabilityRisk({ kind, type, owner: "immutable" }).risk;
+    expect(frozen("upgrade", `${P2}::package::UpgradeCap`)).toBe("info");
+    expect(frozen("deny", `${P2}::coin::DenyCapV2<0xabc::t::T>`)).toBe("info");
+    expect(frozen("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("medium");
+  });
 });
 
 describe("classifyCapabilityRisk — a cap gone from top level with an unread end", () => {

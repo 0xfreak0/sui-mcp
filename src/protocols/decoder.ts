@@ -1,4 +1,4 @@
-import type { GrpcTypes } from "@mysten/sui/grpc";
+import { GrpcTypes } from "@mysten/sui/grpc";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { coinScale, displayCoin, type CoinScale } from "../utils/valuation.js";
@@ -18,6 +18,74 @@ export interface DecodedTransaction {
     formatted: string | null;
     raw_type: string;
   }[];
+  /** The swap hops of router routes, in PTB order ({@link RouteHop}). */
+  route_hops: RouteHop[];
+}
+
+/**
+ * One swap hop of a router route. A path runs from one path-starting call to
+ * the next, so hops of different paths never chain into each other.
+ */
+export interface RouteHop {
+  /** Index of the hop's line in `actions`. */
+  action: number;
+  /** Index of the hop's command in the PTB. */
+  command: number;
+  /** The route path it belongs to, counted in PTB order from 0; -1 before any path start. */
+  path: number;
+  coin_in: string;
+  coin_out: string;
+  /**
+   * The two coins the route declares, when its path-starting call takes the
+   * result of a call with exactly two type arguments (the router's opening
+   * call, naming the coin the route takes in and the coin it gives out).
+   * Null when the path start takes no such result.
+   */
+  route_coins: [string, string] | null;
+}
+
+/** A run of consecutive hops in one path that starts from a coin and returns to it. */
+export interface RouteLoop {
+  /** The loop's hops, in order: the first takes the coin in, the last gives it back. */
+  hops: RouteHop[];
+  /**
+   * The loop is every hop of its path and the route declares the loop's coin
+   * as both what it takes in and what it gives out: the round trip is the
+   * path's whole share of the trade the route was asked for.
+   */
+  whole_trade: boolean;
+}
+
+/**
+ * The round trips inside router paths: within one path, a run of consecutive
+ * hops, each taking in the coin the previous one gave out, whose last hop
+ * gives out the coin its first hop took in. From each hop the shortest such
+ * run is taken, and the search resumes after it, so loops never overlap.
+ */
+export function routeLoops(hops: RouteHop[]): RouteLoop[] {
+  const loops: RouteLoop[] = [];
+  let i = 0;
+  while (i < hops.length) {
+    let end = -1;
+    for (let j = i; j < hops.length && hops[j].path === hops[i].path; j++) {
+      if (j > i && hops[j].coin_in !== hops[j - 1].coin_out) break;
+      if (hops[j].coin_out === hops[i].coin_in) {
+        end = j;
+        break;
+      }
+    }
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    const loop = hops.slice(i, end + 1);
+    const coin = loop[0].coin_in;
+    const route = loop[0].route_coins;
+    const pathHops = hops.filter((h) => h.path === loop[0].path).length;
+    loops.push({ hops: loop, whole_trade: loop.length === pathHops && route !== null && route[0] === coin && route[1] === coin });
+    i = end + 1;
+  }
+  return loops;
 }
 
 /** One address's net change in one coin, signed: negative means it paid. */
@@ -321,8 +389,11 @@ export function decodeTransaction(
   const markers = routeMarkers(commands, hasCoinEvidence);
   // The coin a route's path holds: its start coin, then each hop's output.
   let pathCoin: string | null = null;
+  let path = -1;
+  let routeCoins: [string, string] | null = null;
+  const routeHops: RouteHop[] = [];
 
-  for (const cmd of commands) {
+  for (const [index, cmd] of commands.entries()) {
     const c = cmd.command;
     switch (c.oneofKind) {
       case "moveCall": {
@@ -347,14 +418,27 @@ export function decodeTransaction(
         }
 
         const routed = typeArgs.length >= 2 && markers.has(typeArgs[0]);
-        if (routed && typeArgs.length === 2 && !op) pathCoin = typeArgs[1];
+        if (routed && typeArgs.length === 2 && !op) {
+          pathCoin = typeArgs[1];
+          path++;
+          routeCoins = null;
+          const opener = (mc.arguments ?? []).find((a) => a.kind === GrpcTypes.Argument_ArgumentKind.RESULT);
+          const openerCall = opener?.result !== undefined ? commands[opener.result]?.command : undefined;
+          if (openerCall?.oneofKind === "moveCall" && openerCall.moveCall.typeArguments?.length === 2 && !markers.has(openerCall.moveCall.typeArguments[0])) {
+            const [coinIn, coinOut] = openerCall.moveCall.typeArguments;
+            routeCoins = [coinIn, coinOut];
+          }
+        }
 
         if (op) {
           let args = typeArgs;
           if (op.action === "swap" && routed) {
             const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence);
             args = hop ?? typeArgs.slice(1);
-            if (hop) pathCoin = hop[1];
+            if (hop) {
+              pathCoin = hop[1];
+              routeHops.push({ action: actions.length, command: index, path, coin_in: hop[0], coin_out: hop[1], route_coins: routeCoins });
+            }
           } else if (op.action === "swap") {
             args = swapDirection(
               typeArgs,
@@ -411,5 +495,6 @@ export function decodeTransaction(
     protocols: [...protocols],
     actions,
     token_flow: tokenFlow,
+    route_hops: routeHops,
   };
 }

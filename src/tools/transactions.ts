@@ -8,7 +8,8 @@ import { errorResult } from "../utils/errors.js";
 import { withArchiveFallback } from "../utils/archive-fallback.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { gqlQuery } from "../clients/graphql.js";
-import { collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
+import { collectPackageIds, decodeTransaction, routeLoops, type RouteHop } from "../protocols/decoder.js";
+import { describeRouteLoops } from "../utils/route-loop-cost.js";
 import { prefetchProtocolNames, lookupProtocol, lookupProtocolDisplay, readProtocolCustody, type ProtocolCustodyRead } from "../protocols/registry.js";
 import { originIncomplete, protocolsSignedBy } from "../protocols/package-custody.js";
 import { fetchEventJson, packageOfEventType } from "../utils/event-json.js";
@@ -226,7 +227,7 @@ function movementOut(m: ObjectMovement) {
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. An event field holding a number in the top half of the u256 range also gets its two's-complement reading under `signed_readings` (a signed fee or PnL stored unsigned), and with detail: 'full' a u64, u128 or u256 pure value with its top bit set carries `signed_value`Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. A package with no curated or Move Registry name is named after the curated protocol whose key published it (`protocols_unchecked` lists packages whose publisher was not read), and a `balance_changes` row whose address signed a curated protocol's packages carries `publisher_key_of`, which shows a fee paid to that team's keyFunds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender; coins are never listed there, and when no other object moved `coins_delivered_to` names the addresses other than the sender that gained coins. `mutated_capabilities` lists a sender-owned capability the call mutated in place (a nonce, a rate limit) without changing its owner — the authorising capability itself, present even when nothing changed hands. Pass detail: 'full' for the PTB's inputs, each command's arguments resolved (the object with its version and type, a pure value decoded with the called function's declared type, the command a Result came from) and the id and type of every changed object by kind.",
+    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields — so there is no need to hand-write GraphQL to read an event's values. An event field holding a number in the top half of the u256 range also gets its two's-complement reading under `signed_readings` (a signed fee or PnL stored unsigned), and with detail: 'full' a u64, u128 or u256 pure value with its top bit set carries `signed_value`Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. A package with no curated or Move Registry name is named after the curated protocol whose key published it (`protocols_unchecked` lists packages whose publisher was not read), and a `balance_changes` row whose address signed a curated protocol's packages carries `publisher_key_of`, which shows a fee paid to that team's keyFunds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender; coins are never listed there, and when no other object moved `coins_delivered_to` names the addresses other than the sender that gained coins. `mutated_capabilities` lists a sender-owned capability the call mutated in place (a nonce, a rate limit) without changing its owner — the authorising capability itself, present even when nothing changed hands. `route_loops` appears when a router path swaps a coin away and back within the route (USDC → USDT → USDC before the real hop): the `actions` indices of the loop, its coins, and what the round trip cost by the pools' own swap events, or null with the reason. Pass detail: 'full' for the PTB's inputs, each command's arguments resolved (the object with its version and type, a pure value decoded with the called function's declared type, the command a Result came from) and the id and type of every changed object by kind.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -340,6 +341,7 @@ export function registerTransactionTools(server: McpServer) {
           protocols: [] as string[],
           actions: [`System transaction: ${kind.data.oneofKind}`],
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
+          route_hops: [] as RouteHop[],
         };
       } else {
         kindUnreadable = true;
@@ -347,6 +349,7 @@ export function registerTransactionTools(server: McpServer) {
           protocols: [] as string[],
           actions: [] as string[],
           token_flow: [] as { coin: string; amount: string; raw_type: string }[],
+          route_hops: [] as RouteHop[],
         };
       }
 
@@ -526,6 +529,23 @@ export function registerTransactionTools(server: McpServer) {
         };
       });
       const custodyUnread = publishers ? originIncomplete(publishers.unread) : null;
+      // Round trips inside a router path and what each cost, from the pools'
+      // own swap events in this response. Absent when no path loops or the
+      // transaction failed, since a failed one's swaps were reverted.
+      const succeeded = effects?.status?.success === true;
+      const loops = succeeded ? routeLoops(decoded.route_hops) : [];
+      if (loops.length) await prefetchCoinScale(loops.map((l) => l.hops[0].coin_in));
+      const routeLoopReports = describeRouteLoops(loops, decoded.route_hops, {
+        success: succeeded,
+        commands: kind?.data.oneofKind === "programmableTransaction" ? kind.data.programmableTransaction.commands : [],
+        events:
+          rawEvents.length === 0
+            ? []
+            : parsedUsable
+              ? rawEvents.map((e, i) => ({ type: e.eventType ?? "", package_id: e.packageId, module: e.module, json: parsed![i].json }))
+              : { unread: fieldBudget === 0 ? "max_event_field_bytes: 0 skipped the event fields" : "the transaction's event fields could not be read" },
+        objects: changedObjects,
+      });
 
       const body: Record<string, unknown> = {
         digest: tx?.digest,
@@ -562,6 +582,7 @@ export function registerTransactionTools(server: McpServer) {
           : {}),
         actions: decoded.actions,
         ...(commandCount !== null ? { command_count: commandCount } : {}),
+        ...(routeLoopReports.length ? { route_loops: routeLoopReports } : {}),
         ...(resolved
           ? {
               // Filled below, once the rest of the response is sized.

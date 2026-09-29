@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+- **`get_transaction` explains a round trip inside a swap route.** When a
+  router path swaps a coin away and back (USDC → USDT → USDC, then USDC →
+  ZUK), the result carries `route_loops`: the `actions` indices of the loop,
+  its coins, what went in and what came back, and the difference as `cost`,
+  read from the pools' own swap events and matched to each hop by command,
+  coins and direction. The Cetus, Full Sail, Bluefin, Momentum and FlowX CLMM
+  swap events are read; otherwise the cost is null and `cost_unknown` says
+  why (no events, fields not read, a hop unmatched, amounts that do not
+  chain), since the sender's balance changes net the whole transaction. A
+  negative cost means more came back than went in. When the route itself
+  starts and ends in the loop's coin and the loop is its whole path, the loop
+  is marked `whole_trade` and reported as that path's share of the trade,
+  with gas and any fee the router charged outside the pools not counted.
+  Failed transactions and transactions without a loop are unchanged.
+
 ### Fixed
 - **A wrapped capability is no longer reported as destroyed.**
   `analyze_package` and the capability audit read a cap that no longer exists

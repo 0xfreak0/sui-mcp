@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildGraph, mapChanges, pickAffected, pickSmoke, probePlan } from "../scripts/probe/lib/tiers.mjs";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildGraph, callsTool, mapChanges, ORACLE_PROBES, pickAffected, pickSmoke, probePlan } from "../scripts/probe/lib/tiers.mjs";
+import { registeredTools } from "./helpers/tool-names.js";
 
 /** A small synthetic server source tree. */
 const files = new Map<string, string>([
@@ -135,8 +139,27 @@ describe("probe scripts per tier", () => {
     expect([...plan!.plan.keys()]).toEqual(["adversarial.mjs"]);
   });
 
+  it("affected runs an oracle probe whenever a tool it checks is reached, even one a case check names", () => {
+    const oracles = { "oracle-pass.mjs": ["alpha_one"] };
+    const hit = { full: null, tools: new Set(["alpha_one"]), cases: new Set(), scripts: new Set<string>(), detectorLabels: false };
+    expect([...probePlan("affected", { tools, caseTools, probes, reach: hit, oracles })!.plan.keys()]).toEqual(["oracle-pass.mjs"]);
+    const miss = { ...hit, tools: new Set(["tool_x"]) };
+    expect([...probePlan("affected", { tools, caseTools, probes, reach: miss, oracles })!.plan.keys()]).toEqual(["surface-pass.mjs"]);
+  });
+
   it("affected defers to the full tier when the change reaches everything", () => {
     const r = { full: "package.json", tools: new Set(), cases: new Set(), scripts: new Set(), detectorLabels: false };
     expect(probePlan("affected", { tools, caseTools, probes, reach: r })).toBeNull();
+  });
+});
+
+describe("oracle probes", () => {
+  it("list exactly the tools their scripts call", () => {
+    const names = registeredTools().map((t) => t.name);
+    const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "probe");
+    for (const [file, listed] of Object.entries(ORACLE_PROBES)) {
+      const src = readFileSync(join(dir, file), "utf8");
+      expect([...listed].sort(), file).toEqual(names.filter((t) => callsTool(src, t)).sort());
+    }
   });
 });

@@ -214,7 +214,11 @@ TradeCap` or 0x2's `kiosk::KioskOwnerCap`, is reported as a count in
 `user_held_types` instead of one entry per holder. A struct whose instance
 scan fails outright (a timeout, a 429 after retries), or whose defining
 package version cannot be read, is named in `incomplete_scans` rather than
-silently read as having no live instances.
+silently read as having no live instances. A cap another object holds, such as a
+TreasuryCap a launchpad keeps as a dynamic object field of its bonding curve,
+reads owner `object`, with the holding object in `owner_address` and its type
+in `owner_type`, and is rated like a wrapped cap: that object's module decides
+who can use it.
 
 Mint authority is looked up for the coins the package defines, including one
 whose TreasuryCap the publish transaction never showed at top level:
@@ -236,7 +240,9 @@ its supply as fixed or burn-only (recording that consumes the cap), or the
 coin is SUI, whose Supply was destroyed at genesis.
 
 `analyze_package` also reports `upgrade_cap`, the cap's owner-change count and
-latest change. `get_upgrade_history` joins every version to its publisher, the
+latest change. A package whose publish transaction passed its new UpgradeCap
+to `0x2::package::make_immutable` never had a cap object: both tools say it is
+immutable and name that transaction. `get_upgrade_history` joins every version to its publisher, the
 publisher's signing scheme and the cap holder at that moment, and `as_of`
 answers who held upgrade authority at a given time:
 

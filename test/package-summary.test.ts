@@ -112,4 +112,23 @@ describe("groupCapabilities", () => {
     expect(note).not.toContain("the holder of each object in holders");
     expect(note).toMatch(/nobody holds a key/);
   });
+
+  it("folds caps held by different objects under a note that names none of them, keeping each holder and its type", () => {
+    const held = (id: string, parent: string, parentType: string) => {
+      const c = cap({ object_id: id, type: "0x1::vault::AdminCap", owner: "object", owner_address: parent, owner_type: parentType, risk: "low" });
+      return { ...c, note: classifyCapabilityRisk({ kind: c.kind, type: c.type, owner: c.owner, ownerAddress: parent, ownerType: parentType }).note };
+    };
+    const [group] = groupCapabilities([held("0x1", "0xp1", "0x1::vault::Vault"), held("0x2", "0xp2", "0x1::vault::Vault")]);
+    expect(group).toMatchObject({
+      owner: "object",
+      count: 2,
+      holders: [
+        { object_id: "0x1", owner_address: "0xp1", owner_type: "0x1::vault::Vault" },
+        { object_id: "0x2", owner_address: "0xp2", owner_type: "0x1::vault::Vault" },
+      ],
+    });
+    expect(group.note).toContain("is held by another object;");
+    expect(group.note).not.toContain("0xp1");
+    expect(group.note).not.toContain("holder of each object");
+  });
 });

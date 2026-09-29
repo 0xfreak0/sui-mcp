@@ -973,6 +973,18 @@ check that fails there runs again alone on a fresh server before it counts,
 since a tool with a wall-clock budget (`SCAN_TIME_BUDGET_MS` in
 `get_top_holders`) reads less while it waits on a shared window.
 
+`oracle-pass.mjs` checks answers on subjects drawn at random each run, from
+the effects version 1 era, later and the newest checkpoints, router
+transactions and registry coins, against the same fact read from the chain
+by another path: swap labels against pool events, object ends and object
+changes against GraphQL `objectChanges` (effects version 1 against its own
+BCS), mint authority against the registry and a `TreasuryCap<T>` type query,
+flows against `balanceChanges`, cap owners against live owners. An oracle
+never reads truth through the helper the tool uses, and a tool change that
+reaches `ORACLE_PROBES` in `lib/tiers.mjs` runs it in the affected tier. A
+disagreement fails it unless its `KNOWN_DEFECTS` lists it; `--subjects`
+pins subjects and `--dist` runs another build.
+
 `detector-pass.mjs` scores the anomaly detectors of `analyze_attack_tx` and
 `decode_ptb` (by digest, and on the transaction's own BCS as the pre-sign
 mode, `decode_ptb_bytes`) on `cases/detectors.json`: 64 exploit and attack
@@ -3076,6 +3088,17 @@ Seven rules, every one of them a bug that shipped to `main` first:
   checks it against the vendored framework source and fails on a callable
   function the table does not list; a claim about the framework without a
   `FrameworkClaim` is not checked by anything.
+- **A capability another object owns reads like a wrapped one.** An
+  `ObjectOwner` cap (a dynamic object field, a child object) is live, and
+  reaching it takes the parent's `UID`, which only the parent's module can
+  give, so that module decides who can use it: `capabilities.ts` reports
+  owner `object` with the same risk a wrapped cap of that kind gets, and
+  names the holder in `owner_address` and its type in `owner_type`. A dynamic
+  object field's direct owner is its `dynamic_field::Field`, so the object
+  that owns the field is named instead: SUIPUMP's TreasuryCap
+  (`0xeb195778…::suipump::SUIPUMP`, cap `0x6f47e074…`) is a field of the
+  shared `bonding_curve::Curve<SUIPUMP>` `0x89fc98c1…`. `object-flow.ts`
+  already reads an object owner as a party.
 - **Classify a capability BEFORE a position name.** `POSITION_NAME` is
   unanchored and matches `Account`, `Obligation`, `Receipt`, `Vault` — testing
   it first turned `custodian_v2::AccountCap` and
@@ -4539,6 +4562,18 @@ must be answerable from these tools, and no case check calls
   holder at an upgrade is the cap's INPUT owner, and `get_upgrade_history`'s
   usual holder is measured in time held, not versions, so an eleven-minute
   loan that shipped one version does not become the norm.
+- **A package can be immutable from its publish.** A publish PTB that passes
+  its Publish command's result to `0x2::package::make_immutable` creates and
+  destroys the UpgradeCap in one transaction, so no object change shows a cap
+  (`0xeb195778…::suipump`, publish `4nDW27Ki…`). `madeImmutableAtPublish`
+  (`object-end.ts`) reads the publish's commands and claims this only when
+  `make_immutable` takes the result of every Publish command: a PTB may publish
+  several packages (`6Uf8naj2…` publishes three and destroys each cap, one of
+  them `0x17fa0d81…`), and which Publish made which package is not stated. `get_upgrade_history`
+  then reports state `deleted` with `cap_end` at the publish, and the
+  capability audit an UpgradeCap entry with `object_id: null`, owner `burned`
+  and `destroyed_in_tx`. A package whose publish shows no cap and made no such
+  call keeps "custody unknown": that is not evidence of immutability.
 - `GrpcTypes` must be imported as value (not `import type`) when using enum values
 - GraphQL max page size: 50
 - **Guard the cursor on every paginated walk.** A connection can claim

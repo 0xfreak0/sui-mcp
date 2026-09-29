@@ -250,8 +250,13 @@ export function evaluate(
 
     // A transaction that moved no coin still matters — an NFT or a capability
     // moves without one, which is exactly what object flow is for.
+    // A capability the watched address opened at creation has no previous
+    // holder; the watched address is the sender that created it.
     const moved = custodyChanges(tx.object_movements ?? []).filter(
-      (m) => m.from?.address === entry.address || m.to?.address === entry.address,
+      (m) =>
+        m.from?.address === entry.address ||
+        m.to?.address === entry.address ||
+        (m.kind === "created" && tx.sender === entry.address),
     );
     const capabilities = moved.filter((m) => m.high_consequence && !m.renounced);
     if (capabilities.length) reasons.push("capability_moved");

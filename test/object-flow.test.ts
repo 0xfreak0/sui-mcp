@@ -342,26 +342,46 @@ describe("appeared is not custody unless it lands on a party", () => {
   });
 });
 
-describe("renouncing has three forms, not one", () => {
-  const cap = `${P2}::coin::TreasuryCap<0xa::t::T>`;
-  const to = (owner: unknown) =>
-    readObjectMovements([moved("0xcap", cap, addrOwner(A), owner)])[0]!;
+describe("giving up a capability: who can use it afterwards", () => {
+  const TREASURY = `${P2}::coin::TreasuryCap<0xa::t::T>`;
+  const UPGRADE = `${P2}::package::UpgradeCap`;
+  const ADMIN = "0xa::vault::AdminCap";
+  const IMMUTABLE = { __typename: "Immutable" };
+  const SHARED = { __typename: "Shared" };
+  const to = (type: string, owner: unknown) => readObjectMovements([moved("0xcap", type, addrOwner(A), owner)])[0]!;
+  // public_share_object only shares an object created in the same transaction.
+  const createdShared = (type: string) =>
+    readObjectMovements([{ address: "0xcap", idCreated: true, idDeleted: false, outputState: state(type, SHARED) }])[0]!;
 
-  it("treats freezing as renunciation", () => {
-    const m = to({ __typename: "Immutable" });
-    expect(m.renounced).toBe(true);
-    expect(m.note).toMatch(/RENOUNCED rather than transferred/);
-    expect(summarizeObjectFlow([m])!.capability_transfers).toHaveLength(0);
+  // authorize_upgrade and commit_upgrade take the cap by &mut, which a frozen
+  // object cannot give.
+  it("renounces an UpgradeCap by freezing it", () => {
+    const flow = summarizeObjectFlow([to(UPGRADE, IMMUTABLE)])!;
+    expect(flow.renounced_capabilities).toHaveLength(1);
+    expect(flow.opened_capabilities).toHaveLength(0);
   });
 
-  it("treats sharing as renunciation", () => {
-    const m = to({ __typename: "Shared" });
-    expect(m.renounced).toBe(true);
-    expect(summarizeObjectFlow([m])!.renounced_capabilities).toHaveLength(1);
+  // coin::update_* and token::new_policy take a TreasuryCap by &, and most
+  // custom checks take `_: &AdminCap`.
+  it("opens a frozen TreasuryCap or custom cap to every transaction instead of renouncing it", () => {
+    for (const type of [TREASURY, ADMIN]) {
+      const flow = summarizeObjectFlow([to(type, IMMUTABLE)])!;
+      expect(flow.renounced_capabilities).toHaveLength(0);
+      expect(flow.opened_capabilities).toHaveLength(1);
+      expect(flow.capability_transfers).toHaveLength(0);
+    }
+  });
+
+  it("reports a capability shared at creation as opened to everyone", () => {
+    const m = createdShared(TREASURY);
+    expect(custodyChanges([m])).toHaveLength(1);
+    const flow = summarizeObjectFlow([m])!;
+    expect(flow.opened_capabilities).toHaveLength(1);
+    expect(flow.renounced_capabilities).toHaveLength(0);
   });
 
   it("still treats a transfer to a live address as a handover", () => {
-    expect(to(addrOwner(B)).renounced).toBeUndefined();
+    expect(summarizeObjectFlow([to(TREASURY, addrOwner(B))])!.capability_transfers).toHaveLength(1);
   });
 });
 

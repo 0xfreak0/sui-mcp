@@ -233,6 +233,13 @@ describe("prompts", () => {
     await expect(client.getPrompt({ name: "is_this_token_safe", arguments: {} })).rejects.toThrow();
   });
 
+  // The protocol makes `arguments` optional in prompts/get.
+  it("renders a prompt whose arguments are all optional when the request has no arguments field", async () => {
+    const res = await client.getPrompt({ name: "was_i_scammed" });
+    expect(res.messages).toHaveLength(1);
+    await expect(client.getPrompt({ name: "who_is_this_wallet" })).rejects.toThrow();
+  });
+
   it("renders the task with the skill's method", async () => {
     const res = await client.getPrompt({ name: "investigate_address", arguments: { address: ADDR } });
     const text = (res.messages[0].content as { text: string }).text;
@@ -256,20 +263,16 @@ describe("prompts", () => {
   // A prompt that names a tool the server lacks, an argument its schema
   // rejects, or a tool whose profile is off without saying how to turn it on
   // sends the model into a failed call.
-  it("call only registered tools, with arguments and values their schemas accept, enabling each tool's profile", () => {
+  it("call only registered tools, with arguments and values their schemas accept, enabling each tool's profile", async () => {
     const defaultTools = toolsForProfiles(DEFAULT_PROFILES);
     const profiled = allProfiledTools();
+    const mentions = (text: string) => tools.map((t) => t.name).filter((t) => new RegExp(`\\b${t}\\b`).test(text));
     for (const name of Object.keys(PROMPTS)) {
       const task = PROMPTS[name].task(promptArgs(name, true));
       const calls = toolCallsIn(task);
       if (calls.length === 0) continue;
       // Every tool the task mentions is spelled as a call, so every one is checked.
-      const mentioned = tools.map((t) => t.name).filter((t) => new RegExp(`\\b${t}\\b`).test(task));
-      expect(mentioned.filter((t) => !calls.some((c) => c.tool === t)), name).toEqual([]);
-      const enabled = calls
-        .filter((c) => c.tool === "enable_tools")
-        .flatMap((c) => c.args.filter((a) => a.name === "profile").map((a) => a.value as ProfileName));
-      const reachable = new Set([...defaultTools, ...enabled.flatMap((p) => PROFILES[p] ?? [])]);
+      expect(mentions(task).filter((t) => !calls.some((c) => c.tool === t)), name).toEqual([]);
       for (const call of calls) {
         const tool = tools.find((t) => t.name === call.tool);
         expect(tool, `${name}: ${call.tool}`).toBeDefined();
@@ -279,7 +282,38 @@ describe("prompts", () => {
           const allowed = props[arg.name]?.enum;
           if (allowed && arg.value !== undefined) expect(allowed, `${name}: ${call.tool}(${arg.name}: ${arg.value})`).toContain(arg.value);
         }
-        if (profiled.has(call.tool)) expect(reachable.has(call.tool), `${name}: ${call.tool} needs enable_tools`).toBe(true);
+      }
+      // Every tool the rendered prompt names, carried skill text included, is
+      // reachable through the profiles it enables.
+      const enabled = calls
+        .filter((c) => c.tool === "enable_tools")
+        .flatMap((c) => c.args.filter((a) => a.name === "profile").map((a) => a.value as ProfileName));
+      const reachable = new Set([...defaultTools, ...enabled.flatMap((p) => PROFILES[p] ?? [])]);
+      const res = await client.getPrompt({ name, arguments: promptArgs(name, true) });
+      const content = res.messages[0].content;
+      const rendered = content.type === "text" ? content.text : "";
+      const unreachable = mentions(rendered).filter((t) => profiled.has(t) && !reachable.has(t));
+      expect(unreachable, `${name} names tools it never enables`).toEqual([]);
+    }
+  });
+
+  // A step marks the profile its tools need, and the model enables only that
+  // one when it reaches the step, so a wrong mark leaves the call unavailable.
+  it("mark each step outside the default profile with a profile that holds its tools", () => {
+    const defaultTools = toolsForProfiles(DEFAULT_PROFILES);
+    for (const name of Object.keys(PROMPTS)) {
+      const steps: string[] = [];
+      for (const line of PROMPTS[name].task(promptArgs(name, true)).split("\n")) {
+        if (/^\d+\. /.test(line)) steps.push(line);
+        else if (/^\s+\S/.test(line) && steps.length > 0) steps[steps.length - 1] += `\n${line}`;
+      }
+      for (const step of steps) {
+        const marks = [...step.matchAll(/\((forensics|developer|market)\b/g)].map((m) => m[1] as ProfileName);
+        for (const call of toolCallsIn(step)) {
+          if (defaultTools.has(call.tool)) continue;
+          const covered = marks.some((p) => (PROFILES[p] as readonly string[]).includes(call.tool));
+          expect(covered, `${name}: ${call.tool} in a step marked ${marks.join(",") || "nothing"}`).toBe(true);
+        }
       }
     }
   });

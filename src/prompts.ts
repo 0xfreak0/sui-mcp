@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { markdownSections } from "./utils/markdown-sections.js";
+import { GetPromptRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -13,8 +14,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  * the same relative URL resolves from either.
  *
  * The investigation prompts carry the method at length. The everyday prompts
- * answer one question a non-investigator asks, so they carry at most two short
- * sections and name each tool call as `tool_name(arg, arg: value)`, which the
+ * answer one question a non-investigator asks, so they carry at most one short
+ * section and name each tool call as `tool_name(arg, arg: value)`, which the
  * tests check against the registered tools' schemas.
  */
 export const SKILL_URL = new URL("../.claude/skills/sui-forensics/SKILL.md", import.meta.url);
@@ -156,19 +157,21 @@ export const PROMPTS: Record<string, PromptSpec> = {
       { name: "address", description: "Your wallet address (0x…) or SuiNS name.", required: false },
       { name: "digest", description: "The digest of the transaction you suspect.", required: false },
     ],
-    sections: ["An address's rendering is not its identity"],
+    sections: [],
     task: ({ address, digest, network }) =>
       [
         address || digest
           ? `Work out whether the user lost funds to a scam, from ${[address && `their wallet ${address}`, digest && `the transaction ${digest}`].filter(Boolean).join(" and ")}. ${networkLine(network)}`
           : "The user thinks they were scammed but gave neither a wallet address nor a transaction digest. Ask for either one, and wait for the answer before calling any tool.",
-        enableLine("forensics", "developer"),
+        enableLine("forensics"),
         "",
         "1. Find the transaction. With a digest, go to step 2. With only a wallet, `get_transaction_history(address, limit: 20)` lists its recent transactions, newest first: look for value leaving that the user did not expect, and read `address_poisoning` for a lookalike of an address the user pays. When several transactions fit, ask the user which one.",
-        "2. What left: `get_transaction(digest)`. `balance_changes` gives the coins each address lost or gained, and `object_transfers` each object that changed hands (an NFT, staked SUI, a capability such as a KioskOwnerCap or an AdminCap) and where it went. `authorization` says who signed. When the wallet only received something unknown there (a coin or an NFT), nothing was taken in it: check the coin with `analyze_token(query, include_holders: false)` for `flagged_by`, and tell the user not to act on a link or claim in its name. When it is a plain transfer the user sent to an address they believed they knew, check for address poisoning: `get_transaction_history(address, limit: 20)` on the sender compares every address on that page in `address_poisoning`, and the user can compare the address they meant to pay with the recipient in full.",
-        "3. Drainer check (developer): `decode_ptb(digest)`. In `anomalies`, `blocklisted-package-call` means the transaction called a package on the Sui wallet scam blocklist, and `transfers-to-non-sender` names the coins and objects it handed to another address.",
-        "4. Standing access: `identify_address(address)` on the wallet (the transaction's sender when the user gave only a digest). Sui has no ERC-20 style allowance: an owned coin or object moves only in a transaction the owner's account authorizes, with its own key or through an address in its alias set. `delegated_to` lists those addresses, and one the user did not add can still move what is left.",
-        "5. Where it went (forensics): `trace_funds(digest, direction: 'forward')` follows the largest flow hop by hop. Read `stop_reason` (an exchange, a bridge exit, a hub, or an address that has not moved it yet) and `address_poisoning`. At a bridge exit, `resolve_bridge_transfer(digest)` names the account on the other chain. When the trace stops at an exchange, `classify_deposit_address(address)` on the last address before it says whether that is the exchange's deposit address. Optional: `screen_address(address, direction: 'out')` on the first recipient for its exposure to labelled scam, exchange and bridge accounts.",
+        "2. What moved: `get_transaction(digest)`. `balance_changes` gives the coins each address lost or gained, and `object_transfers` each object that changed hands (an NFT, staked SUI, a capability such as a KioskOwnerCap or an AdminCap) and where it went. `authorization` says who signed. The user's wallet is the address they gave; with only a digest, it is the address that lost coins or objects here, never the sender by default, and when no address did, ask the user which address is theirs before going on.",
+        "   - When the wallet only received something (an unknown coin or NFT) and lost nothing but gas, nothing was taken in this transaction. For a coin, `analyze_token(query, include_holders: false)` gives `flagged_by`; for an NFT, `identify_address(address)` on its object id does. Tell the user not to follow a link or claim made in its name, then answer and skip steps 3 to 5.",
+        "   - When it is a plain transfer the user sent to an address they believed they knew, check for address poisoning: `get_transaction_history(address, limit: 20)` on the user's wallet compares every address on that page in `address_poisoning`, and the user can compare the address they meant to pay with the recipient in full.",
+        "3. Drainer check (forensics): `analyze_attack_tx(digest)`. In `anomalies`, `blocklisted-package-call` means the transaction called a package on the Sui wallet scam blocklist, and `transfers-to-non-sender` names the coins and objects it handed to another address.",
+        "4. Standing access: `identify_address(address)` on the user's wallet. Sui has no ERC-20 style allowance: an owned coin or object moves only in a transaction the owner's account authorizes, with its own key or through an address in its alias set. `delegated_to` lists those addresses, and one the user did not add can still move what is left.",
+        "5. Where it went (forensics): `trace_funds(digest, direction: 'forward', hops: 5)` follows the largest flow hop by hop. Read `address_poisoning` and `stop_reason`: an exchange, a bridge exit, a hub, an address that has not moved the funds yet, or the hop limit. The hop limit means the funds kept moving: trace again from the last hop's transaction before saying where they went. At a bridge exit, `resolve_bridge_transfer(digest)` names the account on the other chain. When the trace stops at an exchange, `classify_deposit_address(address)` on the last address before it says whether that is the exchange's deposit address. Optional: `screen_address(address, direction: 'out')` on the first recipient for its exposure to labelled scam, exchange and bridge accounts.",
         "6. What the user can do: keep every digest above; report to the exchange the funds reached, with the deposit address and the digests; if the user did not approve the transaction that took the funds, treat the wallet's key as exposed and move what is left to a new wallet; and if `delegated_to` names an address the user did not add, that address can still move funds.",
         "",
         EVERYDAY_ANSWER,
@@ -179,21 +182,28 @@ export const PROMPTS: Record<string, PromptSpec> = {
     description:
       "For someone deciding whether to buy or hold a coin: who can mint or freeze it, whether its code can change, who holds it, whether it trades, and whether a scam list flags it.",
     args: [{ name: "coin_type", description: "The coin type (0x…::module::NAME). A symbol works but may match several coins.", required: true }],
-    sections: ["A coin's symbol is not its identity", "A holder scan is not a ranking unless it finished"],
+    sections: ["A holder scan is not a ranking unless it finished"],
     task: ({ coin_type, network }) =>
       [
         `Assess whether the coin ${coin_type} carries the risks of a rug pull, for a user deciding whether to buy or hold it. ${networkLine(network)}`,
-        enableLine("forensics"),
+        enableLine("developer", "forensics"),
         "",
-        "1. `analyze_token(query)`: `verified` (a curated list vouches for this exact coin type), `flagged_by` (the Sui wallet scam blocklist), supply, price, `deny_list`, and a sample of holders. A symbol several coins use returns `candidates`: ask the user which coin type they mean, and never pick one for them.",
-        "2. Who can mint and change it (forensics): `analyze_package(package_id)` on the coin's package, the part of the coin type before the first `::`. In `capabilities`, the TreasuryCap's `owner` and `note` say who can mint: an address can mint at will; shared means anyone can; frozen, or sent to an address nobody holds a key for, means nobody can; wrapped means the code of the object holding it decides. When no TreasuryCap is listed, the publish stored it inside another object or the audit could not find it: say who can mint is unknown, never that nobody can. The `findings` entry `mint-authority` names the package's public functions that mint or take the TreasuryCap, and `freeze-authority` its deny list functions. A DenyCap's holder can freeze addresses. The UpgradeCap's `holder_status` says whether the code can still change (burned: never); an upgrade can add functions that use the caps the package's own objects hold. Read `flagged_by` and `root_publisher` too.",
+        "1. `analyze_token(query)`: `verified` (a curated list names this coin type as the real coin for its symbol; it says nothing about who controls or holds it), `flagged_by` (the Sui wallet scam blocklist), supply, price, `deny_list`, and a sample of holders. A symbol several coins use returns `candidates`: ask the user which coin type they mean, and never pick one for them.",
+        "2. Who can mint and change it (developer): `analyze_package(package_id)` on the coin's package, the part of the coin type before the first `::`. In `capabilities`, the TreasuryCap's `owner` and `note` say who can mint:",
+        "   - an address: that holder can mint at will; shared: anyone can; sent to an address nobody holds a key for: nobody can;",
+        "   - frozen (immutable): nobody can mint, though its name, symbol and icon may still change;",
+        "   - burned (destroyed): nobody can only when the note says the coin registry records the supply as fixed or burn-only; otherwise whatever holds the supply still can;",
+        "   - wrapped: the rules of the contract holding it decide;",
+        "   - not listed: the publish stored it inside another object, or the audit could not find it. Say who can mint is unknown, never that nobody can.",
+        "   The `findings` entry `mint-authority` names the package's public functions that mint or take the TreasuryCap, and `freeze-authority` its deny list functions. A DenyCap's holder can freeze addresses. The UpgradeCap's `owner` and `note` say whether the code can still change: burned, frozen or sent to an address nobody holds a key for, never; shared, anyone can upgrade; wrapped, the rules of the contract holding it; an address, that holder, and an upgrade can add functions that use the caps the package's own objects hold. Read `flagged_by` and `root_publisher` too.",
+        "   A coin type names its package's first version, so `findings` describe that version's code. When `lineage.latest_version` is above `lineage.version`, `identify_address(address)` on the package gives `lineage.latest_package_id`, and `analyze_package(package_id, audit_capabilities: false)` on that id reads the current code; if you skip it, say the current code's mint functions were not read.",
         "3. Optional: when an address holds the TreasuryCap, the DenyCap or the UpgradeCap, `identify_address(address)` on it says whether that power sits with one key or a multisig committee, and whether a label names the holder.",
         "4. Freezes (forensics, only when `deny_list` says the coin is regulated): `check_coin_restrictions(coin_type)` lists the frozen addresses and whether the coin is paused.",
         "5. Holders (forensics, optional when step 1's sample already answers it): `get_top_holders(type, limit: 10)`. Quote a share of supply only when `complete_ranking` is true. A holder with `owner_kind` object is a contract object, such as a pool or a vault, not a person. The deployer or its funder holding most of the supply is a lead to report.",
         "6. Liquidity: `find_pools(token_a, token_b: 'SUI')` searches Cetus, DeepBook and Turbos. No pool there leaves every other venue unchecked.",
         "7. Deployer: `identify_address(address)` on `root_publisher` for its age (`first_seen`) and any label. Optional: `get_transaction_history(address, limit: 10)` on it, to see whether it recently sold or moved the coin.",
         "",
-        "In the plain answer, say who can mint more, freeze holders or change the code (one key, a committee, nobody, or unknown), and how concentrated the holdings are.",
+        "In the plain answer, say who can mint more, freeze holders or change the code (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown), and how concentrated the holdings are.",
         "",
         EVERYDAY_ANSWER,
       ].join("\n"),
@@ -203,20 +213,20 @@ export const PROMPTS: Record<string, PromptSpec> = {
     description:
       "For someone deciding whether to deposit into a protocol: who can upgrade its code or use its admin powers, whether that changed recently, and what its bytecode scan flags.",
     args: [{ name: "protocol", description: "A package ID (0x…), an MVR name (@org/app), or a protocol name such as Cetus.", required: true }],
-    sections: ["Packages: who deployed it, and who can change it"],
+    sections: [],
     task: ({ protocol, network }) =>
       [
         `Assess who controls the protocol or package ${protocol}, for a user deciding whether to deposit into it. ${networkLine(network)}`,
         enableLine("forensics"),
         "",
         "1. Given a protocol name rather than a package ID (forensics): `resolve_protocol_packages(protocol)` lists the package versions of that protocol that emit events now. Continue with the one or two the user would call. An MVR name (@org/app) can be passed wherever a package is asked for.",
-        "2. Upgrade authority (forensics): `get_upgrade_history(package)`. Read `upgrade_cap` (who holds it now and how that holder signs: one key, or a multisig with its threshold), the most recent entries of `versions` (when the code last changed and who signed), and `flags`: a cap round trip, a single-key upgrade while the cap is usually multisig-held, a policy change, or a cap destroyed so the code can no longer change.",
-        "3. Admin powers (forensics): `analyze_package(package_id)` on the newest version. `capabilities` lists the admin caps with each holder, owner kind and risk note; `upgrade_cap` gives `owner_change_count` and `last_owner_change`; `flagged_by` is the Sui wallet scam blocklist. The `bytecode_scan` leads are hints for a reviewer, graded strong, medium or weak, and never evidence of a flaw by themselves.",
+        "2. Upgrade authority (forensics): `get_upgrade_history(package)`. `upgrade_cap` gives its `state` (exists, deleted, wrapped or unknown) and `current_holder`: an address with its signing `scheme` (one key, or a multisig with its threshold), shared (anyone can upgrade) or immutable (frozen: nobody can). Deleted, or sent to an address nobody holds a key for, means the code can no longer change, which lowers the risk; wrapped means the rules of the contract holding it decide; unknown means it could not be read, never that nobody holds it. Read the most recent entries of `versions` (when the code last changed and who signed) and `flags`: a cap round trip, a single-key upgrade while the cap is usually multisig-held, a policy change, or a cap destroyed, wrapped, frozen or shared.",
+        "3. Admin powers (forensics): `analyze_package(package_id)` on the newest version. `capabilities` lists the admin caps with each holder, owner kind and risk note; a cap with owner `consensus` is held by its one owner address. `upgrade_cap` gives `owner_change_count` and `last_owner_change`; `flagged_by` is the Sui wallet scam blocklist. The `bytecode_scan` leads are hints for a reviewer, graded strong, medium or weak, and never evidence of a flaw by themselves.",
         "4. For each address holding the UpgradeCap or an admin cap, `identify_address(address)`: a multisig committee and its members, a label, or one key. Optional: `analyze_multisig(address)` (forensics) says which committee keys actually sign.",
         "5. Optional: `trace_object_history(object_id, order: 'newest', limit: 10)` (forensics) on the UpgradeCap or an admin cap lists its recent owner changes.",
         "6. Past incidents: this server keeps no incident list for a protocol. Mention an incident only with a source you can cite, such as the protocol's own post-mortem; otherwise say past incidents were not checked.",
         "",
-        "In the plain answer, say who can change the code or use the admin powers (one key, a committee of N with threshold M, or nobody) and whether that changed recently.",
+        "In the plain answer, say who can change the code or use the admin powers (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown) and whether that changed recently.",
         "",
         EVERYDAY_ANSWER,
       ].join("\n"),
@@ -226,13 +236,18 @@ export const PROMPTS: Record<string, PromptSpec> = {
     description:
       "For someone deciding whether to trust or pay an address: what kind of account it is, what labels it carries and on what evidence, how it is funded and used, and whether it behaves like an exchange deposit address.",
     args: [{ name: "address", description: "The address (0x…) or SuiNS name.", required: true }],
-    sections: ["Multisig", REFUSE],
+    sections: [],
     task: ({ address, network }) =>
       [
         `Describe what the Sui account ${address} is, for a user deciding whether to trust or pay it. ${networkLine(network)}`,
         enableLine("forensics"),
         "",
-        "1. `identify_address(address)`, which takes a SuiNS name too. `type` says what it is: a wallet, a package, an object or a validator (for a package, the is_this_protocol_safe prompt answers the rest; for an object, say what it is and stop). Read the `label` with its `source` and `evidence`, `sui_name` and `names_held` (handles anyone can buy, never identity), `authentication` (one key, a `multisig` committee, `zklogin` or `passkey`; null means it has never sent a transaction, so how it signs is unknown), `delegated_to` (other addresses that can act for it) and `first_seen` (its age).",
+        "1. `identify_address(address)`, which takes a SuiNS name too. `type` says what it is: a wallet, a package, an object or a validator (for a package, the is_this_protocol_safe prompt answers the rest; for an object, say what it is and stop). Read:",
+        "   - the `label` with its `source` and `evidence`;",
+        "   - `sui_name` and `names_held`: handles anyone can buy, never identity, and a name another address sent it (`provenance` received_from_third_party) says nothing about the holder;",
+        "   - `authentication`: one key, a `multisig` committee, `zklogin` or `passkey`. Null means it has never sent a transaction, so how it signs is unknown. A committee is fixed by the address; a member marked `unsignable` can never sign;",
+        "   - `delegated_to`: other addresses that can act for it, whatever its committee;",
+        "   - `first_seen`: its age.",
         "2. `get_transaction_history(address, limit: 10)`: what it does (protocols, actions, how recent) and `address_poisoning`.",
         "3. Optional: `get_wallet_overview(address)` when what it holds matters to the question.",
         "4. Funding (forensics): `find_funding_source(address)` walks back to who first funded it and stops at a labelled exchange or a service. Funding from an exchange means the owner used that exchange; it names nobody.",
@@ -257,7 +272,29 @@ export function skillText(sections: string[]): string {
   return markdownSections(markdown, sections).text;
 }
 
+/**
+ * `prompts/get` with no `arguments` field reaches a prompt as `{}`.
+ *
+ * The protocol makes the field optional, but the SDK validates it against the
+ * prompt's object schema, so a prompt whose arguments are all optional would be
+ * refused rather than rendered. The SDK installs its handler when the first
+ * prompt registers, so this wraps `setRequestHandler` beforehand, the same way
+ * `explainDisabledTools` wraps `tools/call`.
+ */
+function defaultPromptArguments(server: McpServer): void {
+  type Handler = (request: { params: { arguments?: Record<string, string> } }, extra: unknown) => unknown;
+  const inner = server.server;
+  const setRequestHandler = inner.setRequestHandler.bind(inner) as (schema: unknown, handler: Handler) => void;
+  inner.setRequestHandler = ((schema: unknown, handler: Handler) => {
+    if (schema !== GetPromptRequestSchema) return setRequestHandler(schema, handler);
+    return setRequestHandler(schema, (request, extra) =>
+      handler({ ...request, params: { ...request.params, arguments: request.params.arguments ?? {} } }, extra),
+    );
+  }) as typeof inner.setRequestHandler;
+}
+
 export function registerAllPrompts(server: McpServer): void {
+  defaultPromptArguments(server);
   for (const [name, spec] of Object.entries(PROMPTS)) {
     const argsSchema: Record<string, z.ZodString | z.ZodOptional<z.ZodString>> = {};
     for (const arg of spec.args) {
@@ -271,7 +308,7 @@ export function registerAllPrompts(server: McpServer): void {
           role: "user" as const,
           content: {
             type: "text" as const,
-            text: `${spec.task(args)}\n\n${skillText(spec.sections)}`,
+            text: spec.sections.length > 0 ? `${spec.task(args)}\n\n${skillText(spec.sections)}` : spec.task(args),
           },
         },
       ],

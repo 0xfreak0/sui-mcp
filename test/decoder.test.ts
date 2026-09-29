@@ -483,6 +483,18 @@ describe("router integrations that pass a bookkeeping type", () => {
         makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [SUI, SUDENG]),
       ]),
     ).toEqual(["Swap SUI → SUDENG"]);
+    // Two Turbos hops through pools of one fee tier both trail it: neither
+    // gives it out, with or without a closing call naming the route's coin.
+    const TOK = "0x1111111111111111111111111111111111111111111111111111111111111111::tok::TOK";
+    const twoTurbos = [
+      makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+      makeCommand(TURBOS_INT, "router", "swap_b_a_w1", [RD, SUI, SUDENG, SUI, FEE]),
+      makeCommand(TURBOS_INT, "router", "swap_a_b_w1", [RD, SUI, SUDENG, TOK, FEE]),
+    ];
+    expect(hops(twoTurbos)).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → TOK"]);
+    expect(
+      hops([makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [SUI, TOK]), ...twoTurbos, makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [SUI, TOK])]),
+    ).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → TOK"]);
   });
 
   it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {

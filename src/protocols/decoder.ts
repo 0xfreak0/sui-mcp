@@ -336,17 +336,23 @@ function routeMarkers(commands: GrpcTypes.Command[], hasCoinEvidence: (t: string
  * since a hop's output is what the route uses next: a type the path's next
  * routed call names, or for a path's last call the coin the route gives out.
  * A pool parameter that is no coin (Turbos passes its fee tier as an own
- * type) is passed over that way. Failing both, the last own type.
+ * type) is passed over that way. Two consecutive hops of a path through such
+ * pools can share the parameter: a type that trails both calls' own types,
+ * when each has more than two, is a parameter (`poolParams`), and neither
+ * hop gives it out while another candidate remains. Failing all of these,
+ * the last own type.
  */
 function routeHop(
   typeArgs: string[],
   pathCoin: string | null,
   hasCoinEvidence: (t: string) => boolean,
-  next: { own: string[] | undefined; routeOut: string | null },
+  next: { own: string[] | undefined; routeOut: string | null; poolParams: ReadonlySet<string> },
 ): [string, string] | null {
   const own = typeArgs.slice(2);
   const input = pathCoin !== null && own.includes(pathCoin) ? pathCoin : typeArgs[1];
-  const rest = own.filter((t) => t !== input).reverse();
+  const all = own.filter((t) => t !== input).reverse();
+  const candidates = all.filter((t) => !next.poolParams.has(t));
+  const rest = candidates.length ? candidates : all;
   const used = next.own ? rest.find((t) => next.own!.includes(t)) : rest.find((t) => t === next.routeOut);
   const output = rest.find(hasCoinEvidence) ?? used ?? rest[0];
   return output ? [input, output] : null;
@@ -403,7 +409,12 @@ export function decodeTransaction(
   // the route takes in and the one it gives out.
   const nextInPath = new Map<number, string[]>();
   const closing = new Map<string, string>();
+  // A type trailing the own types of two consecutive routed calls of a path,
+  // each with more than two and nothing showing it to be a coin, is a pool
+  // parameter both pass.
+  const poolParams = new Set<string>();
   let previous: number | null = null;
+  let previousOwn: string[] = [];
   for (const [index, cmd] of commands.entries()) {
     const c = cmd.command;
     if (c.oneofKind !== "moveCall") continue;
@@ -414,8 +425,14 @@ export function decodeTransaction(
     if (tas.length < 2 || !markers.has(tas[0])) continue;
     if (tas.length === 2 && !op) previous = null;
     else {
-      if (previous !== null) nextInPath.set(previous, tas.slice(2));
+      const own = tas.slice(2);
+      if (previous !== null) {
+        nextInPath.set(previous, own);
+        if (own.length > 2 && previousOwn.length > 2 && own[own.length - 1] === previousOwn[previousOwn.length - 1] && !hasCoinEvidence(own[own.length - 1]))
+          poolParams.add(own[own.length - 1]);
+      }
       previous = index;
+      previousOwn = own;
     }
   }
   // The coin a route's path holds: its start coin, then each hop's output.
@@ -476,7 +493,7 @@ export function decodeTransaction(
         if (op) {
           let args = typeArgs;
           if (op.action === "swap" && routed) {
-            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut });
+            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut, poolParams });
             args = hop ?? typeArgs.slice(1);
             if (hop) {
               pathCoin = hop[1];

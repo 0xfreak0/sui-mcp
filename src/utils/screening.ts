@@ -4,7 +4,7 @@ import { getNetwork } from "../config.js";
 import { detectBridges, exitCarrier, type CallSite } from "./bridge/detect.js";
 import { readBridgeEvents } from "./bridge/exits.js";
 import { fetchEventJson } from "./event-json.js";
-import { disclosedLabelSources, getLabel, labelProvenance, type LabelCategory } from "./labels.js";
+import { disclosedLabelSources, getLabel, inferredLabelCoverage, labelProvenance, type InferredFrom, type LabelCategory } from "./labels.js";
 import { sanctions } from "./sanctions.js";
 import { pricesForRanking } from "./price-providers.js";
 import { decimalsForCoinType, displayCoin, prefetchCoinScale, toHumanAmount, usdValue } from "./valuation.js";
@@ -186,6 +186,8 @@ export interface Hit {
   evidence?: string;
   source_url?: string;
   retrieved_at?: string;
+  /** Present when the hit's label is inferred from chain data (an exchange deposit address), not disclosed. */
+  inferred_from?: InferredFrom;
   /** For sanctions hits. */
   sdn?: { name: string; entity_id: string | null; programs: string[]; listed_as: string[]; data_as_of: string | null };
 }
@@ -614,6 +616,7 @@ export function screeningCoverage() {
   const cov = sanctions().coverage();
   return {
     labels: disclosedLabelSources(),
+    inferred_deposit_labels: inferredLabelCoverage(),
     sanctions: {
       ...cov,
       sui_note:

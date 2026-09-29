@@ -60,7 +60,8 @@ export function registerLabelTools(server: McpServer) {
       "saved to the local store when SUI_STORE_PATH is set and last only for the session " +
       "otherwise; 'remove' deletes the stored copy too. Only those labels can be removed: the " +
       "override file (SUI_LABELS_FILE) and the shipped set are read-only here. Precedence: labels " +
-      "added here > override file > shipped set. Labels are chain-qualified: a label added while " +
+      "added here > override file > shipped disclosed set > shipped inferred exchange deposit " +
+      "addresses (source 'inferred'). Labels are chain-qualified: a label added while " +
       "querying one chain does not apply on another.",
     {
       action: z

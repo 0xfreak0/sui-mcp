@@ -2,7 +2,7 @@ import { z } from "zod";
 import { numArg, coinTypeArg } from "./args.js";
 import { describeAddresses, identityNote } from "../utils/identity.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
-import { getLabel, isSink, labelProvenance, type LabelProvenance } from "../utils/labels.js";
+import { getLabel, inferredLabelNote, isSink, labelProvenance, type LabelProvenance } from "../utils/labels.js";
 import { detectBridges, resolvableHit, type BridgeHit } from "../utils/bridge/detect.js";
 import {
   chooseNextHop,
@@ -992,7 +992,8 @@ export function registerTraceTools(server: McpServer) {
         // exploit trace at hop 1. trace_flow_graph applies the same rule.
         if (isSink(nextAddress)) {
           const label = getLabel(nextAddress);
-          terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink. Stopping trace.`;
+          const inferred = label ? inferredLabelNote(label) : undefined;
+          terminationReason = `Funds reached ${label?.label ?? nextAddress} (${label?.category}) — a known sink.${inferred ? ` ${inferred}` : ""} Stopping trace.`;
           // A bridge is the one sink that is not terminal, and a labeled one
           // may carry no curated Move-call marker at all — a relayer forward,
           // an unlisted bridge, or a plain transfer into a deposit address.

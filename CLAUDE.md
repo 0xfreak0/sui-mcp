@@ -935,6 +935,7 @@ npm run verify:live          # live mainnet checks — see below
 npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
 npm run sync:coin-symbols    # regenerate src/data/coin-symbols.json (about 13 minutes)
+npm run sync:labels          # build, then regenerate src/data/deposit-labels.json (inferred deposit addresses)
 ```
 
 ### Live checks
@@ -3457,7 +3458,7 @@ change is likely to break:
 
 ### Shipped labels, screening and scam lists
 
-- **Shipped labels are first-party disclosures only**, generated into
+- **Shipped disclosed labels are first-party disclosures only**, generated into
   `src/data/disclosed-labels.json` by `npm run sync:disclosed-labels`: exchange
   proof-of-reserves lists (`proof-of-reserves-listed`), bridge deployment docs
   (`official-docs`), attackers named in the victim's own incident report
@@ -3466,6 +3467,23 @@ change is likely to break:
   Keys are `sui:mainnet:` or `eip155:1:`. OKX signs each address, but the
   scheme has not been reproduced, so OKX rows claim a listing, nothing more.
 - **Every surface that shows a label shows its provenance** (`labelProvenance`).
+- **Inferred deposit labels are a tier below every other label.**
+  `npm run sync:labels` (`scripts/sync-deposit-labels.mjs`, rule in
+  `src/utils/deposit-labels.ts`) writes `src/data/deposit-labels.json` from
+  the senders into each disclosed exchange wallet: an address is kept when
+  `classify_deposit_address` would read it `likely` against that disclosed
+  wallet (the same `readDepositPattern` and `decideDepositVerdict`, so every
+  outflow is a full-balance sweep into one wallet) with at least two sweeps.
+  A disclosed or curated address, an object, a curated protocol and an address
+  sweeping to two exchanges are never labelled. The label names the exchange
+  only (`<Exchange> deposit address (inferred)`, category `cex`, confidence
+  medium, source `inferred`, evidence `sweep-pattern`) and carries
+  `inferred_from` (the wallet, sweep count, latest sweep digests); an entry
+  without it is not loaded. Precedence: session > override > curated >
+  disclosed > inferred. It is a sink, and a stop at one says it was inferred
+  (`inferredLabelNote`). `classify_deposit_address` never counts an inferred
+  label as an exchange destination, or a wallet paying into a deposit address
+  would read as one. Keys are `sui:mainnet:`. No private case address goes in.
 - **A sponsor's SUI change is never a payment.** Sweeps delete coin objects and
   the storage rebate goes to the gas payer, so the sponsor shows a positive SUI
   change. `isSponsorGasChange` (`src/utils/sponsor-gas.ts`) is the one rule, and

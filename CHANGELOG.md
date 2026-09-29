@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### Changed
+- **`was_i_scammed` is now `what_happened_to_my_funds`, and it starts with
+  stopping further loss.** Someone asking has usually lost funds already, so
+  the prompt works in this order: whether anyone else can still move what is
+  left (a leaked key, an address in `delegated_to` the user did not add), how
+  the funds left (a leaked key, a drainer transaction the user signed or an
+  approval on a website, a lookalike address pasted from the wallet's
+  history), where they went up to the first exchange deposit address or
+  bridge, and whom to report to with which digests and addresses. The plain
+  answer follows the same order. A drop and the user's own order or position
+  remain the two outcomes in which nothing was taken, and every check and
+  rule of the old prompt is kept.
+- Removed repeated instructions from `what_happened_to_my_funds` and
+  shortened the shared profile-enabling instructions used by the four
+  everyday prompts. The own-order branch explicitly checks who can still
+  move funds before answering, including after a wrapper's drainer check.
+  Wallet selection, ownership evidence, withdrawal-versus-fill limits and
+  all safety and answer rules are kept.
 - **The truncation guide distinguishes display limits from pagination.**
   It explains empty `query_events` pages with `has_next_page: true`, read-budget
   stops under `scan`, and continuation with `scan.next_call.repeat_with`.
@@ -81,6 +98,11 @@
   sender), and `first_inflow` is null only when a continuation read fails.
   The tool description and site explain that genesis allocations are
   system-created: `sender` remains null and does not identify a funding wallet.
+
+### Migration
+- `was_i_scammed` stays registered for this release with the same
+  arguments. It renders `what_happened_to_my_funds` after a first line
+  naming the new name, and will be removed in a later release.
 
 ## 1.24.0 (2026-09-29)
 

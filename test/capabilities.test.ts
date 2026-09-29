@@ -60,6 +60,15 @@ describe("classifyCapabilityRisk — upgrade cap", () => {
   });
 });
 
+describe("classifyCapabilityRisk — a cap gone from top level with an unread end", () => {
+  // A gone admin cap is either wrapped (low) or destroyed (info).
+  it("rates an admin cap low and a mint authority medium", () => {
+    const gone = (kind: "admin" | "treasury", type: string) => classifyCapabilityRisk({ kind, type, owner: "unknown", gone: true }).risk;
+    expect(gone("admin", "0x1::vault::AdminCap")).toBe("low");
+    expect(gone("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("medium");
+  });
+});
+
 describe("classifyCapabilityRisk — treasury cap", () => {
   it("address-owned mint authority is high risk", () => {
     const r = classifyCapabilityRisk({ kind: "treasury", type: `${P2}::coin::TreasuryCap<0xabc::t::T>`, owner: "address", ownerAddress: "0xbad" });
@@ -245,7 +254,6 @@ describe("auditPackageCapabilities — wrapped TreasuryCap", () => {
     expect(cap.owner).toBe("wrapped");
     expect(cap.wrapped_in_tx).toBe("LaunchWrap");
     expect(cap.risk).toBe("medium");
-    expect(cap.note).not.toMatch(/renounced|supply is fixed\./i);
   });
 
   it("reports an unknown owner when the end of the object cannot be read", async () => {

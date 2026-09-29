@@ -79,12 +79,12 @@ const caps: CapVersion[] = [
 
 const NOW = Date.parse("2026-09-25T00:00:00Z");
 
-function analyse(windowHours = 24, end: CapEnd | null = null, capList = caps, versionList = versions) {
+function analyse(windowHours = 24, end: CapEnd | null = null, capList = caps, versionList = versions, gone = false) {
   const periods = custodyPeriods(capList, end);
   const usual = usualHolder(periods, NOW);
   const excursions = capExcursions(periods, versionList, usual?.holder ?? null, windowHours);
   const signerByVersion = new Map(versionList.map((v) => [v.version, v.sender === MULTI ? multisigAuth : singleAuth]));
-  const flags = upgradeFlags({ versions: versionList, caps: capList, end, periods, excursions, usual, signerByVersion, auth });
+  const flags = upgradeFlags({ versions: versionList, caps: capList, end, gone, periods, excursions, usual, signerByVersion, auth });
   return { periods, usual, excursions, flags };
 }
 
@@ -252,6 +252,11 @@ describe("stateAsOf", () => {
     expect(stateAsOf(parseAsOf("2026-02-01T00:00:00Z"), versions, caps, end)).toMatchObject({ cap_state: "deleted", holder: null });
     expect(stateAsOf(parseAsOf("2025-12-31T00:00:00Z"), versions, caps, end).holder).toEqual(addr(MULTI));
   });
+
+  it("does not read a gone cap whose end is unread as still held after its last version", () => {
+    expect(stateAsOf(parseAsOf("2026-02-01T00:00:00Z"), versions, caps, null, true)).toMatchObject({ cap_state: "unknown", holder: null });
+    expect(stateAsOf(parseAsOf("2025-09-08T00:00:00Z"), versions, caps, null, true).cap_state).toBe("held");
+  });
 });
 
 describe("terminal cap states and policy", () => {
@@ -266,6 +271,12 @@ describe("terminal cap states and policy", () => {
   it("flags a destroyed cap", () => {
     const end: CapEnd = { kind: "deleted", tx: "Del", timestamp: "2026-01-01T00:00:00Z", checkpoint: 230000000, sender: MULTI };
     expect(analyse(24, end).flags.find((f) => f.kind === "cap_destroyed")?.txs).toEqual(["Del"]);
+  });
+
+  it("raises no current-holder flag for a gone cap whose end is unread", () => {
+    const burned = [...caps, { ...caps[caps.length - 1], tx: "Burn", checkpoint: 220000000, timestamp: "2025-12-10T00:00:00Z", owner: addr(`0x${"0".repeat(64)}`) }];
+    expect(analyse(24, null, burned).flags.some((f) => f.kind === "cap_renounced")).toBe(true);
+    expect(analyse(24, null, burned, versions, true).flags.some((f) => f.kind === "cap_renounced")).toBe(false);
   });
 
   it("flags a shared cap as high severity", () => {

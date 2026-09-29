@@ -12,7 +12,11 @@
   shared object reads medium risk, with supply fixed only as far as the
   wrapper's module and its UpgradeCap holder allow. A cap whose end cannot be
   read is `unknown`. `get_upgrade_history` and `trace_object_history` use the
-  same reading, so Wormhole's wrapped UpgradeCaps no longer read destroyed.
+  same reading, so Wormhole's wrapped UpgradeCaps no longer read destroyed,
+  and `get_transaction` lists an object an older transaction wrapped under
+  `wrapped`, not `deleted`. When how a cap ended cannot be read,
+  `get_upgrade_history` reports its state as `unknown` and names no current
+  holder.
 - **A destroyed TreasuryCap no longer means fixed supply on its own.**
   Destroying the cap leaves its Supply, which can still mint wherever it is
   kept. `analyze_package` reports fixed or burn-only supply when Sui's

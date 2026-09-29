@@ -295,6 +295,8 @@ export interface FlagInput {
   versions: PublishedVersion[];
   caps: CapVersion[];
   end: CapEnd | null;
+  /** The cap is gone from top level; `end` is null when how it ended could not be read. */
+  gone?: boolean;
   periods: CustodyPeriod[];
   excursions: CapExcursion[];
   usual: UsualHolder | null;
@@ -305,7 +307,7 @@ export interface FlagInput {
 }
 
 export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
-  const { versions, caps, end, periods, excursions, usual, signerByVersion, auth } = input;
+  const { versions, caps, end, gone, periods, excursions, usual, signerByVersion, auth } = input;
   const flags: UpgradeFlag[] = [];
   const byVersion = new Map(versions.map((v) => [v.version, v]));
 
@@ -389,7 +391,7 @@ export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
   }
 
   const current = periods[periods.length - 1];
-  if (current && !end) {
+  if (current && !end && !gone) {
     const at = current.from;
     const txs = at.tx ? [at.tx] : [];
     const h = current.holder;
@@ -450,7 +452,8 @@ export function atOrBefore(p: ChainPoint, at: AsOfPoint): boolean | null {
 export interface StateAsOf {
   /** The newest version published at or before the point. */
   latest_version: PublishedVersion | null;
-  cap_state: "not_created" | "held" | "deleted" | "wrapped";
+  /** `unknown`: after the cap's last recorded version, when it is gone and how it ended could not be read. */
+  cap_state: "not_created" | "held" | "deleted" | "wrapped" | "unknown";
   /** The cap's owner at the point; null when it did not exist then. */
   holder: OwnerDesc | null;
   /** The transaction that put the cap with that holder. */
@@ -465,6 +468,7 @@ export function stateAsOf(
   versions: PublishedVersion[],
   caps: CapVersion[],
   end: CapEnd | null,
+  gone = false,
 ): StateAsOf {
   let unordered = 0;
   let latest: PublishedVersion | null = null;
@@ -490,6 +494,9 @@ export function stateAsOf(
   }
   if (idx < 0) {
     return { latest_version: latest, cap_state: "not_created", holder: null, holder_since: null, policy: null, unordered };
+  }
+  if (gone && !end && idx === caps.length - 1) {
+    return { latest_version: latest, cap_state: "unknown", holder: null, holder_since: null, policy: null, unordered };
   }
   // Walk back to where this holder's custody began.
   let start = idx;

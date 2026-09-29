@@ -132,12 +132,16 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
         ...(c.signing_scheme ? { signing_scheme: c.signing_scheme } : {}),
         ...(c.wrapped_in_tx ? { wrapped_in_tx: c.wrapped_in_tx } : {}),
       })),
-      note: classifyCapabilityRisk({
-        kind: head.kind,
-        type: head.type,
-        owner: head.owner,
-        ownerAddress: sharedAddress ?? (head.owner_address ? "the holder of each object in holders" : undefined),
-      }).note,
+      // One note for every member when they all read the same; otherwise a
+      // note without any one member's address.
+      note: members.every((c) => c.note === head.note)
+        ? head.note
+        : classifyCapabilityRisk({
+            kind: head.kind,
+            type: head.type,
+            owner: head.owner,
+            ownerAddress: sharedAddress ?? (head.owner_address ? "the holder of each object in holders" : undefined),
+          }).note,
     };
   });
 }

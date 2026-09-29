@@ -13,6 +13,11 @@ const ID_DELETED = 3;
  */
 const WRAPPED_DIGEST = "6ws1bVyu3F8wGy1fPHhrc2v8UyWiGbRAAuek8SwikKPD";
 
+/** Whether a gRPC changed object was deleted, as opposed to wrapped. */
+export function isDeletion(c: Pick<GrpcTypes.ChangedObject, "idOperation" | "outputDigest">): boolean {
+  return c.idOperation === ID_DELETED && c.outputDigest !== WRAPPED_DIGEST;
+}
+
 /** The last transaction to touch an object, found even after it stops existing. */
 const LAST_TOUCH_QUERY = `query ($id: SuiAddress!) {
   transactions(filter: { affectedObject: $id }, last: 1) {
@@ -61,7 +66,7 @@ export async function readObjectEnd(objectId: string): Promise<ObjectEnd | null>
   );
   if (!change) throw new Error(`transaction ${last.digest} does not list ${objectId} among its changed objects`);
   return {
-    kind: change.idOperation === ID_DELETED && change.outputDigest !== WRAPPED_DIGEST ? "deleted" : "wrapped",
+    kind: isDeletion(change) ? "deleted" : "wrapped",
     tx: last.digest,
     timestamp: last.effects?.timestamp ?? null,
     checkpoint: last.effects?.checkpoint?.sequenceNumber ?? null,

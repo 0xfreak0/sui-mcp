@@ -81,51 +81,59 @@ function str(v: unknown): string | undefined {
 }
 
 /**
- * The registry's entry for a coin, or null when it has none.
- *
- * Null means "not registered", which is the common case and says nothing about
- * the coin. A failed lookup also returns null rather than throwing: this
- * enriches an answer the caller already has and must never be the reason
- * `analyze_token` fails.
+ * The registry's entry for a coin, or null when it has none. Null means "not
+ * registered", which is the common case and says nothing about the coin. A
+ * failed read throws.
  */
-export async function fetchRegistryCurrency(
+export async function readRegistryCurrency(
   coinType: string,
 ): Promise<RegistryCurrency | null> {
   const canonical = normalizeCoinType(coinType);
   if (!canonical) return null;
   const type = `${normalizeSuiAddress("0x2")}::coin_registry::Currency<${canonical}>`;
 
+  const d = await gqlQuery<{
+    objects?: { nodes?: Array<{ asMoveObject?: { contents?: { json?: CurrencyJson } } }> };
+  }>(CURRENCY_QUERY, { type });
+  const json = d.objects?.nodes?.[0]?.asMoveObject?.contents?.json;
+  if (!json) return null;
+
+  // Decimals is the field worth having, so an entry that cannot supply one is
+  // no better than no entry at all.
+  const decimals = typeof json.decimals === "number" ? json.decimals : undefined;
+  if (decimals === undefined) return null;
+
+  const variant = str(json.regulated?.["@variant"]);
+  const regulated: RegulatedState =
+    variant === "Regulated" ? "regulated" : variant === "Unregulated" ? "unregulated" : "unknown";
+
+  const supplyVariant = str(json.supply?.["@variant"]);
+  const supply: SupplyState = supplyVariant === "Fixed" ? "fixed" : supplyVariant === "BurnOnly" ? "burn_only" : "unknown";
+
+  return {
+    decimals,
+    ...(str(json.symbol) ? { symbol: str(json.symbol) } : {}),
+    ...(str(json.name) ? { name: str(json.name) } : {}),
+    ...(str(json.description) ? { description: str(json.description) } : {}),
+    ...(str(json.icon_url) ? { icon_url: str(json.icon_url) } : {}),
+    regulated,
+    supply,
+    ...(regulated === "regulated" && str(json.regulated?.cap)
+      ? { regulated_cap_id: str(json.regulated?.cap) }
+      : {}),
+  };
+}
+
+/**
+ * The registry's entry for a coin, or null when it has none or the read
+ * failed: this enriches an answer the caller already has and must never be
+ * the reason `analyze_token` fails.
+ */
+export async function fetchRegistryCurrency(
+  coinType: string,
+): Promise<RegistryCurrency | null> {
   try {
-    const d = await gqlQuery<{
-      objects?: { nodes?: Array<{ asMoveObject?: { contents?: { json?: CurrencyJson } } }> };
-    }>(CURRENCY_QUERY, { type });
-    const json = d.objects?.nodes?.[0]?.asMoveObject?.contents?.json;
-    if (!json) return null;
-
-    // Decimals is the field worth having, so an entry that cannot supply one is
-    // no better than no entry at all.
-    const decimals = typeof json.decimals === "number" ? json.decimals : undefined;
-    if (decimals === undefined) return null;
-
-    const variant = str(json.regulated?.["@variant"]);
-    const regulated: RegulatedState =
-      variant === "Regulated" ? "regulated" : variant === "Unregulated" ? "unregulated" : "unknown";
-
-    const supplyVariant = str(json.supply?.["@variant"]);
-    const supply: SupplyState = supplyVariant === "Fixed" ? "fixed" : supplyVariant === "BurnOnly" ? "burn_only" : "unknown";
-
-    return {
-      decimals,
-      ...(str(json.symbol) ? { symbol: str(json.symbol) } : {}),
-      ...(str(json.name) ? { name: str(json.name) } : {}),
-      ...(str(json.description) ? { description: str(json.description) } : {}),
-      ...(str(json.icon_url) ? { icon_url: str(json.icon_url) } : {}),
-      regulated,
-      supply,
-      ...(regulated === "regulated" && str(json.regulated?.cap)
-        ? { regulated_cap_id: str(json.regulated?.cap) }
-        : {}),
-    };
+    return await readRegistryCurrency(coinType);
   } catch {
     return null;
   }

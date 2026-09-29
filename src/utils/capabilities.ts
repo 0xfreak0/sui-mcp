@@ -5,7 +5,7 @@ import { fetchTypeOrigins, type TypeOrigin } from "./package-versions.js";
 import { describeAddresses } from "./identity.js";
 import { schemeLabel } from "./upgrade-history.js";
 import { readObjectEnd } from "./object-end.js";
-import { fetchRegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
+import { readRegistryCurrency, type SupplyState } from "./onchain-coin-registry.js";
 
 /**
  * Capability auditing for a Move package: who holds the powerful capabilities
@@ -116,8 +116,8 @@ export function classifyCapabilityRisk(input: {
   wrappedInTx?: string;
   /** The cap no longer exists at top level. */
   gone?: boolean;
-  /** `burned` TreasuryCap only: the on-chain coin registry's supply state. */
-  supplyState?: SupplyState;
+  /** `burned` TreasuryCap only: the on-chain coin registry's supply state, or `unread` when the read failed. */
+  supplyState?: SupplyState | "unread";
 }): { risk: CapRisk; note: string } {
   const { kind, type, owner, ownerAddress, policyLabel, wrappedInTx, gone, supplyState } = input;
   // A party object has exactly one owner, so it is held the way an
@@ -136,13 +136,15 @@ export function classifyCapabilityRisk(input: {
       ? `${ownerAddress} (a party object: one owner, transactions ordered through consensus)`
       : ownerAddress
     : owner;
-  const shortType = type.split("::").slice(-2).join("::").split("<")[0];
+  const shortType = type.replace(/>+$/, "").split("::").slice(-2).join("::").split("<")[0];
+  const capName = type.split("<")[0].split("::").slice(-2).join("::");
   const inside = `stored inside another object${wrappedInTx ? ` by transaction ${wrappedInTx}` : ""}, not destroyed`;
 
   if (owner === "unknown" && gone) {
     return {
-      risk: "medium",
-      note: `${shortType} no longer exists at top level. Whether it was destroyed or stored inside another object could not be read.`,
+      // An admin cap reads low when wrapped and info when destroyed.
+      risk: kind === "admin" ? "low" : "medium",
+      note: `${capName}${type.includes("<") ? ` for ${shortType}` : ""} no longer exists at top level. Whether it was destroyed or stored inside another object could not be read.`,
     };
   }
 
@@ -188,6 +190,12 @@ export function classifyCapabilityRisk(input: {
       }
       if (supplyState === "burn_only") {
         return { risk: "info", note: `The TreasuryCap for ${shortType} was destroyed and the on-chain coin registry records its supply as burn-only: it can only decrease.` };
+      }
+      if (supplyState === "unread") {
+        return {
+          risk: "medium",
+          note: `The TreasuryCap for ${shortType} was destroyed. Destroying it leaves its Supply, which can still mint for whatever holds it, and the on-chain coin registry could not be read to tell whether that Supply was fixed.`,
+        };
       }
       return {
         risk: "medium",
@@ -560,7 +568,7 @@ export async function auditPackageCapabilities(
       let policyLabel: string | undefined;
       let wrappedInTx: string | undefined;
       let gone = false;
-      let supplyState: SupplyState | undefined;
+      let supplyState: SupplyState | "unread" | undefined;
       if (knownOwner) {
         owner = knownOwner.owner;
         ownerAddress = knownOwner.ownerAddress;
@@ -576,7 +584,10 @@ export async function auditPackageCapabilities(
               owner = "burned";
               if (kind === "treasury") {
                 const coinType = type.slice(type.indexOf("<") + 1, type.lastIndexOf(">"));
-                supplyState = (await fetchRegistryCurrency(coinType))?.supply ?? "unknown";
+                supplyState = await readRegistryCurrency(coinType).then(
+                  (c) => c?.supply ?? "unknown",
+                  () => "unread" as const,
+                );
               }
             } else if (end?.kind === "wrapped") {
               owner = "wrapped";

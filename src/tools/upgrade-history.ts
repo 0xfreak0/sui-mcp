@@ -130,8 +130,6 @@ interface CapVersionsResult {
   } | null;
 }
 
-const ID_DELETED = 3;
-
 const point = (tx: Omit<TxGql, "signatures"> | null): ChainPoint & { sender: string | null } => ({
   tx: tx?.digest ?? null,
   timestamp: tx?.effects?.timestamp ?? null,
@@ -374,7 +372,19 @@ export function registerUpgradeHistoryTools(server: McpServer) {
 
         const cap = capId ? await fetchCapHistory(capId) : null;
         const caps = cap?.versions ?? [];
-        const end = capId && cap && !cap.exists && caps.length > 0 ? await readObjectEnd(capId).catch(() => null) : null;
+        // Gone from top level: how it ended decides what the cap's state is.
+        // An end that cannot be read leaves the state unknown, never "exists".
+        const gone = !!capId && !!cap && !cap.exists && caps.length > 0;
+        let endError: string | null = null;
+        const end = gone
+          ? await readObjectEnd(capId!).catch((e: unknown) => {
+              endError = e instanceof Error ? e.message : String(e);
+              return null;
+            })
+          : null;
+        if (gone && !end) {
+          capNote = `The UpgradeCap no longer exists at top level, and whether it was destroyed or wrapped could not be read${endError ? `: ${endError}` : ""}. Its last recorded holder is not its current one.`;
+        }
         const capComplete = !!cap && cap.complete && caps[0]?.tx === root.tx;
 
         // How every sender authenticates, read from the transactions already
@@ -403,7 +413,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         for (const [addr, id] of ids) if (!auth.has(addr) && id.authentication) auth.set(addr, id.authentication);
 
         const periods = custodyPeriods(caps, end);
-        const asOfState = at ? stateAsOf(at, versions, caps, end) : null;
+        const asOfState = at ? stateAsOf(at, versions, caps, end, gone) : null;
         const asOf =
           at && asOfState
             ? {
@@ -435,7 +445,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         const nowMs = Date.now();
         const usual = usualHolder(periods, nowMs);
         const excursions = capExcursions(periods, versions, usual?.holder ?? null, windowHours);
-        const flags = upgradeFlags({ versions, caps, end, periods, excursions, usual, signerByVersion, auth });
+        const flags = upgradeFlags({ versions, caps, end, gone, periods, excursions, usual, signerByVersion, auth });
 
         const current = caps[caps.length - 1];
         const hoursOf = (from: ChainPoint, until: ChainPoint | null): number | null => {
@@ -446,7 +456,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
 
         // A redeploy mints an unrelated root, so no version walk reaches it;
         // the search starts from who could have published it.
-        const holderNow = !end && current && (current.owner.kind === "address" || current.owner.kind === "consensus") ? current.owner.address : null;
+        const holderNow = !end && !gone && current && (current.owner.kind === "address" || current.owner.kind === "consensus") ? current.owner.address : null;
         const searchFrom = [root.sender, holderNow].filter((a): a is string => !!a && !/^0x0+$/.test(a));
         const redeploys =
           find_redeploys && !systemPackage && searchFrom.length > 0 ? await findRedeploys(
@@ -468,8 +478,8 @@ export function registerUpgradeHistoryTools(server: McpServer) {
           upgrade_cap: capId
             ? {
                 object_id: capId,
-                state: end ? end.kind : current ? "exists" : "unknown",
-                current_holder: end ? null : describeHolder(current?.owner ?? null, auth, ids),
+                state: end ? end.kind : gone ? "unknown" : current ? "exists" : "unknown",
+                current_holder: end || gone ? null : describeHolder(current?.owner ?? null, auth, ids),
                 policy: upgradePolicyName(current?.policy),
                 owner_change_count: Math.max(0, periods.length - 1),
                 history_complete: capComplete,

@@ -10,6 +10,9 @@
   reference is generated from the server's own tool and prompt schemas;
   `test/site-tool-reference.test.ts` fails when the committed reference is
   stale. Tool counts are checked against the tool profiles page.
+- The docs site is live at <https://sui-mcp.vercel.app/>. The README links
+  there, `package.json`'s `homepage` points to it, and the site sets its
+  address for canonical links and a sitemap.
 
 ## 1.24.0 (2026-09-29)
 

@@ -1,0 +1,10 @@
+/* Tables fit the content column: cells may wrap long text, and every column
+   but the last keeps a minimum width so short values such as "no" stay whole. */
+.sl-markdown-content td,
+.sl-markdown-content th {
+  overflow-wrap: anywhere;
+}
+.sl-markdown-content td:not(:last-child),
+.sl-markdown-content th:not(:last-child) {
+  min-width: 8ch;
+}

@@ -35,7 +35,9 @@
  *    A cap the registry's `treasury_cap_id` or a TreasuryCap<T> type query
  *    finds must be listed, and every listed cap must have the owner the chain
  *    gives: one deleted, or consumed by a registry supply of Fixed or
- *    BurnOnly, reads `burned`, and `unknown` never matches.
+ *    BurnOnly, reads `burned`, one another object owns names that object
+ *    (the owner of its `dynamic_field::Field` for a dynamic object field),
+ *    and `unknown` never matches.
  * e. Flows. get_transaction's `token_flow` summed per coin against the
  *    sender's GraphQL balanceChanges, and `balance_changes` summed per owner
  *    and coin against all of them.
@@ -92,13 +94,7 @@ import { startServer, gql as gqlOnce, ROOT } from "./lib/mcp-client.mjs";
  * fails it until its entry is removed. Never add an entry to quiet a new
  * finding.
  */
-const KNOWN_DEFECTS = [
-  {
-    oracles: ["d", "f"],
-    note: "tracked: analyze_package reads an ObjectOwner capability's owner as unknown (ownerKindOf in src/utils/capabilities.ts)",
-    problem: (p) => p.audit === "unknown" && p.chain === "object",
-  },
-];
+const KNOWN_DEFECTS = [];
 
 const ORACLES = {
   a: {
@@ -408,15 +404,28 @@ function objectTruth(id) {
 }
 async function readObjectTruth(id) {
   const d = await gql(
-    `query($a:SuiAddress!){ object(address:$a){ version owner{ __typename } asMoveObject{ contents{ type{ repr } json } } asMovePackage{ address } }
+    `query($a:SuiAddress!){ object(address:$a){ version owner{ __typename ... on ObjectOwner{ address{ address } } } asMoveObject{ contents{ type{ repr } json } } asMovePackage{ address } }
       last: transactions(filter:{ affectedObject:$a }, last:1){ nodes{ digest } } }`,
     { a: id },
   );
   if (d.object?.asMovePackage) return { exists: true, package: true };
   if (d.object) {
+    const typename = d.object.owner?.__typename;
+    // The object that holds an object-owned one. A dynamic object field is
+    // owned by its dynamic_field::Field, which the object holding the field owns.
+    let holder = null;
+    if (typename === "ObjectOwner") {
+      holder = normAddr(d.object.owner.address.address);
+      const direct = (
+        await gql(`query($a:SuiAddress!){ object(address:$a){ owner{ __typename ... on ObjectOwner{ address{ address } } } asMoveObject{ contents{ type{ repr } } } } }`, { a: holder })
+      ).object;
+      if (normType(direct?.asMoveObject?.contents?.type?.repr).startsWith(`${ADDR2}::dynamic_field::Field<`) && direct.owner?.__typename === "ObjectOwner")
+        holder = normAddr(direct.owner.address.address);
+    }
     return {
       exists: true,
-      owner: OWNER_KIND[d.object.owner?.__typename] ?? `unread (${d.object.owner?.__typename})`,
+      owner: OWNER_KIND[typename] ?? `unread (${typename})`,
+      ...(holder ? { holder } : {}),
       type: normType(d.object.asMoveObject?.contents?.type?.repr),
       json: d.object.asMoveObject?.contents?.json ?? null,
     };
@@ -764,9 +773,17 @@ async function checkFlows(key, digest, why) {
 /** Every capability an audit lists, a folded entry expanded to its holders. */
 function auditCaps(audit) {
   return (audit?.capabilities ?? []).flatMap((c) =>
-    (c.holders ?? [{ object_id: c.object_id }]).map((h) => ({ id: normAddr(h.object_id), kind: c.kind, type: normType(c.type), owner: c.owner })),
+    (c.holders ?? [{ object_id: c.object_id }]).map((h) => ({
+      id: normAddr(h.object_id),
+      kind: c.kind,
+      type: normType(c.type),
+      owner: c.owner,
+      holder: c.owner === "object" ? normAddr(h.owner_address ?? c.owner_address ?? ZERO) : null,
+    })),
   );
 }
+/** An owner as compared: its kind, and for an object-owned cap the object that holds it. */
+const ownerLabel = (owner, holder) => (owner === "object" ? `object ${holder}` : owner);
 
 async function mintTruth(coinType) {
   const d = await gql(
@@ -779,7 +796,12 @@ async function mintTruth(coinType) {
     ? { currency: normAddr(d.currency.nodes[0].address), treasury_cap_id: json.treasury_cap_id ? normAddr(json.treasury_cap_id) : null, supply: json.supply?.["@variant"] ?? null }
     : null;
   const caps = new Map();
-  for (const n of d.caps.nodes) caps.set(normAddr(n.address), { owner: OWNER_KIND[n.owner?.__typename] ?? n.owner?.__typename, found_by: "TreasuryCap<T> type query" });
+  for (const n of d.caps.nodes) {
+    const id = normAddr(n.address);
+    const owner = OWNER_KIND[n.owner?.__typename] ?? n.owner?.__typename;
+    const holder = owner === "object" ? (await objectTruth(id)).holder : undefined;
+    caps.set(id, { owner, ...(holder ? { holder } : {}), found_by: "TreasuryCap<T> type query" });
+  }
   if (registry?.treasury_cap_id && !caps.has(registry.treasury_cap_id)) {
     const t = await objectTruth(registry.treasury_cap_id);
     // make_supply_fixed and make_supply_burn_only take the cap by value and
@@ -790,7 +812,7 @@ async function mintTruth(coinType) {
     if (consumed && (t.unreadable || (!t.exists && t.kind === "deleted")))
       state = { owner: "burned", found_by: `registry treasury_cap_id, supply ${registry.supply}`, ...(t.tx ? { ended_in: t.tx } : {}) };
     else if (consumed) state = { unreadable: `the registry records supply ${registry.supply}, yet the cap is ${t.exists ? "live" : t.kind}` };
-    else state = t.unreadable ? { unreadable: t.unreadable } : { owner: capOwner(t), found_by: "registry treasury_cap_id", ...(t.exists ? {} : { ended_in: t.tx }) };
+    else state = t.unreadable ? { unreadable: t.unreadable } : { owner: capOwner(t), ...(t.holder ? { holder: t.holder } : {}), found_by: "registry treasury_cap_id", ...(t.exists ? {} : { ended_in: t.tx }) };
     caps.set(registry.treasury_cap_id, state);
   }
   return { registry, caps };
@@ -819,19 +841,20 @@ async function checkMintAuthority(key, coinType) {
       continue;
     }
     const l = listed.find((x) => x.id === id);
-    if (!l) problems.push({ cap: id, audit: "not listed", chain: c.owner, found_by: c.found_by });
-    else if (l.owner !== c.owner) problems.push({ cap: id, audit: l.owner, chain: c.owner });
+    const chain = ownerLabel(c.owner, c.holder);
+    if (!l) problems.push({ cap: id, audit: "not listed", chain, found_by: c.found_by });
+    else if (ownerLabel(l.owner, l.holder) !== chain) problems.push({ cap: id, audit: ownerLabel(l.owner, l.holder), chain });
   }
   const extra = [];
   for (const l of listed.filter((x) => !truth.caps.has(x.id))) {
     const t = await objectTruth(l.id);
-    const owner = t.unreadable ? null : capOwner(t);
-    extra.push({ id: l.id, audit: l.owner, chain: owner ?? `unreadable: ${t.unreadable}` });
-    if (!owner) unread.push(`the state of listed cap ${l.id} could not be read: ${t.unreadable}`);
-    else if (l.owner !== owner) problems.push({ cap: l.id, audit: l.owner, chain: owner });
+    const chain = t.unreadable ? null : ownerLabel(capOwner(t), t.holder);
+    extra.push({ id: l.id, audit: ownerLabel(l.owner, l.holder), chain: chain ?? `unreadable: ${t.unreadable}` });
+    if (!chain) unread.push(`the state of listed cap ${l.id} could not be read: ${t.unreadable}`);
+    else if (ownerLabel(l.owner, l.holder) !== chain) problems.push({ cap: l.id, audit: ownerLabel(l.owner, l.holder), chain });
   }
   const detail = {
-    ours: { treasury_caps: listed.map((l) => ({ id: l.id, owner: l.owner })), unlocated: unlocated.map((u) => ({ risk: u.risk, reason: text(u.reason, 200) })) },
+    ours: { treasury_caps: listed.map((l) => ({ id: l.id, owner: ownerLabel(l.owner, l.holder) })), unlocated: unlocated.map((u) => ({ risk: u.risk, reason: text(u.reason, 200) })) },
     truth: { registry: truth.registry, caps: Object.fromEntries(truth.caps), ...(extra.length ? { listed_by_the_audit_only: extra } : {}) },
   };
   if (problems.length) return record("d", key, T, "disagree", { ...detail, problems });
@@ -856,11 +879,12 @@ async function checkCapOwners(key, pkgId) {
     const subject = `analyze_package ${pkg} ${c.type.split("<")[0].split("::").slice(-2).join("::")} ${c.id}`;
     const t = await truthOf("f", key, subject, () => objectTruth(c.id));
     if (!t) continue;
-    const owner = capOwner(t);
-    record("f", key, subject, c.owner === owner ? "agree" : "disagree", {
-      ours: { owner: c.owner },
+    const owner = ownerLabel(capOwner(t), t.holder);
+    const ours = ownerLabel(c.owner, c.holder);
+    record("f", key, subject, ours === owner ? "agree" : "disagree", {
+      ours: { owner: ours },
       truth: { owner, ...(t.exists ? {} : { ended_in: t.tx }) },
-      ...(c.owner === owner ? {} : { problems: [{ cap: c.id, audit: c.owner, chain: owner }] }),
+      ...(ours === owner ? {} : { problems: [{ cap: c.id, audit: ours, chain: owner }] }),
     });
   }
 }

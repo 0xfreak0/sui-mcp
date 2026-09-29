@@ -1112,7 +1112,9 @@ const summary = [];
 for (const [id, o] of Object.entries(ORACLES)) {
   const rows = [...o.rows].sort((a, b) => a.key - b.key);
   const n = (s) => rows.filter((r) => r.status === s).length;
-  const requested = PINNED ? !!PINNED[id]?.length : true;
+  // A drawn oracle whose bounds allow subjects must check something.
+  const drawn = { a: ROUTER_N, b: ENDS + COINS, c: TXS + ROUTER_N, d: COINS, e: TXS + ROUTER_N, f: COINS };
+  const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
   if (!rows.length && !requested) continue;
   const checked = n("agree") + n("disagree") + n("known");
   summary.push([id, o.title, checked, n("agree"), n("disagree"), n("known"), n("skip")]);

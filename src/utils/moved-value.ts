@@ -33,8 +33,9 @@ export interface MovedObject {
   before_version?: string;
   /**
    * The input version of an object whose previous holder the chain did not
-   * record (`appeared`): that version's holder is read to decide whether it
-   * moved or was only changed in place.
+   * record (`appeared`, or deleted or wrapped under effects v1): that
+   * version's holder is read to decide whether it moved, was only changed in
+   * place, or left an address at all.
    */
   prior_version?: string;
   /** Moved into or out of another object, or from a holder that cannot be read: listed, never counted. */
@@ -129,12 +130,15 @@ export function movedObjects(movements: ObjectMovement[], objects: ChangedObject
     if (!m.type || readerFor(m.type, specificOnly) === null) continue;
     const from = FROM_KINDS.includes(m.kind) && m.from?.kind === "address" && m.from.address ? normalizeSuiAddress(m.from.address) : null;
     const to = TO_KINDS.includes(m.kind) && m.to?.kind === "address" && m.to.address ? normalizeSuiAddress(m.to.address) : null;
-    if ((!from && !to) || from === to) continue;
+    // Effects v1 name no holder for an object they deleted or wrapped; the
+    // holder of its input version is read instead.
+    const endedUnrecorded = m.source_unrecorded === true && m.from === null && (m.kind === "deleted" || m.kind === "wrapped");
+    if (!endedUnrecorded && ((!from && !to) || from === to)) continue;
     const v = byId.get(normalizeSuiAddress(m.object_id));
     const custody = CUSTODY_KINDS[m.kind];
     // An object whose previous holder went unrecorded is resolved from its
     // input version when there is one; with none it cannot be.
-    const prior = m.kind === "appeared" ? (v?.inputVersion ?? null) : null;
+    const prior = m.kind === "appeared" || endedUnrecorded ? (v?.inputVersion ?? null) : null;
     out.push({
       object_id: normalizeSuiAddress(m.object_id),
       type: m.type,
@@ -256,7 +260,10 @@ export async function valueMovedObjects(
   );
   // An object that appeared with no recorded holder: the same address held
   // it before (changed in place), another address did (a transfer), or no
-  // address did (it came out of another object), which is only listed.
+  // address did (it came out of another object), which is only listed. One
+  // deleted or wrapped with no recorded holder left the address that held
+  // it, and left no address when held by an object, shared or immutable.
+  const noAddress = new Set<MovedObject>();
   for (const m of readable) {
     if (!m.prior_version) continue;
     const owner = priorStates.get(`${m.object_id}@${m.prior_version}`)?.owner;
@@ -265,10 +272,16 @@ export async function valueMovedObjects(
       m.from = holder;
       m.before_version = m.prior_version;
     } else if (holder) m.from = holder;
-    else m.custody = owner?.kind === "object" ? "unwrapped" : "prior_holder_unknown";
+    else if (m.to === null) {
+      if (owner?.kind !== "object" && owner?.kind !== "shared" && owner?.kind !== "immutable") {
+        unread.push({ what: m.object_id, reason: `its holder at version ${m.prior_version} could not be read` });
+      }
+      noAddress.add(m);
+    } else m.custody = owner?.kind === "object" ? "unwrapped" : "prior_holder_unknown";
   }
+  const held = noAddress.size > 0 ? readable.filter((m) => !noAddress.has(m)) : readable;
   const states = await readVersions(
-    readable.flatMap((m) => [
+    held.flatMap((m) => [
       { object_id: m.object_id, version: m.version! },
       ...(m.before_version ? [{ object_id: m.object_id, version: m.before_version }] : []),
     ]),
@@ -321,7 +334,7 @@ export async function valueMovedObjects(
   };
   const rows: MovedObjectValue[] = [];
   await Promise.all(
-    readable.map(async (m) => {
+    held.map(async (m) => {
       // A kept object's state before is valued against protocol state as of
       // the previous checkpoint, since its reader may read the protocol's
       // own record of it (a pool's position record) rather than the object.

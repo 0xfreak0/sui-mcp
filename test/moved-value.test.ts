@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ObjectMovement } from "../src/utils/object-flow.js";
 import type { MovedObjectValue } from "../src/utils/moved-value.js";
+import type { ObjectState } from "../src/utils/valuers/common.js";
 
 // Only the synthetic readers registered below, and object states as read.
 vi.mock("../src/utils/valuers/index.js", () => ({}));
-/** Holder of an object at a version, by `id@version`; an address unless listed. */
-const owners = new Map<string, { kind: "address" | "object"; address: string }>();
+/** Holder of an object at a version, by `id@version`. */
+const owners = new Map<string, NonNullable<ObjectState["owner"]>>();
 vi.mock("../src/utils/valuers/common.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   prefetchCheckpoints: async () => undefined,
@@ -18,9 +19,22 @@ vi.mock("../src/utils/valuers/common.js", async (importOriginal) => ({
     ),
 }));
 
+/** Transactions the fullnode returns to `batchGetTransactions`, in request order. */
+let fullnodeTxs: unknown[] = [];
+vi.mock("../src/clients/grpc.js", () => {
+  const client = {
+    ledgerService: {
+      batchGetTransactions: async () => ({
+        response: { transactions: fullnodeTxs.map((transaction) => ({ result: { oneofKind: "transaction", transaction } })) },
+      }),
+    },
+  };
+  return { sui: client, archive: client };
+});
+
 // Imported after the mocks above.
 const { registerValuer } = await import("../src/utils/position-value.js");
-const { keptDelta, movedObjects, objectValueByAddress, valueMovedObjects, valueTransactionObjects } = await import("../src/utils/moved-value.js");
+const { keptDelta, movedObjects, objectValueByAddress, readMovedObjects, valueMovedObjects, valueTransactionObjects } = await import("../src/utils/moved-value.js");
 
 const STAKE = "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui";
 const ART = `0x${"a".repeat(64)}::art::Art`;
@@ -112,6 +126,15 @@ describe("movedObjects", () => {
     expect(out[0].custody).toBeUndefined();
     expect(out[1].custody).toBe("prior_holder_unknown");
   });
+
+  it("resolves an object effects v1 deleted or wrapped from its input version, since they name no holder", () => {
+    const ended = (id: number, kind: "deleted" | "wrapped") => ({ ...move(id, STAKE, kind, null, null), source_unrecorded: true });
+    const out = movedObjects([ended(18, "deleted"), ended(19, "wrapped")], [versions(18, "15", null), versions(19, "6", null)]);
+    expect(out).toEqual([
+      { object_id: ID(18), type: STAKE, from: null, to: null, version: "15", prior_version: "15" },
+      { object_id: ID(19), type: STAKE, from: null, to: null, version: "6", prior_version: "6", custody: "wrapped" },
+    ]);
+  });
 });
 
 describe("keptDelta", () => {
@@ -196,6 +219,29 @@ describe("valueMovedObjects", () => {
     const r = await valueMovedObjects([{ object_id: ID(15), type: STAKE, from: null, to: B, version: "4", prior_version: "3" }], "100");
     expect(r.rows[0].custody).toBe("unwrapped");
     expect(objectValueByAddress(r.rows).get(B)).toMatchObject({ usd_net: 0, usd_gained: 0 });
+  });
+
+  it.each(["object", "shared", "immutable"] as const)("excludes a deleted object with a %s owner, and lists one whose holder could not be read", async (kind) => {
+    owners.set(`${ID(21)}@15`, { kind, address: kind === "object" ? ID(99) : null });
+    const r = await valueMovedObjects(
+      [
+        { object_id: ID(21), type: STAKE, from: null, to: null, version: "15", prior_version: "15" },
+        { object_id: ID(22), type: STAKE, from: null, to: null, version: "15", prior_version: "15" },
+      ],
+      "100",
+    );
+    expect(r.rows).toEqual([]);
+    expect(r.unread.map((u) => u.what)).toEqual([ID(22)]);
+  });
+
+  it.each(["other", "address"] as const)("lists a deleted object's %s owner without a known address as unread", async (kind) => {
+    owners.set(`${ID(23)}@15`, { kind, address: null });
+    const r = await valueMovedObjects(
+      [{ object_id: ID(23), type: STAKE, from: null, to: null, version: "15", prior_version: "15" }],
+      "100",
+    );
+    expect(r.rows).toEqual([]);
+    expect(r.unread.map((u) => u.what)).toEqual([ID(23)]);
   });
 });
 
@@ -282,5 +328,38 @@ describe("valueTransactionObjects", () => {
     const r = await valueTransactionObjects([tx("t1", 7, 100)], { maxTxs: 10, maxObjects: 5 });
     expect(r.rows).toHaveLength(7);
     expect(r.skipped).toEqual([]);
+  });
+});
+
+describe("readMovedObjects", () => {
+  it("lists a stake withdrawal under effects v1, which name no owner for the StakedSui it deleted", async () => {
+    // The gRPC shape of an effects-v1 request_withdraw_stake: the StakedSui's
+    // input existed and its output does not, with no owner on either side;
+    // the SUI paid out is a coin, left to the balance changes.
+    fullnodeTxs = [
+      {
+        checkpoint: 500n,
+        effects: {
+          version: 1,
+          changedObjects: [
+            {
+              objectId: ID(30),
+              objectType: "0x0000000000000000000000000000000000000000000000000000000000000002::coin::Coin<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>",
+              inputState: 1,
+              outputState: 2,
+              outputVersion: 41n,
+              outputOwner: { kind: 1, address: A },
+              idOperation: 2,
+            },
+            { objectId: ID(31), objectType: STAKE, inputState: 2, inputVersion: 15n, outputState: 1, outputVersion: 41n, outputDigest: "7gyGAp71YXQRoxmFBaHxofQXAipvgHyBKPyxmdSJxyvz", idOperation: 3 },
+          ],
+        },
+      },
+    ];
+    owners.set(`${ID(31)}@15`, { kind: "address", address: A });
+    const read = await readMovedObjects(["w1"], true);
+    const r = await valueTransactionObjects(read.txs, { maxTxs: 10, maxObjects: 10 });
+    expect(r.rows).toEqual([expect.objectContaining({ digest: "w1", object_id: ID(31), from: A, to: null, usd: 1 })]);
+    expect(r.unread).toEqual([]);
   });
 });

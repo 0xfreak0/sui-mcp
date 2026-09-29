@@ -39,6 +39,10 @@
  *   ones. Reading that as "unwrapped" and dropping it would lose every object
  *   transfer over the chain's first year, which a backward trace reaches. It
  *   is reported as {@link MovementKind} `appeared`, with the ambiguity stated.
+ *   gRPC renders the same effects (version 1) with no owner on either side
+ *   of an object they deleted or wrapped; that is reported as `deleted` or
+ *   `wrapped` with `source_unrecorded`, and the holder is at its input
+ *   version.
  * - **`Coin<T>` is excluded** because the balance changes already state it,
  *   and **mutations are excluded** because an object written to has not
  *   changed hands.
@@ -94,7 +98,7 @@ export interface ObjectMovement {
   renounced?: boolean;
   /** A capability made shared, or frozen while functions take it by `&`: any transaction can now use it. */
   opened?: true;
-  /** The chain did not record the previous holder. See `appeared`. */
+  /** The chain did not record the previous holder: see `appeared`, and an object effects v1 deleted or wrapped. */
   source_unrecorded?: boolean;
   /** Protocol that defined this type, when the registry knows it. */
   protocol?: string;
@@ -556,6 +560,10 @@ function finish(
     out.note =
       (out.note ? out.note + " " : "") +
       "The chain did not record who held this before the transaction, which is normal for transactions before roughly March 2024. It is therefore not knowable from this alone whether it was transferred or unwrapped from something.";
+  } else if (out.source_unrecorded) {
+    out.note =
+      (out.note ? out.note + " " : "") +
+      "The chain did not record who held this before the transaction, which is normal for transactions before roughly March 2024. The holder is the owner of the version the transaction read (get_object with that version).";
   }
 
   return out;
@@ -831,12 +839,18 @@ export function readGrpcObjectChanges(
     // the owner alone keeps the pre-2024 shape (EXISTS, no owner) as
     // `appeared`.
     const hasInput = from !== null;
+    // Effects version 1 records no input owner, so an object it deleted or
+    // wrapped names an owner on neither side. The input existed and the
+    // output does not; `isDeletion` tells the two apart, since effects v1
+    // lists a wrap as DELETED with the wrapped marker as its output digest.
+    const endedUnrecorded =
+      from === null && change.inputState === INPUT_EXISTS && change.outputState === OUTPUT_DOES_NOT_EXIST && change.idOperation !== ID_CREATED;
 
     const kind = classifyKind(
       {
         created: change.idOperation === ID_CREATED,
         deleted: isDeletion(change),
-        hasInput,
+        hasInput: hasInput || endedUnrecorded,
         hasOutput: to !== null,
       },
       from,
@@ -844,8 +858,9 @@ export function readGrpcObjectChanges(
     );
     if (kind === "mutated") continue;
     // Neither side named an owner. With nobody at either end, the change is
-    // not reported as a transfer.
-    if (from === null && to === null) continue;
+    // not reported as a transfer. An object old effects deleted or wrapped is
+    // reported, with its holder unrecorded.
+    if (from === null && to === null && !endedUnrecorded) continue;
     // An input that genuinely did not exist and was not created is an unwrap,
     // which is a different claim from an unrecorded owner.
     const resolved: MovementKind = kind === "appeared" && inputAbsent ? "unwrapped" : kind;
@@ -863,6 +878,7 @@ export function readGrpcObjectChanges(
         to,
         category,
         high_consequence: isHighConsequence(type),
+        ...(endedUnrecorded ? { source_unrecorded: true } : {}),
         ...(protocol ? { protocol: protocol.name } : {}),
       }),
     );
@@ -974,7 +990,10 @@ export function custodyChanges(movements: ObjectMovement[]): ObjectMovement[] {
     // (transfer::public_share_object aborts on an older object), so opening
     // one to everyone at creation is a change of control too.
     if (m.kind === "created") return m.opened === true;
-    return m.kind === "unwrapped" || m.kind === "wrapped";
+    // A wrap whose holder went unrecorded names no party at either end, which
+    // gives a trace nobody to follow, as with `appeared` above.
+    if (m.kind === "wrapped") return m.from !== null;
+    return m.kind === "unwrapped";
   });
 }
 

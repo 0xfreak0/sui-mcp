@@ -70,6 +70,8 @@ describe("parseMoveModule", () => {
     expect(fn("consume").visibility).toBe("public(package)");
     expect(fn("consume").params[0]).toMatchObject({ takes: "value", base: "coin::TreasuryCap" });
     expect(fn("consume").body).toContain("into_supply()");
+    expect(fn("consume").returnBases).toEqual(["balance::Supply"]);
+    expect(fn("take_ref").returnBases).toEqual([]);
     expect(fn("private_entry").params[0]).toMatchObject({ takes: "&mut", base: "demo::Holder" });
   });
 
@@ -89,5 +91,31 @@ describe("parseMoveModule", () => {
       ["State", ["store"], ["Fixed", "Named", "Unknown"]],
     ]);
     expect(m.structs[0]!.typeParams).toEqual([{ name: "T", phantom: true, constraints: ["key", "store"] }]);
+  });
+});
+
+// Every `use` form and modifier order the compiler accepts resolves the same way.
+describe("parseMoveModule — use forms and modifier order", () => {
+  const m = parseMoveModule(`module sui::ext;
+use sui::package as pkg;
+use sui::{coin::{Self as c, TreasuryCap as Treasury}, balance::Supply};
+use sui::{deny_list};
+
+public fun by_alias(cap: &pkg::UpgradeCap) {}
+public fun by_group<T>(cap: &Treasury<T>, s: &mut Supply<T>, k: &c::DenyCapV2<T>, d: &deny_list::DenyList) {}
+entry public(package) fun reordered<T>(cap: &Treasury<T>) {}
+native public fun reordered_native(x: u64);
+`);
+  const fn = (name: string) => m.functions.find((f) => f.name === name)!;
+
+  it("resolves a module alias and a grouped use, nested groups included", () => {
+    expect(fn("by_alias").params[0]!.base).toBe("package::UpgradeCap");
+    expect(fn("by_group").params.map((p) => p.base)).toEqual(["coin::TreasuryCap", "balance::Supply", "coin::DenyCapV2", "deny_list::DenyList"]);
+  });
+
+  it("reads modifiers in any order", () => {
+    expect(fn("reordered")).toMatchObject({ visibility: "public(package)", entry: true });
+    expect(isCallable(fn("reordered"))).toBe(true);
+    expect(fn("reordered_native")).toMatchObject({ visibility: "public", native: true, body: null });
   });
 });

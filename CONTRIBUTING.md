@@ -248,9 +248,13 @@ abilities or field names) states that as a claim beside the rule: a
 `CAPABILITY_USES` in `src/utils/object-flow.ts`. `test/sui-framework.test.ts`
 parses the framework sources vendored under `test/fixtures/sui-framework` and
 fails on any claim the source contradicts. For each high-consequence
-capability it also fails on a callable function taking it by reference that
-`CAPABILITY_USES` neither grants, covers nor marks inert, and it checks that
-the shared and frozen readings follow from those functions.
+capability it also fails on a callable function that takes it in any mode,
+or that consumes what a function taking it by `&` returns, when
+`CAPABILITY_USES` neither grants, covers nor marks it inert, and it checks
+that the shared and frozen readings, and the notes, follow from those
+functions. It also fails when a parameter naming a capability does not
+resolve to the capability's defining module, so a `use` form the parser
+misreads cannot hide a function.
 
 Move the pinned framework to a new release and run the test:
 

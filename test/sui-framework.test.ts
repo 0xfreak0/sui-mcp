@@ -13,12 +13,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isCallable, parseMoveModule, type MoveFunction, type MoveModule, type MoveStruct } from "./helpers/move-source.js";
 import { CAPABILITY_STRUCTS } from "../scripts/lib/sui-framework-files.mjs";
-import type { FrameworkClaim, FunctionClaim, StructClaim, TakenBy } from "../src/utils/framework-claims.js";
+import { citeFunctions, type FrameworkClaim, type FunctionClaim, type StructClaim, type TakenBy } from "../src/utils/framework-claims.js";
 import {
   CAPABILITY_USES,
   HIGH_CONSEQUENCE_TYPES,
   OBJECT_FLOW_CLAIMS,
   readObjectMovements,
+  type CapabilityGrant,
   type GqlObjectChange,
 } from "../src/utils/object-flow.js";
 import {
@@ -122,13 +123,38 @@ function modeText(mode: TakenBy): string {
   return mode === "value" ? "by value" : `by ${mode}`;
 }
 
-/** Callable functions taking `type` (`module::Name`) by reference, with how. */
-function referenceUses(type: string): Map<string, TakenBy> {
+/** Callable functions taking `type` (`module::Name`) in any mode, with how. */
+function uses(type: string): Map<string, TakenBy> {
   const out = new Map<string, TakenBy>();
   for (const [name, f] of functions) {
     if (!isCallable(f)) continue;
-    const p = f.params.find((q) => q.base === type && q.takes !== "value");
+    const p = f.params.find((q) => q.base === type);
     if (p) out.set(name, p.takes);
+  }
+  return out;
+}
+
+/** `tx_context::TxContext` is the one non-object a `&mut` parameter takes everywhere; it lives in an unvendored module. */
+const NOT_AN_OBJECT = new Set(["tx_context::TxContext"]);
+const isObjectType = (base: string) => structs.get(base)?.abilities.includes("key") ?? (base.includes("::") && !NOT_AN_OBJECT.has(base));
+
+/**
+ * Callable functions that turn what a `&` grant returns into something more:
+ * they take one of its outputs by value, or take an output and also write
+ * (`&mut`) another object that was not among the outputs, such as a shared
+ * registry. A function that only reads or edits the objects the grant made
+ * is what making them already allows.
+ */
+function outputConsumers(cap: string, grantFns: string[]): Set<string> {
+  const outputs = new Set(
+    grantFns.flatMap((fn) => functions.get(fn)?.returnBases ?? []).filter((b) => b !== cap && structs.has(b)),
+  );
+  const out = new Set<string>();
+  for (const [name, f] of functions) {
+    if (!isCallable(f) || !f.params.some((p) => outputs.has(p.base))) continue;
+    const consumes = f.params.some((p) => outputs.has(p.base) && p.takes === "value");
+    const writesOther = f.params.some((p) => p.takes === "&mut" && !outputs.has(p.base) && p.base !== cap && isObjectType(p.base));
+    if (consumes || writesOther) out.add(name);
   }
   return out;
 }
@@ -179,7 +205,7 @@ describe("framework claims hold in the pinned source", () => {
   });
 });
 
-describe("CAPABILITY_USES accounts for every callable function taking a capability by reference", () => {
+describe("CAPABILITY_USES accounts for every callable function that takes a capability", () => {
   it("covers exactly the high-consequence types, and the sync script vendors every module naming them", () => {
     const uncovered = Object.keys(HIGH_CONSEQUENCE_TYPES).filter((t) => !(t in CAPABILITY_USES)).map(short);
     expect(uncovered, `high-consequence types CAPABILITY_USES does not cover: ${uncovered.join(", ")}`).toEqual([]);
@@ -188,14 +214,47 @@ describe("CAPABILITY_USES accounts for every callable function taking a capabili
     for (const type of Object.keys(CAPABILITY_USES)) expect(CAPABILITY_STRUCTS).toContain(type.split("::").pop());
   });
 
-  for (const [type, uses] of highConsequenceUses) {
+  // A parameter whose type the parser could not resolve would be skipped by
+  // every check below without a failure.
+  it("resolves every capability a callable function takes to its defining module", () => {
+    const defining = new Map<string, string[]>(CAPABILITY_STRUCTS.map((n) => [n, [...structs.keys()].filter((k) => k.endsWith(`::${n}`))]));
+    for (const [n, ks] of defining) expect(ks, `${n} is defined once in the vendored sources`).toHaveLength(1);
+    const named = new RegExp(`\\b(?:${CAPABILITY_STRUCTS.join("|")})\\b`);
+    const wrong: string[] = [];
+    for (const [name, f] of functions) {
+      if (!isCallable(f)) continue;
+      for (const p of f.params) {
+        if (!named.test(p.type)) continue;
+        const head = p.type.replace(/<[\s\S]*$/, "").split("::").pop()!.replace(/`/g, "");
+        const want = defining.get(head)?.[0];
+        if (!want) wrong.push(`${name}(${p.name}: ${p.type}) holds a capability inside another type`);
+        else if (p.base !== want) wrong.push(`${name}(${p.name}: ${p.type}) resolved to ${p.base}, not ${want}`);
+      }
+    }
+    expect(wrong, wrong.join("; ")).toEqual([]);
+  });
+
+  for (const [type, entry] of highConsequenceUses) {
     it(short(type), () => {
-      const found = referenceUses(short(type));
-      const listed = new Set([...uses.grants.flatMap((g) => g.fns), ...Object.keys(uses.covered), ...Object.keys(uses.inert)]);
+      const found = uses(short(type));
+      const refGrants = entry.grants.filter((g) => g.takes === "&");
+      const consumers = outputConsumers(short(type), [...refGrants.flatMap((g) => g.fns), ...Object.keys(entry.covered).filter((fn) => found.get(fn) === "&")]);
+      const listed = new Set([
+        ...entry.grants.flatMap((g) => [...g.fns, ...(g.unlocks?.fns ?? [])]),
+        ...Object.keys(entry.covered),
+        ...Object.keys(entry.inert),
+      ]);
       const unlisted = [...found].filter(([fn]) => !listed.has(fn)).map(([fn, mode]) => `${fn} (${mode})`);
-      expect(unlisted, `callable functions taking ${short(type)} by reference that CAPABILITY_USES neither grants, covers nor marks inert: ${unlisted.join(", ")}`).toEqual([]);
-      const stale = [...listed].filter((fn) => !found.has(fn));
-      expect(stale, `listed in CAPABILITY_USES for ${short(type)}, but not a callable function taking it by reference: ${stale.join(", ")}`).toEqual([]);
+      expect(unlisted, `callable functions taking ${short(type)} that CAPABILITY_USES neither grants, covers nor marks inert: ${unlisted.join(", ")}`).toEqual([]);
+      const unreviewed = [...consumers].filter((fn) => !listed.has(fn));
+      expect(unreviewed, `callable functions turning what a & grant on ${short(type)} returns into something more, which CAPABILITY_USES neither unlocks, covers nor marks inert: ${unreviewed.join(", ")}`).toEqual([]);
+      const stale = [...listed].filter((fn) => !found.has(fn) && !consumers.has(fn));
+      expect(stale, `listed in CAPABILITY_USES for ${short(type)}, but neither takes it nor consumes a & grant's output: ${stale.join(", ")}`).toEqual([]);
+      for (const g of entry.grants) {
+        for (const fn of g.unlocks?.fns ?? []) {
+          expect(consumers.has(fn), `${fn} is listed as unlocked by ${g.fns.join(", ")} but takes none of what they return`).toBe(true);
+        }
+      }
     });
   }
 });
@@ -212,13 +271,15 @@ describe("the capability rules agree with what the framework lets any transactio
   });
   // public_share_object only shares an object the transaction created.
   const shared = (type: string): GqlObjectChange => ({ address: "0xcap", idCreated: true, idDeleted: false, outputState: state(type, { __typename: "Shared" }) });
+  /** Each grant as a note must cite it, whole: `coin::mint and mint_balance`. */
+  const citations = (grants: CapabilityGrant[]) =>
+    grants.flatMap((g) => [citeFunctions(g.fns), ...(g.takes === "&" && g.unlocks ? [citeFunctions(g.unlocks.fns)] : [])]);
 
-  for (const [type, uses] of highConsequenceUses) {
+  for (const [type, entry] of highConsequenceUses) {
     const struct = structs.get(short(type));
     const instance = struct?.typeParams.length ? `${type}<0xa::t::T>` : type;
-    const found = [...referenceUses(short(type))].filter(([fn]) => !(fn in uses.inert));
+    const found = [...uses(short(type))].filter(([fn]) => !(fn in entry.inert));
     const byRef = found.filter(([, mode]) => mode === "&").map(([fn]) => fn);
-    const cited = uses.grants.flatMap((g) => g.fns);
 
     it(`${short(type)} frozen: renounced only when no function taking it by & grants anything`, () => {
       const m = readObjectMovements([frozen(instance)])[0]!;
@@ -228,26 +289,28 @@ describe("the capability rules agree with what the framework lets any transactio
       } else {
         expect(m.renounced, `no function takes ${short(type)} by & to any effect, so freezing renounces it`).toBe(true);
       }
-      for (const fn of cited) expect(m.note, `the note names ${fn}`).toContain(fn.split("::")[1]);
+      const cited = citations(entry.grants.filter((g) => g.takes !== "value"));
+      for (const c of cited) expect(m.note, `the frozen note cites ${c}`).toContain(c);
       const kind = classifyCapType(instance);
       if (kind === "upgrade" || kind === "treasury" || kind === "deny") {
         const r = classifyCapabilityRisk({ kind, type: instance, owner: "immutable" });
         expect(r.risk, `capabilities.ts on a frozen ${short(type)}`).toBe(byRef.length ? "medium" : "info");
-        for (const fn of cited) expect(r.note, `the note names ${fn}`).toContain(fn.split("::")[1]);
+        for (const c of cited) expect(r.note, `the frozen note cites ${c}`).toContain(c);
       }
     });
 
     it(`${short(type)} shared: opened to everyone`, () => {
-      expect(found.length, `no callable function takes ${short(type)} by reference to any effect`).toBeGreaterThan(0);
+      expect(found.length, `no callable function takes ${short(type)} to any effect`).toBeGreaterThan(0);
       const m = readObjectMovements([shared(instance)])[0]!;
       expect(m.renounced, `any transaction can pass a shared ${short(type)} to ${found.map(([fn]) => fn).join(", ")}`).toBeFalsy();
       expect(m.opened).toBe(true);
-      for (const fn of cited) expect(m.note, `the note names ${fn}`).toContain(fn.split("::")[1]);
+      const cited = citations(entry.grants);
+      for (const c of cited) expect(m.note, `the shared note cites ${c}`).toContain(c);
       const kind = classifyCapType(instance);
       if (kind === "upgrade" || kind === "treasury" || kind === "deny") {
         const r = classifyCapabilityRisk({ kind, type: instance, owner: "shared" });
         expect(r.risk, `capabilities.ts on a shared ${short(type)}`).toBe("high");
-        for (const fn of cited) expect(r.note, `the note names ${fn}`).toContain(fn.split("::")[1]);
+        for (const c of cited) expect(r.note, `the shared note cites ${c}`).toContain(c);
       }
     });
   }

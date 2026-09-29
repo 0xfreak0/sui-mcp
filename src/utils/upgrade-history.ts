@@ -419,7 +419,7 @@ export function upgradeFlags(input: FlagInput): UpgradeFlag[] {
       flags.push({
         kind: "cap_shared",
         severity: "high",
-        summary: `The UpgradeCap is a shared object (since ${at.timestamp}). Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers("0x2::package::UpgradeCap")}`,
+        summary: `The UpgradeCap is a shared object (since ${at.timestamp}). Any transaction can pass a shared object to the functions that take it: ${sharedCapabilityPowers("0x2::package::UpgradeCap")}`,
         txs,
       });
     }

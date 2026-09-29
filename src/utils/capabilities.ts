@@ -236,7 +236,7 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `UpgradeCap is a shared object (policy: ${policyLabel ?? "unread"}). Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers(type)}`,
+        note: `UpgradeCap is a shared object (policy: ${policyLabel ?? "unread"}). Any transaction can pass a shared object to the functions that take it: ${sharedCapabilityPowers(type)}`,
       };
     }
     if (owner === "immutable") {
@@ -286,7 +286,7 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `Mint authority (${shortType}) is a shared object. Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers(type)}`,
+        note: `Mint authority (${shortType}) is a shared object. Any transaction can pass a shared object to the functions that take it: ${sharedCapabilityPowers(type)}`,
       };
     }
     if (owner === "immutable") {
@@ -315,7 +315,7 @@ export function classifyCapabilityRisk(input: {
     if (owner === "shared") {
       return {
         risk: "high",
-        note: `Denylist/freeze authority (${shortType}) is a shared object. Any transaction can pass a shared object by &mut or &: ${sharedCapabilityPowers(type)}`,
+        note: `Denylist/freeze authority (${shortType}) is a shared object. Any transaction can pass a shared object to the functions that take it: ${sharedCapabilityPowers(type)}`,
       };
     }
     if (owner === "immutable") {

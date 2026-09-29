@@ -75,6 +75,10 @@ describe("classifyCapabilityRisk — upgrade cap", () => {
     const r = classifyCapabilityRisk({ kind: "deny", type: `${P2}::coin::DenyCapV2<0xabc::t::T>`, owner: "shared" });
     expect(r.note).toMatch(/deny_list_v2_enable_global_pause/);
   });
+  it("says a shared DenyCap can be swapped for a DenyCapV2 that pauses the coin", () => {
+    const r = classifyCapabilityRisk({ kind: "deny", type: `${P2}::coin::DenyCap<0xabc::t::T>`, owner: "shared" });
+    expect(r.note).toMatch(/migrate_regulated_currency_to_v2/);
+  });
 
   // A frozen object passes only by &: the &mut functions close, the & ones
   // open to everyone.

@@ -40,6 +40,8 @@ export interface MoveFunction {
   params: MoveParam[];
   /** The return type as written, "" for none. */
   returns: string;
+  /** `module::Name` (or primitive) of each returned value, references stripped. */
+  returnBases: string[];
   /** The `///` lines above the declaration, without the slashes. */
   doc: string;
   /** Body text with comments and literals blanked, null for a native function. */
@@ -160,6 +162,9 @@ function parseTypeParams(text: string): MoveTypeParam[] {
 /**
  * `use` lines: local name -> `module::Name`, and module aliases -> module.
  * Starts from the aliases Move 2024 gives every Sui module without a `use`.
+ * Reads every form the compiler accepts: `use a::m;`, `use a::m as x;`,
+ * `use a::m::N;`, `use a::m::{Self as x, N as y};` and address groups
+ * `use a::{m, n::{Self, N}};`.
  */
 function readUses(code: string): { types: Map<string, string>; modules: Map<string, string> } {
   const types = new Map<string, string>([
@@ -169,25 +174,30 @@ function readUses(code: string): { types: Map<string, string>; modules: Map<stri
     ["Option", "option::Option"],
   ]);
   const modules = new Map<string, string>(["object", "transfer", "tx_context", "option", "vector"].map((m) => [m, m]));
-  const addMember = (mod: string, member: string) => {
-    const [name, alias] = member.split(/\s+as\s+/).map((s) => s.trim());
+  const members = (mod: string, tree: string) => {
+    if (tree.startsWith("{")) {
+      for (const part of splitTop(tree.slice(1, -1))) members(mod, part);
+      return;
+    }
+    const [name, alias] = tree.split(/\s+as\s+/).map((s) => s.trim());
     if (name === "Self") modules.set(alias ?? mod, mod);
     else types.set(alias ?? name!, `${mod}::${name}`);
   };
-  for (const m of code.matchAll(/(?:^|[;{}\s])use\s+(\w+)::(\w+)(?:::([^;]+))?;/g)) {
-    const mod = m[2]!;
-    const rest = m[3]?.trim();
-    if (!rest) {
-      modules.set(mod, mod);
-    } else if (rest.startsWith("{")) {
-      for (const member of splitTop(rest.slice(1, -1))) addMember(mod, member);
-    } else if (/^\w+(\s+as\s+\w+)?$/.test(rest)) {
-      addMember(mod, rest);
-    } else {
-      const alias = /^as\s+(\w+)$/.exec(rest);
-      if (alias) modules.set(alias[1]!, mod);
+  const moduleTree = (tree: string) => {
+    if (tree.startsWith("{")) {
+      for (const part of splitTop(tree.slice(1, -1))) moduleTree(part);
+      return;
     }
-  }
+    const m = /^(\w+)\s*(.*)$/s.exec(tree);
+    if (!m) return;
+    const [, mod, tail] = m;
+    const alias = /^as\s+(\w+)$/.exec(tail!);
+    if (!tail) modules.set(mod!, mod!);
+    else if (alias) modules.set(alias[1]!, mod!);
+    else if (tail.startsWith("::")) members(mod!, tail.slice(2).trim());
+  };
+  // `use fun` (a method alias) has no `::` after its first word, so it never matches.
+  for (const m of code.matchAll(/(?:^|[;{}\s])use\s+\w+\s*::\s*([^;]+);/g)) moduleTree(squash(m[1]!));
   return { types, modules };
 }
 
@@ -321,7 +331,8 @@ export function parseMoveModule(src: string): MoveModule {
     constants.push({ module: moduleName, name: m[1]!, value, line: lineAt(m.index! + m[0].indexOf("const")) });
   }
 
-  const FUN = /\b(?:(public)\s*(\(\s*(?:package|friend)\s*\))?\s+)?(?:(entry)\s+)?(?:(native)\s+)?(?:(macro)\s+)?fun\s+(`?\w+`?)/g;
+  // The compiler accepts `public`, `entry`, `native` and `macro` in any order.
+  const FUN = /\b((?:(?:public\s*(?:\(\s*(?:package|friend)\s*\))?|entry|native|macro)\s+)*)fun\s+(`?\w+`?)/g;
   for (const m of code.matchAll(FUN)) {
     const start = m.index!;
     // `public use fun a as T.b;` is a method alias, not a declaration.
@@ -338,7 +349,7 @@ export function parseMoveModule(src: string): MoveModule {
       k = end;
       skipWs();
     }
-    if (code[k] !== "(") throw new Error(`${moduleName}::${m[6]}: expected ( at line ${lineAt(k)}`);
+    if (code[k] !== "(") throw new Error(`${moduleName}::${m[2]}: expected ( at line ${lineAt(k)}`);
     const pend = closeOf(code, k);
     const params = splitTop(code.slice(k + 1, pend - 1)).map((p): MoveParam => {
       const colon = p.indexOf(":");
@@ -371,19 +382,24 @@ export function parseMoveModule(src: string): MoveModule {
     }
     let body: string | null = null;
     if (code[k] === "{") body = code.slice(k, closeOf(code, k));
-    const vis: Visibility = !m[1] ? "private" : m[2] ? (m[2].includes("package") ? "public(package)" : "public(friend)") : "public";
+    const tuple = returns.startsWith("(") && closeOf(returns, 0) === returns.length;
+    const returnBases = splitTop(tuple ? returns.slice(1, -1) : returns).map((t) => typeBase(t.replace(/^&\s*(mut\s+)?/, ""), typeParams));
+    const mods = m[1]!;
+    const pub = /\bpublic\s*(\(\s*(package|friend)\s*\))?/.exec(mods);
+    const vis: Visibility = !pub ? "private" : pub[2] === "package" ? "public(package)" : pub[2] === "friend" ? "public(friend)" : "public";
     const line = lineAt(start);
     functions.push({
       module: moduleName,
-      name: ident(m[6]!),
+      name: ident(m[2]!),
       visibility: vis,
-      entry: !!m[3],
-      native: !!m[4],
-      macro: !!m[5],
+      entry: /\bentry\b/.test(mods),
+      native: /\bnative\b/.test(mods),
+      macro: /\bmacro\b/.test(mods),
       testOnly: isTestOnly(attributesBefore(start)),
       typeParams,
       params,
       returns,
+      returnBases,
       doc: docAbove(line),
       body,
       line,

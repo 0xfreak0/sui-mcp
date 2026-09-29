@@ -387,6 +387,21 @@ describe("giving up a capability: who can use it afterwards", () => {
     expect(createdShared(`${P2}::coin::DenyCapV2<0xa::t::T>`).note).toMatch(/deny_list_v2_enable_global_pause/);
   });
 
+  // display::new takes a Publisher by & and returns a legacy Display, which
+  // display_registry::migrate_v1_to_v2 and claim turn into the registry
+  // Display or its DisplayCap: freezing does not close the registry.
+  it("does not say a frozen Publisher closes the Display registry", () => {
+    const note = to(`${P2}::package::Publisher`, IMMUTABLE).note!;
+    expect(note).toMatch(/display_registry::migrate_v1_to_v2 and claim/);
+    expect(note).not.toMatch(/nobody can/i);
+  });
+
+  // coin::migrate_regulated_currency_to_v2 takes the DenyCap by value, and a
+  // transaction can pass a shared object by value to a function that deletes it.
+  it("says a shared DenyCap can be swapped for a pausing DenyCapV2", () => {
+    expect(createdShared(`${P2}::coin::DenyCap<0xa::t::T>`).note).toMatch(/coin::migrate_regulated_currency_to_v2 takes it by value/);
+  });
+
   it("still treats a transfer to a live address as a handover", () => {
     expect(summarizeObjectFlow([to(TREASURY, addrOwner(B))])!.capability_transfers).toHaveLength(1);
   });

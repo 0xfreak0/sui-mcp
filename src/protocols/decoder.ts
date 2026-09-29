@@ -341,6 +341,12 @@ function routeMarkers(commands: GrpcTypes.Command[], hasCoinEvidence: (t: string
  * when each has more than two, is a parameter (`poolParams`), and neither
  * hop gives it out while another candidate remains. Failing all of these,
  * the last own type.
+ *
+ * When neither the coin the path holds nor its start coin is among the
+ * hop's own types (`pathCoin` is null after a routed step that consumed the
+ * path's coin without naming what it gave out), the input is unknown too, so
+ * the output is found first, by what the route uses next, and the input is
+ * the hop's other own type.
  */
 function routeHop(
   typeArgs: string[],
@@ -349,13 +355,22 @@ function routeHop(
   next: { own: string[] | undefined; routeOut: string | null; poolParams: ReadonlySet<string> },
 ): [string, string] | null {
   const own = typeArgs.slice(2);
-  const input = pathCoin !== null && own.includes(pathCoin) ? pathCoin : typeArgs[1];
-  const all = own.filter((t) => t !== input).reverse();
-  const candidates = all.filter((t) => !next.poolParams.has(t));
-  const rest = candidates.length ? candidates : all;
-  const used = next.own ? rest.find((t) => next.own!.includes(t)) : rest.find((t) => t === next.routeOut);
+  const known = pathCoin !== null && own.includes(pathCoin) ? pathCoin : own.includes(typeArgs[1]) || pathCoin !== null ? typeArgs[1] : null;
+  const pick = (all: string[]) => {
+    const candidates = all.filter((t) => !next.poolParams.has(t));
+    const rest = candidates.length ? candidates : all;
+    const used = next.own ? rest.find((t) => next.own!.includes(t)) : rest.find((t) => t === next.routeOut);
+    return { rest, used };
+  };
+  if (known === null) {
+    const { rest, used } = pick([...own].reverse());
+    const output = used ?? rest.find(hasCoinEvidence) ?? rest[0];
+    const others = rest.filter((t) => t !== output);
+    return output && others.length === 1 ? [others[0], output] : output ? [typeArgs[1], output] : null;
+  }
+  const { rest, used } = pick(own.filter((t) => t !== known).reverse());
   const output = rest.find(hasCoinEvidence) ?? used ?? rest[0];
-  return output ? [input, output] : null;
+  return output ? [known, output] : null;
 }
 
 /**
@@ -487,11 +502,14 @@ export function decodeTransaction(
         // its other own type, so the next hop starts from that coin. A step
         // with one own type that the path does not hold (an LST integration's
         // `mint_w1<_, SUI, SPRING_SUI>` staking the path's SUI) gives that
-        // type out.
+        // type out. One whose only own type is the coin the path holds (a
+        // `redeem_w1` of an LST) consumes it and names no output, so what the
+        // path holds next is unknown and the next hop is read from its own
+        // types.
         if (routed && op?.action !== "swap" && pathCoin !== null) {
           const own = typeArgs.slice(2);
           if (own.length === 2 && own.includes(pathCoin)) pathCoin = own[0] === pathCoin ? own[1] : own[0];
-          else if (own.length === 1 && own[0] !== pathCoin) pathCoin = own[0];
+          else if (own.length === 1) pathCoin = own[0] === pathCoin ? null : own[0];
         }
 
         if (op) {

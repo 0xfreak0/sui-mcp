@@ -472,6 +472,31 @@ describe("router integrations that pass a bookkeeping type", () => {
     expect(swaps.map((h) => [h.coin_in, h.coin_out])).toEqual([[SPRING_SUI, SUI]]);
   });
 
+  it("reads the next hop from its own types after a routed step consumes the path's coin and names no output", () => {
+    // X → sSUI, then an LST integration's redeem_w1<_, X, SSUI> turns the
+    // path's sSUI into SUI without naming SUI, then SUI → TOK. The last hop
+    // must not take sSUI, or the start coin X, as its input.
+    const X = "0x2222222222222222222222222222222222222222222222222222222222222222::x::X";
+    const SSUI = "0x83556891f4a0f233ce7b05cfe7f957d4020492a34f5405b2cb9377d060bef4bf::spring_sui::SPRING_SUI";
+    const LST_INT = "0x05bb8426f7a0d92382533ce392d87975770394403990f83c5a43157e282627e3";
+    const route = (hop: GrpcTypes.Command) =>
+      decodeTransaction(
+        [
+          makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [X, TOKEN]),
+          makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, X]),
+          makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, X, X, SSUI]),
+          makeCommand(LST_INT, "router", "redeem_w1", [RD, X, SSUI]),
+          hop,
+          makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [X, TOKEN]),
+        ],
+        [],
+        SENDER,
+      ).route_hops.map((h) => [h.coin_in, h.coin_out]);
+    const expected = [[X, SSUI], [SUI, TOKEN]];
+    expect(route(makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, X, SUI, TOKEN]))).toEqual(expected);
+    expect(route(makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, X, TOKEN, SUI]))).toEqual(expected);
+  });
+
   it("names as a hop's output the type the route uses next, passing over a pool parameter that is no coin", () => {
     const hops = (cmds: GrpcTypes.Command[]) =>
       decodeTransaction(cmds, [], SENDER)

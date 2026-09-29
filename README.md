@@ -632,8 +632,8 @@ task and the order of tool calls, followed by the skill sections that govern it:
 | `attribute_cluster` | `addresses` (comma-separated), optional `network`, `case_name` | Whether several addresses share an operator, with a control group |
 
 Four more prompts answer the questions people without investigation experience
-ask. Each gives a plain answer of two to four sentences first, then a
-`How sure: high|medium|low` line naming what was and was not checked, then the
+ask. Each gives a plain answer of at most four sentences in everyday words first,
+then a `How sure: high|medium|low` line naming what was and was not checked, then the
 digests and addresses behind it. They treat every flag as a lead, never as a
 verdict, never name a private person, keep to default detail levels, and call
 `enable_tools` only when a step needs a tool outside `core`:

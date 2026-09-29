@@ -32,9 +32,10 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import type { AttackTx } from "./attack-analysis.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 import type { CheckRun, PtbAnomaly } from "./ptb-anomalies.js";
 import { mintedTotals, type StateSnapshot } from "./state-delta.js";
-import { BALANCE_CHANGES_SELECTION } from "./tx-connections.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections, readAllBalanceChanges, type GqlConnection } from "./tx-connections.js";
 import { formatUsd, prefetchCoinScale, pricingScale, priceUsdAtTime, toHumanAmount, type PricePoint } from "./valuation.js";
 
 /** How far back an entry leg is looked for: one day. */
@@ -181,16 +182,16 @@ interface LegNode {
     status?: string | null;
     timestamp?: string | null;
     gasEffects?: { gasSummary?: { computationCost?: string; storageCost?: string; storageRebate?: string } | null } | null;
-    balanceChanges?: { nodes: Array<{ coinType?: { repr: string }; amount?: string; owner?: { address: string } }> } | null;
+    balanceChanges?: GqlConnection<GqlBalanceChangeNode> | null;
   } | null;
 }
 
-function legOf(n: LegNode, address: string): Leg | null {
+function legOf(n: LegNode, address: string, balanceChanges: GqlBalanceChangeNode[]): Leg | null {
   if (n.effects?.status && n.effects.status.toUpperCase() !== "SUCCESS") return null;
   const ts = n.effects?.timestamp ? Date.parse(n.effects.timestamp) : NaN;
   if (!Number.isFinite(ts)) return null;
   const deltas = new Map<string, bigint>();
-  for (const b of n.effects?.balanceChanges?.nodes ?? []) {
+  for (const b of balanceChanges) {
     if (!b.owner?.address || normalizeSuiAddress(b.owner.address) !== address || !b.coinType?.repr || !b.amount) continue;
     const coin = normalizeStructTag(b.coinType.repr);
     deltas.set(coin, (deltas.get(coin) ?? 0n) + BigInt(b.amount));
@@ -264,10 +265,12 @@ export async function roundTripsOf(
   for (const s of shares) {
     try {
       const r = await gqlQuery<{ transactions: { nodes: LegNode[] } }>(SENDER_ON_OBJECT, { sender, object: s.vault, before, last: MAX_ENTRIES });
+      const completed = await completeTxConnections(r.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })));
       const entries = r.transactions.nodes
-        .map((n) => legOf(n, sender))
+        .map((n, i) => !n.effects?.balanceChanges || completed[i].balanceChangesTruncated ? null : legOf(n, sender, completed[i].balanceChanges))
         .filter((l): l is Leg => l !== null && l.timestampMs >= since && (l.deltas.get(s.coin) ?? 0n) > 0n)
         .map((leg) => ({ leg, units: leg.deltas.get(s.coin)! }));
+      if (r.transactions.nodes.some((n, i) => !n.effects?.balanceChanges || completed[i].balanceChangesTruncated)) out.unread.push(s.coin);
       found.push({ kind: "share", unit: s.coin, vault: s.vault, exitUnits: -(exit.deltas.get(s.coin) ?? 0n), entries });
     } catch {
       out.unread.push(s.coin);
@@ -281,7 +284,12 @@ export async function roundTripsOf(
       // transaction's payment less than what the position holds.
       const [first, next] = r.transactions.nodes;
       if (!first || next?.digest !== tx.digest || !first.sender?.address || normalizeSuiAddress(first.sender.address) !== sender) continue;
-      const leg = legOf(first, sender);
+      const completed = first.effects?.balanceChanges ? await readAllBalanceChanges(first.digest, first.effects.balanceChanges) : null;
+      if (!completed || completed.truncated) {
+        out.unread.push(p.objectId);
+        continue;
+      }
+      const leg = legOf(first, sender, completed.nodes);
       if (leg && leg.timestampMs >= since) found.push({ kind: "position", unit: p.objectId, vault: null, exitUnits: null, entries: [{ leg, units: null }] });
     } catch {
       out.unread.push(p.objectId);

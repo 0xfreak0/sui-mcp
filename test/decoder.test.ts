@@ -319,6 +319,129 @@ describe("decodeTransaction", () => {
   });
 });
 
+describe("router integrations that pass a bookkeeping type", () => {
+  // Shapes of an Aftermath router route: each integration passes the router's
+  // own data type first and its coins in a layout of its own.
+  const RD = "0x3f0871fc4320e2399734c44eae3a7599c57900a66af6ba6fe0f6e50d2d8bed8a::router::RouterDataV1";
+  const USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+  const USDT = "0x375f70cf2ae4c00bf37117d0c85a2c71545e6ee05c4a5c7d282cd66a4504b068::usdt::USDT";
+  const SUI = "0x2::sui::SUI";
+  const TOKEN = "0x1111111111111111111111111111111111111111111111111111111111111111::tok::TOK";
+  const ROUTER = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5";
+  const CETUS_INT = "0x8fbcffce4ac1b56d517cc2118fae85f1881a80a934af575d825f63a05af5a874";
+  const FULLSAIL_INT = "0xbb2f1bc0c032aa7237ead35cbdd42d49ee7b04e1269c37af1ca5ec8e099793cb";
+  const SENDER = "0xa11ce";
+
+  const route = () => [
+    makeCommand("0x2", "coin", "redeem_funds", [USDC]),
+    makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [USDC, TOKEN]),
+    makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, USDC]),
+    makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, USDC, USDC, USDT]),
+    makeCommand(FULLSAIL_INT, "router", "swap_b2a_w1", [RD, USDC, USDT, USDC]),
+    makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, USDC, USDC, TOKEN]),
+    makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [USDC, TOKEN]),
+    makeCommand("0x2", "coin", "from_balance", [TOKEN]),
+  ];
+
+  it("names each hop's real coins in route order, never the bookkeeping type", () => {
+    const swaps = decodeTransaction(route(), [makeBalanceChange(SENDER, USDC, "-5000000")], SENDER).actions.filter((a) =>
+      a.startsWith("Swap"),
+    );
+    expect(swaps).toHaveLength(3);
+    expect(swaps[0]).toMatch(/^Swap USDC → USDT/);
+    expect(swaps[1]).toMatch(/^Swap USDT → USDC/);
+    expect(swaps[2]).toMatch(/^Swap USDC → TOK/);
+    expect(swaps.join(" ")).not.toMatch(/RouterData/);
+  });
+
+  it("starts a path from the coin its initiating call names", () => {
+    const swaps = decodeTransaction(
+      [
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, USDT]),
+        makeCommand(FULLSAIL_INT, "router", "swap_b2a_w1", [RD, USDC, USDT, USDC]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, USDC, USDC, TOKEN]),
+      ],
+      [makeBalanceChange(SENDER, USDT, "-1000000"), makeBalanceChange(SENDER, TOKEN, "5")],
+      SENDER,
+    ).actions.filter((a) => a.startsWith("Swap"));
+    expect(swaps[0]).toMatch(/^Swap USDT → USDC/);
+    expect(swaps[1]).toMatch(/^Swap USDC → TOK/);
+  });
+
+  it("restarts each path at the coin its initiating call names", () => {
+    const LBTC = "0x3e8e9423d80e1774a7ca128fccd8bf5f1f7753be658c5e645929037f7c819040::lbtc::LBTC";
+    const DEEPBOOK_INT = "0xd5bd38a8b2d7e2d9e1b2f0a0b2a3d1f5c4e7a9b0c1d2e3f405162738495a6b7c";
+    const swaps = decodeTransaction(
+      [
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_w1", [RD, SUI, SUI, USDT]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_w1", [RD, SUI, USDT, USDC]),
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, SUI, LBTC, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_a2b_w1", [RD, SUI, LBTC, USDC]),
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, USDC]),
+        makeCommand(DEEPBOOK_INT, "router", "swap_exact_quote_for_base_deepless_w2", [RD, USDC, SUI, USDC]),
+      ],
+      [],
+      SENDER,
+    ).actions.filter((a) => a.startsWith("Swap"));
+    expect(swaps.map((a) => a.replace(/ on .*$/, ""))).toEqual([
+      "Swap SUI → USDT",
+      "Swap USDT → USDC",
+      "Swap SUI → LBTC",
+      "Swap LBTC → USDC",
+      "Swap USDC → SUI",
+    ]);
+  });
+
+  it("names a route intermediate nothing vouches for as the hop's output", () => {
+    const AF_LP = "0x2222222222222222222222222222222222222222222222222222222222222222::af_lp::AF_LP";
+    const AFTERMATH_INT = "0x9999999999999999999999999999999999999999999999999999999999999999";
+    const hops = (cmds: GrpcTypes.Command[]) =>
+      decodeTransaction(cmds, [], SENDER)
+        .actions.filter((a) => a.startsWith("Swap"))
+        .map((a) => a.replace(/ on .*$/, ""));
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, SUI, TOKEN, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUI, TOKEN, USDC]),
+      ]),
+    ).toEqual(["Swap SUI → TOK", "Swap TOK → USDC"]);
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(AFTERMATH_INT, "router", "swap_exact_in_direct_w1", [RD, SUI, AF_LP, SUI, TOKEN]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUI, TOKEN, USDC]),
+      ]),
+    ).toEqual(["Swap SUI → TOK", "Swap TOK → USDC"]);
+  });
+
+  it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {
+    const CETUS = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
+    const TURBOS = "0x1a3c42ded7b75cdf4ebc7c7b7da9d1e1db49f16fcdca934fac003f35f39ecad9";
+    const FEE = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::fee3000bps::FEE3000BPS";
+    const swaps = decodeTransaction(
+      [
+        makeCommand(CETUS, "pool", "swap_a2b", [TOKEN, SUI]),
+        makeCommand(CETUS, "pool", "swap_a2b", [TOKEN, SUI]),
+        makeCommand(TURBOS, "swap_router", "swap_a_b", [TOKEN, SUI, FEE]),
+      ],
+      [makeBalanceChange(SENDER, SUI, "100")],
+      SENDER,
+    ).actions.filter((a) => a.startsWith("Swap"));
+    expect(swaps).toHaveLength(3);
+    for (const a of swaps) expect(a).toMatch(/^Swap TOK → SUI(?: on |$)/);
+  });
+
+  it("reads a_to_b and b_to_a in a function name as a direction", () => {
+    const [a2b] = decodeTransaction([makeCommand(CETUS_INT, "pool", "swap_a_to_b", [USDC, USDT])], [], SENDER).actions;
+    const [b2a] = decodeTransaction([makeCommand(CETUS_INT, "pool", "swap_b_to_a", [USDC, USDT])], [], SENDER).actions;
+    expect(a2b).toMatch(/^Swap USDC → USDT/);
+    expect(b2a).toMatch(/^Swap USDT → USDC/);
+  });
+});
+
 describe("addressFlow", () => {
   // FjkAurXTGnmq…: 0x1f7b27 sends ATTACKER 39.44771725 SUI. The sender-side
   // token_flow shows -39449215130, the sender's outflow, on that same row.

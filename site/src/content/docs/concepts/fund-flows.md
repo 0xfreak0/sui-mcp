@@ -56,6 +56,18 @@ one of two terminals:
 
 A labelled attacker is followed rather than treated as a sink.
 
+## Resolving value arriving through a bridge
+
+`resolve_bridge_transfer` reports solver-style inbound transfers in
+`fulfilment_inbound`. It reads every balance-change page before matching an
+event's amount and coin to a credited beneficiary, including credits after
+the first 50 rows. `paid_to` and `released_from` also use the complete set.
+
+If a balance continuation cannot be read, the result includes
+`balance_changes_incomplete` and omits `fulfilment_inbound`. Its absence then
+does not rule out an inbound transfer. Other bridge sections derived from
+events or message inputs remain available.
+
 ## Paths between two addresses
 
 `find_flow_path(from, to)` asks whether any path connects two addresses. It

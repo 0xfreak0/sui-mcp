@@ -3,6 +3,31 @@
 ## Unreleased
 
 ### Added
+- **Oracle checks on random subjects in `verify:live`.**
+  `scripts/probe/oracle-pass.mjs` draws its subjects at random each run,
+  printing the seed and the tip checkpoint so `--seed S --tip T` redraws
+  them: transactions from the effects version 1 era, later and the newest
+  checkpoints, Aftermath router transactions, and coins from the on-chain
+  coin registry. Each answer is compared with the same fact read from the
+  chain by a path the tool does not use, and the report says where a read is
+  a query the tool also runs: `get_transaction` swap labels against each
+  pool's own swap event and the pool's type arguments, by coin type; the end
+  of an object no longer at top level in `trace_object_history` and
+  `get_upgrade_history` against `idDeleted` in its last transaction;
+  `get_transaction` object changes against GraphQL `objectChanges`, and
+  under effects version 1 against the effects' own BCS; `analyze_package`
+  mint authority against the registry's `treasury_cap_id`, its supply state
+  and a `TreasuryCap<T>` type query; `token_flow` and `balance_changes`
+  against GraphQL `balanceChanges`; and capability owners, down to the
+  object that holds an object-owned cap, against each object's live owner
+  read over gRPC. A swap label no pool event matches is listed and counted
+  rather than passed. The report lists per oracle the samples checked, the
+  agreements, every disagreement with our answer, the truth and how it was
+  read, and every skip with its reason. A disagreement fails the run unless
+  the script's `KNOWN_DEFECTS` lists it. `--subjects` pins subjects and
+  `--dist` runs another build. The full tier runs it, the affected tier runs
+  it when a change reaches a tool it checks, and `SUI_REPLAY_DIR` replays
+  its fixed reads.
 - **Framework claims checked against the framework source.**
   `test/sui-framework.test.ts` parses the Sui framework Move sources vendored
   under `test/fixtures/sui-framework` (every non-test source at
@@ -79,6 +104,41 @@
   Failed transactions and transactions without a loop are unchanged.
 
 ### Fixed
+- `get_transaction` named the wrong coins for a router swap that follows a
+  routed call the decoder does not label as a swap. After Meta Stable's
+  `withdraw_w1` turned superSUI into afSUI, the next hop read "Swap superSUI
+  → SUI" while the pool swapped afSUI for SUI; after `sell_w1` sold the
+  path's SUI for USDC, the next Bluefin hop read "Swap SUI → USDC" while the
+  pool swapped USDC for SUI. A routed call with two coins of its own that is
+  no decoded swap now passes the coin the path holds on to its other coin,
+  and one with a single coin of its own (an LST integration's `mint_w1`
+  staking the path's SUI) passes that coin on, so the next hop no longer
+  reads "Swap SUI → sSUI" where the pool swapped sSUI for SUI. A step whose
+  only coin is the one the path holds (an LST `redeem_w1`) consumes it
+  without naming its output, so the next hop is read from its own coins
+  instead of taking the route's start coin as its input.
+- `get_transaction` named Turbos's fee tier as a router swap's output ("Swap
+  SUI → FEE10000BPS") when nothing in the transaction showed the coin the
+  pool gave out to be a coin, and then started the next hop from the wrong
+  coin. A hop's output is now what the route uses next: the type the path's
+  next routed call names, or for a path's last hop the coin the route gives
+  out. A fee tier two consecutive Turbos hops both pass is never taken for
+  an output.
+- `analyze_package` read a capability held by another object (a dynamic
+  object field, a child object) as owner `unknown`. Launchpad coins keep
+  their TreasuryCap that way, as a field of the bonding curve. It now reads
+  owner `object`, names the holding object in `owner_address` (the object
+  that owns the field, for a dynamic object field) and its type in
+  `owner_type`, and rates the cap as it rates a wrapped one: that object's
+  module decides who can use it.
+- A package made immutable in its own publish transaction, which passes the
+  new UpgradeCap to `0x2::package::make_immutable` so that no cap object
+  ever exists, read as "cap custody is unknown" in `get_upgrade_history` and
+  as nothing in `analyze_package`. Both now say the package is immutable and
+  name that transaction: `get_upgrade_history` reports the cap `deleted` at
+  the publish, and the capability audit lists the UpgradeCap burned there,
+  with no object id. A transaction that publishes several packages counts
+  when it destroys every UpgradeCap its Publish commands returned.
 - A shared `Publisher` and a shared `DenyCapV2` now say everything they let
   any transaction do. `display_registry::new_with_publisher` and
   `claim_with_publisher` take a Publisher by `&mut`, so a shared one lets

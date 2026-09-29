@@ -244,19 +244,32 @@ export function pickAffected(cases, reach) {
 export const NOT_COVERAGE = new Set(["adversarial.mjs"]);
 
 /**
+ * Probe scripts that check tools' answers on random subjects against chain
+ * truth read another way, with the tools each one checks. A case check
+ * replays a fixed incident and never draws the rare states these samples
+ * do, so such a script runs in the affected tier whenever one of its tools
+ * is reached, whether a case check names that tool or not.
+ * `test/tiers.test.ts` holds each list equal to the tools its script calls.
+ */
+export const ORACLE_PROBES = {
+  "oracle-pass.mjs": ["analyze_package", "get_transaction", "get_upgrade_history", "trace_object_history"],
+};
+
+/**
  * The probe scripts besides case-pass that a tier runs, each with why.
  *
  * `smoke`: the fewest scripts (chosen greedily, most uncovered tools first)
  * that call every tool no case check names, so each tool gets a live check.
  * `affected`: each changed probe script; each script that calls a reached
- * tool no case check names; and detector-pass when a tool it scores was
- * reached or its labels changed. Returns null for `affected` when `reach.full`
- * is set: the full pass runs.
+ * tool no case check names; each of `oracles` (script to the tools it
+ * checks, `ORACLE_PROBES` by default) whose tools were reached; and
+ * detector-pass when a tool it scores was reached or its labels changed.
+ * Returns null for `affected` when `reach.full` is set: the full pass runs.
  *
  * `probes` maps script file names to their text; `caseTools` holds the tools
  * case checks name; `detectorTools` the tools detector-pass scores.
  */
-export function probePlan(tier, { tools, caseTools, probes, reach = null, detectorTools = [] }) {
+export function probePlan(tier, { tools, caseTools, probes, reach = null, detectorTools = [], oracles = ORACLE_PROBES }) {
   const credited = new Map();
   for (const [file, src] of probes)
     if (!NOT_COVERAGE.has(file) && file !== "case-pass.mjs") credited.set(file, new Set(tools.filter((t) => callsTool(src, t))));
@@ -289,6 +302,10 @@ export function probePlan(tier, { tools, caseTools, probes, reach = null, detect
   for (const [file, calls] of credited) {
     const hit = probeOnly.filter((t) => calls.has(t));
     if (hit.length && !plan.has(file)) plan.set(file, `calls reached tool(s) with no case check: ${hit.join(", ")}`);
+  }
+  for (const [file, checked] of Object.entries(oracles)) {
+    const hit = checked.filter((t) => reach.tools.has(t));
+    if (hit.length && !plan.has(file)) plan.set(file, `checks reached tool(s) against chain truth: ${hit.join(", ")}`);
   }
   const scored = detectorTools.filter((t) => reach.tools.has(t));
   if (!plan.has("detector-pass.mjs") && (reach.detectorLabels || scored.length))

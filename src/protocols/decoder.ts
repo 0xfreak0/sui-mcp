@@ -332,14 +332,45 @@ function routeMarkers(commands: GrpcTypes.Command[], hasCoinEvidence: (t: string
  * hop's own types in each integration's order, so position says nothing about
  * direction. The hop takes in the coin the path holds (the previous hop's
  * output, or the start coin) and gives out another of its own types: the last
- * one the transaction shows to be a coin, else the last one.
+ * one the transaction shows to be a coin. When none is, the route decides,
+ * since a hop's output is what the route uses next: a type the path's next
+ * routed call names, or for a path's last call the coin the route gives out.
+ * A pool parameter that is no coin (Turbos passes its fee tier as an own
+ * type) is passed over that way. Two consecutive hops of a path through such
+ * pools can share the parameter: a type that trails both calls' own types,
+ * when each has more than two, is a parameter (`poolParams`), and neither
+ * hop gives it out while another candidate remains. Failing all of these,
+ * the last own type.
+ *
+ * When neither the coin the path holds nor its start coin is among the
+ * hop's own types (`pathCoin` is null after a routed step that consumed the
+ * path's coin without naming what it gave out), the input is unknown too, so
+ * the output is found first, by what the route uses next, and the input is
+ * the hop's other own type.
  */
-function routeHop(typeArgs: string[], pathCoin: string | null, hasCoinEvidence: (t: string) => boolean): [string, string] | null {
+function routeHop(
+  typeArgs: string[],
+  pathCoin: string | null,
+  hasCoinEvidence: (t: string) => boolean,
+  next: { own: string[] | undefined; routeOut: string | null; poolParams: ReadonlySet<string> },
+): [string, string] | null {
   const own = typeArgs.slice(2);
-  const input = pathCoin !== null && own.includes(pathCoin) ? pathCoin : typeArgs[1];
-  const rest = own.filter((t) => t !== input).reverse();
-  const output = rest.find(hasCoinEvidence) ?? rest[0];
-  return output ? [input, output] : null;
+  const known = pathCoin !== null && own.includes(pathCoin) ? pathCoin : own.includes(typeArgs[1]) || pathCoin !== null ? typeArgs[1] : null;
+  const pick = (all: string[]) => {
+    const candidates = all.filter((t) => !next.poolParams.has(t));
+    const rest = candidates.length ? candidates : all;
+    const used = next.own ? rest.find((t) => next.own!.includes(t)) : rest.find((t) => t === next.routeOut);
+    return { rest, used };
+  };
+  if (known === null) {
+    const { rest, used } = pick([...own].reverse());
+    const output = used ?? rest.find(hasCoinEvidence) ?? rest[0];
+    const others = rest.filter((t) => t !== output);
+    return output && others.length === 1 ? [others[0], output] : output ? [typeArgs[1], output] : null;
+  }
+  const { rest, used } = pick(own.filter((t) => t !== known).reverse());
+  const output = rest.find(hasCoinEvidence) ?? used ?? rest[0];
+  return output ? [known, output] : null;
 }
 
 /**
@@ -387,10 +418,44 @@ export function decodeTransaction(
   }
   const hasCoinEvidence = (t: string) => coinTypes.has(t) || isVerifiedCoin(t);
   const markers = routeMarkers(commands, hasCoinEvidence);
+  // For each routed call, the own types of the next routed call in its path;
+  // a path's last call has none. And per package, its last call passing
+  // exactly two types with no marker: a router's closing call names the coin
+  // the route takes in and the one it gives out.
+  const nextInPath = new Map<number, string[]>();
+  const closing = new Map<string, string>();
+  // A type trailing the own types of two consecutive routed calls of a path,
+  // each with more than two and nothing showing it to be a coin, is a pool
+  // parameter both pass.
+  const poolParams = new Set<string>();
+  let previous: number | null = null;
+  let previousOwn: string[] = [];
+  for (const [index, cmd] of commands.entries()) {
+    const c = cmd.command;
+    if (c.oneofKind !== "moveCall") continue;
+    const tas = c.moveCall.typeArguments ?? [];
+    const op = lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "");
+    if (op?.skip) continue;
+    if (tas.length === 2 && !markers.has(tas[0])) closing.set(normalizeSuiAddress(c.moveCall.package ?? "0x0"), tas[1]);
+    if (tas.length < 2 || !markers.has(tas[0])) continue;
+    if (tas.length === 2 && !op) previous = null;
+    else {
+      const own = tas.slice(2);
+      if (previous !== null) {
+        nextInPath.set(previous, own);
+        if (own.length > 2 && previousOwn.length > 2 && own[own.length - 1] === previousOwn[previousOwn.length - 1] && !hasCoinEvidence(own[own.length - 1]))
+          poolParams.add(own[own.length - 1]);
+      }
+      previous = index;
+      previousOwn = own;
+    }
+  }
   // The coin a route's path holds: its start coin, then each hop's output.
   let pathCoin: string | null = null;
   let path = -1;
   let routeCoins: [string, string] | null = null;
+  // The coin the route gives out: its opening call's, else its closing call's.
+  let routeOut: string | null = null;
   const routeHops: RouteHop[] = [];
 
   for (const [index, cmd] of commands.entries()) {
@@ -428,12 +493,29 @@ export function decodeTransaction(
             const [coinIn, coinOut] = openerCall.moveCall.typeArguments;
             routeCoins = [coinIn, coinOut];
           }
+          routeOut = routeCoins?.[1] ?? closing.get(normalizeSuiAddress(pkg)) ?? null;
+        }
+
+        // A routed step that is no decoded swap (Meta Stable's `withdraw_w1`
+        // turning superSUI into afSUI, or a swap under a function name the
+        // registry does not know) takes the coin the path holds and passes on
+        // its other own type, so the next hop starts from that coin. A step
+        // with one own type that the path does not hold (an LST integration's
+        // `mint_w1<_, SUI, SPRING_SUI>` staking the path's SUI) gives that
+        // type out. One whose only own type is the coin the path holds (a
+        // `redeem_w1` of an LST) consumes it and names no output, so what the
+        // path holds next is unknown and the next hop is read from its own
+        // types.
+        if (routed && op?.action !== "swap" && pathCoin !== null) {
+          const own = typeArgs.slice(2);
+          if (own.length === 2 && own.includes(pathCoin)) pathCoin = own[0] === pathCoin ? own[1] : own[0];
+          else if (own.length === 1) pathCoin = own[0] === pathCoin ? null : own[0];
         }
 
         if (op) {
           let args = typeArgs;
           if (op.action === "swap" && routed) {
-            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence);
+            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut, poolParams });
             args = hop ?? typeArgs.slice(1);
             if (hop) {
               pathCoin = hop[1];

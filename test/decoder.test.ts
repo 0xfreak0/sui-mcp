@@ -417,6 +417,129 @@ describe("router integrations that pass a bookkeeping type", () => {
     ).toEqual(["Swap SUI → TOK", "Swap TOK → USDC"]);
   });
 
+  it("passes the path's coin through a routed call that is no decoded swap", () => {
+    const hops = (cmds: GrpcTypes.Command[]) =>
+      decodeTransaction(cmds, [], SENDER)
+        .actions.filter((a) => a.startsWith("Swap"))
+        .map((a) => a.replace(/ on .*$/, ""));
+    // The route of 5piHz9Vwv2zWjzBj2njVfSfSPumoUDdwSnG4JKeuqj3n: withdraw_w1
+    // turns the path's superSUI into afSUI, and the Cetus pool's SwapEvent for
+    // the next hop (pool 0xa528b26e…, Pool<AFSUI, SUI>, atob true) swaps afSUI
+    // for SUI, then pool 0x51e883ba… (Pool<USDC, SUI>, atob false) SUI for USDC.
+    const SUPER_SUI = "0x790f258062909e3a0ffc78b3c53ac2f62d7084c3bab95644bdeb05add7250001::super_sui::SUPER_SUI";
+    const AFSUI = "0xf325ce1300e8dac124071d3152c5c5ee6174914f8bc2161e88329cf579246efc::afsui::AFSUI";
+    const META_STABLE_INT = "0x7ca2b6a3241764817175cfa99c2cd3e973a2025071e7c83ec7338ce52a893413";
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUPER_SUI]),
+        makeCommand(META_STABLE_INT, "router", "withdraw_w1", [RD, SUPER_SUI, SUPER_SUI, AFSUI]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUPER_SUI, AFSUI, SUI]),
+        makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, SUPER_SUI, USDC, SUI]),
+      ]),
+    ).toEqual(["Swap AFSUI → SUI", "Swap SUI → USDC"]);
+    // The route of GGNbQpSKZAqEw2td7vdRLv1VFX1zNgyL6AgzYENtjdE1: sell_w1 sells
+    // the path's SUI for USDC (SwapExecutedV2, is_buy false), and the Bluefin
+    // pool's AssetSwap for the next hop (pool 0xcd8294c7…, Pool<SUI, USDC>,
+    // a2b false) swaps USDC for SUI.
+    const BLUE = "0xe1b45a0e641b9955a20aa0ad1c1f4ad86aad8afb07296d4085e349a50e90bdca::blue::BLUE";
+    const SELL_INT = "0x7e7288d64dcd011720bb22c4f106635d1d60e026bb51ba3ef5d06f907d07189d";
+    const BLUEFIN_INT = "0x8cd0b2cbaf9d39f457f2d6a6fca0c96500a4d5654b99e1ba86d74a518c68017a";
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, BLUE]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, BLUE, BLUE, SUI]),
+        makeCommand(SELL_INT, "router", "sell_w1", [RD, BLUE, SUI, USDC]),
+        makeCommand(BLUEFIN_INT, "router", "swap_b_to_a_w1", [RD, BLUE, SUI, USDC]),
+      ]),
+    ).toEqual(["Swap BLUE → SUI", "Swap USDC → SUI"]);
+  });
+
+  it("passes on the one type a routed step that is no swap names, when the path does not hold it", () => {
+    // AeB42TVxiPoRVF13HVK49XDwHVwD2mLQXh5zGF6o3A5W: mint_w1 stakes the path's
+    // SUI into SPRING_SUI, and the Cetus SwapEvent for the next hop (pool
+    // 0x5c5e87f0…, atob true on Pool<SPRING_SUI, SUI>) swaps it back to SUI.
+    const SPRING_SUI = "0x83556891f4a0f233ce7b05cfe7f957d4020492a34f5405b2cb9377d060bef4bf::spring_sui::SPRING_SUI";
+    const LST_INT = "0x05bb8426f7a0d92382533ce392d87975770394403990f83c5a43157e282627e3";
+    const swaps = decodeTransaction(
+      [
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(LST_INT, "router", "mint_w1", [RD, SUI, SPRING_SUI]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUI, SPRING_SUI, SUI]),
+      ],
+      [],
+      SENDER,
+    ).route_hops;
+    expect(swaps.map((h) => [h.coin_in, h.coin_out])).toEqual([[SPRING_SUI, SUI]]);
+  });
+
+  it("reads the next hop from its own types after a routed step consumes the path's coin and names no output", () => {
+    // X → sSUI, then an LST integration's redeem_w1<_, X, SSUI> turns the
+    // path's sSUI into SUI without naming SUI, then SUI → TOK. The last hop
+    // must not take sSUI, or the start coin X, as its input.
+    const X = "0x2222222222222222222222222222222222222222222222222222222222222222::x::X";
+    const SSUI = "0x83556891f4a0f233ce7b05cfe7f957d4020492a34f5405b2cb9377d060bef4bf::spring_sui::SPRING_SUI";
+    const LST_INT = "0x05bb8426f7a0d92382533ce392d87975770394403990f83c5a43157e282627e3";
+    const route = (hop: GrpcTypes.Command) =>
+      decodeTransaction(
+        [
+          makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [X, TOKEN]),
+          makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, X]),
+          makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, X, X, SSUI]),
+          makeCommand(LST_INT, "router", "redeem_w1", [RD, X, SSUI]),
+          hop,
+          makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [X, TOKEN]),
+        ],
+        [],
+        SENDER,
+      ).route_hops.map((h) => [h.coin_in, h.coin_out]);
+    const expected = [[X, SSUI], [SUI, TOKEN]];
+    expect(route(makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, X, SUI, TOKEN]))).toEqual(expected);
+    expect(route(makeCommand(CETUS_INT, "router", "swap_b_to_a_by_b_w1", [RD, X, TOKEN, SUI]))).toEqual(expected);
+  });
+
+  it("names as a hop's output the type the route uses next, passing over a pool parameter that is no coin", () => {
+    const hops = (cmds: GrpcTypes.Command[]) =>
+      decodeTransaction(cmds, [], SENDER)
+        .actions.filter((a) => a.startsWith("Swap"))
+        .map((a) => a.replace(/ on .*$/, ""));
+    // EyMcXJpWTGDkzkFG9H6RsNypnhDkoRQ9trzUF8MTM26U: Turbos's swap_b_a_w1 passes
+    // its pool's fee tier as an own type. The Turbos SwapEvent (pool
+    // 0x04dd1e69…, Pool<SUDENG, SUI, FEE10000BPS>) swaps SUI for SUDENG, and
+    // the Cetus SwapEvent (pool 0xb785e6ee…, Pool<SUDENG, SUI>, atob true)
+    // SUDENG for SUI. Nothing in the transaction shows SUDENG to be a coin.
+    const SUDENG = "0x8993129d72e733985f7f1a00396cbd055bad6f817fee36576ce483c8bbb8b87b::sudeng::SUDENG";
+    const FEE = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::fee10000bps::FEE10000BPS";
+    const TURBOS_INT = "0x666c289f99fc924f75c05b048772c504be83916b33a220772c0248afc79f00a6";
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(TURBOS_INT, "router", "swap_b_a_w1", [RD, SUI, SUDENG, SUI, FEE]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUI, SUDENG, SUI]),
+      ]),
+    ).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → SUI"]);
+    // A path's last hop gives out the coin the route's closing call names.
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [SUI, SUDENG]),
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(TURBOS_INT, "router", "swap_b_a_w1", [RD, SUI, SUDENG, SUI, FEE]),
+        makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [SUI, SUDENG]),
+      ]),
+    ).toEqual(["Swap SUI → SUDENG"]);
+    // Two Turbos hops through pools of one fee tier both trail it: neither
+    // gives it out, with or without a closing call naming the route's coin.
+    const TOK = "0x1111111111111111111111111111111111111111111111111111111111111111::tok::TOK";
+    const twoTurbos = [
+      makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+      makeCommand(TURBOS_INT, "router", "swap_b_a_w1", [RD, SUI, SUDENG, SUI, FEE]),
+      makeCommand(TURBOS_INT, "router", "swap_a_b_w1", [RD, SUI, SUDENG, TOK, FEE]),
+    ];
+    expect(hops(twoTurbos)).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → TOK"]);
+    expect(
+      hops([makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [SUI, TOK]), ...twoTurbos, makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [SUI, TOK])]),
+    ).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → TOK"]);
+  });
+
   it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {
     const CETUS = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
     const TURBOS = "0x1a3c42ded7b75cdf4ebc7c7b7da9d1e1db49f16fcdca934fac003f35f39ecad9";

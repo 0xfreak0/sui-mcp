@@ -257,6 +257,45 @@ describe("auditPackageCapabilities — destroyed UpgradeCap", () => {
   });
 });
 
+// SUIPUMP 0xeb195778…'s publish 4nDW27KiRYFacgfKLVBU5yBTDHmFrDaZhCy2QEYaTcQ6
+// runs Publish, then 0x2::package::make_immutable(Result(0)) (read live): the
+// cap is created and destroyed in one transaction and no object change shows it.
+describe("auditPackageCapabilities — a package made immutable in its publish transaction", () => {
+  const PUBLISHER = "0xa19c3be9e4a8a85ca40def19932a2867ff0f33f27bcacdd1d8bf2c01e8ab3a31";
+  const PUBLISH = "4nDW27KiRYFacgfKLVBU5yBTDHmFrDaZhCy2QEYaTcQ6";
+  const makeImmutable = (argument: Record<string, unknown>) => ({
+    __typename: "MoveCallCommand",
+    function: { name: "make_immutable", module: { name: "package", package: { address: P2 } } },
+    arguments: [argument],
+  });
+  const chain = (commands: Array<Record<string, unknown>>) => {
+    gqlQuery.mockReset();
+    gqlQuery.mockImplementation(async (query: string) => {
+      if (query.includes("packageAt(version: 1)")) {
+        return { package: { packageAt: { previousTransaction: { digest: PUBLISH, effects: { objectChanges: gqlPage([]) } } } } };
+      }
+      if (query.includes("commands(first: 50")) {
+        return { transaction: { kind: { commands: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: commands } } } };
+      }
+      throw new Error(`unexpected query in test: ${query}`);
+    });
+  };
+
+  it("reports the UpgradeCap the publish destroyed, citing the transaction", async () => {
+    chain([{ __typename: "PublishCommand" }, makeImmutable({ __typename: "TxResult", cmd: 0 })]);
+    const [cap] = (await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities;
+    expect(cap).toMatchObject({ kind: "upgrade", object_id: null, owner: "burned", destroyed_in_tx: PUBLISH, risk: "info" });
+    expect(cap.note).toContain(`made immutable in its publish transaction ${PUBLISH}`);
+  });
+
+  it("claims nothing when make_immutable takes another cap, or the transaction publishes twice", async () => {
+    chain([{ __typename: "PublishCommand" }, makeImmutable({ __typename: "Input" })]);
+    expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities).toEqual([]);
+    chain([{ __typename: "PublishCommand" }, { __typename: "PublishCommand" }, makeImmutable({ __typename: "TxResult", cmd: 0 })]);
+    expect((await auditPackageCapabilities("0xpkg", PUBLISHER)).capabilities).toEqual([]);
+  });
+});
+
 describe("auditPackageCapabilities — wrapped TreasuryCap", () => {
   const CAP = "0x9945b2f35c85dffbb1c6f289c7cef8f7d253771d803d79f9df680f588153590e";
   const PUBLISHER = "0xdd7126a71c9c29145dd71bd28ef0db7d986cde112641d4b659e8144d86e9c2ec";
@@ -710,7 +749,7 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     /** Types of the objects the publish transaction created besides the UpgradeCap. */
     created?: string[];
     registry?: Record<string, unknown> | null;
-    capInstances?: Array<{ address: string; owner: { __typename: string; address?: { address: string } } }>;
+    capInstances?: Array<{ address: string; owner: Record<string, unknown> }>;
     capScanFails?: boolean;
     capObject?: Record<string, unknown> | null;
     /** Registry `Currency` JSON at each derived id a multi-get reads. */
@@ -792,6 +831,45 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     mockChain({ created: [METADATA], registry: null, capInstances: [{ address: CAP, owner: { __typename: "Shared" } }] });
     const [cap] = treasury(await auditPackageCapabilities(PKG, HOLDER));
     expect(cap).toMatchObject({ object_id: CAP, owner: "shared", risk: "high", found_by: "type_scan" });
+  });
+
+  // SUIPUMP 0xeb195778…'s TreasuryCap 0x6f47e074… is a dynamic object field:
+  // owned by a dynamic_field::Field, which the shared
+  // 0xb205fea4…::bonding_curve::Curve<SUIPUMP> 0x89fc98c1… owns (read live).
+  it("reads a cap another object holds as a dynamic object field as held by that object, like a wrapped one", async () => {
+    const FIELD = `0x${"f1".repeat(32)}`;
+    const CURVE = `0x${"c0".repeat(32)}`;
+    const CURVE_TYPE = `0x${"b2".repeat(32)}::bonding_curve::Curve<${COIN}>`;
+    const owner = {
+      __typename: "ObjectOwner",
+      address: {
+        address: FIELD,
+        asObject: {
+          asMoveObject: { contents: { type: { repr: `${P2}::dynamic_field::Field<${P2}::dynamic_object_field::Wrapper<${P2}::object::ID>, ${P2}::object::ID>` } } },
+          owner: { __typename: "ObjectOwner", address: { address: CURVE, asObject: { asMoveObject: { contents: { type: { repr: CURVE_TYPE } } } } } },
+        },
+      },
+    };
+    mockChain({ created: [METADATA], registry: null, capInstances: [{ address: CAP, owner }] });
+    const [cap] = treasury(await auditPackageCapabilities(PKG, HOLDER));
+    expect(cap).toMatchObject({ object_id: CAP, owner: "object", owner_address: CURVE, owner_type: CURVE_TYPE, risk: "medium", found_by: "type_scan" });
+    expect(cap.note).toContain(`held by object ${CURVE} (0x${"b2".repeat(32)}::bonding_curve::Curve)`);
+    expect(cap).not.toHaveProperty("signing_scheme");
+  });
+
+  it("names the direct parent of a cap owned by an object that is no dynamic field", async () => {
+    const PARENT = `0x${"d0".repeat(32)}`;
+    const PARENT_TYPE = `0x${"b3".repeat(32)}::vault::Vault`;
+    mockChain({
+      created: [METADATA],
+      registry: { decimals: 9, supply: { "@variant": "Unknown" }, treasury_cap_id: CAP },
+      capObject: {
+        owner: { __typename: "ObjectOwner", address: { address: PARENT, asObject: { asMoveObject: { contents: { type: { repr: PARENT_TYPE } } }, owner: { __typename: "Shared" } } } },
+        asMoveObject: { contents: { json: {} } },
+      },
+    });
+    const [cap] = treasury(await auditPackageCapabilities(PKG, HOLDER));
+    expect(cap).toMatchObject({ object_id: CAP, owner: "object", owner_address: PARENT, owner_type: PARENT_TYPE, risk: "medium", found_by: "coin_registry" });
   });
 
   it("names a coin whose cap is found nowhere, at medium risk, instead of leaving it out", async () => {
@@ -987,5 +1065,24 @@ describe("classifyCapabilityRisk — sent to an unspendable address", () => {
   it("an admin cap sent to an unspendable address is effectively destroyed", () => {
     const r = classifyCapabilityRisk({ kind: "admin", type: "0xabc::vault::AdminCap", owner: "address", ownerAddress: "0x0" });
     expect(r.risk).toBe("info");
+  });
+});
+
+describe("classifyCapabilityRisk — held by another object", () => {
+  // Reaching an object another object owns takes the parent's UID, which only
+  // the parent's module can give, as with a wrapper: the same risk per kind.
+  it("rates each kind of cap an object holds as it rates a wrapped one, and names the holder", () => {
+    const types = {
+      upgrade: `${P2}::package::UpgradeCap`,
+      treasury: `${P2}::coin::TreasuryCap<0xabc::t::T>`,
+      deny: `${P2}::coin::DenyCapV2<0xabc::t::T>`,
+      admin: "0xabc::vault::AdminCap",
+    } as const;
+    for (const [kind, type] of Object.entries(types) as Array<[keyof typeof types, string]>) {
+      const held = classifyCapabilityRisk({ kind, type, owner: "object", ownerAddress: "0xc0ffee", ownerType: "0xb2::bonding_curve::Curve<0xabc::t::T>" });
+      expect(held.risk, kind).toBe(classifyCapabilityRisk({ kind, type, owner: "wrapped", wrappedInTx: "Tx" }).risk);
+      expect(held.note, kind).toContain("held by object 0xc0ffee (0xb2::bonding_curve::Curve)");
+      expect(held.note, kind).not.toMatch(/owner is/);
+    }
   });
 });

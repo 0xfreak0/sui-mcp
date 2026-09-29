@@ -5,6 +5,28 @@ sidebar:
   order: 9
 ---
 
+## Choosing a package read
+
+`analyze_package` accepts a package ID or an MVR name such as `@org/app`.
+It summarizes modules, public and entry functions, and struct shapes, then
+scans for freeze/denylist and mint authority, admin capabilities, fund
+handling, randomness and hot-potato types. It is a heuristic surface scan,
+not a security audit; no finding proves a flaw and no empty scan proves safety.
+
+By default, `overview.modules` lists function and struct counts and entry
+and public function names. `modules: ["pool"]` returns just those modules'
+full signatures and struct field names and types. `detail: "full"` returns
+every module in full, every capability separately and every bytecode lead.
+The summary groups capabilities of one type while listing every holder.
+`audit_capabilities: false` skips the capability audit; `include_disassembly:
+true` adds each module's GraphQL bytecode assembly.
+
+Use `get_package` for module names and linkage, `get_move_function` for one
+signature, `disassemble_module` for instructions and `diff_package_upgrade`
+for code changes. Direct GraphQL reads need care: `structs` is a connection
+paged at 20 by default, while `fields` is a plain list with no `nodes`.
+
+
 ## Publisher and UpgradeCap holder
 
 `identify_address` reports `publisher`, the address that created the package,
@@ -108,22 +130,29 @@ disassemble_module { package_id: "0xe2b515f0…", module_name: "math_u256", func
 the ones whose instructions changed, and counts lines that only renumber
 locals, fields or instruction offsets apart from the hunks.
 
-`analyze_package` traces data flow through each function and the package's
-own callees and returns graded leads, each with its instructions:
+`analyze_package` traces bytecode data flow through each function and the
+package's own callees, without name lists. Each lead names the function and
+supporting instructions and is graded strong, medium or weak:
 
 - `discarded-check`: a bool from a comparison or a read-only call that reaches
   no branch, abort, return or store.
-- `sibling-guard-gap`: a public function that mutates an object type without a
-  check most of its module's public functions on that type make.
-- `unchecked-state-write`: a caller's value written into a shared object with
-  no comparison linking it to stored state.
+- `sibling-guard-gap`: a public function that mutates an object of a package
+  type without a check most of its module's public functions on that type
+  make, such as an ID binding, version check or pause check.
+- `unchecked-state-write`: a public function writes a plain-value argument
+  into a shared object's field without a comparison against stored state,
+  sender check or owned-object gate.
 
-Weak leads raise no finding and are listed in `bytecode_scan.weak_leads`,
-every one with `detail: 'full'`.
+Strong and medium leads raise findings listing the first leads. Weak leads
+raise no finding and appear in `bytecode_scan.weak_leads`, the first few by
+default. `detail: "full"` lists every lead, weak ones included;
+`bytecode_scan.read` gives the calls to inspect them.
 
-It also compares the lineage's older versions with its newest: every version
-of a package stays callable, so an older version whose public functions mutate
-a shared type without the check the newest version makes (a version check
-added later) is raised as `ungated-older-version`.
+It also compares the lineage's older versions with its newest, reading up to
+30 versions from the oldest and newest ends. Every version stays callable
+against the same shared objects, whichever package ID you pass. An older
+version whose public functions mutate a shared type without a check most
+of the newest version's public functions on that type make is raised as
+`ungated-older-version`, for example a version check added later.
 
 None of these need the optional [decompiler](/guides/decompiler/).

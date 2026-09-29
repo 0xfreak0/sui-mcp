@@ -20,3 +20,10 @@ of the wallets the sponsor serves.
 
 `relayer` and `operator` are proven. `private_sponsor` off a truncated scan is
 flagged provisional, since breadth only grows with the window.
+
+`build_wallet_edges` needs complete balance changes before choosing a first
+funder. If a transaction's remaining rows cannot be read, the lookup is unread:
+no first funder is chosen or cached, and no funding edge rests on that lookup.
+The result reports `truncated: true` and explains the unread lookup in `notes`.
+This also applies to the first-funder checks used for expansion and for a
+sponsor/funder split. An unread lookup does not mean the wallet had no funder.

@@ -553,6 +553,9 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
       data.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
     );
     budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
+    // Missing rows can hide an earlier inflow or change the apparent payer.
+    // This is an unread lookup, not a negative result or a cacheable pick.
+    if (completed.some((c) => c.balanceChangesTruncated)) return null;
     const txs: FundingTx[] = data.transactions.nodes.map((n, i) => toFundingTx(n, completed[i].balanceChanges));
     // Judged the way `find_funding_source` judges the same candidates, so an
     // unpriced or sub-floor transfer cannot pass as funding here while that
@@ -1086,8 +1089,10 @@ export async function buildWalletEdges(
   // Lookups where an unpriced coin's supply or publisher read failed, so an
   // inflow that may have been a grant was judged spam without it.
   let originUnreadLookups = 0;
+  let unreadFundingLookups = 0;
   for (const seed of uniqueSeeds) {
     const funding = await firstFunderOf(seed, budget);
+    if (!funding) unreadFundingLookups++;
     if (funding?.pricesUnavailable) unpricedLookups++;
     if (funding?.originUnread.length) originUnreadLookups++;
     if (funding?.funder && funding.digest) {
@@ -1231,7 +1236,10 @@ export async function buildWalletEdges(
     let checked = 0;
     for (const [wallet] of served.slice(0, ROLE_SPLIT_SAMPLE)) {
       const f = await firstFunderOf(wallet, budget);
-      if (!f) continue;
+      if (!f) {
+        unreadFundingLookups++;
+        continue;
+      }
       if (f.pricesUnavailable) unpricedLookups++;
       if (f.originUnread.length) originUnreadLookups++;
       checked++;
@@ -1429,6 +1437,7 @@ export async function buildWalletEdges(
       if (verified >= expandBudget || budget.truncated) break;
       verified++;
       const f = await firstFunderOf(c.address, budget);
+      if (!f) unreadFundingLookups++;
       if (f?.pricesUnavailable) unpricedLookups++;
       if (f?.originUnread.length) originUnreadLookups++;
       if (!f?.funder || !f.digest || f.funder !== c.funder) continue;
@@ -1578,6 +1587,13 @@ export async function buildWalletEdges(
     examined.add(funder);
   }
 
+  if (unreadFundingLookups > 0) {
+    notes.push(
+      `${unreadFundingLookups} first-funding lookup(s) remain unread because a read failed, balance changes could not ` +
+        "be completed, or the query budget ran out. No first funder was chosen or cached for those lookups; " +
+        "missing funding edges are not evidence of separate origins.",
+    );
+  }
   if (unpricedLookups > 0) {
     notes.push(
       `Coin prices could not be read for ${unpricedLookups} first-funding lookup(s), so a non-SUI inflow there was ` +
@@ -1613,7 +1629,7 @@ export async function buildWalletEdges(
     used_intermediaries: used,
     first_funders: Object.fromEntries(firstFunders),
     queries_used: budget.used,
-    truncated: budget.truncated || unreadIntermediaries > 0 || originUnreadLookups > 0,
+    truncated: budget.truncated || unreadFundingLookups > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0,
     notes,
   };
 }

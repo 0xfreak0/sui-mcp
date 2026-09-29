@@ -44,7 +44,8 @@ const aftermathUp =
         .map((c) => [c, { price: c === SUI_LONG ? 3.5 : listed[c]!, source: "aftermath" as const }]),
     );
 
-const { Budget, buildWalletEdges, countPaidAddresses, probeRecipients, probeSponsored } = await import(
+// Load after mockSui is initialized: the mocked gRPC factory closes over it.
+const { Budget, buildWalletEdges, countPaidAddresses, firstFunderOf, probeRecipients, probeSponsored } = await import(
   "../src/utils/edge-probe.js"
 );
 
@@ -709,6 +710,48 @@ describe("buildWalletEdges", () => {
     expect(members.has(SIB)).toBe(true);
     expect(members.has(STRANGER)).toBe(false);
   });
+});
+
+describe("first-funding balance completion failures", () => {
+  const A = "0xaaa";
+  const FUNDER = "0xf00d";
+  const LATER = "0x1a7e";
+
+  it.each(["hidden inflow before later funding", "visible inflow", "hidden inflow without later funding"])(
+    "leaves %s unread and uncached",
+    async (scenario) => {
+      const tx = payment("incomplete-first", FUNDER, A);
+      const target = tx.effects.balanceChanges.nodes[1];
+      const others = Array.from({ length: 50 }, (_, i) => ({
+        owner: { address: `0x${(i + 100).toString(16)}` },
+        amount: ONE_SUI,
+        coinType: { repr: SUI },
+      }));
+      const conn = pagedTxConnection(tx.digest, scenario === "visible inflow" ? [target, ...others] : [...others, target], "balanceChanges");
+      tx.effects.balanceChanges = conn.first;
+      const rest = router({
+        earliest: (addr) => addr === A
+          ? page(scenario === "hidden inflow before later funding" ? [tx, payment("later", LATER, A)] : [tx])
+          : page([]),
+      });
+      mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+        if (conn.respond(q, v)) throw new Error("GraphQL HTTP 429");
+        return rest(q, v);
+      });
+
+      const budget = new Budget(100);
+      expect(await firstFunderOf(A, budget)).toBeNull();
+      expect(budget.used).toBe(2);
+      expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+
+      const result = await buildWalletEdges([A, FUNDER, LATER], { expand: false });
+      expect(result.first_funders).toEqual({});
+      expect(result.edges).toEqual([]);
+      expect(result.truncated).toBe(true);
+      expect(result.notes.join(" ")).toMatch(/first.funding.*unread/i);
+      expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("firstFunderOf prices candidates like find_funding_source does", () => {

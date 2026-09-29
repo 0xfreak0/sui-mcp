@@ -48,25 +48,27 @@ get_address_fanout(<that funder>)
 
 Several wallets tracing back to one funder looks decisive until you measure the
 funder itself. Every funding result includes the fan-out measurement for this
-reason. The [full example](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/start/first-investigation.md)
+reason. The [full example](https://sui-mcp.vercel.app/start/first-investigation/)
 starts from ranking a protocol's wallets.
 
 ## Documentation
 
-- [Install](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/start/install.md): clients, forensics profile, running from source
-- [Tool profiles](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/tool-profiles.md): `SUI_TOOLS`, `enable_tools` and what each profile loads
-- [Configuration](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/configuration.md): environment variables, price sources, the optional local store
-- [The forensics skill](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/forensics-skill.md) and its investigation prompts
-- [Multisig](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/multisig.md): committees, signers, aliases
-- [Watching addresses](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/watching-addresses.md)
-- [Move decompiler (optional)](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/decompiler.md)
-- [What a result tells you about itself](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/concepts/index.md): verified coins, fund flows, lookalike addresses, truncated lists and more
-- [Tool reference](https://github.com/0xfreak0/sui-mcp/tree/main/site/src/content/docs/reference/tools) and [capabilities](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/reference/capabilities.md)
+Full documentation: <https://sui-mcp.vercel.app/>
+
+- [Install](https://sui-mcp.vercel.app/start/install/): clients, forensics profile, running from source
+- [Tool profiles](https://sui-mcp.vercel.app/guides/tool-profiles/): `SUI_TOOLS`, `enable_tools` and what each profile loads
+- [Configuration](https://sui-mcp.vercel.app/guides/configuration/): environment variables, price sources, the optional local store
+- [The forensics skill](https://sui-mcp.vercel.app/guides/forensics-skill/) and its investigation prompts
+- [Multisig](https://sui-mcp.vercel.app/guides/multisig/): committees, signers, aliases
+- [Watching addresses](https://sui-mcp.vercel.app/guides/watching-addresses/)
+- [Move decompiler (optional)](https://sui-mcp.vercel.app/guides/decompiler/)
+- [What a result tells you about itself](https://sui-mcp.vercel.app/concepts/): verified coins, fund flows, lookalike addresses, truncated lists and more
+- [Tool reference](https://sui-mcp.vercel.app/reference/tools/) and [capabilities](https://sui-mcp.vercel.app/reference/capabilities/)
 
 ## Everyday prompts
 
 For people without investigation experience
-([details](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/guides/everyday-prompts.md)):
+([details](https://sui-mcp.vercel.app/guides/everyday-prompts/)):
 
 - `was_i_scammed`: what left the wallet, where it went, and whom to report to
 - `who_controls_this_token`: who can mint, freeze or upgrade a coin
@@ -76,7 +78,7 @@ For people without investigation experience
 ## Security
 
 Read-only: no wallet, no keys, and it never submits a transaction. See the
-[security model](https://github.com/0xfreak0/sui-mcp/blob/main/site/src/content/docs/concepts/security.md)
+[security model](https://sui-mcp.vercel.app/concepts/security/)
 and [SECURITY.md](SECURITY.md) for reporting a vulnerability.
 
 ## License

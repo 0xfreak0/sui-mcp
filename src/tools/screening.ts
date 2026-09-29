@@ -121,11 +121,15 @@ export function registerScreeningTools(server: McpServer) {
         });
         const byCategory: Record<string, number> = {};
         for (const e of result.exposures) byCategory[e.category] = (byCategory[e.category] ?? 0) + 1;
+        const incomplete = result.windows.some((w) => w.incomplete_transactions.length > 0);
         const summary = [
           subjectLabel ? `The address itself is labelled ${subjectLabel.label} [${subjectLabel.category}]${subjectLabel.evidence ? ` (${subjectLabel.evidence})` : ""}.` : "",
           result.exposures.length === 0
-            ? "No exposure to a labelled or sanctioned account within the screened window."
+            ? incomplete
+              ? "No exposure found in the fully read transactions; screening is incomplete (see windows.incomplete_transactions)."
+              : "No exposure to a labelled or sanctioned account within the screened window."
             : `${result.exposures.length} exposure(s): ${Object.entries(byCategory).map(([c, n]) => `${n} ${c}`).join(", ")}.`,
+          incomplete && result.exposures.length > 0 ? "Screening is incomplete (see windows.incomplete_transactions)." : "",
         ].filter(Boolean).join(" ");
         return json({
           subject,

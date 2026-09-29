@@ -98,3 +98,14 @@ For example, a stopped call can return:
   }
 }
 ```
+
+## Incomplete screening transactions
+
+`screen_address` reads every balance-change page of each transaction in its
+window. If a continuation cannot be read, the window lists the digest in
+`incomplete_transactions`. That transaction contributes no balance-dependent
+exposure paths, and the summary states that screening is incomplete.
+
+A bridge exit identified by its calls or events can still be reported. Its
+`sent` amount is null when any transaction in the exit group has incomplete
+balance changes, and the group names those digests in `incomplete_transactions`.

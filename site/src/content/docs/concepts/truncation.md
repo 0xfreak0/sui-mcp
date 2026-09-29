@@ -27,3 +27,14 @@ With the local store on, `omitted.result.uri` is the stored full result,
 totals cover every sale. A `get_transaction` event list too long for the
 budget folds events that differ only in amounts into one row, and says so
 under `omitted.folded`.
+
+`get_validators` defaults to `detail: "summary"`: name, address, stake,
+commission, voting power and at-risk status, sorted over the whole set before
+the list is capped. At-risk validators stay even beyond the summary budget
+or an explicit `limit`. `active_validator_count` and `total_stake` describe
+the whole set; `validator_count` counts only the rows shown.
+`omitted.fields` names the dropped fields and `omitted.lists.validators`
+counts any dropped rows. Follow `omitted.next_call` for full rows on the same
+network, in the same order, without a limit. `detail: "full"` has no size cap;
+an explicit `limit` still applies. An `address` lookup always returns the
+single validator's details.

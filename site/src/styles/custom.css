@@ -1,8 +1,11 @@
-/* Tables fit the content column: cells may wrap long text, and every column
-   but the last keeps a minimum width so short values such as "no" stay whole. */
+/* Tables fit the content column. Words wrap whole; long code such as an
+   address may break anywhere; short columns keep a minimum width. */
 .sl-markdown-content td,
 .sl-markdown-content th {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+}
+.sl-markdown-content td code {
+  word-break: break-all;
 }
 .sl-markdown-content td:not(:last-child),
 .sl-markdown-content th:not(:last-child) {

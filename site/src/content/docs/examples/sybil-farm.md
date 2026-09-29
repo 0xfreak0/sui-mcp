@@ -149,15 +149,15 @@ over the 24 control wallets, with the same arguments as step 3:
 
 ```text wrap
 "shared_funders": [
-  { "funder": "0xab73ad38c63f83eda02182422b545395be1d3caeb54b5869159a9f70b678cd56", "funded_count": 5, … },
+  { "funder": "0xab73…cd56", "funded_count": 5, … },
   { "funder": "0x60dd01bc037e2c1ea2aaf02187701f9f4453ba323338d2f2f521957065b0984d", "funded_count": 4, … }
 ],
 …
 ```
 
 The control has no `funding_bursts` field: no two of its wallets were first
-funded within 60 seconds of each other. Its largest shared funder paid 5 of
-24, against 24 of 24 for the farm. The second is the Bybit reserve wallet from
+funded within 60 seconds of each other. Its largest shared funder, an unlabelled wallet shortened here,
+paid 5 of 24, against 24 of 24 for the farm. The second is the Bybit reserve wallet from
 step 1, paying out exchange withdrawals.
 
 ### 6. Classify the collector

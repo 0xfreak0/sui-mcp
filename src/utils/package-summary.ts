@@ -78,7 +78,13 @@ export interface CapabilityGroup {
   owner: CapabilityInfo["owner"];
   risk: CapabilityInfo["risk"];
   count: number;
-  holders: Array<{ object_id: string; owner_address?: string; signing_scheme?: string; wrapped_in_tx?: string }>;
+  holders: Array<{
+    object_id: string;
+    owner_address?: string;
+    signing_scheme?: string;
+    wrapped_in_tx?: string;
+    found_by?: CapabilityInfo["found_by"];
+  }>;
   note: string;
 }
 
@@ -131,6 +137,7 @@ export function groupCapabilities(caps: CapabilityInfo[]): Array<CapabilityInfo 
         ...(c.owner_address ? { owner_address: c.owner_address } : {}),
         ...(c.signing_scheme ? { signing_scheme: c.signing_scheme } : {}),
         ...(c.wrapped_in_tx ? { wrapped_in_tx: c.wrapped_in_tx } : {}),
+        ...(c.found_by ? { found_by: c.found_by } : {}),
       })),
       // One note for every member when they all read the same; otherwise a
       // note without any one member's address.

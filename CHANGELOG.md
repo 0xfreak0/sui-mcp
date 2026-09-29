@@ -62,6 +62,33 @@
   Failed transactions and transactions without a loop are unchanged.
 
 ### Fixed
+- `analyze_package` no longer leaves out a coin whose TreasuryCap the
+  publish transaction did not show at top level. The capability audit listed
+  only caps among the objects version 1's publish created, so a cap stored
+  inside another object during `init` (wUSDC's Wormhole `WrappedAssetSetup`,
+  SRT's `TreasuryAccess`, CLOWNPEPE's `Storage`, which keeps the Supply the
+  cap became) or created by a later transaction was absent, and the audit
+  read the same as a coin nobody can mint. The audit now takes the package's
+  coins from the `CoinMetadata`, `TreasuryCap`, `Coin` and registry
+  `Currency` its publish created for its own types, and from the registry
+  entry each of its non-generic `key` structs and one-time-witness structs
+  would have, read in one request. That finds a coin created after publish
+  through `coin_registry::new_currency` and one whose `init` wrapped both
+  its TreasuryCap and its CoinMetadata, such as HOPELESS inside a
+  `connector::Connector`. A one-time witness the registry does not know is
+  asked of the node. A generic `key` struct in a module whose functions take
+  the CoinRegistry is named in `incomplete_scans`, under the id of the
+  version that defined it, since its coins cannot be looked up. Each missing
+  cap is looked up through the registry's `treasury_cap_id` and then by
+  type. A cap found this way is listed with `found_by` (`coin_registry` or
+  `type_scan`) and read like any other; a registry supply recorded as fixed
+  or burn-only reads as a destroyed cap. A coin whose cap is still not found
+  is named in `coins_without_located_mint_authority` with what was checked,
+  and its `risk` says what that means: medium, who can mint is unknown;
+  info, nothing can mint (a registry supply recorded as fixed or burn-only,
+  or SUI, whose Supply `sui::new` destroyed at genesis). The audit note
+  names these coins, and `incomplete_scans` lists each type once, with every
+  reason a scan gave. `is_this_token_safe` reads each entry by its risk.
 - `classify_deposit_address` no longer counts an inferred deposit label on
   the destination as an exchange wallet, so a wallet that pays into an
   exchange deposit address is not read as a deposit address itself.

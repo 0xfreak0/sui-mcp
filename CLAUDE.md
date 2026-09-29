@@ -4472,13 +4472,22 @@ must be answerable from these tools, and no case check calls
   so the publish scan misses it. Checked live: wUSDC's went into Wormhole's
   `WrappedAssetSetup`, SRT's sits in its shared `TreasuryAccess`, and
   CLOWNPEPE's was turned into the `Supply` its shared `Storage` keeps.
-  `auditPackageCapabilities` takes the
-  package's coins from the publish transaction's created `CoinMetadata`,
-  `TreasuryCap`, `Coin` and registry `Currency` of the lineage root's own
-  types, plus each one-time-witness-shaped struct `getCoinInfo` knows a coin
-  for (a module added by an upgrade). For each coin without a cap it reads
-  the registry's `treasury_cap_id`, then scans `TreasuryCap<T>` by type
-  (`found_by`), and names what is left in
+  `auditPackageCapabilities` takes the package's coins from two places. The
+  publish transaction's created `CoinMetadata`, `TreasuryCap`, `Coin` and
+  registry `Currency` of the lineage root's own types cover every coin made
+  through a one-time witness: `init` runs only at publish (never for a module
+  an upgrade adds) and a witness cannot be packed. A coin made later comes
+  only from `coin_registry::new_currency<T: key>`, whose `Currency<T>` is
+  shared at an id derived under `0xc` from `CurrencyKey<T>` (key BCS `[0]`,
+  the dummy field; checked live against HFROG and wUSDC). Every non-generic
+  `key` struct's derived id is read in one multi-get (live:
+  `0x08f0b496…::currency::COIN`, cap created after publish). A generic `key`
+  struct's id depends on its type argument, so where a function takes
+  `CoinRegistry` it is named in `incomplete_scans` instead. For each coin
+  without a cap it reads the registry's `treasury_cap_id`, then scans
+  `TreasuryCap<T>` by type (`found_by`); GraphQL's type filter matches
+  nothing for a partly instantiated type (`Currency<…::FToken>`), so it
+  cannot stand in for the derivation. What is left is named in
   `coins_without_located_mint_authority` at medium risk with what was
   checked. A registry `Fixed`/`BurnOnly` supply means the cap was consumed
   (`make_supply_fixed` takes it by value), so that cap is reported destroyed

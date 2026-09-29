@@ -30,9 +30,17 @@
  * object read with no derivation to get wrong. The regulated-state variants
  * are `Unknown`, `Regulated` and `Unregulated`, and a `Regulated` entry always
  * carries a cap.
+ *
+ * A `Currency` made by `new_currency` or registered through
+ * `finalize_registration` also sits at an id derived from its type:
+ * `derived_object::claim(&mut registry.id, CurrencyKey<T>())` under `0xc`.
+ * `CurrencyKey<T>()` has no fields, so its BCS is the one `false` byte of
+ * the compiler's dummy field (checked live against HFROG's and wUSDC's
+ * entries). That lets many candidate types be checked in one multi-get
+ * without knowing which of them are coins.
  */
 
-import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { deriveObjectID, normalizeSuiAddress } from "@mysten/sui/utils";
 import { gqlQuery } from "../clients/graphql.js";
 import { normalizeCoinType } from "./coin-registry.js";
 
@@ -103,8 +111,10 @@ export async function readRegistryCurrency(
     objects?: { nodes?: Array<{ asMoveObject?: { contents?: { json?: CurrencyJson } } }> };
   }>(CURRENCY_QUERY, { type });
   const json = d.objects?.nodes?.[0]?.asMoveObject?.contents?.json;
-  if (!json) return null;
+  return json ? parseCurrency(json) : null;
+}
 
+function parseCurrency(json: CurrencyJson): RegistryCurrency | null {
   // Decimals is the field worth having, so an entry that cannot supply one is
   // no better than no entry at all.
   const decimals = typeof json.decimals === "number" ? json.decimals : undefined;
@@ -130,6 +140,44 @@ export async function readRegistryCurrency(
       : {}),
     ...(str(json.treasury_cap_id) ? { treasury_cap_id: str(json.treasury_cap_id) } : {}),
   };
+}
+
+/** Ids per multi-get: the service caps a request at 50 keys and 5,000 bytes, and a key costs about 81. */
+const DERIVED_BATCH = 40;
+
+const MULTI_CURRENCY_QUERY = `query ($keys: [ObjectKey!]!) {
+  multiGetObjects(keys: $keys) { address asMoveObject { contents { json } } }
+}`;
+
+/**
+ * The registry entry of each type that has one at its derived id, keyed by
+ * the canonical type. A type absent from the result has no `Currency` at that
+ * id: it is no coin made by `new_currency`, though a coin whose one-time
+ * witness `Currency` was never finalized sits elsewhere (`readRegistryCurrency`
+ * finds that one). A failed read throws.
+ */
+export async function readDerivedCurrencies(coinTypes: string[]): Promise<Map<string, RegistryCurrency>> {
+  const byId = new Map<string, string>();
+  for (const t of coinTypes) {
+    const canonical = normalizeCoinType(t);
+    if (!canonical) continue;
+    byId.set(normalizeSuiAddress(deriveObjectID("0xc", `0x2::coin_registry::CurrencyKey<${canonical}>`, new Uint8Array([0]))), canonical);
+  }
+  const ids = [...byId.keys()];
+  const out = new Map<string, RegistryCurrency>();
+  for (let i = 0; i < ids.length; i += DERIVED_BATCH) {
+    const d = await gqlQuery<{ multiGetObjects?: Array<{ address?: string; asMoveObject?: { contents?: { json?: CurrencyJson } } | null } | null> }>(
+      MULTI_CURRENCY_QUERY,
+      { keys: ids.slice(i, i + DERIVED_BATCH).map((address) => ({ address })) },
+    );
+    for (const o of d.multiGetObjects ?? []) {
+      const type = o?.address ? byId.get(normalizeSuiAddress(o.address)) : undefined;
+      const json = o?.asMoveObject?.contents?.json;
+      const entry = type && json ? parseCurrency(json) : null;
+      if (type && entry) out.set(type, entry);
+    }
+  }
+  return out;
 }
 
 /**

@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gqlPage } from "./helpers/service-shapes.js";
 
-const { gqlQuery, withArchiveFallback, getCoinInfo } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn(), getCoinInfo: vi.fn() }));
+const { gqlQuery, withArchiveFallback } = vi.hoisted(() => ({ gqlQuery: vi.fn(), withArchiveFallback: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
 vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback }));
-vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo } }, archive: {}, getClients: vi.fn() }));
 vi.mock("../src/utils/identity.js", () => ({
   describeAddresses: async (addrs: string[]) =>
     new Map(addrs.map((a) => [a, { address: a, kind: "wallet" as const, authentication: { scheme: "ed25519" as const, verified: true } }])),
@@ -372,6 +371,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
         return { package: { typeOrigins: [{ module: "vault", struct: "OperatorCap", definingId: PKG }] } };
       }
       // The authority-struct instance scan: one live OperatorCap, held by the hot key.
+      // No key struct here is a coin: nothing sits at its derived registry id.
+      if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
       if (query.includes("objects(filter")) {
         return {
           objects: {
@@ -444,6 +445,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
       if (query.includes("typeOrigins")) {
         return { package: { typeOrigins: [{ module: "balance_manager", struct: "TradeCap", definingId: PKG }] } };
       }
+      // No key struct here is a coin: nothing sits at its derived registry id.
+      if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
       if (query.includes("objects(filter")) {
         return {
           objects: {
@@ -482,6 +485,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
       if (query.includes("typeOrigins")) {
         return { package: { typeOrigins: [{ module: "vault", struct: "OperatorCap", definingId: PKG }] } };
       }
+      // No key struct here is a coin: nothing sits at its derived registry id.
+      if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
       if (query.includes("objects(filter")) {
         return {
           objects: {
@@ -520,6 +525,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
       if (query.includes("typeOrigins")) {
         return { package: { typeOrigins: [{ module: "vault", struct: "AdminCap", definingId: PKG }] } };
       }
+      // No key struct here is a coin: nothing sits at its derived registry id.
+      if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
       if (query.includes("objects(filter")) {
         return {
           objects: {
@@ -559,6 +566,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
       if (query.includes("typeOrigins")) {
         return { package: { typeOrigins: [{ module: "vault", struct: "OperatorCap", definingId: PKG }] } };
       }
+      // No key struct here is a coin: nothing sits at its derived registry id.
+      if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
       if (query.includes("objects(filter")) {
         throw new Error("HTTP 429");
       }
@@ -596,6 +605,8 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
           originReads++;
           return typeOrigins();
         }
+        // No key struct here is a coin: nothing sits at its derived registry id.
+        if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
         if (query.includes("objects(filter")) {
           const type = JSON.stringify(vars);
           const nodes = type.includes(`${V1}::vault::OperatorCap`)
@@ -666,8 +677,12 @@ describe("auditPackageCapabilities — authority-struct discovery", () => {
  * absent from the audit, which then read the same as a coin nobody can mint.
  */
 describe("auditPackageCapabilities — mint authority the publish transaction did not show", () => {
-  const PKG = `0x${"c1".repeat(32)}`;
-  const COIN = `${PKG}::tok::TOK`;
+  // HFROG's package and coin type, whose registry `Currency` sits at a known
+  // id derived from the type (read live), so the discovery tests below use a
+  // real derivation rather than one computed the way the code does.
+  const PKG = "0x000157b9bc48b55a4dc4b38d867a760f743822f7b2336da1acfb1c5f8ccbc548";
+  const COIN = `${PKG}::hfrog::HFROG`;
+  const CURRENCY_ID = "0x8cc535410b25e37808e55cfb206c406fff62d897e1ee6528396b294d59dd1408";
   const CAP_TYPE = `${P2}::coin::TreasuryCap<${COIN}>`;
   const CAP = `0x${"ca".repeat(32)}`;
   const UPGRADE_CAP = `0x${"0b".repeat(32)}`;
@@ -681,6 +696,8 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     capInstances?: Array<{ address: string; owner: { __typename: string; address?: { address: string } } }>;
     capScanFails?: boolean;
     capObject?: Record<string, unknown> | null;
+    /** Registry `Currency` JSON at each derived id a multi-get reads. */
+    derived?: Record<string, Record<string, unknown>>;
   }
 
   const mockChain = (chain: Chain) => {
@@ -695,6 +712,15 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
       }
       if (typeof vars.type === "string" && vars.type.includes("coin_registry::Currency")) {
         return { objects: { nodes: chain.registry ? [{ asMoveObject: { contents: { json: chain.registry } } }] : [] } };
+      }
+      if (query.includes("multiGetObjects")) {
+        const keys = (vars.keys ?? []) as Array<{ address: string }>;
+        return {
+          multiGetObjects: keys.map(({ address }) => {
+            const json = chain.derived?.[address];
+            return json ? { address, asMoveObject: { contents: { json } } } : null;
+          }),
+        };
       }
       if (vars.t === CAP_TYPE) {
         if (chain.capScanFails) throw new Error("HTTP 429");
@@ -711,7 +737,6 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
   const treasury = (audit: { capabilities: Array<{ kind: string }> }) => audit.capabilities.filter((c) => c.kind === "treasury");
 
   beforeEach(() => {
-    getCoinInfo.mockReset();
     withArchiveFallback.mockReset();
   });
 
@@ -762,21 +787,54 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: COIN, risk: "medium" })]);
   });
 
-  // `package::claim` takes the same witness shape as `coin::create_currency`,
-  // so the shape alone does not make a coin: the node has to know one.
-  it("finds the coin of a one-time witness the publish transaction did not show, and adds nothing for a witness that names no coin", async () => {
-    mockChain({ registry: null, capInstances: [] });
-    getCoinInfo.mockImplementation(async ({ coinType }: { coinType: string }) => {
-      if (coinType === COIN) return { response: { metadata: { decimals: 9 } } };
-      throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
+  /**
+   * `coin_registry::new_currency<T: key>` makes a coin from a key struct any
+   * time after publish, so neither the publish effects nor a one-time
+   * witness show it. Its `Currency` sits at the id derived from `T`.
+   */
+  it("finds a coin a key struct became after publish through its derived registry entry", async () => {
+    mockChain({
+      derived: { [CURRENCY_ID]: { decimals: 9, supply: { "@variant": "Unknown" }, treasury_cap_id: CAP } },
+      capObject: { owner: { __typename: "AddressOwner", address: { address: HOLDER } }, asMoveObject: { contents: { json: {} } } },
     });
     const audit = await auditPackageCapabilities(PKG, HOLDER, [
-      { name: "tok", structs: [{ name: "TOK", abilities: ["drop"] }] },
-      { name: "config", structs: [{ name: "CONFIG", abilities: ["drop"] }] },
+      { name: "hfrog", structs: [{ name: "HFROG", abilities: ["key"] }] },
+      { name: "config", structs: [{ name: "Config", abilities: ["key", "store"] }] },
     ]);
-    expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: COIN, risk: "medium" })]);
-    expect(audit.capabilities.map((c) => c.kind)).toEqual(["upgrade"]);
+    expect(treasury(audit)).toEqual([expect.objectContaining({ object_id: CAP, type: CAP_TYPE, owner: "address", risk: "high", found_by: "coin_registry" })]);
+    expect(audit.coins_without_located_mint_authority).toBeUndefined();
     expect(audit.incomplete_scans).toBeUndefined();
+  });
+
+  // A registry entry's id depends on the type argument, so a generic key
+  // struct's coins cannot be looked up; where the code can call new_currency,
+  // the audit says so instead of passing over it.
+  it("names a generic key struct as unchecked when the package can call new_currency", async () => {
+    mockChain({});
+    const modules = (params: string[]) => [
+      { name: "lending_state", structs: [{ name: "FToken", abilities: ["key", "store"], typeParameters: 1 }], functions: [{ params }] },
+    ];
+    const withRegistry = await auditPackageCapabilities(PKG, HOLDER, modules([`&mut ${P2}::coin_registry::CoinRegistry`, "u8"]));
+    expect(withRegistry.incomplete_scans).toEqual([expect.objectContaining({ type: `${PKG}::lending_state::FToken` })]);
+    const without = await auditPackageCapabilities(PKG, HOLDER, modules(["u8"]));
+    expect(without.incomplete_scans).toBeUndefined();
+  });
+
+  /**
+   * A package with more coins than any probe cap, every TreasuryCap created
+   * in its publish, read "N one-time-witness struct type(s) were not checked"
+   * although every coin was listed.
+   */
+  it("adds no unchecked-coin caveat when every coin's cap is in the publish transaction", async () => {
+    const names = Array.from({ length: 20 }, (_, i) => `conditional_${i}`);
+    mockChain({ created: names.map((n) => `${P2}::coin::TreasuryCap<${PKG}::${n}::${n.toUpperCase()}>`) });
+    const audit = await auditPackageCapabilities(
+      PKG,
+      HOLDER,
+      names.map((n) => ({ name: n, structs: [{ name: n.toUpperCase(), abilities: ["drop"] }] })),
+    );
+    expect(treasury(audit)).toHaveLength(20);
+    expect(audit.note).toBeUndefined();
   });
 
   it("audits only the package's own coins among those the publish transaction created", async () => {

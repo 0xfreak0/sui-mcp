@@ -454,6 +454,24 @@ describe("router integrations that pass a bookkeeping type", () => {
     ).toEqual(["Swap BLUE → SUI", "Swap USDC → SUI"]);
   });
 
+  it("passes on the one type a routed step that is no swap names, when the path does not hold it", () => {
+    // AeB42TVxiPoRVF13HVK49XDwHVwD2mLQXh5zGF6o3A5W: mint_w1 stakes the path's
+    // SUI into SPRING_SUI, and the Cetus SwapEvent for the next hop (pool
+    // 0x5c5e87f0…, atob true on Pool<SPRING_SUI, SUI>) swaps it back to SUI.
+    const SPRING_SUI = "0x83556891f4a0f233ce7b05cfe7f957d4020492a34f5405b2cb9377d060bef4bf::spring_sui::SPRING_SUI";
+    const LST_INT = "0x05bb8426f7a0d92382533ce392d87975770394403990f83c5a43157e282627e3";
+    const swaps = decodeTransaction(
+      [
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(LST_INT, "router", "mint_w1", [RD, SUI, SPRING_SUI]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUI, SPRING_SUI, SUI]),
+      ],
+      [],
+      SENDER,
+    ).route_hops;
+    expect(swaps.map((h) => [h.coin_in, h.coin_out])).toEqual([[SPRING_SUI, SUI]]);
+  });
+
   it("names as a hop's output the type the route uses next, passing over a pool parameter that is no coin", () => {
     const hops = (cmds: GrpcTypes.Command[]) =>
       decodeTransaction(cmds, [], SENDER)

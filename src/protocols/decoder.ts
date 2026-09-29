@@ -484,10 +484,14 @@ export function decodeTransaction(
         // A routed step that is no decoded swap (Meta Stable's `withdraw_w1`
         // turning superSUI into afSUI, or a swap under a function name the
         // registry does not know) takes the coin the path holds and passes on
-        // its other own type, so the next hop starts from that coin.
-        if (routed && typeArgs.length === 4 && op?.action !== "swap" && pathCoin !== null) {
+        // its other own type, so the next hop starts from that coin. A step
+        // with one own type that the path does not hold (an LST integration's
+        // `mint_w1<_, SUI, SPRING_SUI>` staking the path's SUI) gives that
+        // type out.
+        if (routed && op?.action !== "swap" && pathCoin !== null) {
           const own = typeArgs.slice(2);
-          if (own.includes(pathCoin)) pathCoin = own[0] === pathCoin ? own[1] : own[0];
+          if (own.length === 2 && own.includes(pathCoin)) pathCoin = own[0] === pathCoin ? own[1] : own[0];
+          else if (own.length === 1 && own[0] !== pathCoin) pathCoin = own[0];
         }
 
         if (op) {

@@ -332,13 +332,23 @@ function routeMarkers(commands: GrpcTypes.Command[], hasCoinEvidence: (t: string
  * hop's own types in each integration's order, so position says nothing about
  * direction. The hop takes in the coin the path holds (the previous hop's
  * output, or the start coin) and gives out another of its own types: the last
- * one the transaction shows to be a coin, else the last one.
+ * one the transaction shows to be a coin. When none is, the route decides,
+ * since a hop's output is what the route uses next: a type the path's next
+ * routed call names, or for a path's last call the coin the route gives out.
+ * A pool parameter that is no coin (Turbos passes its fee tier as an own
+ * type) is passed over that way. Failing both, the last own type.
  */
-function routeHop(typeArgs: string[], pathCoin: string | null, hasCoinEvidence: (t: string) => boolean): [string, string] | null {
+function routeHop(
+  typeArgs: string[],
+  pathCoin: string | null,
+  hasCoinEvidence: (t: string) => boolean,
+  next: { own: string[] | undefined; routeOut: string | null },
+): [string, string] | null {
   const own = typeArgs.slice(2);
   const input = pathCoin !== null && own.includes(pathCoin) ? pathCoin : typeArgs[1];
   const rest = own.filter((t) => t !== input).reverse();
-  const output = rest.find(hasCoinEvidence) ?? rest[0];
+  const used = next.own ? rest.find((t) => next.own!.includes(t)) : rest.find((t) => t === next.routeOut);
+  const output = rest.find(hasCoinEvidence) ?? used ?? rest[0];
   return output ? [input, output] : null;
 }
 
@@ -387,10 +397,33 @@ export function decodeTransaction(
   }
   const hasCoinEvidence = (t: string) => coinTypes.has(t) || isVerifiedCoin(t);
   const markers = routeMarkers(commands, hasCoinEvidence);
+  // For each routed call, the own types of the next routed call in its path;
+  // a path's last call has none. And per package, its last call passing
+  // exactly two types with no marker: a router's closing call names the coin
+  // the route takes in and the one it gives out.
+  const nextInPath = new Map<number, string[]>();
+  const closing = new Map<string, string>();
+  let previous: number | null = null;
+  for (const [index, cmd] of commands.entries()) {
+    const c = cmd.command;
+    if (c.oneofKind !== "moveCall") continue;
+    const tas = c.moveCall.typeArguments ?? [];
+    const op = lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "");
+    if (op?.skip) continue;
+    if (tas.length === 2 && !markers.has(tas[0])) closing.set(normalizeSuiAddress(c.moveCall.package ?? "0x0"), tas[1]);
+    if (tas.length < 2 || !markers.has(tas[0])) continue;
+    if (tas.length === 2 && !op) previous = null;
+    else {
+      if (previous !== null) nextInPath.set(previous, tas.slice(2));
+      previous = index;
+    }
+  }
   // The coin a route's path holds: its start coin, then each hop's output.
   let pathCoin: string | null = null;
   let path = -1;
   let routeCoins: [string, string] | null = null;
+  // The coin the route gives out: its opening call's, else its closing call's.
+  let routeOut: string | null = null;
   const routeHops: RouteHop[] = [];
 
   for (const [index, cmd] of commands.entries()) {
@@ -428,6 +461,7 @@ export function decodeTransaction(
             const [coinIn, coinOut] = openerCall.moveCall.typeArguments;
             routeCoins = [coinIn, coinOut];
           }
+          routeOut = routeCoins?.[1] ?? closing.get(normalizeSuiAddress(pkg)) ?? null;
         }
 
         // A routed step that is no decoded swap (Meta Stable's `withdraw_w1`
@@ -442,7 +476,7 @@ export function decodeTransaction(
         if (op) {
           let args = typeArgs;
           if (op.action === "swap" && routed) {
-            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence);
+            const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut });
             args = hop ?? typeArgs.slice(1);
             if (hop) {
               pathCoin = hop[1];

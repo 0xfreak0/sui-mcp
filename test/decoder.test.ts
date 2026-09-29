@@ -454,6 +454,37 @@ describe("router integrations that pass a bookkeeping type", () => {
     ).toEqual(["Swap BLUE → SUI", "Swap USDC → SUI"]);
   });
 
+  it("names as a hop's output the type the route uses next, passing over a pool parameter that is no coin", () => {
+    const hops = (cmds: GrpcTypes.Command[]) =>
+      decodeTransaction(cmds, [], SENDER)
+        .actions.filter((a) => a.startsWith("Swap"))
+        .map((a) => a.replace(/ on .*$/, ""));
+    // EyMcXJpWTGDkzkFG9H6RsNypnhDkoRQ9trzUF8MTM26U: Turbos's swap_b_a_w1 passes
+    // its pool's fee tier as an own type. The Turbos SwapEvent (pool
+    // 0x04dd1e69…, Pool<SUDENG, SUI, FEE10000BPS>) swaps SUI for SUDENG, and
+    // the Cetus SwapEvent (pool 0xb785e6ee…, Pool<SUDENG, SUI>, atob true)
+    // SUDENG for SUI. Nothing in the transaction shows SUDENG to be a coin.
+    const SUDENG = "0x8993129d72e733985f7f1a00396cbd055bad6f817fee36576ce483c8bbb8b87b::sudeng::SUDENG";
+    const FEE = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::fee10000bps::FEE10000BPS";
+    const TURBOS_INT = "0x666c289f99fc924f75c05b048772c504be83916b33a220772c0248afc79f00a6";
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(TURBOS_INT, "router", "swap_b_a_w1", [RD, SUI, SUDENG, SUI, FEE]),
+        makeCommand(CETUS_INT, "router", "swap_a_to_b_by_a_w1", [RD, SUI, SUDENG, SUI]),
+      ]),
+    ).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → SUI"]);
+    // A path's last hop gives out the coin the route's closing call names.
+    expect(
+      hops([
+        makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [SUI, SUDENG]),
+        makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, SUI]),
+        makeCommand(TURBOS_INT, "router", "swap_b_a_w1", [RD, SUI, SUDENG, SUI, FEE]),
+        makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [SUI, SUDENG]),
+      ]),
+    ).toEqual(["Swap SUI → SUDENG"]);
+  });
+
   it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {
     const CETUS = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
     const TURBOS = "0x1a3c42ded7b75cdf4ebc7c7b7da9d1e1db49f16fcdca934fac003f35f39ecad9";

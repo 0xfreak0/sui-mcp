@@ -33,7 +33,7 @@ on the attacker wallet, oldest transactions first:
 ```
 
 The wallet was funded once, failed one transaction, and first succeeded at
-10:30:50 UTC. Cetus dates the exploit from that time.
+10:30:50 UTC. Cetus's incident report dates the exploit from that time.
 
 [`analyze_attack_tx`](/reference/tools/incident-investigation/#analyze_attack_tx)
 on that transaction:

@@ -64,7 +64,9 @@ metadata, which says how far it got.
 
 ## Frozen addresses
 
-`check_coin_restrictions` reads the on-chain deny list in both directions. A
-frozen address usually holds none of the coin that froze it, so it checks
-every configured coin type rather than the ones it holds. A freeze by
+`check_coin_restrictions` reads the on-chain deny list in two directions:
+given a coin type, it lists the addresses frozen for that coin; given an
+address, it lists the coins that freeze it. A frozen address usually holds
+none of the coin that froze it, so the address check covers every coin type
+with a deny list rather than the ones it holds. A freeze by
 validators is node configuration, not chain state, and does not appear here.

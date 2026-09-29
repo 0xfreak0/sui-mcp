@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { gqlPage } from "../helpers/service-shapes.js";
+import { gqlPage, gqlPages } from "../helpers/service-shapes.js";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 
 const mockSui = createMockClient();
@@ -96,6 +96,54 @@ describe("get_validators", () => {
     expect(data.validators[0].name).toBe("low");
     expect(data.validators[0].commission_rate_bps).toBe(100);
     expect(data.validators[2].name).toBe("high");
+  });
+
+  describe("a set larger than one page", () => {
+    // 60 validators with distinct stakes, served in pages of 50. The largest
+    // stakes sit on the second page, so a cut made by page order rather than
+    // by stake order shows up.
+    const all = Array.from({ length: 60 }, (_, i) =>
+      makeValidator(`v${String(i).padStart(2, "0")}`, String((i + 1) * 1_000_000_000), String(100 + i)),
+    );
+    const pages = gqlPages(all);
+    const serve = () =>
+      mockGqlQuery.mockImplementation(async (_q: string, vars: { after: string | null }) => {
+        const index = vars.after === null ? 0 : pages.findIndex((_, i) => i > 0 && pages[i - 1].pageInfo.endCursor === vars.after);
+        return { epoch: { epochId: 900, validatorSet: { activeValidators: pages[index], contents: { json: { total_stake: "1830000000000" } } } } };
+      });
+
+    it("lists every active validator by default", async () => {
+      serve();
+      const data = JSON.parse((await tools.get("get_validators")!({})).content[0].text);
+
+      expect(data.active_validator_count).toBe(60);
+      expect(data.validator_count).toBe(60);
+      expect(data.validators).toHaveLength(60);
+      expect(data.truncated).toBeUndefined();
+      const names = new Set(data.validators.map((v: { name: string }) => v.name));
+      for (const v of all) expect(names.has(v.contents.json.metadata.name)).toBe(true);
+      expect(data.validators[0].name).toBe("v59");
+      expect(data.validators[59].name).toBe("v00");
+    });
+
+    it("with limit, keeps totals over the whole set and states the omitted rest", async () => {
+      serve();
+      const data = JSON.parse((await tools.get("get_validators")!({ limit: 10, sort_by: "commission" })).content[0].text);
+
+      expect(data.active_validator_count).toBe(60);
+      expect(data.total_stake).toBe("1830000000000");
+      expect(data.validator_count).toBe(10);
+      expect(data.validators.map((v: { name: string }) => v.name)).toEqual(
+        Array.from({ length: 10 }, (_, i) => `v${String(i).padStart(2, "0")}`),
+      );
+      expect(data.truncated).toBe(true);
+      const omitted = data.omitted.lists.validators;
+      expect(omitted.count).toBe(50);
+      expect(omitted.from).toBe(10);
+      expect(omitted.first).toMatchObject({ name: "v10", commission_rate_bps: 110 });
+      // The call that lists the rest drops `limit` and keeps the order.
+      expect(data.omitted.next_call).toEqual({ tool: "get_validators", args: { sort_by: "commission" } });
+    });
   });
 });
 

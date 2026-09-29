@@ -29,11 +29,11 @@ Get a wallet's staking positions: every StakedSui object with its validator pool
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.
+List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Listing returns every active validator, sorted by stake or commission; `limit` returns only the first N of that order, and the rest are counted under `omitted` with the call that lists them.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | no | If set, return details for this one validator instead of the full list (0x...) |
-| `limit` | integer (1 to 150) | no | Max validators to return when listing (default 50, max 150) |
+| `limit` | integer (1 to 150) | no | When listing, return only the first N validators of the sort order; the rest are counted under `omitted`. Default: every active validator. |
 | `sort_by` | `stake` \| `commission` | no | Sort field when listing: stake (default) or commission |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

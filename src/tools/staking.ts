@@ -6,6 +6,7 @@ import {
   type ValidatorJson,
 } from "../utils/validators.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { capPayload } from "../utils/output-cap.js";
 import { listOwnedWithJson } from "../utils/owned-objects.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -16,7 +17,7 @@ const MAX_STAKE_POSITIONS = 1000;
 export function registerStakingTools(server: McpServer) {
   server.tool(
     "get_validators",
-    "List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.",
+    "List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Listing returns every active validator, sorted by stake or commission; `limit` returns only the first N of that order, and the rest are counted under `omitted` with the call that lists them.",
     {
       address: addressArg()
         .optional()
@@ -26,7 +27,7 @@ export function registerStakingTools(server: McpServer) {
         .min(1)
         .max(150)
         .optional()
-        .describe("Max validators to return when listing (default 50, max 150)"),
+        .describe("When listing, return only the first N validators of the sort order; the rest are counted under `omitted`. Default: every active validator."),
       sort_by: z
         .enum(["stake", "commission"])
         .optional()
@@ -73,7 +74,6 @@ export function registerStakingTools(server: McpServer) {
 
       // Ranking needs the whole set. Asking for `first: N` and sorting the
       // result ranks whichever N the service returned first, not the top N.
-      const limitN = Math.max(limit ?? 50, 1);
       const sortField = sort_by ?? "stake";
       const set = await fetchActiveValidators();
 
@@ -109,34 +109,43 @@ export function registerStakingTools(server: McpServer) {
         );
       }
 
-      // Sorted over the whole set, then cut — so "top N by stake" is the real
-      // top N rather than the first page reordered.
-      const shown = validators.slice(0, limitN);
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                epoch: set.epochId,
-                total_stake: set.totalStake,
-                active_validator_count: validators.length,
-                ...(set.truncated
-                  ? {
-                      truncated: true,
-                      note: "Validator set pagination hit its page budget; counts and ranking cover only what was fetched.",
-                    }
-                  : {}),
-                validator_count: shown.length,
-                validators: shown,
+      // Sorted over the whole set, then cut to `limit` if one was asked for,
+      // so "top N by stake" is the real top N. The counts cover the whole
+      // set and the cut rows are stated under `omitted`.
+      type Row = (typeof validators)[number];
+      const { payload } = capPayload(
+        "get_validators",
+        { limit, sort_by },
+        {
+          epoch: set.epochId,
+          total_stake: set.totalStake,
+          active_validator_count: validators.length,
+          ...(set.truncated
+            ? {
+                truncated: true,
+                note: "Validator set pagination hit its page budget; counts and ranking cover only what was fetched.",
+              }
+            : {}),
+          validator_count: Math.min(limit ?? validators.length, validators.length),
+          validators,
+        },
+        limit === undefined
+          ? {}
+          : {
+              validators: {
+                budget: Number.POSITIVE_INFINITY,
+                limit,
+                brief: (v: Row) => ({
+                  name: v.name,
+                  address: v.address,
+                  staking_pool_sui_balance: v.staking_pool_sui_balance,
+                  commission_rate_bps: v.commission_rate_bps,
+                }),
               },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+            },
+        { full: false, next_call: { tool: "get_validators", args: sort_by ? { sort_by } : {} } },
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     }
   );
 

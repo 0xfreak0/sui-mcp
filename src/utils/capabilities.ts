@@ -579,6 +579,18 @@ async function locateTreasuryCap(
   const capType = `${ADDR2}::coin::TreasuryCap<${coinType}>`;
   const short = coinType.split("::").slice(-2).join("::");
   const checked: string[] = [];
+  // `sui::new` runs once, at genesis: it turns SUI's TreasuryCap into a
+  // Supply, mints the total and destroys the Supply, so no SUI can be minted.
+  // The registry's entry for SUI records neither a cap nor a fixed supply.
+  if (coinType === `${ADDR2}::sui::SUI`) {
+    return {
+      unlocated: {
+        coin_type: coinType,
+        risk: "info",
+        reason: "SUI has no TreasuryCap: sui::new, run once at genesis, turned it into a Supply, minted the total supply and destroyed the Supply, so nothing can mint SUI.",
+      },
+    };
+  }
 
   let registry: RegistryCurrency | null = knownRegistry ?? null;
   if (!registry) {

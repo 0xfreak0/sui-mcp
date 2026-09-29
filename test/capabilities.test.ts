@@ -861,6 +861,23 @@ describe("auditPackageCapabilities — mint authority the publish transaction di
     expect(otherModule.incomplete_scans).toBeUndefined();
   });
 
+  // SUI's genesis destroyed its Supply; its registry entry records no cap and
+  // no fixed supply, which read as unknown mint authority.
+  it("reads SUI as a coin nothing can mint", async () => {
+    gqlQuery.mockReset();
+    gqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      if (query.includes("packageAt(version: 1)")) {
+        const created = [{ idCreated: true, outputState: { address: CAP, asMoveObject: { contents: { type: { repr: `${P2}::coin::CoinMetadata<${P2}::sui::SUI>` } } } } }];
+        return { package: { packageAt: { address: P2, previousTransaction: { effects: { objectChanges: gqlPage(created) } } } } };
+      }
+      if (query.includes("multiGetObjects")) return { multiGetObjects: [] };
+      if (typeof vars.type === "string" || typeof vars.t === "string") return { objects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } };
+      throw new Error(`unexpected query in test: ${query}`);
+    });
+    const audit = await auditPackageCapabilities("0x2", null);
+    expect(audit.coins_without_located_mint_authority).toEqual([expect.objectContaining({ coin_type: `${P2}::sui::SUI`, risk: "info" })]);
+  });
+
   /**
    * A package with more coins than any probe cap, every TreasuryCap created
    * in its publish, read "N one-time-witness struct type(s) were not checked"

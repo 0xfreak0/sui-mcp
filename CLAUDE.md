@@ -4500,7 +4500,9 @@ must be answerable from these tools, and no case check calls
   checked. A registry `Fixed`/`BurnOnly` supply means the cap was consumed
   (`make_supply_fixed` takes it by value), so that cap is reported destroyed
   without reading it: a cap created and consumed in one transaction appears
-  in no effects and `readObjectEnd` cannot place it.
+  in no effects and `readObjectEnd` cannot place it. SUI is an `info`
+  entry: `sui::new` destroyed its Supply at genesis, and its registry entry
+  records neither a cap nor a fixed supply.
 - **A package upgrade can change behaviour through its linkage alone.**
   `diff_package_upgrade` reads each version's `linkage` and reports relinked
   dependencies; framework rows (0x1, 0x2 …) are `system: true` and change no

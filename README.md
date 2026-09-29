@@ -606,6 +606,20 @@ task and the order of tool calls, followed by the skill sections that govern it:
 | `trace_incident` | `subject` (attack digest or attacker address), optional `network`, `case_name` | What an exploit took, the flaw in the code it ran, and where the money went |
 | `attribute_cluster` | `addresses` (comma-separated), optional `network`, `case_name` | Whether several addresses share an operator, with a control group |
 
+Four more prompts answer the questions people without investigation experience
+ask. Each gives a plain answer of two to four sentences first, then a
+`How sure: high|medium|low` line naming what was and was not checked, then the
+digests and addresses behind it. They treat every flag as a lead, never as a
+verdict, never name a private person, keep to default detail levels, and call
+`enable_tools` only when a step needs a tool outside `core`:
+
+| Prompt | Arguments | For |
+|---|---|---|
+| `was_i_scammed` | optional `address`, `digest`, `network` | What left the wallet, where it went, whether a blocklisted drainer package or a lookalike address was involved, and whom to report to |
+| `is_this_token_safe` | `coin_type`, optional `network` | Who can mint, freeze or upgrade the coin, how concentrated its holders are, where it trades, and whether a scam list flags it |
+| `is_this_protocol_safe` | `protocol` (package ID, MVR name or protocol name), optional `network` | Who can upgrade the code or use the admin caps, how they sign, and what changed recently |
+| `who_is_this_wallet` | `address` (or SuiNS name), optional `network` | What kind of account it is, its labels and their evidence, its funding, activity and exchange deposit behaviour |
+
 ## Tool profiles
 
 All 76 tools loaded at once cost about 29k tokens of context on every request (117k characters of tool list; `core` alone is about 7k tokens and `core,forensics` about 24k), and a large flat tool list makes models pick the wrong tool. So the server starts with a **core** set of 18 and keeps the rest one call away.

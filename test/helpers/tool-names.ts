@@ -43,6 +43,31 @@ export function unknownToolsIn(text: string, names: Set<string>): string[] {
   return [...new Set(bare.match(TOOL_LIKE) ?? [])].filter((n) => !names.has(n));
 }
 
+export interface ToolCall {
+  tool: string;
+  /** Each argument as written; `value` is set for `name: value`, unquoted. */
+  args: Array<{ name: string; value?: string }>;
+}
+
+/**
+ * The tool calls a prompt spells as `` `tool_name(arg, arg: 'value')` ``.
+ * Values in the prompts never contain a comma, so arguments split on commas.
+ */
+export function toolCallsIn(text: string): ToolCall[] {
+  return [...text.matchAll(/`([a-z][a-z0-9_]*)\(([^`)]*)\)`/g)].map(([, tool, list]) => ({
+    tool,
+    args: list
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean)
+      .map((a) => {
+        const colon = a.indexOf(":");
+        if (colon < 0) return { name: a };
+        return { name: a.slice(0, colon).trim(), value: a.slice(colon + 1).trim().replace(/^'(.*)'$/, "$1") };
+      }),
+  }));
+}
+
 /** Tools that need an external binary the server does not ship. */
 const BINARY_TOOLS = ["decompile_module"];
 /** Code readers that need nothing beyond the install. */

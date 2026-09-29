@@ -188,7 +188,15 @@ try {
     }
     for (const m of String(t.description ?? "").matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) documented.add(m[1]);
   }
-  const promptArgs = { investigate_address: { address: NEMO_ATTACKER }, trace_incident: { subject: NEMO_EXPLOIT }, attribute_cluster: { addresses: `${NEMO_ATTACKER},${NEMO_FUNDER}` } };
+  const promptArgs = {
+    investigate_address: { address: NEMO_ATTACKER },
+    trace_incident: { subject: NEMO_EXPLOIT },
+    attribute_cluster: { addresses: `${NEMO_ATTACKER},${NEMO_FUNDER}` },
+    was_i_scammed: { digest: NEMO_EXPLOIT },
+    is_this_token_safe: { coin_type: USDC },
+    is_this_protocol_safe: { protocol: NEMO_ROOT },
+    who_is_this_wallet: { address: NEMO_ATTACKER },
+  };
   for (const [name, args] of Object.entries(promptArgs)) {
     const r = await server.rpc("prompts/get", { name, arguments: args });
     const text = (r.result?.messages ?? []).map((m) => m.content?.text ?? "").join("\n");

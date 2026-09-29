@@ -8,7 +8,7 @@ sidebar:
 | Tool | Summary |
 |---|---|
 | [`get_staking_summary`](#get_staking_summary) | Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. |
-| [`get_validators`](#get_validators) | List current Sui validators (stake, commission, voting power), or — when `address` is given — return detailed info for that one validator (credentials, staking stats, network addresses). |
+| [`get_validators`](#get_validators) | List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). |
 
 ## get_staking_summary
 
@@ -16,7 +16,7 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance — a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.
+Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance: a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -29,7 +29,7 @@ Get a wallet's staking positions: every StakedSui object with its validator pool
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-List current Sui validators (stake, commission, voting power), or — when `address` is given — return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.
+List current Sui validators (stake, commission, voting power), or, when `address` is given, return detailed info for that one validator (credentials, staking stats, network addresses). Supports sorting when listing.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

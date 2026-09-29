@@ -356,7 +356,7 @@ function toolsIndex(groups, profiles, defaultProfiles) {
     title: "Tools",
     description: "Every tool the server registers, grouped by task, with its profile and parameters.",
     order: TOOLS_INDEX_ORDER,
-    label: "All tools",
+    label: "Overview",
   });
   const intro = [
     "These pages are generated from the `tools/list` response of the server started with `SUI_TOOLS=all`.",
@@ -403,7 +403,7 @@ function profilesPartial(groups, profiles, defaultProfiles, profileSummaries) {
   const parts = [`<!-- ${GENERATED_BY} -->`, items.join("\n\n")];
   if (alwaysOn.length) {
     const names = alwaysOn.map(({ tool, group }) => toolLink(tool, group));
-    parts.push(`${names.join(", ")} ${names.length === 1 ? "is" : "are"} on whatever the profile.`);
+    parts.push(`${names.join(", ")} ${names.length === 1 ? "is" : "are"} loaded in every profile.`);
   }
   return parts.join("\n\n") + "\n";
 }

@@ -27,16 +27,18 @@ The build fails on a broken internal link or heading anchor ([starlight-links-va
 | `src/content/docs/reference/` | Sidebar group "Reference" |
 | `src/content/docs/project/` | Sidebar group "Project" |
 | `src/content/docs/reference/tools/`, `src/content/docs/reference/prompts.md` | Generated tool and prompt reference, and `reference/tools/_profiles.md`, the profile list `guides/tool-profiles.mdx` imports. Do not edit by hand. |
+| `src/content/docs/project/changelog.md`, `src/content/docs/project/_current-release.md` | Generated from `../CHANGELOG.md` and `../package.json`: the changelog page, and the current-release line the front page and `start/index.mdx` import. Do not edit by hand. |
 | `scripts/gen-tools.mjs` | Generator for the reference pages |
 | `scripts/tool-reference.mjs` | Tool groups and page rendering, shared with the root test |
+| `scripts/gen-release-pages.mjs`, `scripts/release-pages.mjs` | Generator and renderer for the changelog page and the current-release line, shared with the root test |
 | `src/routeData.ts` | Labels the `reference/tools/` sidebar group |
 | `vercel.json` | Vercel project settings |
 
-The sidebar groups are generated from the directories, in the order `astro.config.mjs` lists them; prev/next links follow that order. Every page needs `title` and `description` in its frontmatter; `sidebar.order` sets its position within the directory, and `sidebar.label` gives it a short sidebar name when the title is long.
+The sidebar groups are generated from the directories, in the order `astro.config.mjs` lists them; prev/next links follow that order. Every page needs `title` and `description` in its frontmatter; `sidebar.order` sets its position within the directory. The sidebar shows the page title; only an index page whose title is its section's name sets `sidebar.label: Overview`.
 
 No hand-written page states a count or size that changes with the product (tools, profiles, prompts, coins, labels, tool-list size). Where a count or list is needed, generate it with `gen:tools`.
 
-`npm run lint:prose` at the repo root checks every page under `src/content/docs/` except the generated reference.
+`npm run lint:prose` at the repo root checks every page under `src/content/docs/` except the generated reference and changelog.
 
 ## Regenerating the tool reference
 
@@ -53,6 +55,8 @@ npm run gen:tools
 Run it after changing a tool's name, description or parameters, a prompt, or a profile in `src/tools/profiles.ts`, and commit the result. The root `npm test` includes `test/site-tool-reference.test.ts`, which fails while the committed files differ from what the current source would generate.
 
 A new tool has to be added to a group in `GROUPS` in `scripts/tool-reference.mjs`. Until it is, the generator and the test fail and name the tool.
+
+`gen:tools` then runs `scripts/gen-release-pages.mjs`, which reads `../CHANGELOG.md` and the version in `../package.json` and rewrites `src/content/docs/project/changelog.md` and `src/content/docs/project/_current-release.md`. Each release gets its summary paragraph, or the lead of its first bullet when it has none, and links to its entry in `CHANGELOG.md` and its GitHub release. It stops with an error when the package version has no `## X.Y.Z (date)` heading in `CHANGELOG.md`, so run it after the release's changelog heading is written and the version is set. The same root test fails while these files are stale.
 
 ## Vercel
 

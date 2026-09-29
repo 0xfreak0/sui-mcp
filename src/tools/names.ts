@@ -8,7 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerNameTools(server: McpServer) {
   server.tool(
     "resolve_name",
-    "Resolve a SuiNS name (.sui domain) to an address, or reverse-lookup an address to its SuiNS name. At least one of 'name' or 'address' must be provided. A name that is not registered, has expired, or points at no address resolves to null with `name_note` saying which; a malformed name is an error.\n\nIDENTITY WARNING: a SuiNS name is a self-chosen handle that anyone can buy. It is not identity and it is not verified. Names matching an exchange, a project or a person can be — and are — registered by unrelated parties, including by someone who wants an investigator to draw a particular conclusion. Treat a name as a label the holder picked, never as evidence of who they are, and do not carry it to other platforms as a matching key without independent corroboration.",
+    "Resolve a SuiNS name (.sui domain) to an address, or reverse-lookup an address to its SuiNS name. At least one of 'name' or 'address' must be provided. A name that is not registered, has expired, or points at no address resolves to null with `name_note` saying which; a malformed name is an error.\n\nIDENTITY WARNING: a SuiNS name is a self-chosen handle that anyone can buy. It is not identity and it is not verified. Names matching an exchange, a project or a person can be, and are, registered by unrelated parties, including by someone who wants an investigator to draw a particular conclusion. Treat a name as a label the holder picked, never as evidence of who they are, and do not carry it to other platforms as a matching key without independent corroboration.",
     {
       name: z
         .string()

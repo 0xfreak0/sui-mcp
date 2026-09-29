@@ -10,9 +10,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 
 // The docs site's pages, except the tool and prompt reference that
-// site/scripts/gen-tools.mjs generates from the server's own descriptions.
+// site/scripts/gen-tools.mjs generates from the server's own descriptions, and
+// the changelog page site/scripts/gen-release-pages.mjs quotes from CHANGELOG.md.
 const SITE_DOCS = "site/src/content/docs";
-const GENERATED = /^reference\/(tools\/|prompts\.md$)/;
+const GENERATED = /^(reference\/(tools\/|prompts\.md$)|project\/(changelog|_current-release)\.md$)/;
 let siteDocs = [];
 try {
   siteDocs = readdirSync(SITE_DOCS, { recursive: true })

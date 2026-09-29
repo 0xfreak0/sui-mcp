@@ -7,6 +7,7 @@ import { registerAllTools } from "../src/tools/index.js";
 import { registerAllPrompts } from "../src/prompts.js";
 import { DEFAULT_PROFILES, PROFILES, PROFILE_SUMMARIES } from "../src/tools/profiles.js";
 import { PROMPTS_PAGE, TOOLS_DIR, renderReference } from "../site/scripts/tool-reference.mjs";
+import { renderReleasePages } from "../site/scripts/release-pages.mjs";
 
 /**
  * The docs site's tool and prompt reference, and the profile list the tool
@@ -14,7 +15,10 @@ import { PROMPTS_PAGE, TOOLS_DIR, renderReference } from "../site/scripts/tool-r
  * prompts/list and profiles and committed (site/scripts/gen-tools.mjs), so the
  * site builds without the server. A tool, parameter, description or profile
  * change that is not regenerated would publish a reference that no longer
- * matches what clients receive.
+ * matches what clients receive. The changelog page and the current-release
+ * line are generated the same way from CHANGELOG.md and package.json
+ * (site/scripts/gen-release-pages.mjs), so a release that is not regenerated
+ * would leave the site naming the previous version.
  */
 
 const DOCS = new URL("../site/src/content/docs/", import.meta.url);
@@ -68,5 +72,22 @@ describe("site tool reference", () => {
     const committed = readdirSync(new URL(`${TOOLS_DIR}/`, DOCS)).map((f) => `${TOOLS_DIR}/${f}`);
     const expected = [...pages.keys()].filter((p) => p !== PROMPTS_PAGE);
     expect(committed.sort(), REGENERATE).toEqual(expected.sort());
+  });
+});
+
+describe("site release pages", () => {
+  it("match CHANGELOG.md and the package version", () => {
+    const pagesFromRepo = renderReleasePages({
+      changelog: readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8"),
+      version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version,
+    });
+    const stale = [...pagesFromRepo].filter(([path, content]) => {
+      try {
+        return readFileSync(new URL(path, DOCS), "utf8") !== content;
+      } catch {
+        return true;
+      }
+    });
+    expect(stale.map(([path]) => path), `stale release pages: run \`npm run gen:tools\` in site/ and commit the result`).toEqual([]);
   });
 });

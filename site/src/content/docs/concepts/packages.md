@@ -88,8 +88,11 @@ get_upgrade_history { package: "0x0f286ad0…", as_of: "2025-09-07T16:03Z" }
 `use` lines of the modules it calls and the constants it loads. A dependency's
 `use` line prints its original ID; the note gives the version this package's
 linkage runs, which is the ID to disassemble next. Large integers carry their
-hex or shift form and a clever abort code its error name, message and source
-line:
+hex or shift form. A
+[clever error](https://move-book.com/reference/abort-and-assert/clever-errors/)
+is Move's name for an abort constant marked `#[error]`, which carries a
+readable message; an abort that raises one is annotated with the constant's
+name, its message and the source line:
 
 ```
 disassemble_module { package_id: "0xc6faf370…", module_name: "clmm_math", function_name: "get_delta_a" }

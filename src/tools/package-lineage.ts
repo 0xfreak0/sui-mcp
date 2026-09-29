@@ -31,7 +31,7 @@ interface ProbeResult {
 export function registerPackageLineageTools(server: McpServer) {
   server.tool(
     "resolve_protocol_packages",
-    "(Incident investigation) Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. Start here before aggregate_events or query_events when you know a protocol by name or hold a package ID of unknown vintage. The bundled protocol registry maps IDs to names for DECODING and is full of historical versions on purpose, so using one as a query target silently returns zero events and looks like the protocol is dead. Note the answer is usually plural: an event carries the ID of the package version that defined it, so a protocol upgraded piecemeal emits from several versions at once — querying only the newest drops the rest.",
+    "(Incident investigation) Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. Start here before aggregate_events or query_events when you know a protocol by name or hold a package ID of unknown vintage. The bundled protocol registry maps IDs to names for DECODING and is full of historical versions on purpose, so using one as a query target silently returns zero events and looks like the protocol is dead. Note the answer is usually plural: an event carries the ID of the package version that defined it, so a protocol upgraded piecemeal emits from several versions at once, and querying only the newest drops the rest.",
     {
       protocol: z
         .string()

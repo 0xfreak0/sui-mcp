@@ -1,8 +1,7 @@
 ---
-title: "Example: claim::swapS drainer kit"
+title: "Wallet drainer: claim::swapS kit"
 description: Reading a drainer package from the drainer's side, how its shared switch hid the drain from a dry run, and who collected the stolen stake.
 sidebar:
-  label: Wallet drainer
   order: 3
 ---
 

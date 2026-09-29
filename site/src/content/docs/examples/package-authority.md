@@ -1,8 +1,7 @@
 ---
-title: "Example: Typus oracle authority check"
+title: "Package authority: Typus oracle"
 description: Finding which oracle version an exploit called, who held its upgrade authority, why any caller could set prices, and what the fix upgrade changed.
 sidebar:
-  label: Package authority
   order: 5
 ---
 

@@ -7,32 +7,32 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`aggregate_events`](#aggregate_events) | Rank addresses or event types by activity across a time window — the 'who were the top wallets on this protocol today' question — in one call instead of paginating thousands of events yourself. |
+| [`aggregate_events`](#aggregate_events) | Rank addresses or event types by activity across a time window, answering 'who were the top wallets on this protocol today', in one call instead of paginating thousands of events yourself. |
 | [`analyze_attack_tx`](#analyze_attack_tx) | Break down one exploit transaction. |
 | [`analyze_multisig`](#analyze_multisig) | For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. |
 | [`build_timeline`](#build_timeline) | Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find addresses that appear to share an operator with the ones you give it, and say why. |
 | [`check_coin_restrictions`](#check_coin_restrictions) | Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. |
 | [`classify_deposit_address`](#classify_deposit_address) | Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. |
-| [`delete_finding`](#delete_finding) | Remove a finding by id — for retracting something that turned out to be wrong. |
-| [`export_case`](#export_case) | Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. |
+| [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
+| [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
 | [`find_flow_path`](#find_flow_path) | Is there a value path from one address to another? |
-| [`find_funding_source`](#find_funding_source) | Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. |
+| [`find_funding_source`](#find_funding_source) | Trace an address back to its funding source (the first transaction that funded the wallet, and who sent it), then walk that funder's funding, and so on. |
 | [`find_funding_sources`](#find_funding_sources) | Trace many addresses back to their funding sources in one call, sharing work between them. |
-| [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control — even one that never appeared in your trace. |
+| [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. |
 | [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. |
 | [`get_upgrade_history`](#get_upgrade_history) | Upgrade governance across a package's whole lineage. |
 | [`list_findings`](#list_findings) | List recorded findings, or every case with its finding count. |
 | [`manage_labels`](#manage_labels) | Manage the address-label registry used for incident investigation and fund tracing. |
 | [`resolve_bridge_transfer`](#resolve_bridge_transfer) | Follow funds across a bridge. |
 | [`resolve_protocol_packages`](#resolve_protocol_packages) | Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. |
-| [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing — other addresses that used the same protocol over the same window. |
+| [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. |
 | [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
 | [`screen_address`](#screen_address) | Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. |
 | [`summarize_address_flows`](#summarize_address_flows) | What one address took in and paid out over a window, in one call. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. |
 | [`trace_flow_graph`](#trace_flow_graph) | Follow ALL of the funds, not one branch. |
-| [`trace_funds`](#trace_funds) | Trace fund flow from a transaction. |
+| [`trace_funds`](#trace_funds) | Trace fund flow from a transaction across hops. |
 | [`trace_object_history`](#trace_object_history) | Trace the provenance of a Sui object. |
 
 ## aggregate_events
@@ -41,7 +41,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Analytics) Rank addresses or event types by activity across a time window — the 'who were the top wallets on this protocol today' question — in one call instead of paginating thousands of events yourself. Filter by event type, module or sender, bound by ISO timestamps or checkpoints, and group by sender or event type. Call it WITHOUT value_field first: it returns counts plus a sample event and the numeric fields available, so you can see what the protocol emits (many carry their own USD valuation) and then re-run naming that field. With group_pnl it also ranks the senders of the matched transactions by what their own balances did in them, per coin and in USD, and flags PTBs where the filtered package was one leg of several. Always check `truncated` — a partial scan produces a confidently wrong ranking.
+(Incident investigation) Rank addresses or event types by activity across a time window, answering 'who were the top wallets on this protocol today', in one call instead of paginating thousands of events yourself. Filter by event type, module or sender, bound by ISO timestamps or checkpoints, and group by sender or event type. Call it WITHOUT value_field first: it returns counts plus a sample event and the numeric fields available, so you can see what the protocol emits (many carry their own USD valuation) and then re-run naming that field. With group_pnl it also ranks the senders of the matched transactions by what their own balances did in them, per coin and in USD, and flags PTBs where the filtered package was one leg of several. Always check `truncated`: a partial scan produces a confidently wrong ranking.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -54,7 +54,7 @@ sidebar:
 | `value_field` | string | no | Dotted path into the event JSON to sum, e.g. 'deposit_value'. Omit to get counts plus field suggestions. |
 | `value_scale` | number (greater than 0) | no | Divisor for the summed value, e.g. 100 when a protocol reports USD cents. |
 | `top` | integer (1 to 200) | no | Groups to return (default 20). |
-| `sort_order` | `desc` \| `asc` | no | 'desc' (default) returns the largest — whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view. |
+| `sort_order` | `desc` \| `asc` | no | 'desc' (default) returns the largest: whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view. |
 | `max_events` | integer (50 to 50000) | no | Scan budget (default 10000). Raise for busy protocols, or narrow the window. |
 | `group_pnl` | boolean | no | Also rank the senders of the matched transactions by profit: for each distinct transaction behind the events, sum its sender's own balance changes per coin (gas included), value them in USD at the median transaction time, and flag PTBs where the filtered package is one leg of several. Answers 'who else profited in this window'. |
 | `pnl_max_transactions` | integer (1 to 2000) | no | Distinct transactions read for group_pnl, oldest first (default 500). Check pnl.truncated. |
@@ -83,12 +83,12 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction — this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.
+(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction, and this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | The multisig wallet's address (0x...) |
-| `max_transactions` | integer (1 to 500) | no | Sent transactions to examine, newest first (default 200). More is strictly better here — a key looks dormant until the one transaction it signed comes into view. |
+| `max_transactions` | integer (1 to 500) | no | Sent transactions to examine, newest first (default 200). More is strictly better here: a key looks dormant until the one transaction it signed comes into view. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## build_timeline
@@ -106,7 +106,7 @@ sidebar:
 | `to` | string | no | Window end: ISO date or a checkpoint number |
 | `limit` | integer (at most 200, greater than 0) | no | Max timeline entries to return (default 60) |
 | `per_address` | integer (at most 300, greater than 0) | no | Max transactions to read per address before merging (default 30). An address with more in the window is reported `truncated` in `coverage`. Raise it for `activity_hours`: a daily rhythm needs 50+ transactions spanning a week or more, and the reading says so when it has less. |
-| `activity_hours` | boolean | no | Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one — on Sui the common answer is 'flat, consistent with automation', which is itself a finding. |
+| `activity_hours` | boolean | no | Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one. On Sui the common answer is 'flat, consistent with automation', which is itself a finding. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): the entries that fit about 35k characters, in timeline order, keeping every failed entry and every entry two tracked addresses took part in; `omitted` states the rest. 'full': every entry up to `limit`. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -116,14 +116,14 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live — no analytics warehouse needed — from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address — the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together, unless most of the other wallets that sponsor pays gas for were first funded by the seeds' own funder, itself narrow and unlabelled (`role_split`), one operator funding from one address and sponsoring from another. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference — each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.
+(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live, with no analytics warehouse, from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address; the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together, unless most of the other wallets that sponsor pays gas for were first funded by the seeds' own funder, itself narrow and unlabelled (`role_split`), one operator funding from one address and sponsoring from another. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference: each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `addresses` | array of string (1 to 25 items) | yes | Seed addresses to examine (1-25). Give it every address you already suspect belongs together — links between seeds are the exactly-verified ones. |
+| `addresses` | array of string (1 to 25 items) | yes | Seed addresses to examine (1-25). Give it every address you already suspect belongs together; links between seeds are the exactly-verified ones. |
 | `expand` | boolean | no | Also look for unknown siblings, not just links among the seeds (default true). Each candidate is verified by computing its own first funder before it is admitted. |
 | `expand_budget` | integer (0 to 200) | no | Sibling candidates to verify while expanding (default 25). Unverified candidates are reported, never silently dropped. |
-| `popularity_limit` | integer (5 to 500) | no | Distinct counterparties past which a funder or sponsor is treated as a service and discarded (default 50). A funder's recipients count only when paid at least 0.01 SUI or $0.10. Raise it only if you have a reason — this is the control that stops an exchange from linking the whole chain together. |
+| `popularity_limit` | integer (5 to 500) | no | Distinct counterparties past which a funder or sponsor is treated as a service and discarded (default 50). A funder's recipients count only when paid at least 0.01 SUI or $0.10. Raise it only if you have a reason: this is the control that stops an exchange from linking the whole chain together. |
 | `min_signal_types` | integer (1 to 4) | no | Independent signal types a pair needs before it may merge (default 1). Set 2 for the strict batch-pipeline rule: far higher precision, but it misses ordinary personal alt-wallets, which typically share exactly one mechanism. |
 | `max_cluster_size` | integer (2 to 1000) | no | Refuse merges beyond this size (default 100). A runaway cluster is worse than no answer. |
 | `reciprocal_budget` | integer (0 to 100) | no | Reciprocal counterparties to measure for popularity (default 15). Value moving both ways is a strong signal, but the counterparty must be checked before it is trusted. |
@@ -137,12 +137,12 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions — give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (~1,250 on mainnet, about 65 requests — a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. A freeze by validators, who can refuse an address's transactions through their node configuration, is off chain and in no deny list, so this tool cannot see it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.
+(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions: give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (every regulated coin, so it reads many deny lists; a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. A freeze by validators, who can refuse an address's transactions through their node configuration, is off chain and in no deny list, so this tool cannot see it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `coin_type` | string | no | Full coin type (e.g. '0xabc::usdc::USDC'). Lists every address frozen for it. |
-| `address` | string | no | Address to check. Without coin_type, checks it against every coin type that has a deny list (~1,250 on mainnet), whether or not the address holds that coin: a frozen address usually holds none of the coin that froze it. With coin_type, reports whether it is frozen for that coin. |
+| `address` | string | no | Address to check. Without coin_type, checks it against every coin type that has a deny list, whether or not the address holds that coin: a frozen address usually holds none of the coin that froze it. With coin_type, reports whether it is frozen for that coin. |
 | `max_addresses` | integer (1 to 1000) | no | Cap on denied addresses returned for a coin (default 200). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -166,7 +166,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `destructiveHint: true`, `idempotentHint: true`, `openWorldHint: false`, `readOnlyHint: false`
 
-(Incident investigation) Remove a finding by id — for retracting something that turned out to be wrong. Use list_findings to get ids. Requires SUI_STORE_PATH.
+(Incident investigation) Remove a finding by id, for retracting something that turned out to be wrong. Use list_findings to get ids. Requires SUI_STORE_PATH.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -178,7 +178,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: false`, `readOnlyHint: true`
 
-(Incident investigation) Render a case's findings as a Markdown report — ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.
+(Incident investigation) Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -213,7 +213,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Trace an address back to its funding source — the first transaction that funded the wallet and who sent it — then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet — see manage_labels), a funder that paid more than 50 distinct addresses at least 0.01 SUI or $0.10 each (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution; addresses it paid only dust do not count), a funder that paid the previous address after its own earliest 12 transactions (an established wallet paying from a balance it held, such as a victim's transfer to a thief; its own funding describes it, not that payment), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.
+(Incident investigation) Trace an address back to its funding source (the first transaction that funded the wallet, and who sent it), then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet; see manage_labels), a funder that paid more than 50 distinct addresses at least 0.01 SUI or $0.10 each (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution; addresses it paid only dust do not count), a funder that paid the previous address after its own earliest 12 transactions (an established wallet paying from a balance it held, such as a victim's transfer to a thief; its own funding describes it, not that payment), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -235,7 +235,7 @@ sidebar:
 |---|---|---|---|
 | `addresses` | array of string (1 to 100 items) | yes | Addresses to attribute (1-100). |
 | `max_hops` | integer (at most 12, greater than 0) | no | Max hops per address (default 5, max 12). |
-| `depth` | `first_hop` \| `full` | no | 'first_hop' walks one hop per address — usually the informative one, since deep chains dead-end in early distribution wallets. 'full' walks to max_hops (default). |
+| `depth` | `first_hop` \| `full` | no | 'first_hop' walks one hop per address, usually the informative one, since deep chains dead-end in early distribution wallets. 'full' walks to max_hops (default). |
 | `measure_fanout` | boolean | no | Measure fan-out for funders shared by 2+ addresses (default true). |
 | `detail` | `summary` \| `full` | no | 'summary' (default): each result keeps its origin, first funder and first hop and counts its dust_skipped rows, and results and subject_paid_subject list what fits about 20k characters, every result tied to a shared funder, subject link, co-funding, burst or payment first. 'full' returns every hop of each chain under results[].chain, every dust row and every row of each list. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -246,11 +246,11 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Multisig investigation) Given several addresses you already suspect are related, find any multisig wallet they jointly control — even one that never appeared in your trace. Works by deriving every committee those keys could form and checking which of those addresses exist on chain, so a hit is proof (the address IS the hash of its committee), not a guess. Use it when a trace links wallets and you want to know whether they also share a treasury. Each address must have SENT a transaction, since that is where its public key becomes visible.
+(Multisig investigation) Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. Works by deriving every committee those keys could form and checking which of those addresses exist on chain, so a hit is proof (the address IS the hash of its committee), not a guess. Use it when a trace links wallets and you want to know whether they also share a treasury. Each address must have SENT a transaction, since that is where its public key becomes visible.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `addresses` | array of string (2 to 5 items) | yes | 2-5 addresses to test for a shared multisig. Member order is part of a multisig's address, so the search is factorial in committee size — 4 addresses is 192 candidates, 5 is 1,560, and 6 is refused. |
+| `addresses` | array of string (2 to 5 items) | yes | 2-5 addresses to test for a shared multisig. Member order is part of a multisig's address, so the search is factorial in committee size: 4 addresses is 192 candidates, 5 is 1,560, and 6 is refused. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_address_fanout
@@ -259,7 +259,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape — shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.
+(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape. The shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -308,7 +308,7 @@ Manage the address-label registry used for incident investigation and fund traci
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `action` | `list` \| `lookup` \| `add` \| `remove` \| `import` \| `export` | yes | What to do. |
-| `address` | string | no | Address to lookup/add/remove (required for those actions). A bare address refers to the network this call targets; a CAIP-10 id ('eip155:1:0x…') labels an account on another chain — useful for recording where funds landed after a bridge hop. |
+| `address` | string | no | Address to lookup/add/remove (required for those actions). A bare address refers to the network this call targets; a CAIP-10 id ('eip155:1:0x…') labels an account on another chain, useful for recording where funds landed after a bridge hop. |
 | `label` | string | no | Human-readable label (required for 'add'). |
 | `category` | `cex` \| `bridge` \| `mixer` \| `malicious` \| `protocol` \| `validator` \| `defi` \| `burn` \| `other` | no | Label category (required for 'add'). Sink categories (cex, bridge, mixer, burn) terminate fund tracing. A malicious label is shown and alerted on but does not stop a trace: it marks the wallet being followed. |
 | `confidence` | `high` \| `medium` \| `low` | no | Attribution confidence for 'add' (default: medium). |
@@ -323,7 +323,7 @@ Manage the address-label registry used for incident investigation and fund traci
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Follow funds across a bridge. Given a Sui transaction, return where each bridge transfer in it went, read from chain data wherever the protocol writes it on Sui: Wormhole (the VAA identity — emitter chain, emitter address, sequence — plus, where Wormholescan has indexed a redemption, the destination transaction), Sui's native bridge, Circle CCTP, LayerZero V2 (destination endpoint, GUID and destination OApp, plus LayerZero Scan's delivery transaction), Axelar ITS, Allbridge Core and Celer cBridge. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan (MCTP and Swift), Circle CCTP, Sui's native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge; the contract a redemption or message was delivered to is reported separately (`redeemed_via_contract`, `destination_oapp`). Transfers ARRIVING on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) are reported as inbound with their origin identity, and so is any package's fulfilment whose events quote the cross-chain message it consumed (a CCTP source domain and nonce, or a VAA passed in) while the transaction credits an address (`fulfilment_inbound`: origin chain, the CCTP transfer id and VAA id, amounts, and the beneficiary credited exactly an amount the events state; the package is named from the registry or a bridge label on it or on an object it defines). A package outside a bridge's lineage whose PTB call emitted that bridge's event is named under `carriers` with its function and its own events (an adapter's order id). Meson is recognised but its destination is not in Sui data. An event from a package none of these covers that carries a chain field beside a foreign-address-sized byte string is listed in `cross_chain_leads`, tier heuristic: a possible exit through an unrecognised bridge, never an exit on its own. This is what lets a trace continue past a bridge instead of stopping there: each identity is quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: chain-derived values come from Sui; delivery is asserted by an indexer and should be confirmed on the destination chain before being relied on.
+(Incident investigation) Follow funds across a bridge. Given a Sui transaction, return where each bridge transfer in it went, read from chain data wherever the protocol writes it on Sui: Wormhole (the VAA identity: emitter chain, emitter address and sequence, plus, where Wormholescan has indexed a redemption, the destination transaction), Sui's native bridge, Circle CCTP, LayerZero V2 (destination endpoint, GUID and destination OApp, plus LayerZero Scan's delivery transaction), Axelar ITS, Allbridge Core and Celer cBridge. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan (MCTP and Swift), Circle CCTP, Sui's native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge; the contract a redemption or message was delivered to is reported separately (`redeemed_via_contract`, `destination_oapp`). Transfers ARRIVING on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) are reported as inbound with their origin identity, and so is any package's fulfilment whose events quote the cross-chain message it consumed (a CCTP source domain and nonce, or a VAA passed in) while the transaction credits an address (`fulfilment_inbound`: origin chain, the CCTP transfer id and VAA id, amounts, and the beneficiary credited exactly an amount the events state; the package is named from the registry or a bridge label on it or on an object it defines). A package outside a bridge's lineage whose PTB call emitted that bridge's event is named under `carriers` with its function and its own events (an adapter's order id). Meson is recognised but its destination is not in Sui data. An event from a package none of these covers that carries a chain field beside a foreign-address-sized byte string is listed in `cross_chain_leads`, tier heuristic: a possible exit through an unrecognised bridge, never an exit on its own. This is what lets a trace continue past a bridge instead of stopping there: each identity is quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: chain-derived values come from Sui; delivery is asserted by an indexer and should be confirmed on the destination chain before being relied on.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -337,7 +337,7 @@ Manage the address-label registry used for incident investigation and fund traci
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. Start here before aggregate_events or query_events when you know a protocol by name or hold a package ID of unknown vintage. The bundled protocol registry maps IDs to names for DECODING and is full of historical versions on purpose, so using one as a query target silently returns zero events and looks like the protocol is dead. Note the answer is usually plural: an event carries the ID of the package version that defined it, so a protocol upgraded piecemeal emits from several versions at once — querying only the newest drops the rest.
+(Incident investigation) Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. Start here before aggregate_events or query_events when you know a protocol by name or hold a package ID of unknown vintage. The bundled protocol registry maps IDs to names for DECODING and is full of historical versions on purpose, so using one as a query target silently returns zero events and looks like the protocol is dead. Note the answer is usually plural: an event carries the ID of the package version that defined it, so a protocol upgraded piecemeal emits from several versions at once, and querying only the newest drops the rest.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -353,17 +353,17 @@ Manage the address-label registry used for incident investigation and fund traci
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Draw a random control group from the same population as a cohort you are testing — other addresses that used the same protocol over the same window. Shared funding, common ancestry and timing overlap all look damning until you measure how often they occur by chance; this is what you compare against. Excludes the cohort automatically, samples randomly rather than by size (top-N would compare against whales, which collide more than ordinary wallets), and accepts a seed so the draw can be reproduced by whoever checks the report.
+(Incident investigation) Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. Shared funding, common ancestry and timing overlap all look damning until you measure how often they occur by chance; this is what you compare against. Excludes the cohort automatically, samples randomly rather than by size (top-N would compare against whales, which collide more than ordinary wallets), and accepts a seed so the draw can be reproduced by whoever checks the report.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `module` | string | no | Population: addresses that called this package/module. Before the relocate_event_module cutover (mainnet checkpoint 69,982,635 on 2024-10-17, testnet 118,397,835 on 2024-10-09, devnet at genesis), events carry the package's ORIGINAL id regardless of the version called; from the cutover on they carry the id of the version actually called. The filter is queried at whichever id (or both, merged) your window needs, and `module_scope` reports how. From the cutover on, any one id (the original included) matches calls through that version only, and `module_scope.other_version_ids` lists the lineage's other ids. Accepts 0x... or 0x...::module. |
 | `event_type` | string | no | Population: addresses that emitted this event struct type. Any version's ID of the defining package works. |
-| `size` | integer (1 to 100) | no | Control group size (default 25). Match it to the cohort — an unequal comparison is hard to read. |
+| `size` | integer (1 to 100) | no | Control group size (default 25). Match it to the cohort; an unequal comparison is hard to read. |
 | `exclude` | array of string | no | The cohort under test. Excluded from the draw; leaving them in contaminates the comparison. |
 | `from` | string | no | Window start: ISO 8601 timestamp or a checkpoint number. |
 | `to` | string | no | Window end: ISO 8601 timestamp, 'now', or a checkpoint. |
-| `seed` | integer | no | Integer seed. Makes the draw reproducible. Record it alongside the result — without it nobody can redraw your control. |
+| `seed` | integer | no | Integer seed. Makes the draw reproducible. Record it alongside the result; without it nobody can redraw your control. |
 | `max_events` | integer (50 to 50000) | no | Events to scan when building the population (default 5000). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -373,7 +373,7 @@ Manage the address-label registry used for incident investigation and fund traci
 - Profile: `forensics`
 - Annotations: `destructiveHint: false`, `idempotentHint: false`, `openWorldHint: false`, `readOnlyHint: false`
 
-(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them — what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it — then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.
+(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them: what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it. Then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -384,7 +384,7 @@ Manage the address-label registry used for incident investigation and fund traci
 | `evidence_tier` | `chain-derived` \| `indexer-attested` \| `heuristic` | no | How the finding is known: 'chain-derived' (read from Sui itself, e.g. a transfer in a transaction), 'indexer-attested' (a third party asserts it, e.g. a bridge indexer), or 'heuristic' (an inference from patterns, e.g. a shared funder). Default 'heuristic', the weakest, so an unstated tier is never read as a stronger one. export_case groups findings by it. |
 | `addresses` | array of string | no | Addresses the finding concerns. A bare address is recorded against the network this call ran on; pass a CAIP-10 id ('eip155:1:0x…', 'sui:mainnet:0x…') to record an address on another chain, which is how a cross-chain case keeps both sides of a bridge hop straight. |
 | `digests` | array of string | no | Sui transaction digests the finding rests on. Each is checked to be a real digest before saving. |
-| `evidence` | array of string | no | What establishes it — tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted. |
+| `evidence` | array of string | no | What establishes it: tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## screen_address
@@ -478,7 +478,7 @@ Manage the address-label registry used for incident investigation and fund traci
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Advanced — multi-hop) Trace fund flow from a transaction. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers, burn addresses — see manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and at high-fanout hubs (forward, only at one that 100+ distinct senders pay into; an address paid by fewer passes on what it received and is followed), and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).
+(Incident investigation) Trace fund flow from a transaction across hops. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers and burn addresses, as labelled in manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and at high-fanout hubs (forward, only at one that 100+ distinct senders pay into; an address paid by fewer passes on what it received and is followed), and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -495,7 +495,7 @@ Manage the address-label registry used for incident investigation and fund traci
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Trace the provenance of a Sui object: its version history — each version, the transaction that produced it, when — and every ownership transition (transfers, sharing, freezing, party transfers) found. Use it to see the lifecycle of an exploited pool/vault/cap: who created it and who held it when. A party object reports owner kind `consensus` with its single owner's address; a kiosk-held item reports owner kind `object` with the kiosk's own id (or the dynamic-field wrapper just below it) on its CURRENT row only, plus a `kiosk_cap_holder` naming who controls that kiosk today — never attached to a historical row, which would misname a past holder as the controller at that time. Works on a deleted or wrapped object: `current` is null and `end` names the transaction and kind. For a capability mutated on every privileged call, reaching a transition from long ago is a checkpoint search, not a page walk, so it stays cheap however hot the object has been since — but that search can only find a checkpoint where the owner disagrees with the one before it, so an ownership round trip (out to another owner and back) landing inside one probed span is invisible to it. `owner_change_count` beyond the shown page is therefore always a lower bound, never asserted complete; `owner_change_note` and `more_versions_note` say why. A search that runs out of its read or time budget lists in `owner_change_unpinned` each checkpoint range it stopped inside, with the owners at both ends: each holds an owner change it did not pin. Versions list oldest first from the earliest retained one; `order: 'newest'` starts at the current version and pages back, which reaches how a busy shared object changed just before an incident. Each page states its `order`; pass `next_cursor` back as `cursor` with the same `order` (`next_call` is that call). Owner changes relate each listed version to the one before it, whichever order the page runs.
+(Incident investigation) Trace the provenance of a Sui object: its version history (each version, the transaction that produced it, when) and every ownership transition (transfers, sharing, freezing, party transfers) found. Use it to see the lifecycle of an exploited pool/vault/cap: who created it and who held it when. A party object reports owner kind `consensus` with its single owner's address; a kiosk-held item reports owner kind `object` with the kiosk's own id (or the dynamic-field wrapper just below it) on its CURRENT row only, plus a `kiosk_cap_holder` naming who controls that kiosk today, never attached to a historical row, which would misname a past holder as the controller at that time. Works on a deleted or wrapped object: `current` is null and `end` names the transaction and kind. For a capability mutated on every privileged call, reaching a transition from long ago is a checkpoint search, not a page walk, so it stays cheap however hot the object has been since, but that search can only find a checkpoint where the owner disagrees with the one before it, so an ownership round trip (out to another owner and back) landing inside one probed span is invisible to it. `owner_change_count` beyond the shown page is therefore always a lower bound, never asserted complete; `owner_change_note` and `more_versions_note` say why. A search that runs out of its read or time budget lists in `owner_change_unpinned` each checkpoint range it stopped inside, with the owners at both ends: each holds an owner change it did not pin. Versions list oldest first from the earliest retained one; `order: 'newest'` starts at the current version and pages back, which reaches how a busy shared object changed just before an incident. Each page states its `order`; pass `next_cursor` back as `cursor` with the same `order` (`next_call` is that call). Owner changes relate each listed version to the one before it, whichever order the page runs.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

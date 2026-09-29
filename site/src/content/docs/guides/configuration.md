@@ -49,7 +49,8 @@ echoed back as `resolved_from`.
 ## Price sources
 
 Current USD prices come from Aftermath, then DefiLlama for anything Aftermath
-does not list. The 24h change in `get_token_prices` and `analyze_token` is
+does not list. `get_token_prices` then asks Pyth for a coin on the verified
+list when `PYTH_API_KEY` is set. The 24h change in `get_token_prices` and `analyze_token` is
 DefiLlama's, and null for a coin it does not list. Prices at a past moment
 (`get_token_prices` with `at`, per-hop USD in `trace_funds`,
 `analyze_attack_tx`, `summarize_incident_losses`) come from DefiLlama, or from
@@ -74,13 +75,12 @@ DefiLlama and Aftermath key on the full coin type, so an impostor coin that
 copies a real coin's symbol is priced as itself or not at all. Pyth feeds are
 matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
-The paid sources are opt-in and engage only when their key is set, so nobody
-is billed by accident and nothing degrades if you set none:
+Pyth is opt-in and engages only when its key is set, so nobody is billed by
+accident and nothing degrades without it:
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Pyth as the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price values; feed discovery is still open. |
-| `CMC_API_KEY` | CoinMarketCap as an additional current-price source. Note it keys on ticker symbols, which are not unique on-chain, so it is only consulted for symbols already mapped to a coin type. |
+| `PYTH_API_KEY` | Pyth as the third current-price source in `get_token_prices` and the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price values; feed discovery is still open. |
 
 A missing price and a price of zero mean different things, and no tool reports
 one as the other.

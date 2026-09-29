@@ -23,8 +23,10 @@ An attacker generates an address sharing the leading and trailing characters
 of one you already deal with, sends dust from it, and waits for someone to copy
 the wrong row out of their own history. The check covers senders,
 balance-change recipients and the branches a trace declined to follow. A
-poisoning wallet sends rather than receives, so it never shows up as a
-counterparty, and the lookalike is usually several hops from the address it
+poisoning wallet sends dust and receives nothing, so a trace that follows the
+victim's funds outward never reaches it as a recipient. It appears as a sender
+in the victim's own history, which is where `get_transaction_history` compares
+it. In a trace, the lookalike is usually several hops from the address it
 imitates. `trace_flow_graph` and `find_flow_path` never prune a branch to an
 address that renders like one already reached, whatever `min_share` or
 `min_usd` say: the small amount is the finding.
@@ -44,7 +46,15 @@ page is normal for this attack, so a small margin proves nothing. Failing
 that, an address that received nothing is the likelier impostor.
 
 In a transaction history, timing can also decide it, but only for the shape
-poisoning leaves: the later address first appears paying the wallet dust and
-receiving nothing, within ten minutes of the address it imitates, and that
-address's first row is not the oldest one shown. Otherwise the pair is
-reported with `direction_known: false`.
+poisoning leaves. The address that appears later is named the impostor, with
+`direction_basis: "lifecycle"`, when all of these hold:
+
+- Its first transaction in the history credits the wallet, and the address
+  receives nothing in it.
+- That transaction is at most ten minutes after the other address's first
+  transaction in the history.
+- The other address's first transaction is not of that kind.
+- The other address's first transaction is not the oldest one shown, so the
+  history reaches back before it.
+
+Otherwise the pair is reported with `direction_known: false`.

@@ -66,7 +66,7 @@ wallet.
 - [The forensics skill](https://sui-mcp.vercel.app/guides/forensics-skill/) and its investigation prompts
 - [Multisig](https://sui-mcp.vercel.app/guides/multisig/): committees, signers, aliases
 - [Watching addresses](https://sui-mcp.vercel.app/guides/watching-addresses/)
-- [Move decompiler (optional)](https://sui-mcp.vercel.app/guides/decompiler/)
+- [Move decompiler](https://sui-mcp.vercel.app/guides/decompiler/)
 - [How to read results](https://sui-mcp.vercel.app/concepts/): verified coins, fund flows, lookalike addresses, truncated lists and more
 - [Tool reference](https://sui-mcp.vercel.app/reference/tools/) and [capabilities](https://sui-mcp.vercel.app/reference/capabilities/)
 

@@ -27,7 +27,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerRestrictionTools(server: McpServer) {
   server.tool(
     "check_coin_restrictions",
-    "(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions — give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (~1,250 on mainnet, about 65 requests — a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. A freeze by validators, who can refuse an address's transactions through their node configuration, is off chain and in no deny list, so this tool cannot see it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.",
+    "(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions: give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (every regulated coin, so it reads many deny lists; a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. A freeze by validators, who can refuse an address's transactions through their node configuration, is off chain and in no deny list, so this tool cannot see it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.",
     {
       coin_type: coinTypeArg()
         .optional()
@@ -35,7 +35,7 @@ export function registerRestrictionTools(server: McpServer) {
       address: addressArg()
         .optional()
         .describe(
-          "Address to check. Without coin_type, checks it against every coin type that has a deny list (~1,250 on mainnet), whether or not the address holds that coin: a frozen address usually holds none of the coin that froze it. With coin_type, reports whether it is frozen for that coin.",
+          "Address to check. Without coin_type, checks it against every coin type that has a deny list, whether or not the address holds that coin: a frozen address usually holds none of the coin that froze it. With coin_type, reports whether it is frozen for that coin.",
         ),
       max_addresses: numArg()
         .int()

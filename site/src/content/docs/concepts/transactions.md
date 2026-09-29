@@ -112,3 +112,57 @@ moves. That deposit carries `converted_from_coins` and a note saying so.
 `address_balance` beside each total, and `identify_address` and `get_object`
 list `address_balances` for an object id: funds the object holds itself, which
 are not among its fields and which only its defining module can withdraw.
+
+## Decoding a PTB before signing
+
+`decode_ptb` accepts exactly one of `transaction_bcs` (base64 BCS bytes) and
+`digest` (an executed transaction's Base58 digest). It never executes the
+transaction. Use the bytes mode before approving a wallet prompt, then
+`simulate_transaction` to see where every coin and object would end up.
+`checks_run` names the checks performed; no match clears nothing.
+
+The command list resolves each argument and annotates protocols. Pure inputs
+are decoded using the receiving Move function's declared type, in `value_type`
+and `value`; address-typed values appear under `address`. A u64, u128 or u256
+with its high bit set also carries `signed_value`, its two's-complement
+reading. Without a readable type, the input stays `bytes`. A 32-byte value
+also gets `possible_address` in inputs or `address` without `value_type` in
+commands. That guess is not proof: a u256, an `ID` and a 31-byte string can
+also occupy 32 bytes.
+
+Result and NestedResult arguments identify the producing command in `from`;
+that command's `returns` gives the declared type. With a digest, object
+inputs include the version read and the object's type. FundsWithdrawal inputs
+name the amount, coin type and address-balance source (Sender or Sponsor).
+`gas_source` distinguishes coin-funded gas from the gas owner's address balance.
+`get_transaction` with `detail: "full"` returns these inputs and commands
+alongside effects and events.
+
+The heuristic checks cover publishes/upgrades, wallet-blocklisted packages,
+unvouched packages, unlisted lineages, superseded versions, non-sender payouts,
+flash-loan patterns and multi-package composition. A package is vouched for
+by the curated registry or a curated protocol's publishing key; an MVR name
+is display only. The unvouched-package check reaches medium only with one-way
+value flow or another lead. For a digest, the flow must show another address
+gaining what the sender lost, or the sender receiving nothing back.
+
+Payout checks read TransferObjects and framework calls:
+`transfer::public_transfer`, `pay::split_and_transfer`,
+`pay::join_vec_and_transfer`, `sui::transfer`, `coin::send_funds`,
+`balance::send_funds`, `coin::mint_and_transfer`, `token::transfer`, and
+`party::single_owner` building a party for `transfer::public_party_transfer`
+(all under `0x2`). Digest mode also reads the effects for coins and objects
+the sender lost to another address.
+
+With bytes, `presign_context` compares outgoing SplitCoins amounts, whole
+coins and the gas coin against the sender's balances now. It gives each
+coin's `share_of_balance` and each recipient's first chain transaction as
+`first_seen`, null when no transaction has ever affected that recipient.
+
+The first command page fits about 30,000 characters, prioritizing commands
+named by anomalies, highest severity first and fewest named commands among
+ties, then non-framework Move calls. Every anomaly lists its command indices.
+`command_offset` instead reads in index order from that offset; `commands`
+selects exact indices, such as `[3, 7]`. Each returned command carries its
+`index`. `commands_omitted` lists missing index ranges and the continuation
+`next_call`. Checks cover all commands, even when the displayed list is a page.

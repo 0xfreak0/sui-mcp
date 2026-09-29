@@ -173,6 +173,17 @@ Forward walks remain where the question is "since X": first funding,
 `build_timeline` with `from`. Anything else asking "what is this address doing"
 walks back, as `measureFanout` does.
 
+### One read is not a page
+
+The service reads a bounded range per request. An events filter combining
+fields (seen with `sender` and `type`) can come back short or empty with
+`hasPreviousPage` / `hasNextPage` still true, its cursor marking where that
+read stopped rather than an event. On mainnet a bridge maker's swaps on one
+DEX took seven reads to reach the first match. Continue on the page-info flag,
+never on a page's length: `query_events` reads on until `limit` is filled, the
+list ends or `QUERY_EVENTS_MAX_READS` reads are spent, and a call the budget
+cut short reports `scan` with `reads` and the `next_call` that continues.
+
 ## Time windows go into the filter
 
 A window is applied as `afterCheckpoint` / `beforeCheckpoint`, never by

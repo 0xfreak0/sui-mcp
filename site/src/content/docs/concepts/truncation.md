@@ -5,7 +5,13 @@ sidebar:
   order: 10
 ---
 
-A list is complete only when the response has no `truncated`.
+Display truncation is reported by `truncated` and `omitted`. Connection
+pagination uses `has_next_page` and cursors; a response without `truncated`
+can still have more pages.
+
+For `query_events`, continue while `has_next_page` is true, even when `events`
+is empty. `scan` reports a read-budget stop, and `scan.next_call.repeat_with`
+continues the same query with its filters and network unchanged.
 
 `summarize_address_flows`, `find_funding_sources`, `get_transaction` and
 `decode_ptb` list the rows that fit a fixed size budget and compute every

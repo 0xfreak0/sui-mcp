@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Changed
+- **The truncation guide distinguishes display limits from pagination.**
+  It explains empty `query_events` pages with `has_next_page: true`, read-budget
+  stops under `scan`, and continuation with `scan.next_call.repeat_with`.
 - **The unused CoinMarketCap price source is gone.** No tool read a
   CoinMarketCap price, yet setting `CMC_API_KEY` added `coinmarketcap` to the
   `price_sources` list `get_token_prices` returns for a past moment.
@@ -51,6 +54,16 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **`query_events` no longer returns an empty page while matches remain.**
+  The GraphQL service reads a bounded range per request, so a filter combining
+  `sender` with `event_type` could answer with no events and `has_next_page:
+  true`, and the matches appeared only on a later page. `query_events` now
+  keeps reading until `limit` events are found or the list ends, up to a read
+  budget per call. When the budget runs out first, the response carries
+  `scan` with the number of reads, how many of `limit` events were found and
+  a `next_call` that continues from `next_cursor`. A module filter split at
+  the `relocate_event_module` cutover reads on the same way inside each
+  segment.
 - **`get_validators` no longer silently cuts the active set.** The default
   summary ranks the whole set, shows compact rows within an output budget and
   keeps at-risk validators. Omitted rows and fields are stated, with a full

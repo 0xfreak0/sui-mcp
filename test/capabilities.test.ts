@@ -54,9 +54,15 @@ describe("classifyCapabilityRisk — upgrade cap", () => {
     });
     expect(r.risk).toBe("low");
   });
-  it("shared upgrade cap is medium (governance)", () => {
-    const r = classifyCapabilityRisk({ kind: "upgrade", type: `${P2}::package::UpgradeCap`, owner: "shared", policyLabel: "compatible (any upgrade)" });
-    expect(r.risk).toBe("medium");
+  // package::authorize_upgrade, coin::mint and coin::deny_list_v2_add are
+  // public and take the cap by &mut; any transaction can pass a shared object
+  // that way.
+  it("rates a shared framework cap high: anyone can use it", () => {
+    const shared = (kind: "upgrade" | "treasury" | "deny", type: string) =>
+      classifyCapabilityRisk({ kind, type, owner: "shared", policyLabel: "compatible (any upgrade)" }).risk;
+    expect(shared("upgrade", `${P2}::package::UpgradeCap`)).toBe("high");
+    expect(shared("treasury", `${P2}::coin::TreasuryCap<0xabc::t::T>`)).toBe("high");
+    expect(shared("deny", `${P2}::coin::DenyCapV2<0xabc::t::T>`)).toBe("high");
   });
 });
 

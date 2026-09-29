@@ -174,7 +174,10 @@ export function classifyCapabilityRisk(input: {
       };
     }
     if (owner === "shared") {
-      return { risk: "medium", note: `UpgradeCap is a shared object (likely governance) with policy ${policyLabel} — review who can authorize an upgrade.` };
+      return {
+        risk: "high",
+        note: `UpgradeCap is a shared object (policy: ${policyLabel ?? "unread"}). package::authorize_upgrade and commit_upgrade are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can upgrade this package.`,
+      };
     }
     return { risk: "medium", note: `UpgradeCap owner is ${owner}${policyLabel ? ` (policy: ${policyLabel})` : ""}.` };
   }
@@ -218,7 +221,10 @@ export function classifyCapabilityRisk(input: {
       return { risk: "high", note: `Mint authority (${shortType}) is held by ${who} — new tokens can be minted at will (inflation / rug risk).` };
     }
     if (owner === "shared") {
-      return { risk: "medium", note: `Mint authority (${shortType}) is a shared object — review who can mint.` };
+      return {
+        risk: "high",
+        note: `Mint authority (${shortType}) is a shared object. coin::mint and mint_balance are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can mint this coin.`,
+      };
     }
     return { risk: "medium", note: `Mint authority (${shortType}) owner is ${owner}.` };
   }
@@ -237,6 +243,12 @@ export function classifyCapabilityRisk(input: {
     if (held) {
       return { risk: "medium", note: `Denylist/freeze authority (${shortType}) is held by ${who} — can freeze addresses or block transfers of this coin.` };
     }
+    if (owner === "shared") {
+      return {
+        risk: "high",
+        note: `Denylist/freeze authority (${shortType}) is a shared object. coin::deny_list_v2_add and deny_list_add are public and take the cap by &mut, and any transaction can pass a shared object that way, so anyone can freeze holders of this coin.`,
+      };
+    }
     return { risk: "low", note: `Denylist/freeze authority (${shortType}) owner is ${owner}.` };
   }
 
@@ -251,6 +263,12 @@ export function classifyCapabilityRisk(input: {
   }
   if (held) {
     return { risk: "low", note: `Privileged capability ${shortType} is held by ${who} — review what powers it grants.` };
+  }
+  if (owner === "shared") {
+    return {
+      risk: "low",
+      note: `Capability ${shortType} is a shared object: any transaction can pass it to the functions that take it. What that grants depends on each function's own checks; read the ones that take this type.`,
+    };
   }
   return { risk: "info", note: `Capability ${shortType} owner is ${owner}.` };
 }

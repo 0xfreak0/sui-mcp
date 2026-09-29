@@ -342,7 +342,7 @@ describe("appeared is not custody unless it lands on a party", () => {
   });
 });
 
-describe("renouncing has three forms, not one", () => {
+describe("renouncing a capability: burn and freeze, never share", () => {
   const cap = `${P2}::coin::TreasuryCap<0xa::t::T>`;
   const to = (owner: unknown) =>
     readObjectMovements([moved("0xcap", cap, addrOwner(A), owner)])[0]!;
@@ -354,10 +354,14 @@ describe("renouncing has three forms, not one", () => {
     expect(summarizeObjectFlow([m])!.capability_transfers).toHaveLength(0);
   });
 
-  it("treats sharing as renunciation", () => {
+  // A shared object passes by &mut to any transaction, and coin::mint is
+  // public: sharing opens the authority to everyone.
+  it("reports sharing a capability as a change of control, not renunciation", () => {
     const m = to({ __typename: "Shared" });
-    expect(m.renounced).toBe(true);
-    expect(summarizeObjectFlow([m])!.renounced_capabilities).toHaveLength(1);
+    expect(m.renounced).toBeUndefined();
+    const flow = summarizeObjectFlow([m])!;
+    expect(flow.renounced_capabilities).toHaveLength(0);
+    expect(flow.capability_transfers).toHaveLength(1);
   });
 
   it("still treats a transfer to a live address as a handover", () => {

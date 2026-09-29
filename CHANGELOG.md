@@ -21,6 +21,13 @@
   Destroying the cap leaves its Supply, which can still mint wherever it is
   kept. `analyze_package` reports fixed or burn-only supply when Sui's
   on-chain coin registry records it, and medium risk otherwise.
+- **A shared capability is open to everyone, not renounced.** Any
+  transaction can pass a shared object by `&mut`, and `coin::mint`,
+  `coin::deny_list_v2_add` and `package::authorize_upgrade` are public. A
+  shared TreasuryCap, DenyCap or UpgradeCap now reads high risk (anyone can
+  mint, freeze or upgrade), and object traces no longer count sharing a
+  capability as renouncing it. Freezing still counts: a frozen object passes
+  only by `&`.
 - `get_transaction` and the other decoded views named a router's own
   bookkeeping type as a coin in swaps routed through Aftermath's router
   (`Swap RouterDataV1 → USDC`). Each hop now shows the coins it traded, in

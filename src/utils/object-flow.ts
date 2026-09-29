@@ -22,10 +22,12 @@
  *   balance change" while producing no balance change, so it would appear in
  *   neither channel. `capabilities.ts` already pins `0x2::…` in full; this
  *   follows it.
- * - **A capability sent somewhere unspendable is renounced.** Most UpgradeCap
- *   departures go to `0x0` or `0x2` (see `upgrade-cap.ts`). Reporting those
- *   as "control changed hands, follow the recipient" would be wrong most of
- *   the time for the type that motivated the feature.
+ * - **A capability sent somewhere unspendable, or frozen, is renounced.**
+ *   Most UpgradeCap departures go to `0x0` or `0x2` (see `upgrade-cap.ts`).
+ *   Reporting those as "control changed hands, follow the recipient" would be
+ *   wrong most of the time for the type that motivated the feature. A shared
+ *   capability is the opposite: any transaction can pass a shared object to a
+ *   public function, so it is open to everyone.
  * - **Custody is not only address-to-address.** A kiosk-held NFT is owned by
  *   the Kiosk object, so a normal NFT trade reads `object -> object`, and
  *   `ObjectOwner -> ObjectOwner` changes are common. Filtering to
@@ -280,18 +282,22 @@ function finish(
   const out: ObjectMovement = { ...m };
   const full = m.type ? baseType(m.type) : null;
 
-  // Three ways to give up a capability, not one. transfer_to_0x0,
-  // public_freeze_object (-> Immutable) and public_share_object (-> Shared)
-  // all end the holder's exclusive control. capabilities.ts already
-  // distinguishes destroyed / immutable / shared owners for these types.
-  const frozenOrShared = m.to?.kind === "immutable" || m.to?.kind === "shared";
+  // Two ways to give up a capability: transfer to an address nobody holds a
+  // key for, and public_freeze_object (-> Immutable), after which it passes
+  // only by `&`. public_share_object (-> Shared) gives it up to everyone: any
+  // transaction can pass a shared object by `&mut`, and the framework's
+  // coin::mint, deny_list_v2_add and package::authorize_upgrade are public.
+  const frozen = m.to?.kind === "immutable";
+  const shared = m.to?.kind === "shared";
   const sentToBurn =
     m.to?.kind === "address" && !!m.to.address && isUnspendableAddress(m.to.address);
-  if (sentToBurn || frozenOrShared) out.renounced = true;
+  if (sentToBurn || frozen) out.renounced = true;
 
   if (out.high_consequence && full) {
     const power = HIGH_CONSEQUENCE_TYPES[full]!;
-    if (!out.renounced) {
+    if (shared) {
+      out.note = `Made shared. ${power} Any transaction can pass a shared object to the framework's public functions for this type, so anyone can now use that authority. This opens it to everyone; it is not a renunciation.`;
+    } else if (!out.renounced) {
       out.note = power;
     } else if (sentToBurn) {
       out.note = `Sent to ${m.to?.address}, an address nobody holds a key for. ${power} Those rights are RENOUNCED, not transferred — a deliberate act and a reduction in risk, not a warning.`;

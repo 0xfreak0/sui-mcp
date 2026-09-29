@@ -383,7 +383,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
             })
           : null;
         if (gone && !end) {
-          capNote = `The UpgradeCap no longer exists at top level, and whether it was destroyed or wrapped could not be read${endError ? `: ${endError}` : ""}. Its last recorded holder is not its current one.`;
+          capNote = `The UpgradeCap no longer exists at top level, and whether it was destroyed or wrapped could not be read${endError ? `: ${endError}` : ""}. Its last recorded holder no longer holds it at top level.`;
         }
         const capComplete = !!cap && cap.complete && caps[0]?.tx === root.tx;
 
@@ -412,7 +412,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
         const ids = await describeAddresses([...addresses], { authentication: true });
         for (const [addr, id] of ids) if (!auth.has(addr) && id.authentication) auth.set(addr, id.authentication);
 
-        const periods = custodyPeriods(caps, end);
+        const periods = custodyPeriods(caps, end, gone);
         const asOfState = at ? stateAsOf(at, versions, caps, end, gone) : null;
         const asOf =
           at && asOfState
@@ -535,7 +535,8 @@ export function registerUpgradeHistoryTools(server: McpServer) {
             holder: describeHolder(p.holder, auth, ids),
             from: p.from,
             until: p.until,
-            duration_hours: hoursOf(p.from, p.until),
+            duration_hours: p.until_unknown ? null : hoursOf(p.from, p.until),
+            ...(p.until_unknown ? { until_unknown: true } : {}),
           })),
           cap_excursions: excursions.map((x) => ({
             holders: x.holders.map((h) => describeHolder(h, auth, ids)),

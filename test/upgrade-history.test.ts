@@ -273,6 +273,15 @@ describe("terminal cap states and policy", () => {
     expect(analyse(24, end).flags.find((f) => f.kind === "cap_destroyed")?.txs).toEqual(["Del"]);
   });
 
+  it("counts no time for a gone cap's last period when its end is unread", () => {
+    // MULTI holds it an hour, then SINGLE until it vanished at an unread time.
+    const two = [cap("A", "2025-01-01T00:00:00Z", 1, MULTI, MULTI, 0), cap("B", "2025-01-01T01:00:00Z", 2, MULTI, SINGLE, 0)];
+    expect(usualHolder(custodyPeriods(two), NOW)?.holder).toEqual(addr(SINGLE));
+    const periods = custodyPeriods(two, null, true);
+    expect(periods[1].until_unknown).toBe(true);
+    expect(usualHolder(periods, NOW)?.holder).toEqual(addr(MULTI));
+  });
+
   it("raises no current-holder flag for a gone cap whose end is unread", () => {
     const burned = [...caps, { ...caps[caps.length - 1], tx: "Burn", checkpoint: 220000000, timestamp: "2025-12-10T00:00:00Z", owner: addr(`0x${"0".repeat(64)}`) }];
     expect(analyse(24, null, burned).flags.some((f) => f.kind === "cap_renounced")).toBe(true);

@@ -67,6 +67,8 @@ export interface CustodyPeriod {
   from: ChainPoint & { sender: string | null };
   /** The transaction that took it away; null while it is still there. */
   until: (ChainPoint & { sender: string | null }) | null;
+  /** The cap is gone from top level and how it ended could not be read, so when this period ended is unknown. */
+  until_unknown?: true;
 }
 
 /** Single-key schemes: one key, one signature, no committee. */
@@ -134,7 +136,7 @@ export function comparePoints(a: ChainPoint, b: ChainPoint): number | null {
 }
 
 /** Collapse the cap's version history into one period per consecutive holder. */
-export function custodyPeriods(caps: CapVersion[], end: CapEnd | null = null): CustodyPeriod[] {
+export function custodyPeriods(caps: CapVersion[], end: CapEnd | null = null, gone = false): CustodyPeriod[] {
   const out: CustodyPeriod[] = [];
   for (const c of caps) {
     const last = out[out.length - 1];
@@ -145,10 +147,13 @@ export function custodyPeriods(caps: CapVersion[], end: CapEnd | null = null): C
   }
   const last = out[out.length - 1];
   if (last && end) last.until = { tx: end.tx, timestamp: end.timestamp, checkpoint: end.checkpoint, sender: end.sender };
+  else if (last && gone) last.until_unknown = true;
   return out;
 }
 
+/** A period whose end is unknown counts no time: it may have ended moments after it began. */
 function periodMs(p: CustodyPeriod, nowMs: number): number {
+  if (p.until_unknown) return 0;
   const start = ms(p.from);
   const stop = p.until ? ms(p.until) : nowMs;
   return start === null || stop === null ? 0 : Math.max(0, stop - start);

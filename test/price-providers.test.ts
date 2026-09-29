@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   availableSources,
-  cmcApiKey,
   defiLlamaKey,
   fetchAftermath,
-  fetchCoinMarketCap,
   fetchDefiLlama,
   parseDefiLlamaPrices,
   pricesForRanking,
@@ -21,7 +19,6 @@ beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   delete process.env.PYTH_API_KEY;
-  delete process.env.CMC_API_KEY;
 });
 
 afterEach(() => {
@@ -78,7 +75,6 @@ describe("opt-in providers", () => {
   it("reports only the free sources when no keys are set", () => {
     expect(availableSources()).toEqual(["aftermath", "defillama"]);
     expect(pythApiKey()).toBeNull();
-    expect(cmcApiKey()).toBeNull();
   });
 
   it("adds Pyth only once its key is present", () => {
@@ -86,39 +82,10 @@ describe("opt-in providers", () => {
     expect(availableSources()).toEqual(["aftermath", "defillama", "pyth"]);
   });
 
-  it("never lists CoinMarketCap, which no tool reads prices from", () => {
-    process.env.CMC_API_KEY = "k2";
-    expect(availableSources()).toEqual(["aftermath", "defillama"]);
-  });
-
   it("treats a blank key as unset, so whitespace does not enable a paid call", () => {
     process.env.PYTH_API_KEY = "   ";
-    process.env.CMC_API_KEY = "   ";
     expect(pythApiKey()).toBeNull();
-    expect(cmcApiKey()).toBeNull();
     expect(availableSources()).toEqual(["aftermath", "defillama"]);
-  });
-
-  it("does not call CoinMarketCap without a key", async () => {
-    await fetchCoinMarketCap(new Map([["SUI", SUI]]));
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("sends the key as a header and maps symbols back to coin types", async () => {
-    process.env.CMC_API_KEY = "secret";
-    fetchMock.mockResolvedValue(ok({ data: { SUI: [{ quote: { USD: { price: 0.75 } } }] } }));
-
-    const out = await fetchCoinMarketCap(new Map([["SUI", SUI]]));
-    expect(out.get(SUI)).toMatchObject({ price: 0.75, source: "coinmarketcap" });
-    expect(fetchMock.mock.calls[0][1].headers["X-CMC_PRO_API_KEY"]).toBe("secret");
-  });
-
-  it("ignores a CMC symbol it was not given a coin type for", async () => {
-    // CMC keys on tickers, which are not unique — anyone can mint a coin called
-    // USDC. Only the caller's own mapping decides which coin a ticker meant.
-    process.env.CMC_API_KEY = "secret";
-    fetchMock.mockResolvedValue(ok({ data: { GHOST: [{ quote: { USD: { price: 9 } } }] } }));
-    expect((await fetchCoinMarketCap(new Map([["SUI", SUI]]))).size).toBe(0);
   });
 });
 

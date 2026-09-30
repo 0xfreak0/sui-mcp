@@ -930,7 +930,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "get_transactions",
-    "Read up to 50 Sui transactions in ONE call, given their digests. Returns sender, status, timing, balance changes, Move call targets in order and events WITH their decoded fields for each, plus the protocols involved, named as get_transaction names them. Use this whenever you hold several digests at once (the outputs of a fan-out, the evidence on a cluster edge, a set of hops to compare) instead of calling get_transaction repeatedly; ten digests go from ten round trips to one. Digests that could not be read come back in `not_found` rather than being dropped. The default view lists each transaction's events, Move calls and balance changes up to its share of about 30k characters, keeping the sender's own balance changes; `event_count` and `move_call_count` count every one, and `omitted` states what each list left out, with detail: 'full' listing all. For ONE transaction, or for a transaction with more than 50 events, prefer get_transaction: it pages events to the end.",
+    "Read 1-50 transaction digests in one call instead of repeated get_transaction calls. Returns sender, status, timing, balance changes, ordered Move targets, decoded event fields and protocols named as in get_transaction. Unread digests appear in not_found. Summary shares about 30k characters across transactions' events, calls and balances, retaining sender balances; event_count and move_call_count give counts and omitted reports hidden rows. detail: 'full' removes display limits. For one transaction or more than 50 events, use get_transaction, which pages events to the end.",
     {
       digests: z
         .array(z.string())
@@ -940,7 +940,7 @@ export function registerTransactionTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): each transaction's events, Move calls and balance changes fit its share of about 30k characters. 'full': every one."),
+        .describe("'summary' (default): events, calls and balances share about 30k characters across the batch. 'full': every fetched row."),
     },
     async ({ digests, detail }) => {
       try {

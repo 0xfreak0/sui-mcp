@@ -426,3 +426,20 @@ support it. A daily rhythm needs at least 50 transactions spanning a week;
 raise `per_address` accordingly, and heed the warning on smaller samples.
 A flat pattern consistent with automation is common on Sui and is itself
 useful evidence, without a timezone claim.
+
+## Reading a batch of digests
+
+Use `get_transactions` when you already have several digests, such as fan-out
+results, cluster-edge evidence or hops to compare. One call reads up to 50
+digests instead of a separate `get_transaction` round trip for each; duplicates
+are collapsed. Each result includes sender, status, timing, balance changes,
+ordered Move call targets, events with decoded fields and protocol names
+resolved as in `get_transaction`. Digests that could not be read remain in
+`not_found`.
+
+The default view shares about 30k characters across each transaction's
+events, calls and balances, keeping the sender's own balance changes.
+`event_count` and `move_call_count` count the rows before display trimming;
+`omitted` describes what was left out. `detail: "full"` removes that display
+limit, not the event-read bound. For one transaction, or any transaction with
+more than 50 events, use `get_transaction` to page events to the end.

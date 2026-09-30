@@ -125,7 +125,7 @@
       ],
       "tier": "chain-derived",
       "basis": "Chain: all of DOPE's liquidity was one Cetus position the deployer held in its own wallet for its whole life.",
-      "known_defect": "analyze_token names no pool, no liquidity and no LP holder, so the unlocked position in the deployer's wallet is invisible."
+      "known_defect": "Analysis-scope limit: analyze_token reads metadata, prices, supply, holders and mint authority, not pool discovery or LP custody. Its result cannot establish locked liquidity. Use find_pools for the pair and trace_object_history for the position; see concepts/coins, Liquidity pools."
     },
     {
       "id": "find-pool",

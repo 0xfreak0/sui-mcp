@@ -127,7 +127,7 @@
       ],
       "tier": "chain-derived",
       "basis": "Chain: GOBBLE's only liquidity was the Cetus pool (and the BlueMove pool), both funded by positions the deployer held in its own wallet. The rug risk sat there, not in a mint authority.",
-      "known_defect": "analyze_token names no pool, no liquidity and no LP holder, so the unlocked LP in the deployer's wallet is invisible."
+      "known_defect": "Analysis-scope limit: analyze_token does not discover pools or audit LP custody. find_pools can list both Cetus and BlueMove v1, but the token overview cannot establish who could withdraw liquidity at the incident time. See concepts/coins, Liquidity pools."
     },
     {
       "id": "find-pools-cetus",

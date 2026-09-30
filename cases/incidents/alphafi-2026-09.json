@@ -442,7 +442,7 @@
       ],
       "tier": "chain-derived",
       "basis": "chain: the multisig sets the ALPHA ratio to 94 at 16:41:09; the first borrow is at 16:41:52; each later borrow comes 24 to 34 seconds after a multisig transaction that raises a market limit or flow limiter; the multisig sets the ratio to 0 at 17:22:00.",
-      "known_defect": "39 rows for a 50-minute window of two addresses come to about 67k characters, over build_timeline's 50k budget, at the default limit of 60 rows."
+      "known_defect": "Display-scope limit: the summary now fits the size budget, but omits late rows including ltv_off_tx. The complete chronology requires omitted.next_call (detail: full); neither the default summary nor its row limit promises every in-window digest. See concepts/transactions, Combining an incident timeline."
     },
     {
       "id": "sep6-borrow-totals",

@@ -622,7 +622,7 @@
       ],
       "tier": "price-provider",
       "basis": "Chain: attacker_a's deposit and withdrawal transactions on five vaults net about $342K; the same window also holds its swaps and six bridge exits.",
-      "known_defect": "sender mode nets the wallet's own swaps and bridge exits against the exploit, so usd_gained reads $1.02 for a $342K take",
+      "known_defect": "Selection limit: sender mode totals every sent transaction in the window. Swaps and bridge burns net against exploit credits; only address-to-address onward coin transfers are excluded. It cannot identify exploit-only profit from the sender/window alone. Supply the exploit digests, as exploit-net-gain does; see concepts/transactions, Totalling incident losses.",
       "timeout_s": 300
     },
     {
@@ -731,7 +731,7 @@
       ],
       "tier": "chain-derived",
       "basis": "Chain: the transaction swaps 65,600 SUI to 50,002.79 USDC paid to Orbiter's maker and emits OrbiterRouter::MessageTakenEvent whose msg decodes to t=0x99a8aA2Ae13Da715b59F9949a0f35100EcDF9591&c=1, the same Ethereum address as the Mayan exits.",
-      "known_defect": "Orbiter Finance is not a recognised bridge and its ASCII memo is not read as a cross-chain lead"
+      "known_defect": "Bridge-decoder limit: Orbiter has no curated bridge marker or beneficiary decoder. Its destination is inside an ASCII query-string memo, outside cross_chain_leads' separate chain-field/address-byte shape. Inspect MessageTakenEvent.msg manually and confirm the maker's destination-chain payment; see concepts/fund-flows, Resolving a bridge transfer."
     },
     {
       "id": "v1-path-callers",

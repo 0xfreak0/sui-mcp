@@ -229,7 +229,7 @@
       ],
       "tier": "chain-derived",
       "basis": "Chain: 126 successful attacker transactions from 02:33 to 05:28 UTC pass oracle 0x0f307cb2 to aggregator_submit_result_action::run, deposit H83xf84 among them.",
-      "known_defect": "affected_object returns only the 3 attestations that changed the oracle, not the transactions that passed it as an immutable input."
+      "known_defect": "Index limit: affected_object uses GraphQL affectedObject, which does not enumerate read-only inputs. Here it lists the three oracle mutations, not the deposit's immutable borrow. Find calls by function and window, then inspect decode_ptb inputs. The all-users expectation is retained; see concepts/transactions, Raw transaction filters."
     },
     {
       "id": "attest-checks-wrong-oracle",
@@ -456,7 +456,7 @@
       ],
       "tier": "heuristic",
       "basis": "Chain: the SUI/USD aggregator is set to 0.007405 by a caller value (command 3), read by port_oracle (command 4) before the deposit, then set back to 0.7405, a 100x span inside one PTB.",
-      "known_defect": "analyze_attack_tx raises no caller-value-used on the set-use-restore deposit, since the aggregator ends where it began; the price the port read is flagged by price-off-market instead (check deposit-price-off-market)."
+      "known_defect": "Detector limit: caller-value-used requires a stored caller value or an event that can be matched to the shared object's fields. A restored final value alone cannot establish the intermediate write, and this PTB does not meet the event/state matching rule. price-off-market still flags the deposit. Inspect the resolved calls and bytecode; no intermediate VM state is reconstructed. See concepts/transactions, Caller-set values."
     },
     {
       "id": "deposit-price-off-market",
@@ -721,7 +721,7 @@
       ],
       "tier": "price-provider",
       "basis": "Full Sail says about $91,000; chain: the attacker netted 112,677.16 SUI and -820.92 USDC on the SUI/USDC port over 43 deposit and withdraw pairs.",
-      "known_defect": "A port's deposit and withdraw legs touch different object sets, so they land in separate groups (+$308.1K and -$225.7K for the SUI/USDC port)."
+      "known_defect": "Attribution limit: groups key the exact pool/object set and evidence basis, not a protocol-specific port identity. Deposits and withdrawals here involve different sets. Merging groups merely because one object overlaps would assign unrelated swap losses to that port. Totals still net all supplied digests; a per-port total requires an explicitly attributed digest set or its own events. See concepts/transactions, Totalling incident losses."
     },
     {
       "id": "attacker-funding",

@@ -194,3 +194,31 @@ Only this redeploy output is capped. The default summary fits function-origin
 groups within about 6,000 characters, prioritizing the code that most predates
 its module's origin. `omitted` counts excluded groups and functions;
 `detail: "full"` lists all groups.
+
+## Reading upgrade hunks
+
+`diff_package_upgrade` resolves the requested two versions, each with its own
+package address, and disassembles both. It accepts any version's ID or an
+MVR name. By default it compares the latest to its predecessor; with
+`to_version`, an omitted `from_version` means the immediately preceding version.
+
+The summary names added and removed modules and functions, functions made
+more or less reachable (for example private to public), and `changed_functions`
+whose instructions changed. Changed modules have unified hunks; dependency
+relinks include a call to diff the dependency itself. Behavior can change
+through a dependency alone, with no local module changing.
+
+Functions, structs and constant-pool entries are matched by name. Each `@@`
+hunk stays within the named declaration even if compilation changed their
+order. Renumbered instruction offsets, local slots, field/struct/constant
+indices, branches and consistently renumbered locals are excluded from hunks
+and counted in `renumbered_lines`. A function with no other change appears in
+`renumbering_only_functions`. Clever abort codes, truncated constants, large
+integers and `Shl`/`Shr` instructions carry explanatory `//` notes.
+
+`max_sample_lines` budgets 60 lines per changed module by default. Changed
+function bodies rank by the fraction rewritten; each receives its largest
+hunk before any receives a second. Added and removed functions, types, `use`
+lines and constants follow, and changed lines take priority over context.
+`sample_truncated` marks a short sample; `unsampled_functions` and
+`partly_sampled_functions` name its gaps. Follow `sample_next_call` to read them.

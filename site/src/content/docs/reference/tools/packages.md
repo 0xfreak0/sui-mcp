@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`analyze_package`](#analyze_package) | Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. |
 | [`decompile_module`](#decompile_module) | Decompile Move module(s) from a Sui package into readable source code. |
-| [`diff_package_upgrade`](#diff_package_upgrade) | Diff two versions of a Move package to spot what an upgrade changed, the classic malicious-upgrade / backdoor vector. |
+| [`diff_package_upgrade`](#diff_package_upgrade) | Compare two Move package versions for upgrade changes or backdoors. |
 | [`disassemble_module`](#disassemble_module) | Disassemble Move module(s) from a Sui package into Move bytecode assembly, using the GraphQL endpoint. |
 | [`get_move_function`](#get_move_function) | Get a specific Move function signature from a Sui package. |
 | [`get_package`](#get_package) | Get a Sui Move package by its ID. |
@@ -54,14 +54,14 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Security) Diff two versions of a Move package to spot what an upgrade changed, the classic malicious-upgrade / backdoor vector. On Sui each upgrade publishes a new package address; this resolves the two versions, disassembles both, and reports added/removed modules; functions added, removed, made more or less reachable (e.g. private → public), and `changed_functions`, those whose instructions changed, all named in `summary`; each changed module as unified hunks; and dependency relinks with the call that diffs the dependency itself. Functions, structs and the constant pool are matched by name, so each `@@` hunk holds only the lines of the declaration it names, even when the upgrade compiled functions in another order. Lines that differ only in numbering a recompile shifts (instruction offsets, local slots, field, struct or constant indices, with branches and locals renumbered consistently) are counted in `renumbered_lines` and left out of the hunks; a function with nothing else is listed in `renumbering_only_functions`. Clever abort codes, truncated constants, large integers and `Shl`/`Shr` lines carry a `//` note. An upgrade can change behaviour through a dependency alone, with no module of its own changing. Defaults to comparing the latest upgrade (previous → latest). Accepts a 0x package ID (any version) or an MVR name.
+(Security) Compare two Move package versions for upgrade changes or backdoors. Reports added and removed modules/functions, visibility changes, changed function instructions, unified hunks and dependency relinks with calls to diff those dependencies. A dependency alone can change behavior even when no local module changed. Renumbering caused only by recompilation is counted but excluded from hunks; renumbering_only_functions names functions with no other change. Hunks stay within the named declaration even if compilation reordered functions. By default, compares the previous version to the latest. Each upgrade has a new package ID; any version's ID or an MVR name identifies the lineage.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `package` | string | yes | Package reference: a 0x package ID (any version in the family) or MVR name (@org/app). |
-| `from_version` | integer (greater than 0) | no | Older version to compare from (default: latest - 1). |
+| `from_version` | integer (greater than 0) | no | Older version (default: one before to_version, or latest - 1 when to_version is omitted). |
 | `to_version` | integer (greater than 0) | no | Newer version to compare to (default: latest). |
-| `max_sample_lines` | integer (10 to 2000) | no | Line budget per changed module for the unified hunks (default 60). Changed function bodies come first, the most rewritten (changed share of the body) first, and each gets its largest hunk before any gets a second; then added and removed functions, types, `use` lines and constants. Changed lines are shown before context. When some do not fit, `sample_truncated` is set, `unsampled_functions` and `partly_sampled_functions` name the functions left out, and `sample_next_call` is the call that shows them. |
+| `max_sample_lines` | integer (10 to 2000) | no | Lines per changed module (default 60). Changed bodies rank by changed share; each gets its largest hunk first. Then added/removed functions, types, use lines and constants; changed lines precede context. sample_truncated, unsampled_functions and partly_sampled_functions report gaps; follow sample_next_call. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## disassemble_module

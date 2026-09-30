@@ -117,7 +117,7 @@ function summarize(diff: PackageDiff, linkage: LinkageChange[]): string {
 export function registerPackageAuditTools(server: McpServer) {
   server.tool(
     "diff_package_upgrade",
-    "(Security) Diff two versions of a Move package to spot what an upgrade changed, the classic malicious-upgrade / backdoor vector. On Sui each upgrade publishes a new package address; this resolves the two versions, disassembles both, and reports added/removed modules; functions added, removed, made more or less reachable (e.g. private → public), and `changed_functions`, those whose instructions changed, all named in `summary`; each changed module as unified hunks; and dependency relinks with the call that diffs the dependency itself. Functions, structs and the constant pool are matched by name, so each `@@` hunk holds only the lines of the declaration it names, even when the upgrade compiled functions in another order. Lines that differ only in numbering a recompile shifts (instruction offsets, local slots, field, struct or constant indices, with branches and locals renumbered consistently) are counted in `renumbered_lines` and left out of the hunks; a function with nothing else is listed in `renumbering_only_functions`. Clever abort codes, truncated constants, large integers and `Shl`/`Shr` lines carry a `//` note. An upgrade can change behaviour through a dependency alone, with no module of its own changing. Defaults to comparing the latest upgrade (previous → latest). Accepts a 0x package ID (any version) or an MVR name.",
+    "(Security) Compare two Move package versions for upgrade changes or backdoors. Reports added and removed modules/functions, visibility changes, changed function instructions, unified hunks and dependency relinks with calls to diff those dependencies. A dependency alone can change behavior even when no local module changed. Renumbering caused only by recompilation is counted but excluded from hunks; renumbering_only_functions names functions with no other change. Hunks stay within the named declaration even if compilation reordered functions. By default, compares the previous version to the latest. Each upgrade has a new package ID; any version's ID or an MVR name identifies the lineage.",
     {
       package: z
         .string()
@@ -126,7 +126,7 @@ export function registerPackageAuditTools(server: McpServer) {
         .int()
         .positive()
         .optional()
-        .describe("Older version to compare from (default: latest - 1)."),
+        .describe("Older version (default: one before to_version, or latest - 1 when to_version is omitted)."),
       to_version: numArg()
         .int()
         .positive()
@@ -138,7 +138,7 @@ export function registerPackageAuditTools(server: McpServer) {
         .max(MAX_SAMPLE_LINES)
         .optional()
         .describe(
-          "Line budget per changed module for the unified hunks (default 60). Changed function bodies come first, the most rewritten (changed share of the body) first, and each gets its largest hunk before any gets a second; then added and removed functions, types, `use` lines and constants. Changed lines are shown before context. When some do not fit, `sample_truncated` is set, `unsampled_functions` and `partly_sampled_functions` name the functions left out, and `sample_next_call` is the call that shows them.",
+          "Lines per changed module (default 60). Changed bodies rank by changed share; each gets its largest hunk first. Then added/removed functions, types, use lines and constants; changed lines precede context. sample_truncated, unsampled_functions and partly_sampled_functions report gaps; follow sample_next_call.",
         ),
     },
     async ({ package: pkgRef, from_version, to_version, max_sample_lines }) => {

@@ -395,6 +395,8 @@ a `deposit_address` field without running the classifier. It reports an
 effective inferred deposit label with its sweep evidence and one applicable
 `session_verdict`. A flow summary selects that verdict by its resolved
 checkpoint bounds, so `from: "now"` is not confused with unbounded history.
+The same bounds apply to the subject, inflow sources, recipients and gas
+sponsors. Their classification follow-up calls retain the incident period.
 `other_session_observations` counts the other windows without repeating them
 on each row. `session_observations_call` returns all observations and their
 full checks through `manage_labels(action: "lookup", detail: "full")`.

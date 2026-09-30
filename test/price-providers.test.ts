@@ -4,6 +4,7 @@ import {
   defiLlamaKey,
   fetchAftermath,
   fetchDefiLlama,
+  fetchDefiLlamaHistory,
   parseDefiLlamaPrices,
   pricesForRanking,
   pythApiKey,
@@ -193,5 +194,36 @@ describe("fetchDefiLlama", () => {
     expect([...r.unanswered]).toEqual(coins.slice(0, 25));
     expect(r.quotes.size).toBe(0);
     expect([...r.unsupported]).toEqual(["0xabc::lp::LP<0x2::sui::SUI>"]);
+  });
+});
+
+describe("historical date batches", () => {
+  it("matches unsorted samples to their requested dates without borrowing a distant quote", async () => {
+    const january = 1735689600;
+    const july = 1751328000;
+    fetchMock.mockResolvedValue(ok({ coins: { [defiLlamaKey(SUI)!]: { prices: [
+      { timestamp: july - 5, price: 2, confidence: 0.99 },
+      { timestamp: january + 10, price: 4, confidence: 0.99 },
+      { timestamp: july + 86400, price: -1 },
+    ] } } }));
+    const prices = await fetchDefiLlamaHistory(new Map([[SUI, [january, july, july + 86400]]]));
+    expect(prices.get(SUI)?.get(january)).toMatchObject({ price: 4, at: january + 10, source: "defillama" });
+    expect(prices.get(SUI)?.get(july)).toMatchObject({ price: 2, at: july - 5 });
+    expect(prices.get(SUI)?.has(july + 86400)).toBe(false);
+  });
+
+  it("keeps successful date batches when another request fails", async () => {
+    const first = 1735689600;
+    const dates = Array.from({ length: 101 }, (_, i) => first + 86400 * i);
+    fetchMock.mockImplementation(async (url: string) => {
+      const coins = JSON.parse(new URL(url).searchParams.get("coins")!) as Record<string, number[]>;
+      const times = coins[defiLlamaKey(SUI)!];
+      if (times.includes(dates[100])) return { ok: false, status: 503 };
+      return ok({ coins: { [defiLlamaKey(SUI)!]: { prices: times.map((timestamp) => ({ timestamp, price: 2 })) } } });
+    });
+    const prices = await fetchDefiLlamaHistory(new Map([[SUI, dates]]));
+    expect(prices.get(SUI)?.get(first)?.price).toBe(2);
+    expect(prices.get(SUI)?.get(dates[99])?.price).toBe(2);
+    expect(prices.get(SUI)?.has(dates[100])).toBe(false);
   });
 });

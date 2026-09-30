@@ -13,7 +13,8 @@ import { CROSS_CHAIN_LEAD_MEANING, crossChainLeads } from "../utils/bridge/cross
 import { EVIDENCE_TIER_MEANING, type SuiEventNode } from "../utils/bridge/wormhole.js";
 import { describeAddresses, fetchKinds, identityNote, type AddressIdentity } from "../utils/identity.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
-import { displayCoin, prefetchCoinScale, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
+import { displayCoin, prefetchCoinScale } from "../utils/valuation.js";
+import { WindowAmounts, windowPrices } from "../utils/window-prices.js";
 import { coinKey } from "../utils/trace-hop.js";
 import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
@@ -180,7 +181,7 @@ function who(address: string, identity: AddressIdentity | undefined) {
 export function registerFlowTools(server: McpServer) {
   server.tool(
     "summarize_address_flows",
-    "(Incident investigation) Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. Reports every sent bridge exit with chain-derived beneficiaries for CCTP, Sui Bridge, Wormhole Token Bridge/NTT and Mayan. Up to 20 other sends without an address recipient are checked for unknown cross-chain messages; cross_chain_leads are heuristic leads, never exits. Gas is separate from coin totals; value without a counterparty address is unattributed. address_poisoning always checks sources, recipients and received dust in this window only; empty pairs clear nothing outside it. Scans newest first. Check coverage.complete and follow coverage.continue_with if the scan budget stops it.",
+    "(Incident investigation) Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. Coin USD uses daily historical quotes; check usd_basis and priced/unpriced raw amounts. Scans newest first: check coverage.complete and follow coverage.continue_with when capped. address_poisoning and cross_chain_leads cover only scanned activity, not clearance.",
     {
       address: addressArg().describe("Address to summarise (0x... or a SuiNS name)."),
       from: timePointArg()
@@ -282,24 +283,19 @@ export function registerFlowTools(server: McpServer) {
           }));
         });
 
-        // One price per coin, at the median transaction time: activity
-        // clusters, and the midpoint of a window can fall where nothing
-        // happened.
-        const times = txs
-          .map((t) => (t.timestamp ? Date.parse(t.timestamp) : NaN))
-          .filter(Number.isFinite)
-          .sort((a, b) => a - b);
-        const oldestMs = times.length ? times[0] : null;
-        const newestMs = times.length ? times[times.length - 1] : null;
-        const atSec = times.length ? Math.floor(times[Math.floor(times.length / 2)] / 1000) : null;
+        const timed = txs.map((tx) => ({
+          tx,
+          at: tx.timestamp ? Date.parse(tx.timestamp) / 1000 : null,
+          summary: summarizeFlows(address, [tx], coin_type ?? null),
+        }));
         const coinSet = new Set<string>(summary.coins.keys());
         for (const e of exits) for (const c of [...e.sent.keys(), ...e.retained.keys()]) coinSet.add(c);
         const sui = coinKey("0x2::sui::SUI");
         coinSet.add(sui);
         // Valued objects (staked SUI, LP positions, lending caps, vault
         // receipts, NFT estimates) that entered or left the address, each
-        // read at its transaction's checkpoint and priced at the same time
-        // as the coins. A coin filter narrows the summary to coins only.
+        // read and valued at its transaction's checkpoint and time.
+        // A coin filter narrows the summary to coins only.
         const subject = normalizeSuiAddress(address);
         const objectCandidates = coin_type
           ? []
@@ -309,7 +305,9 @@ export function registerFlowTools(server: McpServer) {
             txs.filter((t) => t.status === "success").map((t) => t.digest);
         const objectRead = objectCandidates.slice(0, MAX_OBJECT_TXS);
         const [prices, , objectValues] = await Promise.all([
-          priceUsdAtTime([...coinSet], atSec ?? undefined),
+          windowPrices(timed.map(({ at, summary: s, tx }) => ({
+            at, coins: new Set([...s.coins.keys(), ...exits.filter((e) => e.digest === tx.digest).flatMap((e) => [...e.sent.keys(), ...e.retained.keys()])]),
+          }))),
           prefetchCoinScale(coinSet),
           // Specific readers only: an NFT estimate stays out of the totals,
           // and its market reads cost far more per object than the rest.
@@ -319,12 +317,29 @@ export function registerFlowTools(server: McpServer) {
               // that holder is read, since it may have left this address.
               r.txs.map((t) => ({ ...t, moved: t.moved.filter((m) => m.from === subject || m.to === subject || m.prior_version) })),
               { maxTxs: MAX_OBJECT_TXS, maxObjects: SCAN_OBJECT_BUDGET },
-              atSec ?? undefined,
             )),
             unreadTxs: r.unread,
           })),
         ]);
-        const v = coinValuer(prices);
+        const v = coinValuer({ points: new Map(), unpriced: [] });
+        const incoming = new WindowAmounts(prices);
+        const outgoing = new WindowAmounts(prices);
+        const valued = new Map<Map<string, bigint>, WindowAmounts>();
+        const add = (target: Map<string, bigint>, amounts: Map<string, bigint>, at: number | null) => {
+          const value = valued.get(target) ?? new WindowAmounts(prices);
+          value.addMap(amounts, at);
+          valued.set(target, value);
+        };
+        for (const { at, summary: s } of timed) {
+          for (const [coin, flow] of s.coins) {
+            if (flow.in) incoming.add(coin, flow.in, at);
+            if (flow.out) outgoing.add(coin, flow.out, at);
+          }
+          for (const direction of ["sources", "recipients"] as const) for (const [addr, c] of s[direction]) {
+            add(summary[direction].get(addr)!.coins, c.coins, at);
+          }
+        }
+        const amounts = (m: Map<string, bigint>) => valued.get(m)?.amounts() ?? v.amounts(m);
         const txTime = new Map(txs.map((t) => [t.digest, t.timestamp]));
         // A kept object the transaction changed counts its signed change,
         // in or out by its sign, with no counterparty. An object wrapped,
@@ -391,7 +406,7 @@ export function registerFlowTools(server: McpServer) {
         const rank = (m: Map<string, Counterparty>, objects: typeof objectsFrom) =>
           [...m.values()]
             .map((c) => {
-              const coinUsd = v.totalUsd(c.coins);
+              const coinUsd = valued.get(c.coins)?.totalUsd() ?? null;
               const o = objects.get(c.address);
               return { c, usd: o ? (coinUsd ?? 0) + o.usd : coinUsd, objects: o?.rows };
             })
@@ -425,7 +440,7 @@ export function registerFlowTools(server: McpServer) {
           ...who(c.address, identify ? identities.get(c.address) : undefined),
           ...(identify ? {} : kindOf(c.address)),
           usd: usd === null ? null : round(usd),
-          coins: v.amounts(c.coins),
+          coins: amounts(c.coins),
           ...(objects?.length
             ? { objects: objects.map((r) => ({ object_id: r.object_id, kind: r.kind, protocol: r.protocol, usd: r.usd, ...(r.estimate ? { estimate: true } : {}) })) }
             : {}),
@@ -438,10 +453,9 @@ export function registerFlowTools(server: McpServer) {
         const coins = [...summary.coins.values()]
           .map((f) => {
             const d = displayCoin(f.coinType);
-            const p = prices.points.get(f.coinType);
-            const unpriced = prices.unpriced.find((u) => u.coin_type === f.coinType);
+            const inUsd = incoming.usd(f.coinType);
+            const outUsd = outgoing.usd(f.coinType);
             const net = f.in - f.out;
-            const offset = p && atSec !== null ? p.publishTime - atSec : null;
             return {
               coin_type: f.coinType,
               symbol: d.symbol,
@@ -452,20 +466,11 @@ export function registerFlowTools(server: McpServer) {
               raw: { in: f.in.toString(), out: f.out.toString(), net: net.toString() },
               transactions_in: f.txIn,
               transactions_out: f.txOut,
-              ...(p
-                ? {
-                    price_usd: p.price,
-                    price_source: p.source,
-                    ...(p.priced_as ? { priced_as: p.priced_as } : {}),
-                    ...(offset !== null ? { price_offset_sec: offset } : {}),
-                    ...(offset !== null && Math.abs(offset) > PRICE_STALE_THRESHOLD_SEC ? { price_stale: true } : {}),
-                    usd: {
-                      in: round(v.usd(f.coinType, f.in)!),
-                      out: round(v.usd(f.coinType, f.out)!),
-                      net: round(v.usd(f.coinType, net)!),
-                    },
-                  }
-                : { usd: null, ...(unpriced ? { unpriced: unpriced.code } : {}) }),
+              usd: inUsd === null && outUsd === null ? null : {
+                in: round(inUsd ?? 0), out: round(outUsd ?? 0), net: round((inUsd ?? 0) - (outUsd ?? 0)),
+              },
+              priced_raw: { in: incoming.values.get(f.coinType)?.pricedIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.pricedIn.toString() ?? "0" },
+              unpriced_raw: { in: incoming.values.get(f.coinType)?.unpricedIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.unpricedIn.toString() ?? "0" },
             };
           })
           .sort((a, b) => Math.abs(b.usd?.net ?? 0) - Math.abs(a.usd?.net ?? 0) || b.transactions_in + b.transactions_out - (a.transactions_in + a.transactions_out));
@@ -474,12 +479,18 @@ export function registerFlowTools(server: McpServer) {
         const unattributedRows = (m: typeof summary.unattributedIn) =>
           [...m.values()]
             .map((u) => {
-              const usd = v.usd(u.coinType, u.amount);
+              const legs = new WindowAmounts(prices);
+              for (const { at, summary: s } of timed) {
+                const row = (m === summary.unattributedIn ? s.unattributedIn : s.unattributedOut).get(u.coinType);
+                if (row) legs.add(u.coinType, row.amount, at);
+              }
+              const usd = legs.usd(u.coinType);
               return {
                 symbol: displayCoin(u.coinType).symbol,
                 coin_type: u.coinType,
                 amount: v.human(u.coinType, u.amount),
                 usd: usd === null ? null : round(usd),
+                ...legs.coverage(u.coinType),
                 transactions: u.digests.length,
                 ...digestList(u.digests),
               };
@@ -489,8 +500,17 @@ export function registerFlowTools(server: McpServer) {
         const oldest = txs.at(-1);
         const newest = txs[0];
         const point = (t: FlowTx | undefined) => (t ? { checkpoint: t.checkpoint, timestamp: t.timestamp, digest: t.digest } : null);
-        const spanDays = oldestMs !== null && newestMs !== null ? (newestMs - oldestMs) / 86_400_000 : 0;
         const bridgeGroups = groupExits(exits);
+        for (const e of exits) {
+          const at = e.timestamp ? Date.parse(e.timestamp) / 1000 : null;
+          add(e.sent, e.sent, at);
+          add(e.retained, e.retained, at);
+          const group = bridgeGroups.find((g) => g.bridge === e.bridge)!;
+          add(group.sent, e.sent, at);
+          add(group.retained, e.retained, at);
+          const keys = [...new Set(e.beneficiaries.map(destinationKey))];
+          if (keys.length === 1) add(group.destinations.find((d) => d.key === keys[0])!.sent, e.sent, at);
+        }
         const unresolvedVaas = exits.flatMap((e) => e.unresolvedVaas);
         // An exit's beneficiary drops what the output already says once: its
         // evidence tier (bridge_exits.evidence), an account that is
@@ -542,19 +562,11 @@ export function registerFlowTools(server: McpServer) {
               : {}),
           },
           address_poisoning: poisoning,
-          usd_basis:
-            atSec !== null
-              ? {
-                  kind: "historical",
-                  at: new Date(atSec * 1000).toISOString(),
-                  meaning: `Every coin is priced once, at the median time of the transactions scanned (DefiLlama, or Pyth for verified coins when PYTH_API_KEY is set). A third-party price, not chain data.${spanDays > 1 ? ` The scan spans ${spanDays.toFixed(1)} days, so a coin whose price moved in that time is valued at one point of it.` : ""}`,
-                }
-              : { kind: "none", meaning: "No transaction in the window, so nothing was priced." },
+          usd_basis: prices.basis,
           coins,
-          ...(prices.unpriced.length
-            ? { unpriced_reasons: Object.fromEntries(prices.unpriced.map((u) => [u.code, u.reason])) }
-            : {}),
           totals_usd: {
+            approximate: true,
+            partial: prices.basis.partial || objectsPartial,
             ...(objectsPartial ? { objects_partial: true } : {}),
             in: round(pricedCoins.reduce((s, c) => s + (c.usd?.in ?? 0), 0) + objectsIn),
             out: round(pricedCoins.reduce((s, c) => s + (c.usd?.out ?? 0), 0) + objectsOut),
@@ -582,7 +594,7 @@ export function registerFlowTools(server: McpServer) {
                   (objectValues.skipped.length
                     ? `; the objects of ${objectValues.skipped.length} older transaction(s) past the first ${SCAN_OBJECT_BUDGET} objects were not valued (objects_skipped_transactions), so totals_usd leaves them out (objects_partial); narrow the window to value them`
                     : "") +
-                  `. Each is read at its transaction's checkpoint and priced at the same time as the coins; each row states its method. totals_usd counts them, estimates (tier heuristic, NFTs) and "custody" rows (wrapped into or unwrapped from another object, or from a holder that could not be read) excepted, and inflow_sources and top_recipients rank counterparties with them. totals_usd.objects_partial says objects were left out: older transactions not read (above), objects_transactions_unread, objects_unread or objects_skipped_transactions.`,
+                  `. Each is read and valued at its transaction's checkpoint and time; each row states its method. totals_usd counts them, estimates (tier heuristic, NFTs) and "custody" rows (wrapped into or unwrapped from another object, or from a holder that could not be read) excepted, and inflow_sources and top_recipients rank counterparties with them. totals_usd.objects_partial says objects were left out: older transactions not read (above), objects_transactions_unread, objects_unread or objects_skipped_transactions.`,
               }
             : {}),
           gas: {
@@ -622,8 +634,8 @@ export function registerFlowTools(server: McpServer) {
             by_bridge: bridgeGroups.map((g) => ({
               bridge: g.bridge,
               transactions: g.digests.length,
-              sent: v.amounts(g.sent),
-              ...(g.retained.size ? { retained_on_sui: v.amounts(g.retained) } : {}),
+              sent: amounts(g.sent),
+              ...(g.retained.size ? { retained_on_sui: amounts(g.retained) } : {}),
               destinations: g.destinations.map((d) => ({
                 chain: d.beneficiary.chain,
                 chain_label: d.beneficiary.chain_label,
@@ -631,7 +643,7 @@ export function registerFlowTools(server: McpServer) {
                 account: d.beneficiary.account,
                 protocol: d.beneficiary.protocol,
                 transactions: d.digests.length,
-                sent: v.amounts(d.sent),
+                sent: amounts(d.sent),
                 ...(d.sharedDigests.length
                   ? {
                       shared_transactions: d.sharedDigests,
@@ -648,8 +660,8 @@ export function registerFlowTools(server: McpServer) {
               bridge: e.bridge,
               // Named only when the transaction used more than its bridge.
               ...(e.protocols.length === 1 && e.protocols[0] === e.bridge ? {} : { protocols: e.protocols }),
-              sent: v.amounts(e.sent),
-              ...(e.retained.size ? { retained_on_sui: v.amounts(e.retained) } : {}),
+              sent: amounts(e.sent),
+              ...(e.retained.size ? { retained_on_sui: amounts(e.retained) } : {}),
               beneficiaries: exitBeneficiaries[i],
               ...(e.unresolvedVaas.length ? { unresolved_vaas: e.unresolvedVaas } : {}),
               ...(e.eventsIncomplete ? { events_incomplete: true } : {}),
@@ -690,6 +702,7 @@ export function registerFlowTools(server: McpServer) {
           args,
           payload,
           {
+            "usd_basis.missing_coin_days": { budget: 2_000, keepOrder: true },
             inflow_sources: {
               budget: 8_000,
               keep: (r: Row) => flagged(r) || topSources.has(r.address),

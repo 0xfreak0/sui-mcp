@@ -18,6 +18,15 @@ vi.mock("../../src/utils/valuation.js", async (importOriginal) => ({
   priceUsdAtTime: async (types: string[]) => ({ points: new Map(), unpriced: types.map((t) => ({ coin_type: t, code: "not_listed", reason: "No price." })) }),
   prefetchCoinScale: async () => undefined,
 }));
+vi.mock("../../src/utils/price-providers.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  pythApiKey: () => null,
+  fetchDefiLlamaHistory: async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [
+    coin, new Map(times.filter((at) => at !== Date.parse("2025-09-01") / 1000).map((at) => [at, {
+      price: at < Date.parse("2025-06-01") / 1000 ? 4 : 2, at, source: "defillama",
+    }])),
+  ])),
+}));
 vi.mock("../../src/utils/identity.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   describeAddresses: async (addrs: string[]) => new Map(addrs.map((a) => [a, { address: a, kind: "wallet" as const }])),
@@ -175,5 +184,34 @@ describe("summarize_address_flows objects", () => {
 
     expect(d.objects).toBeUndefined();
     expect(batchGetTransactions).not.toHaveBeenCalled();
+  });
+
+  it("values inflows, recipients and totals at their own day across months", async () => {
+    const times = ["2025-01-01T12:00:00Z", "2025-07-01T12:00:00Z", "2025-09-01T12:00:00Z"];
+    mockGqlQuery.mockResolvedValue({
+      transactions: {
+        nodes: times.map((timestamp, i) => ({
+          digest: `synthetic-${i}`, sender: { address: V },
+          kind: { commands: gqlPage([]) },
+          effects: {
+            status: "SUCCESS", timestamp, checkpoint: { sequenceNumber: 1000 + i },
+            gasEffects: { gasSummary: { computationCost: "0", storageCost: "0", storageRebate: "0" } },
+            balanceChanges: gqlPage([
+              { coinType: { repr: SUI }, amount: "-10000000000", owner: { address: V } },
+              { coinType: { repr: SUI }, amount: "10000000000", owner: { address: C } },
+            ]), events: gqlPage([]),
+          },
+        })).reverse(),
+        pageInfo: { hasPreviousPage: false, startCursor: null },
+      },
+    });
+    const d = JSON.parse((await handlers.get("summarize_address_flows")!({ address: V, coin_type: SUI })).content[0].text);
+    expect(d.totals_usd).toMatchObject({ out: 60, net: -60, partial: true, approximate: true });
+    expect(d.coins[0]).toMatchObject({
+      out: 30, usd: { in: 0, out: 60, net: -60 },
+      priced_raw: { in: "0", out: "20000000000" }, unpriced_raw: { in: "0", out: "10000000000" },
+    });
+    expect(d.top_recipients[0]).toMatchObject({ address: C, usd: 60, coins: [{ amount: 30, usd: 60 }] });
+    expect(d.usd_basis).toMatchObject({ method: "daily_utc", priced_coin_days: 2, partial: true });
   });
 });

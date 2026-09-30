@@ -5,6 +5,26 @@ sidebar:
   order: 3
 ---
 
+## USD over a time window
+
+`summarize_address_flows` values each coin movement with a quote near midnight
+UTC on its transaction's day, then sums those values. It does not multiply a
+multi-month coin total by one price. Counterparties, unattributed flows and
+bridge exits use the same daily quotes. Objects retain their own valuation
+methods and transaction times.
+
+The `usd_basis` block reports sources and coin-day coverage. Daily quotes are
+estimates, not execution prices. `priced_raw` and `unpriced_raw` separate the
+amounts included in USD from those left out. A missing timestamp or price never
+falls back to today's price or another day's quote.
+
+DefiLlama is the default; Pyth is used only with `PYTH_API_KEY`. Multi-day
+DefiLlama reads batch historical samples, and successful samples are cached.
+The newest days are priced first within a bounded read budget. If
+`budget_skipped_coin_days` is nonzero, narrow the window and combine disjoint
+windows. A partial USD net is not a lower bound: missing debits can make it
+too high.
+
 ## Historical object flows
 
 `summarize_address_flows` lists valued objects a transaction deleted or wrapped,

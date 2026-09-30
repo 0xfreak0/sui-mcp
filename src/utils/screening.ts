@@ -12,6 +12,9 @@ import { isSponsorGasChange } from "./sponsor-gas.js";
 import { splitBridgeOutflow, type FlowChange } from "./address-flows.js";
 import { withoutGas, coinKey } from "./trace-hop.js";
 import { netGas as gqlNetGas, type GqlGasSummary } from "./trace-read.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections } from "./tx-connections.js";
+import type { GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 
 /**
  * Exposure screening: is this address, directly or within a few hops, connected
@@ -54,6 +57,8 @@ export interface ScreenTx {
   eventTypes: string[];
   /** The events could not all be read, so an exit marked only by an event may be missed. */
   eventsIncomplete?: boolean;
+  /** Balance-dependent paths and amounts cannot be concluded from this transaction. */
+  balanceChangesIncomplete?: boolean;
 }
 
 /** Value moved between the subject and one counterparty, in one direction. */
@@ -85,6 +90,7 @@ export function flowsOf(subject: string, txs: ScreenTx[]): Flows {
     flows[dir].set(who, list);
   };
   for (const tx of txs) {
+    if (tx.balanceChangesIncomplete) continue;
     const own = new Map<string, bigint>();
     for (const c of tx.changes) {
       if (c.owner === subject) own.set(c.coinType, (own.get(c.coinType) ?? 0n) + c.amount);
@@ -163,6 +169,7 @@ export function bridgeExitsOf(address: string, txs: ScreenTx[]): ScreenExit[] {
  * so the two tools do not drift apart on what "sent" means.
  */
 export function bridgeSentPerCoin(tx: ScreenTx): Map<string, bigint> {
+  if (tx.balanceChangesIncomplete) return new Map();
   const hop = withoutGas(
     tx.changes.map((c) => ({ address: c.owner, coin_type: c.coinType, amount: c.amount.toString() })),
     { payer: tx.gasSponsor ?? tx.sender, net: tx.netGas },
@@ -227,7 +234,7 @@ const WINDOW_QUERY = `query ($filter: TransactionFilter!, $last: Int!, $before: 
         status
         timestamp
         gasEffects { gasSummary { computationCost storageCost storageRebate } }
-        balanceChanges(first: 50) { nodes { amount owner { address } coinType { repr } } }
+        ${BALANCE_CHANGES_SELECTION}
         events(first: 50) @include(if: $events) { pageInfo { hasNextPage } nodes { contents { type { repr } } } }
       }
       kind {
@@ -252,7 +259,7 @@ interface WindowResult {
         status?: string | null;
         timestamp?: string | null;
         gasEffects?: { gasSummary?: GqlGasSummary | null } | null;
-        balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string } | null; coinType?: { repr: string } }> };
+        balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
         events?: { pageInfo?: { hasNextPage?: boolean }; nodes: Array<{ contents?: { type?: { repr?: string } } | null }> };
       } | null;
       kind?: {
@@ -292,7 +299,11 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
       before,
       events: kind === "sent",
     });
-    const page = res.transactions.nodes.map((n): ScreenTx & { moreEvents: boolean } => ({
+    const completed = await completeTxConnections(res.transactions.nodes.map((n) => ({
+      digest: n.digest,
+      balanceChanges: n.effects?.balanceChanges,
+    })));
+    const page = res.transactions.nodes.map((n, i): ScreenTx & { moreEvents: boolean } => ({
       digest: n.digest,
       timestamp: n.effects?.timestamp ?? null,
       sender: n.sender?.address ?? null,
@@ -302,7 +313,8 @@ export async function fetchWindow(address: string, kind: WindowKind, limit: numb
         const g = gqlNetGas(n.effects?.gasEffects?.gasSummary);
         return g === null ? null : BigInt(g);
       })(),
-      changes: (n.effects?.balanceChanges?.nodes ?? [])
+      balanceChangesIncomplete: completed[i].balanceChangesTruncated,
+      changes: completed[i].balanceChanges
         .filter((c) => c.owner?.address && c.coinType?.repr && c.amount !== undefined)
         .map((c) => ({ owner: c.owner!.address!, coinType: c.coinType!.repr, amount: BigInt(c.amount!) })),
       calls: (n.kind?.commands?.nodes ?? [])
@@ -408,7 +420,7 @@ function summarizeLegs(legs: Leg[]) {
 export async function screenAddress(subjectRaw: string, options: ScreenOptions) {
   const subject = normalizeSuiAddress(subjectRaw);
   const windows = new Map<string, Promise<TxWindow>>();
-  const windowReport: Array<{ address: string; kind: WindowKind; scanned: number; truncated: boolean }> = [];
+  const windowReport: Array<{ address: string; kind: WindowKind; scanned: number; truncated: boolean; incomplete_transactions: string[] }> = [];
   const windowFor = async (address: string, dir: Direction) => {
     const kind: WindowKind = dir === "out" ? "sent" : "affected";
     const key = `${kind}|${address}`;
@@ -427,7 +439,10 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
       );
     }
     const win = await windows.get(key)!;
-    if (fresh) windowReport.push({ address, kind, scanned: win.txs.length, truncated: win.truncated });
+    if (fresh) windowReport.push({
+      address, kind, scanned: win.txs.length, truncated: win.truncated,
+      incomplete_transactions: win.txs.filter((tx) => tx.balanceChangesIncomplete).map((tx) => tx.digest),
+    });
     return win;
   };
 
@@ -588,12 +603,14 @@ export async function screenAddress(subjectRaw: string, options: ScreenOptions) 
   const bridgeExposures = groupList.map((g): Exposure => {
     const times = g.times.sort();
     const digests = g.exits.map((e) => e.tx.digest);
+    const incomplete = g.exits.filter((e) => e.tx.balanceChangesIncomplete).map((e) => e.tx.digest);
     return {
       ...g.entry,
       exit_count: digests.length,
       ...(g.route.size ? { route: [...g.route] } : {}),
       ...(g.alsoExited.size ? { also_exited: [...g.alsoExited] } : {}),
-      sent: [...g.sent].map(([coin, raw]) => fmt(raw, coin)).join(" + ") || null,
+      sent: incomplete.length ? null : [...g.sent].map(([coin, raw]) => fmt(raw, coin)).join(" + ") || null,
+      ...(incomplete.length ? { incomplete_transactions: incomplete } : {}),
       first_at: times[0] ?? null,
       last_at: times.at(-1) ?? null,
       digests: digests.slice(0, 20),

@@ -176,6 +176,15 @@ describe("findNextForward", () => {
     expect(data.stop_reason).toMatch(/is a distributor/);
   });
 
+  it("stops before a withdrawal when the recipient's hub check is unread", async () => {
+    mockFanout.mockRejectedValue(new Error("Incomplete balance changes for synthetic-fanout"));
+    route([hop1, spend], (q) => (q.includes("sentAddress") ? [spend] : []));
+    const data = await run({ digest: START, direction: "forward", hops: 3 });
+    expect(data.hops.map((h: { digest: string }) => h.digest)).toEqual([START]);
+    expect(data.stop_reason).toContain("synthetic-fanout");
+    expect(data.stop_reason).toMatch(/unread|incomplete/i);
+  });
+
   it("follows an address paid by few senders that pays many: it passes on what it received", async () => {
     // A theft wallet or an operator's disperser: three payers, 211 payees.
     // Everything it pays out came from those three.
@@ -304,6 +313,15 @@ describe("findPriorInflow", () => {
     const data = await run({ digest: START, direction: "backward", hops: 3 });
     expect(data.hop_count).toBe(1);
     expect(data.stop_reason).toMatch(/earlier inflows are other parties' money/);
+  });
+
+  it("stops before earlier deposits when the payer's hub check is unread", async () => {
+    mockFanout.mockRejectedValue(new Error("Incomplete balance changes for synthetic-fanout"));
+    route([hop1, funding], () => [funding, hop1]);
+    const data = await run({ digest: START, direction: "backward", hops: 3 });
+    expect(data.hops.map((h: { digest: string }) => h.digest)).toEqual([START]);
+    expect(data.stop_reason).toContain("synthetic-fanout");
+    expect(data.stop_reason).toMatch(/unread|incomplete/i);
   });
 });
 

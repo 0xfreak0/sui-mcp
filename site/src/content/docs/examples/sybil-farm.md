@@ -181,6 +181,18 @@ The collector swept its full balance once, to a Bybit reserve wallet, so it
 reads as a Bybit deposit address. Exchanges usually assign a deposit address
 to one account.
 
+The classifier reads every balance-change page before checking destinations or
+reconstructing balances. If a continuation cannot be read, it returns
+`verdict: "unknown"`, lists the digests in `incomplete_transactions`, and leaves
+every check null with an explanation in `checks_not_run`. Sweep and deposit
+counts are null, and `window_complete` is false. The deposit check in
+`get_address_fanout` carries the same unknown verdict and incomplete-read reason.
+
+The inferred-label pipeline uses the same completed reads for exchange wallets
+and candidate addresses. An unread balance-change connection stops
+`npm run sync:labels` from replacing the label file; it cannot establish or
+reject a deposit label.
+
 ## What this shows and what it does not
 
 - The claims, the sweeps, the funding payments and their timing are chain

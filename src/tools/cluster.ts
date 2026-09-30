@@ -191,6 +191,7 @@ export function registerClusterTools(server: McpServer) {
         };
 
         if (format && format !== "json") {
+          const coverage = { truncated: built.truncated, notes: built.notes };
           const label = (a: string) => {
             const d = describe(a);
             return d.name ?? d.label ?? d.protocol ?? shortAddress(a);
@@ -220,7 +221,7 @@ export function registerClusterTools(server: McpServer) {
             })),
           };
           if (format === "graph_json") {
-            return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph)) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(graph), ...coverage }) }] };
           }
           const text =
             format === "mermaid"
@@ -250,6 +251,7 @@ export function registerClusterTools(server: McpServer) {
                   "Edges are facts; clusters are an inference, and a missing edge is not evidence of separate control. Seeds are highlighted; the JSON format carries each edge's evidence.",
               },
               { type: "text" as const, text },
+              { type: "text" as const, text: JSON.stringify(coverage) },
             ],
           };
         }

@@ -76,6 +76,28 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **Tools that read a transaction's balance changes now read all of them.**
+  Several tools used only the first page of a transaction's balance changes,
+  so a large transaction (an airdrop, a batch payout, an exploit) could hide
+  the row that mattered. Now read in full:
+  - `screen_address` exposure paths;
+  - `analyze_attack_tx` round trips;
+  - `classify_deposit_address` and the inferred deposit labels (also through
+    `get_address_fanout`);
+  - `resolve_bridge_transfer` inbound fulfilment;
+  - fan-out measurement;
+  - first-funder lookups and `build_wallet_edges` signals.
+
+  When a continuation read fails, the answer says which transactions were
+  unread and draws no conclusion from the partial rows:
+  - screening withholds those paths;
+  - deposit verdicts become `unknown`;
+  - round trips go to `round_trips_unread`;
+  - the bridge names no beneficiary;
+  - graph and path traces stop the branch as unread instead of reading it
+    as a budget limit, in every output format.
+
+  Label sync cannot turn partial rows into an inferred label or a rejection.
 - **`query_transactions` fills pages across short and empty service reads.**
   With combined filters the service can return a short or empty page while
   more exist. Ordinary queries now read on to the requested limit, the end of

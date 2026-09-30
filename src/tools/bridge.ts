@@ -179,7 +179,7 @@ function unqualifiedNote(qualify: boolean): string {
 export function registerBridgeTools(server: McpServer) {
   server.tool(
     "resolve_bridge_transfer",
-    "(Incident investigation) Follow funds across a bridge. Given a Sui transaction, return where each bridge transfer in it went, read from chain data wherever the protocol writes it on Sui: Wormhole (the VAA identity: emitter chain, emitter address and sequence, plus, where Wormholescan has indexed a redemption, the destination transaction), Sui's native bridge, Circle CCTP, LayerZero V2 (destination endpoint, GUID and destination OApp, plus LayerZero Scan's delivery transaction), Axelar ITS, Allbridge Core and Celer cBridge. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan (MCTP and Swift), Circle CCTP, Sui's native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge; the contract a redemption or message was delivered to is reported separately (`redeemed_via_contract`, `destination_oapp`). Transfers ARRIVING on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) are reported as inbound with their origin identity, and so is any package's fulfilment whose events quote the cross-chain message it consumed (a CCTP source domain and nonce, or a VAA passed in) while the transaction credits an address (`fulfilment_inbound`: origin chain, the CCTP transfer id and VAA id, amounts, and the beneficiary credited exactly an amount the events state; the package is named from the registry or a bridge label on it or on an object it defines). A package outside a bridge's lineage whose PTB call emitted that bridge's event is named under `carriers` with its function and its own events (an adapter's order id). Meson is recognised but its destination is not in Sui data. An event from a package none of these covers that carries a chain field beside a foreign-address-sized byte string is listed in `cross_chain_leads`, tier heuristic: a possible exit through an unrecognised bridge, never an exit on its own. This is what lets a trace continue past a bridge instead of stopping there: each identity is quoted on BOTH chains, so matching it is an identifier comparison rather than an amount-and-timing guess. Results are tiered by evidence: chain-derived values come from Sui; delivery is asserted by an indexer and should be confirmed on the destination chain before being relied on.",
+    "(Incident investigation) Follow funds across a bridge. Given a Sui transaction, return where each bridge transfer in it went, read from chain data wherever the protocol writes it on Sui: Wormhole (the VAA identity: emitter chain, emitter address and sequence, plus, where Wormholescan has indexed a redemption, the destination transaction), Sui's native bridge, Circle CCTP, LayerZero V2 (destination endpoint, GUID and destination OApp, plus LayerZero Scan's delivery transaction), Axelar ITS, Allbridge Core and Celer cBridge. `beneficiaries` names who the transfer pays on the far side, decoded from the Sui transaction itself for Wormhole Token Bridge (including the Token Bridge Relayer), Wormhole NTT, Mayan (MCTP and Swift), Circle CCTP, Sui's native bridge, LayerZero OFT, Axelar ITS, Allbridge Core and Celer cBridge; the contract a redemption or message was delivered to is reported separately (`redeemed_via_contract`, `destination_oapp`). Transfers ARRIVING on Sui (native-bridge claims, Wormhole Token Bridge and NTT redemptions) are reported as inbound with their origin identity, and so is any package's fulfilment whose events quote the cross-chain message it consumed (a CCTP source domain and nonce, or a VAA passed in) while the transaction credits an address (`fulfilment_inbound`: origin chain, the CCTP transfer id and VAA id, amounts, and the beneficiary credited exactly an amount the events state; the package is named from the registry or a bridge label on it or on an object it defines). balance_changes_incomplete means unread balances: fulfilment_inbound is withheld, not a negative inbound finding. A package outside a bridge's lineage whose PTB call emitted that bridge's event is named under `carriers` with its function and its own events (an adapter's order id). Meson is recognised but its destination is not in Sui data. An event from a package none of these covers that carries a chain field beside a foreign-address-sized byte string is listed in `cross_chain_leads`, tier heuristic: a possible exit through an unrecognised bridge, never an exit on its own. Results are tiered by evidence: chain-derived values come from Sui; delivery is asserted by an indexer and should be confirmed on the destination chain before being relied on.",
     {
       digest: z.string().describe("Sui transaction digest (Base58) to inspect for a bridge transfer."),
       include_destination: boolArg()
@@ -286,9 +286,8 @@ export function registerBridgeTools(server: McpServer) {
       if (carrierPkgs.length) await prefetchPackageRoots(carrierPkgs);
       const carriers = carrierPkgs.length ? bridgeCarriers(events, calls, getPackageRoot) : [];
 
-      // Value arriving through a package's own fulfilment of a cross-chain
-      // message. The balance changes past the first page are read only for
-      // a transaction that has one.
+      // Complete the balances before testing for a credit: the first page
+      // can contain only debits even when a later page pays a beneficiary.
       const toRows = (nodes: GqlBalanceChangeNode[]): BalanceChangeRow[] =>
         nodes.flatMap((n) =>
           n.owner?.address && n.coinType?.repr && n.amount ? [{ address: n.owner.address, coin_type: n.coinType.repr, amount: n.amount }] : [],
@@ -301,14 +300,11 @@ export function registerBridgeTools(server: McpServer) {
         sender: data.transaction.sender?.address ?? null,
         qualify,
       };
-      const firstChanges = data.transaction.effects?.balanceChanges;
-      let fulfils = inboundFulfilments({ ...fulfilInput, balanceChanges: toRows(firstChanges?.nodes ?? []) });
-      let balanceChangesIncomplete = false;
-      if (fulfils.length && firstChanges?.pageInfo?.hasNextPage) {
-        const all = await readAllBalanceChanges(digest, firstChanges);
-        balanceChangesIncomplete = all.truncated;
-        fulfils = inboundFulfilments({ ...fulfilInput, balanceChanges: toRows(all.nodes) });
-      }
+      const balanceChanges = await readAllBalanceChanges(digest, data.transaction.effects?.balanceChanges);
+      // Missing credits can also make an ambiguous beneficiary look unique.
+      const fulfils = balanceChanges.truncated
+        ? []
+        : inboundFulfilments({ ...fulfilInput, balanceChanges: toRows(balanceChanges.nodes) });
       const fulfilProtocols = await Promise.all(fulfils.map((f) => nameBridgePackage(f.package)));
 
       const wantDestination = include_destination !== false;
@@ -509,9 +505,6 @@ export function registerBridgeTools(server: McpServer) {
                 direction: "inbound" as const,
                 meaning: INBOUND_FULFIL_MEANING,
                 fulfilments: fulfils.map((f, i) => ({ protocol: fulfilProtocols[i], ...f })),
-                ...(balanceChangesIncomplete
-                  ? { balance_changes_incomplete: "This transaction has more balance changes than could be read, so paid_to and the beneficiary may be missing a credit." }
-                  : {}),
               },
             }
           : {}),
@@ -605,6 +598,7 @@ export function registerBridgeTools(server: McpServer) {
         ...(exits.length || inbound || crossChainLeads.length ? { evidence_tiers: EVIDENCE_TIER_MEANING } : {}),
         ...(eventsIncomplete ? { events_incomplete: EVENTS_INCOMPLETE } : {}),
         ...(commands.truncated ? { commands_incomplete: COMMANDS_INCOMPLETE } : {}),
+        ...(balanceChanges.truncated ? { balance_changes_incomplete: BALANCE_CHANGES_INCOMPLETE } : {}),
         ...(allBeneficiaries.length ? { beneficiaries: allBeneficiaries } : {}),
         ...bridgeSections,
         wormhole_messages: perMessage.map(({ m, op, decoded, indexer, chainDerived }) => ({
@@ -695,13 +689,15 @@ export function registerBridgeTools(server: McpServer) {
               ? {
                   note: "No outbound transfer here. This transaction received value ARRIVING on Sui — see the *_inbound sections for the origin chain and transfer identity.",
                 }
-              : crossChainLeads.length
-                ? {
-                    note: "None of the bridges this server recognises appears in this transaction's events or Move calls, but cross_chain_leads lists events shaped like a cross-chain message. Read the emitting package before calling it an exit.",
-                  }
-                : {
-                    note: "None of the bridges this server recognises appears in this transaction's events or Move calls, and no event carries a chain field beside a foreign-address-sized byte string. A bridge that encodes its destination another way would not show here.",
-                  }),
+              : balanceChanges.truncated
+                ? { note: BALANCE_CHANGES_INCOMPLETE }
+                : crossChainLeads.length
+                  ? {
+                      note: "None of the bridges this server recognises appears in this transaction's events or Move calls, but cross_chain_leads lists events shaped like a cross-chain message. Read the emitting package before calling it an exit.",
+                    }
+                  : {
+                      note: "None of the bridges this server recognises appears in this transaction's events or Move calls, and no event carries a chain field beside a foreign-address-sized byte string. A bridge that encodes its destination another way would not show here.",
+                    }),
       });
     },
   );
@@ -724,6 +720,9 @@ const EVENTS_INCOMPLETE =
 
 const COMMANDS_INCOMPLETE =
   "This transaction has more Move calls than could be read, so a bridge detected only by its call (Meson) may be missing from this result.";
+
+const BALANCE_CHANGES_INCOMPLETE =
+  "Balance changes are incomplete, so inbound fulfilments and their beneficiaries could not be determined. A missing fulfilment_inbound section does not rule out value arriving on Sui.";
 
 const ok = (payload: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(payload) }],

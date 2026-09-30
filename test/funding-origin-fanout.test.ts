@@ -117,3 +117,32 @@ describe("origin_fanout and get_address_fanout agree on one address", () => {
     expect(origin.classification_provisional).toBe(direct.classification_provisional);
   });
 });
+
+describe("unread optional fan-out context", () => {
+  it.each(["single", "batch"])("preserves the funding answer and reports unread %s context", async (mode) => {
+    const failed = transfer("synthetic-fanout", ORIGIN, party(2000));
+    failed.effects.balanceChanges = {
+      nodes: Array.from({ length: 50 }, (_, i) => bc(party(3000 + i), "1000000000")),
+      pageInfo: { hasNextPage: true, endCursor: "page-1" },
+    };
+    history = [failed];
+    const second = party(2001);
+    const fallback = gqlQuery.getMockImplementation()!;
+    gqlQuery.mockImplementation(async (q: string, vars: Record<string, unknown> = {}) =>
+      q.includes("affectedAddress: $addr") && !q.includes("$last") && vars.addr === second
+        ? { transactions: { nodes: [transfer("Fund0002", ORIGIN, second)] } }
+        : fallback(q, vars),
+    );
+    if (mode === "single") {
+      const result = await run("find_funding_source", { address: SUBJECT, max_hops: 1 });
+      expect(result.origin.address).toBe(ORIGIN);
+      expect(result.origin_fanout).toBeUndefined();
+      expect(result.origin_fanout_unread).toContain("synthetic-fanout");
+    } else {
+      const result = await run("find_funding_sources", { addresses: [SUBJECT, second], max_hops: 1 });
+      expect(result.shared_funders).toEqual([expect.objectContaining({
+        funder: ORIGIN, fanout_unread: expect.stringContaining("synthetic-fanout"),
+      })]);
+    }
+  });
+});

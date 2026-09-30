@@ -173,8 +173,8 @@ export interface EdgeBuildResult {
   first_funders: Record<string, string>;
   queries_used: number;
   /**
-   * True when a budget stopped the build before it ran out of work, or an
-   * intermediary's popularity read failed so leads through it went unfollowed.
+   * True when a budget stopped the build before it ran out of work, or a
+   * funding, seed-profile or intermediary read left evidence unread.
    */
   truncated: boolean;
   notes: string[];
@@ -450,7 +450,9 @@ const SENT_IN_WINDOW_QUERY = `query ($filter: TransactionFilter) {
  * within {@link SEND_BURST_CHECKPOINTS} either side. One read. The shape is
  * absent when the read failed or the transaction has no checkpoint; a window
  * or a transaction past one page marks it `burst_truncated`, which never
- * reads as a grant.
+ * reads as a grant. This is deliberately a bounded heuristic, unlike funding
+ * attribution or seed profiling: `isTargetedSend` rejects every truncated
+ * shape, so a lower-bound recipient count cannot establish a targeted grant.
  */
 async function readSendShape(tx: FundingTx, funder: string, coinType: string): Promise<{ shape?: SendShape; reads: number }> {
   const paid = new Map<string, bigint>();
@@ -553,6 +555,9 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
       data.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
     );
     budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
+    // Missing rows can hide an earlier inflow or change the apparent payer.
+    // This is an unread lookup, not a negative result or a cacheable pick.
+    if (completed.some((c) => c.balanceChangesTruncated)) return null;
     const txs: FundingTx[] = data.transactions.nodes.map((n, i) => toFundingTx(n, completed[i].balanceChanges));
     // Judged the way `find_funding_source` judges the same candidates, so an
     // unpriced or sub-floor transfer cannot pass as funding here while that
@@ -939,6 +944,10 @@ interface SeedProfile {
    */
   paidTo: Map<string, string>;
   paidBy: Map<string, string>;
+  /** Transactions whose balance changes could not be completed. */
+  unreadTransactions: string[];
+  /** A recent-transaction page failed; earlier complete evidence remains usable. */
+  readFailed: boolean;
 }
 
 /**
@@ -958,6 +967,8 @@ async function profileSeed(
   const coParties: Array<{ digest: string; parties: string[] }> = [];
   const paidTo = new Map<string, string>();
   const paidBy = new Map<string, string>();
+  const unreadTransactions: string[] = [];
+  let readFailed = false;
   let cursor: string | undefined;
   let scanned = 0;
 
@@ -971,6 +982,7 @@ async function profileSeed(
         before: cursor,
       });
     } catch {
+      readFailed = true;
       break;
     }
     const completed = await completeTxConnections(
@@ -985,6 +997,12 @@ async function profileSeed(
       // the sender as its own gas sponsor, which would otherwise make every
       // address its own sponsor and link it to nobody usefully.
       if (sponsor && sender && sponsor !== sender) sponsors.set(sponsor, n.digest);
+      // Sponsorship is independent of the balance connection. Payment direction
+      // and the mass-action bound are not: missing rows can change either.
+      if (completed[i].balanceChangesTruncated) {
+        unreadTransactions.push(n.digest);
+        continue;
+      }
 
       // The sender is excluded, and that exclusion is what makes this a signal
       // rather than a restatement of transfer volume. If A pays B, both appear
@@ -1026,7 +1044,7 @@ async function profileSeed(
     cursor = page.transactions.pageInfo.startCursor;
     if (!cursor) break;
   }
-  return { sponsors, coParties, paidTo, paidBy };
+  return { sponsors, coParties, paidTo, paidBy, unreadTransactions, readFailed };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1086,8 +1104,10 @@ export async function buildWalletEdges(
   // Lookups where an unpriced coin's supply or publisher read failed, so an
   // inflow that may have been a grant was judged spam without it.
   let originUnreadLookups = 0;
+  let unreadFundingLookups = 0;
   for (const seed of uniqueSeeds) {
     const funding = await firstFunderOf(seed, budget);
+    if (!funding) unreadFundingLookups++;
     if (funding?.pricesUnavailable) unpricedLookups++;
     if (funding?.originUnread.length) originUnreadLookups++;
     if (funding?.funder && funding.digest) {
@@ -1098,8 +1118,20 @@ export async function buildWalletEdges(
 
   // --- phase 1b: profile every seed for sponsor / co-appearance signals -
   const profiles = new Map<string, SeedProfile>();
+  let unreadSeedScans = 0;
   for (const seed of uniqueSeeds) {
-    profiles.set(seed, await profileSeed(seed, maxSeedScan, budget));
+    const profile = await profileSeed(seed, maxSeedScan, budget);
+    profiles.set(seed, profile);
+    if (profile.readFailed || profile.unreadTransactions.length > 0) unreadSeedScans++;
+    if (profile.readFailed) {
+      notes.push(`The recent-transaction scan for ${seed} is unread past a failed page. Signals from complete transactions already read are retained.`);
+    }
+    if (profile.unreadTransactions.length > 0) {
+      notes.push(
+        `Balance changes remain unread for transaction(s) ${profile.unreadTransactions.join(", ")} while profiling ${seed}. ` +
+          "Co-appearance and payment-derived signals from those transactions are withheld; independent gas sponsorship is retained.",
+      );
+    }
   }
 
   // Co-appearance, free: derived from pages already fetched for the seeds.
@@ -1231,7 +1263,10 @@ export async function buildWalletEdges(
     let checked = 0;
     for (const [wallet] of served.slice(0, ROLE_SPLIT_SAMPLE)) {
       const f = await firstFunderOf(wallet, budget);
-      if (!f) continue;
+      if (!f) {
+        unreadFundingLookups++;
+        continue;
+      }
       if (f.pricesUnavailable) unpricedLookups++;
       if (f.originUnread.length) originUnreadLookups++;
       checked++;
@@ -1429,6 +1464,7 @@ export async function buildWalletEdges(
       if (verified >= expandBudget || budget.truncated) break;
       verified++;
       const f = await firstFunderOf(c.address, budget);
+      if (!f) unreadFundingLookups++;
       if (f?.pricesUnavailable) unpricedLookups++;
       if (f?.originUnread.length) originUnreadLookups++;
       if (!f?.funder || !f.digest || f.funder !== c.funder) continue;
@@ -1578,6 +1614,13 @@ export async function buildWalletEdges(
     examined.add(funder);
   }
 
+  if (unreadFundingLookups > 0) {
+    notes.push(
+      `${unreadFundingLookups} first-funding lookup(s) remain unread because a read failed, balance changes could not ` +
+        "be completed, or the query budget ran out. No first funder was chosen or cached for those lookups; " +
+        "missing funding edges are not evidence of separate origins.",
+    );
+  }
   if (unpricedLookups > 0) {
     notes.push(
       `Coin prices could not be read for ${unpricedLookups} first-funding lookup(s), so a non-SUI inflow there was ` +
@@ -1613,7 +1656,7 @@ export async function buildWalletEdges(
     used_intermediaries: used,
     first_funders: Object.fromEntries(firstFunders),
     queries_used: budget.used,
-    truncated: budget.truncated || unreadIntermediaries > 0 || originUnreadLookups > 0,
+    truncated: budget.truncated || unreadFundingLookups > 0 || unreadSeedScans > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0,
     notes,
   };
 }

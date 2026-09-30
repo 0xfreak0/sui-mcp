@@ -326,15 +326,20 @@ function prose(engine: FlowEngine, ids: Map<string, AddressIdentity>, start: str
       const n = engine.nodes.get(en.node);
       const eu = en.usd !== null && en.usd > 0 ? ` ${formatUsd(en.usd)}` : "";
       lines.push(`    ${pct(en.share)}${eu}  ${labelOfNode(n, en.node, ids)}`);
+      if (g.code === "read_failed" && en.detail) lines.push(`      ${en.detail}`);
     }
     if (g.code !== "below_threshold" && g.entries.length > 5) lines.push(`    … ${g.entries.length - 5} more`);
   }
   const ends = engine.ledger.summary().map((g) => g.code);
-  if (engine.pending > 0 || ends.includes("budget") || ends.includes("read_failed") || (engine.truncated && engine.partial.length === 0)) {
+  if (engine.pending > 0 || ends.includes("budget") || (engine.truncated && !ends.includes("read_failed") && engine.partial.length === 0)) {
     lines.push("");
     lines.push(
       "⚠ Partial: some branches hit a limit (see terminals `budget` and coverage). Raise max_depth or max_nodes, or start a new graph from a budget node.",
     );
+  }
+  if (ends.includes("read_failed")) {
+    lines.push("");
+    lines.push("Partial: some branches are unread (see read_failed terminals). No further flows are attributed through those stops.");
   }
   if (engine.partial.length > 0) {
     lines.push("");
@@ -369,14 +374,14 @@ function formatted(
   format: ExportFormat,
   engines: FlowEngine[],
   ids: Map<string, AddressIdentity>,
-  json: unknown,
+  json: Record<string, unknown>,
   summary: string,
   poisoning: LookalikeReport,
 ) {
   const text = (t: string) => ({ type: "text" as const, text: t });
   if (format === "mermaid") return { content: [text(summary), text(toMermaid(exportGraph(engines, ids)))] };
   if (format === "graph_json") {
-    const graph = { ...toGraphJson(exportGraph(engines, ids)), address_poisoning: poisoning };
+    const graph = { ...toGraphJson(exportGraph(engines, ids)), terminals: json.terminals, coverage: json.coverage, address_poisoning: poisoning };
     return { content: [text(JSON.stringify(graph))] };
   }
   if (format === "csv") return { content: [text(summary), text(edgeCsv(engines, ids))] };
@@ -637,10 +642,13 @@ export function registerFlowGraphTools(server: McpServer) {
       }));
       const toAccount = "sui" in target ? target.account : (target.account ?? target.foreign);
       const found = rendered.length > 0;
+      const unread = engines.flatMap((engine) => engine.ledger.summary().find((group) => group.code === "read_failed")?.entries ?? []);
       const lines = [
         found
           ? `PATH FOUND — ${shortAddress(from)} → ${toAccount}: ${rendered.length} path(s), shortest ${Math.min(...rendered.map((p) => p.hops))} transfer(s).`
-          : `NO PATH within budget from ${shortAddress(from)} to ${toAccount}.`,
+          : unread.length
+            ? `SEARCH INCOMPLETE from ${shortAddress(from)} to ${toAccount}: no path established; some branches are unread.`
+            : `NO PATH within budget from ${shortAddress(from)} to ${toAccount}.`,
       ];
       for (const [i, p] of rendered.entries()) {
         lines.push(`Path ${i + 1} (${p.hops} hops):`);
@@ -653,6 +661,8 @@ export function registerFlowGraphTools(server: McpServer) {
       );
       for (const reason of forward.partial) lines.push(`Partial (the \`from\` address): ${reason} Narrow the window to read the rest.`);
       for (const reason of backward?.partial ?? []) lines.push(`Partial (the \`to\` address): ${reason} Narrow the window to read the rest.`);
+      for (const entry of unread.slice(0, 5)) lines.push(`Unread: ${entry.detail ?? labelOfNode(undefined, entry.node, ids)}`);
+      if (unread.length > 5) lines.push(`${unread.length - 5} more unread stops; see explored.terminals.`);
       // The node limit is the bound a caller can raise, so a search that found
       // nothing says how much of the value it left unread and where. Per side:
       // a forward share is a fraction of what `from` moved, a backward one of
@@ -698,7 +708,9 @@ export function registerFlowGraphTools(server: McpServer) {
           );
         }
         lines.push(
-          "Absence is not evidence: the search is bounded by max_hops, max_nodes and min_share, stops at hubs and sinks, and cannot see value that leaves through an exchange or another chain. Widen the window or the limits, or trace_flow_graph from either end.",
+          unread.length
+            ? "Unread branches prevent a complete search. See the read_failed terminal reasons; increasing limits does not repair a failed read."
+            : "Absence is not evidence: the search is bounded by max_hops, max_nodes and min_share, stops at hubs and sinks, and cannot see value that leaves through an exchange or another chain. Widen the window or the limits, or trace_flow_graph from either end.",
         );
       }
       const summary = lines.join("\n");
@@ -712,8 +724,10 @@ export function registerFlowGraphTools(server: McpServer) {
         ...(found
           ? { paths: rendered }
           : {
-              result: "no path within budget",
-              note: "Absence is not evidence that no path exists. The search is bounded (max_hops, max_nodes, min_share), stops at hubs, sinks and protocol addresses, and cannot see value that leaves through an exchange or another chain.",
+              result: unread.length ? "search incomplete" : "no path within budget",
+              note: unread.length
+                ? "Some branches could not be read; see explored.terminals for their reasons. No path was established from the readable evidence."
+                : "Absence is not evidence that no path exists. The search is bounded (max_hops, max_nodes, min_share), stops at hubs, sinks and protocol addresses, and cannot see value that leaves through an exchange or another chain.",
             }),
         explored: {
           forward_levels: fLevels,
@@ -730,7 +744,7 @@ export function registerFlowGraphTools(server: McpServer) {
       const onPath = new Set(paths.slice(0, 5).flatMap((p) => p.steps.flatMap((s) => [s.step.from, s.step.to])));
       const g = exportGraph(engines, ids, onPath.size ? onPath : undefined);
       if (format === "mermaid") return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: toMermaid(g) }] };
-      if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(g)) }] };
+      if (format === "graph_json") return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(g), found, explored: json.explored }) }] };
       return { content: [{ type: "text" as const, text: summary }, { type: "text" as const, text: edgeCsv(engines, ids) }] };
     },
   );

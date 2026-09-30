@@ -485,6 +485,11 @@ export async function measureFanout(
       page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
     );
     for (const [i, node] of page.transactions.nodes.entries()) {
+      // Missing balances can hide the subject's debit or the wallets it paid.
+      // Refuse the measurement before classifying or caching a partial sample.
+      if (completed[i].balanceChangesTruncated) {
+        throw new Error(`Fan-out measurement incomplete: balance changes for transaction ${node.digest} could not be fully read.`);
+      }
       scanned++;
 
       // Paying your own gas is not sponsorship, so the sender must differ.

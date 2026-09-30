@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Changed
+- **Shorter tool descriptions.** The longest tool and field descriptions are
+  rewritten to say the same in fewer words. Each keeps when to pick the tool,
+  what it does not cover, when output is partial, how to continue, and the
+  "leads, not verdicts" caveats. Explanations of method and worked examples
+  moved to the concept guides on the docs site. Every model request with all
+  tools enabled carries about 16% fewer characters of tool definitions.
+  Behaviour and input schemas are unchanged.
 - **Higher default request pacing on mainnet.** The public mainnet endpoints
   now accept more requests per IP than testnet and devnet, so the default
   spacing for `*.mainnet.sui.io` hosts is raised; testnet and devnet keep

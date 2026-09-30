@@ -8,9 +8,9 @@ sidebar:
 | Tool | Summary |
 |---|---|
 | [`analyze_token`](#analyze_token) | Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. |
-| [`get_transaction_history`](#get_transaction_history) | Get decoded transaction history for a Sui wallet. |
+| [`get_transaction_history`](#get_transaction_history) | Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. |
 | [`get_wallet_overview`](#get_wallet_overview) | Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. |
-| [`identify_address`](#identify_address) | Identify what a Sui address is: wallet, package, validator, or object. |
+| [`identify_address`](#identify_address) | Classify a Sui address as wallet, package, validator or object before choosing other tools. |
 
 ## analyze_token
 
@@ -32,15 +32,15 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for wallet activity) Get decoded transaction history for a Sui wallet: protocol names (e.g. Cetus, Suilend), action descriptions (e.g. 'Swap USDC → SUI') and token flow for each transaction. Newest first by default; `order: 'oldest'` starts from the address's first transaction instead. Each page reports its `order` and the `oldest_shown`/`newest_shown` timestamps; pass `next_cursor` back as `cursor` with the same `order` to continue. Rows are decoded from each transaction's complete balance changes and commands. `address_poisoning` is always present, with `addresses_compared` and the lookalike `pairs` found over the page shown, so the default page covers recent activity and an empty `pairs` clears nothing older. Each row's `subject_flow` is the queried address's own signed balance change per coin, with formatted amounts and coin_verified; `token_flow` is the transaction sender's, so on a transfer this address received it shows the sender's outflow; a row this address sent carries subject_flow alone, since the two are the same side. The page lists the rows that fit about 35k characters, keeping every failed row and every row a lookalike address took part in, and `omitted` states the rest; detail: 'full' lists every row. `counterparties` names up to 25 addresses that received value in the row, with `counterparty_count` when there were more. Prefer this over query_transactions when exploring what a wallet has been doing. `signed_as_alias`, when present, lists transactions this address signed as an 0x2::address_alias delegate for another wallet; the page above cannot show them, because their sender is the other wallet. Which wallets name this address comes from a scan reused for up to five minutes, and `alias_scan_as_of` says when it read the chain. `signed_as_alias_unavailable` marks a scan that did not finish, including beside rows it did find.
+(Recommended for wallet activity) Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. Rows use complete balance changes and commands. Newest first by default; oldest starts at the first transaction. Pass next_cursor as cursor with the same order. address_poisoning always checks the shown page only, so empty pairs clear nothing older. subject_flow is the queried wallet's signed change per coin; token_flow is the sender's, omitted when they are the same address. Counterparties include at most 25 value recipients; counterparty_count reports larger sets. Summary keeps ~35k characters, preserving failed and lookalike-involved rows; omitted reports the rest and detail:'full' lists the whole page. signed_as_alias separately lists transactions signed as another wallet's address_alias delegate, which the main page cannot show. The delegate scan is cached for up to five minutes; alias_scan_as_of dates it and signed_as_alias_unavailable marks incomplete scans, even beside returned matches.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Sui wallet address (0x...) |
 | `limit` | number (1 to 50), default `10` | no | Number of transactions to return (default 10, max 50) |
-| `order` | `newest` \| `oldest` | no | 'newest' (default) starts at the most recent transaction and pages back in time; 'oldest' starts at the first and pages forward. |
+| `order` | `newest` \| `oldest` | no | 'newest' (default) pages backward from recent activity; 'oldest' pages forward from the first transaction. |
 | `cursor` | string | no | `next_cursor` from the previous page. Continues in the same direction; pass the same `order`. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): the rows that fit about 35k characters, in page order, keeping every failed row and every row a lookalike address took part in; `omitted` states the rest. 'full': every row of the page. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) keeps ~35k chars in page order, always retaining failed and lookalike-involved rows; omitted reports the rest. 'full' lists every row of the page. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_wallet_overview
@@ -65,7 +65,7 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended first step) Identify what a Sui address is: wallet, package, validator, or object. Returns a type classification with contextual summary (e.g. balance + SuiNS for wallets, module list for packages, stake info for validators). Use this before deciding which other tools to call. For a package, `protocol` falls back to the entity of a bridge label on an object whose type the package defines (`identified_via: labeled-object`), and `bridge_carrier` lists its bytecode's calls into a curated bridge's exit entry: an adapter or aggregator that can send that bridge's transfers. A wallet's `first_seen` is the oldest transaction the GraphQL service returns with it as sender or affected party (digest, timestamp, checkpoint, sender, the coins it `received`). It reads all balance-change pages of that transaction. `first_inflow` is true when the wallet gained coins in a transaction it did not send, including a system-created genesis allocation with `sender: null`; genesis does not identify a funding wallet. If no gain was found and the balance changes could not all be read, `first_inflow` is null; `first_seen_unavailable` says the first read failed. find_funding_sources names the funder when the first transaction is not funding.
+(Recommended first step) Classify a Sui address as wallet, package, validator or object before choosing other tools. It adds contextual balance/name, module or stake information. Packages can be identified from bridge labels on their defined objects; bridge_carrier identifies bytecode calls into curated bridge exits. A wallet's first_seen is the oldest transaction GraphQL returns where it sent or was affected, with received coins read across all balance-change pages. first_inflow means it gained coins without sending, including genesis with sender:null; genesis names no funding wallet. If no gain is found in incomplete changes, first_inflow is null. first_seen_unavailable means the first read failed. Use find_funding_sources when the first transaction was not funding.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

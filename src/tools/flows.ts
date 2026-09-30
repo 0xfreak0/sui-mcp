@@ -180,12 +180,12 @@ function who(address: string, identity: AddressIdentity | undefined) {
 export function registerFlowTools(server: McpServer) {
   server.tool(
     "summarize_address_flows",
-    "(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Up to 20 other sends in which its value reached no address are read for the shape of a cross-chain message from an unrecognised bridge (`cross_chain_leads`, tier heuristic, a lead and never an exit). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. `address_poisoning` is always present: `addresses_compared` and the `pairs` of addresses seen in the scan (as a source, a recipient, or dust the subject received) that render alike enough to be mistaken for one another. An empty `pairs` covers only this window's addresses. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.",
+    "(Incident investigation) Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. Reports every sent bridge exit with chain-derived beneficiaries for CCTP, Sui Bridge, Wormhole Token Bridge/NTT and Mayan. Up to 20 other sends without an address recipient are checked for unknown cross-chain messages; cross_chain_leads are heuristic leads, never exits. Gas is separate from coin totals; value without a counterparty address is unattributed. address_poisoning always checks sources, recipients and received dust in this window only; empty pairs clear nothing outside it. Scans newest first. Check coverage.complete and follow coverage.continue_with if the scan budget stops it.",
     {
       address: addressArg().describe("Address to summarise (0x... or a SuiNS name)."),
       from: timePointArg()
         .optional()
-        .describe("Window start: ISO 8601 time (2025-09-07T00:00:00Z) or a checkpoint number. Omit for the address's whole history back to the scan budget."),
+        .describe("Window start as ISO 8601 time or checkpoint. Omit to scan the whole history, subject to the scan budget."),
       to: timePointArg().optional().describe("Window end: ISO 8601 time, 'now', or a checkpoint number."),
       coin_type: coinTypeArg()
         .optional()
@@ -206,7 +206,7 @@ export function registerFlowTools(server: McpServer) {
         .enum(["summary", "full"])
         .optional()
         .describe(
-          "'summary' (default) lists the counterparties, coins and unattributed rows that fit about 20k characters: the top ranked by value, plus every labelled or non-wallet address and every lookalike, always. Totals and counts cover every row, and `omitted` states what each list left out. 'full' lists every row.",
+          "'summary' (default) keeps ~20k chars of counterparties, coins and unattributed rows by value, retaining all labelled, non-wallet and lookalike addresses. Totals/counts cover all rows; omitted reports the rest. 'full': every row.",
         ),
     },
     async ({ address, from, to, coin_type, max_transactions, top, detail }) => {

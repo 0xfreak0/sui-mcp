@@ -557,7 +557,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_sources",
-    "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Each walk stops at a funder that paid more than 50 distinct addresses, like find_funding_source, and a chain is counted toward shared funders only up to the first funder that is itself a subject. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly, plus every later payment one subject signed to another (subject_paid_subject, checked pair by pair for up to 20 subjects); and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.",
+    "(Incident investigation) Trace funding for many addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses; shared-funder counts stop at the first funder that is itself a subject. Reports common funders with fan-out and flow shape, co-funding compared with each transaction's total recipients, direct subject-to-subject funding, and later signed payments between subjects (subject_paid_subject, checked pairwise for up to 20 subjects). It also groups fundings within one minute as possible scripted setup. A common exchange or shared batch need not imply common control. Compare a sample_control_addresses control group before interpreting any rate.",
     {
       addresses: addressListArg()
         .min(1)
@@ -573,7 +573,7 @@ export function registerFundingTools(server: McpServer) {
         .enum(["first_hop", "full"])
         .optional()
         .describe(
-          "'first_hop' walks one hop per address, usually the informative one, since deep chains dead-end in early distribution wallets. 'full' walks to max_hops (default).",
+          "'first_hop' reads one funding hop per address; 'full' (default) walks to max_hops.",
         ),
       measure_fanout: boolArg()
         .optional()
@@ -582,7 +582,7 @@ export function registerFundingTools(server: McpServer) {
         .enum(["summary", "full"])
         .optional()
         .describe(
-          "'summary' (default): each result keeps its origin, first funder and first hop and counts its dust_skipped rows, and results and subject_paid_subject list what fits about 20k characters, every result tied to a shared funder, subject link, co-funding, burst or payment first. 'full' returns every hop of each chain under results[].chain, every dust row and every row of each list.",
+          "'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row.",
         ),
     },
     async ({ addresses, max_hops, depth, measure_fanout, detail }) => {
@@ -1004,14 +1004,14 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_source",
-    "(Incident investigation) Trace an address back to its funding source (the first transaction that funded the wallet, and who sent it), then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet; see manage_labels), a funder that paid more than 50 distinct addresses at least 0.01 SUI or $0.10 each (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution; addresses it paid only dust do not count), a funder that paid the previous address after its own earliest 12 transactions (an established wallet paying from a balance it held, such as a victim's transfer to a thief; its own funding describes it, not that payment), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
+    "(Incident investigation) Follow a wallet's first funding transaction and sender, then each funder's own funding. Stops at labels (see manage_labels), cycles, dead ends, funders paying over 50 addresses at least 0.01 SUI or $0.10 each, or a funder whose payment came after its own first 12 transactions. Service ancestry and an established wallet's earlier funding do not attribute the payment being traced; dust-only recipients do not count toward the service threshold. Each hop reports funder popularity. dust_skipped lists ignored inflows; sponsored_by lists gas payers even when no funding was found. A wallet can pay gas from an address balance without SUI inflows, and a lookalike operator may appear only as its sponsor.",
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),
       measure_fanout: boolArg()
         .optional()
         .describe(
-          "Measure the origin's fan-out so a hub can be told from a real link (default true). Scans the same default window as get_address_fanout, so the two agree on `truncated` and the counts.",
+          "Measure origin fan-out (default true), using get_address_fanout's default window and matching counts/truncation.",
         ),
     },
     async ({ address, max_hops, measure_fanout }) => {

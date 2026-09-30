@@ -525,7 +525,7 @@ function traceCsv(direction: "forward" | "backward", followed: FollowedHop[], ho
 export function registerTraceTools(server: McpServer) {
   server.tool(
     "trace_funds",
-    "(Incident investigation) Trace fund flow from a transaction across hops. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers and burn addresses, as labelled in manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and at high-fanout hubs (forward, only at one that 100+ distinct senders pay into; an address paid by fewer passes on what it received and is followed), and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).",
+    "(Incident investigation) Follow a fund-flow path from a transaction. Forward traces a recipient's next move of the tracked coin; backward traces its payer's most recent earlier inflow. It follows value through swaps, self-crediting exploits or withdrawals, and objects. Stops at labelled exchanges, bridges, mixers or burns (manage_labels), bridge exits and high-fanout hubs; forward hub stops require 100+ distinct incoming senders, so smaller pass-through funders are followed. Malicious labels do not stop the trace. stop_reason always explains the end. Returns decoded actions, a readable summary and per-hop USD at block time with its source. Calls run sequentially for up to 10 hops; use trace_flow_graph to follow every branch.",
     {
       digest: z.string().describe("Starting transaction digest (Base58)"),
       direction: z
@@ -539,12 +539,12 @@ export function registerTraceTools(server: McpServer) {
         .describe("Max hops to follow (default 3, max 10)"),
       coin_type: coinTypeArg()
         .optional()
-        .describe("Start by following this coin type, and restrict the DISPLAYED balance changes to it (e.g. 0x2::sui::SUI; the short and padded forms match). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown and the first hop picks the largest flow."),
+        .describe("Starting coin and displayed balance-change filter; short/padded types match. Swaps still follow value. Omit to show all changes and start with the largest flow."),
       format: z
         .enum(EXPORT_FORMATS)
         .optional()
         .describe(
-          "Output format (default json). mermaid: a fenced ```mermaid diagram of the followed path, with unfollowed branches dashed, bridge exits and the stop reason. graph_json: {nodes, edges}. csv: one row per followed or unfollowed transfer. The prose summary comes first in every format but graph_json.",
+          "Default json. Mermaid shows the path, dashed unfollowed branches, bridge exits and stop reason; graph_json gives nodes/edges; CSV lists every followed or unfollowed transfer. Prose comes first except in graph_json.",
         ),
     },
     async ({ digest, direction, hops, coin_type, format: formatArg }) => {

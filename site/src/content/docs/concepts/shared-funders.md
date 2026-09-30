@@ -70,3 +70,100 @@ see [Gas sponsors](/concepts/gas-sponsors/).
   against a control group.
 - [Forensics skill](/guides/forensics-skill/): the base-rate check that keeps
   shared ancestry from reading as collusion.
+
+## Building shared-control edges
+
+`build_wallet_edges` asks whether a fresh address reached by a trace is a new
+party or another wallet of the same operator. It builds signals live, without
+an analytics warehouse, from six sources:
+
+- Multisig co-signature: a committee key can spend the wallet whose address
+  the committee hashes to. This is the non-behavioral signal.
+- A shared first funder.
+- One address first-funding another.
+- Value moving both ways between two non-service addresses.
+- A shared gas sponsor.
+- Co-appearance in one transaction.
+
+Every intermediary is measured before use. An exchange or sponsorship relayer
+is discarded rather than linking unrelated users. The `role_split` exception
+applies when most other wallets served by a sponsor were first funded by the
+seeds' own narrow, unlabelled funder: one operator may fund and sponsor from
+different addresses.
+
+`edges` are facts with transaction digests to check; `co_signer` instead cites
+the committee's address hash. `clusters` are inferences with their own
+`evidence_tier`, never proof of ownership.
+
+Supply all suspected wallets as seeds, up to 25; links among them are exactly
+verified. `expand` defaults to true, admitting unknown siblings only after
+checking their own first funder. The expansion budget defaults to 25 candidates,
+and unverified candidates are reported rather than hidden.
+
+`popularity_limit` defaults to 50 distinct counterparties. Funders' recipients
+count only if paid at least 0.01 SUI or $0.10. Raise this limit only with cause:
+otherwise a service can link thousands of unrelated wallets. Reciprocal
+counterparties are also checked for popularity before that signal is trusted,
+up to `reciprocal_budget` (15 by default).
+
+`min_signal_types: 2` is the stricter batch-pipeline rule, improving precision
+but missing ordinary personal alt-wallets that share one mechanism; the
+default is 1. `max_cluster_size` rejects merges above 100 by default.
+`query_budget` caps GraphQL requests at 150 by default; inspect `truncated`.
+
+Mermaid output has one box per cluster and signal-labelled edges, with
+unclustered pairs dashed. `graph_json` returns nodes and edges; CSV gives one
+row per edge. JSON is the default.
+
+## Following a funding chain
+
+`find_funding_source` starts at a wallet's first funding transaction and its
+sender, then follows the funder's own funding, up to five hops by default
+(maximum 12). It can establish a first funding source such as a Binance
+withdrawal; that is narrower than attributing every later payment.
+
+The walk stops at a labelled exchange, bridge or known wallet (managed through
+`manage_labels`), a repeated wallet, a dead end, or a funder that paid more
+than 50 distinct recipients at least 0.01 SUI or $0.10 each. Dust-only recipients
+do not count. This is the same service threshold used by `build_wallet_edges`;
+ancestry beyond a service does not attribute its users.
+
+It also stops when a funder's payment occurred after that funder's own earliest
+12 transactions. An established wallet can pay from a long-held balance,
+as when a victim transfers to a thief; that wallet's original funding does
+not explain this payment.
+
+Every hop reports funder popularity. `dust_skipped` lists ignored inflows;
+`sponsored_by` lists gas payers for the hop's own transactions even if no
+funding was found. Address-balance gas can support a wallet with no SUI inflow,
+and a poisoning lookalike's operator may appear only in sponsorship.
+`measure_fanout` defaults to true and uses `get_address_fanout`'s default window,
+so the counts and truncation status agree.
+
+## Comparing many funding chains
+
+`find_funding_sources` shares reads when chains converge, so it is cheaper
+than a separate single-address call for each subject. It accepts 1–100
+addresses. Full depth is the default, up to `max_hops` (five by default);
+`depth: "first_hop"` stops after one hop. That first hop is often the useful
+one, since deeper chains tend to end at early distribution wallets.
+
+Like the single walk, it stops at funders that paid more than 50 distinct
+addresses. A shared-funder count stops at the first funder that is itself a
+subject. Each common funder has fan-out and flow shape to distinguish a narrow
+origin from an exchange many unrelated users withdrew from.
+
+Co-funding is measured against each transaction's total recipient count.
+Two subjects among two recipients suggests a bespoke payment; two among
+twenty can occur in an unrelated service batch. The tool reports subjects
+directly funding other subjects, and later payments one subject signed to
+another under `subject_paid_subject`, checked pairwise for up to 20 subjects.
+Fundings within a minute form timing clusters, a lead for scripted setup
+rather than proof. Run the same read on a `sample_control_addresses` control
+group before interpreting rates.
+
+The summary retains each result's origin, first funder and first hop and
+counts `dust_skipped`. Results and later subject payments fit about 20,000
+characters, prioritizing every result tied to a shared funder, subject link,
+co-funding, burst or payment. `detail: "full"` returns every hop under
+`results[].chain`, every dust row and every list row.

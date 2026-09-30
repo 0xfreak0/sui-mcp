@@ -362,17 +362,17 @@ function parseAt(at: string | number | undefined): number | null | "invalid" {
 export function registerAttackTools(server: McpServer) {
   server.tool(
     "analyze_attack_tx",
-    "(Incident investigation) Break down one exploit transaction: who gained or lost what, per address and coin, in USD at block time; flash-loan and flash-swap legs paired borrow to repay; each swap's coins and amounts, and the pool price before and after where the DEX event carries it; what each pool, vault or market gained or lost, from its own events, attributed to the changed shared object whose id the event carries; oracle calls and updates inside the PTB; each changed shared object read at its input and output versions (state_deltas); a reconciliation of the value that came out of objects or mints to addresses (transfers between addresses cancel in it) against what decoded events and the read objects paid out, with the objects the read caps left out counted; anomaly flags, including a value the caller passed that is written into a shared object, or reaches its accounting multiplied by another number an event states, and is then used in the same PTB, a stored number that moved 100x, a balance drained or a holder losing most of its priced value to addresses, and a liquidity event credited more than its amounts buy on its tick range or a share mint far above the deposit's share of the holdings, a public key a shared object holds replaced by another, a price an event or a coin-keyed table row states for one coin 5x or more from its provider price while the same field agrees with the provider for other coins, shares or a position redeemed within a day for 1.1x or more what the sender paid for them, and a shared object the transaction took that another address rewrote in the minute before it ran, flipping a flag or setting a recipient or an amount it moved; `flagged_commands` gives the decode_ptb call that lists the commands the medium and high flags name; and the profit of the attacker, or, when that address lost value (a victim who signed the transaction), its loss and the addresses that gained. Reads the whole transaction over gRPC with archive fallback, so a PTB with hundreds of commands and events is read completely. USD needs no API key (DefiLlama; Pyth for verified coins when PYTH_API_KEY is set) and every coin without a price is listed. The anomaly pass also runs decode_ptb's PTB checks on the transaction, with payouts read from its effects, calls into a superseded package version, and calls into packages that neither the curated registry nor a curated protocol's publishing key vouches for. Flash legs, oracle touches and anomalies are heuristic leads; `checks_run` names every check, and one that matched nothing clears nothing.",
+    "(Incident investigation) Investigate one exploit transaction: gains and losses per address and coin in USD at block time, attacker profit or a signing victim's loss and gainers, paired flash-loan and flash-swap legs, swap amounts and prices where events supply them, pool/vault/market flows attributed by event object ID, oracle calls and updates, and shared-object state before and after. It reconciles object and mint outflows to addresses against decoded events and read objects; address-to-address transfers cancel, and capped-out objects are counted. It flags caller-fed state or accounting reused in the PTB, state jumps, drains, excess liquidity or share minting, key replacement, coin-specific oracle mispricing, rapid profitable redemptions and last-minute third-party state rewrites. It includes decode_ptb checks, effects-based payouts, superseded versions and packages unvouched by the registry or publishing key. The whole transaction is read, including large command and event sets. USD needs no key; unpriced coins are listed. Flash legs, oracle touches and anomalies are heuristic leads; checks_run with no matches clears nothing. Follow flagged_commands to decode_ptb for the commands named by medium and high flags.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       attacker: z
         .string()
         .optional()
-        .describe("Address whose profit to summarise. Defaults to the transaction's sender, unless the sender's own coins show it only paid gas (no coin but SUI moved, and the SUI change was a payment): then it defaults to the largest PRICED gainer over the gas-only threshold in the same transaction instead, reported in attacker_defaulted_from_sender. A gain in an unpriced coin by any non-sender other than that gainer blocks this default; pass \"attacker\" to name a different address."),
+        .describe("Profit address; default sender. May switch to largest priced gainer (>= $1) if sender has only a SUI payment/no coin change and no priced object movement, or gives away valued objects without taking value. Unpriced gains outside sender/chosen gainer block it, excluding flagged coins and sender-paid coin types. Reports attacker_defaulted_from_sender; pass an address to override."),
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): each list keeps what fits its share of about 40k characters, keeping every pool, holder and address an anomaly or flash leg names, the sender and the profit address; totals and anomalies cover every row, and `omitted` states the rest. 'full': every row."),
+        .describe("'summary' (default): ~40k chars across lists; keeps anomaly/flash-linked pools, holders and addresses, sender and profit address. Totals/anomalies cover all rows; omitted counts the rest. 'full': all rows."),
     },
     async ({ digest: rawDigest, attacker, detail }) => {
       try {
@@ -950,7 +950,7 @@ export function registerAttackTools(server: McpServer) {
 
   server.tool(
     "summarize_incident_losses",
-    "(Incident investigation) Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. Give the exploit digests, or a sender and a window. For each group: the attacker's net per coin, the pool's own reserve change from its events (or, when no event of the transaction decodes into amounts, from the drained objects' Balance<T> holdings at its input and output versions), and the USD of both. Coins the attacker sent on to other addresses, in a coin that moved only between addresses in that transaction, are listed under transfers_out and kept out of the take. Totals come with the coins that could not be priced listed separately, so the figure is stated as a lower bound when any are. The default view lists what fits about 40k characters, largest first, and `omitted` states the rest; detail: 'full' lists every row. Needs no API key. Reads every transaction over gRPC with archive fallback.",
+    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced coins are listed separately and make USD totals a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.",
     {
       digests: z
         .array(z.string())
@@ -981,12 +981,12 @@ export function registerAttackTools(server: McpServer) {
       attacker: z
         .string()
         .optional()
-        .describe("Address whose gains to total. Defaults to `sender`, or to each transaction's sender, unless every successful transaction's sender only paid gas: then it defaults to the largest PRICED gainer over the gas-only threshold across the same transactions instead, reported in attacker_defaulted_from_sender. A gain in an unpriced coin by any non-sender other than that gainer blocks this default; pass \"attacker\" to name a different address."),
+        .describe("Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override."),
       price_at: z
         .union([numArg(), z.string()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Price every coin and object at this moment (Unix seconds or ISO 8601). Without it coins are priced at the first successful transaction's time, before prices reacted, and each moved object at its own transaction's time."),
+        .describe("Price all coins and objects at Unix seconds or ISO 8601 time. Default: coins at the first successful transaction's time; each moved object at its own transaction's time."),
       max_groups: numArg()
         .int()
         .min(1)
@@ -995,7 +995,7 @@ export function registerAttackTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): each list keeps what fits about 40k characters in all, largest first; totals cover every row, and `omitted` states each list's count, USD and largest row with the call that returns them. 'full': every row of every list."),
+        .describe("'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows."),
     },
     async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, detail }) => {
       try {

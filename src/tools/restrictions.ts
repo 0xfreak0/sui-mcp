@@ -27,7 +27,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerRestrictionTools(server: McpServer) {
   server.tool(
     "check_coin_restrictions",
-    "(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions: give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (every regulated coin, so it reads many deny lists; a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. A freeze by validators, who can refuse an address's transactions through their node configuration, is off chain and in no deny list, so this tool cannot see it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.",
+    "(Incident investigation) Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. Give coin_type to list frozen addresses, address to check every regulated coin regardless of holdings, or both for one pair. Address-only checks read many lists. Freezes are issuer decisions, not protocol rules, and the DenyCap holder can reverse them. Off-chain validator freezes are invisible here. Use when a traced address cannot move a token or to check whether an issuer has frozen a counterparty.",
     {
       coin_type: coinTypeArg()
         .optional()
@@ -35,7 +35,7 @@ export function registerRestrictionTools(server: McpServer) {
       address: addressArg()
         .optional()
         .describe(
-          "Address to check. Without coin_type, checks it against every coin type that has a deny list, whether or not the address holds that coin: a frozen address usually holds none of the coin that froze it. With coin_type, reports whether it is frozen for that coin.",
+          "Address to check against coin_type, or against every coin with a deny list if coin_type is omitted, regardless of holdings.",
         ),
       max_addresses: numArg()
         .int()

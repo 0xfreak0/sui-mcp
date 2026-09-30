@@ -8,7 +8,7 @@ sidebar:
 | Tool | Summary |
 |---|---|
 | [`find_pools`](#find_pools) | Find DeFi liquidity pools by token pair. |
-| [`get_defi_positions`](#get_defi_positions) | Find and value the DeFi positions a Sui wallet holds. |
+| [`get_defi_positions`](#get_defi_positions) | Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking coins, CLMM/AMM liquidity, lending and balances inside owned objects. |
 | [`get_pool_stats`](#get_pool_stats) | Get stats for a DeFi liquidity pool on Sui given its object ID. |
 
 ## find_pools
@@ -33,12 +33,12 @@ Find DeFi liquidity pools by token pair. Searches every Cetus pool, DeepBook v3 
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-Find and value the DeFi positions a Sui wallet holds: staked SUI with accrued rewards, liquid-staking coins at their issuer's exchange rate, CLMM and AMM liquidity positions, lending positions, and balances held inside objects the wallet owns (a vault, a table of coins, a wrapped position). Every position carries `usd` (null when a leg has no price, with `unpriced_reason`), the `method` its amounts and price came from, its evidence `tier`, and its asset legs. Lending rows' `health` adds `borrow_limit_used` and `liquidation_threshold_used` from the protocol's own figures; `health_basis` appears when those figures and the legs' USD part by more than 2%. `total_usd` and `by_protocol` sum every priced position; `coverage` says what that covers of the objects the wallet owns and lists the ones no reader recognises by type and count; `unread` lists what could not be read; `leads` names positions near their borrow limit and shared vaults the wallet operates, with what they hold.
+Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking coins, CLMM/AMM liquidity, lending and balances inside owned objects. Positions include asset legs, valuation method and evidence tier; USD is null if any leg lacks a price, with unpriced_reason. Totals sum only priced positions. coverage lists unrecognised owned-object types and counts; unread lists failed reads. Lending includes protocol health ratios. leads flags near-borrow-limit positions and operated shared vaults with their holdings.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Wallet address (0x...) |
-| `detail` | `summary` \| `full` | no | 'summary' (default): the most valuable positions that fit about 30k characters, keeping every unpriced one; `omitted` states the rest. 'full': every position. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): highest-value positions fitting about 30k characters, plus all unpriced ones; omitted counts the rest. 'full': every position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_pool_stats

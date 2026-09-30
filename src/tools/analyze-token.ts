@@ -236,7 +236,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
 
       // Fetch metadata, price, holders and the on-chain registry in parallel
       let coinInfoError: unknown = null;
-      const [metaResult, priceResult, change24hByCoin, holderResult, registry] = await Promise.all([
+      const [metaResult, priceResult, { changes: change24hByCoin }, holderResult, registry] = await Promise.all([
         sui.stateService
           .getCoinInfo({ coinType })
           .then(({ response }) => response)

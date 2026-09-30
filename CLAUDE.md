@@ -3629,10 +3629,13 @@ change is likely to break:
   a `1d` candle compares a day's price move. Without `PYTH_API_KEY` nothing is
   compared: `oracle_unavailable` says so and `flagged_count` is null, because
   zero flagged candles reads as agreement.
-- **The 24h change comes from DefiLlama's `/percentage`**
-  (`fetchDefiLlamaChange24h`). Aftermath's `priceChange24HoursPercentage` is
-  0.0 for every coin (SUI read 0 on a day it rose 17%), so `get_token_prices`
-  and `analyze_token` never use it. A coin DefiLlama does not list gets null.
+- **The 24h change uses DefiLlama's current and day-ago prices**
+  (`fetchDefiLlamaChange24h`), requested in batches with canonical coin keys.
+  The current quotes also serve `get_token_prices`' price fallback, so they
+  are not fetched twice. A missing quote or a zero day-ago price yields null.
+  Do not use `/percentage`: its one-hour CDN cache can disagree with the
+  current prices. Aftermath's `priceChange24HoursPercentage` is also unused:
+  it reads 0.0 for every coin regardless of the price move.
 - **An unpriced coin carries a code.** `request_failed` says nothing about the
   coin and must not be reported the way `not_listed` is.
 

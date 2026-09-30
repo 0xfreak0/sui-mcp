@@ -120,7 +120,6 @@ export async function fetchAftermath(coinTypes: string[]): Promise<Map<string, P
  * ------------------------------------------------------------------ */
 
 const DEFILLAMA_PRICES_URL = "https://coins.llama.fi/prices";
-const DEFILLAMA_PERCENTAGE_URL = "https://coins.llama.fi/percentage";
 
 /**
  * Coins per request. Keys are ~90 characters, so 25 keeps the URL near 2.3 KB,
@@ -375,44 +374,27 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
 }
 
 /**
- * Percent change over the last 24 hours, from DefiLlama's `/percentage`
- * endpoint, keyed by the coin types asked for. A coin DefiLlama does not list
- * is absent from its answer and from this map, as is every coin of a batch
- * whose request failed: an unknown change is never a zero.
- *
- * A framework coin (package 0x2) is asked for under its short address:
- * DefiLlama's `/percentage` answer for the 64-digit form of SUI does not
- * follow the price, while the short form does.
- *
- * Aftermath's `priceChange24HoursPercentage` is not used: it reads 0.0 for
- * every coin, SUI included, whatever the price did.
+ * Percent change from DefiLlama's current quote and its quote 24 hours ago.
+ * Return the current prices too, so price fallbacks reuse the same read.
+ * Missing quotes or a zero denominator leave the change unknown.
  */
-export async function fetchDefiLlamaChange24h(coinTypes: string[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  const keyToCoins = new Map<string, string[]>();
-  for (const coinType of new Set(coinTypes)) {
-    const key = defiLlamaKey(coinType)?.replace(/^sui:0x0{63}2::/, "sui:0x2::");
-    if (key) keyToCoins.set(key, [...(keyToCoins.get(key) ?? []), coinType]);
+export async function fetchDefiLlamaChange24h(coinTypes: string[]): Promise<{
+  current: DefiLlamaResult;
+  changes: Map<string, number>;
+}> {
+  const dayAgo = Math.floor(Date.now() / 1000) - 86400;
+  const [current, previous] = await Promise.all([
+    fetchDefiLlama(coinTypes),
+    fetchDefiLlama(coinTypes, dayAgo),
+  ]);
+  const changes = new Map<string, number>();
+  for (const [coinType, now] of current.quotes) {
+    const then = previous.quotes.get(coinType);
+    if (!then || then.price === 0) continue;
+    const percent = (now.price - then.price) / then.price * 100;
+    if (Number.isFinite(percent)) changes.set(coinType, percent);
   }
-  const keys = [...keyToCoins.keys()];
-  for (let i = 0; i < keys.length; i += DEFILLAMA_BATCH) {
-    const chunk = keys.slice(i, i + DEFILLAMA_BATCH);
-    try {
-      const resp = await fetch(`${DEFILLAMA_PERCENTAGE_URL}/${chunk.join(",")}?period=24h`, {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
-      });
-      if (!resp.ok) continue;
-      const coins = ((await resp.json()) as { coins?: Record<string, unknown> } | null)?.coins ?? {};
-      for (const [key, pct] of Object.entries(coins)) {
-        if (typeof pct !== "number" || !Number.isFinite(pct)) continue;
-        for (const coinType of keyToCoins.get(key) ?? []) out.set(coinType, pct);
-      }
-    } catch {
-      // Best-effort: these coins are left out, which the caller reports as null.
-    }
-  }
-  return out;
+  return { current, changes };
 }
 
 /* ------------------------------------------------------------------ *

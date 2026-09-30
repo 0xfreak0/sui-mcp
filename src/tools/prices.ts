@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { coinTypeArg, numArg, refinePoint } from "./args.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
-import { pythApiKey, availableSources, fetchDefiLlama, fetchDefiLlamaChange24h } from "../utils/price-providers.js";
+import { pythApiKey, availableSources, fetchDefiLlamaChange24h } from "../utils/price-providers.js";
 import { isVerifiedCoin } from "../utils/coin-registry.js";
 import { errorResult } from "../utils/errors.js";
 import { displayCoin, priceUsdAtTime, PRICE_STALE_THRESHOLD_SEC } from "../utils/valuation.js";
@@ -100,7 +100,7 @@ export async function fetchPythPrices(
 export function registerPriceTools(server: McpServer) {
   server.tool(
     "get_token_prices",
-    "Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. Needs no API key. Current prices come from Aftermath, then DefiLlama, then Pyth for coins on the verified list when PYTH_API_KEY is set; the 24h change comes from DefiLlama (null when it does not list the coin). Historical prices come from Pyth when PYTH_API_KEY is set and the coin is on the verified list, and from DefiLlama otherwise. Every price names its source, confidence and the time of the sample it came from, and every coin that could not be priced is listed under `unpriced` with the reason. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
+    "Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. Needs no API key. Current prices come from Aftermath, then DefiLlama, then Pyth for coins on the verified list when PYTH_API_KEY is set; the 24h change is calculated from DefiLlama's current price and its price a day ago (null when either is missing or the earlier price is zero). Historical prices come from Pyth when PYTH_API_KEY is set and the coin is on the verified list, and from DefiLlama otherwise. Every price names its source, confidence and the time of the sample it came from, and every coin that could not be priced is listed under `unpriced` with the reason. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
     {
       coin_types: z
         .array(coinTypeArg())
@@ -167,14 +167,11 @@ export function registerPriceTools(server: McpServer) {
       const { feedIds: pythFeedIds, reverseMap: pythReverse } =
         await buildPythFeedMap(pythCandidates);
 
-      const [aftermathData, pythData, change24hByCoin] = await Promise.all([
+      const [aftermathData, pythData, { current: llama, changes: change24hByCoin }] = await Promise.all([
         fetchAftermathPrices(coin_types),
         fetchPythPrices(pythFeedIds),
         fetchDefiLlamaChange24h(coin_types),
       ]);
-      // DefiLlama fills what Aftermath did not answer.
-      const aftermathMissing = coin_types.filter((ct) => !(aftermathData?.[ct] && aftermathData[ct].price >= 0));
-      const llama = aftermathMissing.length > 0 ? await fetchDefiLlama(aftermathMissing) : null;
 
       const pythForCoin = new Map<string, PythParsedPrice>();
       if (pythData) {
@@ -193,7 +190,7 @@ export function registerPriceTools(server: McpServer) {
         // Aftermath returns -1 for unknown coins
         const aftermathPrice =
           afEntry && afEntry.price >= 0 ? afEntry.price : null;
-        const llamaPrice = llama?.quotes.get(ct)?.price ?? null;
+        const llamaPrice = aftermathPrice == null ? llama.quotes.get(ct)?.price ?? null : null;
         const pythPrice = pyEntry ? parsePythPrice(pyEntry) : null;
 
         const priceUsd = aftermathPrice ?? llamaPrice ?? pythPrice ?? null;
@@ -213,11 +210,11 @@ export function registerPriceTools(server: McpServer) {
           price_change_24h_percent: change24h,
           source,
         };
-        const llamaAsset = aftermathPrice == null ? llama?.quotes.get(ct)?.priced_as : undefined;
+        const llamaAsset = aftermathPrice == null ? llama.quotes.get(ct)?.priced_as : undefined;
         if (llamaAsset) result.priced_as = llamaAsset;
 
         if (priceUsd == null) {
-          result.note = llama?.unanswered.has(ct)
+          result.note = llama.unanswered.has(ct)
             ? "Aftermath had no price and the DefiLlama request failed, so this is not evidence the coin has no market."
             : "No source has a price for this exact coin type. The coin type may be invalid or not traded on any tracked venue.";
         }

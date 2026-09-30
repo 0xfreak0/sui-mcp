@@ -61,7 +61,7 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 | `package` | string | yes | Package reference: a 0x package ID (any version in the family) or MVR name (@org/app). |
 | `from_version` | integer (greater than 0) | no | Older version (default: one before to_version, or latest - 1 when to_version is omitted). |
 | `to_version` | integer (greater than 0) | no | Newer version to compare to (default: latest). |
-| `max_sample_lines` | integer (10 to 2000) | no | Lines per changed module (default 60). Changed bodies rank by changed share; each gets its largest hunk first. Then added/removed functions, types, use lines and constants; changed lines precede context. sample_truncated, unsampled_functions and partly_sampled_functions report gaps; follow sample_next_call. |
+| `max_sample_lines` | integer (10 to 2000) | no | Lines per changed module (default 60). Changed bodies rank by changed share; each gets its largest hunk first. Then added/removed functions, types, use lines and constants; changed lines precede context. sample_truncated, unsampled_functions and partly_sampled_functions report gaps. The `sample_next_call` result field contains the follow-up tool and args for omitted code. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## disassemble_module

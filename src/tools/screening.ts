@@ -7,13 +7,14 @@
  */
 
 import { z } from "zod";
-import { addressArg, numArg } from "./args.js";
+import { addressArg, numArg, timePointArg } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { classifyDepositAddress } from "../utils/deposit.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
 import { hitsFor, screenAddress, screeningCoverage, type Direction } from "../utils/screening.js";
 import { namespaceOf, parseAccountId, currentSuiChain } from "../utils/chain-id.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { capPayload } from "../utils/output-cap.js";
 
 const json = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }] });
 
@@ -29,28 +30,41 @@ const SCREEN_CAVEATS = [
 export function registerScreeningTools(server: McpServer) {
   server.tool(
     "classify_deposit_address",
-    "(Incident investigation) Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. Verdict likely, no or unknown is heuristic. With complete balances it independently checks full-balance outflows to one destination, a relayer-shaped gas sponsor, and a labelled exchange or hub-shaped destination. Self-funded gas may leave up to 1 SUI. A balance equal to deposits just before the sweep may remain only if the next outflow empties that coin to the same destination or is not yet in the window; left_for_next_sweep records this. Other residual balances fail the sweep check. Returns hot wallet, exchange provenance, sponsor, sweep digests and sampled deposits. checks_not_run explains null checks. Unread balances give unknown, null checks/sweep_count/deposit_count, and incomplete_transactions. One initial query plus balance continuations and optional sponsor/destination reads.",
+    "(Incident investigation) Classify exchange deposit behaviour over a chosen window. The heuristic verdict covers only transactions read; window states bounds, coverage and continuation. Historical sweep balances are reconstructed with a separate budget. No outflows means unknown, not clearance. Session verdicts are shared with identification, flows and label lookup without adding trace sinks.",
     {
       address: addressArg().describe("Candidate deposit address (0x...)."),
+      from: timePointArg().optional().describe("Window start: ISO 8601 time (inclusive) or checkpoint (exclusive)."),
+      to: timePointArg().optional().describe("Window end: ISO 8601 time (inclusive), 'now', or checkpoint (exclusive)."),
       max_transactions: numArg()
         .int()
         .min(5)
-        .max(50)
+        .max(5000)
         .optional()
-        .describe("Most recent transactions to read (default 50)."),
+        .describe("Newest transactions to read within the window (default 50)."),
+      max_balance_transactions: numArg().int().min(50).max(10000).optional()
+        .describe("Later transactions to undo for historical sweep balances (default 1000). An incomplete reconstruction withholds that check."),
+      detail: z.enum(["summary", "full"]).optional().describe("Summary caps evidence lists with omissions; full returns every scanned sweep, deposit and other outflow."),
     },
-    async ({ address, max_transactions }) => {
+    async ({ address, from, to, max_transactions, max_balance_transactions, detail }) => {
       try {
-        const result = await classifyDepositAddress(address, { last: max_transactions ?? 50 });
-        return json({
+        const result = await classifyDepositAddress(address, {
+          last: max_transactions ?? 50, from, to, maxBalanceTransactions: max_balance_transactions,
+        });
+        const { payload } = capPayload("classify_deposit_address",
+          { address, from, to, max_transactions, max_balance_transactions },
+          {
           ...result,
           interpretation:
             result.verdict === "likely"
-              ? `This behaves like a customer deposit address${result.exchange?.entity ? ` at ${result.exchange.entity}` : ""}: incoming funds are swept whole into ${result.hot_wallet}. The exchange can name the account holder for this address.`
+              ? `In the transactions read, this behaves like a customer deposit address${result.exchange?.entity ? ` at ${result.exchange.entity}` : ""}: incoming funds are swept whole into ${result.hot_wallet}. This is a heuristic lead for asking the exchange about the account, not proof of ownership. See window for the period actually read.`
               : result.verdict === "no"
                 ? "The outflows in this window do not fit an exchange deposit address; see reasons."
-                : "Not enough evidence either way; see reasons and checks_not_run for which check is open.",
-        });
+                : "Not enough evidence in the transactions read; see window, reasons and checks_not_run. Older sweeps outside this window may give a different answer.",
+          },
+          { sweeps: { budget: 12000 }, deposits: { budget: 6000 }, other_outflows: { budget: 4000 } },
+          { full: detail === "full", next_call: { tool: "classify_deposit_address", repeat_with: { detail: "full" } } },
+        );
+        return json(payload);
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

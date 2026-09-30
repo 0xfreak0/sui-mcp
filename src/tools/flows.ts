@@ -34,6 +34,7 @@ import {
 import { capPayload, type ListCap } from "../utils/output-cap.js";
 import { readMovedObjects, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { depositRole } from "../utils/deposit-role.js";
 
 /**
  * Everything one scan needs: balance changes and commands (both completed past
@@ -172,6 +173,7 @@ function who(address: string, identity: AddressIdentity | undefined) {
     ...(identity?.name ? { name: identity.name } : {}),
     ...(label ? { label: label.label, label_category: label.category } : {}),
     ...(provenance ? { label_provenance: provenance } : {}),
+    deposit_address: depositRole(address),
     ...(identity?.protocol ? { protocol: identity.protocol } : {}),
     ...(note ? { note } : {}),
   };
@@ -551,6 +553,7 @@ export function registerFlowTools(server: McpServer) {
         const payload = {
           address,
           window: describeWindow(from, to, window),
+          deposit_address: depositRole(address, { from, to }),
           ...(coin_type ? { coin_filter: coinKey(coin_type) } : {}),
           coverage: {
             scanned_transactions: txs.length,

@@ -35,7 +35,7 @@ describe("identify_address", () => {
     mockSui.ledgerService.getObject.mockResolvedValue({
       response: {
         object: {
-          objectId: "0xpkg",
+          objectId: "0xa11",
           objectType: "package",
           owner: { kind: GrpcTypes.Owner_OwnerKind.IMMUTABLE },
         },
@@ -53,7 +53,7 @@ describe("identify_address", () => {
     });
 
     const handler = tools.get("identify_address")!;
-    const result = await handler({ address: "0xpkg" });
+    const result = await handler({ address: "0xa11" });
     const data = JSON.parse(result.content[0].text);
 
     expect(data.type).toBe("package");
@@ -106,18 +106,18 @@ describe("identify_address", () => {
   it("reports a package as current when it is the newest version", async () => {
     mockSui.ledgerService.getObject.mockResolvedValue({
       response: {
-        object: { objectId: "0xpkg", objectType: "package", owner: { kind: GrpcTypes.Owner_OwnerKind.IMMUTABLE } },
+        object: { objectId: "0xa11", objectType: "package", owner: { kind: GrpcTypes.Owner_OwnerKind.IMMUTABLE } },
       },
     });
     mockSui.movePackageService.getPackage.mockResolvedValue({
       response: { package: { originalId: "0xroot", version: 3n, modules: [] } },
     });
     mockGqlQuery.mockResolvedValue({
-      packageVersions: { nodes: [{ address: "0xpkg", version: 3 }] },
+      packageVersions: { nodes: [{ address: "0xa11", version: 3 }] },
     });
 
     const handler = tools.get("identify_address")!;
-    const data = JSON.parse((await handler({ address: "0xpkg" })).content[0].text);
+    const data = JSON.parse((await handler({ address: "0xa11" })).content[0].text);
 
     expect(data.lineage.is_latest).toBe(true);
     expect(data.protocol).toBeNull();
@@ -128,7 +128,7 @@ describe("identify_address", () => {
     // outage must not turn a working identification into an error.
     mockSui.ledgerService.getObject.mockResolvedValue({
       response: {
-        object: { objectId: "0xpkg", objectType: "package", owner: { kind: GrpcTypes.Owner_OwnerKind.IMMUTABLE } },
+        object: { objectId: "0xa11", objectType: "package", owner: { kind: GrpcTypes.Owner_OwnerKind.IMMUTABLE } },
       },
     });
     mockSui.movePackageService.getPackage.mockResolvedValue({
@@ -137,7 +137,7 @@ describe("identify_address", () => {
     mockGqlQuery.mockRejectedValue(new Error("502"));
 
     const handler = tools.get("identify_address")!;
-    const data = JSON.parse((await handler({ address: "0xpkg" })).content[0].text);
+    const data = JSON.parse((await handler({ address: "0xa11" })).content[0].text);
 
     expect(data.type).toBe("package");
     expect(data.module_count).toBe(1);
@@ -149,7 +149,7 @@ describe("identify_address", () => {
     mockSui.ledgerService.getObject.mockResolvedValue({
       response: {
         object: {
-          objectId: "0xshared",
+          objectId: "0xa12",
           objectType: "0xdex::pool::Pool<0x2::sui::SUI, 0xusdc::USDC>",
           owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 1n },
           version: 100n,
@@ -158,7 +158,7 @@ describe("identify_address", () => {
     });
 
     const handler = tools.get("identify_address")!;
-    const result = await handler({ address: "0xshared" });
+    const result = await handler({ address: "0xa12" });
     const data = JSON.parse(result.content[0].text);
 
     expect(data.type).toBe("shared_object");
@@ -226,7 +226,7 @@ describe("identify_address", () => {
     mockSui.ledgerService.getObject.mockResolvedValue({
       response: {
         object: {
-          objectId: "0xshared",
+          objectId: "0xa12",
           objectType: "0xdex::pool::Pool",
           owner: { kind: GrpcTypes.Owner_OwnerKind.SHARED, version: 1n },
           version: 100n,
@@ -235,7 +235,7 @@ describe("identify_address", () => {
     });
     mockSui.listBalances.mockRejectedValue(grpcError("UNAVAILABLE"));
 
-    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xshared" })).content[0].text);
+    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xa12" })).content[0].text);
 
     expect(data.address_balances).toBeUndefined();
     expect(data.address_balances_error).toMatch(/Could not read/);
@@ -270,7 +270,7 @@ describe("identify_address", () => {
     });
 
     const handler = tools.get("identify_address")!;
-    const result = await handler({ address: "0xwallet" });
+    const result = await handler({ address: "0xa13" });
     const data = JSON.parse(result.content[0].text);
 
     expect(data.type).toBe("wallet");
@@ -406,7 +406,7 @@ describe("identify_address error handling", () => {
     mockSui.nameService.reverseLookupName.mockRejectedValue(grpcError("DEADLINE_EXCEEDED"));
     mockSui.listBalances.mockRejectedValue(grpcError("UNAVAILABLE"));
 
-    const res = await tools.get("identify_address")!({ address: "0xwallet" });
+    const res = await tools.get("identify_address")!({ address: "0xa13" });
     const data = JSON.parse(res.content[0].text);
     expect(data.type).toBe("wallet");
     expect(data.sui_balance).toBeNull();
@@ -430,7 +430,7 @@ describe("identify_address error handling", () => {
     mockSui.nameService.reverseLookupName.mockRejectedValue(notFoundError("no name record"));
     mockSui.listBalances.mockResolvedValue({ balances: [] });
 
-    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xwallet" })).content[0].text);
+    const data = JSON.parse((await tools.get("identify_address")!({ address: "0xa13" })).content[0].text);
     expect(data.sui_name).toBeNull();
     expect(data.sui_name_unavailable).toBeUndefined();
     expect(data.sui_balance).toBe("0");

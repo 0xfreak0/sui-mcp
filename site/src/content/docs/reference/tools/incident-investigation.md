@@ -13,7 +13,7 @@ sidebar:
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find possible shared operators when a fund trace reaches fresh wallets. |
 | [`check_coin_restrictions`](#check_coin_restrictions) | Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. |
-| [`classify_deposit_address`](#classify_deposit_address) | Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. |
+| [`classify_deposit_address`](#classify_deposit_address) | Classify exchange deposit behaviour over a chosen window. |
 | [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
 | [`find_flow_path`](#find_flow_path) | Is there a value path from one address to another? |
@@ -154,12 +154,16 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. Verdict likely, no or unknown is heuristic. With complete balances it independently checks full-balance outflows to one destination, a relayer-shaped gas sponsor, and a labelled exchange or hub-shaped destination. Self-funded gas may leave up to 1 SUI. A balance equal to deposits just before the sweep may remain only if the next outflow empties that coin to the same destination or is not yet in the window; left_for_next_sweep records this. Other residual balances fail the sweep check. Returns hot wallet, exchange provenance, sponsor, sweep digests and sampled deposits. checks_not_run explains null checks. Unread balances give unknown, null checks/sweep_count/deposit_count, and incomplete_transactions. One initial query plus balance continuations and optional sponsor/destination reads.
+(Incident investigation) Classify exchange deposit behaviour over a chosen window. The heuristic verdict covers only transactions read; window states bounds, coverage and continuation. Historical sweep balances are reconstructed with a separate budget. No outflows means unknown, not clearance. Session verdicts are shared with identification, flows and label lookup without adding trace sinks.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Candidate deposit address (0x...). |
-| `max_transactions` | integer (5 to 50) | no | Most recent transactions to read (default 50). |
+| `from` | string | no | Window start: ISO 8601 time (inclusive) or checkpoint (exclusive). |
+| `to` | string | no | Window end: ISO 8601 time (inclusive), 'now', or checkpoint (exclusive). |
+| `max_transactions` | integer (5 to 5000) | no | Newest transactions to read within the window (default 50). |
+| `max_balance_transactions` | integer (50 to 10000) | no | Later transactions to undo for historical sweep balances (default 1000). An incomplete reconstruction withholds that check. |
+| `detail` | `summary` \| `full` | no | Summary caps evidence lists with omissions; full returns every scanned sweep, deposit and other outflow. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## delete_finding

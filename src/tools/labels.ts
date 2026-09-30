@@ -13,6 +13,7 @@ import { storeStatus } from "../utils/store.js";
 import { capPayload } from "../utils/output-cap.js";
 import { errorResult } from "../utils/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { depositRole } from "../utils/deposit-role.js";
 
 const CATEGORIES = [
   "cex",
@@ -142,6 +143,7 @@ export function registerLabelTools(server: McpServer) {
             account: safeAccount(address),
             label: found,
             is_sink: found ? isSinkCategory(found.category) : false,
+            deposit_address: depositRole(address),
           });
         }
 

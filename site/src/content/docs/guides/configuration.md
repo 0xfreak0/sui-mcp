@@ -49,9 +49,9 @@ echoed back as `resolved_from`.
 
 ## Price sources
 
-Current USD prices come from Aftermath, then DefiLlama for anything Aftermath
-does not list. `get_token_prices` then asks Pyth for a coin on the verified
-list when `PYTH_API_KEY` is set. The 24h change in `get_token_prices` and `analyze_token` is
+Current USD prices in `get_token_prices` come from Aftermath, then DefiLlama
+for anything Aftermath does not list, then Pyth for verified coins when
+`PYTH_API_KEY` is set. The 24h change in `get_token_prices` and `analyze_token` is
 DefiLlama's, and null for a coin it does not list. Prices at a past moment
 (`get_token_prices` with `at`, per-hop USD in `trace_funds`,
 `analyze_attack_tx`, `summarize_incident_losses`) come from DefiLlama, or from
@@ -73,12 +73,14 @@ the reason, and a failed request is reported differently from a coin the
 provider does not list.
 
 For windows, `summarize_address_flows`, `summarize_incident_losses` and
-`aggregate_events` participant P&L price each coin movement by its own UTC day
-before summing. Their pricing blocks report coverage; missing coin-days,
-unknown decimals and pricing-budget stops stay unpriced. `price_at` on
-`summarize_incident_losses` selects one fixed time instead. Objects keep their
-own transaction-time valuation unless that override is set. See
-[USD over a time window](/concepts/fund-flows/#usd-over-a-time-window).
+`aggregate_events` participant P&L use each coin's median movement time within
+each UTC hour, or within each UTC day when the window needs too many quotes.
+Their pricing blocks report coverage; missing samples, unknown decimals and
+pricing-budget stops stay unpriced. `price_at` on `summarize_incident_losses`
+selects one fixed time instead. Objects keep their own transaction-time
+valuation unless that override is set. See
+[How USD values are calculated](/concepts/pricing/) for timing, partial totals
+and how to report USD estimates.
 
 DefiLlama and Aftermath key on the full coin type, so an impostor coin that
 copies a real coin's symbol is priced as itself or not at all. Pyth feeds are
@@ -93,6 +95,11 @@ accident and nothing degrades without it:
 
 A missing price and a price of zero mean different things, and no tool reports
 one as the other.
+
+`analyze_token`, `get_pool_info` and the coin balances in
+`get_wallet_overview` use Aftermath's current prices. Position and NFT
+valuations use DefiLlama, or Pyth for verified coins when its key is set;
+each position's method names the source and time.
 
 ## Optional local store
 

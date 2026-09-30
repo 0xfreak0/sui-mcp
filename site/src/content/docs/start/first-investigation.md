@@ -69,6 +69,8 @@ funded the wallet.
   unread or unpriced objects. Missing debits can raise a net, so a partial
   total is not a lower bound. `usd_basis` reports pricing coverage, and
   `unpriced_remainder` lists unpriced coins in incident totals.
+  USD values are estimates from provider quotes; see
+  [How USD values are calculated](/concepts/pricing/).
 - `coin_verified` and `verified`: whether a coin is the one its symbol
   suggests or an imitator. See [Coin identity and scale](/concepts/coins/).
 - Leads and facts: amounts, digests, signers and timestamps are read from the

@@ -77,7 +77,7 @@ const EVIDENCE_TIERS = {
   "chain-derived":
     "Read from the transaction: balance changes, and pool reserve changes decoded from the pool's own events.",
   "price-provider":
-    "USD is DefiLlama's or Pyth's price at the stated time, a third-party figure. Coins without one are listed, never valued at zero.",
+    "USD estimates use DefiLlama or Pyth quotes near the transaction or requested time, not execution prices. Unpriced coins are listed, not valued at zero.",
   heuristic:
     "Matched on function and event names, the PTB's data flow and who published each called package: flash legs, oracle touches and anomaly flags. A lead to check against the calls, not a finding on its own; a check that matched nothing clears nothing.",
 };

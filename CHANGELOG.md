@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Changed
+- **USD values are labelled as estimates, and a docs page explains them.**
+  A new page, "How USD values are calculated", says which provider and which
+  moment each tool prices at. It also explains why a total can differ from
+  an exact or reported figure (price moves, stale or missing quotes, thin
+  coins, rounding, two tools pricing at different times) and which fields
+  state it. The answer is: report raw token amounts as exact and USD as an
+  estimate. USD-bearing answers say in one phrase that their USD comes from
+  provider quotes, not execution prices.
 - **The forensics skill matches 1.25.** It uses the renamed funds-loss prompt,
   distinguishes empty pages and read-budget stops from exhausted results,
   and explains unread transactions, same-network continuations, validator

@@ -11,6 +11,7 @@ cluster from a crowd, then reconstruct it all on a timeline.
 
 It also covers the ordinary things: wallet overviews, DeFi positions, NFTs,
 prices and Move package analysis.
+USD totals are provider-based estimates; see [How USD values are calculated](https://sui-mcp.vercel.app/concepts/pricing/).
 
 ## Install
 

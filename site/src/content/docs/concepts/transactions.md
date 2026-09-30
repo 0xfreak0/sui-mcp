@@ -388,9 +388,15 @@ The default order is newest-first. Pages report `order`, `oldest_shown`,
 with the same order and filters. Checkpoint bounds are exclusive; ISO bounds
 include the stated instant, for example `2026-08-07T00:00:00Z`.
 
+Short service pages are filled to `limit` within a read budget. If that budget
+runs out, `scan` explains the stop and supplies the continuation call.
+Continue while `has_next_page` is true, even if `transactions` is empty.
+
 A function filter matches only the named package version, so each upgraded
 version sees a different share of calls. `function_scope` reports the lineage;
 `all_versions: true` merges calls through every version.
+Rows wait until each version stream's next rows or exhaustion establish their
+global order.
 
 Matching a call does not attribute the whole transaction to that protocol.
 A PTB may also make a large Cetus swap or use another protocol; summing its

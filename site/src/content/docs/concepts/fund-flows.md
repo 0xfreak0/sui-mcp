@@ -257,6 +257,10 @@ window can miss an active address's largest exit. Expanded counterparties
 get 50 transactions. `max_expand` defaults to eight counterparties per hop,
 highest value first, and a call typically costs 15–60 requests.
 
+`windows[].incomplete_transactions` names transactions whose balance pages
+could not all be read. Their paths are withheld, and affected bridge
+`sent` amounts are null rather than partial totals.
+
 A CAIP-10 account on another chain, such as `eip155:1:0x…`, receives only a
 direct label and sanctions lookup; the server does not trace that chain.
 
@@ -265,7 +269,7 @@ direct label and sanctions lookup; the server does not trace that chain.
 `classify_deposit_address` tests whether an address is a per-customer deposit
 address that an exchange sweeps into its hot wallet, the identifier used to
 request the customer's identity. Its `likely`, `no` or `unknown` verdict is
-heuristic. It checks three things independently:
+heuristic. With complete balances, it checks three things independently:
 
 1. Every outflow sweeps the full balance to one destination.
 2. A relayer-shaped sponsor pays the sweeps' gas.
@@ -277,11 +281,15 @@ recorded in `left_for_next_sweep`, if the next outflow of that coin empties
 it into the same destination or is not yet in the window. Any other residual
 balance fails the sweep check.
 
-Every check runs regardless of the others' results, and `checks_not_run`
-explains null checks. Results identify the hot wallet, exchange label and
-provenance, sweep sponsor, sweep digests and sampled deposits. The read defaults
-to the most recent 50 transactions, costing about one request plus up to
-12 more to measure the sponsor and an unlabelled destination.
+With complete balances, each check runs regardless of the others' results.
+`checks_not_run` explains null checks. Unread balances instead produce
+`unknown`, null checks, null `sweep_count` and `deposit_count`, and
+`incomplete_transactions`, not a negative deposit-address finding.
+
+Results identify the hot wallet, exchange label and provenance, sweep sponsor,
+sweep digests and sampled deposits. The read defaults to the most recent
+50 transactions. It uses one initial query, any balance continuations, and
+optional reads to measure the sponsor and an unlabelled destination.
 
 ## Following one fund-flow path
 

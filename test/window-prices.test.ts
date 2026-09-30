@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { windowPrices, WindowAmounts, resetWindowPriceCache } from "../src/utils/window-prices.js";
+import { resetLiveCoinScale } from "../src/utils/valuation.js";
+const metadataRead = vi.hoisted(() => vi.fn());
+vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo: metadataRead } }, archive: {} }));
 const pointRead = vi.hoisted(() => vi.fn());
 const historyRead = vi.hoisted(() => vi.fn());
 vi.mock("../src/utils/valuation.js", async (original) => ({ ...(await original<object>()), priceUsdAtTime: pointRead }));
@@ -7,7 +10,7 @@ vi.mock("../src/utils/price-providers.js", async (original) => ({ ...(await orig
 const SUI = "0x2::sui::SUI";
 const JAN = 1735689600;
 const JUL = 1751328000;
-beforeEach(() => { resetWindowPriceCache(); vi.clearAllMocks(); });
+beforeEach(() => { resetWindowPriceCache(); resetLiveCoinScale(); vi.clearAllMocks(); });
 
 describe("window USD", () => {
   it("sums differently priced signed legs even when their raw net is zero", async () => {
@@ -58,5 +61,32 @@ describe("window USD", () => {
     amounts.add(SUI, 10_000_000_000n, JAN);
     expect(amounts.amounts()[0]).toMatchObject({ amount: 10, usd: null, unpriced_raw: { in: "10000000000", out: "0" } });
     expect(prices.basis).toMatchObject({ partial: true, priced_coin_days: 0 });
+  });
+
+  it("resolves and caches decimals independently of batch quotes", async () => {
+    const coin = `0x${"ab".repeat(32)}::coin::SIX`;
+    metadataRead.mockResolvedValue({ response: { metadata: { decimals: 6 } } });
+    historyRead.mockResolvedValue(new Map([[coin, new Map([[JAN, { price: 2, at: JAN }], [JUL, { price: 2, at: JUL }]])]]));
+    const requests = [{ at: JAN, coins: [coin] }, { at: JUL, coins: [coin] }];
+    const prices = await windowPrices(requests);
+    const amounts = new WindowAmounts(prices);
+    amounts.add(coin, 1_000_000n, JAN);
+    amounts.add(coin, 1_000_000n, JUL);
+    expect(amounts.amounts()[0]).toMatchObject({ amount: 2, usd: 4 });
+    expect(prices.basis).toMatchObject({ priced_coin_days: 2, partial: false });
+    await windowPrices(requests);
+    expect(metadataRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts quotes with unknown decimals as unpriced rather than guessing a scale", async () => {
+    const coin = `0x${"ac".repeat(32)}::coin::UNKNOWN`;
+    metadataRead.mockResolvedValue({ response: {} });
+    historyRead.mockResolvedValue(new Map([[coin, new Map([[JAN, { price: 2, at: JAN }], [JUL, { price: 2, at: JUL }]])]]));
+    const prices = await windowPrices([{ at: JAN, coins: [coin] }, { at: JUL, coins: [coin] }]);
+    const amounts = new WindowAmounts(prices);
+    amounts.add(coin, 1_000_000n, JAN);
+    amounts.add(coin, -1_000_000n, JUL);
+    expect(amounts.amounts()[0]).toMatchObject({ usd: null, unpriced_raw: { in: "1000000", out: "1000000" } });
+    expect(prices.basis).toMatchObject({ priced_coin_days: 0, partial: true, missing_coin_days: [{ coin_type: coin, days: 2 }] });
   });
 });

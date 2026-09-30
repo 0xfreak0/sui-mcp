@@ -1,5 +1,5 @@
 import { fetchDefiLlamaHistory, pythApiKey } from "./price-providers.js";
-import { displayCoin, priceUsdAtTime, pricingScale, toHumanAmount, type PricePoint } from "./valuation.js";
+import { displayCoin, prefetchCoinScale, priceUsdAtTime, pricingScale, toHumanAmount, type PricePoint } from "./valuation.js";
 
 const DAY = 86400;
 const MAX_DAYS = 366;
@@ -36,6 +36,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
   }
   const points = new Map<number, Map<string, PricePoint>>();
   const pending = new Map<number, string[]>();
+  const selectedCoins = new Set<string>();
   let selected = 0;
   let skipped = 0;
   const provider = pythApiKey() ? "pyth+defillama" : "defillama";
@@ -45,6 +46,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
     for (const coin of coins) {
       if (index >= MAX_DAYS || selected >= MAX_QUOTES) { skipped++; continue; }
       selected++;
+      selectedCoins.add(coin);
       const cached = cache.get(`${provider}:${day}:${coin}`);
       if (cached) daily.set(coin, cached);
       else {
@@ -54,6 +56,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       }
     }
   }
+  const scalesReady = prefetchCoinScale(selectedCoins);
   if (pending.size === 1 || provider !== "defillama") {
     const days = [...pending];
     for (let i = 0; i < days.length; i += 4) await Promise.all(days.slice(i, i + 4).map(async ([day, coins]) => {
@@ -74,13 +77,18 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
         ...(quote.decimals !== undefined ? { decimals: quote.decimals } : {}), ...(quote.priced_as ? { priced_as: quote.priced_as } : {}) });
     }
   }
+  await scalesReady;
   const missing = new Map<string, { coin_type: string; days: number; first_day: string; last_day: string }>();
   let priced = 0;
   const sources = new Set<string>();
   const pricedAs: Record<string, string> = {};
   let firstMissing: number | undefined;
   for (const [day, coins] of wanted) for (const coin of coins) {
-    const point = points.get(day)?.get(coin);
+    let point = points.get(day)?.get(coin);
+    if (point && pricingScale(coin, point).source === "assumed") {
+      points.get(day)!.delete(coin);
+      point = undefined;
+    }
     if (point) {
       priced++;
       sources.add(point.source);
@@ -116,7 +124,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       budget_skipped_coin_days: skipped,
       partial: missing.size > 0 || unknownTime > 0,
       meaning: (fixedAt !== undefined ? "Coin USD uses the requested fixed time" : "Coin USD sums use each transaction's UTC-day midnight quote") +
-        " (within one hour), not execution prices. Missing prices and timestamps are excluded; priced/unpriced raw amounts show coverage. Objects use their own stated methods.",
+        " (within one hour), not execution prices. Missing prices, known decimals or timestamps are excluded; priced/unpriced raw amounts show coverage. Objects use their own stated methods.",
       ...(missing.size || unknownTime ? { continue_with: {
         ...(firstMissing !== undefined ? {
           from: new Date(firstMissing * 1000).toISOString(),

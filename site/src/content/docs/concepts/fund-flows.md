@@ -17,6 +17,8 @@ The `usd_basis` block reports sources and coin-day coverage. Daily quotes are
 estimates, not execution prices. `priced_raw` and `unpriced_raw` separate the
 amounts included in USD from those left out. A missing timestamp or price never
 falls back to today's price or another day's quote.
+Coin decimals come from the registry, cached on-chain metadata or the quote's
+provider. A quote without a known decimal scale stays unpriced.
 
 DefiLlama is the default; Pyth is used only with `PYTH_API_KEY`. Multi-day
 DefiLlama reads batch historical samples, and successful samples are cached.

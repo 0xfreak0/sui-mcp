@@ -20,6 +20,7 @@ const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002:
 const USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 const CETUS = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool";
 const TURBOS = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool";
+const BLUEMOVE = "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool";
 const FEE = "91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::fee500bps::FEE500BPS";
 
 const node = (id: string, type: string) => ({ address: id, asMoveObject: { contents: { type: { repr: type } } } });
@@ -46,12 +47,13 @@ describe("find_pools", () => {
           : page([node("0xc1", cetusType), node("0xc2", cetusType)], "p2");
       }
       if (vars.type === `${TURBOS}<${USDC}, ${SUI}, 0x${FEE}>`) return page([node("0xt1", turbosType)]);
+      if (vars.type === `${BLUEMOVE}<${USDC}, ${SUI}>`) return page([node("0xb1", `${BLUEMOVE}<${USDC}, ${SUI}>`)]);
       return page([]);
     });
 
     const data = JSON.parse((await tools.get("find_pools")!({ token_a: SUI, token_b: USDC })).content[0].text);
 
-    expect(data.pools.map((p: { pool_id: string }) => p.pool_id).sort()).toEqual(["0xc1", "0xc2", "0xc3", "0xt1"]);
+    expect(data.pools.map((p: { pool_id: string }) => p.pool_id).sort()).toEqual(["0xb1", "0xc1", "0xc2", "0xc3", "0xt1"]);
     expect(data.pools.every((p: { token_a: string; token_b: string }) => p.token_a === USDC && p.token_b === SUI)).toBe(true);
     expect(data.incomplete).toBeUndefined();
   });

@@ -521,6 +521,11 @@ export function decodeTransaction(
               pathCoin = hop[1];
               routeHops.push({ action: actions.length, command: index, path, coin_in: hop[0], coin_out: hop[1], route_coins: routeCoins });
             }
+          } else if (op.action === "swap" && mod === "router" && /^swap_(ab|ba)_(bc|cb)$/.test(fn) && typeArgs.length === 3) {
+            // These two-pool routes take and return Coin<A>/Coin<C>.
+            // The function's letters order the pools, not the user's coins;
+            // B is internal to the route and never its final output.
+            args = [typeArgs[0], typeArgs[2]];
           } else if (op.action === "swap") {
             args = swapDirection(
               typeArgs,

@@ -125,7 +125,7 @@
       ],
       "tier": "chain-derived",
       "basis": "Chain: all of DOPE's liquidity was one Cetus position the deployer held in its own wallet for its whole life.",
-      "known_defect": "analyze_token names no pool, no liquidity and no LP holder, so the unlocked position in the deployer's wallet is invisible."
+      "known_defect": "Analysis-scope limit: analyze_token reads metadata, prices, supply, holders and mint authority, not pool discovery or LP custody. Its result cannot establish locked liquidity. Use find_pools for the pair and trace_object_history for the position; see concepts/coins, Liquidity pools."
     },
     {
       "id": "find-pool",
@@ -393,14 +393,18 @@
           "value": "{funding_tx}"
         },
         {
-          "path": "transactions[0].token_flow[0].amount",
+          "path": "transactions[0].subject_flow[0].amount",
           "op": "equals",
           "value": "2680000000000"
+        },
+        {
+          "path": "transactions[0].token_flow[0].amount",
+          "op": "equals",
+          "value": "-2679953820000"
         }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: EQHEs1p1 credits the deployer +2680000000000 MIST.",
-      "known_defect": "token_flow on a transaction the address did not send shows the sender's flow (-2679.95382 SUI), so an inbound funding reads as an outflow."
+      "basis": "Chain: EQHEs1p1 credits the queried deployer +2680000000000 MIST and debits its sender -2679953820000 MIST (net of storage rebate). subject_flow is the queried wallet's side; token_flow is the sender's side. Both values were independently read from the complete GraphQL balanceChanges connection."
     },
     {
       "id": "proceeds-to-hub",

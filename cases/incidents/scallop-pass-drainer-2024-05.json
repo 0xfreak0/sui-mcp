@@ -472,8 +472,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "chain: router::swap_ab_bc<USDT, USDC, SUI> took 7,940.81 USDT and returned 7,803.38 SUI.",
-      "known_defect": "actions labels the two-hop swap_ab_bc as 'Swap USDT → USDC', dropping the SUI leg the token_flow shows."
+      "basis": "chain: router::swap_ab_bc<USDT, USDC, SUI> took 7,940.81 USDT and returned 7,803.38 SUI."
     }
   ]
 }

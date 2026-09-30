@@ -58,6 +58,19 @@ describe("decodeTransaction", () => {
     expect(result.actions[0]).toContain("Cetus");
   });
 
+  it.each(["swap_ab_bc", "swap_ab_cb", "swap_ba_bc", "swap_ba_cb"])(
+    "reports the input and final output of router::%s rather than its intermediate coin",
+    (fn) => {
+      const coins = ["0x11::a::AAA", "0x22::b::BBB", "0x33::c::CCC"];
+      const result = decodeTransaction([makeCommand("0x123", "router", fn, coins)], [
+        makeBalanceChange("0xsender", coins[0], "-100"),
+        makeBalanceChange("0xsender", coins[2], "90"),
+      ], "0xsender");
+      expect(result.actions[0]).toMatch(/AAA.*CCC/);
+      expect(result.actions[0]).not.toContain("BBB");
+    },
+  );
+
   it("skips infrastructure operations", () => {
     const commands = [
       makeCommand("0x2", "coin", "from_balance"),

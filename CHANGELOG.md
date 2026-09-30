@@ -21,7 +21,22 @@
   later upgrades are named from the registry rather than by publisher key.
 
 ### Changed
+- **The docs state ten known limits and what to do instead.** They cover:
+  summary timelines; `analyze_token` not reading pools or LP custody; the
+  affected-object index missing read-only users; caller-value detection;
+  incident grouping by exact pool set; flow graphs seeding from coins only;
+  batch reads without object custody; sender-window totals; and Orbiter
+  memos, which are not decoded.
 - **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
+
+### Fixed
+- **Two-pool router swaps name the final output coin.** The decoded action
+  showed the route's intermediate coin as the output; it now uses the input
+  and final output types.
+- **Switchboard on-demand packages are identified across upgrades.** The
+  official deployment is curated, so every version of its lineage is named.
+- **`find_pools` finds BlueMove v1 pools**, in both token orders and when
+  object-owned. `protocol: "bluemove"` restricts the search to them.
 
 ## 1.25.0 (2026-09-30)
 

@@ -57,6 +57,11 @@ follow `events_page.next_call` for the next offset.
 real hop, for example USDC to USDT to USDC. It lists the loop's action indices,
 coins and round-trip cost from the pools' own swap events, or null with a reason.
 
+Two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` and `swap_ba_cb`
+actions name the first and third type arguments as input and output. The
+middle type is the route's intermediate coin; the function suffix describes
+the pools' coin ordering.
+
 
 ## Why a transaction failed
 
@@ -382,6 +387,11 @@ and recipient. A Move filter can name a function such as
 `0x2::coin::transfer`, a module such as `0x2::pay`, or a package.
 Use `get_transaction_history` for decoded wallet activity instead.
 
+`affected_object` uses the service's affected-object index. Transactions that
+only read an object can be absent, so this filter cannot enumerate every user
+of an oracle or other immutable input. Search the relevant function and time
+window, then inspect `decode_ptb` inputs to establish which object each call used.
+
 The default order is newest-first. Pages report `order`, `oldest_shown`,
 `newest_shown` and the resolved `window`; pass `next_cursor` as `cursor`
 with the same order and filters. Checkpoint bounds are exclusive; ISO bounds
@@ -424,6 +434,9 @@ The default summary keeps rows within a display budget in order, always retainin
 failures and entries involving two tracked addresses. `omitted` describes
 display exclusions; `detail: "full"` returns entries up to `limit`, which
 defaults to 60. The read budget defaults to 30 transactions per address.
+Even a short window can exceed the summary budget; a missing closing action
+does not establish that it never happened. Follow `omitted.next_call` before
+treating the displayed timeline as the complete sequence.
 
 `activity_hours` is off by default. It reports distributions by UTC hour and
 offers a timezone reading only when sample size, time span and read depth
@@ -449,6 +462,11 @@ events, calls and balances, keeping the sender's own balance changes.
 limit, not the event-read bound. For one transaction, or any transaction with
 more than 50 events, use `get_transaction` to page events to the end.
 
+The batch does not read object custody changes, including transfers of NFTs,
+positions or `StakedSui`. `detail: "full"` does not add these reads. Use
+`get_transaction` and its `object_transfers` when value can move without a coin
+balance change; a batch showing no coin loss does not rule out an object drain.
+
 ## Totalling incident losses
 
 `summarize_incident_losses` accepts exploit digests or a sender with an optional
@@ -462,6 +480,18 @@ Coins sent onward in a coin that moved only between addresses in that
 transaction are `transfers_out`, excluded from take. Unpriced coin legs and
 unread or unpriced objects make `totals.partial` true. Missing debits can raise
 a net, so a partial USD total is not a lower bound.
+
+Sender mode includes swaps, deposits, withdrawals and bridge burns in the
+window. These can net against exploit credits. It does not classify which
+transactions were exploits, so use an explicit exploit digest set to measure
+the take before subsequent trading and bridging.
+
+Groups use the exact set of pool or vault objects attributed to a transaction
+and the evidence basis (events or state). A transaction touching several
+pools has one attacker net that cannot safely be split among them. Deposits
+and withdrawals involving different sets remain separate groups even if they
+share a port. For that port's net, attribute its digest set or aggregate its
+own events; the largest group's `attacker_usd` need not be its total loss.
 
 The default attacker is `sender`, or each transaction's sender. If every
 successful transaction's sender only paid gas, the largest priced gainer above
@@ -480,3 +510,14 @@ The summary keeps the largest rows within a display budget. Totals cover
 all rows, even when `max_groups` limits the listed groups. `omitted` gives
 each trimmed list's count, USD, largest row and the call to retrieve it.
 `detail: "full"` lists every row.
+
+## Caller-set values
+
+`analyze_attack_tx`'s `caller-value-used` rule connects a caller input to a
+shared-object field or an attributed event, followed by a call using that
+object. It does not reconstruct intermediate VM state. A set-use-restore
+sequence can be detected when events track the changed field, but a value
+restored before the final object write can escape the rule when the event
+fields cannot be matched to that state. Inspect `decode_ptb` and the called
+bytecode before treating the absence of this flag as evidence of a safe
+oracle update. `price-off-market` is a separate check of a quoted price.

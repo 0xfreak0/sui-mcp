@@ -73,6 +73,15 @@ describe("lineage tier", () => {
     });
   });
 
+  it("identifies an unlisted Switchboard upgrade as an oracle only on mainnet", async () => {
+    const future = "0x00000000000000000000000000000000000000000000000000000000000000b2";
+    const root = "0xc3c7e6eb7202e9fb0389a2f7542b91cc40e4f7a33c02554fec11c4c92f938ea3";
+    lineages({ [future]: root });
+    await runWithNetwork("mainnet", () => prefetchProtocolNames([future]));
+    expect(runWithNetwork("mainnet", () => lookupProtocol(future))).toEqual({ name: "Switchboard", type: "oracle" });
+    expect(runWithNetwork("testnet", () => lookupProtocol(future))).toBeNull();
+  });
+
   it("stays exact-match until a prefetch has run", () => {
     // Lookup is synchronous by contract. Skipping the prefetch degrades to the
     // behaviour this registry had before lineages existed — never to a hang.

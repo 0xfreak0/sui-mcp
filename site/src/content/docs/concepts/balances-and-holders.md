@@ -84,9 +84,11 @@ and a null total, never an intermediate set labelled as historical holdings.
 Objects created already wrapped are skipped only when a gRPC effects read
 proves they never existed at top level; other missing states remain incomplete.
 When effects v1 omit an input holder, the tool reads that exact object version.
-`attempts` records the stopping point; `continue_with` supplies a higher-budget
-call. `detail: full` returns all positions from a completed read. Display caps
-leave totals intact and give a saved-result page or full call for omitted rows.
+`attempts` records the stopping point and budget. `continue_with` supplies a
+higher-budget call for transaction/page limits. A time-budget stop stays
+incomplete without suggesting that a larger transaction budget can help.
+`detail: full` returns all positions from a completed read. Display caps leave
+totals intact and give a saved-result page or full call for omitted rows.
 
 `estimated_reward_mist` is separate. Each position's principal converts to
 pool tokens at its activation-epoch exchange rate, then back to SUI at the

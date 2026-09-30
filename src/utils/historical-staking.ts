@@ -11,6 +11,12 @@ const STAKE_TYPE = /^0x0*3::staking_pool::StakedSui$/;
 const MAX_POSITIONS = 10_000;
 const DEADLINE_MS = 90_000;
 
+class ScanBudgetExceeded extends Error {
+  constructor(readonly budget: "time" | "transactions" | "object_changes") {
+    super(`Historical replay stopped at its ${budget === "time" ? "time" : budget === "transactions" ? "transaction" : "object-change page"} budget.`);
+  }
+}
+
 interface Point { sequenceNumber: number; timestamp: string }
 interface Range { first: Point | null; last: Point | null }
 interface Page<T> { nodes: T[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }
@@ -149,7 +155,7 @@ async function ownedAt(owner: string, cp: number, deadline: number): Promise<Map
   let after: string | null = null;
   const seen = new Set<string>();
   for (;;) {
-    if (Date.now() >= deadline) throw new Error("The anchored holdings read reached its time budget.");
+    if (Date.now() >= deadline) throw new ScanBudgetExceeded("time");
     const data: { address: { objects: Page<Ref> } | null } = await gqlQuery(`query($owner:SuiAddress!,$cp:UInt53!,$after:String) {
       address(address:$owner,atCheckpoint:$cp) { objects(filter:{type:"${STAKED_SUI_TYPE}"},first:50,after:$after) {
         nodes { address version } pageInfo { hasNextPage endCursor }
@@ -173,6 +179,7 @@ interface Attempt {
   reached_checkpoint: number | null;
   complete: boolean;
   reason?: string;
+  budget_exhausted?: ScanBudgetExceeded["budget"];
 }
 
 async function replay(owner: string, cp: number, anchor: number, direction: Attempt["direction"], max: number, deadline: number) {
@@ -185,8 +192,8 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
     let cursor: string | undefined;
     const cursors = new Set<string>();
     for (;;) {
-      if (Date.now() >= deadline) throw new Error("The historical scan reached its time budget.");
-      if (attempt.transactions_scanned >= max) throw new Error("The transaction budget was exhausted.");
+      if (Date.now() >= deadline) throw new ScanBudgetExceeded("time");
+      if (attempt.transactions_scanned >= max) throw new ScanBudgetExceeded("transactions");
       const data = await gqlQuery<{ transactions: { nodes: Tx[]; pageInfo: BothWaysPageInfo } }>(SCAN, {
         owner, afterCp: forward ? null : cp, beforeCp: (forward ? cp : anchor) + 1,
         ...orderedPageArgs(order, Math.min(50, max - attempt.transactions_scanned), cursor),
@@ -198,7 +205,8 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
         let native: { changes: Map<string, GrpcTypes.ChangedObject>; createdWrapped: Set<string> } | undefined;
         const changeCursors = new Set<string>();
         for (;;) {
-          if (Date.now() >= deadline || attempt.object_change_pages >= max) throw new Error("The object-change scan budget was exhausted.");
+          if (Date.now() >= deadline) throw new ScanBudgetExceeded("time");
+          if (attempt.object_change_pages >= max) throw new ScanBudgetExceeded("object_changes");
           attempt.object_change_pages++;
           if (changes.nodes.some(c => !c.inputState && (c.idCreated !== true || !c.outputState))) {
             native ??= await replayEffects(tx.digest);
@@ -207,7 +215,7 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
           apply(changes.nodes, positions, owner, forward, native?.createdWrapped);
           if (positions.size > MAX_POSITIONS) throw new Error("The replay exceeds the position budget.");
           if (!changes.pageInfo.hasNextPage) break;
-          if (attempt.object_change_pages >= max) throw new Error("The object-change scan budget was exhausted.");
+          if (attempt.object_change_pages >= max) throw new ScanBudgetExceeded("object_changes");
           const after = changes.pageInfo.endCursor;
           if (!after || changeCursors.has(after)) throw new Error("An object-change continuation is unavailable.");
           changeCursors.add(after);
@@ -225,6 +233,7 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
     }
   } catch (error) {
     attempt.reason = error instanceof Error ? error.message : String(error);
+    if (error instanceof ScanBudgetExceeded) attempt.budget_exhausted = error.budget;
     return { positions: new Map<string, Ref>(), attempt };
   }
 }
@@ -311,10 +320,17 @@ export async function historicalStaking(address: string, asOf: string | number, 
   if (refs) {
     try { positions = await hydrate(refs); } catch (e) { refs = undefined; reason = String(e); }
   }
+  const timeStopped = attempts.some(attempt => attempt.budget_exhausted === "time");
+  const canIncreaseBudget = !timeStopped && maxTransactions < 10000 &&
+    attempts.some(attempt => attempt.budget_exhausted === "transactions" || attempt.budget_exhausted === "object_changes");
   if (!refs) return { ...base, method, complete: false, total_staked_mist: null, position_count: null, positions: [],
     estimated_reward_mist: null, total_unavailable: reason, attempts,
-    continue_with: { tool: "get_staking_summary", args: { address, network: getNetwork(), as_of: asOf, max_transactions: Math.min(10000, maxTransactions * 2) } },
-    continuation_note: "Increase max_transactions if below 10000, use a checkpoint nearer either end of the address history, or an endpoint retaining checkpoint-owned object sets for this date." };
+    ...(canIncreaseBudget ? {
+      continue_with: { tool: "get_staking_summary", args: { address, network: getNetwork(), as_of: asOf, max_transactions: Math.min(10000, maxTransactions * 2) } },
+      continuation_note: "Increase max_transactions to read more transactions and object-change pages.",
+    } : {}),
+    ...(timeStopped ? { time_budget_reached: true } : {}),
+  };
   let rewardsUnavailable: string | undefined;
   try {
     const rewards = await estimateStakedSuiRewards(positions, data.checkpoint.epoch.epochId);

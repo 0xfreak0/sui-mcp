@@ -146,6 +146,27 @@ describe("historical staking holdings", () => {
     expect(await historicalStaking(owner, 800)).toMatchObject({ complete: false, total_staked_mist: null });
   });
 
+  it("reports time exhaustion without suggesting an ineffective larger transaction budget", async () => {
+    let now = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const original = mocks.gql.getMockImplementation()!;
+    mocks.gql.mockImplementation((query, vars) => {
+      if (query.includes("transactions(filter:") && !query.includes("first: transactions")) now += 60_000;
+      return original(query, vars);
+    });
+    scanned = [tx(10, [])];
+    try {
+      const result = await historicalStaking(owner, 100);
+      expect(result).toMatchObject({ complete: false, total_staked_mist: null, attempts: [
+        { budget_exhausted: "time", transactions_scanned: 0, object_change_pages: 0 },
+        { budget_exhausted: "time", transactions_scanned: 0, object_change_pages: 0 },
+      ] });
+      expect(result.continue_with).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("finishes every object-change page before treating a transaction as complete", async () => {
     scanned = [tx(10, [change("0xs", null, state(1))], true, "changes")];
     continuation = [change("0xsecond", null, state(1))];

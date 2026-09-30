@@ -75,6 +75,6 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 | `address` | string | yes | Owner wallet address (0x...) |
 | `limit` | integer (1 to 1000) | no | Most NFTs to return (default 50, max 1000). |
 | `cursor` | string | no | Opaque pagination token from a prior response's `next_cursor`. Omit on first call. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): display fields only, and `omitted` counts the NFTs whose raw contents were left out. 'full' adds each NFT's raw Move struct contents. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) leaves out raw contents and valuation evidence, counted in `omitted`. 'full' includes both. |
 | `value` | boolean, default `true` | no | Estimate each NFT's value from its collection's market (default true). Costs a few requests per collection on the page. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

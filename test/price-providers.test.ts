@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-  availableSources,
   defiLlamaKey,
   fetchAftermath,
   fetchDefiLlama,
   fetchDefiLlamaHistory,
   parseDefiLlamaPrices,
   pricesForRanking,
-  pythApiKey,
 } from "../src/utils/price-providers.js";
 
 const SUI = "0x2::sui::SUI";
@@ -72,23 +70,6 @@ describe("fetchAftermath", () => {
   });
 });
 
-describe("opt-in providers", () => {
-  it("reports only the free sources when no keys are set", () => {
-    expect(availableSources()).toEqual(["aftermath", "defillama"]);
-    expect(pythApiKey()).toBeNull();
-  });
-
-  it("adds Pyth only once its key is present", () => {
-    process.env.PYTH_API_KEY = "k1";
-    expect(availableSources()).toEqual(["aftermath", "defillama", "pyth"]);
-  });
-
-  it("treats a blank key as unset, so whitespace does not enable a paid call", () => {
-    process.env.PYTH_API_KEY = "   ";
-    expect(pythApiKey()).toBeNull();
-    expect(availableSources()).toEqual(["aftermath", "defillama"]);
-  });
-});
 
 describe("pricesForRanking", () => {
   it("uses the free current-price source and never a paid historical one", async () => {

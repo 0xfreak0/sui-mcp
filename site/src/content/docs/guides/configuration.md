@@ -54,11 +54,14 @@ for anything Aftermath does not list, then Pyth for verified coins when
 `PYTH_API_KEY` is set. The 24h change in `get_token_prices` and `analyze_token` is
 DefiLlama's, and null for a coin it does not list. Prices at a past moment
 (`get_token_prices` with `at`, per-hop USD in `trace_funds`,
-`analyze_attack_tx`, `summarize_incident_losses`) come from DefiLlama, or from
-Pyth for verified coins when `PYTH_API_KEY` is set. A Sui Bridge token (ETH,
-USDT, wBTC, wLBTC) that DefiLlama has no price for under its own Sui type is
-priced as the Ethereum asset it is minted against, and the price says so in
-`priced_as`. Neither Aftermath nor DefiLlama needs a key.
+`analyze_attack_tx`, `summarize_incident_losses`) use DefiLlama by default,
+then CoinGecko's public API and GeckoTerminal when a quote is missing or a
+request fails. These keyless fallbacks cover recent history only. Unsupported
+dates are skipped; a historical request never falls back to a current price.
+Pyth is preferred for verified coins when `PYTH_API_KEY` is set. A Sui Bridge
+token (ETH, USDT, wBTC, wLBTC) that DefiLlama has no price for under its own Sui
+type is priced as the Ethereum asset it is minted against, and the price says
+so in `priced_as`. Only Pyth needs a key.
 
 ```
 get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
@@ -66,24 +69,36 @@ get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
     price_time 2025-05-22T10:30:01Z, price_offset_sec 1
 ```
 
-Every price names its source, the provider's confidence, and the time of the
-sample it came from; one more than an hour from the moment asked for is marked
-`stale`. Every coin that could not be priced is listed under `unpriced` with
-the reason, and a failed request is reported differently from a coin the
-provider does not list.
+Every historical price names its source and sample time, with
+`price_offset_sec` showing its distance from the requested time. Confidence
+is included only when the provider supplies it. A sample more than an hour
+away is marked `stale`. Every coin that could not be priced is listed under
+`unpriced` with the reason. Non-JSON replies and HTTP 429 responses are failed
+requests, distinct from an answered request with no price.
+
+CoinGecko resolves the full type as a contract on the `sui` platform and reads
+its historical USD chart. GeckoTerminal uses the full type on `sui-network`,
+selects the matching pool with the greatest reported USD reserve and reads
+completed hourly USD candles for the correct side of that pool. The sample
+time is the candle end, not its open. `market` names the pool and candle
+boundaries, and states whether the pool scan reached the end. Both fallbacks
+accept only quotes within an hour of the requested time.
 
 For windows, `summarize_address_flows`, `summarize_incident_losses` and
 `aggregate_events` participant P&L use each coin's median movement time within
 each UTC hour, or within each UTC day when the window needs too many quotes.
-Their pricing blocks report coverage; missing samples, unknown decimals and
-pricing-budget stops stay unpriced. `price_at` on `summarize_incident_losses`
+Their pricing blocks report each sample's provider, time and offset, and raw
+amount coverage names which provider priced which incoming and outgoing
+amounts. Missing samples, unknown decimals and pricing-budget stops stay
+unpriced. `price_at` on `summarize_incident_losses`
 selects one fixed time instead. Objects keep their own transaction-time
 valuation unless that override is set. See
 [How USD values are calculated](/concepts/pricing/) for timing, partial totals
 and how to report USD estimates.
 
-DefiLlama and Aftermath key on the full coin type, so an impostor coin that
-copies a real coin's symbol is priced as itself or not at all. Pyth feeds are
+DefiLlama, CoinGecko, GeckoTerminal and Aftermath identify coins by full type,
+so an impostor coin that copies a real coin's symbol is priced as itself or not
+at all. Pyth feeds are
 matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
 Pyth is opt-in and engages only when its key is set, so nobody is billed by
@@ -91,15 +106,15 @@ accident and nothing degrades without it:
 
 | Variable | Enables |
 |---|---|
-| `PYTH_API_KEY` | Pyth as the third current-price source in `get_token_prices` and the preferred historical source for verified coins, with DefiLlama covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price values; feed discovery is still open. |
+| `PYTH_API_KEY` | Pyth as the third current-price source in `get_token_prices` and the preferred historical source for verified coins, with keyless providers covering the rest, and the oracle-vs-market comparison in `compare_oracle_price`, which is Pyth-only. Without it, `compare_oracle_price` returns the DeepBook candles with `oracle_unavailable` and compares nothing. Pyth's Hermes endpoint requires authentication for price values; feed discovery is still open. |
 
 A missing price and a price of zero mean different things, and no tool reports
 one as the other.
 
 `analyze_token`, `get_pool_info` and the coin balances in
 `get_wallet_overview` use Aftermath's current prices. Position and NFT
-valuations use DefiLlama, or Pyth for verified coins when its key is set;
-each position's method names the source and time.
+valuations use the same historical providers, with Pyth preferred for verified
+coins when its key is set; each position's method names the source and time.
 
 ## Optional local store
 

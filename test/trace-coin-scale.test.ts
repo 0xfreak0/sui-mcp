@@ -18,6 +18,7 @@ vi.mock("../src/utils/price-providers.js", () => ({
   pythApiKey: () => null,
   fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),
 }));
+vi.mock("../src/utils/recent-prices.js", () => ({ fetchRecentHistory: async () => ({ quotes: new Map(), unanswered: new Map() }) }));
 vi.mock("../src/utils/store.js", () => ({ getCachedTransaction: () => null, saveTransaction: () => {} }));
 vi.mock("../src/utils/fanout.js", () => ({
   measureFanout: async () => ({ classification: "narrow", counterparty_count: 2, scanned_transactions: 5, truncated: false }),

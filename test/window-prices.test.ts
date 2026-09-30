@@ -16,7 +16,7 @@ beforeEach(() => { resetWindowPriceCache(); resetLiveCoinScale(); vi.clearAllMoc
 
 describe("window USD", () => {
   it("sums differently priced signed legs even when their raw net is zero", async () => {
-    historyRead.mockResolvedValue(new Map([[SUI, new Map([[JAN + 100, { price: 4, at: JAN }], [JUL + 200, { price: 2, at: JUL }]])]]));
+    historyRead.mockResolvedValue(new Map([[SUI, new Map([[JAN + 100, { price: 4, at: JAN, source: "defillama" }], [JUL + 200, { price: 2, at: JUL, source: "defillama" }]])]]));
     const prices = await windowPrices([{ at: JAN + 100, coins: [SUI] }, { at: JUL + 200, coins: [SUI] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(SUI, 10_000_000_000n, JAN + 100);
@@ -26,7 +26,7 @@ describe("window USD", () => {
   });
 
   it("excludes missing dates and timestamps without pricing them at a nearby day", async () => {
-    historyRead.mockResolvedValue(new Map([[SUI, new Map([[JAN, { price: 4, at: JAN }]])]]));
+    historyRead.mockResolvedValue(new Map([[SUI, new Map([[JAN, { price: 4, at: JAN, source: "defillama" }]])]]));
     const prices = await windowPrices([{ at: JAN, coins: [SUI] }, { at: JUL, coins: [SUI] }, { at: null, coins: [SUI] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(SUI, 1_000_000_000n, JAN);
@@ -46,7 +46,7 @@ describe("window USD", () => {
   });
 
   it("leaves dates beyond the budget unpriced with complete raw coverage", async () => {
-    historyRead.mockImplementation(async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [coin, new Map(times.map((at) => [at, { price: 2, at }]))])));
+    historyRead.mockImplementation(async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [coin, new Map(times.map((at) => [at, { price: 2, at, source: "defillama" }]))])));
     const requests = Array.from({ length: 367 }, (_, i) => ({ at: JAN + i * 86400, coins: [SUI] }));
     const prices = await windowPrices(requests);
     const amounts = new WindowAmounts(prices);
@@ -68,7 +68,7 @@ describe("window USD", () => {
   it("resolves and caches decimals independently of batch quotes", async () => {
     const coin = `0x${"ab".repeat(32)}::coin::SIX`;
     metadataRead.mockResolvedValue({ response: { metadata: { decimals: 6 } } });
-    historyRead.mockResolvedValue(new Map([[coin, new Map([[JAN, { price: 2, at: JAN }], [JUL, { price: 2, at: JUL }]])]]));
+    historyRead.mockResolvedValue(new Map([[coin, new Map([[JAN, { price: 2, at: JAN, source: "defillama" }], [JUL, { price: 2, at: JUL, source: "defillama" }]])]]));
     const requests = [{ at: JAN, coins: [coin] }, { at: JUL, coins: [coin] }];
     const prices = await windowPrices(requests);
     const amounts = new WindowAmounts(prices);
@@ -83,7 +83,7 @@ describe("window USD", () => {
   it("counts quotes with unknown decimals as unpriced rather than guessing a scale", async () => {
     const coin = `0x${"ac".repeat(32)}::coin::UNKNOWN`;
     metadataRead.mockResolvedValue({ response: {} });
-    historyRead.mockResolvedValue(new Map([[coin, new Map([[JAN, { price: 2, at: JAN }], [JUL, { price: 2, at: JUL }]])]]));
+    historyRead.mockResolvedValue(new Map([[coin, new Map([[JAN, { price: 2, at: JAN, source: "defillama" }], [JUL, { price: 2, at: JUL, source: "defillama" }]])]]));
     const prices = await windowPrices([{ at: JAN, coins: [coin] }, { at: JUL, coins: [coin] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(coin, 1_000_000n, JAN);
@@ -123,7 +123,7 @@ describe("window USD", () => {
     const other = `0x${"be".repeat(32)}::coin::OTHER`;
     metadataRead.mockResolvedValue({ response: { metadata: { decimals: 9 } } });
     historyRead.mockImplementation(async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [
-      coin, new Map(times.map((at) => [at, { price: Math.floor((at % 86400) / 3600) + 1, at }])),
+      coin, new Map(times.map((at) => [at, { price: Math.floor((at % 86400) / 3600) + 1, at, source: "defillama" }])),
     ])));
     const requests = Array.from({ length: 4100 }, (_, i) => ({ at: JAN + i * 3600 + 120, coins: [SUI] }));
     requests.push({ at: JAN + 18 * 3600, coins: [other] }, { at: JAN + 20 * 3600, coins: [other] });
@@ -137,7 +137,7 @@ describe("window USD", () => {
   it("separates stale priced legs and rejects samples beyond two hours", async () => {
     const times = [JAN, JAN + 3600, JAN + 7200, JAN + 10800];
     const offsets = [-3600, 3601, -7200, 7201];
-    historyRead.mockResolvedValue(new Map([[SUI, new Map(times.map((at, i) => [at, { price: 2, at: at + offsets[i] }]))]]));
+    historyRead.mockResolvedValue(new Map([[SUI, new Map(times.map((at, i) => [at, { price: 2, at: at + offsets[i], source: "defillama" }]))]]));
     const prices = await windowPrices(times.map((at) => ({ at, coins: [SUI] })));
     const amounts = new WindowAmounts(prices);
     [1n, 2n, -3n, 4n].forEach((amount, i) => amounts.add(SUI, amount * 1_000_000_000n, times[i]));

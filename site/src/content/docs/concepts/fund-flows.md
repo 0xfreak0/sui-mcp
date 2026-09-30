@@ -144,3 +144,42 @@ Evidence tiers distinguish values read from Sui from delivery asserted by an
 indexer. Confirm indexer delivery on the destination chain before relying on
 it. `include_destination` defaults to true and queries Wormholescan and
 LayerZero Scan; false keeps the read strictly on-chain.
+
+## Graph allocation and coverage
+
+`trace_flow_graph` starts from a Base58 `digest` or an `address`, never both.
+From an address, it follows payouts after `from` forward or receipts before
+`to` backward. A `coin_type` restricts the starting coin, such as
+`0x2::sui::SUI`, but value is still followed through swaps.
+
+Each transfer's traced value is allocated across recipients in proportion
+to what they received. The walk keeps the actor through swaps and self-credits,
+follows value released from objects, and stops at sinks, hubs, protocols,
+bridge exits or a transaction signed by someone other than the sender.
+Bridge terminals include the far-side beneficiary read from the transaction.
+An address's swap counts once: later moves carry the proceeds forward, and
+earlier inflows carry its input backward. Unmoved value ends as `unspent`
+forward or `source` backward, or `budget` if the move limit stopped the search.
+
+Nodes contain the address, coin, identity, traced share and amount, and ending
+reason. Edges contain amounts, USD at transaction time and digests. `terminals`
+groups the traced shares by reason, including `bridge_exit`, `sink`, `hub`,
+`unspent`, `consumed`, `retained` and `budget`. `coverage` counts expanded and
+pruned nodes, marks truncation, and sets `partial` when the starting address's
+move search stopped at its limit.
+
+`address_poisoning` always gives `addresses_compared` and the lookalike `pairs`
+among reached addresses. Every format's summary names those pairs. No empty
+list clears addresses outside the graph, and a lookalike branch is never
+pruned for its share or USD value. Consumed and retained terminals can carry
+heuristic `cross_chain_leads` when the transaction emitted a message-shaped
+event from a package no bridge reader covers.
+
+The summary fits about 20,000 characters, putting the largest traced shares
+first and retaining bridge exits, sinks, hubs, protocols, consumed and retained
+nodes, labelled addresses and lookalikes, with their incoming edges. Terminal
+totals, coverage and shares cover the whole graph. `omitted` reports missing
+rows; `detail: "full"` lists every node and edge.
+
+Expansion costs about one search plus the spends found per node; 40 nodes
+typically require 100–300 requests.

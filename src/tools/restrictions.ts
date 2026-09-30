@@ -165,5 +165,5 @@ const VALIDATOR_FREEZE_NOTE =
   "Validators can also refuse an address's transactions through their node configuration. That freeze is off chain, is not in any deny list, and this result cannot show it. Its traces on chain are indirect: the address stops sending transactions, and any later movement of its funds happens in transactions its owner did not sign.";
 
 function json(body: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }] };
+  return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
 }

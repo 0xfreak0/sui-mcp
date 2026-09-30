@@ -510,104 +510,100 @@ export function registerObjectHistoryTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  object_id,
-                  type,
-                  current: current
-                    ? { version: current.version.toString(), owner: describeOwner(ownerDesc(current.owner), true) }
-                    : null,
-                  ...(end
+              text: JSON.stringify({
+                object_id,
+                type,
+                current: current
+                  ? { version: current.version.toString(), owner: describeOwner(ownerDesc(current.owner), true) }
+                  : null,
+                ...(end
+                  ? {
+                      end: {
+                        kind: end.kind,
+                        tx: end.tx,
+                        timestamp: end.timestamp,
+                        note:
+                          end.kind === "deleted"
+                            ? "This object was deleted in this transaction; it no longer exists as an object and holds nothing."
+                            : "This object was wrapped inside another object in this transaction; it no longer exists as a top-level object, but its value was not destroyed.",
+                      },
+                    }
+                  : !current
                     ? {
-                        end: {
-                          kind: end.kind,
-                          tx: end.tx,
-                          timestamp: end.timestamp,
-                          note:
-                            end.kind === "deleted"
-                              ? "This object was deleted in this transaction; it no longer exists as an object and holds nothing."
-                              : "This object was wrapped inside another object in this transaction; it no longer exists as a top-level object, but its value was not destroyed.",
-                        },
-                      }
-                    : !current
-                      ? {
-                          end_unknown:
-                            "No transaction touching this object id could be found, so whether it was deleted or wrapped, and by what, is unknown.",
-                        }
-                      : {}),
-                  created: creation
-                    ? { tx: creation.tx, timestamp: creation.timestamp, owner: describeOwner(creation.owner) }
-                    : null,
-                  order: newest ? "newest" : "oldest",
-                  ...(newest
-                    ? { order_note: "history and owner_changes run newest first; each owner change reads from the owner before at_version to the owner at it." }
-                    : {}),
-                  history_truncated: truncated,
-                  ...(historyUnavailable
-                    ? {
-                        history_unavailable:
-                          "The transaction at the front of this walk did not create this object, which for a long-lived object means its earlier history is beyond retention rather than absent. `created` is therefore null and `owner_change_count` counts only what was found — NOT that this object was never transferred before this window.",
+                        end_unknown:
+                          "No transaction touching this object id could be found, so whether it was deleted or wrapped, and by what, is unknown.",
                       }
                     : {}),
-                  ...(moreOlder || moreNewer
-                    ? {
-                        more_versions_note: searchRan
-                          ? `More versions exist beyond this page (this object is busier than \`limit\`). \`history\` below is ${shownVersions}.${walked} owner_changes adds a checkpoint search ${searchSpan}, but that search can only find a checkpoint where the owner disagrees with the one before it — an ownership round trip (out to another owner and back to this one) landing inside one probed span is invisible to it. owner_change_count is a lower bound on this object's full life, not a certified total; see owner_change_note.`
-                          : `More versions exist beyond this page (this object is busier than \`limit\`). \`history\` below is ${shownVersions}, and owner_changes/owner_change_count count only the transitions among those shown versions: no checkpoint search ran for the rest of this object's life.${walked} See owner_change_note.`,
-                      }
-                    : {}),
-                  version_count_shown: history.length,
-                  ...(nextCursor
-                    ? {
-                        next_cursor: nextCursor,
-                        next_call: {
-                          tool: "trace_object_history",
-                          repeat_with: { order: newest ? "newest" : "oldest", cursor: nextCursor },
-                        },
-                      }
-                    : {}),
-                  owner_change_count: ownerChanges.length,
-                  ...(!ownerChangesComplete
-                    ? {
-                        owner_change_note: !(moreOlder || moreNewer)
-                          ? "Counts transitions among the versions shown only. An earlier transfer outside this window would not appear."
-                          : searchRan
-                            ? searchTruncated
-                              ? `The checkpoint search that extends this list ${pastPage} did not finish (its query budget or time budget ran out)${searchFound > 0 ? ` after finding ${searchFound} transition(s), listed in owner_changes after the page's own` : ""}. owner_change_unpinned lists the checkpoint ranges it stopped inside: each holds at least one more owner change, from the owner at its start to the owner at its end, not pinned to a transaction. A transition elsewhere may be missing too, as may any reversed transfer the search's design cannot see (see more_versions_note).`
-                              : searchFound > 0
-                                ? `The checkpoint search that extends this list ${pastPage} finished and found ${searchFound} transition(s) there, listed in owner_changes after the page's own. It can only find a checkpoint where the owner disagrees with the one before it, so a reversed transfer (out to another owner and back to this one) inside one probed span would not appear (see more_versions_note).`
-                                : `The checkpoint search that extends this list ${pastPage} finished without finding further disagreement, but it can only find a checkpoint where the owner disagrees with the one before it: a reversed transfer (out to another owner and back to this one) inside one probed span would not appear (see more_versions_note).`
-                            : "Counts only the transitions among the versions shown; no checkpoint search ran for the rest of this object's life, so an earlier or later transition would not appear.",
-                      }
-                    : {}),
-                  ...(unresolved.length
-                    ? {
-                        owner_change_unpinned: unresolved.map((u) => ({
-                          from_checkpoint: u.lo.checkpoint,
-                          to_checkpoint: u.hi.checkpoint,
-                          owner_before: describeOwner(u.lo.owner),
-                          owner_after: describeOwner(u.hi.owner),
-                        })),
-                      }
-                    : {}),
-                  owner_changes: listedChanges.map((c) => ({
-                    from: describeOwner(c.from),
-                    to: describeOwner(c.to),
-                    at_version: c.at_version,
-                    tx: c.tx,
-                    timestamp: c.timestamp,
-                  })),
-                  history: listedHistory.map((e) => ({
-                    version: e.version,
-                    tx: e.tx,
-                    timestamp: e.timestamp,
-                    checkpoint: e.checkpoint,
-                    owner: describeOwner(e.owner),
-                  })),
-                },
-                null,
-                2,
-              ),
+                created: creation
+                  ? { tx: creation.tx, timestamp: creation.timestamp, owner: describeOwner(creation.owner) }
+                  : null,
+                order: newest ? "newest" : "oldest",
+                ...(newest
+                  ? { order_note: "history and owner_changes run newest first; each owner change reads from the owner before at_version to the owner at it." }
+                  : {}),
+                history_truncated: truncated,
+                ...(historyUnavailable
+                  ? {
+                      history_unavailable:
+                        "The transaction at the front of this walk did not create this object, which for a long-lived object means its earlier history is beyond retention rather than absent. `created` is therefore null and `owner_change_count` counts only what was found — NOT that this object was never transferred before this window.",
+                    }
+                  : {}),
+                ...(moreOlder || moreNewer
+                  ? {
+                      more_versions_note: searchRan
+                        ? `More versions exist beyond this page (this object is busier than \`limit\`). \`history\` below is ${shownVersions}.${walked} owner_changes adds a checkpoint search ${searchSpan}, but that search can only find a checkpoint where the owner disagrees with the one before it — an ownership round trip (out to another owner and back to this one) landing inside one probed span is invisible to it. owner_change_count is a lower bound on this object's full life, not a certified total; see owner_change_note.`
+                        : `More versions exist beyond this page (this object is busier than \`limit\`). \`history\` below is ${shownVersions}, and owner_changes/owner_change_count count only the transitions among those shown versions: no checkpoint search ran for the rest of this object's life.${walked} See owner_change_note.`,
+                    }
+                  : {}),
+                version_count_shown: history.length,
+                ...(nextCursor
+                  ? {
+                      next_cursor: nextCursor,
+                      next_call: {
+                        tool: "trace_object_history",
+                        repeat_with: { order: newest ? "newest" : "oldest", cursor: nextCursor },
+                      },
+                    }
+                  : {}),
+                owner_change_count: ownerChanges.length,
+                ...(!ownerChangesComplete
+                  ? {
+                      owner_change_note: !(moreOlder || moreNewer)
+                        ? "Counts transitions among the versions shown only. An earlier transfer outside this window would not appear."
+                        : searchRan
+                          ? searchTruncated
+                            ? `The checkpoint search that extends this list ${pastPage} did not finish (its query budget or time budget ran out)${searchFound > 0 ? ` after finding ${searchFound} transition(s), listed in owner_changes after the page's own` : ""}. owner_change_unpinned lists the checkpoint ranges it stopped inside: each holds at least one more owner change, from the owner at its start to the owner at its end, not pinned to a transaction. A transition elsewhere may be missing too, as may any reversed transfer the search's design cannot see (see more_versions_note).`
+                            : searchFound > 0
+                              ? `The checkpoint search that extends this list ${pastPage} finished and found ${searchFound} transition(s) there, listed in owner_changes after the page's own. It can only find a checkpoint where the owner disagrees with the one before it, so a reversed transfer (out to another owner and back to this one) inside one probed span would not appear (see more_versions_note).`
+                              : `The checkpoint search that extends this list ${pastPage} finished without finding further disagreement, but it can only find a checkpoint where the owner disagrees with the one before it: a reversed transfer (out to another owner and back to this one) inside one probed span would not appear (see more_versions_note).`
+                          : "Counts only the transitions among the versions shown; no checkpoint search ran for the rest of this object's life, so an earlier or later transition would not appear.",
+                    }
+                  : {}),
+                ...(unresolved.length
+                  ? {
+                      owner_change_unpinned: unresolved.map((u) => ({
+                        from_checkpoint: u.lo.checkpoint,
+                        to_checkpoint: u.hi.checkpoint,
+                        owner_before: describeOwner(u.lo.owner),
+                        owner_after: describeOwner(u.hi.owner),
+                      })),
+                    }
+                  : {}),
+                owner_changes: listedChanges.map((c) => ({
+                  from: describeOwner(c.from),
+                  to: describeOwner(c.to),
+                  at_version: c.at_version,
+                  tx: c.tx,
+                  timestamp: c.timestamp,
+                })),
+                history: listedHistory.map((e) => ({
+                  version: e.version,
+                  tx: e.tx,
+                  timestamp: e.timestamp,
+                  checkpoint: e.checkpoint,
+                  owner: describeOwner(e.owner),
+                })),
+              }),
             },
           ],
         };

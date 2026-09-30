@@ -806,7 +806,7 @@ export function registerHolderTools(server: McpServer) {
         parsed.cached = true;
         return {
           content: [
-            { type: "text" as const, text: JSON.stringify(parsed, null, 2) },
+            { type: "text" as const, text: JSON.stringify(parsed) },
           ],
         };
       }
@@ -821,23 +821,19 @@ export function registerHolderTools(server: McpServer) {
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify(
-                  {
-                    mode: "token",
-                    type: resolvedType,
-                    total_scanned: 0,
-                    coin_objects_scanned: 0,
-                    address_balances_scanned: 0,
-                    unique_holders: 0,
-                    truncated: false,
-                    complete_ranking: false,
-                    cached: false,
-                    caveat:
-                      `No Coin<${resolvedType}> objects and no address balances of it were found. That reads the same as a mistyped coin type, a coin that exists on another network, or an NFT collection type scanned as a coin. It is not evidence that the coin has no holders.`,
-                  },
-                  null,
-                  2,
-                ),
+                text: JSON.stringify({
+                  mode: "token",
+                  type: resolvedType,
+                  total_scanned: 0,
+                  coin_objects_scanned: 0,
+                  address_balances_scanned: 0,
+                  unique_holders: 0,
+                  truncated: false,
+                  complete_ranking: false,
+                  cached: false,
+                  caveat:
+                    `No Coin<${resolvedType}> objects and no address balances of it were found. That reads the same as a mistyped coin type, a coin that exists on another network, or an NFT collection type scanned as a coin. It is not evidence that the coin has no holders.`,
+                }),
               },
             ],
           };
@@ -908,7 +904,7 @@ export function registerHolderTools(server: McpServer) {
         if (!scan.time_budget_reached) setCache(cacheKey, JSON.stringify(result));
         return {
           content: [
-            { type: "text" as const, text: JSON.stringify(result, null, 2) },
+            { type: "text" as const, text: JSON.stringify(result) },
           ],
         };
       }
@@ -1009,25 +1005,21 @@ export function registerHolderTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  mode: effectiveMode,
-                  type: resolvedType,
-                  total_scanned: 0,
-                  unique_holders: 0,
-                  truncated: false,
-                  complete_ranking: false,
-                  cached: false,
-                  caveat:
-                    `No objects of type ${resolvedType} were found${effectiveMode === "nft" ? "" : " (searched as 0x2::coin::Coin<" + resolvedType + ">)"}. ` +
-                    `This is not a statement that the type has no holders: it reads the same as a mistyped type, a type that exists on another network, or the wrong mode for this type. ` +
-                    (modeGuessed
-                      ? "The mode could not be verified because the coin probe failed, so this may be a coin scanned as a collection — pass mode explicitly. "
-                      : "Pass mode explicitly if you know which this is. "),
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify({
+                mode: effectiveMode,
+                type: resolvedType,
+                total_scanned: 0,
+                unique_holders: 0,
+                truncated: false,
+                complete_ranking: false,
+                cached: false,
+                caveat:
+                  `No objects of type ${resolvedType} were found${effectiveMode === "nft" ? "" : " (searched as 0x2::coin::Coin<" + resolvedType + ">)"}. ` +
+                  `This is not a statement that the type has no holders: it reads the same as a mistyped type, a type that exists on another network, or the wrong mode for this type. ` +
+                  (modeGuessed
+                    ? "The mode could not be verified because the coin probe failed, so this may be a coin scanned as a collection — pass mode explicitly. "
+                    : "Pass mode explicitly if you know which this is. "),
+              }),
             },
           ],
         };
@@ -1177,7 +1169,7 @@ export function registerHolderTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(result),
           },
         ],
       };

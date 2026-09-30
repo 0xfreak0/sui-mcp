@@ -39,21 +39,17 @@ export function registerChainTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  epoch: bigintToString(ep?.epoch),
-                  first_checkpoint: bigintToString(ep?.firstCheckpoint),
-                  last_checkpoint: bigintToString(ep?.lastCheckpoint),
-                  start: timestampToIso(ep?.start),
-                  end: timestampToIso(ep?.end),
-                  reference_gas_price: bigintToString(ep?.referenceGasPrice),
-                  protocol_version: bigintToString(
-                    ep?.protocolConfig?.protocolVersion
-                  ),
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                epoch: bigintToString(ep?.epoch),
+                first_checkpoint: bigintToString(ep?.firstCheckpoint),
+                last_checkpoint: bigintToString(ep?.lastCheckpoint),
+                start: timestampToIso(ep?.start),
+                end: timestampToIso(ep?.end),
+                reference_gas_price: bigintToString(ep?.referenceGasPrice),
+                protocol_version: bigintToString(
+                  ep?.protocolConfig?.protocolVersion
+                ),
+              }),
             },
           ],
         };
@@ -72,26 +68,22 @@ export function registerChainTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                chain_id: res.chainId,
-                chain: res.chain,
-                epoch: bigintToString(res.epoch),
-                checkpoint_height: bigintToString(res.checkpointHeight),
-                timestamp: timestampToIso(res.timestamp),
-                reference_gas_price: "value" in gasPrice ? gasPrice.value : null,
-                ...("failed" in gasPrice ? { reference_gas_price_unavailable: gasPrice.failed } : {}),
-                lowest_available_checkpoint: bigintToString(
-                  res.lowestAvailableCheckpoint
-                ),
-                lowest_available_checkpoint_objects: bigintToString(
-                  res.lowestAvailableCheckpointObjects
-                ),
-                server: res.server,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              chain_id: res.chainId,
+              chain: res.chain,
+              epoch: bigintToString(res.epoch),
+              checkpoint_height: bigintToString(res.checkpointHeight),
+              timestamp: timestampToIso(res.timestamp),
+              reference_gas_price: "value" in gasPrice ? gasPrice.value : null,
+              ...("failed" in gasPrice ? { reference_gas_price_unavailable: gasPrice.failed } : {}),
+              lowest_available_checkpoint: bigintToString(
+                res.lowestAvailableCheckpoint
+              ),
+              lowest_available_checkpoint_objects: bigintToString(
+                res.lowestAvailableCheckpointObjects
+              ),
+              server: res.server,
+            }),
           },
         ],
       };
@@ -165,21 +157,17 @@ export function registerChainTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                sequence_number: bigintToString(cp?.sequenceNumber),
-                digest: cp?.digest,
-                epoch: bigintToString(cp?.summary?.epoch),
-                timestamp: timestampToIso(cp?.summary?.timestamp),
-                total_network_transactions: bigintToString(
-                  cp?.summary?.totalNetworkTransactions
-                ),
-                previous_digest: cp?.summary?.previousDigest,
-                ...(fromTime ? { resolved_from_timestamp: fromTime } : {}),
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              sequence_number: bigintToString(cp?.sequenceNumber),
+              digest: cp?.digest,
+              epoch: bigintToString(cp?.summary?.epoch),
+              timestamp: timestampToIso(cp?.summary?.timestamp),
+              total_network_transactions: bigintToString(
+                cp?.summary?.totalNetworkTransactions
+              ),
+              previous_digest: cp?.summary?.previousDigest,
+              ...(fromTime ? { resolved_from_timestamp: fromTime } : {}),
+            }),
           },
         ],
       };

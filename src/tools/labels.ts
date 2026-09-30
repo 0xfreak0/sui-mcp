@@ -30,7 +30,7 @@ const CATEGORIES = [
 const ADDED_HERE: Record<string, true> = { session: true, stored: true };
 
 function jsonResult(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+  return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
 /**

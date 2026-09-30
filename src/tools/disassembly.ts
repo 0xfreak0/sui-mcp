@@ -119,6 +119,6 @@ export function registerDisassemblyTools(server: McpServer) {
 
 function json(value: unknown) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
   };
 }

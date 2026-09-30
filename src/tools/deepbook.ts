@@ -15,7 +15,7 @@ import { pythApiKey } from "../utils/price-providers.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const ok = (payload: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(payload) }],
 });
 
 /** Candle intervals the indexer accepts. */

@@ -271,7 +271,7 @@ export function registerIdentifyTools(server: McpServer) {
                 lineage.is_latest === false
                   ? `This is version ${lineage.version} of ${lineage.latest_version}; the current package is ${lineage.latest_package_id}. Older versions can still be live — use resolve_protocol_packages to see which versions emit events.`
                   : "Use get_package for module details and the dependency versions it runs, and disassemble_module (function_name for one function) to read the bytecode. decompile_module renders Move source when its optional binary is installed.",
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -339,7 +339,7 @@ export function registerIdentifyTools(server: McpServer) {
                 (holdsFunds
                   ? " The funds under address_balances are held by the object itself and are not among those fields."
                   : ""),
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -358,7 +358,7 @@ export function registerIdentifyTools(server: McpServer) {
               staking_pool_sui_balance_formatted: formatCoinAmount(validator.staking_pool_sui_balance, "0x2::sui::SUI"),
               commission_rate_bps: validator.commission_rate_bps,
               hint: `Use get_validators {"address": "${address}"} for full detail (credentials, staking stats, network addresses), or get_staking_summary for delegation positions.`,
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -430,7 +430,7 @@ export function registerIdentifyTools(server: McpServer) {
               meaning:
                 "No live object is at this id and nothing has ever signed for it, but a transaction recorded it as an object id. It is the id of an object that was wrapped inside another object or deleted. Value sent to it is held by that object and leaves only through the module that owns it, in a transaction someone else sends.",
               hint: `Use get_transaction on ${identity.object_seen_in} to see which object this was, and trace_funds forward to follow value out of it.`,
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -536,7 +536,7 @@ export function registerIdentifyTools(server: McpServer) {
             hint: auth?.scheme === "multisig"
               ? `This wallet is controlled by a committee. Each member listed in committee_members is a separate address with its own history — run identify_address or get_transaction_history on them, or pass them to build_wallet_edges as seeds.${aliasHint(aliases)}`
               : "Use get_wallet_overview for full portfolio, get_transaction_history for activity, or get_defi_positions for DeFi.",
-          }, null, 2),
+          }),
         }],
       };
     }

@@ -15,7 +15,7 @@ import { hitsFor, screenAddress, screeningCoverage, type Direction } from "../ut
 import { namespaceOf, parseAccountId, currentSuiChain } from "../utils/chain-id.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-const json = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
+const json = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }] });
 
 const SCREEN_CAVEATS = [
   "Labels cover only first-party disclosures (see coverage.labels): four exchanges' proof-of-reserves lists, four bridges' deployment docs, and attackers named in two victim post-mortems. An address with no exposure here may still be exposed to anything those lists do not name.",

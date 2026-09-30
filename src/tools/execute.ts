@@ -42,23 +42,19 @@ export function registerExecuteTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                status: tx.status,
-                gas: gas
-                  ? {
-                      computation_cost: gas.computationCost,
-                      storage_cost: gas.storageCost,
-                      storage_rebate: gas.storageRebate,
-                      non_refundable_storage_fee: gas.nonRefundableStorageFee,
-                    }
-                  : null,
-                events,
-                balance_changes: balanceChanges,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              status: tx.status,
+              gas: gas
+                ? {
+                    computation_cost: gas.computationCost,
+                    storage_cost: gas.storageCost,
+                    storage_rebate: gas.storageRebate,
+                    non_refundable_storage_fee: gas.nonRefundableStorageFee,
+                  }
+                : null,
+              events,
+              balance_changes: balanceChanges,
+            }),
           },
         ],
       };

@@ -47,7 +47,7 @@ export function registerWatchTools(server: McpServer) {
     async ({ action, addresses, label, min_amount }) => {
       const network = getNetwork();
       const out = (o: unknown) => ({
-        content: [{ type: "text" as const, text: JSON.stringify(o, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(o) }],
       });
 
       if (!storeStatus().enabled) return errorResult(NO_STORE);
@@ -188,7 +188,7 @@ export function registerWatchTools(server: McpServer) {
     async ({ max_per_address }) => {
       const network = getNetwork();
       const out = (o: unknown) => ({
-        content: [{ type: "text" as const, text: JSON.stringify(o, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(o) }],
       });
 
       if (!storeStatus().enabled) return errorResult(NO_STORE);

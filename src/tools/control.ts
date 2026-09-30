@@ -146,38 +146,34 @@ export function registerControlTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  filter: { module, event_type },
-                  ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
-                  ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
-                  window: describeWindow(from, to, window),
-                  events_scanned: scanned,
-                  // A truncated scan still gives a valid control — it is a
-                  // sample either way — but it is drawn from whichever slice of
-                  // the window the scan reached, so say so.
-                  population_truncated: truncated,
-                  ...result,
-                  how_to_use:
-                    "Run the same test on this control that you ran on the cohort — find_funding_sources over both, then compare how many share a funder. A cohort rate that matches the control's is not evidence, however striking the cohort looked alone.",
-                  ...(result.undersampled
-                    ? {
-                        warning:
-                          `Only ${result.population_size} distinct addresses were available, fewer than the ${result.requested} requested. A control this small will not separate a real effect from chance — widen the window or raise max_events.` +
-                          (moduleFilter?.resolution?.other_version_ids
-                            ? " From the relocate_event_module cutover on, a `module` filter draws callers of one package version only; module_scope.other_version_ids lists the rest of the lineage."
-                            : ""),
-                      }
-                    : {}),
-                  ...(result.seed === null
-                    ? {
-                        note: "No seed given, so this draw cannot be reproduced. Pass `seed` if the result is going into a report.",
-                      }
-                    : {}),
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify({
+                filter: { module, event_type },
+                ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
+                ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
+                window: describeWindow(from, to, window),
+                events_scanned: scanned,
+                // A truncated scan still gives a valid control — it is a
+                // sample either way — but it is drawn from whichever slice of
+                // the window the scan reached, so say so.
+                population_truncated: truncated,
+                ...result,
+                how_to_use:
+                  "Run the same test on this control that you ran on the cohort — find_funding_sources over both, then compare how many share a funder. A cohort rate that matches the control's is not evidence, however striking the cohort looked alone.",
+                ...(result.undersampled
+                  ? {
+                      warning:
+                        `Only ${result.population_size} distinct addresses were available, fewer than the ${result.requested} requested. A control this small will not separate a real effect from chance — widen the window or raise max_events.` +
+                        (moduleFilter?.resolution?.other_version_ids
+                          ? " From the relocate_event_module cutover on, a `module` filter draws callers of one package version only; module_scope.other_version_ids lists the rest of the lineage."
+                          : ""),
+                    }
+                  : {}),
+                ...(result.seed === null
+                  ? {
+                      note: "No seed given, so this draw cannot be reproduced. Pass `seed` if the result is going into a report.",
+                    }
+                  : {}),
+              }),
             },
           ],
         };

@@ -27,6 +27,10 @@ then reads its [USD history chart](https://docs.coingecko.com/demo/reference/con
 Chart timestamps are milliseconds and are
 converted to seconds without rounding to the requested time. A package address
 or a matching ticker does not identify a coin.
+Because CoinGecko's URL lookup is case-insensitive, its `platforms.sui` record
+must match the requested type with module and struct case preserved before
+any chart is accepted. Package-address padding and hex case are normalized.
+The identity check is cached independently of chart dates.
 
 GeckoTerminal discovers pools on `sui-network` by full coin type and chooses
 the matching pool with the greatest reported USD reserve across the public

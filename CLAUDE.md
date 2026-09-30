@@ -3614,6 +3614,9 @@ change is likely to break:
 - **Recent-history fallbacks still identify the full type and retain sample time.**
   `recent-prices.ts` asks CoinGecko's `sui` contract chart, then GeckoTerminal
   on `sui-network`. Both require the full type, not a package or symbol.
+  CoinGecko's URL lookup folds case: require its `platforms.sui` record to
+  match the requested module and struct names case-sensitively before reading
+  the chart. GeckoTerminal pool token IDs must pass the same exact-type check.
   GeckoTerminal needs the short address spelling for SUI; its pool lookup
   returned an empty list for padded SUI. Public history bounds are checked
   before requests. CoinGecko timestamps are milliseconds; GeckoTerminal's

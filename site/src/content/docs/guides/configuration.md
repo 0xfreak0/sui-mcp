@@ -98,7 +98,9 @@ and how to report USD estimates.
 
 DefiLlama, CoinGecko, GeckoTerminal and Aftermath identify coins by full type,
 so an impostor coin that copies a real coin's symbol is priced as itself or not
-at all. Pyth feeds are
+at all. CoinGecko's contract record and GeckoTerminal's pool token records
+must match the requested Move module and struct names case-sensitively; a
+successful URL lookup alone does not establish identity. Pyth feeds are
 matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
 Pyth is opt-in and engages only when its key is set, so nobody is billed by

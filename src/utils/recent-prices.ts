@@ -52,9 +52,25 @@ function samples(rows: unknown, source: RecentPriceSource, divisor: number, pric
   return out;
 }
 
+/** Normalize only the package address; Move module and struct names retain case. */
+function matchesCoinType(providerType: unknown, coin: string): boolean {
+  return typeof providerType === "string" && normalizeCoinType(providerType) === coin;
+}
+
+async function coinGeckoIdentity(coin: string): Promise<boolean> {
+  return cached(`coingecko-identity:${coin}`, async () => {
+    const body = await json(`https://api.coingecko.com/api/v3/coins/sui/contract/${encodeURIComponent(coin)}`);
+    if (!body) return false;
+    const platforms = body.platforms;
+    if (!platforms || typeof platforms !== "object" || Array.isArray(platforms)) throw new Error("Missing contract identity");
+    return matchesCoinType((platforms as Record<string, unknown>).sui, coin);
+  });
+}
+
 async function coinGecko(coin: string, day: number, oldest: number, now: number): Promise<PriceQuote[]> {
   return cached(`coingecko:${coin}:${day}`, async () => {
-    // The contract endpoint resolves the full Sui type, not its package or symbol.
+    // CoinGecko's URL lookup folds case; its platform record must match first.
+    if (!await coinGeckoIdentity(coin)) return [];
     const from = Math.max(oldest + 1, day - HOUR);
     const to = Math.min(now, day + DAY + HOUR);
     const body = await json(`https://api.coingecko.com/api/v3/coins/sui/contract/${encodeURIComponent(coin)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`);
@@ -84,7 +100,7 @@ async function mostLiquidPool(coin: string): Promise<Pool | null> {
       for (const pool of body.data as PoolRow[]) {
         const side = (["base", "quote"] as const).find((s) => {
           const id = pool.relationships?.[`${s}_token`]?.data?.id;
-          return id?.startsWith("sui-network_") && normalizeCoinType(id.slice("sui-network_".length)) === coin;
+          return id?.startsWith("sui-network_") && matchesCoinType(id.slice("sui-network_".length), coin);
         });
         const liquidity = Number(pool.attributes?.reserve_in_usd);
         const address = pool.attributes?.address;

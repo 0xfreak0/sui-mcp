@@ -9,6 +9,8 @@ const COIN = "0xabc::coin::COIN";
 const NOW = Date.parse("2026-09-30T12:00:00Z") / 1000;
 const AT = NOW - 2 * 86400;
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+const coinGeckoReply = (url: string, prices: unknown, coin = COIN) =>
+  ok(url.includes("/market_chart/") ? { prices, current_price: { usd: 99 } } : { platforms: { sui: coin } });
 let fetchMock: Mock;
 beforeEach(() => {
   resetRecentPriceCache();
@@ -21,22 +23,45 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("recent historical fallbacks", () => {
+  it.each(["0xabc::coin::coin", "0xabc::Coin::COIN"])("rejects CoinGecko case-insensitive matches for %s", async (coin) => {
+    fetchMock.mockImplementation(async (url: string) => url.includes("/market_chart/")
+      ? ok({ prices: [[AT * 1000, 9]] }) : ok({ platforms: { sui: COIN }, contract_address: coin }));
+    const result = await priceUsdAtTime([coin], AT, { sources: ["coingecko"] });
+    expect(result.points.has(coin)).toBe(false);
+    expect(result.unpriced).toMatchObject([{ coin_type: coin, code: "not_listed" }]);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/market_chart/"))).toBe(false);
+    const exact = await priceUsdAtTime([COIN], AT, { sources: ["coingecko"] });
+    expect(exact.points.get(COIN)).toMatchObject({ price: 9, source: "coingecko", publishTime: AT });
+  });
+
+  it("rejects GeckoTerminal pool records for a case-distinct Move type", async () => {
+    const coin = "0xabc::coin::coin";
+    fetchMock.mockImplementation(async (url: string) => url.includes("/tokens/") ? ok({ data: [{
+      attributes: { address: "0xpool", reserve_in_usd: "100" },
+      relationships: { base_token: { data: { id: `sui-network_${COIN}` } } },
+    }] }) : ok({ data: { attributes: { ohlcv_list: [[AT - 3600, 9, 9, 9, 9, 1]] } } }));
+    const result = await priceUsdAtTime([coin], AT, { sources: ["geckoterminal"] });
+    expect(result.points.has(coin)).toBe(false);
+    expect(result.unpriced).toMatchObject([{ coin_type: coin, code: "not_listed" }]);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/ohlcv/"))).toBe(false);
+  });
+
   it("prices the exact contract from CoinGecko after a plain-text DefiLlama failure", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("coins.llama.fi")) return { ok: true, status: 200, json: async () => { throw new SyntaxError("usage limit"); } };
-      if (url.includes("api.coingecko.com")) return ok({ prices: [[(AT - 20) * 1000, 0.25], [(AT + 300) * 1000, 0.5]] });
+      if (url.includes("api.coingecko.com")) return coinGeckoReply(url, [[(AT - 20) * 1000, 0.25], [(AT + 300) * 1000, 0.5]]);
       throw new Error(`Unexpected provider: ${url}`);
     });
     const result = await priceUsdAtTime([COIN], AT);
     expect(result.points.get(COIN)).toMatchObject({ source: "coingecko", price: 0.25, publishTime: AT - 20 });
     expect(result.unpriced).toEqual([]);
-    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("api.coingecko.com"))!;
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/market_chart/"))!;
     expect(decodeURIComponent(String(request[0]))).toContain("::coin::COIN/market_chart/range");
   });
 
   it("does not mistake successful empty replies for request failures", async () => {
     fetchMock.mockImplementation(async (url: string) => url.includes("coins.llama.fi") ? ok({ coins: {} })
-      : url.includes("api.coingecko.com") ? ok({ prices: [] }) : ok({ data: [] }));
+      : url.includes("api.coingecko.com") ? coinGeckoReply(url, []) : ok({ data: [] }));
     expect((await priceUsdAtTime([COIN], AT)).unpriced).toMatchObject([{ coin_type: COIN, code: "not_listed" }]);
   });
 
@@ -60,14 +85,14 @@ describe("recent historical fallbacks", () => {
   });
 
   it("ignores a current quote and distant or malformed chart samples", async () => {
-    fetchMock.mockResolvedValue(ok({ prices: [[NOW * 1000, 99], [(AT + 3601) * 1000, 3], [AT * 1000, -1], [AT * 1000, "4"]], current_price: { usd: 99 } }));
+    fetchMock.mockImplementation(async (url: string) => coinGeckoReply(url, [[NOW * 1000, 99], [(AT + 3601) * 1000, 3], [AT * 1000, -1], [AT * 1000, "4"]]));
     const result = await fetchRecentHistory(new Map([[COIN, [AT]]]), "coingecko");
     expect(result.quotes.size).toBe(0);
     expect(result.unanswered.size).toBe(0);
   });
 
   it("shares one day chart between duplicate spellings, dates and concurrent callers", async () => {
-    fetchMock.mockResolvedValue(ok({ prices: [[AT * 1000, 2], [(AT + 3600) * 1000, 3]] }));
+    fetchMock.mockImplementation(async (url: string) => coinGeckoReply(url, [[AT * 1000, 2], [(AT + 3600) * 1000, 3]]));
     const padded = defiLlamaKey(COIN)!.slice(4);
     const [first, second] = await Promise.all([
       fetchRecentHistory(new Map([[COIN, [AT, AT, AT + 3600]], [padded, [AT]]]), "coingecko"),
@@ -76,11 +101,11 @@ describe("recent historical fallbacks", () => {
     expect(first.quotes.get(COIN)?.get(AT)?.price).toBe(2);
     expect(first.quotes.get(padded)?.get(AT)?.price).toBe(2);
     expect(second.quotes.get(COIN)?.get(AT + 3600)?.price).toBe(3);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not cache a failed read as an absent coin", async () => {
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 429 }).mockResolvedValueOnce(ok({ prices: [[AT * 1000, 2]] }));
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 429 }).mockImplementation(async (url: string) => coinGeckoReply(url, [[AT * 1000, 2]]));
     const request = new Map([[COIN, [AT]]]);
     expect((await fetchRecentHistory(request, "coingecko")).unanswered.get(COIN)?.has(AT)).toBe(true);
     expect((await fetchRecentHistory(request, "coingecko")).quotes.get(COIN)?.get(AT)?.price).toBe(2);
@@ -120,7 +145,7 @@ describe("recent historical fallbacks", () => {
   it("preserves batch failure evidence while filling only missing samples", async () => {
     fetchMock.mockImplementation(async (url: string) => url.includes("coins.llama.fi")
       ? { ok: false, status: 429 }
-      : ok({ prices: [[AT * 1000, 2], [(AT + 3600) * 1000, 3]] }));
+      : coinGeckoReply(url, [[AT * 1000, 2], [(AT + 3600) * 1000, 3]]));
     const result = await fetchHistoricalMarketPrices(new Map([[COIN, [AT, AT + 3600]]]));
     expect([...result.unanswered.get(COIN)!]).toEqual([AT, AT + 3600]);
     expect(result.quotes.get(COIN)?.get(AT)).toMatchObject({ source: "coingecko", price: 2 });
@@ -131,7 +156,7 @@ describe("recent historical fallbacks", () => {
     const sui = "0x2::sui::SUI";
     fetchMock.mockImplementation(async (url: string) => url.includes("coins.llama.fi")
       ? ok({ coins: { [defiLlamaKey(sui)!]: { prices: [{ timestamp: AT, price: 2 }] } } })
-      : ok({ prices: [[(AT + 10800 - 10) * 1000, 3]] }));
+      : coinGeckoReply(url, [[(AT + 10800 - 10) * 1000, 3]], sui));
     const prices = await windowPrices([{ at: AT, coins: [sui] }, { at: AT + 10800, coins: [sui] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(sui, 1_000_000_000n, AT);
@@ -147,7 +172,7 @@ describe("recent historical fallbacks", () => {
 
   it("keeps failed window samples separate from answered empty history", async () => {
     fetchMock.mockImplementation(async (url: string) => url.includes("coins.llama.fi") ? { ok: false, status: 429 }
-      : url.includes("api.coingecko.com") ? ok({ prices: [] }) : ok({ data: [] }));
+      : url.includes("api.coingecko.com") ? coinGeckoReply(url, [], "0x2::sui::SUI") : ok({ data: [] }));
     const prices = await windowPrices([{ at: AT, coins: ["0x2::sui::SUI"] }, { at: AT + 3600, coins: ["0x2::sui::SUI"] }]);
     expect(prices.basis).toMatchObject({ partial: true, missing_coin_samples: [{ samples: 2, request_failed_samples: 2 }] });
   });

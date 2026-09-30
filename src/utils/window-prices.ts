@@ -1,3 +1,4 @@
+import { getNetwork } from "../config.js";
 import { fetchDefiLlamaHistory, pythApiKey } from "./price-providers.js";
 import { displayCoin, prefetchCoinScale, priceUsdAtTime, pricingScale, toHumanAmount, type PricePoint } from "./valuation.js";
 
@@ -40,6 +41,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
   let selected = 0;
   let skipped = 0;
   const provider = pythApiKey() ? "pyth+defillama" : "defillama";
+  const network = getNetwork();
   for (const [index, [day, coins]] of [...wanted].sort(([a], [b]) => b - a).entries()) {
     const daily = new Map<string, PricePoint>();
     points.set(day, daily);
@@ -47,7 +49,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       if (index >= MAX_DAYS || selected >= MAX_QUOTES) { skipped++; continue; }
       selected++;
       selectedCoins.add(coin);
-      const cached = cache.get(`${provider}:${day}:${coin}`);
+      const cached = cache.get(`${network}:${provider}:${day}:${coin}`);
       if (cached) daily.set(coin, cached);
       else {
         const list = pending.get(day) ?? [];
@@ -93,7 +95,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       priced++;
       sources.add(point.source);
       if (point.priced_as) pricedAs[coin] = point.priced_as;
-      const key = `${provider}:${day}:${coin}`;
+      const key = `${network}:${provider}:${day}:${coin}`;
       if (!cache.has(key)) {
         if (cache.size >= MAX_QUOTES) cache.delete(cache.keys().next().value!);
         cache.set(key, point);

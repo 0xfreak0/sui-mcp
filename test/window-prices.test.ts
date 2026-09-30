@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { windowPrices, WindowAmounts, resetWindowPriceCache } from "../src/utils/window-prices.js";
 import { resetLiveCoinScale } from "../src/utils/valuation.js";
+import { getNetwork, runWithNetwork } from "../src/config.js";
+const pythKey = vi.hoisted(() => vi.fn());
 const metadataRead = vi.hoisted(() => vi.fn());
 vi.mock("../src/clients/grpc.js", () => ({ sui: { stateService: { getCoinInfo: metadataRead } }, archive: {} }));
 const pointRead = vi.hoisted(() => vi.fn());
 const historyRead = vi.hoisted(() => vi.fn());
 vi.mock("../src/utils/valuation.js", async (original) => ({ ...(await original<object>()), priceUsdAtTime: pointRead }));
-vi.mock("../src/utils/price-providers.js", async (original) => ({ ...(await original<object>()), fetchDefiLlamaHistory: historyRead, pythApiKey: () => null }));
+vi.mock("../src/utils/price-providers.js", async (original) => ({ ...(await original<object>()), fetchDefiLlamaHistory: historyRead, pythApiKey: pythKey }));
 const SUI = "0x2::sui::SUI";
 const JAN = 1735689600;
 const JUL = 1751328000;
-beforeEach(() => { resetWindowPriceCache(); resetLiveCoinScale(); vi.clearAllMocks(); });
+beforeEach(() => { resetWindowPriceCache(); resetLiveCoinScale(); vi.clearAllMocks(); pythKey.mockReturnValue(null); });
 
 describe("window USD", () => {
   it("sums differently priced signed legs even when their raw net is zero", async () => {
@@ -88,5 +90,20 @@ describe("window USD", () => {
     amounts.add(coin, -1_000_000n, JUL);
     expect(amounts.amounts()[0]).toMatchObject({ usd: null, unpriced_raw: { in: "1000000", out: "1000000" } });
     expect(prices.basis).toMatchObject({ priced_coin_days: 0, partial: true, missing_coin_days: [{ coin_type: coin, days: 2 }] });
+  });
+
+  it("does not reuse a mainnet Pyth quote on another network", async () => {
+    pythKey.mockReturnValue("synthetic-key");
+    metadataRead.mockResolvedValue({ response: { metadata: { decimals: 9 } } });
+    pointRead.mockImplementation(async (_coins: string[], at: number) => ({
+      points: new Map([[SUI, { price: getNetwork() === "mainnet" ? 4 : 2, publishTime: at,
+        source: getNetwork() === "mainnet" ? "pyth" : "defillama", decimals: 9 }]]),
+      unpriced: [],
+    }));
+    const request = [{ at: JAN, coins: [SUI] }];
+    const main = await runWithNetwork("mainnet", () => windowPrices(request));
+    const test = await runWithNetwork("testnet", () => windowPrices(request));
+    expect(main.point(SUI, JAN)).toMatchObject({ price: 4, source: "pyth" });
+    expect(test.point(SUI, JAN)).toMatchObject({ price: 2, source: "defillama" });
   });
 });

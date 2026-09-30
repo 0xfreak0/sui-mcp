@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, timePointArg } from "./args.js";
 import {
   fetchActiveValidators,
   findValidatorByAddress,
@@ -187,8 +187,8 @@ export function registerStakingTools(server: McpServer) {
     "Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). Historical reads include transfers and split/joined stakes; rewards are separate estimates. Incomplete history gives no total. Excludes wrapped stakes and liquid-staking tokens.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
-      as_of: z.union([z.string(), numArg().int().min(0).max(Number.MAX_SAFE_INTEGER - 1)]).optional()
-        .describe("ISO 8601 date or checkpoint; holdings at the end of the last checkpoint at or before it."),
+      as_of: timePointArg().optional()
+        .describe("ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it."),
       max_transactions: numArg().int().min(1).max(10000).optional()
         .describe("Historical replay budget per direction (default 1000); also bounds object-change pages."),
       detail: z.enum(["summary", "full"]).optional().describe("summary caps displayed positions; full returns every read position."),

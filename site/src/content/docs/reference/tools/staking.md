@@ -21,7 +21,7 @@ Get directly held StakedSui positions and principal, now or at as_of (date/check
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Wallet address (0x...) |
-| `as_of` | string \| integer (0 to 9007199254740990) | no | ISO 8601 date or checkpoint; holdings at the end of the last checkpoint at or before it. |
+| `as_of` | string | no | ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it. |
 | `max_transactions` | integer (1 to 10000) | no | Historical replay budget per direction (default 1000); also bounds object-change pages. |
 | `detail` | `summary` \| `full` | no | summary caps displayed positions; full returns every read position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

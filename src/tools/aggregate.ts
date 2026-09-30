@@ -120,7 +120,7 @@ export function registerAggregateTools(server: McpServer) {
       group_pnl: boolArg()
         .optional()
         .describe(
-          "Rank senders by their own balance-change P&L, gas included, using daily historical quotes. Multi-leg PTBs may include gains from other packages.",
+          "Rank senders by their own balance-change P&L, gas included, using historical quotes. Multi-leg PTBs may include gains from other packages.",
         ),
       pnl_max_transactions: numArg()
         .int()
@@ -395,7 +395,8 @@ export function registerAggregateTools(server: McpServer) {
           payload,
           {
             ...Object.fromEntries((pnl?.senders ?? []).map((_, i) => [`pnl.senders.${i}.net`, coinCap])),
-            "pnl.usd_basis.missing_coin_days": { budget: 3_000, keepOrder: true },
+            "pnl.usd_basis.missing_coin_samples": { budget: 3_000, keepOrder: true },
+            "pnl.usd_basis.stale_quotes": { budget: 3_000, keepOrder: true },
           },
           { full: detail === "full", next_call: { tool: "aggregate_events", repeat_with: { detail: "full" } } },
         );

@@ -7,27 +7,38 @@ sidebar:
 
 ## USD over a time window
 
-`summarize_address_flows` values each coin movement with a quote near midnight
-UTC on its transaction's day, then sums those values. It does not multiply a
-multi-month coin total by one price. Counterparties, unattributed flows and
-bridge exits use the same daily quotes. Objects retain their own valuation
-methods and transaction times.
+`summarize_address_flows` values each coin movement using the median leg time
+for its coin and UTC hour, then sums those values. It does not multiply a
+multi-month coin total by one price. Counterparties, unattributed flows and bridge exits share the samples.
+Objects retain their own valuation methods and transaction times.
 
-The `usd_basis` block reports sources and coin-day coverage. Daily quotes are
-estimates, not execution prices. `priced_raw` and `unpriced_raw` separate the
-amounts included in USD from those left out. A missing timestamp or price never
-falls back to today's price or another day's quote.
+`usd_basis.method` is `hourly_utc` by default. When the requested coin-hours
+exceed the sample budget, `daily_median_time` uses each coin/day's median
+transaction time instead. Sample times are not rounded to the hour. For an
+even number of legs, the later middle leg is used.
+The block reports sources and requested, priced and missing coin samples.
+Quotes within one hour of the sample time are fresh. Quotes over one and up
+to two hours away are accepted as stale; `stale_quotes` lists each coin's
+largest signed offset in seconds. Older quotes stay unpriced. These are
+estimates, not execution prices. `priced_raw`, `stale_priced_raw` and
+`unpriced_raw` separate fresh, stale and excluded amounts without overlap.
+Missing timestamps or quotes never fall back to today's price.
+Fully priced flow and participant rows use gross `raw.in` and `raw.out`
+instead of repeating priced and zero unpriced buckets. For these rows,
+`stale_priced_raw`, when present, is a subset of `raw`; the rest is fresh.
+Bridge summaries cap transaction detail, not group totals or destinations.
+`omitted` names the removed rows and gives the full-result continuation.
 Coin decimals come from the registry, cached on-chain metadata or the quote's
 provider. A quote without a known decimal scale stays unpriced.
 
-DefiLlama is the default; Pyth is used only with `PYTH_API_KEY`. Multi-day
-DefiLlama reads batch historical samples, and successful samples are cached.
-The newest days are priced first within a bounded read budget. If
-`budget_skipped_coin_days` is nonzero, narrow the window and combine disjoint
-windows. A partial USD net is not a lower bound: missing debits can make it
+DefiLlama is the default; Pyth is used only with `PYTH_API_KEY`. Historical
+DefiLlama reads batch samples, and successful samples are cached per network.
+The newest samples are priced first within a bounded read budget. If
+`budget_skipped_coin_samples` is nonzero, narrow the window and combine
+disjoint windows. A partial USD net is not a lower bound: missing debits can make it
 too high.
 
-`summarize_incident_losses` uses the same daily quotes for gains, pool deltas,
+`summarize_incident_losses` uses the same quotes for gains, pool deltas,
 recipient selection and transfers sent on. Coin legs are priced before being
 netted: equal token amounts at different dates can have a nonzero USD net.
 Objects received and later consumed retain each leg's historical value.
@@ -36,7 +47,7 @@ Objects received and later consumed retain each leg's historical value.
 `totals.partial` true, not a claim that the total is a lower bound.
 
 With `group_pnl: true`, `aggregate_events` also prices each sender's balance
-changes by transaction day before netting them. Gas stays included. Check
+changes at their transaction times before netting them. Gas stays included. Check
 `pnl.usd_basis` before comparing senders with different missing-price coverage.
 
 ## Historical object flows

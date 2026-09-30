@@ -5,6 +5,7 @@ export interface TimedDeltas { at: number | null; deltas: Map<string, bigint> }
 export interface CoveredCoin extends ValuedCoin {
   priced_raw: { in: string; out: string };
   unpriced_raw: { in: string; out: string };
+  stale_priced_raw?: { in: string; out: string };
 }
 export interface WindowDeltas extends ValuedDeltas { coins: CoveredCoin[] }
 
@@ -36,7 +37,8 @@ export function valueWindowDeltas(legs: TimedDeltas[], prices: WindowPrices): Wi
     gained += Math.max(0, v.usd);
     coins.push({ ...meta, amount: v.raw.toString(), usd: v.priced ? Math.round(v.usd * 100) / 100 : null,
       priced_raw: { in: v.pricedIn.toString(), out: v.pricedOut.toString() },
-      unpriced_raw: { in: v.unpricedIn.toString(), out: v.unpricedOut.toString() } });
+      unpriced_raw: { in: v.unpricedIn.toString(), out: v.unpricedOut.toString() },
+      ...(v.staleIn || v.staleOut ? { stale_priced_raw: { in: v.staleIn.toString(), out: v.staleOut.toString() } } : {}) });
   }
   coins.sort((a, b) => Math.abs(b.usd ?? 0) - Math.abs(a.usd ?? 0));
   return { coins, usd_net: Math.round(net * 100) / 100, usd_gained: Math.round(gained * 100) / 100, unpriced };

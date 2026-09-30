@@ -13,7 +13,7 @@ sidebar:
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find possible shared operators when a fund trace reaches fresh wallets. |
 | [`check_coin_restrictions`](#check_coin_restrictions) | Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. |
-| [`classify_deposit_address`](#classify_deposit_address) | Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. |
+| [`classify_deposit_address`](#classify_deposit_address) | Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. |
 | [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
 | [`find_flow_path`](#find_flow_path) | Is there a value path from one address to another? |
@@ -154,7 +154,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. Verdict likely|no|unknown, tier heuristic, from three checks: every outflow is a full-balance sweep to one destination (a sweep that pays its own gas may leave up to 1 SUI behind as its gas reserve; a balance equal to the deposits that arrived just before a sweep is the next sweep's, in left_for_next_sweep, when the next outflow of that coin empties it into the same destination or is not in the window yet; anything else left behind fails the check); the sweeps' gas is paid by a relayer-shaped sponsor; the destination is a labelled exchange wallet (with its source_url) or hub-shaped. Returns the hot wallet, exchange provenance, sponsor, sweeps and deposit sample. checks_not_run explains null checks. Unread balances give unknown, null checks/sweep_count/deposit_count, and incomplete_transactions. One initial query plus balance continuations and optional sponsor/destination reads.
+(Incident investigation) Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. Verdict likely/no/unknown is heuristic. It independently checks full-balance outflows to one destination, a relayer-shaped gas sponsor, and a labelled exchange or hub-shaped destination. Self-funded gas may leave up to 1 SUI. A balance equal to deposits just before the sweep may remain only if the next outflow empties that coin to the same destination or is not yet in the window; left_for_next_sweep records this. Other residual balances fail the sweep check. All checks run independently; checks_not_run explains null checks. Returns hot wallet, exchange provenance, sponsor, sweep digests and sampled deposits. Costs about one request plus up to 12 to measure the sponsor and an unlabelled destination.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

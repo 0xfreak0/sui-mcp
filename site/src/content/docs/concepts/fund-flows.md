@@ -259,3 +259,26 @@ highest value first, and a call typically costs 15–60 requests.
 
 A CAIP-10 account on another chain, such as `eip155:1:0x…`, receives only a
 direct label and sanctions lookup; the server does not trace that chain.
+
+## Classifying an exchange deposit address
+
+`classify_deposit_address` tests whether an address is a per-customer deposit
+address that an exchange sweeps into its hot wallet, the identifier used to
+request the customer's identity. Its `likely`, `no` or `unknown` verdict is
+heuristic. It checks three things independently:
+
+1. Every outflow sweeps the full balance to one destination.
+2. A relayer-shaped sponsor pays the sweeps' gas.
+3. The destination is a labelled exchange, with its `source_url`, or is hub-shaped.
+
+A sweep paying its own gas may leave up to 1 SUI as reserve. A balance equal
+to deposits arriving just before a sweep can be left for the next one,
+recorded in `left_for_next_sweep`, if the next outflow of that coin empties
+it into the same destination or is not yet in the window. Any other residual
+balance fails the sweep check.
+
+Every check runs regardless of the others' results, and `checks_not_run`
+explains null checks. Results identify the hot wallet, exchange label and
+provenance, sweep sponsor, sweep digests and sampled deposits. The read defaults
+to the most recent 50 transactions, costing about one request plus up to
+12 more to measure the sponsor and an unlabelled destination.

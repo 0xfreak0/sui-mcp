@@ -85,7 +85,7 @@
         { "path": "groups[0].pools[0]", "op": "equals", "value": "{hasui_sui_pool}" },
         { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "55429398247450" },
         { "path": "priced_coins[*].attacker_net_raw", "op": "includes", "value": "10138247832730473" },
-        { "path": "totals.lower_bound", "op": "equals", "value": true }
+        { "path": "totals.partial", "op": "equals", "value": true }
       ],
       "tier": "chain-derived",
       "basis": "Cetus: exploit from 10:30:50 UTC, pools disabled from 10:57:47. On chain the attacker sent 287 transactions between 10:30:50 and 10:45:38, 265 successful, netting 55,429,398.24745 USDC and 10,138,247.83 haSUI among 195 coins.",

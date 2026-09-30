@@ -1004,14 +1004,14 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_source",
-    "(Incident investigation) Trace an address back to its funding source (the first transaction that funded the wallet, and who sent it), then walk that funder's funding, and so on. Stops when it reaches a labeled entity (exchange/bridge/known wallet; see manage_labels), a funder that paid more than 50 distinct addresses at least 0.01 SUI or $0.10 each (an exchange or service, by the same limit build_wallet_edges uses; ancestry beyond it carries no attribution; addresses it paid only dust do not count), a funder that paid the previous address after its own earliest 12 transactions (an established wallet paying from a balance it held, such as a victim's transfer to a thief; its own funding describes it, not that payment), a wallet it has already seen, or a dead end. Each hop reports the funder's popularity. Inflows skipped as dust are listed in dust_skipped, and parties that paid gas for a hop's own transactions are listed in sponsored_by, whether or not that hop found funding: a wallet paying gas from an address balance can run with no SUI inflow at all, and a poisoning lookalike's operator can appear only there. Great for attribution: e.g. 'this attacker wallet was first funded by a Binance withdrawal'.",
+    "(Incident investigation) Follow a wallet's first funding transaction and sender, then each funder's own funding. Stops at labels (see manage_labels), cycles, dead ends, funders paying over 50 addresses at least 0.01 SUI or $0.10 each, or a funder whose payment came after its own first 12 transactions. Service ancestry and an established wallet's earlier funding do not attribute the payment being traced; dust-only recipients do not count toward the service threshold. Each hop reports funder popularity. dust_skipped lists ignored inflows; sponsored_by lists gas payers even when no funding was found. A wallet can pay gas from an address balance without SUI inflows, and a lookalike operator may appear only as its sponsor.",
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),
       measure_fanout: boolArg()
         .optional()
         .describe(
-          "Measure the origin's fan-out so a hub can be told from a real link (default true). Scans the same default window as get_address_fanout, so the two agree on `truncated` and the counts.",
+          "Measure origin fan-out (default true), using get_address_fanout's default window and matching counts/truncation.",
         ),
     },
     async ({ address, max_hops, measure_fanout }) => {

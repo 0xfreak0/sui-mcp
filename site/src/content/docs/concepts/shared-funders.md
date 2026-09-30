@@ -114,3 +114,28 @@ default is 1. `max_cluster_size` rejects merges above 100 by default.
 Mermaid output has one box per cluster and signal-labelled edges, with
 unclustered pairs dashed. `graph_json` returns nodes and edges; CSV gives one
 row per edge. JSON is the default.
+
+## Following a funding chain
+
+`find_funding_source` starts at a wallet's first funding transaction and its
+sender, then follows the funder's own funding, up to five hops by default
+(maximum 12). It can establish a first funding source such as a Binance
+withdrawal; that is narrower than attributing every later payment.
+
+The walk stops at a labelled exchange, bridge or known wallet (managed through
+`manage_labels`), a repeated wallet, a dead end, or a funder that paid more
+than 50 distinct recipients at least 0.01 SUI or $0.10 each. Dust-only recipients
+do not count. This is the same service threshold used by `build_wallet_edges`;
+ancestry beyond a service does not attribute its users.
+
+It also stops when a funder's payment occurred after that funder's own earliest
+12 transactions. An established wallet can pay from a long-held balance,
+as when a victim transfers to a thief; that wallet's original funding does
+not explain this payment.
+
+Every hop reports funder popularity. `dust_skipped` lists ignored inflows;
+`sponsored_by` lists gas payers for the hop's own transactions even if no
+funding was found. Address-balance gas can support a wallet with no SUI inflow,
+and a poisoning lookalike's operator may appear only in sponsorship.
+`measure_fanout` defaults to true and uses `get_address_fanout`'s default window,
+so the counts and truncation status agree.

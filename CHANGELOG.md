@@ -105,6 +105,10 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **The 24h change is current.** `get_token_prices` and `analyze_token` read
+  DefiLlama's percentage endpoint, which is served from a cache and could be
+  up to an hour old. The change is now computed from DefiLlama's current
+  price and its price 24 hours earlier, read in one batched request.
 - **USD over long windows is priced near each transaction's time.**
   `summarize_address_flows` priced a multi-month window at one median-time
   price, so its USD totals were unusable. Each coin movement is now priced

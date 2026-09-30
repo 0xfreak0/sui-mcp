@@ -54,8 +54,10 @@ service returns short pages. Continue while `has_next_page` is true, even when
 and network unchanged.
 
 With `all_versions: true`, rows wait until the next rows or exhaustion of
-every version stream establish their global order. The cursor retains progress
-through empty reads as well as transactions already returned.
+every version stream establish their global order. The tool stops reading once
+that ordered page is full; it refills only streams whose unknown frontier
+prevents filling the page. The cursor retains progress through empty reads as
+well as transactions already returned.
 
 ## Partial event rankings
 

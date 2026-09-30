@@ -128,5 +128,51 @@ for (const order of ["newest", "oldest"] as const) {
       expect(resumed.transactions.map((t: { checkpoint: number }) => t.checkpoint)).toEqual(order === "newest" ? [100, 50] : [1, 50]);
       expect(resumed.has_next_page).toBe(false);
     });
+    it("returns a full safe page without refilling a later short stream", async () => {
+      const leading = order === "newest" ? [81, 82, 83] : [1, 2, 3];
+      query.mockImplementation(async (_q, vars) => {
+        const out: Record<string, unknown> = {};
+        for (let k = 0; vars[`f${k}`]; k++) {
+          const address = vars[`f${k}`].function.split("::")[0];
+          if (vars[`c${k}`]) throw new Error("Read beyond an already complete global page");
+          out[`v${k}`] = address === "0x1"
+            ? connection(leading, true, "leading")
+            : connection([order === "newest" ? 10 : 100], true, "trailing");
+        }
+        return out;
+      });
+      const page = await call({ function: fn, all_versions: true, order, limit: 3 });
+      expect(page.transactions.map((t: { checkpoint: number }) => t.checkpoint))
+        .toEqual(order === "newest" ? [...leading].reverse() : leading);
+      expect(query).toHaveBeenCalledTimes(1);
+      expect(decodeFanoutCursor(page.next_cursor, order)).toEqual([
+        { address: "0x1", cursor: "leading", done: false },
+        { address: "0x2", cursor: undefined, done: false },
+      ]);
+    });
+
+    it("refills only the unknown frontier blocking the global page", async () => {
+      versions.mockResolvedValue([1, 2, 3].map((version) => ({ address: `0x${version}`, version })));
+      const leading = order === "newest" ? [100, 90] : [1, 2];
+      const requests: string[][] = [];
+      query.mockImplementation(async (_q, vars) => {
+        const out: Record<string, unknown> = {};
+        const addresses: string[] = [];
+        for (let k = 0; vars[`f${k}`]; k++) {
+          const address = vars[`f${k}`].function.split("::")[0];
+          addresses.push(address);
+          const cursor = vars[`c${k}`];
+          if (cursor && address !== "0x1") throw new Error("Refilled a nonblocking stream");
+          out[`v${k}`] = address === "0x1"
+            ? connection([cursor ? leading[1] : leading[0]], !cursor, "leading")
+            : connection([address === "0x2" ? 50 : order === "newest" ? 10 : 100], true, "trailing");
+        }
+        requests.push(addresses);
+        return out;
+      });
+      const page = await call({ function: fn, all_versions: true, order, limit: 2 });
+      expect(page.transactions.map((t: { checkpoint: number }) => t.checkpoint)).toEqual(leading);
+      expect(requests).toEqual([["0x1", "0x2", "0x3"], ["0x1"]]);
+    });
   });
 }

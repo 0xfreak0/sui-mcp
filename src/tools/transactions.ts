@@ -160,8 +160,8 @@ function queriedTxFragment(includeFunctions: boolean): string {
 }
 
 /**
- * Fill each version's candidate page before merging. A short connection
- * read does not establish the next global row in the other streams.
+ * Read candidates from every version, then refill only streams whose unknown
+ * frontier blocks the next global row. Stop as soon as the safe page is full.
  */
 async function readVersionPages(
   streams: VersionStream[],
@@ -170,7 +170,7 @@ async function readVersionPages(
   order: ListOrder,
   size: number,
   includeFunctions: boolean,
-): Promise<{ pages: Array<VersionPage<QueriedTx> | null>; reads: number }> {
+) {
   const rest = fn.split("::").slice(1);
   const pages: Array<VersionPage<QueriedTx> | null> = streams.map(() => null);
   const perRequest = versionAliasesPerRequest(includeFunctions);
@@ -178,11 +178,20 @@ async function readVersionPages(
   // known. Large lineages get enough aliased reads for that first pass.
   const maxReads = Math.max(QUERY_TRANSACTIONS_MAX_READS, Math.ceil(streams.filter((s) => !s.done).length / perRequest));
   let reads = 0;
-  while (reads < maxReads) {
-    const active = streams.map((s, i) => ({ s, i })).filter(({ s, i }) =>
-      !s.done && (!pages[i] || (pages[i]!.hasMore && pages[i]!.edges.length < size)),
+  for (;;) {
+    const merged = mergeVersionPages(
+      streams, pages, order, size, (n) => n.digest, (n) => n.effects?.checkpoint?.sequenceNumber,
     );
-    if (!active.length) break;
+    if (merged.nodes.length >= size || !merged.has_next_page || reads >= maxReads) {
+      return { ...merged, reads };
+    }
+    const active = streams.map((s, i) => ({ s, i })).filter(({ s, i }) => {
+      const page = pages[i];
+      // The merge advances to the boundary only after consuming the entire
+      // scanned range. Other streams still hold candidates for this page.
+      return !s.done && (!page || (page.hasMore && merged.streams[i].cursor === page.nextCursor));
+    });
+    if (!active.length) return { ...merged, reads };
     for (let start = 0; start < active.length && reads < maxReads; start += perRequest) {
       const chunk = active.slice(start, start + perRequest);
       const decls = chunk.map((_, k) => `$f${k}: TransactionFilter, $c${k}: String, $n${k}: Int`).join(", ");
@@ -217,7 +226,6 @@ async function readVersionPages(
       });
     }
   }
-  return { pages, reads };
 }
 
 /** One object movement as `get_transaction` reports it. */
@@ -1121,16 +1129,8 @@ export function registerTransactionTools(server: McpServer) {
               "cursor is not an all_versions cursor for this order. Pass the next_cursor of a previous all_versions page, with the same order.",
             );
           }
-          const read = await readVersionPages(streams, filterParts, fn, direction, size, !!include_functions);
-          reads = read.reads;
-          const merged = mergeVersionPages(
-            streams,
-            read.pages,
-            direction,
-            size,
-            (n) => n.digest,
-            (n) => n.effects?.checkpoint?.sequenceNumber,
-          );
+          const merged = await readVersionPages(streams, filterParts, fn, direction, size, !!include_functions);
+          reads = merged.reads;
           nodes = merged.nodes;
           hasNextPage = merged.has_next_page;
           nextCursor = merged.has_next_page ? encodeFanoutCursor(direction, merged.streams) : null;

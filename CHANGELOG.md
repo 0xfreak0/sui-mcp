@@ -87,6 +87,20 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **USD over long windows is priced per day.** `summarize_address_flows`
+  priced a multi-month window at one median-time price, so its USD totals
+  were unusable. Each coin movement is now priced at its own UTC day's
+  historical quote before it is summed. This applies to coin totals,
+  counterparties and bridges; objects keep their transaction-time valuation.
+  The same holds for:
+  - `summarize_incident_losses` coin gains and pool losses (`price_at` still
+    sets one fixed time);
+  - `aggregate_events` participant P&L.
+
+  One pricing block states the method, the source and the coverage. Missing
+  coin-days, coins with unknown decimals, and a pricing-budget stop leave
+  those amounts unpriced and reported; there is no median or current-price
+  fallback. A one-day window costs the same as before.
 - **Continuations stay on the chain that produced them.** A `next_call`
   from a testnet or devnet call, or from a mainnet call on a server whose
   default is another network, omitted `network`, so following it read the

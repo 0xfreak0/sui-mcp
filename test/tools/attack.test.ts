@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AttackBalanceChange, AttackTx } from "../../src/utils/attack-analysis.js";
 import { canonicalId } from "../../src/utils/attack-analysis.js";
+import { resetWindowPriceCache } from "../../src/utils/window-prices.js";
 
 /**
  * Tool-level coverage for the gas-only / largest-gainer default in
@@ -30,13 +31,22 @@ vi.mock("../../src/utils/valuation.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   priceUsdAtTime: mockPriceUsdAtTime,
 }));
+vi.mock("../../src/utils/price-providers.js", async (original) => ({
+  ...(await original<object>()),
+  pythApiKey: () => null,
+  fetchDefiLlamaHistory: async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [
+    coin, new Map(times.filter((at) => at !== Date.parse("2025-09-01") / 1000).map((at) => [at, {
+      price: at < Date.parse("2025-06-01") / 1000 ? 4 : 2, at, source: "defillama", decimals: 9,
+    }])),
+  ])),
+}));
 
-mockPriceUsdAtTime.mockImplementation(async (coinTypes: string[]) => {
+mockPriceUsdAtTime.mockImplementation(async (coinTypes: string[], at = 0) => {
   const points = new Map<string, PricePointLike>();
   const unpriced: Array<{ coin_type: string; code: "not_listed"; reason: string }> = [];
   for (const c of new Set(coinTypes)) {
     const p = priceMapRef.current[c];
-    if (p) points.set(c, { price: p.price, publishTime: 0, source: "defillama", decimals: p.decimals });
+    if (p) points.set(c, { price: p.price, publishTime: at, source: "defillama", decimals: p.decimals });
     else unpriced.push({ coin_type: c, code: "not_listed", reason: "No price." });
   }
   return { points, unpriced };
@@ -86,6 +96,7 @@ const tx = (digest: string, sender: string, success: boolean, changes: AttackBal
 const emptyRead = (txs: AttackTx[]) => ({ txs, missing: [], served_by_archive: 0, events_undecoded: [] });
 
 beforeEach(() => {
+  resetWindowPriceCache();
   priceMapRef.current = {};
   mockReadAttackTransactions.mockReset();
   mockDigestsSentBy.mockReset();
@@ -274,7 +285,7 @@ describe("a beneficiary whose gain is unpriced is not passed over", () => {
     expect(payload.attacker_defaulted_from_sender.senders).toEqual([canonicalId(A)]);
     expect(payload.unpriced_gain_candidates).toBeUndefined();
     expect(payload.totals.usd_gained).toBeCloseTo(5000, 2);
-    expect(payload.totals.lower_bound).toBe(true);
+    expect(payload.totals.partial).toBe(true);
   });
 
   it("summarize_incident_losses: still keeps the senders when a smaller gainer's unpriced coin would be passed over", async () => {
@@ -289,8 +300,8 @@ describe("a beneficiary whose gain is unpriced is not passed over", () => {
   });
 });
 
-describe("coin rows and lower_bound cover only the attacker's own coins", () => {
-  it("does not mislabel a fully priced attacker total as a lower bound because a third party touched an unpriced coin", async () => {
+describe("incident totals cover the attacker's coins and pools", () => {
+  it("keeps unrelated third-party unpriced coins out of the totals' coverage", async () => {
     mockReadAttackTransactions.mockResolvedValue(
       emptyRead([
         tx(DIGEST1, VAULT, true, [
@@ -305,7 +316,45 @@ describe("coin rows and lower_bound cover only the attacker's own coins", () => 
     const payload = payloadOf(r);
 
     expect(payload.totals.coins).toBe(1);
-    expect(payload.totals.lower_bound).toBeUndefined();
+    expect(payload.totals.partial).toBe(false);
     expect(payload.unpriced_remainder).toEqual([]);
+  });
+});
+
+describe("incident historical coin legs", () => {
+  it("prices gains and forwarded amounts on their respective days", async () => {
+    const take = tx(DIGEST1, A, true, [bc(A, SUI, "10000000000")]);
+    take.timestampMs = Date.parse("2025-01-01");
+    const send = tx(DIGEST2, A, true, [bc(A, SUI, "-10000000000"), bc(D, SUI, "10000000000")]);
+    send.timestampMs = Date.parse("2025-07-01");
+    send.gas = { payer: A, net: 0n };
+    mockReadAttackTransactions.mockResolvedValue(emptyRead([take, send]));
+    const result = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: A }));
+    expect(result.totals).toMatchObject({ usd_gained: 40, usd_net: 40, transfers_out_usd: 20, approximate: true, partial: false });
+    expect(result.transfers_out[0]).toMatchObject({ usd: 20, amount: 10 });
+    expect(result.usd_basis).toMatchObject({ method: "daily_utc", priced_coin_days: 2 });
+  });
+
+  it("retains an explicitly requested fixed-time valuation", async () => {
+    const first = tx(DIGEST1, A, true, [bc(A, SUI, "10000000000")]);
+    first.timestampMs = Date.parse("2025-01-01");
+    const last = tx(DIGEST2, A, true, [bc(A, SUI, "-10000000000")]);
+    last.timestampMs = Date.parse("2025-07-01");
+    priceMapRef.current = { [SUI]: { price: 3, decimals: 9 } };
+    mockReadAttackTransactions.mockResolvedValue(emptyRead([first, last]));
+    const result = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: A, price_at: "2025-03-01" }));
+    expect(result.totals.usd_net).toBe(0);
+    expect(result.usd_basis).toMatchObject({ method: "fixed_time", priced_coin_days: 1 });
+  });
+
+  it("does not hide an unpriced debit behind a priced credit in the same coin", async () => {
+    const first = tx(DIGEST1, A, true, [bc(A, SUI, "10000000000")]);
+    first.timestampMs = Date.parse("2025-01-01");
+    const last = tx(DIGEST2, A, true, [bc(A, SUI, "-10000000000")]);
+    last.timestampMs = Date.parse("2025-09-01");
+    mockReadAttackTransactions.mockResolvedValue(emptyRead([first, last]));
+    const result = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: A }));
+    expect(result.totals).toMatchObject({ usd_net: 40, partial: true });
+    expect(result.unpriced_remainder[0]).toMatchObject({ attacker_net_raw: "0", unpriced_raw: { in: "0", out: "10000000000" } });
   });
 });

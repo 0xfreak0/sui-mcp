@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AttackBalanceChange, AttackTx } from "../../src/utils/attack-analysis.js";
 import { canonicalId } from "../../src/utils/attack-analysis.js";
 import type { ObjectMovement } from "../../src/utils/object-flow.js";
+import { resetWindowPriceCache } from "../../src/utils/window-prices.js";
 
 /**
  * Objects a transaction moved count in who gained and lost: a victim-signed
@@ -41,8 +42,8 @@ const S1 = canonicalId("0x51")!;
 const DIGEST1 = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
 const DIGEST2 = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR";
 
-mockPriceUsdAtTime.mockImplementation(async (coinTypes: string[]) => ({
-  points: new Map(coinTypes.filter((c) => c === SUI).map((c) => [c, { price: 1, publishTime: 0, source: "defillama" as const, decimals: 9 }])),
+mockPriceUsdAtTime.mockImplementation(async (coinTypes: string[], at = 0) => ({
+  points: new Map(coinTypes.filter((c) => c === SUI).map((c) => [c, { price: 1, publishTime: at, source: "defillama" as const, decimals: 9 }])),
   unpriced: coinTypes.filter((c) => c !== SUI).map((c) => ({ coin_type: c, code: "not_listed" as const, reason: "No price." })),
 }));
 
@@ -51,8 +52,6 @@ const { registerValuer } = await import("../../src/utils/position-value.js");
 const { registerAttackTools } = await import("../../src/tools/attack.js");
 
 let stakeUsd: number | null = 100;
-/** The pricing time each valuation was asked for. */
-let seenTimes: Array<number | undefined> = [];
 /** Value by object version, for an object changed in place. */
 let byVersion: Record<string, number> = {};
 /** Raw SUI a version holds, when its price differs from $1. */
@@ -61,8 +60,7 @@ registerValuer({
   name: "synthetic_stake",
   value: async () => ({ positions: [], unread: [] }),
   handles: (type) => type === STAKE_TYPE,
-  valueObject: async (obj, ctx) => {
-    seenTimes.push(ctx.atTime);
+  valueObject: async (obj) => {
     const usd = obj.version && obj.version in byVersion ? byVersion[obj.version] : stakeUsd;
     return {
       positions: [
@@ -117,10 +115,10 @@ const read = (txs: AttackTx[]) => ({ txs, missing: [], served_by_archive: 0, eve
 const drain = (victimGain: AttackBalanceChange) => tx(DIGEST1, V, [bc(V, SUI, "-1000000"), victimGain], [move("transferred", V, C)]);
 
 beforeEach(() => {
+  resetWindowPriceCache();
   stakeUsd = 100;
   byVersion = {};
   amountByVersion = {};
-  seenTimes = [];
   mockReadAttackTransactions.mockReset();
 });
 
@@ -214,28 +212,22 @@ describe("summarize_incident_losses counts the attacker's objects", () => {
     expect(payload.totals.usd_net).toBe(100);
   });
 
-  it("values each moved object at its own transaction's time unless price_at names one", async () => {
-    mockReadAttackTransactions.mockResolvedValue(read([drain(bc(V, DECOY, "404000000000"))]));
-    await handlers.summarize_incident_losses({ digests: [DIGEST1] });
-    expect(seenTimes.every((t) => t === undefined)).toBe(true);
 
-    seenTimes = [];
-    await handlers.summarize_incident_losses({ digests: [DIGEST1], price_at: 1_700_000_000 });
-    expect(seenTimes.length).toBeGreaterThan(0);
-    expect(seenTimes.every((t) => t === 1_700_000_000)).toBe(true);
-  });
-
-  it("nets a stake received and later unstaked by its amounts, whatever the price did between", async () => {
-    // Received worth $400 (100 SUI at $4), unstaked worth $360 (100 SUI at $3.60).
+  it("nets historical object values against the coins paid when consumed", async () => {
+    // Received worth $400, consumed worth $360, and the unstake coins worth $360.
     byVersion = { "8": 400, "7": 360 };
     amountByVersion = { "8": 100e9, "7": 100e9 };
     const received = drain(bc(V, DECOY, "404000000000"));
     const unstake = { ...tx(DIGEST2, C, [bc(C, SUI, "100000000000")], [move("deleted", C, null)]), objects: [{ objectId: S1, objectType: STAKE_TYPE, shared: false, parent: null, inputVersion: "7", outputVersion: null }] };
     mockReadAttackTransactions.mockResolvedValue(read([received, unstake]));
+    mockPriceUsdAtTime.mockImplementationOnce(async (coinTypes: string[], at: number) => ({
+      points: new Map(coinTypes.filter((c) => c === SUI).map((c) => [c, { price: 3.6, publishTime: at, source: "defillama", decimals: 9 }])),
+      unpriced: [],
+    }));
     const payload = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: C }));
 
-    expect(payload.totals.objects_usd_gained ?? 0).toBe(0);
-    expect(payload.totals.objects_usd_consumed ?? 0).toBe(0);
+    expect(payload.totals.objects_usd_gained).toBe(40);
+    expect(payload.totals.usd_gained).toBe(400);
   });
 
   it("counts a stake received and later unstaked once, as the coins the unstake paid", async () => {

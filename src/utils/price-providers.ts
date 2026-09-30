@@ -299,6 +299,81 @@ export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Prom
   return { quotes, unanswered, unsupported };
 }
 
+/** Many historical samples, keyed by coin then requested second. No current-price fallback. */
+export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Promise<Map<string, Map<number, PriceQuote>>> {
+  const out = new Map<string, Map<number, PriceQuote>>();
+  const read = async (keys: Map<string, number[]>) => {
+    const result = new Map<string, Map<number, PriceQuote>>();
+    const chunks: Array<Record<string, number[]>> = [];
+    let chunk: Record<string, number[]> = {};
+    let count = 0;
+    for (const [key, times] of keys) for (const time of times) {
+      if (count === 100 || encodeURIComponent(JSON.stringify({ ...chunk, [key]: [...(chunk[key] ?? []), time] })).length > 6000) {
+        chunks.push(chunk);
+        chunk = {};
+        count = 0;
+      }
+      (chunk[key] ??= []).push(time);
+      count++;
+    }
+    if (count) chunks.push(chunk);
+    for (let i = 0; i < chunks.length; i += DEFILLAMA_CONCURRENCY) {
+      await Promise.all(chunks.slice(i, i + DEFILLAMA_CONCURRENCY).map(async (coins) => {
+        try {
+          const response = await fetch(`https://coins.llama.fi/batchHistorical?coins=${encodeURIComponent(JSON.stringify(coins))}&searchWidth=1h`, {
+            headers: { accept: "application/json" },
+            signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
+          });
+          if (!response.ok) return;
+          const body = await response.json() as { coins?: Record<string, { symbol?: string; prices?: DefiLlamaEntry[] }> };
+          for (const [key, times] of Object.entries(coins)) {
+            const entries = (body.coins?.[key]?.prices ?? []).filter(
+              (p): p is DefiLlamaEntry & { timestamp: number; price: number } =>
+                typeof p.timestamp === "number" && Number.isFinite(p.timestamp) &&
+                typeof p.price === "number" && Number.isFinite(p.price) && p.price >= 0,
+            );
+            const samples = result.get(key) ?? new Map<number, PriceQuote>();
+            result.set(key, samples);
+            for (const time of times) {
+              const nearest = entries.reduce<(typeof entries)[number] | undefined>((best, p) =>
+                !best || Math.abs(p.timestamp - time) < Math.abs(best.timestamp - time) ? p : best, undefined);
+              if (nearest && Math.abs(nearest.timestamp - time) <= 3600) {
+                samples.set(time, { price: nearest.price, source: "defillama", at: nearest.timestamp,
+                  ...(typeof nearest.confidence === "number" ? { confidence: nearest.confidence } : {}),
+                  ...(typeof nearest.decimals === "number" && Number.isInteger(nearest.decimals) ? { decimals: nearest.decimals } : {}) });
+              }
+            }
+          }
+        } catch { /* Missing samples stay unpriced. */ }
+      }));
+    }
+    return result;
+  };
+  const keys = new Map<string, number[]>();
+  for (const [coin, times] of requests) {
+    const key = defiLlamaKey(coin);
+    if (key) keys.set(key, [...new Set([...(keys.get(key) ?? []), ...times])]);
+  }
+  const own = await read(keys);
+  const fallback = new Map<string, number[]>();
+  for (const [coin, times] of requests) {
+    const samples = own.get(defiLlamaKey(coin) ?? "") ?? new Map();
+    out.set(coin, samples);
+    const asset = SUI_BRIDGE_ASSET[normalizeCoinType(coin) ?? ""];
+    if (asset) fallback.set(asset, [...new Set([...(fallback.get(asset) ?? []), ...times.filter((t) => !samples.has(t))])]);
+  }
+  const assets = await read(fallback);
+  for (const [coin, times] of requests) {
+    const asset = SUI_BRIDGE_ASSET[normalizeCoinType(coin) ?? ""];
+    if (!asset) continue;
+    for (const t of times) {
+      const quote = assets.get(asset)?.get(t);
+      if (!out.get(coin)!.has(t) && quote) out.get(coin)!.set(t, { ...quote, priced_as: asset });
+    }
+  }
+  return out;
+}
+
 /**
  * Percent change over the last 24 hours, from DefiLlama's `/percentage`
  * endpoint, keyed by the coin types asked for. A coin DefiLlama does not list

@@ -77,3 +77,26 @@ distinction.
 
 For NFT collections, `holder_kind` says how each holder was found; see
 [Kiosk-held NFTs](/concepts/nft-ownership/).
+
+## DeFi positions
+
+`get_defi_positions` values staked SUI with accrued rewards, liquid-staking
+coins at their issuer's exchange rate, CLMM and AMM liquidity, lending, and
+balances inside owned objects such as vaults, coin tables and wrapped
+positions.
+
+Each position has asset legs, its valuation `method`, evidence `tier` and
+`usd`. If any leg has no price, `usd` is null and `unpriced_reason` explains
+why. `total_usd` and `by_protocol` sum every priced position, not the missing
+ones. `coverage` compares supported positions with the wallet's owned objects
+and lists unrecognised types and counts; `unread` records failed reads.
+
+Lending `health` includes the protocol's `borrow_limit_used` and
+`liquidation_threshold_used`. When those figures differ from the legs' USD by
+more than 2%, `health_basis` explains the difference. `leads` flags positions
+near their borrow limit and shared vaults the wallet operates, including what
+they hold.
+
+The default summary keeps the most valuable positions fitting about 30k
+characters and every unpriced position. `omitted` reports the rest.
+`detail: "full"` returns every position.

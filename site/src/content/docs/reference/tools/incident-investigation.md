@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`aggregate_events`](#aggregate_events) | Rank senders or event types by event count, or by a summed event field, across a window in one call instead of paging query_events. |
 | [`analyze_attack_tx`](#analyze_attack_tx) | Investigate one exploit transaction. |
-| [`analyze_multisig`](#analyze_multisig) | For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. |
+| [`analyze_multisig`](#analyze_multisig) | Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. |
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find possible shared operators when a fund trace reaches fresh wallets. |
 | [`check_coin_restrictions`](#check_coin_restrictions) | Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. |
@@ -85,12 +85,12 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction, and this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.
+(Multisig investigation) Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. Answers whether a treasury is run by fewer keys than its committee, whether the active signer set shifted, and which keys are unused. A member whose public key was written by hand is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address to learn that a wallet is a multisig; use this to learn how it operates.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | The multisig wallet's address (0x...) |
-| `max_transactions` | integer (1 to 500) | no | Sent transactions to examine, newest first (default 200). More is strictly better here: a key looks dormant until the one transaction it signed comes into view. |
+| `max_transactions` | integer (1 to 500) | no | Sent transactions to examine, newest first (default 200). A key that signed only before this window looks dormant, so more is better. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## build_timeline

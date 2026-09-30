@@ -557,7 +557,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_sources",
-    "(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Each walk stops at a funder that paid more than 50 distinct addresses, like find_funding_source, and a chain is counted toward shared funders only up to the first funder that is itself a subject. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly, plus every later payment one subject signed to another (subject_paid_subject, checked pair by pair for up to 20 subjects); and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.",
+    "(Incident investigation) Trace funding for many addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses; shared-funder counts stop at the first funder that is itself a subject. Reports common funders with fan-out and flow shape, co-funding compared with each transaction's total recipients, direct subject-to-subject funding, and later signed payments between subjects (subject_paid_subject, checked pairwise for up to 20 subjects). It also groups fundings within one minute as possible scripted setup. A common exchange or shared batch need not imply common control. Compare a sample_control_addresses control group before interpreting any rate.",
     {
       addresses: addressListArg()
         .min(1)
@@ -573,7 +573,7 @@ export function registerFundingTools(server: McpServer) {
         .enum(["first_hop", "full"])
         .optional()
         .describe(
-          "'first_hop' walks one hop per address, usually the informative one, since deep chains dead-end in early distribution wallets. 'full' walks to max_hops (default).",
+          "'first_hop' reads one funding hop per address; 'full' (default) walks to max_hops.",
         ),
       measure_fanout: boolArg()
         .optional()
@@ -582,7 +582,7 @@ export function registerFundingTools(server: McpServer) {
         .enum(["summary", "full"])
         .optional()
         .describe(
-          "'summary' (default): each result keeps its origin, first funder and first hop and counts its dust_skipped rows, and results and subject_paid_subject list what fits about 20k characters, every result tied to a shared funder, subject link, co-funding, burst or payment first. 'full' returns every hop of each chain under results[].chain, every dust row and every row of each list.",
+          "'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row.",
         ),
     },
     async ({ addresses, max_hops, depth, measure_fanout, detail }) => {

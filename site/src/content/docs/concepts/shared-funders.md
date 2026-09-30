@@ -139,3 +139,31 @@ funding was found. Address-balance gas can support a wallet with no SUI inflow,
 and a poisoning lookalike's operator may appear only in sponsorship.
 `measure_fanout` defaults to true and uses `get_address_fanout`'s default window,
 so the counts and truncation status agree.
+
+## Comparing many funding chains
+
+`find_funding_sources` shares reads when chains converge, so it is cheaper
+than a separate single-address call for each subject. It accepts 1–100
+addresses. Full depth is the default, up to `max_hops` (five by default);
+`depth: "first_hop"` stops after one hop. That first hop is often the useful
+one, since deeper chains tend to end at early distribution wallets.
+
+Like the single walk, it stops at funders that paid more than 50 distinct
+addresses. A shared-funder count stops at the first funder that is itself a
+subject. Each common funder has fan-out and flow shape to distinguish a narrow
+origin from an exchange many unrelated users withdrew from.
+
+Co-funding is measured against each transaction's total recipient count.
+Two subjects among two recipients suggests a bespoke payment; two among
+twenty can occur in an unrelated service batch. The tool reports subjects
+directly funding other subjects, and later payments one subject signed to
+another under `subject_paid_subject`, checked pairwise for up to 20 subjects.
+Fundings within a minute form timing clusters, a lead for scripted setup
+rather than proof. Run the same read on a `sample_control_addresses` control
+group before interpreting rates.
+
+The summary retains each result's origin, first funder and first hop and
+counts `dust_skipped`. Results and later subject payments fit about 20,000
+characters, prioritizing every result tied to a shared funder, subject link,
+co-funding, burst or payment. `detail: "full"` returns every hop under
+`results[].chain`, every dust row and every list row.

@@ -18,7 +18,7 @@ sidebar:
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
 | [`find_flow_path`](#find_flow_path) | Is there a value path from one address to another? |
 | [`find_funding_source`](#find_funding_source) | Follow a wallet's first funding transaction and sender, then each funder's own funding. |
-| [`find_funding_sources`](#find_funding_sources) | Trace many addresses back to their funding sources in one call, sharing work between them. |
+| [`find_funding_sources`](#find_funding_sources) | Trace funding for many addresses together, cheaper than repeated find_funding_source calls. |
 | [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. |
 | [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. |
 | [`get_upgrade_history`](#get_upgrade_history) | Read upgrade governance across a package lineage: each version's ID, transaction, time, publisher, signing scheme and UpgradeCap holder then. |
@@ -231,15 +231,15 @@ sidebar:
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Trace many addresses back to their funding sources in one call, sharing work between them. Funding chains converge, so this is much cheaper than calling find_funding_source per address. Each walk stops at a funder that paid more than 50 distinct addresses, like find_funding_source, and a chain is counted toward shared funders only up to the first funder that is itself a subject. Reports shared funders with each one's fan-out and flow shape, so a real common origin is distinguishable from an exchange everyone withdrew from; addresses paid by a single transaction, weighed against how many that transaction paid in total (two of two is bespoke, two of twenty is a batch an unrelated address can land in); any subject that funded another subject directly, plus every later payment one subject signed to another (subject_paid_subject, checked pair by pair for up to 20 subjects); and clusters of fundings that landed within a minute of each other, which is what separates scripted setup from coincidence. Draw a control with sample_control_addresses and run this over it before treating any rate as meaningful.
+(Incident investigation) Trace funding for many addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses; shared-funder counts stop at the first funder that is itself a subject. Reports common funders with fan-out and flow shape, co-funding compared with each transaction's total recipients, direct subject-to-subject funding, and later signed payments between subjects (subject_paid_subject, checked pairwise for up to 20 subjects). It also groups fundings within one minute as possible scripted setup. A common exchange or shared batch need not imply common control. Compare a sample_control_addresses control group before interpreting any rate.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `addresses` | array of string (1 to 100 items) | yes | Addresses to attribute (1-100). |
 | `max_hops` | integer (at most 12, greater than 0) | no | Max hops per address (default 5, max 12). |
-| `depth` | `first_hop` \| `full` | no | 'first_hop' walks one hop per address, usually the informative one, since deep chains dead-end in early distribution wallets. 'full' walks to max_hops (default). |
+| `depth` | `first_hop` \| `full` | no | 'first_hop' reads one funding hop per address; 'full' (default) walks to max_hops. |
 | `measure_fanout` | boolean | no | Measure fan-out for funders shared by 2+ addresses (default true). |
-| `detail` | `summary` \| `full` | no | 'summary' (default): each result keeps its origin, first funder and first hop and counts its dust_skipped rows, and results and subject_paid_subject list what fits about 20k characters, every result tied to a shared funder, subject link, co-funding, burst or payment first. 'full' returns every hop of each chain under results[].chain, every dust row and every row of each list. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## find_shared_multisig

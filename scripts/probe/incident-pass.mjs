@@ -294,7 +294,22 @@ try {
   ck("the default view's priced coins and the omitted ones are the full list", coinsCap.ok, coinsCap.detail);
   ck("the default view's totals are the full view's", JSON.stringify(lossesSummary.totals) === JSON.stringify(losses.totals));
   const top = (losses.groups ?? [])[0];
-  ck("the largest pool is the haSUI/SUI pool analyze_attack_tx values the same", top?.pools?.includes(CETUS_POOL) && near(top.attacker_usd, cetus.profit?.usd_net ?? NaN, 1e-4), `${top?.attacker_usd} vs ${cetus.profit?.usd_net}`);
+  ck("the largest pool is the haSUI/SUI pool from the analyzed exploit",
+    top?.pools?.length === 1 && top.pools[0] === CETUS_POOL
+      && top.transactions?.length === 1 && top.transactions[0] === CETUS_EXPLOIT);
+  // Both tools' raw amounts are checked against the chain above. Also keep
+  // the group's displayed quantities exact; only its USD valuation may move.
+  const gains = cetus.profit?.gains ?? [];
+  ck("the largest pool's attacker amounts equal analyze_attack_tx",
+    gains.length === 2 && Object.keys(top?.attacker ?? {}).length === gains.length
+      && gains.every((g) => top.attacker[g.coin_type]?.[0] === g.amount_human));
+  // The incident prices each coin at its median leg time in the UTC hour,
+  // rather than this transaction's time. SUI uses $4.17 at 10:37:57 instead
+  // of $4.1638809004624004 at 10:30:41; haSUI uses $4.39 in both. That moves
+  // this pool's total by 0.052%, so allow 0.1% here, not a raw-amount drift.
+  ck("the largest pool's USD is within 0.1% of the transaction-time valuation",
+    near(top?.attacker_usd ?? NaN, cetus.profit?.usd_net ?? NaN, 0.001),
+    `${top?.attacker_usd} vs ${cetus.profit?.usd_net}`);
 
   // =========================================================================
   // trace_funds, forward

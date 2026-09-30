@@ -26,8 +26,15 @@ in the repository. It covers:
 To build and run the server from a clone, see
 [Running from source](/start/install/#running-from-source).
 
-For context-size comparisons, build the server, then run
-`node scripts/probe/token-baseline.mjs --summary <case-pass.json> --out <prefix>`.
-This measures the current tool definitions and reports answer sizes from the
-saved case run without repeating its tool calls. Token counts are estimates.
-The script is a manual comparison tool, not a verify:live check.
+For context-size comparisons, build the server and save a case-pass summary:
+
+```bash
+npm run build
+npm run verify:live -- --keep-summary /tmp/case-pass.json
+node scripts/probe/token-baseline.mjs --summary /tmp/case-pass.json --out /tmp/token-baseline
+```
+
+The report measures tool definitions by profile selection and answer sizes
+from the saved run without repeating its tool calls. It reports characters
+and estimated tokens. The script is a manual comparison tool, not a
+`verify:live` check.

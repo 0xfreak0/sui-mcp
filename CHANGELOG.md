@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Changed
+- **The docs site matches 1.25.** The pricing, flow, transaction, capability
+  and getting-started pages describe daily pricing and partial totals.
+  Contributor docs describe the context-cost workflow. Output-size figures
+  that change between releases are gone.
 - **Shorter tool descriptions.** The longest tool and field descriptions are
   rewritten to say the same in fewer words. Each keeps when to pick the tool,
   what it does not cover, when output is partial, how to continue, and the

@@ -75,7 +75,7 @@ see [Gas sponsors](/concepts/gas-sponsors/).
 
 `build_wallet_edges` asks whether a fresh address reached by a trace is a new
 party or another wallet of the same operator. It builds signals live, without
-an analytics warehouse, from six sources:
+an analytics warehouse, from these sources:
 
 - Multisig co-signature: a committee key can spend the wallet whose address
   the committee hashes to. This is the non-behavioral signal.
@@ -163,7 +163,7 @@ rather than proof. Run the same read on a `sample_control_addresses` control
 group before interpreting rates.
 
 The summary retains each result's origin, first funder and first hop and
-counts `dust_skipped`. Results and later subject payments fit about 20,000
-characters, prioritizing every result tied to a shared funder, subject link,
+counts `dust_skipped`. Results and later subject payments share a display
+budget, prioritizing every result tied to a shared funder, subject link,
 co-funding, burst or payment. `detail: "full"` returns every hop under
 `results[].chain`, every dust row and every list row.

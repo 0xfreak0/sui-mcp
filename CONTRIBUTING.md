@@ -19,17 +19,17 @@ until you run it.
 
 ## Never publish
 
-Two things must not reach this repo, and both have reached it before:
+Keep these out of the public repository:
 
 - **`claude.ai/code/session_...` URLs.** The repo is public; the transcript is
   not. Coding agents offer a `Claude-Session:` commit trailer. Do not accept
   it, and keep `Co-Authored-By:`.
 - **A maintainer's own wallet addresses or SuiNS names**, in code, tests,
-  fixtures, docs *or commit messages*. Use neutral placeholders (`0xw1`).
+  fixtures, docs or commit messages. Use neutral placeholders (`0xw1`).
 
 `.githooks/commit-msg` and `.githooks/pre-commit` enforce both. The message
-hook is the one that matters: every leak this repo has actually had was in a
-commit message, where a pre-commit hook never looks.
+hook matters most: every leak this repo has had was in a commit message,
+where a pre-commit hook never looks.
 
 Patterns live in two files:
 
@@ -38,10 +38,11 @@ Patterns live in two files:
 | `.githooks/patterns` | yes | patterns that are safe to publish |
 | `.githooks/patterns.local` | **no** | patterns that are themselves the secret |
 
-The split is not optional. A hook that blocks your wallet address has to name
-it, and naming it in a tracked file publishes exactly what the hook exists to
-protect. Copy `patterns.local.example` and fill it in; the hook reports only
-that *a* private pattern matched, never which.
+A hook that blocks your wallet address has to name it, and naming it in a
+tracked file publishes what the hook exists to protect, so private patterns
+live in the untracked file. Copy `patterns.local.example`
+and fill it in; the hook reports only that a private pattern matched, never
+which.
 
 CI re-runs the tracked patterns on every pull request, so `--no-verify` does
 not get a session URL merged. It cannot check the private list, since those
@@ -59,9 +60,9 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
 2. Export a `register*` function that takes an `McpServer` and calls `server.tool()`.
 3. Import and call it from `src/tools/index.ts`.
 4. Use Zod schemas for input validation. For numbers and booleans use `numArg()`
-   and `boolArg()` from `src/tools/args.ts`, not bare `z.number()` / `z.boolean()` —
-   a model composing JSON will sometimes quote a value, and strict validation
-   turns that into a hard failure over nothing. For a Sui address, object ID or
+   and `boolArg()` from `src/tools/args.ts`, not bare `z.number()` / `z.boolean()`.
+   These helpers accept quoted numbers and booleans from model-generated JSON.
+   For a Sui address, object ID or
    package ID use `addressArg()` / `addressListArg()`, which return the
    canonical form and accept SuiNS names; comparing a raw argument against chain
    data fails silently on upper-case or short input. A coin or struct type is
@@ -108,11 +109,18 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
   number in a commit message or `CLAUDE.md`. A script kept to rediscover a
   number you already wrote down just rots against live mainnet.
 
-For context-size comparisons, build the server, then run
-`node scripts/probe/token-baseline.mjs --summary <case-pass.json> --out <prefix>`.
-This measures the current tool definitions and reports answer sizes from the
-saved case run without repeating its tool calls. Token counts are estimates.
-The script is a manual comparison tool, not a verify:live check.
+For context-size comparisons, build the server and save a case-pass summary:
+
+```bash
+npm run build
+npm run verify:live -- --keep-summary /tmp/case-pass.json
+node scripts/probe/token-baseline.mjs --summary /tmp/case-pass.json --out /tmp/token-baseline
+```
+
+The report measures tool definitions by profile selection and answer sizes
+from the saved run without repeating its tool calls. It reports characters
+and estimated tokens. The script is a manual comparison tool, not a
+`verify:live` check.
 
 ## Running a blind investigation
 
@@ -199,14 +207,12 @@ Prefer invariants and data-flow rules over names, protocols and thresholds.
 
 - One feature or fix per PR.
 - Include a short description of what changed and why.
-- Make sure CI passes (type check + tests on Node 20 and 22).
+- Make sure CI passes its type checks and tests on the supported Node versions.
 
 ## Keeping the protocol registry current
 
-`src/data/protocols.json` maps package IDs to protocols, and it drifts two ways:
-new protocols launch, and (the case that actually bites) **existing protocols upgrade**.
-A package upgrade produces a new package ID, so a protocol we already support
-silently stops decoding, with no error and no signal.
+`src/data/protocols.json` maps package IDs to protocols. New protocols need
+entries, and upgrades produce new package IDs.
 
 Upgrades are handled by lineage rather than by hand. `src/data/protocol-roots.json`
 maps each curated package back to the root of its upgrade lineage (its version-1
@@ -223,22 +229,19 @@ protocol's name or category, since that would mislabel every future version.
 `test/protocols-data.test.ts` fails if a curated protocol has no lineage
 coverage, which catches a forgotten re-run.
 
-Lineage resolution is a lookup, not a guarantee of freshness: a protocol that
-*redeploys* rather than upgrades mints an unrelated root that no lineage walk
-will find, so `find-unknown-packages` below is still how new lineages get
-discovered.
+A protocol that redeploys rather than upgrades mints an unrelated root.
+Use `find-unknown-packages` below to discover new lineages.
 
 ## Keeping the coin symbol index current
 
 `src/data/coin-symbols.json` lists every mainnet coin by symbol, so
-`analyze_token` and `search_token` can answer a symbol that several coins use
-(30 coins use `KONG`) without a live scan that cannot reach them. It goes stale
-as coins launch: a coin published after the sync is found only by the bounded
-live scan, and tools say which date the index has. Regenerate it before a
-release:
+`analyze_token` and `search_token` can return candidates when several coins
+share a symbol without a live scan that cannot reach them all. A coin
+published after the sync is found only by the bounded live scan, and tools
+say which date the index has. Regenerate it before a release:
 
 ```bash
-npm run sync:coin-symbols                  # rewrites src/data/coin-symbols.json, about 13 minutes
+npm run sync:coin-symbols                  # rewrites src/data/coin-symbols.json
 ```
 
 The script walks every `CoinMetadata` and coin registry `Currency` object. It
@@ -279,25 +282,10 @@ so.
 
 ## Mocks must be shapes the service can actually produce
 
-A mock is an assertion about the outside world. When it asserts something
-false, the test stops testing anything. It also keeps passing, which is worse
-than failing.
-
-Three bugs shipped green this way:
-
-- `activeValidators(first: 200)` was mocked as one page with no `pageInfo`.
-  Mainnet rejects that query outright ("Page size is too large: 200 > 50"),
-  so `identify_address` had **never once** detected a validator and
-  `get_staking_summary` failed on every call naming one. Every test passed.
-- Absence was mocked as `new Error("not found")`. The service signals it with a
-  gRPC `NOT_FOUND` **status**, so code that correctly checks the status looked
-  broken while a catch-everything looked correct.
-- Both let a completely dead code path report success.
-
-Use the builders in `test/helpers/service-shapes.ts` rather than hand-writing
-response literals. They encode the constraints the services impose and **throw**
-instead of building something impossible, so a false assumption fails at
-authoring time:
+Mocks must match the service's page limits, pagination fields and error
+statuses. Use the builders in `test/helpers/service-shapes.ts` rather than
+hand-writing response literals. They reject responses the service cannot
+produce:
 
 ```ts
 gqlPage(nodes)                    // always has pageInfo; throws above 50 nodes
@@ -307,40 +295,34 @@ grpcError("UNAVAILABLE")          // a failure, which is not
 httpOk(body) / httpError(401)     // fetch-shaped responses
 ```
 
-The distinction `notFoundError()` and `grpcError()` draw is load-bearing, not
-stylistic. Absence is an answer callers conclude things from —
-`identify_address` reports a wallet on it, while an outage means the question
-could not be asked. A test that blurs them proves nothing about the code that
-keeps them apart.
-
-If a builder rejects the response you wanted, that is the finding. Do not
-work around it by writing the literal by hand.
+Keep absence separate from read failures. `notFoundError()` represents a
+gRPC `NOT_FOUND` status; `grpcError("UNAVAILABLE")` means the read failed.
+`identify_address` can conclude that an address is a wallet from absent
+object data, but not from an outage. If a builder rejects a response, correct
+the fixture rather than bypassing the builder.
 
 ## Adding a bridge
 
-Bridges live in `src/utils/bridge/detect.ts`, and the bar for adding one is
-higher than for a protocol entry: a marker that never fires is dead weight, and
-one that fires on the wrong call does more harm than none at all.
+Bridges live in `src/utils/bridge/detect.ts`. Verify both detection and
+direction before adding an entry.
 
 **Verify on mainnet before adding anything.** Find the package, list its
 modules and structs, then sample real events to confirm the field names and see
-what a live payload actually contains. Every entry currently in the registry was
-added only after a real transaction was captured, and the payloads are the test
-fixtures. `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` are built
-from transactions named in their comments; `test/fixtures/bridge-transactions.json`
-holds `resolve_bridge_transfer`'s own GraphQL response for one real
-transaction per newer bridge, keyed by digest. Capture a new one with the query
-in `src/tools/bridge.ts` and add it there.
+what a live payload contains. Keep a captured transaction as a test fixture.
+`test/sui-native-bridge.test.ts` and `test/cctp.test.ts` use transactions named
+in their comments. `test/fixtures/bridge-transactions.json` holds
+`resolve_bridge_transfer`'s GraphQL response for each bridge it covers, keyed
+by digest. Capture a new one with the query in `src/tools/bridge.ts` and add
+it there.
 
-Two things that sampling catches and guessing does not:
+Check direction and marker specificity:
 
-- **Direction.** An inbound claim is not an exit. Detecting one as an exit sends
-  an investigator to the wrong chain. Check which events mean *leaving*.
-- **Marker specificity.** `init_order` looked like a good Mayan marker; it would
-  have collided with DEX order books, which emit some of the highest-frequency
-  events on mainnet. The markers carry `mctp` instead. Prefer a distinctive
-  module or event name over a generic one, and add a test asserting the
-  lookalike does *not* match. When the only exit event has a generic name
+- **Direction.** Check which events mean leaving Sui. An inbound claim must
+  not be detected as an exit.
+- **Marker specificity.** Prefer a distinctive module or event name over a
+  generic one. Mayan's `mctp` markers distinguish it from DEX `init_order`
+  calls. Add a test asserting that the lookalike does not match.
+  When the only exit event has a generic name
   (`events::TokensSentEvent`), pin it to its package with a
   `0xpkg::module::Name` marker; events keep the defining package's id across
   upgrades. When a call marker's prefix would catch a sibling function, list
@@ -353,16 +335,14 @@ pinned to the emitting package, and add it to `readBridgeEvents` in
 `readBridgeEvents` together. Give it a section in the tool and add its name to
 `SECTIONED` in `src/tools/bridge.ts`.
 
-Note that volume sampling will **not** surface bridges. A survey of 1200 recent
-mainnet events turned up 180 `order::OrderCanceled` and not one bridge event —
-bridge traffic is rare next to DEX and oracle activity. Probe candidate event
-types by name instead.
+Volume sampling can miss bridges among DEX and oracle activity. Probe
+candidate event types by name.
 
 Set `resolution` honestly. `identifier` means `resolve_bridge_transfer` reads
 the destination or an id quoted on both chains, so the hop can be followed;
 `detect-only` means the exit is recognised and no more (Meson, whose recipient
-is not in Sui data). Never point a caller at a resolver that cannot help them —
-`resolvableHit()` is the guard.
+is not in Sui data). Use `resolvableHit()` to avoid suggesting a resolver that
+cannot follow the exit.
 
 ```bash
 npm run find-unknown-packages              # sample mainnet, rank unknowns by call count
@@ -384,9 +364,8 @@ Before adding an entry, get evidence. Never assert a package ID from memory:
   over GraphQL. Module names are usually self-identifying (`alphafi_*`,
   `batch_price_attestation`, `guardian_set`).
 
-MVR coverage is thin. Roughly half of even our own curated registry is
-unregistered, and some large protocols (AlphaFi) have no MVR presence at all.
-That is why the registry is hand-maintained and MVR is only a fallback:
+MVR does not cover every protocol. The registry is hand-maintained and MVR is
+only a fallback:
 `lookupProtocolDisplay` will show an MVR name for an unknown package, but
 `lookupProtocol` stays curated-only because fund tracing makes pass-through
 decisions from it. The lineage tier sits on the curated side of that line: only
@@ -429,15 +408,11 @@ Things that are easy to get wrong here:
   `npm run set-version` writes all of them; `test/packaging.test.ts` fails if
   they ever drift apart, and CI additionally refuses to publish when the git tag
   disagrees with `package.json`.
-- **The post-publish check runs against the EXACT version, not `@latest`.** The
-  dist-tag is a second thing that has to propagate, so verifying `@latest` can
-  fail while the version itself is already installable, and it would silently
-  pass against the previous release if the tag lagged.
-- **Anything that inspects a failed command's output must CAPTURE it.**
-  `stdio: "inherit"` prints to the console and leaves `err.stdout`/`err.stderr`
-  null, so a check that greps them sees only "Command failed: …". That is how
-  the publish retry sat broken through several releases while appearing to
-  exist.
+- **The post-publish check runs against the exact version, not `@latest`.**
+  The dist-tag propagates separately, so `@latest` can resolve to a previous
+  release while the new version is already installable.
+- **Capture a failed command's output when inspecting it.**
+  `stdio: "inherit"` leaves `err.stdout` and `err.stderr` null.
 - **npm versions are permanent.** A version can be deprecated but not replaced,
   so the tag check runs before `npm publish`, not after.
 - **`npm publish` may skip `prepublishOnly` when run locally.** The
@@ -451,10 +426,9 @@ Things that are easy to get wrong here:
   the build output into the tarball. Don't remove it.
 - **`npm pack --dry-run`** lists exactly what would ship without publishing
   anything. The packaging test runs this too.
-- **npm publishes asynchronously.** `npm publish` answers 202 Accepted and the
-  version becomes readable some minutes later. Measured on 1.17.0: about six
-  minutes. The release workflow waits for it before submitting to the MCP
-  Registry, which validates against npm and rejects a version it cannot see.
+- **npm publishes asynchronously.** The release workflow waits until the
+  version is readable before submitting to the MCP Registry, which validates
+  against npm and rejects a version it cannot see.
 - **The publish step skips a version already on npm.** Re-running the job is the
   only recovery GitHub offers and it restarts from the top, so without that a
   re-run dies on "cannot publish over" before reaching the step that failed.
@@ -463,10 +437,9 @@ Things that are easy to get wrong here:
   only see the working tree; this is what catches a tarball that installs but
   won't start.
 - **The decompiler binary is never published.** `bin/move-decompiler` is a
-  platform-specific Rust build, so a tarball could only ever carry one
-  architecture. `decompile_module` requires a clone plus `SUI_DECOMPILER_PATH`;
-  keep its error message accurate for people who installed from npm and have no
-  local checkout.
+  platform-specific Rust build. `decompile_module` requires a separately built
+  binary configured through `SUI_DECOMPILER_PATH` or `PATH`; it works with
+  npm installs as well as source builds.
 
 ### What needs a new release
 

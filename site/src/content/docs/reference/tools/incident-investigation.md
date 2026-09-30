@@ -58,7 +58,7 @@ sidebar:
 | `max_events` | integer (50 to 50000) | no | Scan budget (default 10000). Raise for busy protocols, or narrow the window. |
 | `max_reads` | integer (1 to 1000) | no | Event-connection read budget across all segments (default 200). Short or empty reads count too. A read-budget stop is truncated and scan.next_call continues the unread event slice. |
 | `cursor` | string | no | Opaque next_cursor from a previous aggregate_events call. Keep the same filters and network. Reads the next disjoint event slice; counts are not cumulative and the ranking remains truncated for the original window. |
-| `group_pnl` | boolean | no | Rank senders by their own balance-change P&L, gas included, using daily historical quotes. Multi-leg PTBs may include gains from other packages. |
+| `group_pnl` | boolean | no | Rank senders by their own balance-change P&L, gas included, using historical quotes. Multi-leg PTBs may include gains from other packages. |
 | `pnl_max_transactions` | integer (1 to 2000) | no | Distinct transactions read for group_pnl, oldest first (default 500). Check pnl.truncated. |
 | `detail` | `summary` \| `full` | no | 'summary' (default) caps P&L coin and missing-price lists, with omissions and continuation. 'full' returns every row. Totals cover all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -414,7 +414,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. Coin USD uses daily historical quotes; check usd_basis and priced/unpriced raw amounts. Scans newest first: check coverage.complete and follow coverage.continue_with when capped. address_poisoning and cross_chain_leads cover only scanned activity, not clearance.
+(Incident investigation) Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. Coin USD uses hourly historical quotes; check usd_basis for coarsening and coverage. Scans newest first: check coverage.complete and follow coverage.continue_with when capped. address_poisoning and cross_chain_leads cover only scanned activity, not clearance.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -434,7 +434,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced coins are listed separately and make USD totals a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.
+(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -444,7 +444,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `end` | number \| string | no | Window end with `sender`: a checkpoint number or ISO 8601 time. Inclusive. |
 | `max_transactions` | integer (1 to 1000) | no | Cap on transactions read in `sender` mode (default 1000, the most). Hitting it is reported. |
 | `attacker` | string | no | Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override. |
-| `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: daily coin quotes at each transaction's date; objects at their own transaction times. |
+| `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

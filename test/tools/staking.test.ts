@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { z } from "zod";
 import { gqlPage, gqlPages } from "../helpers/service-shapes.js";
 import { createMockClient, createMockGraphql } from "../helpers/mock-grpc.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,13 +27,25 @@ const { registerStakingTools } = await import("../../src/tools/staking.js");
 const { withNetworkParam } = await import("../../src/tools/with-network.js");
 
 const tools = new Map<string, Function>();
+const schemas = new Map<string, z.ZodRawShape>();
 const mockServer = {
   tool: (name: string, _desc: string, _schema: unknown, handler: Function) => {
     tools.set(name, handler);
+    schemas.set(name, _schema as z.ZodRawShape);
   },
 } as unknown as McpServer;
 
 registerStakingTools(mockServer);
+
+it("validates historical staking timestamps and checkpoint strings before replay", () => {
+  const schema = z.object(schemas.get("get_staking_summary")!);
+  const address = `0x${"a1".repeat(32)}`;
+  expect(schema.parse({ address, as_of: " 2025-06-01T00:00:00Z " }).as_of).toBe("2025-06-01T00:00:00Z");
+  expect(schema.parse({ address, as_of: " 100 " }).as_of).toBe("100");
+  for (const as_of of ["bad-date", "-1", 100]) {
+    expect(schema.safeParse({ address, as_of }).success).toBe(false);
+  }
+});
 
 function makeValidator(name: string, stake: string, commission: string) {
   return {

@@ -17,7 +17,7 @@
  */
 import { getNetwork } from "../config.js";
 import { loadResult, saveResult, storeStatus } from "./store.js";
-import { bindContinuationNetwork } from "./continuation-network.js";
+import { bindCallNetwork, bindContinuationNetwork } from "./continuation-network.js";
 
 /**
  * The call that returns what a capped response left out: a tool with its
@@ -301,7 +301,8 @@ export function readStoredResult(
   if (!stored) throw new Error(`No stored result '${id}'. Its id comes from a capped response's omitted.result.uri.`);
   // Resource reads have no originating tool context. Use the stored chain,
   // including when the process default has changed since the result was saved.
-  bindContinuationNetwork(stored, stored.network);
+  bindCallNetwork(stored, stored.network);
+  bindContinuationNetwork(stored.payload, stored.network);
   if (!query.path) {
     const lists: Record<string, number> = {};
     const walk = (node: unknown, prefix: string, depth: number) => {

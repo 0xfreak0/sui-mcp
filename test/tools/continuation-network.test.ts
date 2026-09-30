@@ -134,19 +134,40 @@ describe("continuations stay on the originating chain", () => {
   });
 
   it("uses the stored chain, not the resource reader's chain, for calls and repeat args", () => {
-    const id = saveResult("testnet", "decode_ptb", { digest: DIGEST }, {
-      rows: [{ next_call: { tool: "get_transaction", args: { digest: DIGEST } } },
-        { next_call: { tool: "decode_ptb", repeat_with: { command_offset: 5 } } }],
+    const id = saveResult("testnet", "diff_package_upgrade", { package: OWNER }, {
+      diff: { changed_modules: [
+        { sample_next_call: { tool: "disassemble_module", args: { package_id: OWNER, module_name: "pool" } } },
+        { sample_next_call: { tool: "diff_package_upgrade", repeat_with: { max_sample_lines: 200 } } },
+      ] },
     })!;
     const root = runWithNetwork("devnet", () => readStoredResult(id, {}));
     expect((root.args as Args).network ?? DEFAULT_NETWORK).toBe("testnet");
-    const first = runWithNetwork("mainnet", () => readStoredResult(id, { path: "rows", limit: "1" }));
+    const first = runWithNetwork("mainnet", () => readStoredResult(id, { path: "diff.changed_modules", limit: "1" }));
     expect(calls(first)[0].args?.network ?? DEFAULT_NETWORK).toBe("testnet");
     const uri = new URL(first.next_page as string);
     const second = runWithNetwork("devnet", () => readStoredResult(id, Object.fromEntries(uri.searchParams)));
     const repeat = calls(second)[0];
-    expect({ ...(root.args as Args), ...repeat.repeat_with }).toMatchObject({ network: "testnet", command_offset: 5 });
-    const nested = runWithNetwork("devnet", () => readStoredResult(id, { path: "rows.0.next_call" }));
+    expect({ ...(root.args as Args), ...repeat.repeat_with }).toMatchObject({ network: "testnet", max_sample_lines: 200 });
+    const nested = runWithNetwork("devnet", () => readStoredResult(id, { path: "diff.changed_modules.0.sample_next_call" }));
     expect(calls(nested)[0].args?.network ?? DEFAULT_NETWORK).toBe("testnet");
+  });
+
+  it("does not rewrite decoded event data or stored object content that resembles a call", async () => {
+    const decoded = {
+      tool: "router", args: { amount: "1" },
+      next_call: { tool: "get_transaction", args: { digest: DIGEST } },
+      omitted: { next_call: { tool: "decode_ptb", args: { digest: DIGEST } } },
+    };
+    query.mockResolvedValue({ events: {
+      nodes: [{ contents: { type: { repr: "0x2::router::Event" }, json: decoded }, transaction: { digest: DIGEST } }],
+      pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null },
+    } });
+    const registered = tools.get("query_events")!;
+    const result = await registered.handler(registered.schema.parse({ sender: OWNER, network: "testnet" }));
+    expect(result.isError, result.content[0].text).toBeUndefined();
+    expect(JSON.parse(result.content[0].text).events[0].data).toEqual(decoded);
+    const id = saveResult("testnet", "get_object", { object_id: OWNER }, { content: decoded })!;
+    const stored = runWithNetwork("devnet", () => readStoredResult(id, { path: "content" }));
+    expect(stored.value).toEqual(decoded);
   });
 });

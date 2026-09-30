@@ -430,7 +430,8 @@ export function registerIdentifyTools(server: McpServer) {
               token_count: nonZeroTokens,
               meaning:
                 "No live object is at this id and nothing has ever signed for it, but a transaction recorded it as an object id. It is the id of an object that was wrapped inside another object or deleted. Value sent to it is held by that object and leaves only through the module that owns it, in a transaction someone else sends.",
-              hint: `Use get_transaction on ${identity.object_seen_in} to see which object this was, and trace_funds forward to follow value out of it.`,
+              next_call: { tool: "get_transaction", args: { digest: identity.object_seen_in } },
+              hint: "next_call identifies the object; trace_funds forward follows value out of it.",
             }),
           }],
         };

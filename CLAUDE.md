@@ -53,6 +53,9 @@ testnet value to mainnet).
   they retain the caller's network without repeating it. Stored-result reads
   bind calls and the recorded arguments using the result's stored network,
   not the reader's context. Summaries should point to the structured call.
+  Standard continuation paths are bound centrally. Register nonstandard paths
+  in `utils/continuation-network.ts`; never search decoded chain content for
+  objects that happen to resemble tool calls.
 
 ### Which transport to use
 

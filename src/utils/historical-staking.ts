@@ -6,6 +6,7 @@ import { estimateStakedSuiRewards, STAKED_SUI_TYPE } from "./valuers/staked-sui.
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { withArchiveFallback } from "./archive-fallback.js";
 import { readObjectVersions } from "./valuers/common.js";
+import { loadStakingContinuation, saveStakingContinuation } from "./staking-continuation.js";
 
 const STAKE_TYPE = /^0x0*3::staking_pool::StakedSui$/;
 const MAX_POSITIONS = 10_000;
@@ -20,7 +21,7 @@ class ScanBudgetExceeded extends Error {
 interface Point { sequenceNumber: number; timestamp: string }
 interface Range { first: Point | null; last: Point | null }
 interface Page<T> { nodes: T[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }
-interface Ref { address: string; version: number }
+interface Ref { address: string; version: number; stake?: HistoricalStake }
 interface State {
   version: number;
   owner: { __typename: string; address?: { address: string } } | null;
@@ -150,12 +151,11 @@ function apply(changes: Change[], positions: Map<string, Ref>, owner: string, fo
   }
 }
 
-async function ownedAt(owner: string, cp: number, deadline: number): Promise<Map<string, Ref>> {
-  const positions = new Map<string, Ref>();
-  let after: string | null = null;
+async function ownedAt(owner: string, cp: number, deadline: number, positions: Map<string, Ref>, progress: ReplayProgress) {
   const seen = new Set<string>();
   for (;;) {
     if (Date.now() >= deadline) throw new ScanBudgetExceeded("time");
+    const after = progress.owned_cursor ?? null;
     const data: { address: { objects: Page<Ref> } | null } = await gqlQuery(`query($owner:SuiAddress!,$cp:UInt53!,$after:String) {
       address(address:$owner,atCheckpoint:$cp) { objects(filter:{type:"${STAKED_SUI_TYPE}"},first:50,after:$after) {
         nodes { address version } pageInfo { hasNextPage endCursor }
@@ -164,11 +164,12 @@ async function ownedAt(owner: string, cp: number, deadline: number): Promise<Map
     const page = data.address?.objects;
     if (!page) throw new Error("The anchored holdings set is unavailable.");
     for (const ref of page.nodes) positions.set(ref.address, ref);
-    if (!page.pageInfo.hasNextPage) return positions;
-    after = page.pageInfo.endCursor;
-    if (!after || seen.has(after)) throw new Error("The anchored holdings continuation is unavailable.");
-    seen.add(after);
-    if (positions.size >= MAX_POSITIONS) throw new Error("The anchored holdings exceed the position budget.");
+    if (positions.size > MAX_POSITIONS) throw new Error("The anchored holdings exceed the position budget.");
+    if (!page.pageInfo.hasNextPage) { progress.phase = "transactions"; return; }
+    const next = page.pageInfo.endCursor;
+    if (!next || next === after || seen.has(next)) throw new Error("The anchored holdings continuation is unavailable.");
+    seen.add(next);
+    progress.owned_cursor = next;
   }
 }
 
@@ -182,24 +183,61 @@ interface Attempt {
   budget_exhausted?: ScanBudgetExceeded["budget"];
 }
 
-async function replay(owner: string, cp: number, anchor: number, direction: Attempt["direction"], max: number, deadline: number) {
+interface ReplayProgress {
+  phase: "owned" | "transactions" | "done";
+  cursor?: string;
+  // A time stop may occur inside a transaction page or an object-change page
+  // chain. Re-read that fixed-size transaction page, skipping applied changes.
+  offset: number;
+  page_size?: number;
+  change_cursor?: string;
+  owned_cursor?: string;
+}
+
+interface SavedReplay {
+  address: string;
+  as_of: string;
+  checkpoint: number;
+  anchor: number;
+  direction: Attempt["direction"];
+  method: string;
+  calls: number;
+  transactions_scanned: number;
+  object_change_pages: number;
+  progress: ReplayProgress;
+  positions: HistoricalStake[];
+}
+
+interface ReplayResult {
+  positions: Map<string, Ref>;
+  progress: ReplayProgress;
+  attempt: Attempt;
+}
+
+async function replay(owner: string, cp: number, anchor: number, direction: Attempt["direction"], max: number,
+  deadline: number, saved?: SavedReplay, direct = false): Promise<ReplayResult> {
   const attempt: Attempt = { direction, transactions_scanned: 0, object_change_pages: 0, reached_checkpoint: null, complete: false };
   const forward = direction === "forward";
-  let positions = new Map<string, Ref>();
+  const positions = new Map<string, Ref>(saved?.positions.map(stake => [stake.object_id, { address: stake.object_id, version: stake.version, stake }]));
+  const progress: ReplayProgress = saved?.progress ?? { phase: forward ? "transactions" : "owned", offset: 0 };
   try {
-    if (!forward) positions = await ownedAt(owner, anchor, deadline);
+    if (progress.phase === "owned") await ownedAt(owner, anchor, deadline, positions, progress);
+    if (direct) progress.phase = "done";
     const order = forward ? "oldest" : "newest";
-    let cursor: string | undefined;
     const cursors = new Set<string>();
-    for (;;) {
+    while (progress.phase !== "done") {
       if (Date.now() >= deadline) throw new ScanBudgetExceeded("time");
       if (attempt.transactions_scanned >= max) throw new ScanBudgetExceeded("transactions");
+      if (attempt.object_change_pages >= max) throw new ScanBudgetExceeded("object_changes");
+      progress.page_size ??= Math.min(50, max - attempt.transactions_scanned);
       const data = await gqlQuery<{ transactions: { nodes: Tx[]; pageInfo: BothWaysPageInfo } }>(SCAN, {
         owner, afterCp: forward ? null : cp, beforeCp: (forward ? cp : anchor) + 1,
-        ...orderedPageArgs(order, Math.min(50, max - attempt.transactions_scanned), cursor),
+        ...orderedPageArgs(order, progress.page_size, progress.cursor),
       });
       const page = orderedPage(data.transactions.nodes, data.transactions.pageInfo, order);
-      for (const tx of page.nodes) {
+      for (; progress.offset < page.nodes.length; progress.offset++) {
+        if (attempt.transactions_scanned >= max) throw new ScanBudgetExceeded("transactions");
+        const tx = page.nodes[progress.offset];
         if (!tx.effects?.objectChanges || !tx.effects.checkpoint) throw new Error(`Transaction state unavailable for ${tx.digest}.`);
         let changes = tx.effects.objectChanges;
         let native: { changes: Map<string, GrpcTypes.ChangedObject>; createdWrapped: Set<string> } | undefined;
@@ -207,6 +245,12 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
         for (;;) {
           if (Date.now() >= deadline) throw new ScanBudgetExceeded("time");
           if (attempt.object_change_pages >= max) throw new ScanBudgetExceeded("object_changes");
+          if (progress.change_cursor) {
+            const more = await gqlQuery<{ transaction: { effects: { objectChanges: Page<Change> } | null } | null }>(
+              MORE_CHANGES, { digest: tx.digest, after: progress.change_cursor });
+            if (!more.transaction?.effects?.objectChanges) throw new Error(`Object changes unavailable for ${tx.digest}.`);
+            changes = more.transaction.effects.objectChanges;
+          }
           attempt.object_change_pages++;
           if (changes.nodes.some(c => !c.inputState && (c.idCreated !== true || !c.outputState))) {
             native ??= await replayEffects(tx.digest);
@@ -214,33 +258,32 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
           }
           apply(changes.nodes, positions, owner, forward, native?.createdWrapped);
           if (positions.size > MAX_POSITIONS) throw new Error("The replay exceeds the position budget.");
-          if (!changes.pageInfo.hasNextPage) break;
-          if (attempt.object_change_pages >= max) throw new ScanBudgetExceeded("object_changes");
+          if (!changes.pageInfo.hasNextPage) { delete progress.change_cursor; break; }
           const after = changes.pageInfo.endCursor;
-          if (!after || changeCursors.has(after)) throw new Error("An object-change continuation is unavailable.");
+          if (!after || after === progress.change_cursor || changeCursors.has(after)) throw new Error("An object-change continuation is unavailable.");
           changeCursors.add(after);
-          const more = await gqlQuery<{ transaction: { effects: { objectChanges: Page<Change> } | null } | null }>(MORE_CHANGES, { digest: tx.digest, after });
-          if (!more.transaction?.effects?.objectChanges) throw new Error(`Object changes unavailable for ${tx.digest}.`);
-          changes = more.transaction.effects.objectChanges;
+          progress.change_cursor = after;
         }
         attempt.transactions_scanned++;
         attempt.reached_checkpoint = tx.effects.checkpoint.sequenceNumber;
       }
-      if (!page.has_next_page) { attempt.complete = true; return { positions, attempt }; }
-      if (!page.next_cursor || cursors.has(page.next_cursor)) throw new Error("The transaction continuation is unavailable.");
+      if (!page.has_next_page) { progress.phase = "done"; break; }
+      if (!page.next_cursor || page.next_cursor === progress.cursor || cursors.has(page.next_cursor)) throw new Error("The transaction continuation is unavailable.");
       cursors.add(page.next_cursor);
-      cursor = page.next_cursor;
+      progress.cursor = page.next_cursor;
+      progress.offset = 0;
+      delete progress.page_size;
     }
+    attempt.complete = true;
   } catch (error) {
     attempt.reason = error instanceof Error ? error.message : String(error);
     if (error instanceof ScanBudgetExceeded) attempt.budget_exhausted = error.budget;
-    return { positions: new Map<string, Ref>(), attempt };
   }
+  return { positions, progress, attempt };
 }
 
 async function hydrate(refs: Map<string, Ref>): Promise<HistoricalStake[]> {
-  const keys = [...refs.values()];
-  const positions: HistoricalStake[] = [];
+  const keys = [...refs.values()].filter(ref => !ref.stake);
   for (let i = 0; i < keys.length; i += 40) {
     const batch = keys.slice(i, i + 40);
     const data = await gqlQuery<{ multiGetObjects: Array<{ address: string; version: number; asMoveObject: { contents: { json: Record<string, unknown> } | null } | null } | null> }>(
@@ -253,16 +296,20 @@ async function hydrate(refs: Map<string, Ref>): Promise<HistoricalStake[]> {
           typeof json.stake_activation_epoch !== "string" || !/^\d+$/.test(json.stake_activation_epoch)) {
         throw new Error(`Historical stake contents unavailable for ${batch[j].address}.`);
       }
-      positions.push({ object_id: object.address, version: object.version, pool_id: json.pool_id,
-        principal_mist: json.principal, stake_activation_epoch: json.stake_activation_epoch });
+      refs.get(object.address)!.stake = { object_id: object.address, version: object.version, pool_id: json.pool_id,
+        principal_mist: json.principal, stake_activation_epoch: json.stake_activation_epoch };
     }
   }
-  return positions;
+  return [...refs.values()].map(ref => ref.stake!).sort((a, b) => a.object_id.localeCompare(b.object_id));
 }
 
 /** Exact directly held StakedSui principal; an incomplete reconstruction returns no positions or total. */
-export async function historicalStaking(address: string, asOf: string | number, maxTransactions = 1000): Promise<Record<string, unknown>> {
-  const cp = await resolveAsOf(asOf);
+export async function historicalStaking(address: string, asOf: string | number, maxTransactions = 1000, continuation?: string): Promise<Record<string, unknown>> {
+  const saved = continuation ? loadStakingContinuation<SavedReplay>(continuation) : undefined;
+  if (saved && (saved.address !== address || saved.as_of !== String(asOf))) {
+    throw new Error("Staking continuation belongs to a different address or as_of. Use the original arguments.");
+  }
+  const cp = saved?.checkpoint ?? await resolveAsOf(asOf);
   const data = await gqlQuery<{
     serviceConfig: { owned: Range; transactions: Range; objects: Range };
     checkpoint: (Point & { epoch: { epochId: number } }) | null;
@@ -279,26 +326,49 @@ export async function historicalStaking(address: string, asOf: string | number, 
   const base = {
     address, as_of: asOf, at_checkpoint: cp, timestamp: data.checkpoint.timestamp, epoch: data.checkpoint.epoch.epochId,
     scope: "Directly address-owned StakedSui objects at the end of the checkpoint, including transferred and split/joined positions. Excludes wrapped/object-owned stakes, FungibleStakedSui and liquid-staking tokens. Principal excludes rewards; an empty set makes no claim about those excluded holdings.",
-    max_transactions: maxTransactions, available_ranges: ranges,
+    max_transactions: maxTransactions, available_ranges: ranges, replay_calls: (saved?.calls ?? 0) + 1,
   };
-  const deadline = Date.now() + DEADLINE_MS;
   const attempts: Attempt[] = [];
   let refs: Map<string, Ref> | undefined;
-  let method = "reconstructed_object_changes";
+  let method = saved?.method ?? "reconstructed_object_changes";
   let reason: string | undefined;
   let direction: Attempt["direction"] | undefined;
+  let stopped: ReplayResult | undefined;
+  let selected: ReplayResult | undefined;
   const start = ranges.owned?.first?.sequenceNumber;
   const end = ranges.owned?.last?.sequenceNumber;
-  const anchor = end === undefined || start === undefined ? null : Math.max(start, end - 10);
-  if (start !== undefined && end !== undefined && cp >= start && cp <= end) {
+  const anchor = saved?.anchor ?? (end === undefined || start === undefined ? null : Math.max(start, end - 10));
+  const txFirst = ranges.transactions?.first?.sequenceNumber;
+  const txLast = ranges.transactions?.last?.sequenceNumber;
+  const objectFirst = ranges.objects?.first?.sequenceNumber;
+  const forwardAllowed = txFirst === 0 && objectFirst === 0 && txLast !== undefined && txLast >= cp;
+  const reverseAllowed = anchor !== null && anchor >= cp && txFirst !== undefined && txFirst <= cp && txLast !== undefined && txLast >= anchor && objectFirst !== undefined && objectFirst <= cp;
+  const take = (result: ReplayResult) => {
+    attempts.push(result.attempt);
+    if (result.attempt.complete) {
+      refs = result.positions;
+      direction = result.attempt.direction;
+      selected = result;
+    } else if (result.attempt.budget_exhausted && !stopped) {
+      stopped = result;
+    }
+  };
+  if (saved) {
+    const ownedRetained = start !== undefined && end !== undefined && saved.anchor >= start && saved.anchor <= end;
+    if ((saved.progress.phase === "owned" && !ownedRetained) ||
+        (method !== "checkpoint_objects" && !(saved.direction === "forward" ? forwardAllowed : reverseAllowed))) {
+      throw new Error("Stale staking continuation: the provider no longer retains the anchored holdings or replay range. Start again without continuation.");
+    }
+    const result = await replay(address, cp, saved.anchor, saved.direction, maxTransactions,
+      Date.now() + DEADLINE_MS / 2, saved, method === "checkpoint_objects");
+    if (!result.attempt.complete && !result.attempt.budget_exhausted) {
+      throw new Error(`Staking continuation replay is stale or unavailable: ${result.attempt.reason}`);
+    }
+    take(result);
+  } else if (start !== undefined && end !== undefined && cp >= start && cp <= end) {
     method = "checkpoint_objects";
-    try { refs = await ownedAt(address, cp, deadline); } catch (e) { reason = String(e); }
+    take(await replay(address, cp, cp, "reverse", maxTransactions, Date.now() + DEADLINE_MS, undefined, true));
   } else {
-    const txFirst = ranges.transactions?.first?.sequenceNumber;
-    const txLast = ranges.transactions?.last?.sequenceNumber;
-    const objectFirst = ranges.objects?.first?.sequenceNumber;
-    const forwardAllowed = txFirst === 0 && objectFirst === 0 && txLast !== undefined && txLast >= cp;
-    const reverseAllowed = anchor !== null && anchor >= cp && txFirst !== undefined && txFirst <= cp && txLast !== undefined && txLast >= anchor && objectFirst !== undefined && objectFirst <= cp;
     const bounds = await gqlQuery<{ first: { nodes: Array<{ effects: { checkpoint: { sequenceNumber: number } } }> }; last: { nodes: Array<{ effects: { checkpoint: { sequenceNumber: number } } }> } }>(
       `query($owner:SuiAddress!,$before:UInt53!) {
         first: transactions(filter:{affectedAddress:$owner,beforeCheckpoint:$before},first:1) { nodes { effects { checkpoint { sequenceNumber } } } }
@@ -309,35 +379,56 @@ export async function historicalStaking(address: string, asOf: string | number, 
     const order: Attempt["direction"][] = cp - first < last - cp ? ["forward", "reverse"] : ["reverse", "forward"];
     for (const side of order) {
       if (side === "forward" ? !forwardAllowed : !reverseAllowed) continue;
-      // Each direction gets its own budget; one expensive side must not starve the other.
-      const replayed = await replay(address, cp, anchor ?? cp, side, maxTransactions, Date.now() + DEADLINE_MS / 2);
-      attempts.push(replayed.attempt);
-      if (replayed.attempt.complete) { refs = replayed.positions; direction = side; break; }
+      // Try both on the initial call, but resume only the selected saved walk.
+      take(await replay(address, cp, anchor ?? cp, side, maxTransactions, Date.now() + DEADLINE_MS / 2));
+      if (refs) break;
     }
-    if (!refs) reason = attempts.at(-1)?.reason ?? "The retained transaction/object ranges cannot cover either complete reconstruction.";
   }
+  if (!refs) reason = stopped?.attempt.reason ?? attempts.at(-1)?.reason ?? "The retained transaction/object ranges cannot cover either complete reconstruction.";
   let positions: HistoricalStake[] = [];
   if (refs) {
     try { positions = await hydrate(refs); } catch (e) { refs = undefined; reason = String(e); }
   }
   const timeStopped = attempts.some(attempt => attempt.budget_exhausted === "time");
-  const canIncreaseBudget = !timeStopped && maxTransactions < 10000 &&
-    attempts.some(attempt => attempt.budget_exhausted === "transactions" || attempt.budget_exhausted === "object_changes");
-  if (!refs) return { ...base, method, complete: false, total_staked_mist: null, position_count: null, positions: [],
-    estimated_reward_mist: null, total_unavailable: reason, attempts,
-    ...(canIncreaseBudget ? {
-      continue_with: { tool: "get_staking_summary", args: { address, network: getNetwork(), as_of: asOf, max_transactions: Math.min(10000, maxTransactions * 2) } },
-      continuation_note: "Increase max_transactions to read more transactions and object-change pages.",
-    } : {}),
-    ...(timeStopped ? { time_budget_reached: true } : {}),
-  };
+  if (!refs) {
+    let next: Record<string, unknown> = {};
+    if (stopped) {
+      try {
+        const state: SavedReplay = {
+          address, as_of: String(asOf), checkpoint: cp, anchor: method === "checkpoint_objects" ? cp : anchor ?? cp,
+          direction: stopped.attempt.direction, method, calls: base.replay_calls,
+          transactions_scanned: (saved?.transactions_scanned ?? 0) + stopped.attempt.transactions_scanned,
+          object_change_pages: (saved?.object_change_pages ?? 0) + stopped.attempt.object_change_pages,
+          progress: stopped.progress, positions: await hydrate(stopped.positions),
+        };
+        const stored = saveStakingContinuation(state);
+        next = {
+          direction: state.direction, anchor_checkpoint: state.direction === "reverse" ? state.anchor : null,
+          replay_transactions_scanned: state.transactions_scanned, replay_object_change_pages: state.object_change_pages,
+          continue_with: { tool: "get_staking_summary", args: { address, network: getNetwork(), as_of: asOf, max_transactions: maxTransactions, continuation: stored.token } },
+          continuation_storage: stored.storage,
+          continuation_note: stored.storage === "argument"
+            ? "Resume this same replay with continue_with. The authenticated state fits in the argument; it expires after 24 hours or a server restart."
+            : "Resume this same replay with continue_with. The state is saved in SUI_STORE_PATH to keep the argument small; this handle needs the same store and expires after 24 hours.",
+        };
+      } catch (e) {
+        next = { continuation_unavailable: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    return { ...base, method, complete: false, total_staked_mist: null, position_count: null, positions: [],
+      estimated_reward_mist: null, total_unavailable: reason, attempts, ...next,
+      ...(timeStopped ? { time_budget_reached: true } : {}),
+    };
+  }
   let rewardsUnavailable: string | undefined;
   try {
     const rewards = await estimateStakedSuiRewards(positions, data.checkpoint.epoch.epochId);
     for (const p of positions) p.estimated_reward_mist = rewards.get(p.object_id) ?? null;
     if (positions.some(p => p.estimated_reward_mist === null)) rewardsUnavailable = "One or more activation/target-epoch exchange rates are unavailable; no total reward is given.";
   } catch (e) { rewardsUnavailable = `Historical rewards unavailable: ${String(e)}`; }
-  return { ...base, method, ...(direction ? { direction, anchor_checkpoint: direction === "reverse" ? anchor : null } : {}),
+  return { ...base, method, ...(direction && method !== "checkpoint_objects" ? { direction, anchor_checkpoint: direction === "reverse" ? anchor : null } : {}),
+    replay_transactions_scanned: (saved?.transactions_scanned ?? 0) + (selected?.attempt.transactions_scanned ?? 0),
+    replay_object_change_pages: (saved?.object_change_pages ?? 0) + (selected?.attempt.object_change_pages ?? 0),
     complete: true, total_staked_mist: positions.reduce((n, p) => n + BigInt(p.principal_mist), 0n).toString(),
     position_count: positions.length, positions, attempts,
     estimated_reward_mist: rewardsUnavailable ? null : positions.reduce((n, p) => n + BigInt(p.estimated_reward_mist ?? "0"), 0n).toString(),

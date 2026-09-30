@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { historicalStaking } from "../src/utils/historical-staking.js";
+import { runWithNetwork } from "../src/config.js";
+import { loadStakingContinuation } from "../src/utils/staking-continuation.js";
+import { z } from "zod";
 
 const mocks = vi.hoisted(() => ({ gql: vi.fn(), bracket: vi.fn(), rewards: vi.fn(), effects: vi.fn(), versions: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mocks.gql }));
@@ -17,6 +20,10 @@ const change = (id: string, input: StateFixture | null, output: StateFixture | n
 const page = (nodes: unknown[], more = false, cursor: string | null = null) => ({ nodes, pageInfo: { hasNextPage: more, endCursor: cursor, hasPreviousPage: more, startCursor: cursor } });
 const tx = (cp: number, changes: unknown[], more = false, cursor: string | null = null) => ({ digest: `tx${cp}`, effects: { checkpoint: { sequenceNumber: cp }, objectChanges: page(changes, more, cursor) } });
 const range = (first: number, last: number) => ({ first: { sequenceNumber: first, timestamp: "2025-01-01T00:00:00Z" }, last: { sequenceNumber: last, timestamp: "2025-01-02T00:00:00Z" } });
+function continuationArgs(result: Record<string, unknown>) {
+  expect(result.continuation_unavailable).toBeUndefined();
+  return z.object({ args: z.object({ continuation: z.string(), max_transactions: z.number() }) }).parse(result.continue_with).args;
+}
 
 let owned: Array<{ address: string; version: number }>;
 let scanned: unknown[];
@@ -48,7 +55,7 @@ beforeEach(() => {
     if (query.includes("address(address:$owner")) return { address: { objects: page(owned) } };
     if (query.includes("transaction(digest:")) return { transaction: { effects: { objectChanges: page(continuation) } } };
     if (query.includes("transactions(filter:")) return { transactions: page(scanned, scanMore, scanMore ? "next" : null) };
-    if (query.includes("multiGetObjects")) return { multiGetObjects: (vars.keys as Array<{ address: string; version: number }>).map(ref => hydrationMissing ? null : ({ ...ref, asMoveObject: { contents: { json: { pool_id: "0xpool", principal: amounts[ref.address] ?? "100", stake_activation_epoch: "10" } } } })) };
+    if (query.includes("multiGetObjects")) return { multiGetObjects: (vars.keys as Array<{ address: string; version: number }>).map(ref => hydrationMissing ? null : ({ ...ref, asMoveObject: { contents: { json: { pool_id: "0xpool", principal: amounts[`${ref.address}@${ref.version}`] ?? amounts[ref.address] ?? "100", stake_activation_epoch: "10" } } } })) };
     throw new Error("Unexpected query");
   });
 });
@@ -146,22 +153,25 @@ describe("historical staking holdings", () => {
     expect(await historicalStaking(owner, 800)).toMatchObject({ complete: false, total_staked_mist: null });
   });
 
-  it("reports time exhaustion without suggesting an ineffective larger transaction budget", async () => {
+  it("resumes after a time stop without increasing the transaction budget", async () => {
     let now = 0;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     const original = mocks.gql.getMockImplementation()!;
+    let slow = true;
     mocks.gql.mockImplementation((query, vars) => {
-      if (query.includes("transactions(filter:") && !query.includes("first: transactions")) now += 60_000;
+      if (slow && query.includes("transactions(filter:") && !query.includes("first: transactions")) now += 60_000;
       return original(query, vars);
     });
-    scanned = [tx(10, [])];
+    scanned = [tx(10, [change("0xs", null, state(1))])];
     try {
       const result = await historicalStaking(owner, 100);
-      expect(result).toMatchObject({ complete: false, total_staked_mist: null, attempts: [
-        { budget_exhausted: "time", transactions_scanned: 0, object_change_pages: 0 },
-        { budget_exhausted: "time", transactions_scanned: 0, object_change_pages: 0 },
-      ] });
-      expect(result.continue_with).toBeUndefined();
+      expect(result).toMatchObject({ complete: false, total_staked_mist: null, time_budget_reached: true, replay_calls: 1 });
+      const args = continuationArgs(result);
+      expect(args.max_transactions).toBe(1000);
+      slow = false;
+      expect(await historicalStaking(owner, 100, args.max_transactions, args.continuation)).toMatchObject({
+        complete: true, total_staked_mist: "100", replay_calls: 2, positions: [{ object_id: "0xs", version: 1 }],
+      });
     } finally {
       clock.mockRestore();
     }
@@ -174,14 +184,23 @@ describe("historical staking holdings", () => {
     expect(result).toMatchObject({ complete: true, total_staked_mist: "200", position_count: 2 });
   });
 
-  it("stops before a nested continuation would exceed its page budget", async () => {
+  it("resumes inside a transaction's object-change pages without reapplying the first page", async () => {
     scanned = [tx(10, [change("0xs", null, state(1))], true, "changes")];
+    continuation = [change("0xsecond", null, state(1))];
     owned = [{ address: "0xs", version: 1 }];
     const result = await historicalStaking(owner, 100, 1);
     expect(result).toMatchObject({ complete: false, total_staked_mist: null, attempts: [
       { object_change_pages: 1, complete: false }, { object_change_pages: 1, complete: false },
     ] });
     expect(mocks.gql.mock.calls.filter(([query]) => query.includes("transaction(digest:"))).toEqual([]);
+    const token = continuationArgs(result).continuation;
+    expect(loadStakingContinuation<{ positions: unknown[] }>(token).positions).toEqual([
+      { object_id: "0xs", version: 1, pool_id: "0xpool", principal_mist: "100", stake_activation_epoch: "10" },
+    ]);
+    expect(await historicalStaking(owner, 100, 1, token)).toMatchObject({
+      complete: true, total_staked_mist: "200", position_count: 2, replay_calls: 2,
+      replay_transactions_scanned: 1, replay_object_change_pages: 2,
+    });
   });
 
   it("tries the other direction after a budget stop instead of returning a partial sum", async () => {
@@ -195,11 +214,12 @@ describe("historical staking holdings", () => {
     expect(result.attempts).toMatchObject([{ direction: "forward", complete: false }, { direction: "reverse", complete: true }]);
   });
 
-  it("gives no holdings on an exhausted scan and supplies a higher-budget continuation", async () => {
+  it("gives no holdings on an exhausted scan and supplies the same-budget continuation", async () => {
     scanned = [tx(10, [change("0xs", null, state(1))])];
     scanMore = true;
     const result = await historicalStaking(owner, 100, 1);
-    expect(result).toMatchObject({ complete: false, total_staked_mist: null, position_count: null, positions: [], continue_with: { args: { max_transactions: 2 } } });
+    continuationArgs(result);
+    expect(result).toMatchObject({ complete: false, total_staked_mist: null, position_count: null, positions: [], continue_with: { args: { max_transactions: 1, continuation: expect.any(String) } } });
   });
 
   it("refuses missing object state and missing final contents", async () => {
@@ -235,5 +255,136 @@ describe("historical staking holdings", () => {
   it.each(["bad-date", -1, Number.MAX_SAFE_INTEGER, "9007199254740992"])("rejects invalid as_of %s before a data query", async value => {
     await expect(historicalStaking(owner, value)).rejects.toThrow();
     expect(mocks.gql).not.toHaveBeenCalled();
+  });
+
+  it.each(["forward", "reverse"] as const)("matches uninterrupted %s replay split at several transaction and time boundaries", async direction => {
+    const forward = direction === "forward";
+    const cp = forward ? 100 : 800;
+    txRange = range(forward ? 0 : 800, forward ? 100 : 1000);
+    owned = [{ address: "0xs", version: 4 }, { address: "0xkept", version: 2 }];
+    amounts = { "0xs@3": "60", "0xsplit@3": "40", "0xkept@1": "25", "0xkept@2": "35" };
+    const offset = forward ? 0 : 800;
+    const rows = [
+      ...(forward ? [tx(1, [change("0xs", null, state(1))])] : []),
+      tx(offset + 10, [change("0xs", state(1), state(2)), change("0xin", state(1, other), state(2))]),
+      tx(offset + 20, [change("0xs", state(2), state(3)), change("0xsplit", null, state(3))]),
+      tx(offset + 30, [change("0xs", state(3), state(4)), change("0xsplit", state(3), null)]),
+      tx(offset + 40, [change("0xin", state(2), state(3, other)), change("0xkept", null, state(1))]),
+      tx(offset + 50, [change("0xkept", state(1), state(2))]),
+    ];
+    const original = mocks.gql.getMockImplementation()!;
+    let now = 0;
+    let readCost = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    mocks.gql.mockImplementation((query: string, vars: Record<string, unknown>) => {
+      if (query.includes("transactions(filter:") && !query.includes("first: transactions")) {
+        const start = vars.first ? Number(String(vars.after ?? "p0").slice(1)) : Math.max(0, Number(String(vars.before ?? `p${rows.length}`).slice(1)) - Number(vars.last));
+        const end = vars.first ? Math.min(rows.length, start + Number(vars.first)) : Number(String(vars.before ?? `p${rows.length}`).slice(1));
+        return { transactions: { nodes: rows.slice(start, end).map(row => ({
+          ...row, effects: { ...row.effects, objectChanges: {
+            ...row.effects.objectChanges,
+            get nodes() { now += readCost; return row.effects.objectChanges.nodes; },
+          } },
+        })), pageInfo: { hasNextPage: end < rows.length, endCursor: `p${end}`, hasPreviousPage: start > 0, startCursor: `p${start}` } } };
+      }
+      return original(query, vars);
+    });
+    try {
+      const whole = await historicalStaking(owner, cp, 100);
+      expect(whole).toMatchObject({ complete: true, direction, total_staked_mist: forward ? "135" : "100" });
+      for (const budget of [1, 2, 3, 100]) {
+        // The 100-transaction run stops inside a single fetched transaction page.
+        readCost = budget === 100 ? 10_000 : 0;
+        let result = await historicalStaking(owner, cp, budget);
+        let calls = 1;
+        while (!result.complete && calls <= rows.length + 1) {
+          expect(result).toMatchObject({ total_staked_mist: null, position_count: null, positions: [] });
+          const token = continuationArgs(result).continuation;
+          result = await historicalStaking(owner, cp, budget, token);
+          calls++;
+        }
+        expect(calls).toBeGreaterThan(1);
+        expect(result).toMatchObject({
+          complete: true, replay_calls: calls, positions: whole.positions,
+          total_staked_mist: whole.total_staked_mist, estimated_reward_mist: whole.estimated_reward_mist,
+          replay_transactions_scanned: rows.length,
+        });
+      }
+    } finally { clock.mockRestore(); }
+  });
+
+  it("keeps the saved reverse anchor after the recent owned-object range advances", async () => {
+    txRange = range(800, 2000);
+    owned = [{ address: "0xs", version: 3 }];
+    const original = mocks.gql.getMockImplementation()!;
+    let resumed = false;
+    mocks.gql.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+      if (query.includes("serviceConfig")) {
+        const data = await original(query, vars);
+        if (resumed) data.serviceConfig.owned = range(1100, 2000);
+        return data;
+      }
+      if (query.includes("address(address:$owner") && resumed) throw new Error("Must not re-enumerate the anchor");
+      if (query.includes("transactions(filter:") && !query.includes("first: transactions")) {
+        return { transactions: vars.before
+          ? page([tx(850, [change("0xs", state(1), state(2))])])
+          : page([tx(900, [change("0xs", state(2), state(3))])], true, "next") };
+      }
+      return original(query, vars);
+    });
+    const firstResult = await historicalStaking(owner, 800, 1);
+    const token = continuationArgs(firstResult).continuation;
+    resumed = true;
+    expect(await historicalStaking(owner, 800, 1, token)).toMatchObject({
+      complete: true, direction: "reverse", anchor_checkpoint: 990, replay_calls: 2,
+      total_staked_mist: "100", positions: [{ object_id: "0xs", version: 1 }],
+    });
+  });
+
+  it.each(["forward", "reverse"] as const)("resumes each nested change page in %s order", async direction => {
+    const forward = direction === "forward";
+    txRange = range(forward ? 0 : 800, forward ? 100 : 1000);
+    owned = [1, 2, 3].map(i => ({ address: `0xs${i}`, version: 2 }));
+    scanned = [tx(forward ? 10 : 850, [change("0xs1", forward ? null : state(1), state(2))], true, "c1")];
+    const original = mocks.gql.getMockImplementation()!;
+    mocks.gql.mockImplementation((query: string, vars: Record<string, unknown>) => {
+      if (query.includes("transaction(digest:")) {
+        const index = vars.after === "c1" ? 2 : 3;
+        return { transaction: { effects: { objectChanges: page([
+          change(`0xs${index}`, forward ? null : state(1), state(2)),
+        ], index === 2, index === 2 ? "c2" : null) } } };
+      }
+      return original(query, vars);
+    });
+    const cp = forward ? 100 : 800;
+    const whole = await historicalStaking(owner, cp, 100);
+    let result = await historicalStaking(owner, cp, 1);
+    for (let i = 0; i < 2; i++) {
+      expect(result.total_staked_mist).toBeNull();
+      result = await historicalStaking(owner, cp, 1, continuationArgs(result).continuation);
+    }
+    expect(result).toMatchObject({ complete: true, replay_calls: 3, positions: whole.positions,
+      total_staked_mist: "300", replay_transactions_scanned: 1, replay_object_change_pages: 3 });
+  });
+
+  it("rejects tampered, expired, mismatched and other-network continuations before chain reads", async () => {
+    scanned = [tx(10, [change("0xs", null, state(1))])];
+    scanMore = true;
+    const result = await historicalStaking(owner, 100, 1);
+    const token = continuationArgs(result).continuation;
+    mocks.gql.mockClear();
+    const altered = `${token.slice(0, 6)}${token[6] === "A" ? "B" : "A"}${token.slice(7)}`;
+    for (const invalid of [altered, `${token}.`, token.replace("hs1.", "hs0.")]) {
+      await expect(historicalStaking(owner, 100, 1, invalid)).rejects.toThrow(/Invalid or stale staking continuation/);
+    }
+    await expect(historicalStaking(other, 100, 1, token)).rejects.toThrow(/different address/);
+    await expect(historicalStaking(owner, 101, 1, token)).rejects.toThrow(/as_of/);
+    await expect(runWithNetwork("testnet", () => historicalStaking(owner, 100, 1, token))).rejects.toThrow(/mainnet.*testnet/);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 24 * 60 * 60 * 1000 + 1);
+    try { await expect(historicalStaking(owner, 100, 1, token)).rejects.toThrow(/lifetime has expired/); }
+    finally { clock.mockRestore(); }
+    expect(mocks.gql).not.toHaveBeenCalled();
+    txRange = range(200, 1000);
+    await expect(historicalStaking(owner, 100, 1, token)).rejects.toThrow(/no longer retains/);
   });
 });

@@ -184,21 +184,27 @@ export function registerStakingTools(server: McpServer) {
 
   server.tool(
     "get_staking_summary",
-    "Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). Historical reads include transfers and split/joined stakes; rewards are separate estimates. Incomplete history gives no total. Excludes wrapped stakes and liquid-staking tokens.",
+    "Get directly held StakedSui positions and principal, now or at as_of. Historical budget stops return a continuation; totals stay null until replay finishes. Excludes wrapped stakes and liquid-staking tokens.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
       as_of: timePointArg().optional()
         .describe("ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it."),
       max_transactions: numArg().int().min(1).max(10000).optional()
         .describe("Historical replay budget per direction (default 1000); also bounds object-change pages."),
+      continuation: z.string().min(1).max(8192).optional()
+        .describe("Opaque historical replay state from continue_with; keep address, as_of and network unchanged."),
       detail: z.enum(["summary", "full"]).optional().describe("summary caps displayed positions; full returns every read position."),
     },
-    async ({ address, as_of, max_transactions, detail }) => {
+    async ({ address, as_of, max_transactions, detail, continuation }) => {
+      if (continuation && as_of === undefined) throw new Error("A staking continuation requires its original as_of.");
       if (as_of !== undefined) {
-        const historical = await historicalStaking(address, as_of, max_transactions);
-        const args = { address, as_of, max_transactions, network: getNetwork(), detail: "full" };
-        const { payload } = capPayload("get_staking_summary", args, historical,
-          { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args } });
+        const historical = await historicalStaking(address, as_of, max_transactions, continuation);
+        const fullArgs = { address, as_of, max_transactions, network: getNetwork(), detail: "full" };
+        // A stored replay capability contains its decryption key. Never copy it
+        // into readable result metadata or a completed result's full-call link.
+        const recordedArgs = { ...fullArgs, ...(continuation ? { continuation: "<redacted>" } : {}) };
+        const { payload } = capPayload("get_staking_summary", recordedArgs, historical,
+          { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args: fullArgs } });
         return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
       }
       const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, MAX_STAKE_POSITIONS);

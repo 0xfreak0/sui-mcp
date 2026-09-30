@@ -12,7 +12,7 @@ sidebar:
 | [`analyze_multisig`](#analyze_multisig) | For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. |
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
 | [`build_wallet_edges`](#build_wallet_edges) | Find possible shared operators when a fund trace reaches fresh wallets. |
-| [`check_coin_restrictions`](#check_coin_restrictions) | Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. |
+| [`check_coin_restrictions`](#check_coin_restrictions) | Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. |
 | [`classify_deposit_address`](#classify_deposit_address) | Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. |
 | [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
@@ -139,12 +139,12 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Read a regulated coin's on-chain deny list: which addresses its issuer has frozen, and whether the whole coin is paused. Works in both directions: give a coin_type to list everyone frozen for it, or an address to check it against EVERY coin type with a deny list (every regulated coin, so it reads many deny lists; a frozen address usually holds none of the coin that froze it, so checking only its balances misses most restrictions). A freeze is the issuer's own decision recorded on chain (chain-derived attribution), not a protocol rule, and whoever holds the DenyCap can reverse it. A freeze by validators, who can refuse an address's transactions through their node configuration, is off chain and in no deny list, so this tool cannot see it. Use it when a traced address stops being able to move a token, or to check whether a counterparty is already known-bad to an issuer.
+(Incident investigation) Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. Give coin_type to list frozen addresses, address to check every regulated coin regardless of holdings, or both for one pair. Address-only checks read many lists. Freezes are issuer decisions, not protocol rules, and the DenyCap holder can reverse them. Off-chain validator freezes are invisible here. Use when a traced address cannot move a token or to check whether an issuer has frozen a counterparty.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `coin_type` | string | no | Full coin type (e.g. '0xabc::usdc::USDC'). Lists every address frozen for it. |
-| `address` | string | no | Address to check. Without coin_type, checks it against every coin type that has a deny list, whether or not the address holds that coin: a frozen address usually holds none of the coin that froze it. With coin_type, reports whether it is frozen for that coin. |
+| `address` | string | no | Address to check against coin_type, or against every coin with a deny list if coin_type is omitted, regardless of holdings. |
 | `max_addresses` | integer (1 to 1000) | no | Cap on denied addresses returned for a coin (default 200). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

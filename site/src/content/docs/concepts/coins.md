@@ -89,3 +89,13 @@ address, it lists the coins that freeze it. A frozen address usually holds
 none of the coin that froze it, so the address check covers every coin type
 with a deny list rather than the ones it holds. A freeze by
 validators is node configuration, not chain state, and does not appear here.
+
+The issuer's freeze is a chain-derived attribution, not a protocol rule:
+whoever holds the `DenyCap` can reverse it. The tool also reports a pause
+affecting the whole coin. Use it when a traced address cannot move a token or
+to check whether an issuer has already frozen a counterparty.
+
+With both `coin_type` and `address`, the tool checks that pair. Address-only
+checks read many deny lists because holding none of a coin does not establish
+that the address is unrestricted. For a coin's address list, `max_addresses`
+defaults to 200, at most 1000.

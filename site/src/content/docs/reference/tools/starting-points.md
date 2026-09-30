@@ -10,7 +10,7 @@ sidebar:
 | [`analyze_token`](#analyze_token) | Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. |
 | [`get_transaction_history`](#get_transaction_history) | Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. |
 | [`get_wallet_overview`](#get_wallet_overview) | Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. |
-| [`identify_address`](#identify_address) | Identify what a Sui address is: wallet, package, validator, or object. |
+| [`identify_address`](#identify_address) | Classify a Sui address as wallet, package, validator or object before choosing other tools. |
 
 ## analyze_token
 
@@ -65,7 +65,7 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended first step) Identify what a Sui address is: wallet, package, validator, or object. Returns a type classification with contextual summary (e.g. balance + SuiNS for wallets, module list for packages, stake info for validators). Use this before deciding which other tools to call. For a package, `protocol` falls back to the entity of a bridge label on an object whose type the package defines (`identified_via: labeled-object`), and `bridge_carrier` lists its bytecode's calls into a curated bridge's exit entry: an adapter or aggregator that can send that bridge's transfers. A wallet's `first_seen` is the oldest transaction the GraphQL service returns with it as sender or affected party (digest, timestamp, checkpoint, sender, the coins it `received`). It reads all balance-change pages of that transaction. `first_inflow` is true when the wallet gained coins in a transaction it did not send, including a system-created genesis allocation with `sender: null`; genesis does not identify a funding wallet. If no gain was found and the balance changes could not all be read, `first_inflow` is null; `first_seen_unavailable` says the first read failed. find_funding_sources names the funder when the first transaction is not funding.
+(Recommended first step) Classify a Sui address as wallet, package, validator or object before choosing other tools. It adds contextual balance/name, module or stake information. Packages can be identified from bridge labels on their defined objects; bridge_carrier identifies bytecode calls into curated bridge exits. A wallet's first_seen is the oldest transaction GraphQL returns where it sent or was affected, with received coins read across all balance-change pages. first_inflow means it gained coins without sending, including genesis with sender:null; genesis names no funding wallet. If no gain is found in incomplete changes, first_inflow is null. first_seen_unavailable means the first read failed. Use find_funding_sources when the first transaction was not funding.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

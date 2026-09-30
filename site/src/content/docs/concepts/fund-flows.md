@@ -213,3 +213,26 @@ The summary fits about 20,000 characters of counterparties, coins and
 unattributed rows, ranked by value and preserving every labelled or non-wallet
 address and lookalike. Totals and counts cover every row; `omitted` counts
 display exclusions, and `detail: "full"` lists every row.
+
+## Identifying a subject before tracing
+
+`identify_address` distinguishes a wallet, package, validator and object
+before further tool selection. Wallet context includes balance and SuiNS;
+packages include modules, and validators include stake information.
+
+For a package, `protocol` can fall back to a bridge label's entity on an
+object of a type defined by that package, marked
+`identified_via: "labeled-object"`. `bridge_carrier` lists bytecode calls into
+a curated bridge's exit entry, identifying an adapter or aggregator capable
+of sending that bridge's transfers.
+
+A wallet's `first_seen` contains the oldest transaction GraphQL returns
+where it was sender or an affected party: digest, timestamp, checkpoint,
+sender and coins `received`. All of that transaction's balance-change pages
+are read. `first_inflow` is true if it gained coins without sending the
+transaction, including system-created genesis allocations with `sender: null`.
+Genesis does not identify a funding wallet.
+
+If no gain was found and the balance changes could not all be read,
+`first_inflow` is null. `first_seen_unavailable` reports a failed first read.
+Use `find_funding_sources` to find funding when the first transaction was not it.

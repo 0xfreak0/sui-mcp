@@ -373,3 +373,29 @@ crossing cutover queries both scopes and merges them; `module_scope` reports
 the scope. After cutover any one ID, including the original, matches only
 that version, and `module_scope.other_version_ids` lists the rest. Framework
 packages such as `0x2` and `0x3` upgrade in place, so one ID covers all versions.
+
+## Raw transaction filters
+
+`query_transactions` accepts a sender and range, plus only one of
+`affected_address`, `affected_object` and `function`; GraphQL cannot combine
+those three filters. The affected-address filter includes sender, sponsor
+and recipient. A Move filter can name a function such as
+`0x2::coin::transfer`, a module such as `0x2::pay`, or a package.
+Use `get_transaction_history` for decoded wallet activity instead.
+
+The default order is newest-first. Pages report `order`, `oldest_shown`,
+`newest_shown` and the resolved `window`; pass `next_cursor` as `cursor`
+with the same order and filters. Checkpoint bounds are exclusive; ISO bounds
+include the stated instant, for example `2026-08-07T00:00:00Z`.
+
+A function filter matches only the named package version, so each upgraded
+version sees a different share of calls. `function_scope` reports the lineage;
+`all_versions: true` merges calls through every version.
+
+Matching a call does not attribute the whole transaction to that protocol.
+A PTB may also make a large Cetus swap or use another protocol; summing its
+balance changes as the filtered protocol's volume over-attributes the flow.
+Use its own events through `query_events`. `include_functions` lists every
+Move call for inspection. With `function`, `matched_calls` counts matching
+calls at the filter's function, module or package granularity and version
+scope; `total_calls` counts all calls.

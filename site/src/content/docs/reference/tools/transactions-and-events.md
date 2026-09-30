@@ -10,7 +10,7 @@ sidebar:
 | [`get_transaction`](#get_transaction) | Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields; no hand-written GraphQL is needed to read event values. |
 | [`get_transactions`](#get_transactions) | Read up to 50 Sui transactions in ONE call, given their digests. |
 | [`query_events`](#query_events) | Query events by type, sender, emitting module or time/checkpoint range. |
-| [`query_transactions`](#query_transactions) | Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). |
+| [`query_transactions`](#query_transactions) | Query raw transactions by sender, affected address or object, Move function, or time/checkpoint range. |
 
 ## get_transaction
 
@@ -71,11 +71,7 @@ Query events by type, sender, emitting module or time/checkpoint range. Event fi
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order` and filters. A page is filled to `limit` across several reads when the service returns short pages; if the read budget runs out first, `scan` says so and names the call that continues. Continue while `has_next_page` is true, even when `transactions` is empty. For human-readable wallet activity, prefer get_transaction_history instead.
-
-VERSIONS: a `function` filter matches calls made through that exact package version, and each version of an upgraded package sees its own share of the calls. `function_scope` names the lineage when the package has other versions; `all_versions: true` reads every version as one merged list. Rows wait until every stream's next rows or exhaustion establish their global order.
-
-ATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes: a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.
+Query raw transactions by sender, affected address or object, Move function, or time/checkpoint range. Only one of affected_address, affected_object and function is allowed. Prefer get_transaction_history for readable wallet activity. Pages default to newest first and report order, timestamp bounds and resolved window; pass next_cursor as cursor with the same order and filters. A function filter covers only the named package version; function_scope names other versions and all_versions:true merges the whole lineage. It matches any PTB containing the call, even one leg among several protocols. Whole-PTB balance changes therefore over-attribute protocol volume. Use include_functions to inspect every Move call, and query_events for a protocol's own flow.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -83,11 +79,11 @@ ATTRIBUTION WARNING: the `function` filter matches any transaction containing th
 | `affected_address` | string | no | Filter by affected address (sender, sponsor, or recipient). Mutually exclusive with affected_object and function. |
 | `affected_object` | string | no | Filter by affected object ID. Mutually exclusive with affected_address and function. |
 | `function` | string | no | Filter by Move function (e.g. 0x2::coin::transfer or 0x2::pay). Mutually exclusive with affected_address and affected_object. |
-| `after_checkpoint` | string \| number | no | Only transactions after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes transactions at that time |
-| `before_checkpoint` | string \| number | no | Only transactions before this point: a checkpoint number, or an ISO 8601 time, which includes transactions at that time |
+| `after_checkpoint` | string \| number | no | Transactions after this checkpoint number (exclusive), or at/after this ISO 8601 time (inclusive). |
+| `before_checkpoint` | string \| number | no | Transactions before this checkpoint number (exclusive), or at/before this ISO 8601 time (inclusive). |
 | `order` | `newest` \| `oldest` | no | 'newest' (default) starts at the most recent match and pages back; 'oldest' starts at the earliest and pages forward. |
 | `limit` | integer (1 to 50) | no | Max results (default 20, max 50) |
 | `cursor` | string | no | `next_cursor` from the previous page. Pass the same `order` and filters. |
-| `include_functions` | boolean | no | Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB. With `function`, each row adds `matched_calls` (the calls the filter names, at its own granularity: that function, that module or the whole package, through the named version or, with `all_versions`, any version) and `total_calls`. |
-| `all_versions` | boolean | no | With `function`: read calls made through every version of the package's lineage, merged into one list (default false). Without it only the named version is read. |
+| `include_functions` | boolean | no | List every Move call to expose multi-protocol PTBs. With function, adds total_calls and matched_calls at the filter's function/module/package granularity, for the named version or all_versions. |
+| `all_versions` | boolean | no | With function, merge calls through all lineage versions (default false: named version only). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

@@ -1026,7 +1026,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "query_transactions",
-    "Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). Note: only ONE of affected_address, affected_object, or function can be used per query (Sui GraphQL limitation). Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order` and filters. A page is filled to `limit` across several reads when the service returns short pages; if the read budget runs out first, `scan` says so and names the call that continues. Continue while `has_next_page` is true, even when `transactions` is empty. For human-readable wallet activity, prefer get_transaction_history instead.\n\nVERSIONS: a `function` filter matches calls made through that exact package version, and each version of an upgraded package sees its own share of the calls. `function_scope` names the lineage when the package has other versions; `all_versions: true` reads every version as one merged list. Rows wait until every stream's next rows or exhaustion establish their global order.\n\nATTRIBUTION WARNING: the `function` filter matches any transaction containing that call, including PTBs where it is one leg among several protocols. A transaction's balance changes cover the WHOLE PTB, so summing them per protocol over-attributes: a big Cetus swap in the same PTB will be counted as your protocol's volume. Set include_functions to see every Move call in each transaction, and prefer the protocol's own events (query_events) when measuring per-protocol flow.",
+    "Query raw transactions by sender, affected address or object, Move function, or time/checkpoint range. Only one of affected_address, affected_object and function is allowed. Prefer get_transaction_history for readable wallet activity. Pages default to newest first and report order, timestamp bounds and resolved window; pass next_cursor as cursor with the same order and filters. Short service pages are filled to limit within a read budget; scan reports exhaustion and the continuation call. Continue while has_next_page, even with no transactions. A function filter covers only the named package version; function_scope names other versions and all_versions:true merges the whole lineage. Rows wait for each stream's next rows or exhaustion to establish global order. It matches any PTB containing the call, even one leg among several protocols. Whole-PTB balance changes therefore over-attribute protocol volume. Use include_functions to inspect every Move call, and query_events for a protocol's own flow.",
     {
       sender: addressArg().optional().describe("Filter by sender address"),
       affected_address: addressArg()
@@ -1043,12 +1043,12 @@ export function registerTransactionTools(server: McpServer) {
         .union([z.string(), z.number()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Only transactions after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes transactions at that time"),
+        .describe("Transactions after this checkpoint number (exclusive), or at/after this ISO 8601 time (inclusive)."),
       before_checkpoint: z
         .union([z.string(), z.number()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Only transactions before this point: a checkpoint number, or an ISO 8601 time, which includes transactions at that time"),
+        .describe("Transactions before this checkpoint number (exclusive), or at/before this ISO 8601 time (inclusive)."),
       order: z
         .enum(["newest", "oldest"])
         .optional()
@@ -1058,12 +1058,12 @@ export function registerTransactionTools(server: McpServer) {
       include_functions: boolArg()
         .optional()
         .describe(
-          "Return every Move call in each transaction, so you can see whether the filtered package was the whole transaction or one leg of a multi-protocol PTB. With `function`, each row adds `matched_calls` (the calls the filter names, at its own granularity: that function, that module or the whole package, through the named version or, with `all_versions`, any version) and `total_calls`.",
+          "List every Move call to expose multi-protocol PTBs. With function, adds total_calls and matched_calls at the filter's function/module/package granularity, for the named version or all_versions.",
         ),
       all_versions: boolArg()
         .optional()
         .describe(
-          "With `function`: read calls made through every version of the package's lineage, merged into one list (default false). Without it only the named version is read.",
+          "With function, merge calls through all lineage versions (default false: named version only).",
         ),
     },
     async ({

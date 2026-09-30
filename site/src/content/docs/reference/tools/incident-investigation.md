@@ -23,7 +23,7 @@ sidebar:
 | [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. |
 | [`get_upgrade_history`](#get_upgrade_history) | Read upgrade governance across a package lineage: each version's ID, transaction, time, publisher, signing scheme and UpgradeCap holder then. |
 | [`list_findings`](#list_findings) | List recorded findings, or every case with its finding count. |
-| [`manage_labels`](#manage_labels) | Manage the address-label registry used for incident investigation and fund tracing. |
+| [`manage_labels`](#manage_labels) | Manage chain-qualified address labels for investigation and trace sinks. |
 | [`resolve_bridge_transfer`](#resolve_bridge_transfer) | Resolve bridge transfers from a Sui digest using cross-chain message identities rather than guesses from amounts and timing. |
 | [`resolve_protocol_packages`](#resolve_protocol_packages) | Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. |
 | [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. |
@@ -305,18 +305,18 @@ sidebar:
 - Annotations: `destructiveHint: true`, `idempotentHint: true`, `openWorldHint: false`, `readOnlyHint: false`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-Manage the address-label registry used for incident investigation and fund tracing. Labels attribute addresses (exchanges, bridges, mixers, malicious wallets, protocols, etc.) so traces are readable and stop at known sinks. Actions: 'list' all labels, 'lookup' one address, 'add' or 'remove' one label, 'import' a batch, and 'export' every label in the shape 'import' accepts, to move a set between machines. 'list' counts every label by category and source, lists the labels added here first, then the rest that fit about 30k characters, and states the rest under `omitted`; `detail: 'full'` lists all. Labels added or imported here are saved to the local store when SUI_STORE_PATH is set and last only for the session otherwise; 'remove' deletes the stored copy too. Only those labels can be removed: the override file (SUI_LABELS_FILE) and the shipped set are read-only here. Precedence: labels added here > override file > shipped disclosed set > shipped inferred exchange deposit addresses (source 'inferred'), which 'export' leaves out. Labels are chain-qualified: a label added while querying one chain does not apply on another.
+Manage chain-qualified address labels for investigation and trace sinks. Actions list, lookup, add, remove, import a batch, or export in importable form. Added/imported labels persist with SUI_STORE_PATH; otherwise they last this session. Remove deletes their stored copy, but cannot remove the read-only SUI_LABELS_FILE or shipped labels. Precedence is local additions > override file > shipped disclosed labels > shipped inferred exchange deposits; export excludes inferred deposits. A label on one chain does not apply on another. List counts all categories/sources and shows local additions first within ~30k characters; omitted reports the rest and detail:'full' lists all.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `action` | `list` \| `lookup` \| `add` \| `remove` \| `import` \| `export` | yes | What to do. |
-| `address` | string | no | Address to lookup/add/remove (required for those actions). A bare address refers to the network this call targets; a CAIP-10 id ('eip155:1:0x…') labels an account on another chain, useful for recording where funds landed after a bridge hop. |
+| `address` | string | no | Required for lookup/add/remove. Bare addresses use this call's network; CAIP-10 IDs label accounts on other chains. |
 | `label` | string | no | Human-readable label (required for 'add'). |
-| `category` | `cex` \| `bridge` \| `mixer` \| `malicious` \| `protocol` \| `validator` \| `defi` \| `burn` \| `other` | no | Label category (required for 'add'). Sink categories (cex, bridge, mixer, burn) terminate fund tracing. A malicious label is shown and alerted on but does not stop a trace: it marks the wallet being followed. |
+| `category` | `cex` \| `bridge` \| `mixer` \| `malicious` \| `protocol` \| `validator` \| `defi` \| `burn` \| `other` | no | Required for add. cex, bridge, mixer and burn stop tracing; malicious labels alert but keep following the wallet. |
 | `confidence` | `high` \| `medium` \| `low` | no | Attribution confidence for 'add' (default: medium). |
 | `notes` | string | no | Optional context for 'add'. |
 | `labels` | array of object | no | Labels to bulk-import (for 'import'). Malformed entries are skipped and reported rather than failing the batch. |
-| `detail` | `summary` \| `full` | no | For 'list'. 'summary' (default): the labels added here, then the rest that fit about 30k characters, the rest counted under `omitted`. 'full': every label. |
+| `detail` | `summary` \| `full` | no | For list: summary (default) keeps local additions first within ~30k chars and counts omitted labels; full lists all. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## resolve_bridge_transfer

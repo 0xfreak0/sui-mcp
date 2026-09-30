@@ -85,6 +85,14 @@ trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
                below_threshold 0.07%
 ```
 
+The graph's starting branches and percentages cover coin balance changes.
+Transferring a `StakedSui`, NFT or position without a coin credit does not seed
+an object branch, even if another coin moved in the same transaction. A
+reported 100% unspent share therefore says nothing about those transferred
+objects. Use `get_transaction` for object transfers, `trace_funds` for an
+object branch and `trace_object_history` for custody; start a coin graph at
+the transaction that releases the object's coins.
+
 ## How traced value is allocated
 
 A node's traced amount is spent first in, first out: an address that pays out
@@ -194,6 +202,14 @@ that bridge's event, with its function and its own events, such as an adapter
 order ID. `cross_chain_leads` lists uncovered packages' events that have a
 chain field beside a foreign-address-sized byte string. These are heuristic
 leads for possible exits through an unrecognized bridge, never exits by themselves.
+
+Orbiter Finance is not in the curated bridge decoders. Its
+`OrbiterRouter::MessageTakenEvent.msg` can hold the intended recipient and
+chain in an ASCII query-string memo. That encoding has no separate
+chain/address fields for `cross_chain_leads` to match, so an empty bridge
+result does not rule out an Orbiter route. Read the memo with `get_transaction`
+and verify the maker's payment on the destination chain. A memo records the
+requested route, not proof of delivery.
 
 Evidence tiers distinguish values read from Sui from delivery asserted by an
 indexer. Confirm indexer delivery on the destination chain before relying on

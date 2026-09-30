@@ -270,7 +270,7 @@
       ],
       "tier": "chain-derived",
       "basis": "On chain the two StakedSui went to 0x2a6f4852, which unstaked them (5vuZjVUV, 8DDEivFZ), swapped the SUI to USDC (8tXYGyQs) and bridged it to Ethereum 0x64a3db08 (AMXiX7BA).",
-      "known_defect": "Traces only the fake coin minted to the signer and reports 100% unspent there; the StakedSui sent to the collector are not followed.",
+      "known_defect": "Graph-model limit: origin branches and shares come from coin balance changes, not transferred StakedSui objects. The reported unspent share therefore covers the minted coin only. trace_funds follows the stake branch; trace_object_history follows custody. The object-to-coin-to-bridge expectation remains unmet; see concepts/fund-flows, Following every branch.",
       "timeout_s": 300
     },
     {
@@ -295,7 +295,7 @@
       ],
       "tier": "chain-derived",
       "basis": "On chain 661kmJN5 transferred two StakedSui to 0x2a6f4852; get_transaction on the same digest lists them under object_transfers.",
-      "known_defect": "get_transactions returns balance changes and events only, so a drain that moved StakedSui and no coin reads as a mint with no loss."
+      "known_defect": "Batch-read limit: get_transactions selects balance changes, calls and events, but no object custody changes, even with detail: full. A zero coin loss cannot rule out a StakedSui or NFT drain. Use get_transaction for object_transfers; see concepts/transactions, Reading a batch of digests."
     },
     {
       "id": "lure-package-same-publisher",

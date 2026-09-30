@@ -240,14 +240,14 @@ export function registerPoolTools(server: McpServer) {
 
   server.tool(
     "find_pools",
-    "Find DeFi liquidity pools by token pair. Searches every Cetus pool, DeepBook v3 and v2 pool, and Turbos pool (across every fee tier in Turbos's pool config) for the pair, in either order. token_a and token_b on each pool are the pool's own order, read from its type. Use get_pool_stats on a returned pool_id for detailed stats.",
+    "Find liquidity pools for a token pair across Cetus, DeepBook v2/v3, Turbos and BlueMove v1. Searches both token orders and every Turbos fee tier. Each result reports the pool's own token order. Use get_pool_stats for reserves, fees and prices.",
     {
       token_a: z.string().describe("First token: symbol (e.g. 'SUI') or full coin type"),
       token_b: z.string().describe("Second token: symbol (e.g. 'USDC') or full coin type"),
       protocol: z
         .string()
         .optional()
-        .describe("Filter by protocol: 'cetus', 'deepbook', or 'turbos'. Searches all if omitted."),
+        .describe("Filter by protocol: 'cetus', 'deepbook', 'turbos', or 'bluemove'. Searches all if omitted."),
     },
     async ({ token_a, token_b, protocol: protocolFilter }) => {
       const [typeA, typeB] = await Promise.all([
@@ -337,7 +337,7 @@ export function registerPoolTools(server: McpServer) {
   );
 }
 
-const POOL_PROTOCOLS = ["cetus", "deepbook", "turbos"] as const;
+const POOL_PROTOCOLS = ["cetus", "deepbook", "turbos", "bluemove"] as const;
 type PoolProtocol = (typeof POOL_PROTOCOLS)[number];
 
 /**
@@ -353,6 +353,8 @@ async function poolTemplates(protocol: PoolProtocol): Promise<string[]> {
   switch (protocol) {
     case "cetus":
       return ["0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool<{A}, {B}>"];
+    case "bluemove":
+      return ["0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool<{A}, {B}>"];
     case "deepbook":
       return [
         // v3, where DeepBook trades today, and the retired v2 order books.

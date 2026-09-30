@@ -74,5 +74,5 @@ Add, remove or list addresses watched for new activity during an investigation. 
 | `action` | `add` \| `remove` \| `list` | yes | add, remove, or list the current watch set |
 | `addresses` | array of string | no | Addresses to add or remove (0x...) |
 | `label` | string | no | Optional label applied to the addresses being added, e.g. 'victim' or 'suspect' |
-| `min_amount` | string | no | Only report coin movements at or above this, in RAW units of any coin (SUI has 9 decimals, so 0.5 SUI is "500000000"). Sinks and transactions that move no coin are reported regardless. Pass "0" to clear a floor set earlier; omitting it on a re-add keeps the existing one. |
+| `min_amount` | string | no | Coin-movement floor in RAW units of any coin ("500000000" is 0.5 SUI). Sinks and coinless transactions report regardless. "0" clears a floor; omitting it on a re-add keeps it. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

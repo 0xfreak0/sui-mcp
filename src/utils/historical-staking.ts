@@ -3,6 +3,8 @@ import { getNetwork } from "../config.js";
 import { checkpointBracket } from "./checkpoint-time.js";
 import { BOTH_WAYS_PAGE_INFO, orderedPage, orderedPageArgs, type BothWaysPageInfo } from "./pagination.js";
 import { estimateStakedSuiRewards, STAKED_SUI_TYPE } from "./valuers/staked-sui.js";
+import type { GrpcTypes } from "@mysten/sui/grpc";
+import { withArchiveFallback } from "./archive-fallback.js";
 
 const STAKE_TYPE = /^0x0*3::staking_pool::StakedSui$/;
 const MAX_POSITIONS = 10_000;
@@ -68,8 +70,23 @@ function held(state: State | null, owner: string): boolean {
   return STAKE_TYPE.test(state.asMoveObject.contents.type.repr);
 }
 
-function apply(changes: Change[], positions: Map<string, Ref>, owner: string, forward: boolean) {
+/** Prove a missing pair of object states was never top-level, rather than pruned. */
+async function createdWrappedObjects(digest: string): Promise<Set<string>> {
+  const result = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
+    client => client.ledgerService.getTransaction({ digest, readMask: { paths: ["effects.changed_objects"] } }),
+    response => !response.transaction?.effects,
+  );
+  const ids = new Set<string>();
+  for (const change of result.transaction?.effects?.changedObjects ?? []) {
+    // ChangedObject: input/output DOES_NOT_EXIST = 1, id operation CREATED = 2.
+    if (change.objectId && change.inputState === 1 && change.outputState === 1 && change.idOperation === 2) ids.add(change.objectId);
+  }
+  return ids;
+}
+
+function apply(changes: Change[], positions: Map<string, Ref>, owner: string, forward: boolean, createdWrapped?: Set<string>) {
   for (const c of changes) {
+    if (!c.inputState && !c.outputState && c.idCreated === true && createdWrapped?.has(c.address)) continue;
     const known = c.outputState ?? c.inputState;
     const type = known?.asMoveObject?.contents?.type?.repr;
     // Object types cannot change. Missing opposite states of an unrelated
@@ -145,11 +162,15 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
       for (const tx of page.nodes) {
         if (!tx.effects?.objectChanges || !tx.effects.checkpoint) throw new Error(`Transaction state unavailable for ${tx.digest}.`);
         let changes = tx.effects.objectChanges;
+        let createdWrapped: Set<string> | undefined;
         const changeCursors = new Set<string>();
         for (;;) {
           if (Date.now() >= deadline || attempt.object_change_pages >= max) throw new Error("The object-change scan budget was exhausted.");
           attempt.object_change_pages++;
-          apply(changes.nodes, positions, owner, forward);
+          if (!createdWrapped && changes.nodes.some(c => !c.inputState && !c.outputState && c.idCreated === true)) {
+            createdWrapped = await createdWrappedObjects(tx.digest);
+          }
+          apply(changes.nodes, positions, owner, forward, createdWrapped);
           if (positions.size > MAX_POSITIONS) throw new Error("The replay exceeds the position budget.");
           if (!changes.pageInfo.hasNextPage) break;
           if (attempt.object_change_pages >= max) throw new Error("The object-change scan budget was exhausted.");

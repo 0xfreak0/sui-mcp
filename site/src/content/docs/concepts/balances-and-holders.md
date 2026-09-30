@@ -80,6 +80,8 @@ has its own `max_transactions` budget, which also bounds object-change pages.
 Every nested page must finish. Missing history, discontinuous ownership,
 ambiguous wrapped/unwrapped states or a budget stop give `complete: false`
 and a null total, never an intermediate set labelled as historical holdings.
+Objects created already wrapped are skipped only when a gRPC effects read
+proves they never existed at top level; other missing states remain incomplete.
 `attempts` records the stopping point; `continue_with` supplies a higher-budget
 call. `detail: full` returns all positions from a completed read. Display caps
 leave totals intact and give a saved-result page or full call for omitted rows.

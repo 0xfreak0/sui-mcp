@@ -267,7 +267,7 @@ function placesOrder(eventType: string | undefined, json: unknown): boolean {
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Get a Sui transaction by its digest. Returns sender, status, gas, balance changes, protocol-aware decoded actions (e.g. 'swap on Cetus', 'deposit on Suilend'), and events WITH their decoded fields, so there is no need to hand-write GraphQL to read an event's values. An event field holding a number in the top half of the u256 range also gets its two's-complement reading under `signed_readings` (a signed fee or PnL stored unsigned), and with detail: 'full' a u64, u128 or u256 pure value with its top bit set carries `signed_value`Protocols are identified from the events as well as the Move calls, which matters when a transaction calls an obfuscated wrapper: `protocols_from_events_only` marks that case. A package with no curated or Move Registry name is named after the curated protocol whose key published it (`protocols_unchecked` lists packages whose publisher was not read), and a `balance_changes` row whose address signed a curated protocol's packages carries `publisher_key_of`, which shows a fee paid to that team's keyFunds can move without any coin object: `address_balance_ops` lists every deposit to and withdrawal from an address balance, `funds_withdrawals` the address-balance withdrawals the transaction requested, and `gas_source` whether gas came from coins or the gas owner's address balance. `created_for` lists objects minted to someone other than the sender; coins are never listed there, and when no other object moved `coins_delivered_to` names the addresses other than the sender that gained coins. `mutated_capabilities` lists a sender-owned capability the call mutated in place (a nonce, a rate limit) without changing its owner: the authorising capability itself, present even when nothing changed hands. `route_loops` appears when a router path swaps a coin away and back within the route (USDC → USDT → USDC before the real hop): the `actions` indices of the loop, its coins, and what the round trip cost by the pools' own swap events, or null with the reason. Pass detail: 'full' for the PTB's inputs, each command's arguments resolved (the object with its version and type, a pure value decoded with the called function's declared type, the command a Result came from) and the id and type of every changed object by kind.",
+    "Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields. Identifies protocols from calls/events (including wrappers) and unnamed packages by curated publishing key; protocols_unchecked marks unread publishers. Shows address-balance deposits/withdrawals, requested withdrawals and gas source; non-sender object deliveries (coins separately when no other object moved); sender-owned capabilities mutated without transfer; and router coin round trips with cost from pool events (or null with reason). High-bit u256 event numbers get signed readings; full detail also gives high-bit u64/u128/u256 pure values' two's-complement readings. Use detail:'full' for typed/versioned inputs, resolved command arguments/Result origins and every changed object's ID/type/version by kind. Summary may fold/cap event rows past ~20k chars, retaining events emitted by called non-framework packages; omitted reports reductions. Full detail lists all events in pages: follow events_page.next_call. For command-only or pre-sign inspection use decode_ptb; for exploit profit, state deltas and anomaly leads use analyze_attack_tx.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -276,24 +276,24 @@ export function registerTransactionTools(server: McpServer) {
         .max(500_000)
         .optional()
         .describe(
-          "Optional byte cap on decoded event fields. UNSET BY DEFAULT: every event is decoded. Past about 20k characters the summary view folds events that differ only in amounts into one row (count, emission indices, shared fields, and each varying field's total, min and max) and caps the rows, keeping every event a non-framework package the transaction called emitted; `omitted` says so, and detail: 'full' lists every event. Set this only when you knowingly want to bound the payload (anything skipped is reported), or set 0 to skip decoding entirely.",
+          "Decoded event-field byte cap; unset decodes every event. Set only to bound fields knowingly; skips are reported. 0 skips decoding.",
         ),
       detail: z
         .enum(["summary", "full"])
         .optional()
         .describe(
-          "'summary' (default): object_changes as counts, and no inputs or commands; created_for, object_transfers, balance_changes and coins_delivered_to list what fits about 20k characters, every capability, the sender's changes and each coin's largest credit and debit first, and `omitted` states the rest. 'full' lists every row and adds the PTB's `inputs` (object id, version read and type; pure values decoded with the type the called function declares), `commands` with every argument resolved (an input's object or value, the command a Result came from, the gas coin), paged at about 30k characters with Move calls into non-framework packages kept first, and object_changes.by_kind: every changed object's id, type and version, grouped as created, mutated, unwrapped, wrapped and deleted.",
+          "'summary' (default): object counts, no inputs/commands; ~20k chars of deliveries/transfers/balance changes, prioritizing all capabilities and, for SUI/verified coins, sender changes and largest credits/debits. omitted reports the rest. 'full': all rows plus typed inputs, resolved arguments and objects by kind; commands page at ~30k chars, non-framework Move calls first.",
         ),
       commands: z
         .array(numArg().int().min(0))
         .max(100)
         .optional()
-        .describe("With detail: 'full', exact command indices to list, e.g. [3, 7], instead of the first page. Events and object changes narrow to those commands where the transaction attributes them (an event to the Move call that emitted it, an object to the commands that take it or return its type); `events_omitted` and `object_changes_omitted` state what was left out."),
+        .describe("Exact indices in full detail instead of the first page. Where attributable, narrows events to emitting calls and objects to commands taking them/returning their type; events_omitted/object_changes_omitted report exclusions."),
       event_offset: numArg()
         .int()
         .min(0)
         .optional()
-        .describe("With detail: 'full', the position in the listed events (after any `commands` narrowing) to start the event page at. The full view lists about 40k characters of events per page, and `events_page.next_call` carries the next offset."),
+        .describe("Full-detail event position after commands filtering; ~40k chars/page. Continue with events_page.next_call."),
     },
     async ({ digest: rawDigest, max_event_field_bytes, detail, commands: pick, event_offset }) => {
       const full = detail === "full" || pick !== undefined;

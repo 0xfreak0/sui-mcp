@@ -5,6 +5,60 @@ sidebar:
   order: 2
 ---
 
+## Choosing a transaction read
+
+`get_transaction` reads an executed transaction by Base58 digest: sender,
+status, gas, balance changes, decoded actions such as a swap or deposit, and
+events with decoded fields. `decode_ptb` reads resolved commands without an
+effects/event report, and accepts pre-sign bytes too. `analyze_attack_tx`
+adds exploit profit, shared-object state deltas, reconciliation and anomaly
+leads. Use `get_transactions` for a batch rather than one detailed transaction.
+
+Protocol identification uses events as well as Move calls.
+`protocols_from_events_only` marks an event-identified protocol behind an
+obfuscated wrapper. A package lacking a curated or Move Registry name is
+named for the curated protocol whose key published it; `protocols_unchecked`
+lists packages whose publisher was unread. A balance-change address that
+signed a curated protocol's packages carries `publisher_key_of`, for example
+to identify a fee paid to the team's key.
+
+Event fields in the top half of the u256 range also get their two's-complement
+reading in `signed_readings`, for signed fees or PnL stored unsigned.
+With `detail: "full"`, high-bit u64, u128 and u256 pure values get `signed_value`.
+The full view includes inputs with object ID, read version and type, and
+pure values decoded by the called function's declared type. Commands resolve
+arguments to inputs, producing Result commands or the gas coin.
+`object_changes.by_kind` lists every changed object's ID, type and version
+under created, mutated, unwrapped, wrapped or deleted.
+
+The default summary gives object-change counts without inputs or commands.
+`created_for`, `object_transfers`, `balance_changes` and `coins_delivered_to`
+share about 20,000 characters, prioritizing every capability and, for SUI
+and verified coins, the sender's changes and each coin's largest credit and
+debit. `omitted` reports the rest.
+Full detail lists every row, but commands are paged at about 30,000 characters,
+with non-framework Move calls first.
+
+Every event is decoded unless `max_event_field_bytes` sets a byte budget;
+skips are reported and zero disables decoding. Past about 20,000 characters,
+the summary folds events differing only in amounts into rows with counts,
+emission indices, shared fields and each varying field's total, min and max.
+It caps rows while retaining every event emitted by a called non-framework
+package. `omitted` reports the reduction; full detail lists events in pages
+of about 40,000 characters.
+
+`commands: [3, 7]` selects exact command indices in full detail instead of
+the first command page. Events narrow to the calls that emitted them; objects
+narrow to commands taking them as arguments or returning their type.
+`events_omitted` and `object_changes_omitted` state what was excluded.
+`event_offset` starts at a position in the event list after that narrowing;
+follow `events_page.next_call` for the next offset.
+
+`route_loops` marks router paths that swap a coin away and back before the
+real hop, for example USDC to USDT to USDC. It lists the loop's action indices,
+coins and round-trip cost from the pools' own swap events, or null with a reason.
+
+
 ## Why a transaction failed
 
 `get_transaction` returns the abort code with the package, module and function
@@ -88,6 +142,8 @@ Both parties there are Kiosk objects rather than wallets. `changed` counts
 every object effect, including the coin that paid, so it is a weaker signal
 than `object_transfers`. `created_for` lists objects minted to an owner other
 than the sender, which is a delivery even though nothing held them before.
+Coins are excluded from `created_for`. When no other object moved,
+`coins_delivered_to` lists non-sender addresses that gained coins.
 
 ## Address balances
 

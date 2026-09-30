@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **Vice and Blast.fun launchpads are known protocols.** Vice's launch
+  packages (vicefun.com) are curated as Vice. Blast.fun's launchpad contracts
+  are Interest Protocol's memez packages (launchpad, migrator, router,
+  vesting), curated as Interest Protocol because the same key publishes
+  Interest Protocol's other libraries. Blast.fun's own OTC, vesting and
+  timelock packages are curated as Blast.fun. All are in the `launchpad`
+  category.
 - **Memecoin launchpads are known protocols.** SuiPump, Maelstrom, Whirlpool,
   Perpsplexity and Koi are curated under a new `launchpad` category, so their
   bonding-curve and launch calls, events and later upgrades are named instead

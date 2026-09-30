@@ -38,6 +38,18 @@
       "name": "AlphaLend",
       "type": "lending"
     },
+    "0x1749b76a3ae065dedfe847578b07826fa83d1e18ff485d9e4f9647f3698e104d": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x40e0c95f73af329e7a6a8eafee9d152a1f3090736d35052842288232f7eb5968": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x85fdb7e3d28162b99e0df758069a3d23cff874c400b2160fc0d4618aefd3ec5c": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
     "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267": {
       "name": "Bluefin",
       "type": "dex"
@@ -149,6 +161,22 @@
     "0xbde4ba4c2e274a60ce15c1cfff9e5c42e41654ac8b6d906a57efa4bd3c29f47d": {
       "name": "Haedal",
       "type": "liquid_staking"
+    },
+    "0x07cb654d8ae22bd18fff08f322d99fdf9d1673712812329b127430b155dc44ff": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x1a184ecf7d0652f8f1285a3b0b2e644bf86ae1742317fcdaa9b11a7f3a30bd70": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x7ec68f4115dc2944426239b13ce6804dd9971b24069fb4efe88360d29b17f0ce": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
     },
     "0x01c389a85310b47e7630a9361d4e71025bc35e4999d3a645949b1b68b26f2273": {
       "name": "Kai Finance",
@@ -330,6 +358,14 @@
       "name": "Typus",
       "type": "options"
     },
+    "0x5cfddf8ba23be6835644a8ea22482ff6ebb0081e42cc1bc052b5f770ca8bbdea": {
+      "name": "Vice",
+      "type": "launchpad"
+    },
+    "0x93d1a123f8955c344d83d571048cf2d53ab790ba9c202391e4ef54e467574558": {
+      "name": "Vice",
+      "type": "launchpad"
+    },
     "0xcd86f77503a755c48fe6c87e1b8e9a137ec0c1bf37aac8878b6083262b27fefa": {
       "name": "Volo",
       "type": "liquid_staking"
@@ -415,6 +451,21 @@
     "0xd631cd66138909636fc3f73ed75820d0c5b76332d1644608ed1c85ea2b8219b4": {
       "signers": [
         "0xa1eb94d1700652aa85b417b46fa6775575b8b98d3352d864fb5146eb45d335fb"
+      ]
+    },
+    "0x1749b76a3ae065dedfe847578b07826fa83d1e18ff485d9e4f9647f3698e104d": {
+      "signers": [
+        "0x52ecee5e58e2f3a7461cc604f4efcc3b68031e4715456d821e3a2719b0593600"
+      ]
+    },
+    "0x40e0c95f73af329e7a6a8eafee9d152a1f3090736d35052842288232f7eb5968": {
+      "signers": [
+        "0x52ecee5e58e2f3a7461cc604f4efcc3b68031e4715456d821e3a2719b0593600"
+      ]
+    },
+    "0x85fdb7e3d28162b99e0df758069a3d23cff874c400b2160fc0d4618aefd3ec5c": {
+      "signers": [
+        "0x52ecee5e58e2f3a7461cc604f4efcc3b68031e4715456d821e3a2719b0593600"
       ]
     },
     "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267": {
@@ -573,6 +624,26 @@
         "0x24ce5d3bf7adc559befdf0e9a3f58e68853e5a4e4901f0f9a1bc336f75db8bb9",
         "0x5b476896be81dc47a0599e8920ced58ebe16ed6210b73e04f71db0f164d5ab41",
         "0x8f0a9c4d3017b1b9ab9e1dd38cd0dfd94135c980eaf103b22bfabfb548c152ab"
+      ]
+    },
+    "0x07cb654d8ae22bd18fff08f322d99fdf9d1673712812329b127430b155dc44ff": {
+      "signers": [
+        "0xbbf31f4075625942aa967daebcafe0b1c90e6fa9305c9064983b5052ec442ef7"
+      ]
+    },
+    "0x1a184ecf7d0652f8f1285a3b0b2e644bf86ae1742317fcdaa9b11a7f3a30bd70": {
+      "signers": [
+        "0xbbf31f4075625942aa967daebcafe0b1c90e6fa9305c9064983b5052ec442ef7"
+      ]
+    },
+    "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef": {
+      "signers": [
+        "0xbbf31f4075625942aa967daebcafe0b1c90e6fa9305c9064983b5052ec442ef7"
+      ]
+    },
+    "0x7ec68f4115dc2944426239b13ce6804dd9971b24069fb4efe88360d29b17f0ce": {
+      "signers": [
+        "0xbbf31f4075625942aa967daebcafe0b1c90e6fa9305c9064983b5052ec442ef7"
       ]
     },
     "0x01c389a85310b47e7630a9361d4e71025bc35e4999d3a645949b1b68b26f2273": {
@@ -819,6 +890,16 @@
       "signers": [
         "0x978f65df8570a075298598a9965c18de9087f9e888eb3430fe20334f5c554cfd",
         "0xb9a09efd534d29cc9f990db26b2dab00289f32de0cdcefa68c6808de208bc9cb"
+      ]
+    },
+    "0x5cfddf8ba23be6835644a8ea22482ff6ebb0081e42cc1bc052b5f770ca8bbdea": {
+      "signers": [
+        "0x92a32ac7fd525f8bd37ed359423b8d7d858cad26224854dfbff1914b75ee658b"
+      ]
+    },
+    "0x93d1a123f8955c344d83d571048cf2d53ab790ba9c202391e4ef54e467574558": {
+      "signers": [
+        "0x2957f0f19ee92eb5283bf1aa6ce7a3742ea7bc79bc9d1dc907fbbf7a11567409"
       ]
     },
     "0xcd86f77503a755c48fe6c87e1b8e9a137ec0c1bf37aac8878b6083262b27fefa": {

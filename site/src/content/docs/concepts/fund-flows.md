@@ -282,3 +282,29 @@ explains null checks. Results identify the hot wallet, exchange label and
 provenance, sweep sponsor, sweep digests and sampled deposits. The read defaults
 to the most recent 50 transactions, costing about one request plus up to
 12 more to measure the sponsor and an unlabelled destination.
+
+## Following one fund-flow path
+
+`trace_funds` starts with a Base58 digest and a required direction. Forward
+follows the recipient's next transaction moving the tracked coin; backward
+follows the payer's most recent earlier inflow. It follows value through DEX
+swaps, exploits and withdrawals crediting only the actor, and objects that
+received funds. Use `trace_flow_graph` for all branches.
+
+The walk stops at sinks labelled through `manage_labels`: exchanges, bridges,
+mixers and burn addresses. A malicious-labelled wallet is followed instead.
+Bridge exits and high-fanout hubs also stop it. Forward hub stops require at
+least 100 distinct senders paying in; an address with fewer can pass on the
+funds and remains followed. Every ending has a `stop_reason`.
+
+Each hop includes decoded actions and USD at block time, with the price source
+under `usd`. Reads are sequential per hop, defaulting to three and capped at ten.
+A `coin_type`, such as `0x2::sui::SUI`, selects the starting coin and filters
+displayed balance changes; padded and short types match. The trace still
+follows value across swaps. Without the filter, all balance changes are shown
+and the first hop chooses the largest flow.
+
+JSON is the default. Mermaid returns a fenced path diagram with unfollowed
+branches dashed, bridge exits and the stop reason. `graph_json` gives nodes
+and edges; CSV has one row per followed or unfollowed transfer. Every format
+except `graph_json` starts with the prose summary.

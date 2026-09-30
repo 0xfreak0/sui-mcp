@@ -32,7 +32,7 @@ sidebar:
 | [`summarize_address_flows`](#summarize_address_flows) | Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. |
 | [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. |
-| [`trace_funds`](#trace_funds) | Trace fund flow from a transaction across hops. |
+| [`trace_funds`](#trace_funds) | Follow a fund-flow path from a transaction. |
 | [`trace_object_history`](#trace_object_history) | Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. |
 
 ## aggregate_events
@@ -480,15 +480,15 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Trace fund flow from a transaction across hops. Forward follows the tracked coin to whoever received it and then to that address's next transaction that moves it; backward follows whoever paid the coin in, then that address's most recent earlier inflow of it. Swap-aware (follows value across DEX swaps instead of losing it in the pool), follows the actor through an exploit or withdrawal that credits only itself, follows value out of objects that received it, stops at known sinks (exchanges, bridges, mixers and burn addresses, as labelled in manage_labels; a wallet labelled malicious is followed, not a stop), at bridge exits, and at high-fanout hubs (forward, only at one that 100+ distinct senders pay into; an address paid by fewer passes on what it received and is followed), and always says why it stopped in `stop_reason`. Values each hop in USD at block time (see `usd` for the price source). Returns protocol-decoded actions and a human-readable summary. Makes sequential API calls per hop (up to 10).
+(Incident investigation) Follow a fund-flow path from a transaction. Forward traces a recipient's next move of the tracked coin; backward traces its payer's most recent earlier inflow. It follows value through swaps, self-crediting exploits or withdrawals, and objects. Stops at labelled exchanges, bridges, mixers or burns (manage_labels), bridge exits and high-fanout hubs; forward hub stops require 100+ distinct incoming senders, so smaller pass-through funders are followed. Malicious labels do not stop the trace. stop_reason always explains the end. Returns decoded actions, a readable summary and per-hop USD at block time with its source. Calls run sequentially for up to 10 hops; use trace_flow_graph to follow every branch.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `digest` | string | yes | Starting transaction digest (Base58) |
 | `direction` | `forward` \| `backward` | yes | Direction to trace: 'forward' follows recipients, 'backward' follows sender |
 | `hops` | integer (1 to 10) | no | Max hops to follow (default 3, max 10) |
-| `coin_type` | string | no | Start by following this coin type, and restrict the DISPLAYED balance changes to it (e.g. 0x2::sui::SUI; the short and padded forms match). The trace still follows value across swaps regardless. If omitted, all of each hop's balance changes are shown and the first hop picks the largest flow. |
-| `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced ```mermaid diagram of the followed path, with unfollowed branches dashed, bridge exits and the stop reason. graph_json: {nodes, edges}. csv: one row per followed or unfollowed transfer. The prose summary comes first in every format but graph_json. |
+| `coin_type` | string | no | Starting coin and displayed balance-change filter; short/padded types match. Swaps still follow value. Omit to show all changes and start with the largest flow. |
+| `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Default json. Mermaid shows the path, dashed unfollowed branches, bridge exits and stop reason; graph_json gives nodes/edges; CSV lists every followed or unfollowed transfer. Prose comes first except in graph_json. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## trace_object_history

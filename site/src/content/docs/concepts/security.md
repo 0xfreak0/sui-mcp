@@ -7,7 +7,7 @@ sidebar:
 
 ## No wallet, no keys
 
-The server has no credentials and no ability to move funds:
+The server has no wallet credentials and no ability to move funds:
 
 - It never accepts a private key, mnemonic, or seed phrase. No tool takes one
   as an argument and nothing in the code reads one from the environment.
@@ -15,9 +15,9 @@ The server has no credentials and no ability to move funds:
   unsigned BCS bytes that you sign and broadcast somewhere else;
   `simulate_transaction` dry-runs bytes against a fullnode without executing
   them.
-- Every remaining tool is a read.
-- No provider accounts. RPC, indexing, and price data all come from public
-  endpoints.
+- Other tools read chain or provider data, or manage the optional local store.
+- Public RPC and indexing endpoints need no provider account. Aftermath and
+  DefiLlama prices need no key; Pyth is opt-in through `PYTH_API_KEY`.
 
 ## What the process does
 

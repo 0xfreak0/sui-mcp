@@ -72,6 +72,14 @@ sample it came from; one more than an hour from the moment asked for is marked
 the reason, and a failed request is reported differently from a coin the
 provider does not list.
 
+For windows, `summarize_address_flows`, `summarize_incident_losses` and
+`aggregate_events` participant P&L price each coin movement by its own UTC day
+before summing. Their pricing blocks report coverage; missing coin-days,
+unknown decimals and pricing-budget stops stay unpriced. `price_at` on
+`summarize_incident_losses` selects one fixed time instead. Objects keep their
+own transaction-time valuation unless that override is set. See
+[USD over a time window](/concepts/fund-flows/#usd-over-a-time-window).
+
 DefiLlama and Aftermath key on the full coin type, so an impostor coin that
 copies a real coin's symbol is priced as itself or not at all. Pyth feeds are
 matched by symbol, so Pyth is only ever asked about coins on the verified list.
@@ -142,5 +150,5 @@ because the investigator is following that wallet. Imports skip and report
 malformed entries without failing the whole batch.
 
 List counts every label by category and source. Its summary shows local
-additions first, then other labels fitting about 30,000 characters;
+additions first, then other labels within a display budget;
 `omitted` reports the rest. `detail: "full"` lists every label.

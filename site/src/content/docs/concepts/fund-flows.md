@@ -43,12 +43,19 @@ changes by transaction day before netting them. Gas stays included. Check
 
 `summarize_address_flows` lists valued objects a transaction deleted or wrapped,
 including transactions from before about March 2024, when effects did not record
-their owners. It reads the holder at the version the transaction read and values
-the object for the address that held it. An object whose holder cannot be read
-is listed under `objects_unread`.
+their owners. These rows carry `source_unrecorded`. It reads the holder at the
+version the transaction read and values the object for the address that held it.
+Object-held, shared and immutable owners are excluded from direct-address
+valuation. An unread or unrecognised holder is listed under `objects_unread`.
 
 A stake withdrawal has a `StakedSui` row with direction `out` and a separate SUI
 inflow in the same digest. Both legs remain separate in the output.
+
+`analyze_attack_tx` and `summarize_incident_losses` use the same valuation path.
+`trace_funds` can value these objects through its archive path, but its GraphQL
+path can omit historical deleted objects whose type is absent. A tracked
+object's deletion or wrap ends its trail. `get_transaction` does not report a
+wrap with no recorded holder as a custody change.
 
 ## Following every branch
 
@@ -209,19 +216,16 @@ pruned for its share or USD value. Consumed and retained terminals can carry
 heuristic `cross_chain_leads` when the transaction emitted a message-shaped
 event from a package no bridge reader covers.
 
-The summary fits about 20,000 characters, putting the largest traced shares
+The summary has a display budget, putting the largest traced shares
 first and retaining bridge exits, sinks, hubs, protocols, consumed and retained
 nodes, labelled addresses and lookalikes, with their incoming edges. Terminal
 totals, coverage and shares cover the whole graph. `omitted` reports missing
 rows; `detail: "full"` lists every node and edge.
 
-Expansion costs about one search plus the spends found per node; 40 nodes
-typically require 100–300 requests.
-
 ## Summarizing one address's window
 
 `summarize_address_flows` gives each coin's inflow, outflow and net in raw
-and human units, with `coin_verified` and USD valued at the window's time.
+and human units, with `coin_verified` and USD valued per transaction day.
 It lists every funder with amounts and digests, the top recipients by value
 with identity and labels, and both the address's gas sponsors and the parties
 whose gas it paid.
@@ -243,7 +247,7 @@ The scan runs newest first. Check `coverage.complete`; a budget stop gives
 the budget. A `coin_type` filter affects totals and counterparties, while gas
 and bridge exits stay complete.
 
-The summary fits about 20,000 characters of counterparties, coins and
+The summary applies a display budget to counterparties, coins and
 unattributed rows, ranked by value and preserving every labelled or non-wallet
 address and lookalike. Totals and counts cover every row; `omitted` counts
 display exclusions, and `detail: "full"` lists every row.
@@ -289,7 +293,7 @@ OFAC's list, and how much history was read for each address. The default
 subject window is 300 recent transactions in each direction; a 100-transaction
 window can miss an active address's largest exit. Expanded counterparties
 get 50 transactions. `max_expand` defaults to eight counterparties per hop,
-highest value first, and a call typically costs 15–60 requests.
+highest value first.
 
 `windows[].incomplete_transactions` names transactions whose balance pages
 could not all be read. Their paths are withheld, and affected bridge

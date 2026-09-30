@@ -165,6 +165,6 @@ more than 2%, `health_basis` explains the difference. `leads` flags positions
 near their borrow limit and shared vaults the wallet operates, including what
 they hold.
 
-The default summary keeps the most valuable positions fitting about 30k
-characters and every unpriced position. `omitted` reports the rest.
+The default summary keeps the most valuable positions within a display budget
+and every unpriced position. `omitted` reports the rest.
 `detail: "full"` returns every position.

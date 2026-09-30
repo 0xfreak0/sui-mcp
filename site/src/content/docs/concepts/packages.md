@@ -190,8 +190,8 @@ and reports code predating its module's origin, or functions whose whole module
 appears in no compared lineage. Groups identify the module and origin version;
 `related_lineages` lists the related packages.
 
-Only this redeploy output is capped. The default summary fits function-origin
-groups within about 6,000 characters, prioritizing the code that most predates
+Only this redeploy output is capped. The default summary applies a display
+budget to function-origin groups, prioritizing the code that most predates
 its module's origin. `omitted` counts excluded groups and functions;
 `detail: "full"` lists all groups.
 
@@ -230,8 +230,7 @@ binary. The output is lower-level than decompiled source, with basic blocks
 and stack operations. It accepts a package ID or MVR name such as `@org/app`.
 Without `module_name` it lists modules; `all_modules: true` reads the package.
 For a smaller read, supply `function_name` and `module_name`: the result
-contains that function plus referenced `use` lines and constants. A whole
-module can reach 250 KB.
+contains that function plus referenced `use` lines and constants.
 
 Comments explain operands that the raw assembly leaves opaque:
 

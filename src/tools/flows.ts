@@ -34,6 +34,7 @@ import {
 import { capPayload, type ListCap } from "../utils/output-cap.js";
 import { readMovedObjects, SCAN_OBJECT_BUDGET, valueTransactionObjects } from "../utils/moved-value.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { depositRole, type DepositRoleWindow } from "../utils/deposit-role.js";
 
 /**
  * Everything one scan needs: balance changes and commands (both completed past
@@ -162,7 +163,7 @@ function digestList(digests: string[]) {
   };
 }
 
-function who(address: string, identity: AddressIdentity | undefined) {
+function who(address: string, identity: AddressIdentity | undefined, roleWindow: DepositRoleWindow) {
   const label = getLabel(address);
   const provenance = label ? labelProvenance(label) : undefined;
   const note = identity ? identityNote(identity) : undefined;
@@ -172,6 +173,7 @@ function who(address: string, identity: AddressIdentity | undefined) {
     ...(identity?.name ? { name: identity.name } : {}),
     ...(label ? { label: label.label, label_category: label.category } : {}),
     ...(provenance ? { label_provenance: provenance } : {}),
+    deposit_address: depositRole(address, roleWindow),
     ...(identity?.protocol ? { protocol: identity.protocol } : {}),
     ...(note ? { note } : {}),
   };
@@ -212,6 +214,7 @@ export function registerFlowTools(server: McpServer) {
     async ({ address, from, to, coin_type, max_transactions, top, detail }) => {
       try {
         const window = await resolveWindow(from, to);
+        const roleWindow: DepositRoleWindow = { from, to, resolved: window };
         const budget = max_transactions ?? DEFAULT_MAX_TRANSACTIONS;
         const topN = top ?? DEFAULT_TOP;
         const filter: Record<string, unknown> = { affectedAddress: address };
@@ -441,7 +444,7 @@ export function registerFlowTools(server: McpServer) {
         };
 
         const counterpartyRow = ({ c, usd, objects }: { c: Counterparty; usd: number | null; objects?: typeof objectRows }, identify: boolean) => ({
-          ...who(c.address, identify ? identities.get(c.address) : undefined),
+          ...who(c.address, identify ? identities.get(c.address) : undefined, roleWindow),
           ...(identify ? {} : kindOf(c.address)),
           usd: usd === null ? null : round(usd),
           coins: amounts(c.coins),
@@ -551,6 +554,7 @@ export function registerFlowTools(server: McpServer) {
         const payload = {
           address,
           window: describeWindow(from, to, window),
+          deposit_address: depositRole(address, roleWindow),
           ...(coin_type ? { coin_filter: coinKey(coin_type) } : {}),
           coverage: {
             scanned_transactions: txs.length,
@@ -622,7 +626,7 @@ export function registerFlowTools(server: McpServer) {
             "Value that arrived or left without another address's balance moving the other way: swap proceeds and inputs, protocol deposits and withdrawals, exploits, mints, burns and bridge exits. The digests say which.",
           gas_sponsorship: {
             sponsored_by: sponsoredBy.map((s, i) => ({
-              ...who(s.address, i < topN ? identities.get(s.address) : undefined),
+              ...who(s.address, i < topN ? identities.get(s.address) : undefined, roleWindow),
               ...(i < topN ? {} : kindOf(s.address)),
               transactions: s.digests.length,
               ...digestList(s.digests),

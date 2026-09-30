@@ -169,7 +169,7 @@ export function registerMvrTools(server: McpServer) {
         .array(mvrTypeArg())
         .min(1)
         .describe(
-          "One or more struct paths, each '@org/app::module::Type'. Version-pinned names ('@org/app/N::module::Type') also accepted.",
+          "Struct paths, each '@org/app::module::Type' or version-pinned '@org/app/N::module::Type'.",
         ),
     },
     async ({ types }) => {

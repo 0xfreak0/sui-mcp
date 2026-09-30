@@ -798,9 +798,10 @@ to try. The same cleaning runs over an `isError` result a tool built itself.
 to 8s), gives each attempt a 30s `AbortSignal.timeout`, and allows 8 requests in
 flight per network. Every attempt, retries included, also takes a slot in the
 host's `RateWindow`: at most `rateLimitFor(host)` starts per 10-second sliding
-window, shared by every client of that host in the process. The default is 180
-for `*.sui.io` hosts and none for others; `SUI_RATE_LIMIT` sets it for every
-host and `0` disables it. The window covers one process only.
+window, shared by every client of that host in the process. The default is
+`MAINNET_RATE_LIMIT` for `*.mainnet.sui.io` hosts, `PUBLIC_RATE_LIMIT` for other
+`*.sui.io` hosts and none for others; `SUI_RATE_LIMIT` sets it for every host
+and `0` disables it. The window covers one process only.
 An exhausted 429 reports the endpoint and suggests
 `SUI_GRAPHQL_URL`; a GraphQL error reports its first message. Callers never see
 `ClientError`.

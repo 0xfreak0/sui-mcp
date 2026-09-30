@@ -34,7 +34,8 @@ argument; see [Capabilities](/reference/capabilities/).
 
 GraphQL and fullnode requests retry a rate limit (HTTP 429), a 5xx or a
 dropped connection with backoff, time out, and run a bounded number at a time
-per network. Requests to `*.sui.io` endpoints are also spaced per endpoint.
+per network. Requests to `*.sui.io` endpoints are also spaced per endpoint,
+more widely on testnet and devnet than on mainnet.
 `SUI_RATE_LIMIT` sets the number of requests per 10 seconds allowed to each
 endpoint, including non-`sui.io` ones, and `0` turns the spacing off. If the
 public endpoint still rate-limits a heavy investigation, set

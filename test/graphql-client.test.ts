@@ -213,12 +213,18 @@ describe("request rate window", () => {
   it("reads SUI_RATE_LIMIT for any host, 0 turns it off, and leaves other hosts alone by default", async () => {
     const { rateLimitFor } = await import("../src/config.js");
     vi.stubEnv("SUI_RATE_LIMIT", "");
-    expect(rateLimitFor("graphql.mainnet.sui.io")).toBe(180);
-    expect(rateLimitFor("fullnode.testnet.sui.io")).toBe(180);
+    const mainnet = rateLimitFor("graphql.mainnet.sui.io");
+    const testnet = rateLimitFor("fullnode.testnet.sui.io");
+    expect(testnet).toBeGreaterThan(0);
+    expect(mainnet).toBeGreaterThan(testnet!);
+    expect(rateLimitFor("fullnode.mainnet.sui.io")).toBe(mainnet);
+    expect(rateLimitFor("fullnode.devnet.sui.io")).toBe(testnet);
+    expect(rateLimitFor("mainnet.sui.io.example.com")).toBeNull();
     expect(rateLimitFor("my-node.example.com")).toBeNull();
     expect(rateLimitFor("evilsui.io.example.com")).toBeNull();
     vi.stubEnv("SUI_RATE_LIMIT", "500");
     expect(rateLimitFor("my-node.example.com")).toBe(500);
+    expect(rateLimitFor("graphql.mainnet.sui.io")).toBe(500);
     vi.stubEnv("SUI_RATE_LIMIT", "0");
     expect(rateLimitFor("graphql.mainnet.sui.io")).toBeNull();
     vi.unstubAllEnvs();

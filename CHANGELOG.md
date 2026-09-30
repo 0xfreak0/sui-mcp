@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Changed
+- **Higher default request pacing on mainnet.** The public mainnet endpoints
+  now accept more requests per IP than testnet and devnet, so the default
+  spacing for `*.mainnet.sui.io` hosts is raised; testnet and devnet keep
+  theirs. `SUI_RATE_LIMIT` still overrides both.
 - **Tool JSON answers omit indentation.** Graph and fund traces, flow paths,
   event queries and the other JSON tool responses keep every field, row,
   summary, caveat and continuation without pretty-printing overhead. Graph

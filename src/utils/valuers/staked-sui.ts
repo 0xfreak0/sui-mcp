@@ -373,6 +373,57 @@ async function valueStakes(stakes: Stake[], ctx: ValuationContext): Promise<Valu
   return { positions, unread };
 }
 
+/** Rewards for already-proven historical holdings, without price lookups. */
+export async function estimateStakedSuiRewards(
+  stakes: Array<{ object_id: string; pool_id: string; principal_mist: string; stake_activation_epoch: string }>,
+  epoch: number,
+): Promise<Map<string, string | null>> {
+  const rewards = new Map<string, string | null>();
+  if (stakes.length === 0) return rewards;
+  const tables = await systemTables();
+  const groups = new Map<string, typeof stakes>();
+  for (const stake of stakes) {
+    const group = groups.get(stake.pool_id);
+    if (group) group.push(stake);
+    else groups.set(stake.pool_id, [stake]);
+  }
+  for (const [id, group] of groups) {
+    try {
+      const pool = await findPool(id, tables);
+      if (!pool) throw new Error("Pool unavailable");
+      if (pool.status === "pending") {
+        for (const stake of group) rewards.set(stake.object_id, "0");
+        continue;
+      }
+      const wanted = [...new Set([epoch, ...group.map(s => Number(s.stake_activation_epoch))])];
+      const rates = new Map<number, ExchangeRate>();
+      for (let i = 0; i < wanted.length; i += KEYS_PER_REQUEST) {
+        const batch = wanted.slice(i, i + KEYS_PER_REQUEST);
+        const keys = batch.map(e => u64Key(pool.deactivation_epoch === null ? e : Math.min(e, pool.deactivation_epoch)));
+        const d = await gqlQuery<{
+          address: { multiGetDynamicFields: Array<{ value: { json: { sui_amount: string; pool_token_amount: string } } | null } | null> } | null;
+        }>(`query($id:SuiAddress!,$keys:[DynamicFieldName!]!) { address(address:$id) { multiGetDynamicFields(keys:$keys) { value { ... on MoveValue { json } } } } }`,
+          { id: pool.rates_table, keys });
+        batch.forEach((e, j) => {
+          const json = d.address?.multiGetDynamicFields[j]?.value?.json;
+          if (json) rates.set(e, { sui_amount: BigInt(json.sui_amount), pool_token_amount: BigInt(json.pool_token_amount) });
+        });
+      }
+      for (const stake of group) {
+        const activation = Number(stake.stake_activation_epoch);
+        const atStart = rates.get(activation);
+        const atEnd = rates.get(epoch);
+        rewards.set(stake.object_id, activation > epoch ? "0" : atStart && atEnd
+          ? stakeWorth(BigInt(stake.principal_mist), activation, epoch, atStart, atEnd).reward.toString()
+          : null);
+      }
+    } catch {
+      for (const stake of group) rewards.set(stake.object_id, null);
+    }
+  }
+  return rewards;
+}
+
 const STAKE_TYPE = /^0x0*3::staking_pool::(StakedSui|FungibleStakedSui)$/;
 
 registerValuer({

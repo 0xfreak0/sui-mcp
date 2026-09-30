@@ -84,7 +84,7 @@ vi.mock("../src/utils/valuation.js", async (importOriginal) => ({
 }));
 
 // Imported after the mocks above, which the factories close over.
-const { stakeWorth } = await import("../src/utils/valuers/staked-sui.js");
+const { stakeWorth, estimateStakedSuiRewards } = await import("../src/utils/valuers/staked-sui.js");
 const { valueObjects } = await import("../src/utils/position-value.js");
 
 const stake = (pool: string, principal: string, activation: string) => ({
@@ -108,6 +108,32 @@ describe("stakeWorth", () => {
 
   it("never gives a negative reward", () => {
     expect(stakeWorth(1000n, 5, 9, { sui_amount: 2n, pool_token_amount: 1n }, { sui_amount: 1n, pool_token_amount: 1n }).reward).toBe(0n);
+  });
+});
+
+describe("historical stake rewards", () => {
+  const position = (pool = POOL_ACTIVE, activation = "5") => ({
+    object_id: "0xstake", pool_id: pool, principal_mist: "1000", stake_activation_epoch: activation,
+  });
+
+  it("uses the requested epoch's rate rather than a later rate", async () => {
+    const rewards = await estimateStakedSuiRewards([position()], 9);
+    expect(rewards.get("0xstake")).toBe("200");
+  });
+
+  it("leaves a missing historical rate unknown rather than using the latest", async () => {
+    const rewards = await estimateStakedSuiRewards([position()], 10);
+    expect(rewards.get("0xstake")).toBeNull();
+  });
+
+  it("clamps inactive pools to their deactivation epoch", async () => {
+    const rewards = await estimateStakedSuiRewards([position(POOL_INACTIVE, "2")], 10);
+    expect(rewards.get("0xstake")).toBe("500");
+  });
+
+  it("assigns zero rewards before activation without a future rate", async () => {
+    const rewards = await estimateStakedSuiRewards([position(POOL_ACTIVE, "12")], 9);
+    expect(rewards.get("0xstake")).toBe("0");
   });
 });
 

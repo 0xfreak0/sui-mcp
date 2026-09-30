@@ -44,7 +44,8 @@ const aftermathUp =
         .map((c) => [c, { price: c === SUI_LONG ? 3.5 : listed[c]!, source: "aftermath" as const }]),
     );
 
-const { Budget, buildWalletEdges, countPaidAddresses, probeRecipients, probeSponsored } = await import(
+// Load after mockSui is initialized: the mocked gRPC factory closes over it.
+const { Budget, buildWalletEdges, countPaidAddresses, firstFunderOf, probeRecipients, probeSponsored } = await import(
   "../src/utils/edge-probe.js"
 );
 
@@ -709,6 +710,204 @@ describe("buildWalletEdges", () => {
     expect(members.has(SIB)).toBe(true);
     expect(members.has(STRANGER)).toBe(false);
   });
+});
+
+describe("seed-profile balance completion failures", () => {
+  const A = "0xaaa";
+  const B = "0xbbb";
+  const THIRD = "0xccc";
+
+  function incomplete(digest: string, from: string, to: string, sponsor = from, extraParty?: string) {
+    const tx = payment(digest, from, to, sponsor);
+    if (extraParty) tx.effects.balanceChanges.nodes.push({ owner: { address: extraParty }, amount: ONE_SUI, coinType: { repr: SUI } });
+    const padding = Array.from({ length: 50 - tx.effects.balanceChanges.nodes.length }, (_, i) => ({
+      owner: { address: from },
+      amount: "-1",
+      coinType: { repr: `0xcafe::coin::C${i}` },
+    }));
+    const conn = pagedTxConnection(tx.digest, [
+      ...tx.effects.balanceChanges.nodes,
+      ...padding,
+      ...Array.from({ length: 25 }, (_, i) => ({
+        owner: { address: `0x${(i + 100).toString(16)}` },
+        amount: ONE_SUI,
+        coinType: { repr: SUI },
+      })),
+    ], "balanceChanges");
+    tx.effects.balanceChanges = conn.first;
+    return { tx, conn };
+  }
+
+  it("withholds co-appearance when missing parties could cross the mass-action limit", async () => {
+    const partial = incomplete("partial-mass-action", THIRD, A, THIRD, B);
+    const rest = router({ recent: (addr) => addr === A ? page([partial.tx]) : page([]) });
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+      if (partial.conn.respond(q, v)) throw new Error("GraphQL HTTP 429");
+      return rest(q, v);
+    });
+
+    const result = await buildWalletEdges([A, B], { expand: false });
+    expect(result.edges).toEqual([]);
+    expect(result.truncated).toBe(true);
+    expect(result.notes.join(" ")).toMatch(/unread/i);
+    expect(result.notes.join(" ")).toContain(partial.tx.digest);
+  });
+
+  it.each(["outbound", "inbound"])("withholds reciprocal flow from an incomplete %s payment", async (leg) => {
+    const partial = incomplete(leg, leg === "outbound" ? A : B, leg === "outbound" ? B : A);
+    const outbound = leg === "outbound" ? partial.tx : payment("outbound", A, B);
+    const inbound = leg === "inbound" ? partial.tx : payment("inbound", B, A);
+    const rest = router({ recent: (addr) => addr === A ? page([outbound, inbound]) : page([]) });
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+      if (partial.conn.respond(q, v)) return { transactionEffects: null };
+      return rest(q, v);
+    });
+
+    const result = await buildWalletEdges([A, B], { expand: false });
+    expect(result.edges).toEqual([]);
+    expect(result.truncated).toBe(true);
+    expect(result.notes.join(" ")).toMatch(/unread/i);
+    expect(result.notes.join(" ")).toContain(partial.tx.digest);
+  });
+
+  it("does not turn a partially read sponsor payment into an operator edge", async () => {
+    const partial = incomplete("partial-operator-payment", B, A);
+    const sponsored = payment("sponsored", A, THIRD, B);
+    const rest = router({ recent: (addr) => addr === A ? page([partial.tx, sponsored]) : page([]) });
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+      if (partial.conn.respond(q, v)) throw new Error("GraphQL HTTP 429");
+      return rest(q, v);
+    });
+
+    const result = await buildWalletEdges([A, B], { expand: false });
+    expect(result.edges).toEqual([]);
+    expect(result.truncated).toBe(true);
+    expect(result.notes.join(" ")).toContain(partial.tx.digest);
+  });
+
+  it("retains independent sponsorship without payment-derived edges from the unread transaction", async () => {
+    const partial = incomplete("partial-sponsored", A, THIRD, THIRD);
+    const otherSponsored = payment("other-sponsored", B, THIRD, THIRD);
+    const rest = router({
+      recent: (addr) => addr === A ? page([partial.tx])
+        : addr === B ? page([otherSponsored])
+        : addr === THIRD ? page([partial.tx, otherSponsored]) : page([]),
+    });
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+      if (partial.conn.respond(q, v)) throw new Error("GraphQL HTTP 429");
+      return rest(q, v);
+    });
+
+    const result = await buildWalletEdges([A, B], { expand: false });
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0].signal_types).toEqual(["sponsor"]);
+    expect(result.edges[0].signals[0].digests).toEqual([partial.tx.digest, otherSponsored.digest]);
+    expect(result.truncated).toBe(true);
+    expect(result.notes.join(" ")).toContain(partial.tx.digest);
+  });
+
+  it("reports an unread seed scan when its transaction page fails", async () => {
+    const rest = router({});
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+      if (q.includes("gasInput") && v.addr === A) throw new Error("GraphQL HTTP 429");
+      return rest(q, v);
+    });
+
+    const result = await buildWalletEdges([A], { expand: false });
+    expect(result.edges).toEqual([]);
+    expect(result.truncated).toBe(true);
+    expect(result.notes.join(" ")).toMatch(/scan.*unread/i);
+    expect(result.notes.join(" ")).toContain(A);
+  });
+});
+
+describe("send-shape reads remain explicitly bounded", () => {
+  it.each(["transaction window", "balance changes"])("does not accept a targeted grant from incomplete %s", async (boundary) => {
+    const A = "0xaaa";
+    const FUNDER = "0xf00d";
+    const LATER = "0x1a7e";
+    const PKG = "0xcafe";
+    const COIN = `${PKG}::coin::COIN`;
+    coinDecimals[COIN] = 0;
+    coinSupply[COIN] = 1_000_000_000n;
+    packagePublisher[PKG] = FUNDER;
+    const grant = payment("small-grant", FUNDER, A);
+    grant.effects.balanceChanges.nodes = [
+      { owner: { address: FUNDER }, amount: "-100000", coinType: { repr: COIN } },
+      { owner: { address: A }, amount: "100000", coinType: { repr: COIN } },
+    ];
+    const nested = pagedTxConnection("nearby-send", [
+      ...Array.from({ length: 50 }, (_, i) => ({
+        owner: { address: FUNDER },
+        amount: "-1",
+        coinType: { repr: `${PKG}::other::C${i}` },
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        owner: { address: `0x${(i + 100).toString(16)}` },
+        amount: "100000",
+        coinType: { repr: COIN },
+      })),
+    ], "balanceChanges");
+    const rest = router({ earliest: (addr) => addr === A ? page([grant, payment("later", LATER, A)]) : page([]) });
+    mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+      if (q.includes("TransactionFilter")) return {
+        transactions: {
+          pageInfo: { hasNextPage: boundary === "transaction window" },
+          nodes: boundary === "balance changes"
+            ? [{ digest: "nearby-send", effects: { balanceChanges: nested.first } }]
+            : Array.from({ length: 50 }, (_, i) => payment(`nearby-${i}`, FUNDER, A)),
+        },
+      };
+      return rest(q, v);
+    });
+
+    const funding = await firstFunderOf(A, new Budget(100));
+    expect(funding?.digest).toBe("later");
+    expect(funding?.funder).toBe(LATER);
+    expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+  });
+});
+
+describe("first-funding balance completion failures", () => {
+  const A = "0xaaa";
+  const FUNDER = "0xf00d";
+  const LATER = "0x1a7e";
+
+  it.each(["hidden inflow before later funding", "visible inflow", "hidden inflow without later funding"])(
+    "leaves %s unread and uncached",
+    async (scenario) => {
+      const tx = payment("incomplete-first", FUNDER, A);
+      const target = tx.effects.balanceChanges.nodes[1];
+      const others = Array.from({ length: 50 }, (_, i) => ({
+        owner: { address: `0x${(i + 100).toString(16)}` },
+        amount: ONE_SUI,
+        coinType: { repr: SUI },
+      }));
+      const conn = pagedTxConnection(tx.digest, scenario === "visible inflow" ? [target, ...others] : [...others, target], "balanceChanges");
+      tx.effects.balanceChanges = conn.first;
+      const rest = router({
+        earliest: (addr) => addr === A
+          ? page(scenario === "hidden inflow before later funding" ? [tx, payment("later", LATER, A)] : [tx])
+          : page([]),
+      });
+      mockGqlQuery.mockImplementation(async (q: string, v: Record<string, string> = {}) => {
+        if (conn.respond(q, v)) throw new Error("GraphQL HTTP 429");
+        return rest(q, v);
+      });
+
+      const budget = new Budget(100);
+      expect(await firstFunderOf(A, budget)).toBeNull();
+      expect(budget.used).toBe(2);
+      expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+
+      const result = await buildWalletEdges([A, FUNDER, LATER], { expand: false });
+      expect(result.first_funders).toEqual({});
+      expect(result.edges).toEqual([]);
+      expect(result.truncated).toBe(true);
+      expect(result.notes.join(" ")).toMatch(/first.funding.*unread/i);
+      expect(mockSaveFirstFunder).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("firstFunderOf prices candidates like find_funding_source does", () => {

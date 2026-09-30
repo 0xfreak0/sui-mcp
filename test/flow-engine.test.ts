@@ -124,6 +124,33 @@ beforeEach(() => {
   route({ [ATTACKER]: [exploit, split], [B]: [bridge], [C]: [mixed] });
 });
 
+describe("unread hub gates", () => {
+  it.each(["forward", "backward"] as const)("does not attribute value beyond an unread %s hub check", async (direction) => {
+    const pay: HopSpec = { digest: "synthetic-pay", sender: ATTACKER, checkpoint: CP, changes: [[ATTACKER, "-1000000000"], [B, "1000000000"]] };
+    const onward: HopSpec = { digest: "synthetic-onward", sender: B, checkpoint: CP + 1, changes: [[B, "-1000000000"], [C, "1000000000"]] };
+    const all = new Map([pay, onward].map((h) => [h.digest, h]));
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown> = {}) => {
+      if (query.includes("transactions(")) {
+        const tx = direction === "forward" || vars.address === C ? onward : pay;
+        return candidates([tx], direction === "backward" ? "backward" : "forward");
+      }
+      const tx = all.get(String(vars.digest));
+      return tx ? gqlTx(tx) : { transaction: null };
+    });
+    mockFanout.mockRejectedValue(new Error("Incomplete balance changes for synthetic-fanout"));
+    const e = new FlowEngine({ ...engine().opts, direction });
+    if (direction === "forward") await e.startFromDigest(pay.digest);
+    else e.startFromAddress(C);
+    await e.run();
+
+    expect(e.ledger.summary().map((g) => [g.code, g.share])).toEqual([["read_failed", 1]]);
+    expect(e.truncated).toBe(true);
+    const blocked = [...e.nodes.values()].find((n) => n.address === B)!;
+    expect(blocked.stop).toMatchObject({ code: "read_failed", detail: expect.stringContaining("synthetic-fanout") });
+    expect([...e.nodes.values()].some((n) => n.address === (direction === "forward" ? C : ATTACKER))).toBe(false);
+  });
+});
+
 describe("FlowEngine forward", () => {
   it("accounts for every share of the traced value, by where it ended", async () => {
     const e = engine();

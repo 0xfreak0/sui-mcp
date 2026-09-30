@@ -38,8 +38,8 @@ and its payment carries only the traced part (`traced_amount`) onward. That is
 a convention, not something the chain records.
 
 Terminals are grouped by reason (`bridge_exit`, `sink`, `hub`, `unspent`,
-`consumed`, `retained`, `signer_not_sender`, `budget`), and
-`coverage.truncated` says whether a limit cut the graph short.
+`consumed`, `retained`, `signer_not_sender`, `budget`, `read_failed`), and
+`coverage.truncated` says whether limits or unread evidence cut the graph short.
 
 A sale whose proceeds are worth under a tenth of what went in carries only
 what the proceeds are worth, whatever its calls are named. The rest ends in
@@ -56,6 +56,23 @@ one of two terminals:
 
 A labelled attacker is followed rather than treated as a sink.
 
+Before following a new party, the trace checks whether its funds are pooled
+with other people's. An unread fan-out check stops that branch without
+attributing further flows. `trace_funds` gives the reason in `stop_reason`;
+`trace_flow_graph` uses a `read_failed` terminal and sets `coverage.truncated`.
+
+## Resolving value arriving through a bridge
+
+`resolve_bridge_transfer` reports solver-style inbound transfers in
+`fulfilment_inbound`. It reads every balance-change page before matching an
+event's amount and coin to a credited beneficiary, including credits after
+the first 50 rows. `paid_to` and `released_from` also use the complete set.
+
+If a balance continuation cannot be read, the result includes
+`balance_changes_incomplete` and omits `fulfilment_inbound`. Its absence then
+does not rule out an inbound transfer. Other bridge sections derived from
+events or message inputs remain available.
+
 ## Paths between two addresses
 
 `find_flow_path(from, to)` asks whether any path connects two addresses. It
@@ -70,9 +87,18 @@ find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
     Wormhole, Sui Bridge
 ```
 
+If an unread branch prevents the search from establishing a path, the result
+is `search incomplete`, not a complete negative. `explored.terminals` retains
+the `read_failed` entries and their reasons. Raising the limits does not
+repair a failed read.
+
 ## Diagrams and exports
 
 `trace_flow_graph`, `find_flow_path`, `trace_funds` and `build_wallet_edges`
 take `format: "mermaid"` (a fenced diagram that renders in a markdown viewer),
 `"graph_json"` or `"csv"`. `export_case` with `format: "mermaid"` appends a
 fund-flow diagram of the transfers in the case's cited transactions.
+
+Graph JSON retains terminal reasons and coverage (`explored` for
+`find_flow_path`). Mermaid and CSV responses state unread reasons in the
+accompanying summary, without adding them to the diagram or CSV data.

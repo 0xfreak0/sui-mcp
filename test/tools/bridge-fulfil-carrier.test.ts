@@ -42,14 +42,21 @@ const move = (pkg: string, module: string, fn: string) => ({
 
 const change = (address: string, coin: string, amount: string) => ({ owner: { address }, coinType: { repr: coin }, amount });
 
-function tx(parts: { events: unknown[]; commands: unknown[]; inputs?: unknown[]; changes?: unknown[]; sender?: string }) {
+function tx(parts: {
+  events: unknown[];
+  commands: unknown[];
+  inputs?: unknown[];
+  changes?: unknown[];
+  balancePageInfo?: { hasNextPage: boolean; endCursor?: string | null };
+  sender?: string;
+}) {
   return {
     transaction: {
       digest: "D",
       sender: { address: parts.sender ?? hex32("50") },
       effects: {
         status: "SUCCESS",
-        balanceChanges: { nodes: parts.changes ?? [] },
+        balanceChanges: { nodes: parts.changes ?? [], pageInfo: parts.balancePageInfo ?? { hasNextPage: false } },
         events: { nodes: parts.events },
       },
       kind: { commands: { nodes: parts.commands }, inputs: { nodes: parts.inputs ?? [] } },
@@ -61,8 +68,16 @@ function tx(parts: { events: unknown[]; commands: unknown[]; inputs?: unknown[];
  * Answers each query the tool makes: the transaction, lineage roots (each
  * package its own root unless `roots` says otherwise) and object types.
  */
-function serve(response: unknown, opts: { roots?: Record<string, string>; types?: Record<string, string> } = {}) {
+function serve(response: unknown, opts: {
+  roots?: Record<string, string>;
+  types?: Record<string, string>;
+  balancePage?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean } } | Error;
+} = {}) {
   mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, unknown>) => {
+    if (query.includes("transactionEffects")) {
+      if (opts.balancePage instanceof Error) throw opts.balancePage;
+      return { transactionEffects: { balanceChanges: opts.balancePage ?? null } };
+    }
     if (query.includes("packageVersions")) {
       return Object.fromEntries(
         Object.entries(vars).map(([k, id]) => [`p${k.slice(1)}`, { nodes: [{ address: opts.roots?.[id as string] ?? id }] }]),
@@ -181,6 +196,76 @@ describe("resolve_bridge_transfer on an inbound fulfilment", () => {
     expect(f.vaa.vaa_id).toBe(`2/${"44".repeat(32)}/4410`);
     expect(f.beneficiary).toMatchObject({ evidence: "heuristic", address: BENEFICIARY, matched: null });
     expect(f.protocol).toBeNull();
+  });
+
+  const DEBITS = Array.from({ length: 50 }, (_, i) => change(`0x${(0x1000 + i).toString(16).padStart(64, "0")}`, USDC, "-100000"));
+  const CREDIT = change(BENEFICIARY, USDC, "5000000");
+  const paginatedFulfilment = (changes: unknown[] = DEBITS, endCursor: string | null = "balance-page-1") => tx({
+    sender: SOLVER,
+    events: [{
+      contents: {
+        type: { repr: `${FULFIL}::fulfil::Fulfilled` },
+        json: { cctp_source_domain: 0, cctp_nonce: "1234", amount_net: "5000000", coin_type: USDC },
+      },
+    }],
+    commands: [move(FULFIL, "fulfil", "complete")],
+    changes,
+    balancePageInfo: { hasNextPage: true, endCursor },
+  });
+
+  it("finds an inbound fulfilment when its only credit follows fifty debit rows", async () => {
+    serve(paginatedFulfilment(), {
+      balancePage: { nodes: [CREDIT], pageInfo: { hasNextPage: false } },
+    });
+
+    const data = await call({ digest: "D", include_destination: false });
+
+    expect(data.fulfilment_inbound?.fulfilments).toEqual([
+      expect.objectContaining({
+        package: FULFIL,
+        origin_chain: "eip155:1",
+        cctp: expect.objectContaining({ transfer_id: "0/1234" }),
+        beneficiary: expect.objectContaining({ evidence: "chain-derived", address: BENEFICIARY, amount: "5000000", coin_type: USDC }),
+        paid_to: [{ address: BENEFICIARY, amount: "5000000", coin_type: USDC }],
+      }),
+    ]);
+    expect(data.balance_changes_incomplete).toBeUndefined();
+  });
+
+  it("does not choose a beneficiary when a second matching credit is on the next page", async () => {
+    serve(paginatedFulfilment([...DEBITS.slice(0, 49), CREDIT]), {
+      balancePage: { nodes: [change(RECEIVER, USDC, "5000000")], pageInfo: { hasNextPage: false } },
+    });
+
+    const data = await call({ digest: "D", include_destination: false });
+
+    expect(data.fulfilment_inbound.fulfilments[0].beneficiary).toBeNull();
+    expect(data.fulfilment_inbound.fulfilments[0].paid_to).toEqual([
+      { address: BENEFICIARY, amount: "5000000", coin_type: USDC },
+      { address: RECEIVER, amount: "5000000", coin_type: USDC },
+    ]);
+  });
+
+  it.each([false, true])("reports incomplete balances when continuation fails (visible credit: %s)", async (visibleCredit) => {
+    serve(paginatedFulfilment(visibleCredit ? [...DEBITS.slice(0, 49), CREDIT] : DEBITS), {
+      balancePage: new Error("synthetic continuation failure"),
+    });
+
+    const data = await call({ digest: "D", include_destination: false });
+
+    expect(data.balance_changes_incomplete).toEqual(expect.any(String));
+    expect(data.fulfilment_inbound).toBeUndefined();
+    expect(data.note).toMatch(/incomplete/i);
+  });
+
+  it("reports incomplete balances when the continuation cursor is missing", async () => {
+    serve(paginatedFulfilment(DEBITS, null));
+
+    const data = await call({ digest: "D", include_destination: false });
+
+    expect(data.balance_changes_incomplete).toEqual(expect.any(String));
+    expect(data.fulfilment_inbound).toBeUndefined();
+    expect(data.note).toMatch(/incomplete/i);
   });
 });
 

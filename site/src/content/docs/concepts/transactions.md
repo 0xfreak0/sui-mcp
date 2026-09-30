@@ -44,6 +44,19 @@ Transfers of `UpgradeCap`, `TreasuryCap`, `DenyCap`, `DenyCapV2` and
 unspendable address is reported under `renounced_capabilities` instead, since
 those rights have been given up rather than transferred.
 
+## Round-trip checks
+
+`analyze_attack_tx` compares a share redemption or position closure with what
+the sender paid to enter it within the previous day. Entry balance changes
+are read across every page before identifying share credits or calculating
+`round_trips.paid_usd` and `factor`.
+
+If the entry's balance changes are missing or a continuation cannot be read,
+that entry is not scored. The share coin type or position object id appears
+in `round_trips_unread`. Other fully read entries can still produce
+`round_trips`; an unread entry does not establish that no suspicious round
+trip occurred.
+
 ## Transactions with no commands
 
 `get_transaction` reports `command_count` beside a count of the objects the

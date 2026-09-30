@@ -4,6 +4,9 @@ import { getLabel, labelProvenance } from "./labels.js";
 import { measureFanout, type FanoutResult } from "./fanout.js";
 import { decimalsForCoinType, displayCoin, prefetchCoinScale, toHumanAmount } from "./valuation.js";
 import { isSponsorGasChange, isSuiCoinType } from "./sponsor-gas.js";
+import { BALANCE_CHANGES_SELECTION, completeTxConnections } from "./tx-connections.js";
+import type { GqlConnection } from "./tx-connections.js";
+import type { GqlBalanceChangeNode } from "./gql-adapters.js";
 
 /**
  * Is this address an exchange deposit address?
@@ -512,13 +515,13 @@ export function decideDepositVerdict(
 // Network
 // ---------------------------------------------------------------------------
 
-/** Fields of one transaction node that {@link scannedTxOf} reads. */
+/** Fields of each transaction node that {@link scannedTxsOf} reads. */
 export const SCANNED_TX_FIELDS = `digest
       sender { address }
       gasInput { gasSponsor { address } }
       effects {
         timestamp
-        balanceChanges(first: 50) { nodes { amount owner { address } coinType { repr } } }
+        ${BALANCE_CHANGES_SELECTION}
       }`;
 
 const DEPOSIT_QUERY = `query ($addr: SuiAddress!, $last: Int!) {
@@ -539,7 +542,7 @@ export interface ScannedTxNode {
   gasInput?: { gasSponsor?: { address?: string } | null } | null;
   effects?: {
     timestamp?: string | null;
-    balanceChanges?: { nodes: Array<{ amount?: string; owner?: { address?: string } | null; coinType?: { repr: string } }> };
+    balanceChanges?: GqlConnection<GqlBalanceChangeNode> | null;
   } | null;
 }
 
@@ -564,24 +567,37 @@ const tag = (t: string) => {
   }
 };
 
-/** A transaction node read with {@link SCANNED_TX_FIELDS}, as the pattern reader takes it. */
-export function scannedTxOf(n: ScannedTxNode): ScannedTx {
-  return {
+class IncompleteDepositScan extends Error {
+  constructor(readonly digests: string[], readonly transactions: number) {
+    super(`Incomplete balance changes for transaction(s): ${digests.join(", ")}. Deposit-address checks were not run.`);
+  }
+}
+
+/**
+ * Complete a page before exposing any changes to the pattern or label readers.
+ * Throw on an unread connection so label synchronization leaves it unread,
+ * rather than recording a rejection or inferring from part of a transaction.
+ */
+export async function scannedTxsOf(nodes: ScannedTxNode[]): Promise<ScannedTx[]> {
+  const completed = await completeTxConnections(nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })));
+  const incomplete = nodes.filter((n, i) => !n.effects?.balanceChanges || completed[i]!.balanceChangesTruncated);
+  if (incomplete.length) throw new IncompleteDepositScan(incomplete.map((n) => n.digest), nodes.length);
+  return nodes.map((n, i) => ({
     digest: n.digest,
     timestamp: n.effects?.timestamp ?? null,
     sender: n.sender?.address ?? null,
     gasSponsor: n.gasInput?.gasSponsor?.address ?? null,
-    changes: (n.effects?.balanceChanges?.nodes ?? [])
+    changes: completed[i]!.balanceChanges
       .filter((c) => c.owner?.address && c.coinType?.repr && c.amount !== undefined)
-      .map((c) => ({ owner: c.owner!.address!, coinType: tag(c.coinType!.repr), amount: BigInt(c.amount!) })),
-  };
+      .map((c) => ({ owner: c.owner!.address, coinType: tag(c.coinType!.repr), amount: BigInt(c.amount!) })),
+  }));
 }
 
-/** One request: the address's latest transactions and its balances right now. */
+/** The latest transactions and current balances, including every transaction's balance-change pages. */
 export async function scanForDeposit(address: string, last = 50): Promise<DepositScan> {
   const addr = normalizeSuiAddress(address);
   const res = await gqlQuery<DepositQueryResult>(DEPOSIT_QUERY, { addr, last: Math.min(50, last) });
-  const txs = res.transactions.nodes.map(scannedTxOf);
+  const txs = await scannedTxsOf(res.transactions.nodes);
   const balances = res.address?.balances;
   // A balance list that did not fit one page cannot anchor the reconstruction.
   const currentBalances =
@@ -605,7 +621,37 @@ export interface ClassifyOptions {
 
 export async function classifyDepositAddress(address: string, options: ClassifyOptions = {}) {
   const { measureSponsor = true, measureDestination = true, last = 50 } = options;
-  const scan = await scanForDeposit(address, last);
+  let scan: DepositScan;
+  try {
+    scan = await scanForDeposit(address, last);
+  } catch (err) {
+    if (!(err instanceof IncompleteDepositScan)) throw err;
+    const checks: VerdictResult["checks"] = {
+      single_destination: null,
+      full_balance_sweeps: null,
+      sponsored_sweeps: null,
+      sponsor_relayer_shaped: null,
+      destination_is_exchange: null,
+    };
+    return {
+      address: normalizeSuiAddress(address),
+      verdict: "unknown" as const,
+      tier: "heuristic" as const,
+      hot_wallet: null,
+      exchange: null,
+      sweep_sponsor: null,
+      checks,
+      checks_not_run: Object.fromEntries(Object.keys(checks).map((key) => [key, err.message])),
+      reasons: [err.message],
+      sweeps: [],
+      sweep_count: null,
+      deposits: [],
+      deposit_count: null,
+      scanned_transactions: err.transactions,
+      window_complete: false,
+      incomplete_transactions: err.digests,
+    };
+  }
   // Sweep and deposit amounts are formatted as the pattern is read.
   await prefetchCoinScale(scan.txs.flatMap((t) => t.changes.map((c) => c.coinType)));
   const pattern = readDepositPattern(scan);

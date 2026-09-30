@@ -6,7 +6,7 @@ import type { FanoutResult } from "./fanout.js";
 import {
   decideDepositVerdict,
   readDepositPattern,
-  scannedTxOf,
+  scannedTxsOf,
   SCANNED_TX_FIELDS,
   type DepositPattern,
   type DepositScan,
@@ -266,7 +266,7 @@ interface WindowResult {
   transactions: { nodes: ScannedTxNode[]; pageInfo: { hasPreviousPage: boolean; startCursor: string | null } };
 }
 
-/** One page of a wallet's transactions, newest page first; `before` continues an earlier page. */
+/** One wallet page with complete balance changes; throws if any transaction remains unread. */
 export async function readWalletPage(
   wallet: string,
   before: string | null,
@@ -274,7 +274,7 @@ export async function readWalletPage(
 ): Promise<{ txs: ScannedTx[]; before: string | null }> {
   const res = await gqlQuery<WindowResult>(WINDOW_QUERY, { addr: normalizeSuiAddress(wallet), last: Math.min(50, last), before });
   const { hasPreviousPage, startCursor } = res.transactions.pageInfo;
-  return { txs: res.transactions.nodes.map(scannedTxOf), before: hasPreviousPage && startCursor ? startCursor : null };
+  return { txs: await scannedTxsOf(res.transactions.nodes), before: hasPreviousPage && startCursor ? startCursor : null };
 }
 
 const SUI_HEX = /^0x[0-9a-f]{64}$/;

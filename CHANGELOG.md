@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **DeepBook Predict is a known protocol.** Its mainnet `predict`, `sessions`,
+  `account` and `propbook` packages are curated as DeepBook, typed
+  `prediction_market` (`propbook` as `oracle`), so their calls, events and
+  later upgrades are named from the registry rather than by publisher key.
+
 ## 1.25.0 (2026-09-30)
 
 Investigations cost a model less context, and reads that stopped early now

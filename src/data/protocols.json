@@ -364,6 +364,30 @@
       "name": "Yoso",
       "type": "stablecoin"
     },
+    "0x89aea622e7bb3bdd598bde87dde40ee31c9eed4971b9546e23ec83de3c48bbba": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0x08fa3ef1b047d87b0b4ce1c7e5f8b42d8bfdea9a70547efe3cce5d8d6e47ee53": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0x9a068beffa019ae756f4a6d2611e9899d3c6dd888812dd9eca87535d2ac55e2a": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0xec678aee98cd161bdce62ff3dcf4893574df29d927dc8b573f6b4563ec960a1a": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0x4e1dd01465713c9d832313fed5f45c222a4d5c62a533d6da96764c8b2a245d58": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0xa6c8f32015b5b41d34ee09995a2e9d7a21cdecf0e1910a50b264fd252cd33831": {
+      "name": "DeepBook",
+      "type": "oracle"
+    },
     "0xccb197b4f19c0052c2b9ecad6d408713f127b7e03a4d06eed421263772b0d39d": {
       "name": "Yoso",
       "type": "oracle"

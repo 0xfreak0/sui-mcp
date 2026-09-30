@@ -443,3 +443,31 @@ events, calls and balances, keeping the sender's own balance changes.
 `omitted` describes what was left out. `detail: "full"` removes that display
 limit, not the event-read bound. For one transaction, or any transaction with
 more than 50 events, use `get_transaction` to page events to the end.
+
+## Totalling incident losses
+
+`summarize_incident_losses` accepts exploit digests or a sender with an optional
+window, not both. It groups the attacker's net per coin and each pool's or
+vault's reserve change, with USD for both. Reserve changes come from decoded
+events. If no event in the transaction yields amounts, it reads the drained
+objects' `Balance<T>` holdings at input and output versions instead.
+Transaction reads use gRPC with archive fallback and need no API key.
+
+Coins sent onward in a coin that moved only between addresses in that
+transaction are `transfers_out`, excluded from take. Unpriced coins are
+listed separately, making USD totals a lower bound.
+
+The default attacker is `sender`, or each transaction's sender. If every
+successful transaction's sender only paid gas, the largest priced gainer above
+the gas-only threshold across those transactions becomes the default instead,
+reported in `attacker_defaulted_from_sender`. An unpriced gain by any other
+non-sender blocks this default. Set `attacker` to choose explicitly.
+
+Coins default to prices at the first successful transaction, before the
+market reacted; each moved object uses its own transaction's time. `price_at`
+sets one Unix-seconds or ISO 8601 moment for both coins and objects.
+
+Summary keeps the largest rows fitting about 40k characters. Totals cover
+all rows, even when `max_groups` limits the listed groups. `omitted` gives
+each trimmed list's count, USD, largest row and the call to retrieve it.
+`detail: "full"` lists every row.

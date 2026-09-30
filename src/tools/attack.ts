@@ -950,7 +950,7 @@ export function registerAttackTools(server: McpServer) {
 
   server.tool(
     "summarize_incident_losses",
-    "(Incident investigation) Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. Give the exploit digests, or a sender and a window. For each group: the attacker's net per coin, the pool's own reserve change from its events (or, when no event of the transaction decodes into amounts, from the drained objects' Balance<T> holdings at its input and output versions), and the USD of both. Coins the attacker sent on to other addresses, in a coin that moved only between addresses in that transaction, are listed under transfers_out and kept out of the take. Totals come with the coins that could not be priced listed separately, so the figure is stated as a lower bound when any are. The default view lists what fits about 40k characters, largest first, and `omitted` states the rest; detail: 'full' lists every row. Needs no API key. Reads every transaction over gRPC with archive fallback.",
+    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced coins are listed separately and make USD totals a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.",
     {
       digests: z
         .array(z.string())
@@ -981,12 +981,12 @@ export function registerAttackTools(server: McpServer) {
       attacker: z
         .string()
         .optional()
-        .describe("Address whose gains to total. Defaults to `sender`, or to each transaction's sender, unless every successful transaction's sender only paid gas: then it defaults to the largest PRICED gainer over the gas-only threshold across the same transactions instead, reported in attacker_defaulted_from_sender. A gain in an unpriced coin by any non-sender other than that gainer blocks this default; pass \"attacker\" to name a different address."),
+        .describe("Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override."),
       price_at: z
         .union([numArg(), z.string()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Price every coin and object at this moment (Unix seconds or ISO 8601). Without it coins are priced at the first successful transaction's time, before prices reacted, and each moved object at its own transaction's time."),
+        .describe("Price all coins and objects at Unix seconds or ISO 8601 time. Default: coins at the first successful transaction's time; each moved object at its own transaction's time."),
       max_groups: numArg()
         .int()
         .min(1)
@@ -995,7 +995,7 @@ export function registerAttackTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): each list keeps what fits about 40k characters in all, largest first; totals cover every row, and `omitted` states each list's count, USD and largest row with the call that returns them. 'full': every row of every list."),
+        .describe("'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows."),
     },
     async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, detail }) => {
       try {

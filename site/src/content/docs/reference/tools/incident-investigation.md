@@ -30,7 +30,7 @@ sidebar:
 | [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
 | [`screen_address`](#screen_address) | Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. |
 | [`summarize_address_flows`](#summarize_address_flows) | Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. |
-| [`summarize_incident_losses`](#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. |
+| [`summarize_incident_losses`](#summarize_incident_losses) | Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. |
 | [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. |
 | [`trace_funds`](#trace_funds) | Follow a fund-flow path from a transaction. |
 | [`trace_object_history`](#trace_object_history) | Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. |
@@ -434,7 +434,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. Give the exploit digests, or a sender and a window. For each group: the attacker's net per coin, the pool's own reserve change from its events (or, when no event of the transaction decodes into amounts, from the drained objects' Balance&lt;T> holdings at its input and output versions), and the USD of both. Coins the attacker sent on to other addresses, in a coin that moved only between addresses in that transaction, are listed under transfers_out and kept out of the take. Totals come with the coins that could not be priced listed separately, so the figure is stated as a lower bound when any are. The default view lists what fits about 40k characters, largest first, and `omitted` states the rest; detail: 'full' lists every row. Needs no API key. Reads every transaction over gRPC with archive fallback.
+(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced coins are listed separately and make USD totals a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -443,10 +443,10 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `start` | number \| string | no | Window start with `sender`: a checkpoint number or ISO 8601 time. Inclusive. |
 | `end` | number \| string | no | Window end with `sender`: a checkpoint number or ISO 8601 time. Inclusive. |
 | `max_transactions` | integer (1 to 1000) | no | Cap on transactions read in `sender` mode (default 1000, the most). Hitting it is reported. |
-| `attacker` | string | no | Address whose gains to total. Defaults to `sender`, or to each transaction's sender, unless every successful transaction's sender only paid gas: then it defaults to the largest PRICED gainer over the gas-only threshold across the same transactions instead, reported in attacker_defaulted_from_sender. A gain in an unpriced coin by any non-sender other than that gainer blocks this default; pass "attacker" to name a different address. |
-| `price_at` | number \| string | no | Price every coin and object at this moment (Unix seconds or ISO 8601). Without it coins are priced at the first successful transaction's time, before prices reacted, and each moved object at its own transaction's time. |
+| `attacker` | string | no | Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override. |
+| `price_at` | number \| string | no | Price all coins and objects at Unix seconds or ISO 8601 time. Default: coins at the first successful transaction's time; each moved object at its own transaction's time. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): each list keeps what fits about 40k characters in all, largest first; totals cover every row, and `omitted` states each list's count, USD and largest row with the call that returns them. 'full': every row of every list. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## trace_flow_graph

@@ -15,7 +15,7 @@ vi.mock("../../src/tools/holders.js", () => ({
   scanTokenTopHolders: vi.fn(async () => ({ holders: [], total_scanned: 0, truncated: false })),
   stoppedWalks: vi.fn(() => []),
 }));
-vi.mock("../../src/utils/price-providers.js", () => ({ fetchDefiLlamaChange24h: vi.fn(async () => new Map()) }));
+vi.mock("../../src/utils/price-providers.js", () => ({ fetchDefiLlamaChange24h: vi.fn(async () => ({ changes: new Map() })) }));
 // The symbol index the resolver sees. Each test installs the one it needs.
 const shipped = vi.hoisted(() => ({ index: null as SymbolIndex | null }));
 vi.mock("../../src/utils/coin-symbols.js", async (importOriginal) => ({

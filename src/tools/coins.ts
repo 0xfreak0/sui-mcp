@@ -19,7 +19,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerCoinTools(server: McpServer) {
   server.tool(
     "get_balance",
-    "Get the liquid balance of one coin type for a Sui address or object (defaults to SUI), now or at a past time or checkpoint. `balance` is the total the owner can spend: `coin_balance` is held as Coin<T> objects and `address_balance` sits in the owner's address balance, which holds funds without any coin object, so a wallet with no coins can still hold a large balance. For an object id, `address_balance` is funds held by the object itself, which only its defining module can withdraw. Staked SUI and value locked in DeFi positions do not appear here, so a wallet that looks nearly empty may not be: pair it with get_staking_summary and get_defi_positions before concluding anything about what an address holds. For every coin at once, use get_wallet_overview. With `at` or `at_checkpoint`, a checkpoint inside GraphQL's consistent range (about the last hour) is read directly (`method: consistent_read`). An older one is reconstructed (`method: reconstructed`): the balance at a recent anchor checkpoint minus the owner's balance changes in every transaction after the requested checkpoint, which is exact when `complete` is true. Reconstruction reads at most `max_transactions`; when that runs out, `complete` is false, `balance` is null and `reached_checkpoint` says how far back the scan got. A reconstructed balance has no coin/address split (`coin_balance` and `address_balance` are null); `anchor` carries the split at the anchor checkpoint.",
+    "Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. The total includes Coin<T> objects and address-balance funds, so no coin objects does not mean no funds. Only its defining module can withdraw an object's address balance. This excludes staking and DeFi positions: check get_staking_summary and get_defi_positions before assessing holdings; use get_wallet_overview for every coin. Historical reads are direct within the consistent range (about the last hour), reconstructed for older points and exact only when complete:true. Reconstruction stops at max_transactions; an incomplete result has balance:null and reached_checkpoint marks progress. Reconstructed coin_balance and address_balance are null; anchor has the split at its checkpoint.",
     {
       owner: addressArg().optional().describe("Owner address (0x...). Required; `address` is accepted in its place."),
       address: addressArg().optional().describe("Alias for `owner`."),
@@ -34,7 +34,7 @@ export function registerCoinTools(server: McpServer) {
       at: timePointArg()
         .optional()
         .describe(
-          "Balance as of this time (ISO 8601, e.g. 2025-09-07T16:00:00Z): the last checkpoint stamped at or before it. Give this or `at_checkpoint`, not both.",
+          "ISO 8601 time: use the last checkpoint at or before it. Give this or at_checkpoint, not both.",
         ),
       max_transactions: numArg()
         .int()
@@ -42,7 +42,7 @@ export function registerCoinTools(server: McpServer) {
         .max(MAX_MAX_TRANSACTIONS)
         .optional()
         .describe(
-          `Most transactions a reconstruction reads (default ${DEFAULT_MAX_TRANSACTIONS}, max ${MAX_MAX_TRANSACTIONS}). Each page of 50 is one request. Ignored for a current or consistent-range read.`,
+          `Reconstruction transaction limit (default ${DEFAULT_MAX_TRANSACTIONS}, max ${MAX_MAX_TRANSACTIONS}); ignored for current or consistent-range reads.`,
         ),
     },
     async ({ owner: ownerArg, address, coin_type, at_checkpoint, at, max_transactions }) => {

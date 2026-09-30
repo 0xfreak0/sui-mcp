@@ -5,6 +5,19 @@ sidebar:
   order: 7
 ---
 
+## Liquid balances
+
+`get_balance` reads one coin type, SUI by default, for an address or object.
+The total `balance` includes `coin_balance` held as `Coin<T>` objects and
+`address_balance` held without coin objects. A wallet with no coin objects
+can still hold funds. For an object, only its defining module can withdraw
+its address balance.
+
+Staked SUI and DeFi position value are excluded. Use `get_staking_summary`
+and `get_defi_positions` before concluding that an address holds little;
+`get_wallet_overview` reads all its coins together.
+
+
 ## Balance at a past moment
 
 `get_balance` takes `at` (ISO 8601) or `at_checkpoint`. GraphQL reads a
@@ -29,6 +42,13 @@ When that runs out, `complete` is false, `balance` is null, and
 transaction after it was read. A reconstructed balance has no coin/address
 split, so `coin_balance` and `address_balance` are null and `anchor` carries
 the split at the anchor.
+
+`at_checkpoint` asks for the balance at the end of that checkpoint.
+An ISO `at` selects the last checkpoint stamped at or before that time;
+the two arguments are mutually exclusive. Reconstruction uses one request
+per page of 50 transactions. `max_transactions` does not apply to a current
+balance or a direct read within the consistent range.
+
 
 ## Top holders
 

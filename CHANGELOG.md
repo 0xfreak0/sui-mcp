@@ -195,6 +195,15 @@
   naming the new name, and will be removed in a later release.
 
 ### Added
+- **Staking positions at a past date.** `get_staking_summary` takes `as_of`
+  (a date or a checkpoint) and returns the StakedSui objects the address held
+  directly at that checkpoint. Positions that were transferred, split or
+  joined are included. Reward estimates come from the pools' exchange rates
+  and are shown separately from principal. The answer is read directly when
+  the checkpoint is recent. Otherwise it is rebuilt from the address's object
+  changes, and it is exact only when complete. When a transaction or time
+  budget stops the rebuild, the totals are null, never partial. Stakes held
+  inside other objects, and liquid-staking tokens, are outside its scope.
 - **A context-cost measurement script for contributors.**
   `scripts/probe/token-baseline.mjs` reports what the tool definitions cost
   per profile selection and what each tool's answers cost, in characters and

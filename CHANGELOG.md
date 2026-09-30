@@ -35,6 +35,11 @@
   later upgrades are named from the registry rather than by publisher key.
 
 ### Changed
+- **The docs and the forensics skill cover 1.26.** Pages that list price
+  providers name CoinGecko and GeckoTerminal, incident totals are described as
+  priced near each transaction's time, and the skill covers deposit windows,
+  shared deposit roles, resumable historical staking, `out_of_range` prices and
+  the newly documented limits.
 - **Shorter tool descriptions, second pass.** Nineteen more tools, among them
   `aggregate_events`, `analyze_multisig`, `get_token_prices`, `find_flow_path`
   and `get_wallet_overview`, have their long tool and field descriptions

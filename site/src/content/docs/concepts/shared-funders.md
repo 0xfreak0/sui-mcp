@@ -162,6 +162,12 @@ Fundings within a minute form timing clusters, a lead for scripted setup
 rather than proof. Run the same read on a `sample_control_addresses` control
 group before interpreting rates.
 
+`sample_control_addresses` draws that group from the addresses that used the
+same protocol in the same window. Its `module` and `event_type` filters follow
+the event rules in
+[Querying events across transactions](/concepts/transactions/#querying-events-across-transactions),
+including the network's `relocate_event_module` cutover.
+
 The summary retains each result's origin, first funder and first hop and
 counts `dust_skipped`. Results and later subject payments share a display
 budget, prioritizing every result tied to a shared funder, subject link,

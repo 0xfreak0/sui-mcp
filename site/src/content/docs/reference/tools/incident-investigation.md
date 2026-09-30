@@ -16,7 +16,7 @@ sidebar:
 | [`classify_deposit_address`](#classify_deposit_address) | Classify exchange deposit behaviour over a chosen window. |
 | [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
-| [`find_flow_path`](#find_flow_path) | Is there a value path from one address to another? |
+| [`find_flow_path`](#find_flow_path) | Find value paths from one address to another. |
 | [`find_funding_source`](#find_funding_source) | Follow a wallet's first funding transaction and sender, then each funder's own funding. |
 | [`find_funding_sources`](#find_funding_sources) | Trace funding for many addresses together, cheaper than repeated find_funding_source calls. |
 | [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. |
@@ -198,19 +198,19 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Is there a value path from one address to another? Searches forward from `from` and backward from `to` on the trace_flow_graph engine, one node at a time and heaviest branch first, and returns each path found with the transaction digests and amounts of every hop, in time order. `to` may be an account on another chain (an EVM or Solana address, or CAIP-10): the path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found it says what was explored, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of that side's value they carry. A missing path is not evidence that none exists: every search here is bounded, and value can move off-chain or through a hub.
+(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` on trace_flow_graph's engine, heaviest branch first, and returns each path with every hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `from` | string | yes | Address the value starts at. |
-| `to` | string | yes | Address the value should reach: a Sui address, a foreign-chain address a bridge exit pays (0x + 40 hex for EVM, base58 for Solana), or a CAIP-10 account. |
+| `to` | string | yes | Target: a Sui address, an EVM (0x + 40 hex) or Solana (base58) address a bridge exit pays, or a CAIP-10 account. |
 | `max_hops` | integer (1 to 6) | no | Longest path to look for, in transfers (default 5, max 6). |
 | `coin_type` | string | no | Start by following only this coin. Swaps are still followed. |
 | `window_start` | string | no | Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history. |
 | `window_end` | string | no | Only transactions before this: ISO date or checkpoint. |
 | `max_nodes` | integer (1 to 100) | no | Address nodes to expand on each side (default 30, max 100), the branches carrying the most value first. |
-| `min_share` | number (0 to 1) | no | Do not expand branches below this fraction of each side's value (default 0.001), except a branch to an address that renders like one already reached. |
-| `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced ```mermaid flowchart that renders in a markdown viewer. graph_json: {nodes, edges} for graph tools, plus address_poisoning from trace_flow_graph, the lookalike check over every reached address. csv: one row per edge. |
+| `min_share` | number (0 to 1) | no | Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address. |
+| `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## find_funding_source
@@ -474,7 +474,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `max_nodes` | integer (1 to 150) | no | Address nodes to expand (default 40, max 150). The branch carrying the most value is expanded next, at any depth. |
 | `min_share` | number (0 to 1) | no | Prune below this fraction of traced value (default 0.01 = 1%); never prune lookalikes. coverage.pruned counts them. |
 | `min_usd` | number (at least 0) | no | Prune below this USD value at transaction time, except lookalikes. Unpriced branches use min_share. |
-| `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced ```mermaid flowchart that renders in a markdown viewer. graph_json: {nodes, edges} for graph tools, plus address_poisoning from trace_flow_graph, the lookalike check over every reached address. csv: one row per edge. |
+| `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): ~20k chars, largest shares first; keeps all bridge exits, sinks, hubs, protocols, consumed and retained nodes, labelled addresses, lookalikes and their incoming edges. Terminals, coverage and shares cover the whole graph; omitted reports missing rows. 'full': every node and edge. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

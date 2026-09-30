@@ -150,6 +150,13 @@ find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
     Wormhole, Sui Bridge
 ```
 
+Each side expands one address node at a time, heaviest branch first, so
+`max_nodes` goes to the branches carrying the most value. `min_share` skips
+smaller branches, except a branch to an address that renders like one
+already reached. When nothing is found, `explored.node_limited` names, per
+side, the nodes the node limit left unexpanded and the share of that side's
+value they carry.
+
 If an unread branch prevents the search from establishing a path, the result
 is `search incomplete`, not a complete negative. `explored.terminals` retains
 the `read_failed` entries and their reasons. Raising the limits does not
@@ -163,8 +170,10 @@ take `format: "mermaid"` (a fenced diagram that renders in a markdown viewer),
 fund-flow diagram of the transfers in the case's cited transactions.
 
 Graph JSON retains terminal reasons and coverage (`explored` for
-`find_flow_path`). Mermaid and CSV responses state unread reasons in the
-accompanying summary, without adding them to the diagram or CSV data.
+`find_flow_path`). `trace_flow_graph`'s graph JSON also carries
+`address_poisoning`, the lookalike check over every reached address. Mermaid
+and CSV responses state unread reasons in the accompanying summary, without
+adding them to the diagram or CSV data.
 
 ## Resolving a bridge transfer
 

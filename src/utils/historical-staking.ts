@@ -5,6 +5,7 @@ import { BOTH_WAYS_PAGE_INFO, orderedPage, orderedPageArgs, type BothWaysPageInf
 import { estimateStakedSuiRewards, STAKED_SUI_TYPE } from "./valuers/staked-sui.js";
 import type { GrpcTypes } from "@mysten/sui/grpc";
 import { withArchiveFallback } from "./archive-fallback.js";
+import { readObjectVersions } from "./valuers/common.js";
 
 const STAKE_TYPE = /^0x0*3::staking_pool::StakedSui$/;
 const MAX_POSITIONS = 10_000;
@@ -72,18 +73,48 @@ function held(state: State | null, owner: string): boolean {
   return STAKE_TYPE.test(state.asMoveObject.contents.type.repr);
 }
 
-/** Prove a missing pair of object states was never top-level, rather than pruned. */
-async function createdWrappedObjects(digest: string): Promise<Set<string>> {
+/** Native effects distinguish absent state from history GraphQL cannot resolve. */
+async function replayEffects(digest: string) {
   const result = await withArchiveFallback<GrpcTypes.GetTransactionResponse>(
     client => client.ledgerService.getTransaction({ digest, readMask: { paths: ["effects.changed_objects"] } }),
     response => !response.transaction?.effects,
   );
-  const ids = new Set<string>();
+  const changes = new Map<string, GrpcTypes.ChangedObject>();
+  const createdWrapped = new Set<string>();
   for (const change of result.transaction?.effects?.changedObjects ?? []) {
+    if (!change.objectId) continue;
+    changes.set(change.objectId, change);
     // ChangedObject: input/output DOES_NOT_EXIST = 1, id operation CREATED = 2.
-    if (change.objectId && change.inputState === 1 && change.outputState === 1 && change.idOperation === 2) ids.add(change.objectId);
+    if (change.inputState === 1 && change.outputState === 1 && change.idOperation === 2) createdWrapped.add(change.objectId);
   }
-  return ids;
+  return { changes, createdWrapped };
+}
+
+/** Effects v1 omitted input holders; resolve the exact input version as moved-value does. */
+async function recoverInputStates(changes: Change[], native: Map<string, GrpcTypes.ChangedObject>) {
+  const missing = changes.flatMap(change => {
+    const effect = native.get(change.address);
+    return !change.inputState && change.idCreated !== true && effect?.inputState === 2 &&
+      !effect.inputOwner && effect.inputVersion !== undefined
+      ? [{ object_id: change.address, version: effect.inputVersion.toString() }] : [];
+  });
+  if (!missing.length) return;
+  const states = await readObjectVersions(missing);
+  for (const change of changes) {
+    if (change.inputState) continue;
+    const version = native.get(change.address)?.inputVersion?.toString();
+    const state = states.get(`${change.address}@${version}`);
+    if (!state || state.current || state.object_id !== change.address || state.version !== version) continue;
+    const kind = state.owner?.kind;
+    change.inputState = {
+      version: Number(state.version),
+      owner: kind && kind !== "other" ? {
+        __typename: kind === "address" ? "AddressOwner" : kind === "object" ? "ObjectOwner" : kind === "shared" ? "Shared" : "Immutable",
+        ...(state.owner?.address ? { address: { address: state.owner.address } } : {}),
+      } : null,
+      asMoveObject: { contents: { type: { repr: state.type } } },
+    };
+  }
 }
 
 function apply(changes: Change[], positions: Map<string, Ref>, owner: string, forward: boolean, createdWrapped?: Set<string>) {
@@ -164,15 +195,16 @@ async function replay(owner: string, cp: number, anchor: number, direction: Atte
       for (const tx of page.nodes) {
         if (!tx.effects?.objectChanges || !tx.effects.checkpoint) throw new Error(`Transaction state unavailable for ${tx.digest}.`);
         let changes = tx.effects.objectChanges;
-        let createdWrapped: Set<string> | undefined;
+        let native: { changes: Map<string, GrpcTypes.ChangedObject>; createdWrapped: Set<string> } | undefined;
         const changeCursors = new Set<string>();
         for (;;) {
           if (Date.now() >= deadline || attempt.object_change_pages >= max) throw new Error("The object-change scan budget was exhausted.");
           attempt.object_change_pages++;
-          if (!createdWrapped && changes.nodes.some(c => !c.inputState && !c.outputState && c.idCreated === true)) {
-            createdWrapped = await createdWrappedObjects(tx.digest);
+          if (changes.nodes.some(c => !c.inputState && (c.idCreated !== true || !c.outputState))) {
+            native ??= await replayEffects(tx.digest);
+            await recoverInputStates(changes.nodes, native.changes);
           }
-          apply(changes.nodes, positions, owner, forward, createdWrapped);
+          apply(changes.nodes, positions, owner, forward, native?.createdWrapped);
           if (positions.size > MAX_POSITIONS) throw new Error("The replay exceeds the position budget.");
           if (!changes.pageInfo.hasNextPage) break;
           if (attempt.object_change_pages >= max) throw new Error("The object-change scan budget was exhausted.");

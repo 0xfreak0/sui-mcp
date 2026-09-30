@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { historicalStaking } from "../src/utils/historical-staking.js";
 
-const mocks = vi.hoisted(() => ({ gql: vi.fn(), bracket: vi.fn(), rewards: vi.fn(), effects: vi.fn() }));
+const mocks = vi.hoisted(() => ({ gql: vi.fn(), bracket: vi.fn(), rewards: vi.fn(), effects: vi.fn(), versions: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mocks.gql }));
 vi.mock("../src/utils/checkpoint-time.js", () => ({ checkpointBracket: mocks.bracket }));
 vi.mock("../src/utils/valuers/staked-sui.js", () => ({ STAKED_SUI_TYPE: "0x3::staking_pool::StakedSui", estimateStakedSuiRewards: mocks.rewards }));
 vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback: mocks.effects }));
+vi.mock("../src/utils/valuers/common.js", () => ({ readObjectVersions: mocks.versions }));
 const owner = "0x" + "a".repeat(64);
 const other = "0x" + "b".repeat(64);
 const type = "0x3::staking_pool::StakedSui";
@@ -30,6 +31,7 @@ let amounts: Record<string, string>;
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.effects.mockResolvedValue({ transaction: { effects: { changedObjects: [] } } });
+  mocks.versions.mockResolvedValue(new Map());
   owned = [];
   scanned = [];
   first = 0;
@@ -121,6 +123,27 @@ describe("historical staking holdings", () => {
       { objectId: "0xmissing", inputState: 1, outputState: 2, idOperation: 2 },
     ] } } });
     expect(await historicalStaking(owner, 100)).toMatchObject({ complete: false, total_staked_mist: null });
+  });
+
+  it("recovers the input holder of an effects-v1 deleted stake at its exact version", async () => {
+    scanned = [tx(850, [{ address: "0xs", inputState: null, outputState: null, idCreated: false, idDeleted: true }])];
+    mocks.effects.mockResolvedValue({ transaction: { effects: { changedObjects: [
+      { objectId: "0xs", inputState: 2, inputVersion: 7n, outputState: 1, idOperation: 3 },
+    ] } } });
+    mocks.versions.mockResolvedValue(new Map([["0xs@7", {
+      object_id: "0xs", version: "7", type, json: {}, current: false, owner: { kind: "address", address: owner },
+    }]]));
+    expect(await historicalStaking(owner, 800)).toMatchObject({
+      complete: true, direction: "reverse", total_staked_mist: "100", positions: [{ object_id: "0xs", version: 7 }],
+    });
+  });
+
+  it("keeps effects-v1 history incomplete if the input version cannot be read", async () => {
+    scanned = [tx(850, [{ address: "0xs", inputState: null, outputState: null, idCreated: false, idDeleted: true }])];
+    mocks.effects.mockResolvedValue({ transaction: { effects: { changedObjects: [
+      { objectId: "0xs", inputState: 2, inputVersion: 7n, outputState: 1, idOperation: 3 },
+    ] } } });
+    expect(await historicalStaking(owner, 800)).toMatchObject({ complete: false, total_staked_mist: null });
   });
 
   it("finishes every object-change page before treating a transaction as complete", async () => {

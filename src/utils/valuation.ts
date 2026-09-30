@@ -1,6 +1,9 @@
 import { buildPythFeedMap } from "../discovery.js";
 import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
 import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
+import type { PriceQuote, PriceSource } from "./price-providers.js";
+import { fetchRecentHistory } from "./recent-prices.js";
+import type { RecentPriceSource } from "./recent-prices.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
@@ -337,21 +340,25 @@ export interface PricePoint {
   price: number;
   /** Unix seconds of the sample this price came from. */
   publishTime: number;
-  source: "pyth" | "defillama";
+  /** Signed sample-time minus requested-time offset, for historical requests. */
+  price_offset_sec?: number;
+  source: HistoricalSource;
   /** DefiLlama's 0-1 agreement score, or Pyth's USD confidence interval. */
   confidence?: number;
   /** Decimals the price is per, when the provider reports them. */
   decimals?: number;
   /** Provider id of the asset priced, when it is not the coin itself (a Sui Bridge token priced as its Ethereum asset). */
   priced_as?: string;
+  market?: PriceQuote["market"];
 }
 
 /** A coin that has no price, and why. A missing price is never a zero. */
 export interface UnpricedCoin {
   coin_type: string;
-  /** `request_failed` says nothing about the coin; the others are answers. */
-  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price";
+  /** Unanswered and out-of-range reads establish nothing about a coin's listing. */
+  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price" | "out_of_range";
   reason: string;
+  out_of_range_sources?: RecentPriceSource[];
 }
 
 export interface HistoricalPrices {
@@ -359,7 +366,7 @@ export interface HistoricalPrices {
   unpriced: UnpricedCoin[];
 }
 
-export type HistoricalSource = "pyth" | "defillama";
+export type HistoricalSource = Exclude<PriceSource, "aftermath">;
 
 /**
  * Why each coin without a price has none. Pure, so the wording a report rests
@@ -373,7 +380,11 @@ export type HistoricalSource = "pyth" | "defillama";
 export function explainUnpriced(
   coinTypes: string[],
   points: Map<string, PricePoint>,
-  ctx: { sources: ReadonlyArray<HistoricalSource>; pythKey: boolean; llama: DefiLlamaResult | null },
+  ctx: {
+    sources: ReadonlyArray<HistoricalSource>; pythKey: boolean; llama: DefiLlamaResult | null;
+    fallbackFailures?: Map<string, string[]>;
+    outOfRange?: Map<string, RecentPriceSource[]>;
+  },
 ): UnpricedCoin[] {
   const out: UnpricedCoin[] = [];
   for (const coinType of new Set(coinTypes)) {
@@ -388,20 +399,28 @@ export function explainUnpriced(
           : " Pyth returned no price for it.";
     let code: UnpricedCoin["code"];
     let reason: string;
-    if (!ctx.sources.includes("defillama") || !ctx.llama) {
+    const failed = [...(ctx.fallbackFailures?.get(coinType) ?? [])];
+    const outOfRange = ctx.outOfRange?.get(coinType) ?? [];
+    if (ctx.llama?.unanswered.has(coinType)) failed.push("defillama");
+    if (failed.length) {
+      code = "request_failed";
+      reason = `Historical price requests failed (${failed.join(", ")}); this says nothing about whether the coin had a price.${pythNote}`;
+    } else if (!ctx.sources.some((s) => s !== "pyth")) {
       code = "no_oracle_price";
       reason = `No oracle price.${pythNote}`;
-    } else if (ctx.llama.unanswered.has(coinType)) {
-      code = "request_failed";
-      reason = `The DefiLlama request failed, which says nothing about whether the coin had a price.${pythNote}`;
-    } else if (ctx.llama.unsupported.has(coinType)) {
+    } else if (ctx.llama?.unsupported.has(coinType)) {
       code = "type_parameters";
-      reason = `DefiLlama cannot be asked about this coin type: it has type parameters or is not a well-formed coin type.${pythNote}`;
+      reason = `Providers cannot be asked about this coin type: it has type parameters or is not a well-formed coin type.${pythNote}`;
+    } else if (outOfRange.length && ctx.sources.every((s) => s === "pyth" || outOfRange.some((missing) => missing === s))) {
+      code = "out_of_range";
+      reason = `All selected historical market providers were skipped because the requested time is outside their served history ranges.${pythNote}`;
     } else {
       code = "not_listed";
-      reason = `DefiLlama has no price for this exact coin type near that time.${pythNote}`;
+      reason = `Queried providers returned no historical quote for this exact coin type near that time.${pythNote}`;
     }
-    out.push({ coin_type: coinType, code, reason: reason.trim() });
+    if (outOfRange.length) reason += ` Out-of-range sources: ${outOfRange.join(", ")}.`;
+    out.push({ coin_type: coinType, code, reason: reason.trim(),
+      ...(outOfRange.length ? { out_of_range_sources: outOfRange } : {}) });
   }
   return out;
 }
@@ -412,9 +431,9 @@ export function explainUnpriced(
  *
  * Pyth is preferred when PYTH_API_KEY is set, and only for coins the curated
  * registry verifies: Pyth feeds are matched by symbol, so an impostor would get
- * the real coin's price. Everything else goes to DefiLlama, which needs no key
- * and keys on the full coin type, so it prices each coin as itself or not at
- * all.
+ * the real coin's price. Everything else goes to DefiLlama, then CoinGecko
+ * and GeckoTerminal within their recent-history ranges. All three key on the
+ * full coin type; none substitutes a current quote for a historical request.
  *
  * `sources` narrows the providers. `compare_oracle_price` asks for Pyth alone,
  * since comparing a market against a market aggregate is not an oracle check.
@@ -424,7 +443,7 @@ export async function priceUsdAtTime(
   unixTs?: number,
   opts: { sources?: ReadonlyArray<HistoricalSource> } = {},
 ): Promise<HistoricalPrices> {
-  const sources = opts.sources ?? ["pyth", "defillama"];
+  const sources = opts.sources ?? ["pyth", "defillama", "coingecko", "geckoterminal"];
   const points = new Map<string, PricePoint>();
   const uniq = [...new Set(coinTypes)];
   if (uniq.length === 0) return { points, unpriced: [] };
@@ -439,6 +458,7 @@ export async function priceUsdAtTime(
         const point: PricePoint = {
           price: parsePythPrice(entry),
           publishTime: entry.price.publish_time,
+          ...(unixTs !== undefined ? { price_offset_sec: entry.price.publish_time - unixTs } : {}),
           source: "pyth",
           confidence: Number(entry.price.conf) * 10 ** entry.price.expo,
         };
@@ -458,6 +478,7 @@ export async function priceUsdAtTime(
         points.set(ct, {
           price: q.price,
           publishTime: q.at ?? unixTs ?? Math.floor(Date.now() / 1000),
+          ...(unixTs !== undefined && q.at !== undefined ? { price_offset_sec: q.at - unixTs } : {}),
           source: "defillama",
           ...(q.confidence !== undefined ? { confidence: q.confidence } : {}),
           ...(q.decimals !== undefined ? { decimals: q.decimals } : {}),
@@ -466,8 +487,30 @@ export async function priceUsdAtTime(
       }
     }
   }
+  const fallbackFailures = new Map<string, string[]>();
+  const outOfRange = new Map<string, RecentPriceSource[]>();
+  if (unixTs !== undefined) for (const source of ["coingecko", "geckoterminal"] as const) {
+    if (!sources.includes(source)) continue;
+    const rest = uniq.filter((ct) => !points.has(ct));
+    if (!rest.length) break;
+    const result = await fetchRecentHistory(new Map(rest.map((coin) => [coin, [unixTs]])), source);
+    for (const row of result.outOfRange) {
+      const skipped = outOfRange.get(row.coin_type) ?? [];
+      skipped.push(row.source);
+      outOfRange.set(row.coin_type, skipped);
+    }
+    for (const [coin, quotes] of result.quotes) {
+      const q = quotes.get(unixTs);
+      if (!q) continue;
+      points.set(coin, { price: q.price, publishTime: q.at!, price_offset_sec: q.at! - unixTs, source,
+        ...(q.market ? { market: q.market } : {}) });
+    }
+    for (const coin of result.unanswered.keys()) {
+      fallbackFailures.set(coin, [...(fallbackFailures.get(coin) ?? []), source]);
+    }
+  }
 
-  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama }) };
+  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures, outOfRange }) };
 }
 
 // Beyond this gap between a price's sample time and the block time, the

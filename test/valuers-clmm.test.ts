@@ -201,7 +201,7 @@ describe("clmm valuer", () => {
     // The pool's record (900000000) is what the pool removes, not the object's 1000000000.
     const want = amountsForLiquidity(-100, 100, 0, sqrtPriceAtTick(0), 900000000n);
     expect(p.assets.filter((a) => a.side === "liquidity").map((a) => a.amount)).toEqual([want.a.toString(), want.b.toString()]);
-    expect(p.assets.filter((a) => a.side === "reward")).toEqual([
+    expect(p.assets.filter((a) => a.side === "reward")).toMatchObject([
       { coin_type: SUI, amount: "5", side: "reward", usd: 2 * 5e-9 },
       { coin_type: SUI, amount: "9", side: "reward", usd: 2 * 9e-9 },
     ]);

@@ -1,5 +1,7 @@
 import { getNetwork } from "../config.js";
-import { fetchDefiLlamaHistory, pythApiKey } from "./price-providers.js";
+import { pythApiKey } from "./price-providers.js";
+import { fetchHistoricalMarketPrices } from "./recent-prices.js";
+import type { OutOfRangePriceRequest, RecentPriceSource } from "./recent-prices.js";
 import { displayCoin, prefetchCoinScale, priceUsdAtTime, pricingScale, toHumanAmount, type PricePoint as BasePricePoint } from "./valuation.js";
 
 type PricePoint = BasePricePoint & { stale?: boolean };
@@ -17,7 +19,9 @@ export interface WindowPrices {
   basis: {
     method: "fixed_time" | "hourly_utc" | "daily_median_time"; at?: string; approximate: boolean; sources: string[];
     requested_coin_hours: number; requested_coin_samples: number; priced_coin_samples: number;
-    missing_coin_samples: Array<{ coin_type: string; samples: number; first_at: string; last_at: string }>;
+    price_samples: Array<{ coin_type: string; requested_at: number; source: string; price_usd: number; price_time: number; price_offset_sec: number; market?: BasePricePoint["market"] }>;
+    missing_coin_samples: Array<{ coin_type: string; samples: number; first_at: string; last_at: string; request_failed_samples?: number }>;
+    out_of_range_coin_samples: Array<{ coin_type: string; source: RecentPriceSource; samples: number; first_at: string; last_at: string }>;
     unknown_time_transactions: number; budget_skipped_coin_samples: number; partial: boolean;
     meaning: string; priced_as?: Record<string, string>;
     stale_quotes?: Array<{ coin_type: string; offset_sec: number }>;
@@ -73,6 +77,8 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
   }
   const points = new Map<number, Map<string, PricePoint>>();
   const pending = new Map<number, string[]>();
+  const failed = new Map<string, Set<number>>();
+  const outOfRange: OutOfRangePriceRequest[] = [];
   const selectedCoins = new Set<string>();
   let selected = 0;
   let skipped = 0;
@@ -101,6 +107,14 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
     const days = [...pending];
     for (let i = 0; i < days.length; i += 4) await Promise.all(days.slice(i, i + 4).map(async ([day, coins]) => {
       const result = await priceUsdAtTime(coins, day);
+      for (const row of result.unpriced) {
+        if (row.code === "request_failed") {
+          const times = failed.get(row.coin_type) ?? new Set<number>();
+          times.add(day);
+          failed.set(row.coin_type, times);
+        }
+        for (const source of row.out_of_range_sources ?? []) outOfRange.push({ coin_type: row.coin_type, at: day, source });
+      }
       for (const [coin, point] of result.points) {
         points.get(day)!.set(coin, point);
       }
@@ -112,13 +126,29 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       times.push(day);
       byCoin.set(coin, times);
     }
-    for (const [coin, samples] of await fetchDefiLlamaHistory(byCoin)) for (const [day, quote] of samples) {
-      points.get(day)!.set(coin, { price: quote.price, publishTime: quote.at!, source: "defillama",
-        ...(quote.decimals !== undefined ? { decimals: quote.decimals } : {}), ...(quote.priced_as ? { priced_as: quote.priced_as } : {}) });
+    const result = await fetchHistoricalMarketPrices(byCoin);
+    for (const [coin, times] of result.unanswered) failed.set(coin, times);
+    outOfRange.push(...result.outOfRange);
+    for (const [coin, samples] of result.quotes) for (const [day, quote] of samples) {
+      if (quote.source === "aftermath") continue;
+      points.get(day)!.set(coin, { price: quote.price, publishTime: quote.at!, price_offset_sec: quote.at! - day, source: quote.source,
+        ...(quote.decimals !== undefined ? { decimals: quote.decimals } : {}), ...(quote.priced_as ? { priced_as: quote.priced_as } : {}),
+        ...(quote.market ? { market: quote.market } : {}) });
     }
   }
   await scalesReady;
-  const missing = new Map<string, { coin_type: string; samples: number; first_at: string; last_at: string }>();
+  const rangeCoverage = new Map<string, WindowPrices["basis"]["out_of_range_coin_samples"][number]>();
+  for (const { coin_type, source, at } of outOfRange) {
+    const key = `${source}:${coin_type}`;
+    const date = new Date(at * 1000).toISOString();
+    const row = rangeCoverage.get(key) ?? { coin_type, source, samples: 0, first_at: date, last_at: date };
+    row.samples++;
+    if (date < row.first_at) row.first_at = date;
+    if (date > row.last_at) row.last_at = date;
+    rangeCoverage.set(key, row);
+  }
+  const missing = new Map<string, WindowPrices["basis"]["missing_coin_samples"][number]>();
+  const priceSamples: WindowPrices["basis"]["price_samples"] = [];
   let priced = 0;
   const sources = new Set<string>();
   const pricedAs: Record<string, string> = {};
@@ -137,6 +167,8 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
         if (Math.abs(offset) > Math.abs(stale.get(coin) ?? 0)) stale.set(coin, offset);
       }
       priced++;
+      priceSamples.push({ coin_type: coin, requested_at: day, source: point.source, price_usd: point.price,
+        price_time: point.publishTime, price_offset_sec: offset, ...(point.market ? { market: point.market } : {}) });
       sources.add(point.source);
       if (point.priced_as) pricedAs[coin] = point.priced_as;
       const key = `${network}:${provider}:${day}:${coin}`;
@@ -149,6 +181,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       const date = new Date(day * 1000).toISOString();
       const row = missing.get(coin) ?? { coin_type: coin, samples: 0, first_at: date, last_at: date };
       row.samples++;
+      if (failed.get(coin)?.has(day)) row.request_failed_samples = (row.request_failed_samples ?? 0) + 1;
       if (date < row.first_at) row.first_at = date;
       if (date > row.last_at) row.last_at = date;
       missing.set(coin, row);
@@ -172,7 +205,9 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       requested_coin_hours: requestedHours,
       requested_coin_samples: [...wanted.values()].reduce((n, coins) => n + coins.size, 0),
       priced_coin_samples: priced,
+      price_samples: priceSamples,
       missing_coin_samples: [...missing.values()],
+      out_of_range_coin_samples: [...rangeCoverage.values()],
       unknown_time_transactions: unknownTime,
       ...(stale.size ? { stale_quotes: [...stale].map(([coin_type, offset_sec]) => ({ coin_type, offset_sec })) } : {}),
       budget_skipped_coin_samples: skipped,
@@ -192,7 +227,11 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
   };
 }
 
-interface AmountValue { raw: bigint; pricedIn: bigint; pricedOut: bigint; staleIn: bigint; staleOut: bigint; unpricedIn: bigint; unpricedOut: bigint; usd: number; priced: boolean; decimals: number }
+interface AmountValue {
+  raw: bigint; pricedIn: bigint; pricedOut: bigint; staleIn: bigint; staleOut: bigint;
+  unpricedIn: bigint; unpricedOut: bigint; usd: number; priced: boolean; decimals: number;
+  sources: Map<string, { in: bigint; out: bigint }>;
+}
 /** Sum signed, time-valued legs without netting away missing-price coverage. */
 export class WindowAmounts {
   readonly values = new Map<string, AmountValue>();
@@ -200,11 +239,14 @@ export class WindowAmounts {
   add(coin: string, raw: bigint, at: number | null) {
     const p = this.prices.point(coin, at);
     const decimals = pricingScale(coin, p).decimals;
-    const v = this.values.get(coin) ?? { raw: 0n, pricedIn: 0n, pricedOut: 0n, staleIn: 0n, staleOut: 0n, unpricedIn: 0n, unpricedOut: 0n, usd: 0, priced: false, decimals };
+    const v = this.values.get(coin) ?? { raw: 0n, pricedIn: 0n, pricedOut: 0n, staleIn: 0n, staleOut: 0n, unpricedIn: 0n, unpricedOut: 0n, usd: 0, priced: false, decimals, sources: new Map<string, { in: bigint; out: bigint }>() };
     v.raw += raw;
     const magnitude = raw < 0n ? -raw : raw;
     if (p) {
       v.priced = true;
+      const source = v.sources.get(p.source) ?? { in: 0n, out: 0n };
+      if (raw < 0n) source.out += magnitude; else source.in += magnitude;
+      v.sources.set(p.source, source);
       v.usd += (raw < 0n ? -1 : 1) * toHumanAmount(raw, decimals) * p.price;
       if (p.stale) { if (raw < 0n) v.staleOut += magnitude; else v.staleIn += magnitude; }
       else if (raw < 0n) v.pricedOut += magnitude; else v.pricedIn += magnitude;
@@ -218,11 +260,12 @@ export class WindowAmounts {
     const v = this.values.get(coin);
     if (!v) return {};
     const stale = v.staleIn || v.staleOut ? { stale_priced_raw: { in: v.staleIn.toString(), out: v.staleOut.toString() } } : {};
+    const priced_by_source = [...v.sources].map(([source, raw]) => ({ source, raw: { in: raw.in.toString(), out: raw.out.toString() } }));
     if (!v.unpricedIn && !v.unpricedOut) {
-      return { raw: { in: (v.pricedIn + v.staleIn).toString(), out: (v.pricedOut + v.staleOut).toString() }, ...stale };
+      return { raw: { in: (v.pricedIn + v.staleIn).toString(), out: (v.pricedOut + v.staleOut).toString() }, priced_by_source, ...stale };
     }
     return { priced_raw: { in: v.pricedIn.toString(), out: v.pricedOut.toString() },
-      unpriced_raw: { in: v.unpricedIn.toString(), out: v.unpricedOut.toString() }, ...stale };
+      unpriced_raw: { in: v.unpricedIn.toString(), out: v.unpricedOut.toString() }, priced_by_source, ...stale };
   }
   amounts() {
     return [...this.values].map(([coin, v]) => ({ coin_type: coin, symbol: displayCoin(coin).symbol,

@@ -2,93 +2,33 @@
 
 ## Unreleased
 
-### Changed
-- **The docs site matches 1.25.** The pricing, flow, transaction, capability
-  and getting-started pages describe daily pricing and partial totals.
-  Contributor docs describe the context-cost workflow. Output-size figures
-  that change between releases are gone.
-- **Shorter tool descriptions.** The longest tool and field descriptions are
-  rewritten to say the same in fewer words. Each keeps when to pick the tool,
-  what it does not cover, when output is partial, how to continue, and the
-  "leads, not verdicts" caveats. Explanations of method and worked examples
-  moved to the concept guides on the docs site. Every model request with all
-  tools enabled carries about 16% fewer characters of tool definitions.
-  Behaviour and input schemas are unchanged.
-- **Higher default request pacing on mainnet.** The public mainnet endpoints
-  now accept more requests per IP than testnet and devnet, so the default
-  spacing for `*.mainnet.sui.io` hosts is raised; testnet and devnet keep
-  theirs. `SUI_RATE_LIMIT` still overrides both.
-- **Tool JSON answers omit indentation.** Graph and fund traces, flow paths,
-  event queries and the other JSON tool responses keep every field, row,
-  summary, caveat and continuation without pretty-printing overhead. Graph
-  JSON exports and SuiNS name-resolution annotations use the same compact
-  encoding. Resource bodies, stored results and non-JSON exports are unchanged.
-- **`was_i_scammed` is now `what_happened_to_my_funds`, and it starts with
-  stopping further loss.** Someone asking has usually lost funds already, so
-  the prompt works in this order: whether anyone else can still move what is
-  left (a leaked key, an address in `delegated_to` the user did not add), how
-  the funds left (a leaked key, a drainer transaction the user signed or an
-  approval on a website, a lookalike address pasted from the wallet's
-  history), where they went up to the first exchange deposit address or
-  bridge, and whom to report to with which digests and addresses. The plain
-  answer follows the same order. A drop and the user's own order or position
-  remain the two outcomes in which nothing was taken, and every check and
-  rule of the old prompt is kept.
-- Removed repeated instructions from `what_happened_to_my_funds` and
-  shortened the shared profile-enabling instructions used by the four
-  everyday prompts. The own-order branch explicitly checks who can still
-  move funds before answering, including after a wrapper's drainer check.
-  Wallet selection, ownership evidence, withdrawal-versus-fill limits and
-  all safety and answer rules are kept.
-- **The truncation guide distinguishes display limits from pagination.**
-  It explains empty `query_events` pages with `has_next_page: true`, read-budget
-  stops under `scan`, and continuation with `scan.next_call.repeat_with`.
-- **The unused CoinMarketCap price source is gone.** No tool read a
-  CoinMarketCap price, yet setting `CMC_API_KEY` added `coinmarketcap` to the
-  `price_sources` list `get_token_prices` returns for a past moment.
-  `fetchCoinMarketCap`, `CMC_API_KEY` and the `coinmarketcap` source are
-  removed, and the configuration guide, capabilities page, security model and
-  `.env.example` no longer offer the key. `price_sources` names only
-  Aftermath, DefiLlama and, with `PYTH_API_KEY`, Pyth.
-- **`get_token_prices` says when Pyth answers.** Current prices come from
-  Aftermath, then DefiLlama, then Pyth for a verified coin only when
-  `PYTH_API_KEY` is set; the description and the configuration guide now say
-  so.
-- Tool descriptions: `trace_funds` and `aggregate_events` are tagged
-  "(Incident investigation)", the group they are listed under, instead of
-  "(Advanced — multi-hop)" and "(Analytics)"; `get_top_holders` drops its
-  "(Advanced — slow, paginated scan)" tag. Em-dash asides in tool and
-  parameter descriptions are rewritten as plain clauses.
-- **The docs site's changelog page is generated.** `npm run gen:tools` in
-  `site/` also reads CHANGELOG.md and package.json and writes the changelog
-  page (each release's summary, with links to its entry and GitHub release)
-  and a "Current release" line on the front page and Start here.
-  `test/site-tool-reference.test.ts` fails while either is stale, and the
-  release steps in CONTRIBUTING.md regenerate them.
-- Docs fixes from a review: the Cetus example reconciles its step 4 totals
-  with step 3; the lookalike-address page states where a poisoning wallet
-  appears and lists the conditions of the timing rule; the fund-flow page
-  lists when a low-value sale's remainder is `retained` or `consumed`; clever
-  errors are defined where the term first appears; each page has one name in
-  its title and the sidebar.
-- **The docs site has investigation examples and task-based navigation.**
-  Five worked examples (a protocol exploit, a token rug, a drainer kit, a
-  claim farm and a package authority check) show each tool call with its
-  arguments and a trimmed excerpt of the answer. "Start here" lists common
-  tasks and links each to an example or page, and the front page links to the
-  examples. Pages no longer state counts or sizes that change with the
-  product; the profile list and each tool group's summary table are generated
-  with the tool reference.
-- **The README is an overview; the documentation moved to a docs site.**
-  The README keeps the install snippet, one investigation example and links.
-  Every other section moved to pages under `site/src/content/docs/` (an
-  Astro Starlight site in `site/`, outside the npm package), and the tool
-  reference is generated from the server's own tool and prompt schemas;
-  `test/site-tool-reference.test.ts` fails when the committed reference is
-  stale. Tool counts are checked against the tool profiles page.
-- The docs site is live at <https://sui-mcp.vercel.app/>. The README links
-  there, `package.json`'s `homepage` points to it, and the site sets its
-  address for canonical links and a sitemap.
+## 1.25.0 (2026-09-29)
+
+Investigations cost a model less context, and reads that stopped early now
+reach the end. The longest tool descriptions are shorter, tool answers drop
+JSON indentation, and `get_validators` summarises by default. Tools that read
+a transaction's balance changes, and `query_events`, `query_transactions` and
+`aggregate_events`, no longer stop at a short or empty page, and a read that
+fails is named instead of treated as complete. USD over long windows is
+priced per day, `get_staking_summary` answers for a past date, continuations
+keep their network, and `was_i_scammed` becomes `what_happened_to_my_funds`.
+
+### Added
+- **Staking positions at a past date.** `get_staking_summary` takes `as_of`
+  (a date or a checkpoint) and returns the StakedSui objects the address held
+  directly at that checkpoint. Positions that were transferred, split or
+  joined are included. Reward estimates come from the pools' exchange rates
+  and are shown separately from principal. The answer is read directly when
+  the checkpoint is recent. Otherwise it is rebuilt from the address's object
+  changes, and it is exact only when complete. When a transaction or time
+  budget stops the rebuild, the totals are null, never partial. Stakes held
+  inside other objects, and liquid-staking tokens, are outside its scope.
+- **A context-cost measurement script for contributors.**
+  `scripts/probe/token-baseline.mjs` reports what the tool definitions cost
+  per profile selection and what each tool's answers cost, in characters and
+  estimated tokens, from a saved case-pass summary. It is a manual comparison
+  tool, not a `verify:live` check. `verify:live --keep-summary <path>` keeps
+  that run's case-pass summary for it.
 
 ### Fixed
 - **USD over long windows is priced per day.** `summarize_address_flows`
@@ -193,27 +133,98 @@
   The tool description and site explain that genesis allocations are
   system-created: `sender` remains null and does not identify a funding wallet.
 
+### Changed
+- **The docs site matches 1.25.** The pricing, flow, transaction, capability
+  and getting-started pages describe daily pricing and partial totals.
+  Contributor docs describe the context-cost workflow. Output-size figures
+  that change between releases are gone.
+- **Shorter tool descriptions.** The longest tool and field descriptions are
+  rewritten to say the same in fewer words. Each keeps when to pick the tool,
+  what it does not cover, when output is partial, how to continue, and the
+  "leads, not verdicts" caveats. Explanations of method and worked examples
+  moved to the concept guides on the docs site. Every model request with all
+  tools enabled carries about 16% fewer characters of tool definitions.
+  Behaviour and input schemas are unchanged.
+- **Higher default request pacing on mainnet.** The public mainnet endpoints
+  now accept more requests per IP than testnet and devnet, so the default
+  spacing for `*.mainnet.sui.io` hosts is raised; testnet and devnet keep
+  theirs. `SUI_RATE_LIMIT` still overrides both.
+- **Tool JSON answers omit indentation.** Graph and fund traces, flow paths,
+  event queries and the other JSON tool responses keep every field, row,
+  summary, caveat and continuation without pretty-printing overhead. Graph
+  JSON exports and SuiNS name-resolution annotations use the same compact
+  encoding. Resource bodies, stored results and non-JSON exports are unchanged.
+- **`was_i_scammed` is now `what_happened_to_my_funds`, and it starts with
+  stopping further loss.** Someone asking has usually lost funds already, so
+  the prompt works in this order: whether anyone else can still move what is
+  left (a leaked key, an address in `delegated_to` the user did not add), how
+  the funds left (a leaked key, a drainer transaction the user signed or an
+  approval on a website, a lookalike address pasted from the wallet's
+  history), where they went up to the first exchange deposit address or
+  bridge, and whom to report to with which digests and addresses. The plain
+  answer follows the same order. A drop and the user's own order or position
+  remain the two outcomes in which nothing was taken, and every check and
+  rule of the old prompt is kept.
+- Removed repeated instructions from `what_happened_to_my_funds` and
+  shortened the shared profile-enabling instructions used by the four
+  everyday prompts. The own-order branch explicitly checks who can still
+  move funds before answering, including after a wrapper's drainer check.
+  Wallet selection, ownership evidence, withdrawal-versus-fill limits and
+  all safety and answer rules are kept.
+- **The truncation guide distinguishes display limits from pagination.**
+  It explains empty `query_events` pages with `has_next_page: true`, read-budget
+  stops under `scan`, and continuation with `scan.next_call.repeat_with`.
+- **The unused CoinMarketCap price source is gone.** No tool read a
+  CoinMarketCap price, yet setting `CMC_API_KEY` added `coinmarketcap` to the
+  `price_sources` list `get_token_prices` returns for a past moment.
+  `fetchCoinMarketCap`, `CMC_API_KEY` and the `coinmarketcap` source are
+  removed, and the configuration guide, capabilities page, security model and
+  `.env.example` no longer offer the key. `price_sources` names only
+  Aftermath, DefiLlama and, with `PYTH_API_KEY`, Pyth.
+- **`get_token_prices` says when Pyth answers.** Current prices come from
+  Aftermath, then DefiLlama, then Pyth for a verified coin only when
+  `PYTH_API_KEY` is set; the description and the configuration guide now say
+  so.
+- Tool descriptions: `trace_funds` and `aggregate_events` are tagged
+  "(Incident investigation)", the group they are listed under, instead of
+  "(Advanced — multi-hop)" and "(Analytics)"; `get_top_holders` drops its
+  "(Advanced — slow, paginated scan)" tag. Em-dash asides in tool and
+  parameter descriptions are rewritten as plain clauses.
+- **The docs site's changelog page is generated.** `npm run gen:tools` in
+  `site/` also reads CHANGELOG.md and package.json and writes the changelog
+  page (each release's summary, with links to its entry and GitHub release)
+  and a "Current release" line on the front page and Start here.
+  `test/site-tool-reference.test.ts` fails while either is stale, and the
+  release steps in CONTRIBUTING.md regenerate them.
+- Docs fixes from a review: the Cetus example reconciles its step 4 totals
+  with step 3; the lookalike-address page states where a poisoning wallet
+  appears and lists the conditions of the timing rule; the fund-flow page
+  lists when a low-value sale's remainder is `retained` or `consumed`; clever
+  errors are defined where the term first appears; each page has one name in
+  its title and the sidebar.
+- **The docs site has investigation examples and task-based navigation.**
+  Five worked examples (a protocol exploit, a token rug, a drainer kit, a
+  claim farm and a package authority check) show each tool call with its
+  arguments and a trimmed excerpt of the answer. "Start here" lists common
+  tasks and links each to an example or page, and the front page links to the
+  examples. Pages no longer state counts or sizes that change with the
+  product; the profile list and each tool group's summary table are generated
+  with the tool reference.
+- **The README is an overview; the documentation moved to a docs site.**
+  The README keeps the install snippet, one investigation example and links.
+  Every other section moved to pages under `site/src/content/docs/` (an
+  Astro Starlight site in `site/`, outside the npm package), and the tool
+  reference is generated from the server's own tool and prompt schemas;
+  `test/site-tool-reference.test.ts` fails when the committed reference is
+  stale. Tool counts are checked against the tool profiles page.
+- The docs site is live at <https://sui-mcp.vercel.app/>. The README links
+  there, `package.json`'s `homepage` points to it, and the site sets its
+  address for canonical links and a sitemap.
+
 ### Migration
 - `was_i_scammed` stays registered for this release with the same
   arguments. It renders `what_happened_to_my_funds` after a first line
   naming the new name, and will be removed in a later release.
-
-### Added
-- **Staking positions at a past date.** `get_staking_summary` takes `as_of`
-  (a date or a checkpoint) and returns the StakedSui objects the address held
-  directly at that checkpoint. Positions that were transferred, split or
-  joined are included. Reward estimates come from the pools' exchange rates
-  and are shown separately from principal. The answer is read directly when
-  the checkpoint is recent. Otherwise it is rebuilt from the address's object
-  changes, and it is exact only when complete. When a transaction or time
-  budget stops the rebuild, the totals are null, never partial. Stakes held
-  inside other objects, and liquid-staking tokens, are outside its scope.
-- **A context-cost measurement script for contributors.**
-  `scripts/probe/token-baseline.mjs` reports what the tool definitions cost
-  per profile selection and what each tool's answers cost, in characters and
-  estimated tokens, from a saved case-pass summary. It is a manual comparison
-  tool, not a `verify:live` check. `verify:live --keep-summary <path>` keeps
-  that run's case-pass summary for it.
 
 ## 1.24.0 (2026-09-29)
 

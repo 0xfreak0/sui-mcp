@@ -5,9 +5,15 @@ description: Every sui-mcp release, newest first, with a summary and links to it
 sidebar:
   order: 3
 ---
-The current release is 1.24.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
+The current release is 1.25.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
 
 Published versions are on npm as [`sui-analytics-mcp`](https://www.npmjs.com/package/sui-analytics-mcp). To check that an installed tarball was built by the project's CI, see [Verifying a release](/concepts/security/#verifying-a-release).
+
+## 1.25.0 (2026-09-29)
+
+Investigations cost a model less context, and reads that stopped early now reach the end. The longest tool descriptions are shorter, tool answers drop JSON indentation, and `get_validators` summarises by default. Tools that read a transaction's balance changes, and `query_events`, `query_transactions` and `aggregate_events`, no longer stop at a short or empty page, and a read that fails is named instead of treated as complete. USD over long windows is priced per day, `get_staking_summary` answers for a past date, continuations keep their network, and `was_i_scammed` becomes `what_happened_to_my_funds`.
+
+[Full entry](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md#1250-2026-09-29) · [GitHub release](https://github.com/0xfreak0/sui-mcp/releases/tag/v1.25.0)
 
 ## 1.24.0 (2026-09-29)
 

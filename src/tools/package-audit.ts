@@ -103,7 +103,7 @@ function summarize(diff: PackageDiff, linkage: LinkageChange[]): string {
         ? `New dependency ${short(d.package)} v${d.to?.version}.`
         : d.change === "removed"
           ? `Dropped dependency ${short(d.package)} v${d.from?.version}.`
-          : `Dependency ${short(d.package)} relinked v${d.from?.version} → v${d.to?.version}; see what changed in it with diff_package_upgrade ${JSON.stringify(d.diff?.args)}.`,
+          : `Dependency ${short(d.package)} relinked v${d.from?.version} → v${d.to?.version}; its linkage_changes.diff call reads what changed.`,
     );
   }
   if (diff.changed_modules.some((m) => m.sample_truncated)) {

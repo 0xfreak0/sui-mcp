@@ -712,7 +712,7 @@ export function registerAttackTools(server: McpServer) {
           const list = (xs: number[]) => (xs.length > 12 ? `${xs.slice(0, 12).join(", ")} and ${xs.length - 12} more` : xs.join(", "));
           lines.push(
             `Flagged commands: ${[...(high.length ? [`high ${list(high)}`] : []), ...(medium.length ? [`medium ${list(medium)}`] : [])].join("; ")}. ` +
-              `decode_ptb with commands: [${readFlagged.args.commands.join(", ")}] lists ${flaggedCount > FLAGGED_COMMANDS_READ ? `the ${FLAGGED_COMMANDS_READ} most severe` : "them"}.`,
+              `flagged_commands.next_call lists ${flaggedCount > FLAGGED_COMMANDS_READ ? `the ${FLAGGED_COMMANDS_READ} most severe` : "them"}.`,
           );
         }
         lines.push(

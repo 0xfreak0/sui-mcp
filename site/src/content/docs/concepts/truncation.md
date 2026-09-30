@@ -24,9 +24,17 @@ priced ones and how many are unpriced, the largest row left out by USD (or the
 first, where rows carry no value), and `next_call` is the call that returns
 them, usually the same call with `detail: "full"`.
 
+Follow a complete `{ tool, args }` call with its arguments unchanged. It carries
+`args.network` when its chain differs from the server default, including
+`mainnet` on a server whose default is `testnet`. A `repeat_with` object is
+instead a patch: merge it into the original arguments, retaining their network
+and filters, rather than calling the tool with the patch alone.
+
 With the local store on, `omitted.result.uri` is the stored full result,
 `sui://results/{id}`, which pages any list as an MCP resource; see
 [Optional local store](/guides/configuration/#optional-local-store).
+Its original arguments and complete follow-up calls keep the saved chain,
+even when the server default has changed since the result was stored.
 
 `list_nfts` leaves raw Move contents to `detail: "full"` and counts them.
 `get_nft_sales` with `include_sales` lists the newest sales that fit, while its

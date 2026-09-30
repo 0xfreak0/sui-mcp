@@ -2,6 +2,7 @@ import { z } from "zod";
 import { type SuiNetwork, DEFAULT_NETWORK, isSuiNetwork, runWithNetwork } from "../config.js";
 import { sui } from "../clients/grpc.js";
 import { cleanErrorMessage, describeError, errorResult, isNotFound } from "../utils/errors.js";
+import { bindContinuationNetwork } from "../utils/continuation-network.js";
 import { isAddressSchema, isSuinsName, toolArgsSchema } from "./args.js";
 import { toolPolicy, withStructuredContent } from "./tool-meta.js";
 import { CallToolRequestSchema, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
@@ -89,6 +90,23 @@ async function resolveAddressNames(
 interface ToolResult {
   content?: Array<{ type: string; text?: string }>;
   isError?: boolean;
+}
+
+/** All tool calls pass here, including continuations built after capPayload. */
+function bindResultNetwork(result: ToolResult, network: SuiNetwork): ToolResult {
+  if (network === DEFAULT_NETWORK || !result.content) return result;
+  return {
+    ...result,
+    content: result.content.map((item) => {
+      if (item.type !== "text" || !item.text?.includes('"tool"')) return item;
+      try {
+        const value: unknown = JSON.parse(item.text);
+        return bindContinuationNetwork(value, network) ? { ...item, text: JSON.stringify(value) } : item;
+      } catch {
+        return item;
+      }
+    }),
+  };
 }
 
 /**
@@ -273,7 +291,7 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
           ));
         }
         const result = (await (handler as (a: unknown, e: unknown) => unknown)(callArgs, extra)) as ToolResult;
-        const cleaned = reportResolved(cleanReturnedError(result, network), resolved);
+        const cleaned = bindResultNetwork(reportResolved(cleanReturnedError(result, network), resolved), network);
         return policy.structured ? withStructuredContent(cleaned) : cleaned;
       } catch (err) {
         return errorResult(escapeControl(describeError(err, network)));

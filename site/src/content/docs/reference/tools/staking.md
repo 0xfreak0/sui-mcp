@@ -37,7 +37,7 @@ List current Sui validators, or return detailed info for one `address` (credenti
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | no | If set, return details for this one validator instead of the full list (0x...) |
-| `limit` | integer (1 to 150) | no | When listing, keep at most N validators, plus any at-risk rows in summary. The summary output budget still applies; omitted rows name an unlimited full call. |
+| `limit` | integer (1 to 150) | no | When listing, keep at most N validators; summary also keeps at-risk rows beyond N. The summary output budget still applies. |
 | `sort_by` | `stake` \| `commission` | no | Sort field when listing: stake (default) or commission |
-| `detail` | `summary` \| `full` | no | Listing detail: summary (default) caps compact rows and keeps at-risk validators; full returns all fields without a size cap. Does not affect address lookup. |
+| `detail` | `summary` \| `full` | no | Listing detail: summary (default) caps compact rows; full returns all fields without a size cap. Ignored for an address lookup. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

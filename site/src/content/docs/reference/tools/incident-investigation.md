@@ -387,10 +387,10 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `title` | string | yes | One-line statement of the finding. |
 | `detail` | string | no | Fuller explanation, including caveats. |
 | `confidence` | `high` \| `medium` \| `low` | no | How firmly this is established. Reports sort high confidence first. |
-| `evidence_tier` | `chain-derived` \| `indexer-attested` \| `heuristic` | no | How the finding is known: 'chain-derived' (read from Sui itself, e.g. a transfer in a transaction), 'indexer-attested' (a third party asserts it, e.g. a bridge indexer), or 'heuristic' (an inference from patterns, e.g. a shared funder). Default 'heuristic', the weakest, so an unstated tier is never read as a stronger one. export_case groups findings by it. |
-| `addresses` | array of string | no | Addresses the finding concerns. A bare address is recorded against the network this call ran on; pass a CAIP-10 id ('eip155:1:0x…', 'sui:mainnet:0x…') to record an address on another chain, which is how a cross-chain case keeps both sides of a bridge hop straight. |
+| `evidence_tier` | `chain-derived` \| `indexer-attested` \| `heuristic` | no | How it is known: 'chain-derived' (read from Sui), 'indexer-attested' (asserted by a third party) or 'heuristic' (inferred from patterns; the default, and the weakest). export_case groups findings by it. |
+| `addresses` | array of string | no | Addresses it concerns. A bare address is recorded on this call's network; use a CAIP-10 id ('eip155:1:0x…') for another chain. |
 | `digests` | array of string | no | Sui transaction digests the finding rests on. Each is checked to be a real digest before saving. |
-| `evidence` | array of string | no | What establishes it: tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted. |
+| `evidence` | array of string | no | What establishes it, so it can be checked: tool calls, counts, digests, sample sizes. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## screen_address

@@ -153,6 +153,17 @@ The finding tools (`save_finding`, `list_findings`, `export_case`,
 `delete_finding`) and the watch tools (`watch_addresses`, `poll_watch`) need
 the store. `get_nft_sales` needs it to keep the kiosk owners it learns.
 
+A finding records how it is known in `evidence_tier`: `chain-derived` when it
+was read from Sui itself, such as a transfer in a transaction;
+`indexer-attested` when a third party such as a bridge indexer asserts it; or
+`heuristic` for an inference from patterns, such as a shared funder. An
+unstated tier is saved as `heuristic`, the weakest, so it is never read as a
+stronger one. A bare address is recorded against the network the call ran on.
+Pass a CAIP-10 id such as `eip155:1:0x…` or `sui:mainnet:0x…` for an address
+on another chain, so a cross-chain case keeps both sides of a bridge hop apart.
+Findings name their evidence (tool calls, counts, digests, sample sizes) so a
+reader can check them.
+
 ## Address labels
 
 `manage_labels` records exchanges, bridges, mixers, malicious wallets,

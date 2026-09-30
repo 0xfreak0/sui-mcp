@@ -115,19 +115,15 @@ export function registerFindingsTools(server: McpServer) {
         .enum(EVIDENCE_TIERS)
         .optional()
         .describe(
-          "How the finding is known: 'chain-derived' (read from Sui itself, e.g. a transfer in a transaction), " +
-            "'indexer-attested' (a third party asserts it, e.g. a bridge indexer), or 'heuristic' (an inference " +
-            "from patterns, e.g. a shared funder). Default 'heuristic', the weakest, so an unstated tier is never " +
-            "read as a stronger one. export_case groups findings by it.",
+          "How it is known: 'chain-derived' (read from Sui), 'indexer-attested' (asserted by a third party) or " +
+            "'heuristic' (inferred from patterns; the default, and the weakest). export_case groups findings by it.",
         ),
       addresses: z
         .array(z.string())
         .optional()
         .describe(
-          "Addresses the finding concerns. A bare address is recorded against the network this " +
-            "call ran on; pass a CAIP-10 id ('eip155:1:0x…', 'sui:mainnet:0x…') to record an " +
-            "address on another chain, which is how a cross-chain case keeps both sides of a " +
-            "bridge hop straight.",
+          "Addresses it concerns. A bare address is recorded on this call's network; use a CAIP-10 id " +
+            "('eip155:1:0x…') for another chain.",
         ),
       digests: z
         .array(z.string())
@@ -137,7 +133,7 @@ export function registerFindingsTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe(
-          "What establishes it: tool calls, counts, digests, sample sizes. This is what makes a finding checkable rather than asserted.",
+          "What establishes it, so it can be checked: tool calls, counts, digests, sample sizes.",
         ),
     },
     async ({ case_name, title, detail, confidence, evidence_tier, addresses, digests, evidence }) => {

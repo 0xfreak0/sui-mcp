@@ -16,8 +16,9 @@ The server has no wallet credentials and no ability to move funds:
   `simulate_transaction` dry-runs bytes against a fullnode without executing
   them.
 - Other tools read chain or provider data, or manage the optional local store.
-- Public RPC and indexing endpoints need no provider account. Aftermath and
-  DefiLlama prices need no key; Pyth is opt-in through `PYTH_API_KEY`.
+- Public RPC and indexing endpoints need no provider account. Aftermath,
+  DefiLlama, CoinGecko and GeckoTerminal prices need no key; Pyth is opt-in
+  through `PYTH_API_KEY`.
 
 ## What the process does
 
@@ -26,7 +27,7 @@ The full list for this one:
 
 | Capability | Where it's used |
 |---|---|
-| Network | Public Sui RPC and GraphQL; Pyth, Aftermath and DefiLlama for prices and the verified coin list; the Move Registry for name resolution; the DeepBook indexer for order-book data; the Wormholescan and LayerZero Scan APIs for bridge transfers. Most hosts are in [`src/config.ts`](https://github.com/0xfreak0/sui-mcp/blob/main/src/config.ts) and [`src/utils/price-providers.ts`](https://github.com/0xfreak0/sui-mcp/blob/main/src/utils/price-providers.ts); the bridge APIs are in [`src/utils/bridge/`](https://github.com/0xfreak0/sui-mcp/tree/main/src/utils/bridge). |
+| Network | Public Sui RPC and GraphQL; Pyth, Aftermath and DefiLlama for prices and the verified coin list; CoinGecko and GeckoTerminal for recent historical prices; the Move Registry for name resolution; the DeepBook indexer for order-book data; the Wormholescan and LayerZero Scan APIs for bridge transfers. Most hosts are in [`src/config.ts`](https://github.com/0xfreak0/sui-mcp/blob/main/src/config.ts), [`src/utils/price-providers.ts`](https://github.com/0xfreak0/sui-mcp/blob/main/src/utils/price-providers.ts) and [`src/utils/recent-prices.ts`](https://github.com/0xfreak0/sui-mcp/blob/main/src/utils/recent-prices.ts); the bridge APIs are in [`src/utils/bridge/`](https://github.com/0xfreak0/sui-mcp/tree/main/src/utils/bridge). |
 | Filesystem | Temp files for `decompile_module`. Reading `SUI_LABELS_FILE`, and the SQLite store at `SUI_STORE_PATH`, when you set them. Reading the forensics skill and data files shipped in the package. `SUI_REPLAY_DIR`, which the test harness sets, records and replays chain reads in the directory it names. |
 | Subprocess | One call, in [`src/tools/decompiler.ts`](https://github.com/0xfreak0/sui-mcp/blob/main/src/tools/decompiler.ts), to the decompiler binary you build and configure yourself. It uses `execFile` with array arguments, so no shell is involved and nothing is interpolated into a command string. |
 | Environment | The `SUI_`-prefixed variables in [`.env.example`](https://github.com/0xfreak0/sui-mcp/blob/main/.env.example), the optional price-provider key `PYTH_API_KEY`, `PATH` when looking for the decompiler, and the test harness switches `SUI_REPLAY_DIR` and `SUI_DISABLE_LIVE_COIN_LIST`. Nothing else is read. |

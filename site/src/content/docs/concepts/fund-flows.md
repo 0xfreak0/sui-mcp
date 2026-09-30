@@ -34,7 +34,8 @@ Bridge summaries cap transaction detail, not group totals or destinations.
 Coin decimals come from the registry, cached on-chain metadata or the quote's
 provider. A quote without a known decimal scale stays unpriced.
 
-DefiLlama is the default; Pyth is used only with `PYTH_API_KEY`. Historical
+DefiLlama is the default, with keyless CoinGecko and GeckoTerminal fallbacks
+for recent dates; Pyth is used only with `PYTH_API_KEY`. Historical
 DefiLlama reads batch samples, and successful samples are cached per network.
 The newest samples are priced first within a bounded read budget. If
 `budget_skipped_coin_samples` is nonzero, narrow the window and combine

@@ -26,6 +26,8 @@ import {
 import { effectsPayouts } from "../utils/payouts.js";
 import { getLabel } from "../utils/labels.js";
 import { resolveWindow } from "../utils/checkpoint-time.js";
+import { windowPrices } from "../utils/window-prices.js";
+import { valueWindowDeltas, type TimedDeltas } from "../utils/window-deltas.js";
 import {
   displayCoin,
   formatUsd,
@@ -986,7 +988,7 @@ export function registerAttackTools(server: McpServer) {
         .union([numArg(), z.string()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Price all coins and objects at Unix seconds or ISO 8601 time. Default: coins at the first successful transaction's time; each moved object at its own transaction's time."),
+        .describe("Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: daily coin quotes at each transaction's date; objects at their own transaction times."),
       max_groups: numArg()
         .int()
         .min(1)
@@ -1047,10 +1049,6 @@ export function registerAttackTools(server: McpServer) {
         const [{ protocolOf, unread: custodySkipped }, stateRead] = await Promise.all([prefetchFor(read.txs), readStateLosses(read.txs)]);
         let agg = aggregateIncident(read.txs, attackerId ?? undefined, stateRead.losses);
 
-        const firstOk = read.txs
-          .filter((t) => t.success && t.timestampMs !== null)
-          .reduce<number | null>((m, t) => (m === null || t.timestampMs! < m ? t.timestampMs! : m), null);
-        const atSec = priceAt ?? (firstOk !== null ? Math.floor(firstOk / 1000) : Math.floor(Date.now() / 1000));
 
         // Every coin any address received across these transactions, not only
         // the chosen subject's: with no attacker given, the subject defaults
@@ -1062,8 +1060,14 @@ export function registerAttackTools(server: McpServer) {
         for (const loss of stateRead.losses.values()) for (const c of loss.deltas.keys()) coins.add(c);
         for (const g of agg.groups) for (const c of g.pool_deltas.keys()) if (isCoinTypeKey(c)) coins.add(c);
         const successfulTxs = read.txs.filter((t) => t.success);
+        const atOf = (tx: AttackTx) => tx.timestampMs === null ? null : tx.timestampMs / 1000;
+        let perTx = read.txs.map((tx) => ({ tx, aggregate: aggregateIncident([tx], attackerId ?? undefined, stateRead.losses) }));
         const [prices, , txObjects] = await Promise.all([
-          priceUsdAtTime([...coins], atSec),
+          windowPrices(perTx.map(({ tx, aggregate }) => ({
+            at: atOf(tx),
+            coins: new Set([...tx.balanceChanges.flatMap((b) => b.coinType ? [b.coinType] : []),
+              ...aggregate.groups.flatMap((g) => [...g.pool_deltas.keys()].filter(isCoinTypeKey))]),
+          })), priceAt ?? undefined),
           prefetchCoinScale(coins),
           // Objects are read at each transaction's checkpoint.
           valueTransactionObjects(
@@ -1077,6 +1081,11 @@ export function registerAttackTools(server: McpServer) {
             priceAt ?? undefined,
           ),
         ]);
+        const pointsOf = (tx: AttackTx) => new Map([...coins].flatMap((coin) => {
+          const point = prices.point(coin, atOf(tx));
+          return point ? [[coin, point] as const] : [];
+        }));
+        const totalLegs = () => perTx.map(({ tx, aggregate }) => ({ at: atOf(tx), deltas: aggregate.totals }));
         const objectsByTx = new Map<string, Map<string, AddressObjectValue>>();
         for (const digest of new Set(txObjects.rows.map((r) => r.digest))) {
           objectsByTx.set(digest, objectValueByAddress(txObjects.rows.filter((r) => r.digest === digest)));
@@ -1106,8 +1115,9 @@ export function registerAttackTools(server: McpServer) {
             const sender = canonicalId(tx.sender);
             const coinsOf = sender ? netByAddress(tx.balanceChanges).get(sender) : undefined;
             const objs = sender ? objectsByTx.get(tx.digest)?.get(sender) : undefined;
-            if (isGasOnly(coinsOf, prices.points, GAS_ONLY_USD_THRESHOLD) && !movedPricedObjects(objs)) return "gas" as const;
-            const v = valueDeltas(coinsOf ?? new Map(), prices.points);
+            const points = pointsOf(tx);
+            if (isGasOnly(coinsOf, points, GAS_ONLY_USD_THRESHOLD) && !movedPricedObjects(objs)) return "gas" as const;
+            const v = valueDeltas(coinsOf ?? new Map(), points);
             const gaveAway =
               v.usd_gained + (objs?.usd_gained ?? 0) < GAS_ONLY_USD_THRESHOLD &&
               (objs?.usd_net ?? 0) <= -GAS_ONLY_USD_THRESHOLD &&
@@ -1116,13 +1126,13 @@ export function registerAttackTools(server: McpServer) {
           });
           if (tookNothing.every((t) => t !== null)) {
             sendersGaveAway = tookNothing.includes("gave");
-            const byAddress = new Map<string, Map<string, bigint>>();
+            const byAddress = new Map<string, TimedDeltas[]>();
             for (const tx of successfulTxs) {
               for (const [address, deltas] of netByAddress(tx.balanceChanges)) {
                 if (agg.senders.includes(address)) continue;
-                const existing = byAddress.get(address);
-                if (existing) addDeltas(existing, deltas);
-                else byAddress.set(address, new Map(deltas));
+                const existing = byAddress.get(address) ?? [];
+                existing.push({ at: atOf(tx), deltas });
+                byAddress.set(address, existing);
               }
             }
             // Coins a transaction's own sender paid out: a gainer of one
@@ -1133,9 +1143,9 @@ export function registerAttackTools(server: McpServer) {
               for (const [coin, v] of (sender ? netByAddress(tx.balanceChanges).get(sender) : undefined) ?? []) if (v < 0n) sendersPaid.add(coin);
             }
             const objectsBy = objectValueByAddress(txObjects.rows);
-            for (const address of objectsBy.keys()) if (!agg.senders.includes(address) && !byAddress.has(address)) byAddress.set(address, new Map());
+            for (const address of objectsBy.keys()) if (!agg.senders.includes(address) && !byAddress.has(address)) byAddress.set(address, []);
             const valued = [...byAddress].map(([address, deltas]) => {
-              const v = valueDeltas(deltas, prices.points);
+              const v = valueWindowDeltas(deltas, prices);
               const o = objectsBy.get(address);
               return { address, v, o, usd_net: v.usd_net + (o?.usd_net ?? 0) };
             });
@@ -1146,11 +1156,12 @@ export function registerAttackTools(server: McpServer) {
             // over.
             const top = valued.filter((c) => c.usd_net >= GAS_ONLY_USD_THRESHOLD).sort((a, b) => b.usd_net - a.usd_net)[0];
             unpricedGainers = valued
-              .filter((c) => c.address !== top?.address && takesUnpricedValue(c.v.coins, c.o, sendersPaid))
+              .filter((c) => c.address !== top?.address && (takesUnpricedValue(c.v.coins, c.o, sendersPaid) ||
+                c.v.coins.some((coin) => BigInt(coin.unpriced_raw.in) > 0n && guardiansFlagsForCoin(coin.coin_type).length === 0 && !sendersPaid.has(coin.coin_type))))
               .map((c) => ({
                 address: c.address,
                 unpriced_coins: c.v.coins
-                  .filter((coin) => coin.usd === null && BigInt(coin.amount) > 0n)
+                  .filter((coin) => BigInt(coin.unpriced_raw.in) > 0n)
                   .map((coin) => ({ coin_type: coin.coin_type, symbol: coin.symbol, amount: coin.amount_human })),
                 ...(c.o?.gained.some((r) => r.usd === null)
                   ? { unpriced_objects: c.o.gained.filter((r) => r.usd === null).map((r) => ({ object_id: r.object_id, type: r.type })) }
@@ -1161,9 +1172,10 @@ export function registerAttackTools(server: McpServer) {
               defaultedFrom = {
                 address: top.address,
                 senders: agg.senders,
-                sender_usd_net: Number((valueDeltas(agg.totals, prices.points).usd_net + senderObjects).toFixed(2)),
+                sender_usd_net: Number((valueWindowDeltas(totalLegs(), prices).usd_net + senderObjects).toFixed(2)),
               };
               agg = aggregateIncident(read.txs, top.address, stateRead.losses);
+              perTx = read.txs.map((tx) => ({ tx, aggregate: aggregateIncident([tx], top.address, stateRead.losses) }));
             }
           }
         }
@@ -1183,7 +1195,7 @@ export function registerAttackTools(server: McpServer) {
         const objectRows: Array<
           ReturnType<typeof objectRow> & { digest: string; direction: "in" | "consumed" | "sent_on" | "changed" | "custody"; to?: string }
         > = [];
-        const legsByObject = new Map<string, Array<{ signed: number; sign: 1 | -1; coins: MovedObjectValue["coin_amounts"] }>>();
+        const netByObject = new Map<string, number>();
         let objectsSentOn = 0;
         let objectsEstimate = 0;
         let objectsUnpriced = 0;
@@ -1222,30 +1234,10 @@ export function registerAttackTools(server: McpServer) {
           const signed = r.usd === null ? null : direction === "consumed" ? -r.usd : r.usd;
           if (signed === null) objectsUnpriced++;
           else if (r.estimate) objectsEstimate += signed;
-          else {
-            const rowsOf = legsByObject.get(r.object_id) ?? [];
-            rowsOf.push({ signed, sign: direction === "consumed" ? -1 : 1, coins: r.coin_amounts });
-            legsByObject.set(r.object_id, rowsOf);
-          }
+          else netByObject.set(r.object_id, (netByObject.get(r.object_id) ?? 0) + signed);
         }
-        // An object seen in several transactions (received, then unstaked or
-        // closed) is netted by its amounts at one price, the first row's, so
-        // the price moving between the two does not leave value behind that
-        // the coins it paid out, all priced at one moment, cancel against.
-        const netByObject = new Map<string, number>();
-        for (const [id, rowsOf] of legsByObject) {
-          const coinOf = (c: MovedObjectValue["coin_amounts"]) => (c && c.length === 1 ? c[0] : null);
-          const first = coinOf(rowsOf[0].coins);
-          const oneCoin =
-            rowsOf.length > 1 && first !== null && BigInt(first.amount) !== 0n && rowsOf.every((x) => coinOf(x.coins)?.coin_type === first.coin_type);
-          if (!oneCoin) {
-            netByObject.set(id, rowsOf.reduce((t, x) => t + x.signed, 0));
-            continue;
-          }
-          const unit = Math.abs(rowsOf[0].signed) / Math.abs(Number(first!.amount));
-          const net = rowsOf.reduce((t, x) => t + x.sign * Number(coinOf(x.coins)!.amount), 0);
-          netByObject.set(id, net * unit);
-        }
+        // Objects and coin legs are valued at their own times; a later
+        // consumption must not be repriced at the first receipt's quote.
         let objectsGained = 0;
         let objectsConsumed = 0;
         for (const net of netByObject.values()) {
@@ -1259,8 +1251,11 @@ export function registerAttackTools(server: McpServer) {
           Object.fromEntries(v.coins.map((c) => [c.coin_type, [c.amount_human, c.usd]]));
         const allGroups = agg.groups
           .map((g) => {
-            const a = valueDeltas(g.attacker_deltas, prices.points);
-            const p = valueDeltas(g.pool_deltas, prices.points);
+            const legs = perTx.flatMap(({ tx, aggregate }) => aggregate.groups
+              .filter((row) => row.basis === g.basis && row.pools.join("+") === g.pools.join("+"))
+              .map((row) => ({ at: atOf(tx), row })));
+            const a = valueWindowDeltas(legs.map(({ at, row }) => ({ at, deltas: row.attacker_deltas })), prices);
+            const p = valueWindowDeltas(legs.map(({ at, row }) => ({ at, deltas: row.pool_deltas })), prices);
             const poolUsd = Number((p.usd_net - (g.recorded_loss_usd ?? 0)).toFixed(2));
             const unpricedHere = new Set([...a.unpriced, ...p.unpriced]).size;
             const scamListed = g.pool_type !== null && guardiansFlagsForObjectType(g.pool_type).length > 0;
@@ -1276,6 +1271,8 @@ export function registerAttackTools(server: McpServer) {
               ...(unpricedHere ? { unpriced_coins: unpricedHere } : {}),
               attacker: perCoin(a),
               pool: perCoin(p),
+              ...(unpricedHere ? { price_coverage: { attacker: a.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw })),
+                pool: p.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw })) } } : {}),
               ...(g.recorded_loss_usd
                 ? {
                     recorded_loss_usd: Number(g.recorded_loss_usd.toFixed(2)),
@@ -1288,7 +1285,7 @@ export function registerAttackTools(server: McpServer) {
         const groups = max_groups ? allGroups.slice(0, max_groups) : allGroups;
         const rankedGroups = allGroups.filter((g) => !g.pool_type_scam_listed && (g.attacker_usd !== 0 || g.pool_usd !== 0));
 
-        const coinTotal = valueDeltas(agg.totals, prices.points);
+        const coinTotal = valueWindowDeltas(totalLegs(), prices);
         // The attacker's totals count the objects it received or consumed.
         const total = {
           ...coinTotal,
@@ -1296,7 +1293,6 @@ export function registerAttackTools(server: McpServer) {
           usd_net: Number((coinTotal.usd_net + objectsGained - objectsConsumed).toFixed(2)),
         };
         const poolLossUsd = allGroups.reduce((s, g) => s + Math.min(0, g.pool_usd), 0);
-        const unpricedBy = new Map(prices.unpriced.map((u) => [u.coin_type, u]));
         const netOf = new Map(total.coins.map((c) => [c.coin_type, c]));
         // Only the final attacker's own coins and the pools' reserve coins,
         // not every coin any address touched across every transaction: the
@@ -1314,15 +1310,14 @@ export function registerAttackTools(server: McpServer) {
             verified: coin.verified,
             attacker_net: t?.amount_human ?? 0,
             attacker_net_raw: t?.amount ?? "0",
-            decimals_source: t?.decimals_source ?? pricingScale(coinType, prices.points.get(coinType)).source,
-            usd: t?.usd ?? null,
+            decimals_source: t?.decimals_source ?? pricingScale(coinType).source,
+            usd: t ? t.usd : perTx.some(({ tx }) => prices.point(coinType, atOf(tx))) ? 0 : null,
+            ...(t ? { priced_raw: t.priced_raw, unpriced_raw: t.unpriced_raw } : {}),
           };
         });
-        const pricedCoins = coinRows.filter((c) => prices.points.has(c.coin_type)).sort((a, b) => Math.abs(b.usd ?? 0) - Math.abs(a.usd ?? 0));
-        const unpricedRemainder = coinRows
-          .filter((c) => !prices.points.has(c.coin_type))
-          .map(({ usd: _usd, ...c }) => ({ ...c, reason: unpricedBy.get(c.coin_type)?.reason ?? "No price." }));
-        const lowerBound = unpricedRemainder.length > 0 || objectsUnpriced > 0 || objectsUnread > 0;
+        const pricedCoins = coinRows.filter((c) => c.usd !== null).sort((a, b) => Math.abs(b.usd ?? 0) - Math.abs(a.usd ?? 0));
+        const unpricedRemainder = coinRows.filter((c) => c.usd === null || coinTotal.unpriced.includes(c.coin_type));
+        const partial = unpricedRemainder.length > 0 || allGroups.some((g) => g.unpriced_coins) || objectsUnpriced > 0 || objectsUnread > 0;
 
         // Transfers out, one row per coin and set of recipients.
         const sentRows = new Map<string, { coin: string; to: Map<string, bigint>; amount: bigint; digests: string[] }>();
@@ -1336,7 +1331,10 @@ export function registerAttackTools(server: McpServer) {
         }
         const transfersOut = [...sentRows.values()]
           .map((row) => {
-            const v = valueDeltas(new Map([[row.coin, row.amount]]), prices.points).coins[0];
+            const legs = perTx.flatMap(({ tx, aggregate }) => aggregate.transfers_out
+              .filter((t) => t.coin === row.coin && row.digests.includes(t.digest))
+              .map((t) => ({ at: atOf(tx), deltas: new Map([[t.coin, t.amount]]) })));
+            const v = valueWindowDeltas(legs, prices).coins[0];
             return {
               to: [...row.to].map(([address, amount]) => ({ address, amount: amount.toString() })),
               coin_type: row.coin,
@@ -1344,12 +1342,14 @@ export function registerAttackTools(server: McpServer) {
               amount: v.amount_human,
               amount_raw: v.amount,
               usd: v.usd,
+              priced_raw: v.priced_raw,
+              unpriced_raw: v.unpriced_raw,
               transactions: row.digests,
             };
           })
           .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1));
         const sentUsd = Number(transfersOut.reduce((s, t) => s + (t.usd ?? 0), 0).toFixed(2));
-        const sentUnpriced = transfersOut.filter((t) => t.usd === null).length;
+        const sentUnpriced = transfersOut.filter((t) => BigInt(t.unpriced_raw.in) > 0n || BigInt(t.unpriced_raw.out) > 0n).length;
         const recipients = new Set(transfersOut.flatMap((t) => t.to.map((r) => r.address)));
 
         const lines = [
@@ -1364,11 +1364,9 @@ export function registerAttackTools(server: McpServer) {
                   `No attacker given: ${defaultedFrom.senders.join(", ")} ${sendersAside} across these transactions (net ${formatUsd(defaultedFrom.sender_usd_net)}), so ${defaultedFrom.address} is used instead as the largest gainer. Pass "attacker" to name a different address.`,
                 ]
               : []),
-          `Attacker gains at ${new Date(atSec * 1000).toISOString()}: ${formatUsd(total.usd_gained)} across ${pricedCoins.length} priced coin(s)` +
+          `Estimated attacker gains: ${formatUsd(total.usd_gained)} across ${pricedCoins.length} priced coin(s)` +
             (objectsGained > 0 ? ` and valued objects (${formatUsd(objectsGained)})` : "") +
-            (lowerBound
-              ? `; ${unpricedRemainder.length} more coin(s) and ${objectsUnpriced} object(s) have no price${objectsUnread ? `, and ${objectsUnread} object(s) or transaction(s) were not valued` : ""}, so this is a lower bound.`
-              : "."),
+            (partial ? "; partial pricing: missing credits and debits are excluded. See usd_basis and raw coverage." : "."),
           ...(objectRows.length
             ? [
                 `Objects: received ${formatUsd(objectsGained)}, consumed ${formatUsd(objectsConsumed)}, sent on ${formatUsd(objectsSentOn)} (kept out of the totals)` +
@@ -1423,9 +1421,11 @@ export function registerAttackTools(server: McpServer) {
             : {}),
           sender_count: agg.senders.length,
           senders: agg.senders,
-          priced_at: new Date(atSec * 1000).toISOString(),
+          usd_basis: prices.basis,
           evidence_tiers: EVIDENCE_TIERS,
           totals: {
+            approximate: true,
+            partial,
             usd_gained: total.usd_gained,
             usd_net: total.usd_net,
             ...(objectRows.length
@@ -1442,14 +1442,7 @@ export function registerAttackTools(server: McpServer) {
             coins: coinRows.length,
             priced_coins: pricedCoins.length,
             ...(transfersOut.length ? { transfers_out_usd: sentUsd, transfers_out: agg.transfers_out.length } : {}),
-            ...(lowerBound
-              ? {
-                  lower_bound: true,
-                  lower_bound_note:
-                    `${unpricedRemainder.length} of ${coinRows.length} coins${objectsUnpriced ? ` and ${objectsUnpriced} object(s)` : ""} have no price at ${new Date(atSec * 1000).toISOString()}, so the USD totals leave them out. Coins are listed with amounts in unpriced_remainder, objects in objects.` +
-                    (objectsUnread ? ` ${objectsUnread} object(s) or transaction(s) were not valued at all (objects_unread, objects_skipped_transactions).` : ""),
-                }
-              : {}),
+            ...(partial ? { partial_note: "USD excludes unpriced coin legs and unread or unpriced objects. Missing debits can raise a net, so it is not a lower bound." } : {}),
           },
           priced_coins: pricedCoins,
           unpriced_remainder: unpricedRemainder,
@@ -1497,7 +1490,6 @@ export function registerAttackTools(server: McpServer) {
             : {}),
           groups,
           ...custodySkippedNote(custodySkipped),
-          prices: priceTable(prices, atSec),
         };
 
         // A group row lists its first transactions; transaction_count and
@@ -1514,6 +1506,7 @@ export function registerAttackTools(server: McpServer) {
           args,
           detail === "full" ? payload : { ...payload, groups: shownGroups },
           {
+            "usd_basis.missing_coin_days": { budget: 2_000, keepOrder: true },
             groups: {
               budget: 14_000,
               usd: (g: Group) => Math.max(g.attacker_usd, -g.pool_usd),

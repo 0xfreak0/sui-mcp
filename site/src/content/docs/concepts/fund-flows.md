@@ -25,6 +25,14 @@ The newest days are priced first within a bounded read budget. If
 windows. A partial USD net is not a lower bound: missing debits can make it
 too high.
 
+`summarize_incident_losses` uses the same daily quotes for gains, pool deltas,
+recipient selection and transfers sent on. Coin legs are priced before being
+netted: equal token amounts at different dates can have a nonzero USD net.
+Objects received and later consumed retain each leg's historical value.
+`price_at` explicitly switches coins and objects to a fixed-time valuation;
+`usd_basis.method` identifies that choice. Missing coin legs or objects make
+`totals.partial` true, not a claim that the total is a lower bound.
+
 ## Historical object flows
 
 `summarize_address_flows` lists valued objects a transaction deleted or wrapped,

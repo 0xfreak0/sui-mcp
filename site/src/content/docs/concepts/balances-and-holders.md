@@ -49,6 +49,74 @@ the two arguments are mutually exclusive. Reconstruction uses one request
 per page of 50 transactions. `max_transactions` does not apply to a current
 balance or a direct read within the consistent range.
 
+## Staking at a past moment
+
+`get_staking_summary` takes `as_of`, an ISO 8601 date or checkpoint:
+
+```json
+{"address":"0x…","as_of":"2025-06-01T00:00:00Z"}
+```
+
+The result describes **StakedSui objects directly held by the address** at the
+end of that checkpoint. A date selects the last checkpoint at or before it,
+not the nearest checkpoint. `total_staked_mist` is their principal, excluding
+rewards. Transferred stakes count for their holder, and split/joined positions
+use their historical object versions. Wrapped or object-owned stakes,
+FungibleStakedSui and liquid-staking tokens are outside this total. An empty
+set says nothing about those excluded holdings.
+Single-address consensus ownership counts as direct ownership.
+
+`method: checkpoint_objects` reads the owned set at that checkpoint when the
+provider retains it. Outside that range, `reconstructed_object_changes`
+replays every transaction affecting the address, including incoming objects:
+
+- `direction: reverse` starts with an owned set at `anchor_checkpoint` and
+  reverses changes after the requested checkpoint through that anchor.
+- `direction: forward` starts empty and applies changes from genesis through
+  the requested checkpoint. Genesis is included when it affects the address.
+
+The tool chooses a direction from the address's first and latest transaction
+checkpoints, then tries the other if the first cannot finish. Each direction
+has its own `max_transactions` budget, which also bounds object-change pages.
+Every nested page must finish. Missing history, discontinuous ownership,
+ambiguous wrapped/unwrapped states or a budget stop give `complete: false`
+and a null total, never an intermediate set labelled as historical holdings.
+Objects created already wrapped are skipped only when a gRPC effects read
+proves they never existed at top level; other missing states remain incomplete.
+When effects v1 omit an input holder, the tool reads that exact object version.
+`attempts` records the stopping point and budget. `continue_with` supplies a
+higher-budget call for transaction/page limits. A time-budget stop stays
+incomplete without suggesting that a larger transaction budget can help.
+`detail: full` returns all positions from a completed read. Display caps leave
+totals intact and give a saved-result page or full call for omitted rows.
+
+`estimated_reward_mist` is separate. Each position's principal converts to
+pool tokens at its activation-epoch exchange rate, then back to SUI at the
+requested checkpoint's epoch, with integer rounding. Inactive pools stop at
+their deactivation epoch. Missing rates leave rewards null without discarding
+known principal. The estimate excludes a withdrawal-time cap from the pool's
+remaining reward balance; it never substitutes today's rate.
+
+### Why events alone do not establish holdings
+
+`0x3::validator::StakingRequestEvent` records the requester in `staker_address`;
+`UnstakingRequestEvent` records the withdrawer. Subtracting their principal
+amounts by that field measures requests and withdrawals attributed to an
+address. It does not track transfer recipients, splits, joins, genesis stakes
+or conversion to fungible stake. A later holder can withdraw another
+address's original stake, so this event net can even be negative.
+
+GraphQL's `availableRange` reports separate retention for owned-object sets,
+point object history and transaction/event lists. The tool returns these
+ranges rather than assuming that historical object reads imply historical
+owner enumeration. gRPC and its archive read known object IDs and versions;
+they do not enumerate an address's holdings at an old checkpoint. GraphQL
+resolves the historical versions needed by this reconstruction. Event-list
+retention and the absence of a `staker_address` field filter also prevent an
+unqualified event-only fallback.
+
+See [GraphQL scope and retention](https://docs.sui.io/develop/accessing-data/graphql/query-with-graphql)
+and the [validator event definitions](https://docs.sui.io/references/framework/sui_sui_system/validator).
 
 ## Top holders
 

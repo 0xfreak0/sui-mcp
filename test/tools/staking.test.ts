@@ -361,4 +361,27 @@ describe("get_staking_summary", () => {
     expect(data.total_staked_mist).toBe("0");
     expect(data.positions).toEqual([]);
   });
+
+  it("does not return today's holdings for a historical checkpoint", async () => {
+    mockSui.listOwnedObjects.mockResolvedValue({ objects: [], hasNextPage: false, cursor: null });
+    mockGqlQuery.mockRejectedValue(new Error("Historical data unavailable"));
+    await expect(tools.get("get_staking_summary")!({ address: "0xwallet", as_of: "100" })).rejects.toThrow();
+  });
+
+  it("keeps complete totals when display-capping positions and returns omissions on the full call", async () => {
+    mockSui.listOwnedObjects.mockResolvedValue({
+      objects: Array.from({ length: 60 }, (_, i) => stakedSui(`0x${i.toString(16).padStart(64, "0")}`, "0xpool", "1000000000", "10")),
+      hasNextPage: false,
+      cursor: null,
+    });
+    const handler = tools.get("get_staking_summary")!;
+    const summary = JSON.parse((await handler({ address: "0xwallet" })).content[0].text);
+    expect(summary).toMatchObject({ total_staked_mist: "60000000000", position_count: 60, complete: true, truncated: true });
+    expect(summary.positions.length + summary.omitted.lists.positions.count).toBe(60);
+    const full = JSON.parse((await handler(summary.omitted.next_call.args)).content[0].text);
+    expect(full.positions).toHaveLength(60);
+    expect(new Set(full.positions.map((p: { object_id: string }) => p.object_id)).size).toBe(60);
+    expect(full.total_staked_mist).toBe(summary.total_staked_mist);
+    expect(full.truncated).toBe(false);
+  });
 });

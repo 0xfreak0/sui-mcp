@@ -50,6 +50,7 @@ vi.mock("../src/utils/price-providers.js", () => ({
     unsupported: new Set(),
   }),
 }));
+vi.mock("../src/utils/recent-prices.js", () => ({ fetchRecentHistory: async () => ({ quotes: new Map(), unanswered: new Map(), outOfRange: [] }) }));
 vi.mock("../src/utils/names.js", () => ({ batchResolveNames: async () => new Map() }));
 const mockFanout = vi.fn();
 vi.mock("../src/utils/fanout.js", () => ({ measureFanout: mockFanout }));

@@ -85,7 +85,8 @@ export function nftPosition(
       unit_sui: unitSui,
       unit_usd: unitUsd,
       basis: est.basis,
-      sui_usd: sui ? { price: sui.price, source: sui.source, at: new Date(sui.publishTime * 1000).toISOString() } : null,
+      sui_usd: sui ? { price: sui.price, source: sui.source, at: new Date(sui.publishTime * 1000).toISOString(),
+        price_offset_sec: sui.publishTime - asOfSec, ...(sui.market ? { market: sui.market } : {}) } : null,
       window_days: MARKET_WINDOW_DAYS,
       floor: market.floor
         ? {

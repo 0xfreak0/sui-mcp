@@ -340,7 +340,8 @@ export function assemblePosition(base: PositionBase, legs: Leg[], prices: Histor
     } else unpriced.push(leg.coin_type);
     // Borrows are owed, so they subtract from the net.
     if (usd !== null) net += leg.side === "borrow" ? -usd : usd;
-    assets.push({ coin_type: leg.coin_type, amount: leg.amount.toString(), side: leg.side, usd });
+    assets.push({ coin_type: leg.coin_type, amount: leg.amount.toString(), side: leg.side, usd,
+      ...(point && leg.amount !== 0n ? { price_sample: point } : {}) });
   }
   const priceNote = sources.size > 0 ? ` Priced by ${[...sources].join(", ")}.` : "";
   const position: ValuedPosition = {

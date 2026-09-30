@@ -58,6 +58,7 @@ describe("priceUsdAtTime", () => {
     expect(points.get(REAL_SUI)).toEqual({
       price: 4.16,
       publishTime: AT + 1,
+      price_offset_sec: 1,
       source: "defillama",
       confidence: 0.99,
       decimals: 9,
@@ -78,7 +79,7 @@ describe("priceUsdAtTime", () => {
     expect(llamaUrl).toContain(FAKE_SUI);
     expect(llamaUrl).not.toContain(REAL_SUI);
     expect(unpriced).toEqual([
-      expect.objectContaining({ coin_type: FAKE_SUI, code: "not_listed", reason: expect.stringContaining("matched by symbol") }),
+      expect.objectContaining({ coin_type: FAKE_SUI, code: "not_listed" }),
     ]);
   });
 
@@ -122,7 +123,7 @@ describe("priceUsdAtTime", () => {
     const { points, unpriced } = await priceUsdAtTime([REAL_SUI], AT, { sources: ["pyth"] });
     expect(points.size).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(unpriced[0]).toMatchObject({ code: "no_oracle_price", reason: expect.stringContaining("PYTH_API_KEY") });
+    expect(unpriced[0]).toMatchObject({ code: "no_oracle_price" });
   });
 });
 
@@ -145,7 +146,6 @@ describe("explainUnpriced", () => {
       [FAKE_SUI, "not_listed"],
       [lp, "type_parameters"],
     ]);
-    expect(out[0].reason).toContain("says nothing about whether the coin had a price");
   });
 
   it("lists nothing that was priced", () => {

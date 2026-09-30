@@ -3603,14 +3603,27 @@ change is likely to break:
 
 `priceUsdAtTime` (`src/utils/valuation.ts`) is the one historical path, and
 `trace_funds`, `get_token_prices` with `at`, `analyze_attack_tx` and
-`summarize_incident_losses` all use it. Six rules:
+`summarize_incident_losses` all use it.
 
-- **DefiLlama is the keyless source, and its key is the PADDED coin type.**
+- **DefiLlama is the default keyless source, and its key is the PADDED coin type.**
   `sui:0x2::sui::SUI` resolves, but a stripped leading zero does not:
   `sui:0x6864a6f9…::cetus::CETUS` returns nothing where `sui:0x06864a6f9…`
   returns CETUS. A replay that stripped zeros lost CETUS and priced 96 of 195
   Cetus-exploit coins; padded, it prices 103. `defiLlamaKey` pads; do not build
   the key anywhere else.
+- **Recent-history fallbacks still identify the full type and retain sample time.**
+  `recent-prices.ts` asks CoinGecko's `sui` contract chart, then GeckoTerminal
+  on `sui-network`. Both require the full type, not a package or symbol.
+  CoinGecko's URL lookup folds case: require its `platforms.sui` record to
+  match the requested module and struct names case-sensitively before reading
+  the chart. GeckoTerminal pool token IDs must pass the same exact-type check.
+  GeckoTerminal needs the short address spelling for SUI; its pool lookup
+  returned an empty list for padded SUI. Public history bounds are checked
+  before requests. CoinGecko timestamps are milliseconds; GeckoTerminal's
+  are candle-opening seconds, so a closed hourly quote is dated one hour
+  later. Never price the other side of a pool, fill empty candles, or replace
+  a historical quote with a current one. Pool selection uses current USD
+  reserves; the public page cap is disclosed in `pool_scan_complete`.
 - **Pyth is asked about VERIFIED coins only.** Its feeds are found by symbol,
   so an impostor ending `::sui::SUI` would get SUI's price. DefiLlama keys on
   the full type and prices a coin as itself or not at all.

@@ -1241,7 +1241,7 @@ export function registerTraceTools(server: McpServer) {
       }
 
       // Value each hop's flows in USD at that hop's block time: Pyth for
-      // verified coins when a key is set, DefiLlama otherwise. Best-effort:
+      // verified coins with a key, otherwise keyless historical providers. Best-effort:
       // a coin with no price gets a null usd_value and is listed in
       // `usd.unpriced` with the reason, and pricing failures never break the
       // trace.
@@ -1299,9 +1299,11 @@ export function registerTraceTools(server: McpServer) {
               price_usd: Number(price.toFixed(price < 1 ? 6 : 4)),
               price_source: pp.source,
               ...(pp.priced_as ? { priced_as: pp.priced_as } : {}),
+              ...(pp.market ? { market: pp.market } : {}),
               // The sample time says how far it is from the hop; price_stale
               // flags one past the threshold.
               priced_at: new Date(pp.publishTime * 1000).toISOString(),
+              ...(blockUnix !== null ? { price_offset_sec: pp.publishTime - blockUnix } : {}),
               ...(stale ? { price_stale: true } : {}),
             };
           }

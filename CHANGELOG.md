@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **Keyless fallbacks for recent historical prices.** When DefiLlama has no
+  quote or its request fails, the price comes from CoinGecko, then from
+  GeckoTerminal's hourly pool candles. Both cover recent history only and
+  are asked only for dates they serve. A fallback accepts a coin only when
+  the provider's own record matches its exact type, case included, so a
+  lookalike cannot take the real coin's price. Every price names its
+  source, sample time and offset. Window coverage says which provider priced
+  which amounts. A current price never stands in for a historical one.
 - **`classify_deposit_address` answers for a chosen period.** It takes
   `from` and `to` (a time or a checkpoint) and reports the window it read,
   its limits and the continuation. An address whose older sweeps went
@@ -36,6 +44,10 @@
 - **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
 
 ### Fixed
+- **Pricing tells a failed request, a missing quote and a date out of
+  range apart.** A usage-limit or error response is a failed request, not
+  "no price". A date no selected provider serves is reported as
+  `out_of_range`.
 - **Deposit roles show consistently across address tools.**
   `summarize_address_flows`, `identify_address` and `manage_labels` lookup
   report an address's inferred deposit label and any verdict

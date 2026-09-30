@@ -138,6 +138,7 @@ export function registerPriceTools(server: McpServer) {
             price_usd: p.price,
             source: p.source,
             ...(p.priced_as ? { priced_as: p.priced_as } : {}),
+            ...(p.market ? { market: p.market } : {}),
             ...(p.confidence !== undefined ? { confidence: p.confidence } : {}),
             price_time: new Date(p.publishTime * 1000).toISOString(),
             // Signed: negative means the sample predates the moment asked for.

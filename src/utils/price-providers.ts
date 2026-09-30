@@ -9,9 +9,9 @@
  *
  * The response is a provider layer with three properties:
  *
- *   - **Free by default.** Aftermath and DefiLlama need no key. Aftermath
- *     covers current prices; DefiLlama covers current and historical prices,
- *     so block-time valuation works out of the box.
+ *   - **Free by default.** Aftermath covers current prices; DefiLlama covers
+ *     current and historical prices. CoinGecko and GeckoTerminal cover recent
+ *     history when DefiLlama has no quote or its request fails.
  *   - **Paid sources are opt-in.** Pyth engages only when its key is set.
  *     Nothing degrades for someone who does not set it, and nobody is billed
  *     by accident.
@@ -28,15 +28,15 @@
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { normalizeCoinType } from "./coin-registry.js";
 
-export type PriceSource = "aftermath" | "defillama" | "pyth";
+export type PriceSource = "aftermath" | "defillama" | "pyth" | "coingecko" | "geckoterminal";
 
 export interface PriceQuote {
   /** USD unit price. */
   price: number;
   source: PriceSource;
   /**
-   * Unix seconds the quote is for. Absent when the source reports only a
-   * current price, which is the case for every free provider here.
+   * Unix seconds of the sample. Absent for sources that report only a
+   * current price, such as Aftermath.
    */
   at?: number;
   /** True when the caller asked for a historical price and got a current one. */
@@ -55,6 +55,13 @@ export interface PriceQuote {
    * coin's own: a bridge token priced as the asset it is minted against.
    */
   priced_as?: string;
+  /** A closed USD candle; the sample time is its end, not its opening time. */
+  market?: {
+    pool_address: string;
+    candle_start: number;
+    candle_end: number;
+    pool_scan_complete: boolean;
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -66,7 +73,7 @@ export const pythApiKey = (): string | null => process.env.PYTH_API_KEY?.trim() 
 
 /** Which sources are usable right now, cheapest first. */
 export function availableSources(): PriceSource[] {
-  const out: PriceSource[] = ["aftermath", "defillama"];
+  const out: PriceSource[] = ["aftermath", "defillama", "coingecko", "geckoterminal"];
   if (pythApiKey()) out.push("pyth");
   return out;
 }
@@ -180,7 +187,7 @@ export function parseDefiLlamaPrices(
     const price = entry.price;
     if (typeof price !== "number" || !Number.isFinite(price) || price < 0) continue;
     const quote: PriceQuote = { price, source: "defillama" };
-    if (typeof entry.timestamp === "number") quote.at = entry.timestamp;
+    if (typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)) quote.at = entry.timestamp;
     if (typeof entry.confidence === "number") quote.confidence = entry.confidence;
     if (typeof entry.decimals === "number" && Number.isInteger(entry.decimals)) quote.decimals = entry.decimals;
     if (typeof entry.symbol === "string") quote.symbol = entry.symbol;
@@ -243,7 +250,12 @@ async function requestDefiLlama(
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const chunkMap = new Map(chunk.map((k) => [k, keyToCoins.get(k)!]));
-      for (const [coinType, q] of parseDefiLlamaPrices(await resp.json(), chunkMap)) quotes.set(coinType, q);
+      const body = await resp.json() as { coins?: unknown } | null;
+      if (!body?.coins || typeof body.coins !== "object" || Array.isArray(body.coins)) throw new Error("Invalid price response");
+      for (const [coinType, q] of parseDefiLlamaPrices(body, chunkMap)) {
+        if (base.includes("/historical/") && q.at === undefined) continue;
+        quotes.set(coinType, q);
+      }
     } catch {
       // Best-effort, but never silent: these coins are reported as unanswered,
       // which is a different finding from "DefiLlama has no price".
@@ -299,8 +311,12 @@ export async function fetchDefiLlama(coinTypes: string[], unixTs?: number): Prom
 }
 
 /** Many historical samples, keyed by coin then requested second. No current-price fallback. */
-export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Promise<Map<string, Map<number, PriceQuote>>> {
+export async function fetchDefiLlamaHistory(
+  requests: Map<string, number[]>,
+  unanswered = new Map<string, Set<number>>(),
+): Promise<Map<string, Map<number, PriceQuote>>> {
   const out = new Map<string, Map<number, PriceQuote>>();
+  const failed = new Map<string, Set<number>>();
   const read = async (keys: Map<string, number[]>) => {
     const result = new Map<string, Map<number, PriceQuote>>();
     const chunks: Array<Record<string, number[]>> = [];
@@ -323,8 +339,9 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
             headers: { accept: "application/json" },
             signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
           });
-          if (!response.ok) return;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const body = await response.json() as { coins?: Record<string, { symbol?: string; prices?: DefiLlamaEntry[] }> };
+          if (!body?.coins || typeof body.coins !== "object" || Array.isArray(body.coins)) throw new Error("Invalid price response");
           for (const [key, times] of Object.entries(coins)) {
             const entries = (body.coins?.[key]?.prices ?? []).filter(
               (p): p is DefiLlamaEntry & { timestamp: number; price: number } =>
@@ -343,7 +360,13 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
               }
             }
           }
-        } catch { /* Missing samples stay unpriced. */ }
+        } catch {
+          for (const [key, times] of Object.entries(coins)) {
+            const missing = failed.get(key) ?? new Set<number>();
+            for (const time of times) missing.add(time);
+            failed.set(key, missing);
+          }
+        }
       }));
     }
     return result;
@@ -359,7 +382,7 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
     const samples = own.get(defiLlamaKey(coin) ?? "") ?? new Map();
     out.set(coin, samples);
     const asset = SUI_BRIDGE_ASSET[normalizeCoinType(coin) ?? ""];
-    if (asset) fallback.set(asset, [...new Set([...(fallback.get(asset) ?? []), ...times.filter((t) => !samples.has(t))])]);
+    if (asset) fallback.set(asset, [...new Set([...(fallback.get(asset) ?? []), ...times.filter((t) => !samples.has(t) && !failed.get(defiLlamaKey(coin)!)?.has(t))])]);
   }
   const assets = await read(fallback);
   for (const [coin, times] of requests) {
@@ -369,6 +392,12 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
       const quote = assets.get(asset)?.get(t);
       if (!out.get(coin)!.has(t) && quote) out.get(coin)!.set(t, { ...quote, priced_as: asset });
     }
+  }
+  for (const [coin, times] of requests) {
+    const key = defiLlamaKey(coin);
+    const asset = SUI_BRIDGE_ASSET[normalizeCoinType(coin) ?? ""];
+    const missing = times.filter((t) => !out.get(coin)?.has(t) && (failed.get(key ?? "")?.has(t) || failed.get(asset)?.has(t)));
+    if (missing.length) unanswered.set(coin, new Set(missing));
   }
   return out;
 }

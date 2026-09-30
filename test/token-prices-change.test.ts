@@ -41,7 +41,7 @@ describe("get_token_prices: 24h change", () => {
         return ok({ coins: { [SUI_LONG_KEY]: { price: 1.2 } } });
       }
       if (url.startsWith(`https://coins.llama.fi/prices/historical/${DAY_AGO}/`)) {
-        return ok({ coins: { [SUI_LONG_KEY]: { price: 1 } } });
+        return ok({ coins: { [SUI_LONG_KEY]: { price: 1, timestamp: DAY_AGO } } });
       }
       return ok({ coins: {} });
     });
@@ -66,7 +66,7 @@ describe("get_token_prices: 24h change", () => {
       }
       const price = url.startsWith("https://coins.llama.fi/prices/current/") ? current
         : url.startsWith(`https://coins.llama.fi/prices/historical/${DAY_AGO}/`) ? previous : null;
-      return ok({ coins: price === null ? {} : { [SUI_LONG_KEY]: { price } } });
+      return ok({ coins: price === null ? {} : { [SUI_LONG_KEY]: { price, timestamp: url.includes("/current/") ? NOW / 1000 : DAY_AGO } } });
     });
     const out = JSON.parse((await handler({ coin_types: [SUI] })).content[0].text);
     expect(out.prices[0].price_usd).toBe(current);

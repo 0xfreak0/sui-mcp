@@ -8,6 +8,8 @@
  * value carries how it was computed and how far to trust it.
  */
 
+import type { PricePoint } from "./valuation.js";
+
 /** How far a value can be trusted, in the server's evidence tiers. */
 export type ValueTier = "chain-derived" | "price-provider" | "heuristic";
 
@@ -25,6 +27,8 @@ export interface ValuedAsset {
   price_usd?: number;
   /** Where `price_usd` came from: a protocol's own oracle (e.g. "navi_oracle") or a price provider. */
   price_source?: string;
+  /** The provider quote used for this amount, including historical offset and pool coverage. */
+  price_sample?: PricePoint;
   /**
    * Both prices, set when the protocol's oracle price and a provider's differ
    * by more than 2%, or when the oracle price was too old to use and the

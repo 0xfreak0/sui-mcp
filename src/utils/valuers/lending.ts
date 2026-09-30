@@ -614,6 +614,7 @@ export function assembleLending(base: LendingBase, legs: LendingLeg[], prices: H
       asset.usd = toHumanAmount(leg.amount, scale) * point.price;
       asset.price_usd = point.price;
       asset.price_source = point.source;
+      asset.price_sample = point;
       providerSources.add(`${point.source} at ${new Date(point.publishTime * 1000).toISOString()}`);
       if (oracle !== null) {
         failed.push(`${coinSymbol(leg.coin_type)} (${oracleName} ${usdText(oracle)} against ${point.source} ${usdText(point.price)}, ${Math.round(diff * 100) / 100}%)`);

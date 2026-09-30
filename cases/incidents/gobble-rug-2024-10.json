@@ -163,8 +163,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: BlueMove v1 router::add_liquidity in G5TPQact emitted Created_Pool_Event for pool 0xce12565b with creator = deployer.",
-      "known_defect": "find_pools searches Cetus, DeepBook and Turbos only, so the BlueMove pool that held half the liquidity is missing."
+      "basis": "Chain: BlueMove v1 router::add_liquidity in G5TPQact emitted Created_Pool_Event for pool 0xce12565b with creator = deployer. The live object is an object-owned 0xb24b6789::swap::Pool<SUI, GOBBLE>, also returned by GraphQL's exact type search."
     },
     {
       "id": "bluemove-lp-minted-to-deployer",

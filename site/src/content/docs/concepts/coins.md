@@ -99,3 +99,11 @@ With both `coin_type` and `address`, the tool checks that pair. Address-only
 checks read many deny lists because holding none of a coin does not establish
 that the address is unrestricted. For a coin's address list, `max_addresses`
 defaults to 200, at most 1000.
+
+## Liquidity pools
+
+`find_pools` searches Cetus, DeepBook v2 and v3, Turbos and BlueMove v1 by
+exact pool type, in both token orders. BlueMove v1 pools can be object-owned;
+they are included without an address-owner filter. Pass `protocol: "bluemove"`
+to restrict the search. A pool's presence does not establish tradable depth
+or locked liquidity.

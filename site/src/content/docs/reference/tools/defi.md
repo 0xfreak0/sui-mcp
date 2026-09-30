@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`find_pools`](#find_pools) | Find DeFi liquidity pools by token pair. |
+| [`find_pools`](#find_pools) | Find liquidity pools for a token pair across Cetus, DeepBook v2/v3, Turbos and BlueMove v1. |
 | [`get_defi_positions`](#get_defi_positions) | Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking coins, CLMM/AMM liquidity, lending and balances inside owned objects. |
 | [`get_pool_stats`](#get_pool_stats) | Get stats for a DeFi liquidity pool on Sui given its object ID. |
 
@@ -17,13 +17,13 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Find DeFi liquidity pools by token pair. Searches every Cetus pool, DeepBook v3 and v2 pool, and Turbos pool (across every fee tier in Turbos's pool config) for the pair, in either order. token_a and token_b on each pool are the pool's own order, read from its type. Use get_pool_stats on a returned pool_id for detailed stats.
+Find liquidity pools for a token pair across Cetus, DeepBook v2/v3, Turbos and BlueMove v1. Searches both token orders and every Turbos fee tier. Each result reports the pool's own token order. Use get_pool_stats for reserves, fees and prices.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `token_a` | string | yes | First token: symbol (e.g. 'SUI') or full coin type |
 | `token_b` | string | yes | Second token: symbol (e.g. 'USDC') or full coin type |
-| `protocol` | string | no | Filter by protocol: 'cetus', 'deepbook', or 'turbos'. Searches all if omitted. |
+| `protocol` | string | no | Filter by protocol: 'cetus', 'deepbook', 'turbos', or 'bluemove'. Searches all if omitted. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_defi_positions

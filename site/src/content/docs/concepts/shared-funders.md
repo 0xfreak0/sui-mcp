@@ -40,6 +40,11 @@ than counts, a classification, flow shape or sponsor shape. No partial
 measurement is cached. Retry the call once the read succeeds; increasing
 `max_transactions` does not resolve missing rows within a transaction.
 
+When fan-out is optional context beside a completed funding walk, a failed
+measurement does not discard the walk. `find_funding_source` reports
+`origin_fanout_unread`; `find_funding_sources` reports `fanout_unread` on the
+affected shared funder. Both include the reason and omit the unread measurement.
+
 ## Shape
 
 Breadth alone does not separate an exchange from a sybil funder, since the two

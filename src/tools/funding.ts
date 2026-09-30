@@ -657,13 +657,14 @@ export function registerFundingTools(server: McpServer) {
         // standalone tool: this runs once per shared funder inside a batch that
         // may already have made a hundred queries.
         const fanouts: Record<string, FanoutResult> = {};
+        const fanoutsUnread: Record<string, string> = {};
         if (measure_fanout !== false) {
           for (const [funder] of shared.slice(0, 10)) {
             try {
               fanouts[funder] = await measureFanout(funder, 300);
-            } catch {
-              // Fan-out is context, not the answer — a failure here must not
-              // discard a batch of completed traces.
+            } catch (err) {
+              // Keep completed funding traces, but do not silently omit unread context.
+              fanoutsUnread[funder] = err instanceof Error ? err.message : String(err);
             }
           }
         }
@@ -942,6 +943,7 @@ export function registerFundingTools(server: McpServer) {
             // near-identical counterparty counts while one runs
             // balanced and the other pays many and is paid by few.
             ...(fanouts[funder] ? { fanout: fanoutView(fanouts[funder], popularityOf[funder]) } : {}),
+            ...(fanoutsUnread[funder] ? { fanout_unread: fanoutsUnread[funder] } : {}),
           })),
         };
 
@@ -1032,11 +1034,12 @@ export function registerFundingTools(server: McpServer) {
         // a shorter one can stop short of a history that call reads to the
         // end, and the two would then disagree about the same address.
         let originFanout: FanoutResult | null = null;
+        let originFanoutUnread: string | null = null;
         if (measure_fanout !== false && origin !== address && !stoppedAtHub) {
           try {
             originFanout = await measureFanout(origin, FANOUT_DEFAULT_TRANSACTIONS);
-          } catch {
-            // Context, not the answer — never fail the trace over it.
+          } catch (err) {
+            originFanoutUnread = err instanceof Error ? err.message : String(err);
           }
         }
 
@@ -1117,6 +1120,7 @@ export function registerFundingTools(server: McpServer) {
                       },
                     }
                   : {}),
+                ...(originFanoutUnread ? { origin_fanout_unread: originFanoutUnread } : {}),
                 summary: summaryParts.join(" "),
                 chain: chain.map((s) => ({ ...s, address_label: labelFor(s.address), funder_label: labelFor(s.funded_by) })),
               }),

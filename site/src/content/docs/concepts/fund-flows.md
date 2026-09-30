@@ -38,8 +38,8 @@ and its payment carries only the traced part (`traced_amount`) onward. That is
 a convention, not something the chain records.
 
 Terminals are grouped by reason (`bridge_exit`, `sink`, `hub`, `unspent`,
-`consumed`, `retained`, `signer_not_sender`, `budget`), and
-`coverage.truncated` says whether a limit cut the graph short.
+`consumed`, `retained`, `signer_not_sender`, `budget`, `read_failed`), and
+`coverage.truncated` says whether limits or unread evidence cut the graph short.
 
 A sale whose proceeds are worth under a tenth of what went in carries only
 what the proceeds are worth, whatever its calls are named. The rest ends in
@@ -55,6 +55,11 @@ one of two terminals:
   changes were not read in full.
 
 A labelled attacker is followed rather than treated as a sink.
+
+Before following a new party, the trace checks whether its funds are pooled
+with other people's. An unread fan-out check stops that branch without
+attributing further flows. `trace_funds` gives the reason in `stop_reason`;
+`trace_flow_graph` uses a `read_failed` terminal and sets `coverage.truncated`.
 
 ## Resolving value arriving through a bridge
 

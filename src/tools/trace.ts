@@ -1037,8 +1037,13 @@ export function registerTraceTools(server: McpServer) {
         // next hop is the transaction that touches those objects, which
         // pooling at the holder cannot confuse.
         if (direction === "backward" || (nextAddress !== actor && trackedObjects.length === 0)) {
-          const fanout = await measureFanout(nextAddress, HUB_SCAN_TRANSACTIONS).catch(() => null);
-          if (fanout && stopsAsHub(nextAddress, fanout, direction)) {
+          const fanout = await measureFanout(nextAddress, HUB_SCAN_TRANSACTIONS).catch((err: unknown) => {
+            terminationReason = `Hub check for ${nextAddress} is unread: ${err instanceof Error ? err.message : String(err)} ` +
+              "The trace is incomplete; no further flows are attributed through this address.";
+            return null;
+          });
+          if (!fanout) break;
+          if (stopsAsHub(nextAddress, fanout, direction)) {
             terminationReason =
               `${nextAddress} is a ${fanout.classification}: ${fanout.counterparty_count}${fanout.truncated ? "+" : ""} ` +
               `counterparties in its last ${fanout.scanned_transactions} transactions. ` +
@@ -1048,7 +1053,7 @@ export function registerTraceTools(server: McpServer) {
               "Stopping here: attribute this address (manage_labels, get_address_fanout) rather than walking past it.";
             break;
           }
-          if (fanout && fanout.classification !== "narrow") {
+          if (fanout.classification !== "narrow") {
             hopResult.note = [
               hopResult.note,
               `${nextAddress} has ${fanout.counterparty_count}${fanout.truncated ? "+" : ""} counterparties but ` +

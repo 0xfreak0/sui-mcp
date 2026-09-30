@@ -226,7 +226,7 @@ export class FlowEngine {
   private readonly seenAddresses = new LookalikeIndex();
   private readonly allocated = new Map<string, Map<string, RemainingEntry>>();
   private readonly expansions = new Map<string, number>();
-  private readonly hubChecked = new Map<string, FanoutResult | null>();
+  private readonly hubChecked = new Map<string, FanoutResult | Error>();
   private readonly prices = new Map<number, { at: number | undefined; points: Map<string, PricePoint> }>();
   /** Price requests in flight, by `${bucket}|${coin}`. */
   private readonly priceRequests = new Map<string, Promise<void>>();
@@ -429,10 +429,13 @@ export class FlowEngine {
     if (job.from !== null && job.from !== address) {
       let fanout = this.hubChecked.get(address);
       if (fanout === undefined) {
-        fanout = await measureFanout(address, HUB_SCAN_TRANSACTIONS).catch(() => null);
+        fanout = await measureFanout(address, HUB_SCAN_TRANSACTIONS).catch((err: unknown) =>
+          new Error(`Hub check for ${address} is unread: ${err instanceof Error ? err.message : String(err)}`),
+        );
         this.hubChecked.set(address, fanout);
       }
-      if (fanout && stopsAsHub(address, fanout, this.opts.direction)) {
+      if (fanout instanceof Error) return { code: "read_failed", detail: fanout.message, nodeLevel: true };
+      if (stopsAsHub(address, fanout, this.opts.direction)) {
         const senders = this.opts.direction === "forward" && fanout.sender_count >= 0 ? `, ${fanout.sender_count}${fanout.truncated ? "+" : ""} of them paying in` : "";
         return {
           code: "hub",
@@ -450,7 +453,7 @@ export class FlowEngine {
     const stop = await this.gate(job, n);
     if (!stop) return false;
     if (stop.nodeLevel) n.stop = { code: stop.code, detail: stop.detail };
-    if (stop.code === "budget") this.truncated = true;
+    if (stop.code === "budget" || stop.code === "read_failed") this.truncated = true;
     if (stop.nodeLimit) this.nodeLimited.push({ node: n.id, share: job.share });
     this.ledger.add(stop.code, {
       node: n.id,

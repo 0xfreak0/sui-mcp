@@ -508,7 +508,17 @@ try {
   ck("every coin's in and out equal the raw per-transaction sums, gas apart", coinRows.length === [...io.values()].filter((r) => r.in || r.out).length && bad.length === 0, bad.length ? short(bad.map((c) => [c.symbol, c.raw, io.get(c.coin_type)])) : `${coinRows.length} coins`);
   ck("gas paid equals the raw gas of the transactions it paid for", Math.round(flows.gas?.paid_sui * 1e9) === Number(gasPaid), `${flows.gas?.paid_sui} vs ${Number(gasPaid) / 1e9}`);
   const burns = day.filter((t) => eventsOf(t, "::deposit_for_burn::DepositForBurn").some((e) => e.contents.json.depositor === NEMO_ATTACKER));
-  const exitDigests = (flows.bridge_exits?.transactions ?? []).filter((t) => /CCTP/i.test(t.bridge)).map((t) => t.digest);
+  // The summary caps bridge transaction detail. Read its omitted page rather
+  // than mistaking a capped list for the full on-chain set of burns.
+  let exitPage = flows.omitted?.lists?.["bridge_exits.transactions"]?.page;
+  const omittedExits = [];
+  while (exitPage) {
+    const response = await rpc("resources/read", { uri: exitPage });
+    const page = JSON.parse(response.result?.contents?.[0]?.text ?? "{}");
+    omittedExits.push(...(page.rows ?? []).map(({ row }) => row).filter((r) => /CCTP/i.test(r.bridge)).map((r) => r.digest));
+    exitPage = page.next_page;
+  }
+  const exitDigests = [...(flows.bridge_exits?.transactions ?? []).filter((t) => /CCTP/i.test(t.bridge)).map((t) => t.digest), ...omittedExits];
   ck("the CCTP exits are the attacker's burns on chain", exitDigests.length === burns.length && burns.every((b) => exitDigests.includes(b.digest)), `${exitDigests.length} vs ${burns.length}`);
   ck("eight CCTP exits, as Nemo's report says", burns.length === 8);
   const dests = new Set(burns.map((b) => evm(eventsOf(b, "::deposit_for_burn::DepositForBurn")[0].contents.json.mint_recipient)));

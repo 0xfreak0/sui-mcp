@@ -392,11 +392,14 @@ historical reconstruction of their behaviour.
 
 `summarize_address_flows`, `identify_address` and `manage_labels` lookup share
 a `deposit_address` field without running the classifier. It reports an
-effective inferred deposit label with its sweep evidence, and any session
-verdicts with their own windows. A flow summary only selects a session verdict
-for its requested bounds; observations from other periods remain listed
-separately. Without either applicable source it says `not classified` and
-returns the `classify_deposit_address` call. The session cache is network- and
+effective inferred deposit label with its sweep evidence and one applicable
+`session_verdict`. A flow summary selects that verdict by its resolved
+checkpoint bounds, so `from: "now"` is not confused with unbounded history.
+`other_session_observations` counts the other windows without repeating them
+on each row. `session_observations_call` returns all observations and their
+full checks through `manage_labels(action: "lookup", detail: "full")`.
+Without either applicable source it says `not classified` and returns the
+`classify_deposit_address` call. The session cache is network- and
 address-qualified, keeps the latest observation per resolved window and lasts
 only for the server process.
 

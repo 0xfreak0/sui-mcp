@@ -6,6 +6,7 @@ import type { GqlBalanceChangeNode } from "../src/utils/gql-adapters.js";
 import { depositRole } from "../src/utils/deposit-role.js";
 import { runWithNetwork } from "../src/config.js";
 import { registerLabelTools } from "../src/tools/labels.js";
+import { resolveWindow } from "../src/utils/checkpoint-time.js";
 
 const { gqlQuery } = vi.hoisted(() => ({ gqlQuery: vi.fn() }));
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery }));
@@ -77,21 +78,36 @@ describe("deposit verdict windows", () => {
     expect(result.balance_reconstruction).toMatchObject({ complete: false, scanned_transactions: 1, max_transactions: 1 });
   });
 
+  it("selects observations by resolved bounds, keeping a lower now distinct from unbounded history", async () => {
+    serve();
+    await classifyDepositAddress(address, opts);
+    await classifyDepositAddress(address, { ...opts, from: 10, to: 21 });
+    const now = depositRole(address, {
+      from: "now", resolved: { after: { checkpoint: 100, resolved_from: "checkpoint" }, before: null },
+    });
+    expect(now).toMatchObject({ status: "not classified", role: null });
+    const equivalent = depositRole(address, {
+      from: "1970-01-01T00:00:11Z", to: "1970-01-01T00:00:20Z",
+      resolved: { after: { checkpoint: 10, resolved_from: "checkpoint" }, before: { checkpoint: 21, resolved_from: "checkpoint" } },
+    });
+    expect(equivalent).toMatchObject({ verdict: "likely", role: "likely exchange deposit" });
+  });
+
   it("shares independent window verdicts without creating a trace sink or crossing networks", async () => {
     serve();
     await runWithNetwork("mainnet", async () => {
       await classifyDepositAddress(address, { ...opts, from: 10, to: 21 });
       await classifyDepositAddress(address, opts);
-      expect(depositRole(address, { from: 10, to: 21 })).toMatchObject({
+      expect(depositRole(address, { from: 10, to: 21, resolved: await resolveWindow(10, 21) })).toMatchObject({
         role: "likely exchange deposit", verdict: "likely", stops_trace: false,
       });
-      expect(depositRole(address, {})).toMatchObject({ role: null, verdict: "unknown" });
-      expect(depositRole(address, { from: 30, to: 40 })).toMatchObject({
+      expect(depositRole(address, { resolved: await resolveWindow(undefined, undefined) })).toMatchObject({ role: null, verdict: "unknown" });
+      expect(depositRole(address, { from: 30, to: 40, resolved: await resolveWindow(30, 40) })).toMatchObject({
         status: "not classified", role: null,
         next_call: { tool: "classify_deposit_address", args: { address, network: "mainnet", from: 30, to: 40 } },
       });
       addSessionLabel(address, { label: "Investigator attribution", category: "other" });
-      expect(depositRole(address, { from: 10, to: 21 })).toMatchObject({ role: null, stops_trace: false });
+      expect(depositRole(address, { from: 10, to: 21, resolved: await resolveWindow(10, 21) })).toMatchObject({ role: null, stops_trace: false });
       removeSessionLabel(address);
     });
     expect(runWithNetwork("testnet", () => depositRole(address))).toMatchObject({
@@ -101,7 +117,12 @@ describe("deposit verdict windows", () => {
     registerLabelTools({ tool: (name: string, _d: string, _s: unknown, h: never) => tools.set(name, h) } as never);
     gqlQuery.mockRejectedValue(new Error("Role lookup must not read the chain"));
     const lookup = JSON.parse((await tools.get("manage_labels")!({ action: "lookup", address })).content[0]!.text);
-    expect(lookup.deposit_address.session_verdicts.map((r: { verdict: string }) => r.verdict)).toEqual(["unknown", "likely"]);
+    expect(lookup.deposit_address.session_verdict).toMatchObject({ verdict: "unknown" });
+    expect(lookup.deposit_address.session_verdicts).toBeUndefined();
+    expect(lookup.deposit_address.other_session_observations).toBe(1);
+    const next = lookup.deposit_address.session_observations_call;
+    const observations = JSON.parse((await tools.get(next.tool)!(next.args)).content[0]!.text);
+    expect(observations.deposit_observations.map((r: { verdict: string }) => r.verdict)).toEqual(["unknown", "likely"]);
     expect(lookup.is_sink).toBe(false);
   });
 });

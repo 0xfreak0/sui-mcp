@@ -320,7 +320,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `confidence` | `high` \| `medium` \| `low` | no | Attribution confidence for 'add' (default: medium). |
 | `notes` | string | no | Optional context for 'add'. |
 | `labels` | array of object | no | Labels to bulk-import (for 'import'). Malformed entries are skipped and reported rather than failing the batch. |
-| `detail` | `summary` \| `full` | no | For list: summary (default) keeps local additions first within ~30k chars and counts omitted labels; full lists all. |
+| `detail` | `summary` \| `full` | no | For list: summary caps labels; full lists all. For lookup: full also lists all cached deposit-window observations. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## resolve_bridge_transfer

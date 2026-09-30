@@ -553,7 +553,7 @@ export function registerFlowTools(server: McpServer) {
         const payload = {
           address,
           window: describeWindow(from, to, window),
-          deposit_address: depositRole(address, { from, to }),
+          deposit_address: depositRole(address, { from, to, resolved: window }),
           ...(coin_type ? { coin_filter: coinKey(coin_type) } : {}),
           coverage: {
             scanned_transactions: txs.length,

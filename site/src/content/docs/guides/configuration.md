@@ -153,10 +153,13 @@ provenance, not an assertion that the exchange disclosed the address.
 
 `classify_deposit_address` also keeps its verdict in a process-local cache,
 keyed by network, address and resolved window. Lookup, `identify_address` and
-`summarize_address_flows` show these observations without running a classifier
+`summarize_address_flows` select one observation without running a classifier
 or adding chain reads. Each cached verdict retains the period actually read,
-limits and checks not run. A flow summary selects a cached verdict only for
-the requested bounds; the other windows remain separate observations.
+limits and checks not run. A flow summary matches resolved checkpoint bounds,
+not the spelling of a timestamp or checkpoint. `other_session_observations`
+counts other windows; `session_observations_call` points to
+`manage_labels(action: "lookup", detail: "full")`, which returns the full
+`deposit_observations` list, including checks, reasons and read limits.
 With neither an inferred role nor an applicable session verdict, the field
 says `not classified` and supplies a classification call.
 

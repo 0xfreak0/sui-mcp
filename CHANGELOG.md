@@ -76,6 +76,20 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **`query_transactions` fills pages across short and empty service reads.**
+  With combined filters the service can return a short or empty page while
+  more exist. Ordinary queries now read on to the requested limit, the end of
+  the list, or a read budget. With `all_versions`, the version streams are
+  merged in global order: the page holds only rows no unread stream can
+  precede, and reading stops once it is full. A budget stop reports `scan`
+  with the call that continues, including when nothing was found yet.
+- **`aggregate_events` bounds its reads.** Empty reads no longer run without
+  limit: `max_reads` caps the reads a call makes, `scan.stop_reason` says
+  which budget stopped it, and the ranking stays `truncated`. An opaque
+  cursor resumes over the next disjoint slice of events. Per-key counts and
+  summed values from the slices add up when every group was kept in every
+  slice; top-N rankings, distinct-key counts, distributions and group P&L do
+  not add up.
 - **`summarize_address_flows` lists the StakedSui an old withdrawal
   deleted.** gRPC renders effects version 1 (before about March 2024) with no
   owner on either side of an object they deleted or wrapped, and those

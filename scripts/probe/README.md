@@ -36,6 +36,12 @@ which reports missing values, from a complete nonempty window, which refuses
 a numeric field that no event carries. A partial scan must also supply its
 continuation.
 
+The incident pass compares raw amounts exactly against the chain. Its
+largest-pool comparison allows 0.1% USD difference between the incident's
+per-coin hourly median leg times and the single transaction's pricing time.
+For that historical pool, the different SUI quotes account for a 0.052%
+valuation difference; the haSUI quote is the same.
+
 `sample-negatives.mjs` is not a check: it draws fresh holdout negatives for
 `cases/detectors.json` from random checkpoints (or by function with
 `--function`), skipping every labelled sender, when the holdout split has to

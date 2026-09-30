@@ -18,7 +18,7 @@ qualifications, and the security model of the server.
 | [Lookalike addresses](/concepts/address-poisoning/) | `address_poisoning` pairs and which side is the impostor |
 | [Shared funders](/concepts/shared-funders/) | `classification`, `flow_shape` and `out_in_ratio` from `get_address_fanout`, and when a shared funder links wallets |
 | [Gas sponsors](/concepts/gas-sponsors/) | `sponsor_shape` from `get_address_fanout` |
-| [Historical balances and top holders](/concepts/balances-and-holders/) | `get_balance` at a past moment, `complete_ranking` in `get_top_holders` |
+| [Historical balances and top holders](/concepts/balances-and-holders/) | `get_balance` at a past moment, `get_staking_summary` with `as_of`, `complete_ranking` in `get_top_holders` |
 | [Kiosk-held NFTs](/concepts/nft-ownership/) | `holder_kind`, `kiosk_cap_holder`, sale-derived owners |
 | [Packages and upgrade authority](/concepts/packages/) | publisher, UpgradeCap holder status, capability and mint-authority audit, bytecode leads |
 | [Truncated lists](/concepts/truncation/) | `truncated`, `omitted` and `next_call` |

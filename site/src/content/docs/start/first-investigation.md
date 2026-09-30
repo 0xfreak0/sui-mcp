@@ -60,13 +60,15 @@ funded the wallet.
 
 ## Reading the marks on an answer
 
-- `truncated` and `omitted`: a list left rows out. `next_call` is the call
-  that returns them. See [Truncated lists](/concepts/truncation/).
-- `complete: true`: every transaction in the window was read, so a transfer
-  absent from the answer did not happen in that window.
-- `lower_bound: true`: a USD total leaves out coins that had no price at the
-  time, so the real figure is higher. `unpriced_remainder` lists those coins
-  with their amounts.
+- `truncated` and `omitted`: a display limit or scan budget left rows out.
+  Follow the reported `next_call`; a paginated result can have more pages even
+  without `truncated`. See [Truncated lists](/concepts/truncation/).
+- `complete: true`: the scan reached the end of its window. Check separate
+  unread-data and pricing warnings before drawing conclusions.
+- `totals.partial` or `totals_usd.partial`: USD excludes unpriced coin legs or
+  unread or unpriced objects. Missing debits can raise a net, so a partial
+  total is not a lower bound. `usd_basis` reports pricing coverage, and
+  `unpriced_remainder` lists unpriced coins in incident totals.
 - `coin_verified` and `verified`: whether a coin is the one its symbol
   suggests or an imitator. See [Coin identity and scale](/concepts/coins/).
 - Leads and facts: amounts, digests, signers and timestamps are read from the

@@ -33,19 +33,18 @@ under created, mutated, unwrapped, wrapped or deleted.
 
 The default summary gives object-change counts without inputs or commands.
 `created_for`, `object_transfers`, `balance_changes` and `coins_delivered_to`
-share about 20,000 characters, prioritizing every capability and, for SUI
+share a display budget, prioritizing every capability and, for SUI
 and verified coins, the sender's changes and each coin's largest credit and
 debit. `omitted` reports the rest.
-Full detail lists every row, but commands are paged at about 30,000 characters,
+Full detail lists every row, but commands are paged,
 with non-framework Move calls first.
 
 Every event is decoded unless `max_event_field_bytes` sets a byte budget;
-skips are reported and zero disables decoding. Past about 20,000 characters,
+skips are reported and zero disables decoding. When events exceed the display budget,
 the summary folds events differing only in amounts into rows with counts,
 emission indices, shared fields and each varying field's total, min and max.
 It caps rows while retaining every event emitted by a called non-framework
-package. `omitted` reports the reduction; full detail lists events in pages
-of about 40,000 characters.
+package. `omitted` reports the reduction; full detail lists events in pages.
 
 `commands: [3, 7]` selects exact command indices in full detail instead of
 the first command page. Events narrow to the calls that emitted them; objects
@@ -215,7 +214,7 @@ coins and the gas coin against the sender's balances now. It gives each
 coin's `share_of_balance` and each recipient's first chain transaction as
 `first_seen`, null when no transaction has ever affected that recipient.
 
-The first command page fits about 30,000 characters, prioritizing commands
+The first command page has a display budget, prioritizing commands
 named by anomalies, highest severity first and fewest named commands among
 ties, then non-framework Move calls. Every anomaly lists its command indices.
 `command_offset` instead reads in index order from that offset; `commands`
@@ -267,7 +266,7 @@ coins when `PYTH_API_KEY` is set. Every unpriced coin is listed. `attacker`
 selects the profit address; a losing address is reported as a loss with the
 addresses that gained, as with a victim who signed a drain.
 
-The summary keeps rows within their shares of about 40,000 characters,
+The summary keeps rows within a display budget,
 preserving pools, holders and addresses named by anomalies or flash legs,
 the sender and the profit address. Totals and anomalies cover every row;
 `omitted` reports the rest and `detail: "full"` lists every row.
@@ -325,7 +324,7 @@ side. `counterparties` lists up to 25 value recipients per row, with
 
 `address_poisoning` always reports `addresses_compared` and lookalike `pairs`
 over the displayed page. Empty pairs on a recent page clear nothing older.
-The summary keeps about 35,000 characters in page order, retaining every
+The summary keeps rows within a display budget in page order, retaining every
 failed row and every row involving a lookalike. `omitted` reports excluded
 rows; `detail: "full"` returns the whole page, not the wallet's whole history.
 
@@ -421,7 +420,7 @@ the walk, the checkpoint reached, and continuing `from`/`to` bounds.
 own signed change per coin. `token_flow` is the sender's, present only when
 that sender is not already tracked in `subject_flow`.
 
-The default summary fits about 35,000 characters in order, always retaining
+The default summary keeps rows within a display budget in order, always retaining
 failures and entries involving two tracked addresses. `omitted` describes
 display exclusions; `detail: "full"` returns entries up to `limit`, which
 defaults to 60. The read budget defaults to 30 transactions per address.
@@ -443,7 +442,7 @@ ordered Move call targets, events with decoded fields and protocol names
 resolved as in `get_transaction`. Digests that could not be read remain in
 `not_found`.
 
-The default view shares about 30k characters across each transaction's
+The default view shares a display budget across each transaction's
 events, calls and balances, keeping the sender's own balance changes.
 `event_count` and `move_call_count` count the rows before display trimming;
 `omitted` describes what was left out. `detail: "full"` removes that display
@@ -460,8 +459,9 @@ objects' `Balance<T>` holdings at input and output versions instead.
 Transaction reads use gRPC with archive fallback and need no API key.
 
 Coins sent onward in a coin that moved only between addresses in that
-transaction are `transfers_out`, excluded from take. Unpriced coins are
-listed separately, making USD totals a lower bound.
+transaction are `transfers_out`, excluded from take. Unpriced coin legs and
+unread or unpriced objects make `totals.partial` true. Missing debits can raise
+a net, so a partial USD total is not a lower bound.
 
 The default attacker is `sender`, or each transaction's sender. If every
 successful transaction's sender only paid gas, the largest priced gainer above
@@ -469,11 +469,14 @@ the gas-only threshold across those transactions becomes the default instead,
 reported in `attacker_defaulted_from_sender`. An unpriced gain by any other
 non-sender blocks this default. Set `attacker` to choose explicitly.
 
-Coins default to prices at the first successful transaction, before the
-market reacted; each moved object uses its own transaction's time. `price_at`
-sets one Unix-seconds or ISO 8601 moment for both coins and objects.
+Each coin movement uses a historical quote for its own UTC day before amounts
+are summed; each moved object uses its own transaction's time. `usd_basis`
+states the method, sources and coin-day coverage. Missing quotes, unknown
+decimals and pricing-budget stops leave amounts unpriced without falling back
+to another day's price. `price_at` sets one Unix-seconds or ISO 8601 moment for
+both coins and objects. See [USD over a time window](/concepts/fund-flows/#usd-over-a-time-window).
 
-Summary keeps the largest rows fitting about 40k characters. Totals cover
+The summary keeps the largest rows within a display budget. Totals cover
 all rows, even when `max_groups` limits the listed groups. `omitted` gives
 each trimmed list's count, USD, largest row and the call to retrieve it.
 `detail: "full"` lists every row.

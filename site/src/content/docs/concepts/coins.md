@@ -17,7 +17,7 @@ carries `coin_verified`:
 +202.361728 USDC                           coin_verified=true
 ```
 
-These are two separate marks. `unverified` refers to which coin it is.
+`unverified` refers to which coin it is.
 `assumed scale` refers to whether the amount is right: decimals for an unknown
 coin are a guess, and some imitators declare a different scale from the coin
 they imitate. Every tool that formats or values an amount reads the

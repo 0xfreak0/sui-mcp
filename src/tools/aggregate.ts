@@ -12,8 +12,9 @@ import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { fetchPackageVersions, resolveEventTypeFilter, resolveModuleEventFilter } from "../utils/package-versions.js";
 import { readAttackTransactions } from "../utils/attack-read.js";
 import { participantPnl } from "../utils/participant-pnl.js";
-import { coinValuer, roundUsd } from "../utils/address-flows.js";
-import { prefetchCoinScale, priceUsdAtTime } from "../utils/valuation.js";
+import { roundUsd } from "../utils/address-flows.js";
+import { prefetchCoinScale } from "../utils/valuation.js";
+import { WindowAmounts, windowPrices } from "../utils/window-prices.js";
 import { getLabel } from "../utils/labels.js";
 import { lookupProtocolDisplay, prefetchProtocolNames } from "../protocols/registry.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
@@ -119,7 +120,7 @@ export function registerAggregateTools(server: McpServer) {
       group_pnl: boolArg()
         .optional()
         .describe(
-          "Also rank the senders of the matched transactions by profit: for each distinct transaction behind the events, sum its sender's own balance changes per coin (gas included), value them in USD at the median transaction time, and flag PTBs where the filtered package is one leg of several. Answers 'who else profited in this window'.",
+          "Rank senders by their own balance-change P&L, gas included, using daily historical quotes. Multi-leg PTBs may include gains from other packages.",
         ),
       pnl_max_transactions: numArg()
         .int()
@@ -130,7 +131,7 @@ export function registerAggregateTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): each P&L sender lists the coins that fit about 1.5k characters, largest USD first, and pnl.unpriced_coins what fits 3k; totals cover every coin, and `omitted` states the rest with the call that returns it. 'full': every coin."),
+        .describe("'summary' (default) caps P&L coin and missing-price lists, with omissions and continuation. 'full' returns every row. Totals cover all rows."),
     },
     async ({
       event_type,
@@ -382,11 +383,11 @@ export function registerAggregateTools(server: McpServer) {
 
         // Each P&L sender's coins and the unpriced list fit their budgets,
         // largest USD first; totals are computed over every coin above.
-        type Coin = { usd?: number };
+        type Coin = { usd: number | null };
         const coinCap: ListCap<Coin> = {
           budget: 1_500,
           rank: (a, b) => Math.abs(b.usd ?? -1) - Math.abs(a.usd ?? -1),
-          usd: (c) => (c.usd === undefined ? null : Math.abs(c.usd)),
+          usd: (c) => (c.usd === null ? null : Math.abs(c.usd)),
         };
         const { payload: out } = capPayload(
           "aggregate_events",
@@ -394,7 +395,7 @@ export function registerAggregateTools(server: McpServer) {
           payload,
           {
             ...Object.fromEntries((pnl?.senders ?? []).map((_, i) => [`pnl.senders.${i}.net`, coinCap])),
-            "pnl.unpriced_coins": { budget: 3_000, keepOrder: true },
+            "pnl.usd_basis.missing_coin_days": { budget: 3_000, keepOrder: true },
           },
           { full: detail === "full", next_call: { tool: "aggregate_events", repeat_with: { detail: "full" } } },
         );
@@ -427,12 +428,21 @@ async function senderPnl(
     lineage,
   );
 
-  const times = read.txs.map((t) => t.timestampMs).filter((t): t is number => t !== null).sort((a, b) => a - b);
-  const atSec = times.length ? Math.floor(times[Math.floor(times.length / 2)] / 1000) : undefined;
-  const coins = new Set(rows.flatMap((r) => [...r.net.keys()]));
-  // Decimals first: `coinValuer` scales every amount in `net`.
-  const [prices] = await Promise.all([priceUsdAtTime([...coins], atSec), prefetchCoinScale(coins)]);
-  const v = coinValuer(prices);
+  const timed = read.txs.map((tx) => ({
+    at: tx.timestampMs === null ? null : tx.timestampMs / 1000,
+    row: participantPnl([tx], lineage)[0],
+  })).filter((entry) => entry.row !== undefined);
+  const coins = new Set(timed.flatMap(({ row }) => [...row.net.keys()]));
+  const [prices] = await Promise.all([
+    windowPrices(timed.map(({ at, row }) => ({ at, coins: row.net.keys() }))),
+    prefetchCoinScale(coins),
+  ]);
+  const bySender = new Map<string, WindowAmounts>();
+  for (const { at, row } of timed) {
+    const amounts = bySender.get(row.sender) ?? new WindowAmounts(prices);
+    amounts.addMap(row.net, at);
+    bySender.set(row.sender, amounts);
+  }
   const others = new Set(rows.flatMap((r) => [...r.otherPackages]));
   if (others.size) await prefetchProtocolNames(others).catch(() => {});
 
@@ -440,8 +450,8 @@ async function senderPnl(
     .map((r) => {
       let gained = 0;
       let lost = 0;
-      for (const [coin, raw] of r.net) {
-        const usd = v.usd(coin, raw);
+      for (const [coin] of bySender.get(r.sender)!.values) {
+        const usd = bySender.get(r.sender)!.usd(coin);
         if (usd === null) continue;
         if (usd > 0) gained += usd;
         else lost -= usd;
@@ -461,15 +471,7 @@ async function senderPnl(
       : {}),
     ...(opts.eventsTruncated ? { events_truncated: "The event scan hit its budget, so transactions after it are not in this ranking." } : {}),
     ...(read.missing.length ? { missing_transactions: read.missing } : {}),
-    usd_basis: atSec
-      ? {
-          at: new Date(atSec * 1000).toISOString(),
-          meaning: "Each coin priced once, at the median transaction time (DefiLlama, or Pyth for verified coins when PYTH_API_KEY is set). Coins with no price are listed and left out of usd_net.",
-        }
-      : null,
-    ...(prices.unpriced.length
-      ? { unpriced_coin_count: prices.unpriced.length, unpriced_coins: prices.unpriced.map((u) => ({ coin_type: u.coin_type, code: u.code })) }
-      : {}),
+    usd_basis: prices.basis,
     meaning:
       "Each sender's own balance changes summed over the matched transactions, gas included. A transaction marked multi-leg also called packages outside the filtered one, so its P&L may have been made there.",
     senders: ranked.slice(0, opts.top).map(({ r, net, gained, lost }) => {
@@ -481,8 +483,8 @@ async function senderPnl(
         usd_net: roundUsd(net),
         usd_gained: roundUsd(gained),
         usd_lost: roundUsd(lost),
-        coin_count: r.net.size,
-        net: v.amounts(r.net),
+        coin_count: bySender.get(r.sender)!.values.size,
+        net: bySender.get(r.sender)!.amounts(),
         ...(r.multiLeg.length
           ? {
               multi_leg_transactions: r.multiLeg.length,

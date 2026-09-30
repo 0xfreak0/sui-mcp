@@ -3794,18 +3794,14 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   `positions_usd`): an unstake pays SUI out of a staking pool the state read
   does not reach, and the StakedSui it burned says how much. `summarize_incident_losses` applies the same default
   per transaction, counts objects the attacker received, consumed or kept
-  changed, netted per object across the incident as coins are per coin
-  type (a stake received and later unstaked counts once, as the coins the
-  unstake paid; an object in several rows of one coin is netted by amounts
-  at its first row's price, so a price move between them leaves nothing),
-  and keeps objects it handed on out of the totals as coins
-  sent on are, valuing at most `MAX_OBJECT_VALUE_TXS` transactions. Each
-  object is priced at its own transaction's time unless `price_at` is
-  given: coins default to the first transaction's time, before prices
-  reacted, which fits an exploit and misstates a drainer campaign that ran
-  for days. Objects
-  that could not be valued make the total a lower bound, as in
-  `analyze_attack_tx`'s `partial_note` and flows' `objects_partial`.
+  changed, netted per object across the incident. Each object leg keeps its
+  transaction-time USD value; a later consumption is not repriced at the
+  first receipt's quote. Objects handed on stay out of totals, as coins
+  sent on do, valuing at most `MAX_OBJECT_VALUE_TXS` transactions.
+  Coins use daily historical quotes through `window-prices.ts`; `price_at`
+  explicitly selects one fixed time for both coins and objects.
+  Missing credits and debits make incident totals `partial`, not a lower
+  bound: an omitted debit can make a net too high.
 - **A scan values at most `SCAN_OBJECT_BUDGET` objects**, newest
   transactions first, whole transactions at a time; the rest are
   `objects_skipped_transactions` and the totals say `objects_partial`.
@@ -4287,15 +4283,20 @@ summary, and event types. Rules a change is likely to break:
   screen reads its ten destinations from each bridge group in turn: in
   arrival order, fourteen CCTP burns to one address used them all and left
   the Mayan group with none.
-- **One price per coin, at the median transaction time.** The midpoint of the
-  window put the Nemo attacker's prices at 12:57, three hours before the
-  exploit.
+- **Price each transaction before aggregating.** `window-prices.ts` shares
+  UTC-day quotes across totals, counterparties and bridge exits. Multi-day
+  DefiLlama reads use `batchHistorical`; Pyth is opt-in. The read and cache
+  are bounded, and missing prices never use a median or current quote.
+  `usd_basis` reports approximate/partial coverage and a missing day to
+  retry; `priced_raw` and `unpriced_raw` retain both sides of each coin.
 
 `aggregate_events` `group_pnl` (`src/utils/participant-pnl.ts`) reads the
 distinct transactions behind the matched events over gRPC with archive
 fallback (`readAttackTransactions`), so no nested connection is a page. A
 transaction is multi-leg when it calls a package outside the filter's whole
 lineage (`fetchPackageVersions`); 0x1, 0x2 and 0x3 never count as a leg.
+P&L also prices each transaction before netting: zero token net across
+different dates need not mean zero USD net. Its coverage is in `pnl.usd_basis`.
 
 ### Reading Move bytecode
 

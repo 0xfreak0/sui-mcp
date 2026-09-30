@@ -5,6 +5,40 @@ sidebar:
   order: 3
 ---
 
+## USD over a time window
+
+`summarize_address_flows` values each coin movement with a quote near midnight
+UTC on its transaction's day, then sums those values. It does not multiply a
+multi-month coin total by one price. Counterparties, unattributed flows and
+bridge exits use the same daily quotes. Objects retain their own valuation
+methods and transaction times.
+
+The `usd_basis` block reports sources and coin-day coverage. Daily quotes are
+estimates, not execution prices. `priced_raw` and `unpriced_raw` separate the
+amounts included in USD from those left out. A missing timestamp or price never
+falls back to today's price or another day's quote.
+Coin decimals come from the registry, cached on-chain metadata or the quote's
+provider. A quote without a known decimal scale stays unpriced.
+
+DefiLlama is the default; Pyth is used only with `PYTH_API_KEY`. Multi-day
+DefiLlama reads batch historical samples, and successful samples are cached.
+The newest days are priced first within a bounded read budget. If
+`budget_skipped_coin_days` is nonzero, narrow the window and combine disjoint
+windows. A partial USD net is not a lower bound: missing debits can make it
+too high.
+
+`summarize_incident_losses` uses the same daily quotes for gains, pool deltas,
+recipient selection and transfers sent on. Coin legs are priced before being
+netted: equal token amounts at different dates can have a nonzero USD net.
+Objects received and later consumed retain each leg's historical value.
+`price_at` explicitly switches coins and objects to a fixed-time valuation;
+`usd_basis.method` identifies that choice. Missing coin legs or objects make
+`totals.partial` true, not a claim that the total is a lower bound.
+
+With `group_pnl: true`, `aggregate_events` also prices each sender's balance
+changes by transaction day before netting them. Gas stays included. Check
+`pnl.usd_basis` before comparing senders with different missing-price coverage.
+
 ## Historical object flows
 
 `summarize_address_flows` lists valued objects a transaction deleted or wrapped,

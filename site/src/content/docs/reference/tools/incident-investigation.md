@@ -29,7 +29,7 @@ sidebar:
 | [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. |
 | [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
 | [`screen_address`](#screen_address) | Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. |
-| [`summarize_address_flows`](#summarize_address_flows) | Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. |
+| [`summarize_address_flows`](#summarize_address_flows) | Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. |
 | [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. |
 | [`trace_funds`](#trace_funds) | Follow a fund-flow path from a transaction. |
@@ -58,9 +58,9 @@ sidebar:
 | `max_events` | integer (50 to 50000) | no | Scan budget (default 10000). Raise for busy protocols, or narrow the window. |
 | `max_reads` | integer (1 to 1000) | no | Event-connection read budget across all segments (default 200). Short or empty reads count too. A read-budget stop is truncated and scan.next_call continues the unread event slice. |
 | `cursor` | string | no | Opaque next_cursor from a previous aggregate_events call. Keep the same filters and network. Reads the next disjoint event slice; counts are not cumulative and the ranking remains truncated for the original window. |
-| `group_pnl` | boolean | no | Also rank the senders of the matched transactions by profit: for each distinct transaction behind the events, sum its sender's own balance changes per coin (gas included), value them in USD at the median transaction time, and flag PTBs where the filtered package is one leg of several. Answers 'who else profited in this window'. |
+| `group_pnl` | boolean | no | Rank senders by their own balance-change P&L, gas included, using daily historical quotes. Multi-leg PTBs may include gains from other packages. |
 | `pnl_max_transactions` | integer (1 to 2000) | no | Distinct transactions read for group_pnl, oldest first (default 500). Check pnl.truncated. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): each P&L sender lists the coins that fit about 1.5k characters, largest USD first, and pnl.unpriced_coins what fits 3k; totals cover every coin, and `omitted` states the rest with the call that returns it. 'full': every coin. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) caps P&L coin and missing-price lists, with omissions and continuation. 'full' returns every row. Totals cover all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## analyze_attack_tx
@@ -414,7 +414,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. Reports every sent bridge exit with chain-derived beneficiaries for CCTP, Sui Bridge, Wormhole Token Bridge/NTT and Mayan. Up to 20 other sends without an address recipient are checked for unknown cross-chain messages; cross_chain_leads are heuristic leads, never exits. Gas is separate from coin totals; value without a counterparty address is unattributed. address_poisoning always checks sources, recipients and received dust in this window only; empty pairs clear nothing outside it. Scans newest first. Check coverage.complete and follow coverage.continue_with if the scan budget stops it.
+(Incident investigation) Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. Coin USD uses daily historical quotes; check usd_basis and priced/unpriced raw amounts. Scans newest first: check coverage.complete and follow coverage.continue_with when capped. address_poisoning and cross_chain_leads cover only scanned activity, not clearance.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -444,7 +444,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `end` | number \| string | no | Window end with `sender`: a checkpoint number or ISO 8601 time. Inclusive. |
 | `max_transactions` | integer (1 to 1000) | no | Cap on transactions read in `sender` mode (default 1000, the most). Hitting it is reported. |
 | `attacker` | string | no | Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override. |
-| `price_at` | number \| string | no | Price all coins and objects at Unix seconds or ISO 8601 time. Default: coins at the first successful transaction's time; each moved object at its own transaction's time. |
+| `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: daily coin quotes at each transaction's date; objects at their own transaction times. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

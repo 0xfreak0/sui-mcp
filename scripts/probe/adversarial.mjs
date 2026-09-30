@@ -64,13 +64,14 @@ const UNUSED_DIGEST = base58(new Uint8Array(32).fill(0xab));
 
 const chain = await gql(
   `query($pool:SuiAddress!,$d:String!){
-    transaction(digest:$d){ transactionBcs }
+    transaction(digest:$d){ transactionBcs effects { checkpoint { sequenceNumber } } }
     epoch { validatorSet { activeValidators(first:1){ nodes { contents { json } } } } }
     object(address:$pool){ asMoveObject { contents { type { repr } } } }
   }`,
   { pool: CETUS_POOL, d: NEMO_TX },
 );
 const TX_BCS = chain.transaction.transactionBcs;
+const NEMO_CHECKPOINT = Number(chain.transaction.effects.checkpoint.sequenceNumber);
 const VALIDATOR = chain.epoch.validatorSet.activeValidators.nodes[0].contents.json.metadata.sui_address;
 if (!/::pool::Pool</.test(chain.object?.asMoveObject?.contents?.type?.repr ?? "")) {
   throw new Error(`${CETUS_POOL} is no longer a pool; pick another for get_pool_stats`);
@@ -659,7 +660,35 @@ try {
   await refuses("the framework package as a pool", "get_pool_stats", { pool_id: FRAMEWORK });
   await refuses("the Clock as a pool", "get_pool_stats", { pool_id: CLOCK });
   await refuses("a protocol hint the chain contradicts", "get_pool_stats", { pool_id: CETUS_POOL, protocol: "turbos" });
-  await refuses("a value_field no event carries", "aggregate_events", { sender: NEMO, max_events: 50, value_field: "no_such_field" });
+  const missingValueArgs = { sender: NEMO, max_events: 50, value_field: "no_such_field" };
+  const partial = await server.call("aggregate_events", missingValueArgs);
+  const missingValues = (r) => !r._isError && r.events_scanned > 0 && r.groups?.length === 1
+    && r.groups[0].event_count === r.events_scanned
+    && r.groups[0].missing_value_count === r.events_scanned && r.groups[0].value_sum === 0;
+  const next = partial.scan?.next_call;
+  ck("aggregate_events reports missing values and a continuation at the event budget",
+    missingValues(partial) && partial.events_scanned === 50 && partial.truncated === true
+      && partial.scan?.stop_reason === "event_budget" && partial.has_next_page === true
+      && next?.tool === "aggregate_events" && !!partial.next_cursor
+      && next.repeat_with?.cursor === partial.next_cursor,
+    `${partial.events_scanned} events, ${partial.groups?.[0]?.missing_value_count} missing, ${partial.scan?.stop_reason}`);
+  if (next?.tool === "aggregate_events" && next.repeat_with?.cursor) {
+    const resumed = await server.call(next.tool, { ...missingValueArgs, ...next.repeat_with });
+    ck("aggregate_events reports missing values on a resumed slice",
+      missingValues(resumed) && resumed.truncated === true && resumed.scan?.start_cursor === partial.next_cursor,
+      `${resumed.events_scanned} events, ${resumed.groups?.[0]?.missing_value_count} missing`);
+  }
+  // Checkpoint filters are exclusive. This window contains the exploit's
+  // checkpoint, and its complete scan must reject the same nonexistent field.
+  const completeArgs = { sender: NEMO, from: String(NEMO_CHECKPOINT - 1), to: String(NEMO_CHECKPOINT + 1) };
+  const complete = await server.call("aggregate_events", completeArgs);
+  ck("aggregate_events covers the complete nonempty refusal window",
+    !complete._isError && complete.events_scanned > 0 && complete.truncated === false && complete.has_next_page === false,
+    `${complete.events_scanned} events, truncated=${complete.truncated}`);
+  const missing = await server.call("aggregate_events", { ...completeArgs, value_field: "no_such_field" });
+  ck("aggregate_events refuses a value_field no event in a complete window carries",
+    !!missing._isError && missing.error?.includes(`is not a number in any of the ${complete.events_scanned} events scanned`),
+    short(missing.error ?? missing));
   await refuses("bytes left over after a transaction", "decode_ptb", { transaction_bcs: "A".repeat(10_000) });
   await refuses("a list of malformed digests", "get_transactions", { digests: ["notadigest0OIl", "1".repeat(44)] });
   await refuses("a wallet as a package lineage", "resolve_protocol_packages", { package_id: NEMO });

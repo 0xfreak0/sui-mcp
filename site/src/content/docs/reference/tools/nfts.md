@@ -40,11 +40,11 @@ Scan objects of a given type and return top holders. The scan is slow and pagina
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `type` | string | no | Full Move type of the NFT or coin type (e.g. '0xabc::module::NFT' or '0x2::sui::SUI'). Auto-wraps coins in Coin&lt;...> if needed. |
+| `type` | string | no | NFT struct type or coin type, e.g. '0xabc::module::NFT' or '0x2::sui::SUI'. A coin type is wrapped in Coin&lt;...> automatically. |
 | `collection_name` | string | no | NFT collection name or slug to look up in the registry (e.g. 'gawblenz'). Alternative to 'type'. |
-| `mode` | `nft` \| `token` | no | 'nft' ranks by count, 'token' ranks by balance. Auto-detected if omitted: a type the chain knows as a coin (a Coin&lt;T> object, an address balance, coin metadata or a registry entry) is scanned as a token, anything else as an NFT collection. |
+| `mode` | `nft` \| `token` | no | 'nft' ranks by count, 'token' by balance. If omitted, a type the chain knows as a coin is scanned as a token, anything else as an NFT collection. |
 | `limit` | integer (1 to 100) | no | Top N holders to return (default 20, max 100) |
-| `max_scan` | integer (1 to 50000) | no | Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin&lt;T> objects and address-balance entries separately, each up to this bound. A 35s wall-clock budget applies regardless of this value. `time_budget_reached` says when that bound, not `max_scan`, stopped the scan, and the caveat says whether a slow endpoint or the requested depth was the cause. |
+| `max_scan` | integer (1 to 50000) | no | Objects to scan per walk (default 5000, max 50000). Token mode walks Coin&lt;T> objects and address balances separately, each to this bound. The 35s time budget applies regardless. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## list_nft_collections

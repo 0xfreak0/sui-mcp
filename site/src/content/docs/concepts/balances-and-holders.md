@@ -143,6 +143,10 @@ total, and `owner_kind`, because an address balance can belong to an object
 such as a bridge's liquidity bank. `analyze_token` reports the same
 distinction.
 
+Without `mode`, a type the chain knows as a coin is scanned as a token: one
+with a `Coin<T>` object, an address balance, coin metadata or a coin registry
+entry. Anything else is scanned as an NFT collection.
+
 For NFT collections, `holder_kind` says how each holder was found; see
 [Kiosk-held NFTs](/concepts/nft-ownership/).
 

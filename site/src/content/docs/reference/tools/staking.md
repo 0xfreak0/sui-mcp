@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`get_staking_summary`](#get_staking_summary) | Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. |
+| [`get_staking_summary`](#get_staking_summary) | Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). |
 | [`get_validators`](#get_validators) | List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). |
 
 ## get_staking_summary
@@ -16,11 +16,14 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance: a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.
+Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). Historical reads include transfers and split/joined stakes; rewards are separate estimates. Incomplete history gives no total. Excludes wrapped stakes and liquid-staking tokens.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Wallet address (0x...) |
+| `as_of` | string \| integer (0 to 9007199254740990) | no | ISO 8601 date or checkpoint; holdings at the end of the last checkpoint at or before it. |
+| `max_transactions` | integer (1 to 10000) | no | Historical replay budget per direction (default 1000); also bounds object-change pages. |
+| `detail` | `summary` \| `full` | no | summary caps displayed positions; full returns every read position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_validators

@@ -9,6 +9,7 @@ import { gqlQuery } from "../clients/graphql.js";
 import { capPayload } from "../utils/output-cap.js";
 import { getNetwork } from "../config.js";
 import { listOwnedWithJson } from "../utils/owned-objects.js";
+import { historicalStaking } from "../utils/historical-staking.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const STAKED_SUI_TYPE = "0x3::staking_pool::StakedSui";
@@ -183,11 +184,23 @@ export function registerStakingTools(server: McpServer) {
 
   server.tool(
     "get_staking_summary",
-    "Get a wallet's staking positions: every StakedSui object with its validator pool, principal, and activation epoch, and the total principal. Worth calling during an investigation or a net-worth check, because staked SUI does NOT appear in get_balance: a wallet that looks nearly empty can hold a large staked position, and the stake also ties it to a specific validator.",
+    "Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). Historical reads include transfers and split/joined stakes; rewards are separate estimates. Incomplete history gives no total. Excludes wrapped stakes and liquid-staking tokens.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
+      as_of: z.union([z.string(), numArg().int().min(0).max(Number.MAX_SAFE_INTEGER - 1)]).optional()
+        .describe("ISO 8601 date or checkpoint; holdings at the end of the last checkpoint at or before it."),
+      max_transactions: numArg().int().min(1).max(10000).optional()
+        .describe("Historical replay budget per direction (default 1000); also bounds object-change pages."),
+      detail: z.enum(["summary", "full"]).optional().describe("summary caps displayed positions; full returns every read position."),
     },
-    async ({ address }) => {
+    async ({ address, as_of, max_transactions, detail }) => {
+      if (as_of !== undefined) {
+        const historical = await historicalStaking(address, as_of, max_transactions);
+        const args = { address, as_of, max_transactions, network: getNetwork(), detail: "full" };
+        const { payload } = capPayload("get_staking_summary", args, historical,
+          { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args } });
+        return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
+      }
       const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, MAX_STAKE_POSITIONS);
 
       let totalStakedMist = 0n;
@@ -205,27 +218,25 @@ export function registerStakingTools(server: McpServer) {
       // A position whose principal could not be read makes the sum short.
       const summed = complete && positions.every((p) => p.principal_mist !== null);
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              address,
-              total_staked_mist: summed ? totalStakedMist.toString() : null,
-              ...(summed
-                ? {}
-                : {
-                    total_unavailable: complete
-                      ? "A position's principal could not be read, so no total is given."
-                      : `The wallet holds more than ${MAX_STAKE_POSITIONS} StakedSui objects; these are the first ${positions.length} and no total is given.`,
-                  }),
-              position_count: positions.length,
-              truncated: !complete,
-              positions,
-            }),
-          },
-        ],
+      const result = {
+        address,
+        total_staked_mist: summed ? totalStakedMist.toString() : null,
+        ...(summed ? {} : {
+          total_unavailable: complete
+            ? "A position's principal could not be read, so no total is given."
+            : `The holdings walk stopped after ${positions.length} positions; no total is given.`,
+        }),
+        position_count: positions.length,
+        complete: summed,
+        positions,
+        rewards_included: false,
+        scope: "Directly held StakedSui principal only; excludes wrapped/object-owned stakes, FungibleStakedSui and liquid-staking tokens.",
       };
+      const args = { address, network: getNetwork(), detail: "full" };
+      const { payload } = capPayload("get_staking_summary", args, result,
+        { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args } });
+      payload.truncated = !complete || !!payload.omitted;
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
     }
   );
 }

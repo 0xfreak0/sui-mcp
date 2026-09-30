@@ -59,7 +59,7 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 |---|---|---|---|
 | `address` | string | yes | Owner wallet address (0x...) |
 | `value` | boolean, default `true` | no | Estimate each collection's value from its market (default true). Costs a few requests per collection that has a market. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): priced collections plus the most-held others that fit, the rest counted under `omitted`. 'full': every collection. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): priced collections, then the most-held others that fit; `omitted` counts the rest. 'full': every collection. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## list_nfts

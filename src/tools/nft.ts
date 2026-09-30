@@ -176,7 +176,7 @@ export function registerNftTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): priced collections plus the most-held others that fit, the rest counted under `omitted`. 'full': every collection."),
+        .describe("'summary' (default): priced collections, then the most-held others that fit; `omitted` counts the rest. 'full': every collection."),
     },
     async ({ address, value, detail }) => {
       const held = await readHeldCollections(address);

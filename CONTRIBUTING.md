@@ -27,8 +27,9 @@ Keep these out of the public repository:
 - **A maintainer's own wallet addresses or SuiNS names**, in code, tests,
   fixtures, docs or commit messages. Use neutral placeholders (`0xw1`).
 
-`.githooks/commit-msg` checks commit messages, and `.githooks/pre-commit`
-checks staged files.
+`.githooks/commit-msg` and `.githooks/pre-commit` enforce both. The message
+hook matters most: every leak this repo has had was in a commit message,
+where a pre-commit hook never looks.
 
 Patterns live in two files:
 
@@ -37,7 +38,9 @@ Patterns live in two files:
 | `.githooks/patterns` | yes | patterns that are safe to publish |
 | `.githooks/patterns.local` | **no** | patterns that are themselves the secret |
 
-Keep private patterns in the untracked file. Copy `patterns.local.example`
+A hook that blocks your wallet address has to name it, and naming it in a
+tracked file publishes what the hook exists to protect, so private patterns
+live in the untracked file. Copy `patterns.local.example`
 and fill it in; the hook reports only that a private pattern matched, never
 which.
 

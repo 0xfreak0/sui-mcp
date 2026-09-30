@@ -23,6 +23,11 @@ largest signed offset in seconds. Older quotes stay unpriced. These are
 estimates, not execution prices. `priced_raw`, `stale_priced_raw` and
 `unpriced_raw` separate fresh, stale and excluded amounts without overlap.
 Missing timestamps or quotes never fall back to today's price.
+Fully priced flow and participant rows use gross `raw.in` and `raw.out`
+instead of repeating priced and zero unpriced buckets. For these rows,
+`stale_priced_raw`, when present, is a subset of `raw`; the rest is fresh.
+Bridge summaries cap transaction detail, not group totals or destinations.
+`omitted` names the removed rows and gives the full-result continuation.
 Coin decimals come from the registry, cached on-chain metadata or the quote's
 provider. A quote without a known decimal scale stays unpriced.
 

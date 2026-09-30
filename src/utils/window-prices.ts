@@ -216,8 +216,13 @@ export class WindowAmounts {
   totalUsd() { const rows = [...this.values.values()]; return rows.some((v) => v.priced) ? rows.reduce((s, v) => s + v.usd, 0) : null; }
   coverage(coin: string) {
     const v = this.values.get(coin);
-    return v ? { priced_raw: { in: v.pricedIn.toString(), out: v.pricedOut.toString() }, unpriced_raw: { in: v.unpricedIn.toString(), out: v.unpricedOut.toString() },
-      ...(v.staleIn || v.staleOut ? { stale_priced_raw: { in: v.staleIn.toString(), out: v.staleOut.toString() } } : {}) } : {};
+    if (!v) return {};
+    const stale = v.staleIn || v.staleOut ? { stale_priced_raw: { in: v.staleIn.toString(), out: v.staleOut.toString() } } : {};
+    if (!v.unpricedIn && !v.unpricedOut) {
+      return { raw: { in: (v.pricedIn + v.staleIn).toString(), out: (v.pricedOut + v.staleOut).toString() }, ...stale };
+    }
+    return { priced_raw: { in: v.pricedIn.toString(), out: v.pricedOut.toString() },
+      unpriced_raw: { in: v.unpricedIn.toString(), out: v.unpricedOut.toString() }, ...stale };
   }
   amounts() {
     return [...this.values].map(([coin, v]) => ({ coin_type: coin, symbol: displayCoin(coin).symbol,

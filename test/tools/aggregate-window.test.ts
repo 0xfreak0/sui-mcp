@@ -27,7 +27,7 @@ describe("aggregate_events historical P&L", () => {
     })), missing: [] });
     const result = JSON.parse((await handlers.get("aggregate_events")!({ sender: SENDER, group_pnl: true, max_events: 50 })).content[0].text);
     expect(result.pnl.senders[0]).toMatchObject({ sender: SENDER, usd_net: 20, usd_gained: 20, usd_lost: 0,
-      net: [{ amount: 0, usd: 20, priced_raw: { in: "10000000000", out: "10000000000" } }] });
+      net: [{ amount: 0, usd: 20, raw: { in: "10000000000", out: "10000000000" } }] });
     expect(result.pnl.usd_basis).toMatchObject({ method: "hourly_utc", approximate: true, partial: false, priced_coin_samples: 2 });
   });
 });

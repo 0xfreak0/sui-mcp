@@ -47,6 +47,7 @@ vi.mock("../../src/utils/valuers/common.js", async (importOriginal) => ({
 // Imported after the mocks above, which the factories close over.
 const { registerValuer } = await import("../../src/utils/position-value.js");
 const { registerFlowTools } = await import("../../src/tools/flows.js");
+const { resetWindowPriceCache } = await import("../../src/utils/window-prices.js");
 
 const STAKE_TYPE = "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui";
 registerValuer({
@@ -70,6 +71,7 @@ const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002:
 const DIGEST = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
 
 beforeEach(() => {
+  resetWindowPriceCache();
   mockPriceRead.mockImplementation(async (types: string[]) => ({
     points: new Map(), unpriced: types.map((t) => ({ coin_type: t, code: "not_listed", reason: "No price." })),
   }));
@@ -242,5 +244,46 @@ describe("summarize_address_flows objects", () => {
     expect(d.coins[0]).toMatchObject({ in: 2, out: 1, net: 1, usd: { in: 4, out: 2, net: 2 } });
     expect(d.top_recipients[0].coins[0]).toMatchObject({ amount: 1, usd: 2 });
     expect(d.unattributed_inflows[0]).toMatchObject({ amount: 2, usd: 4 });
+  });
+
+  it("caps bridge details without changing totals, destinations or full recovery", async () => {
+    const eventType = "0xecf47609::deposit_for_burn::DepositForBurn";
+    const destination = `0x${"d3".repeat(20)}`;
+    const timestamp = "2025-10-01T12:30:00Z";
+    mockPriceRead.mockImplementation(async (_coins: string[], at: number) => ({
+      points: new Map([[SUI, { price: 4, publishTime: at, source: "defillama" }]]), unpriced: [],
+    }));
+    const nodes = Array.from({ length: 80 }, (_, i) => ({
+      digest: `synthetic-bridge-${i}`, sender: { address: V }, kind: { commands: gqlPage([]) },
+      effects: { status: "SUCCESS", timestamp, checkpoint: { sequenceNumber: 2000 + i },
+        gasEffects: { gasSummary: { computationCost: "0", storageCost: "0", storageRebate: "0" } },
+        balanceChanges: gqlPage([{ coinType: { repr: SUI }, amount: "-1000000000", owner: { address: V } }]),
+        events: gqlPage([{ contents: { type: { repr: eventType } } }]) },
+    }));
+    mockGqlQuery.mockImplementation(async (query: string, vars: Record<string, string>) => {
+      if (query.includes("transactions(filter")) return { transactions: { nodes, pageInfo: { hasPreviousPage: false, startCursor: null } } };
+      if (query.includes("fragment E on Transaction")) return Object.fromEntries(Object.keys(vars).map((key) => [
+        key.replace("d", "t"), { effects: { events: gqlPage([{ contents: { type: { repr: eventType }, json: {
+          nonce: vars[key], burn_token: SUI, amount: "1000000000", depositor: V,
+          mint_recipient: `0x${destination.slice(2).padStart(64, "0")}`, destination_domain: 3,
+        } } }]) } },
+      ]));
+      return {};
+    });
+    const call = handlers.get("summarize_address_flows")!;
+    const summary = JSON.parse((await call({ address: V })).content[0].text);
+    const full = JSON.parse((await call({ address: V, detail: "full" })).content[0].text);
+    expect(new Set(full.bridge_exits.transactions.map((tx: { digest: string }) => tx.digest))).toEqual(new Set(nodes.map((tx) => tx.digest)));
+    expect(summary.bridge_exits.transaction_count).toBe(80);
+    expect(summary.bridge_exits.by_bridge).toEqual(full.bridge_exits.by_bridge);
+    expect(summary.bridge_exits.by_bridge[0]).toMatchObject({ transactions: 80, sent: [{ amount: 80, usd: 320 }],
+      destinations: [{ address: destination, transactions: 80, sent: [{ amount: 80, usd: 320 }] }] });
+    expect(summary.totals_usd).toEqual(full.totals_usd);
+    expect(summary.omitted.lists["bridge_exits.transactions"].count + summary.bridge_exits.transactions.length).toBe(80);
+    expect(summary.omitted.next_call).toMatchObject({ tool: "summarize_address_flows", repeat_with: { detail: "full" } });
+    expect(JSON.stringify(summary.bridge_exits.transactions).length).toBeLessThan(8100);
+    expect(summary.bridge_exits.transactions[0].sent[0]).toMatchObject({ raw: { in: "1000000000", out: "0" }, usd: 4 });
+    expect(summary.bridge_exits.transactions[0].sent[0]).not.toHaveProperty("priced_raw");
+    expect(summary.bridge_exits.transactions[0].sent[0]).not.toHaveProperty("unpriced_raw");
   });
 });

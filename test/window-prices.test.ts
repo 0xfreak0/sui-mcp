@@ -21,7 +21,7 @@ describe("window USD", () => {
     const amounts = new WindowAmounts(prices);
     amounts.add(SUI, 10_000_000_000n, JAN + 100);
     amounts.add(SUI, -10_000_000_000n, JUL + 200);
-    expect(amounts.amounts()[0]).toMatchObject({ amount: 0, usd: 20, priced_raw: { in: "10000000000", out: "10000000000" } });
+    expect(amounts.amounts()[0]).toMatchObject({ amount: 0, usd: 20, raw: { in: "10000000000", out: "10000000000" } });
     expect(prices.basis).toMatchObject({ priced_coin_samples: 2, partial: false, approximate: true });
   });
 

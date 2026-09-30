@@ -473,8 +473,10 @@ export function registerFlowTools(server: McpServer) {
               usd: inUsd === null && outUsd === null ? null : {
                 in: round(inUsd ?? 0), out: round(outUsd ?? 0), net: round((inUsd ?? 0) - (outUsd ?? 0)),
               },
-              priced_raw: { in: incoming.values.get(f.coinType)?.pricedIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.pricedIn.toString() ?? "0" },
-              unpriced_raw: { in: incoming.values.get(f.coinType)?.unpricedIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.unpricedIn.toString() ?? "0" },
+              ...(incoming.values.get(f.coinType)?.unpricedIn || outgoing.values.get(f.coinType)?.unpricedIn ? {
+                priced_raw: { in: incoming.values.get(f.coinType)?.pricedIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.pricedIn.toString() ?? "0" },
+                unpriced_raw: { in: incoming.values.get(f.coinType)?.unpricedIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.unpricedIn.toString() ?? "0" },
+              } : {}),
               ...(incoming.values.get(f.coinType)?.staleIn || outgoing.values.get(f.coinType)?.staleIn ? {
                 stale_priced_raw: { in: incoming.values.get(f.coinType)?.staleIn.toString() ?? "0", out: outgoing.values.get(f.coinType)?.staleIn.toString() ?? "0" },
               } : {}),
@@ -711,6 +713,12 @@ export function registerFlowTools(server: McpServer) {
           {
             "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
             "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
+            "bridge_exits.transactions": {
+              budget: 8_000,
+              keepOrder: true,
+              usd: (row) => row.sent.some((coin) => coin.usd !== null) ? row.sent.reduce((sum, coin) => sum + (coin.usd ?? 0), 0) : null,
+              brief: (row) => ({ digest: row.digest, bridge: row.bridge }),
+            } satisfies ListCap<(typeof payload.bridge_exits.transactions)[number]>,
             inflow_sources: {
               budget: 8_000,
               keep: (r: Row) => flagged(r) || topSources.has(r.address),

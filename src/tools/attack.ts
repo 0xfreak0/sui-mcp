@@ -952,7 +952,7 @@ export function registerAttackTools(server: McpServer) {
 
   server.tool(
     "summarize_incident_losses",
-    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced coins are listed separately and make USD totals a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.",
+    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.",
     {
       digests: z
         .array(z.string())
@@ -988,7 +988,7 @@ export function registerAttackTools(server: McpServer) {
         .union([numArg(), z.string()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: daily coin quotes at each transaction's date; objects at their own transaction times."),
+        .describe("Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening."),
       max_groups: numArg()
         .int()
         .min(1)
@@ -1271,8 +1271,9 @@ export function registerAttackTools(server: McpServer) {
               ...(unpricedHere ? { unpriced_coins: unpricedHere } : {}),
               attacker: perCoin(a),
               pool: perCoin(p),
-              ...(unpricedHere ? { price_coverage: { attacker: a.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw })),
-                pool: p.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw })) } } : {}),
+              ...(unpricedHere || a.coins.some((c) => c.stale_priced_raw) || p.coins.some((c) => c.stale_priced_raw) ? { price_coverage: {
+                attacker: a.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw, ...(c.stale_priced_raw ? { stale_priced_raw: c.stale_priced_raw } : {}) })),
+                pool: p.coins.map((c) => ({ coin_type: c.coin_type, priced_raw: c.priced_raw, unpriced_raw: c.unpriced_raw, ...(c.stale_priced_raw ? { stale_priced_raw: c.stale_priced_raw } : {}) })) } } : {}),
               ...(g.recorded_loss_usd
                 ? {
                     recorded_loss_usd: Number(g.recorded_loss_usd.toFixed(2)),
@@ -1312,7 +1313,7 @@ export function registerAttackTools(server: McpServer) {
             attacker_net_raw: t?.amount ?? "0",
             decimals_source: t?.decimals_source ?? pricingScale(coinType).source,
             usd: t ? t.usd : perTx.some(({ tx }) => prices.point(coinType, atOf(tx))) ? 0 : null,
-            ...(t ? { priced_raw: t.priced_raw, unpriced_raw: t.unpriced_raw } : {}),
+            ...(t ? { priced_raw: t.priced_raw, unpriced_raw: t.unpriced_raw, ...(t.stale_priced_raw ? { stale_priced_raw: t.stale_priced_raw } : {}) } : {}),
           };
         });
         const pricedCoins = coinRows.filter((c) => c.usd !== null).sort((a, b) => Math.abs(b.usd ?? 0) - Math.abs(a.usd ?? 0));
@@ -1344,6 +1345,7 @@ export function registerAttackTools(server: McpServer) {
               usd: v.usd,
               priced_raw: v.priced_raw,
               unpriced_raw: v.unpriced_raw,
+              ...(v.stale_priced_raw ? { stale_priced_raw: v.stale_priced_raw } : {}),
               transactions: row.digests,
             };
           })
@@ -1506,7 +1508,8 @@ export function registerAttackTools(server: McpServer) {
           args,
           detail === "full" ? payload : { ...payload, groups: shownGroups },
           {
-            "usd_basis.missing_coin_days": { budget: 2_000, keepOrder: true },
+            "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
+            "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
             groups: {
               budget: 14_000,
               usd: (g: Group) => Math.max(g.attacker_usd, -g.pool_usd),

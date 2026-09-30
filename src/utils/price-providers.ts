@@ -320,7 +320,7 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
     for (let i = 0; i < chunks.length; i += DEFILLAMA_CONCURRENCY) {
       await Promise.all(chunks.slice(i, i + DEFILLAMA_CONCURRENCY).map(async (coins) => {
         try {
-          const response = await fetch(`https://coins.llama.fi/batchHistorical?coins=${encodeURIComponent(JSON.stringify(coins))}&searchWidth=1h`, {
+          const response = await fetch(`https://coins.llama.fi/batchHistorical?coins=${encodeURIComponent(JSON.stringify(coins))}&searchWidth=2h`, {
             headers: { accept: "application/json" },
             signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
           });
@@ -337,7 +337,7 @@ export async function fetchDefiLlamaHistory(requests: Map<string, number[]>): Pr
             for (const time of times) {
               const nearest = entries.reduce<(typeof entries)[number] | undefined>((best, p) =>
                 !best || Math.abs(p.timestamp - time) < Math.abs(best.timestamp - time) ? p : best, undefined);
-              if (nearest && Math.abs(nearest.timestamp - time) <= 3600) {
+              if (nearest && Math.abs(nearest.timestamp - time) <= 7200) {
                 samples.set(time, { price: nearest.price, source: "defillama", at: nearest.timestamp,
                   ...(typeof nearest.confidence === "number" ? { confidence: nearest.confidence } : {}),
                   ...(typeof nearest.decimals === "number" && Number.isInteger(nearest.decimals) ? { decimals: nearest.decimals } : {}) });

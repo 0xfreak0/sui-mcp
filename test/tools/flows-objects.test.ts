@@ -23,7 +23,7 @@ vi.mock("../../src/utils/price-providers.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   pythApiKey: () => null,
   fetchDefiLlamaHistory: async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [
-    coin, new Map(times.filter((at) => at !== Date.parse("2025-09-01") / 1000).map((at) => [at, {
+    coin, new Map(times.filter((at) => at < Date.parse("2025-09-01") / 1000 || at >= Date.parse("2025-09-02") / 1000).map((at) => [at, {
       price: at < Date.parse("2025-06-01") / 1000 ? 4 : 2, at, source: "defillama",
     }])),
   ])),
@@ -216,7 +216,7 @@ describe("summarize_address_flows objects", () => {
       priced_raw: { in: "0", out: "20000000000" }, unpriced_raw: { in: "0", out: "10000000000" },
     });
     expect(d.top_recipients[0]).toMatchObject({ address: C, usd: 60, coins: [{ amount: 30, usd: 60 }] });
-    expect(d.usd_basis).toMatchObject({ method: "daily_utc", priced_coin_days: 2, partial: true });
+    expect(d.usd_basis).toMatchObject({ method: "hourly_utc", priced_coin_samples: 2, partial: true });
   });
 
   it("formats headline and unattributed amounts with provider decimals", async () => {

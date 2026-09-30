@@ -332,7 +332,7 @@ describe("incident historical coin legs", () => {
     const result = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: A }));
     expect(result.totals).toMatchObject({ usd_gained: 40, usd_net: 40, transfers_out_usd: 20, approximate: true, partial: false });
     expect(result.transfers_out[0]).toMatchObject({ usd: 20, amount: 10 });
-    expect(result.usd_basis).toMatchObject({ method: "daily_utc", priced_coin_days: 2 });
+    expect(result.usd_basis).toMatchObject({ method: "hourly_utc", priced_coin_samples: 2 });
   });
 
   it("retains an explicitly requested fixed-time valuation", async () => {
@@ -344,7 +344,7 @@ describe("incident historical coin legs", () => {
     mockReadAttackTransactions.mockResolvedValue(emptyRead([first, last]));
     const result = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: A, price_at: "2025-03-01" }));
     expect(result.totals.usd_net).toBe(0);
-    expect(result.usd_basis).toMatchObject({ method: "fixed_time", priced_coin_days: 1 });
+    expect(result.usd_basis).toMatchObject({ method: "fixed_time", priced_coin_samples: 1 });
   });
 
   it("does not hide an unpriced debit behind a priced credit in the same coin", async () => {

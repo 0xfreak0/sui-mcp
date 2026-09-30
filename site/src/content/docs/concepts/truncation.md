@@ -11,7 +11,7 @@ can still have more pages.
 
 For `query_events`, continue while `has_next_page` is true, even when `events`
 is empty. `scan` reports a read-budget stop, and `scan.next_call.repeat_with`
-continues the same query with its filters and network unchanged.
+continues the same query with its filters, order and network unchanged.
 
 `summarize_address_flows`, `find_funding_sources`, `get_transaction` and
 `decode_ptb` list the rows that fit a fixed size budget and compute every
@@ -44,3 +44,57 @@ counts any dropped rows. Follow `omitted.next_call` for full rows on the same
 network, in the same order, without a limit. `detail: "full"` has no size cap;
 an explicit `limit` still applies. An `address` lookup always returns the
 single validator's details.
+
+## Scan-limited transaction pages
+
+`query_transactions` fills a page to `limit` across several reads when the
+service returns short pages. Continue while `has_next_page` is true, even when
+`transactions` is empty. `scan` reports a read-budget stop, and
+`scan.next_call.repeat_with` continues the same query with its filters, order
+and network unchanged.
+
+With `all_versions: true`, rows wait until the next rows or exhaustion of
+every version stream establish their global order. The tool stops reading once
+that ordered page is full; it refills only streams whose unknown frontier
+prevents filling the page. The cursor retains progress through empty reads as
+well as transactions already returned.
+
+## Partial event rankings
+
+`aggregate_events` scans oldest first, stopping at either `max_events` or
+`max_reads`. Empty reads count against `max_reads` across every module segment.
+At a budget stop, `truncated` is true and `scan.stop_reason` is `event_budget`
+or `read_budget`. Continue with `scan.next_call.repeat_with` on
+`aggregate_events`, keeping the same filters and network. The opaque cursor
+records the module segment and scan boundary, including empty reads; it does
+not identify a covered checkpoint range.
+
+Each call ranks a disjoint event slice. A resumed ranking remains `truncated`
+even when `has_next_page` becomes false, because it excludes earlier slices.
+Per-key event counts and `value_sum` add only when every group was retained in
+every slice (`scan.groups_complete`); values retain each slice's rounding.
+Top-N rankings, `distinct_keys`, `distribution` and `group_pnl` are not additive.
+One transaction's events can span slices, so adding slice P&L can count that
+transaction more than once.
+
+An all-missing `value_field` in a partial or resumed slice is counted under
+each group's `missing_value_count`; the scan can still continue. The tool
+rejects a field absent from every event only after reading the complete window
+in one call.
+
+For example, a stopped call can return:
+
+```json
+{
+  "truncated": true,
+  "has_next_page": true,
+  "scan": {
+    "reads": 3,
+    "stop_reason": "read_budget",
+    "next_call": {
+      "tool": "aggregate_events",
+      "repeat_with": { "cursor": "opaque-next-cursor" }
+    }
+  }
+}
+```

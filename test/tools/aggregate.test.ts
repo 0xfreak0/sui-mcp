@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockGraphql } from "../helpers/mock-grpc.js";
+import type { ZodRawShape } from "zod";
+import { toolArgsSchema } from "../../src/tools/args.js";
 
 const mockGqlQuery = createMockGraphql();
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -9,8 +11,12 @@ const { RELOCATE_EVENT_MODULE_CHECKPOINT } = await import("../../src/utils/packa
 
 type Result = { isError?: boolean; content: { text: string }[] };
 const tools = new Map<string, (a: Record<string, unknown>) => Promise<Result>>();
+const schemas = new Map<string, ZodRawShape>();
 registerAggregateTools({
-  tool: (n: string, _d: string, _s: unknown, h: (a: Record<string, unknown>) => Promise<Result>) => tools.set(n, h),
+  tool: (n: string, _d: string, schema: ZodRawShape, h: (a: Record<string, unknown>) => Promise<Result>) => {
+    schemas.set(n, schema);
+    tools.set(n, h);
+  },
 } as never);
 
 const SENDER = "0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724";
@@ -31,13 +37,10 @@ const page = {
 describe("aggregate_events with a value_field no event carries", () => {
   // A path nothing carries sums to 0 for every group, and a ranking of zeros
   // would read as a measured one.
-  it("is an error that lists the numeric fields the events do carry", async () => {
+  it("rejects an all-missing field after reading the complete window", async () => {
     mockGqlQuery.mockResolvedValue(page);
     const r = await tools.get("aggregate_events")!({ sender: SENDER, max_events: 50, value_field: "no_such_field" });
     expect(r.isError).toBe(true);
-    expect(JSON.parse(r.content[0].text).error).toBe(
-      'value_field "no_such_field" is not a number in any of the 2 events scanned. Numeric fields they carry: amount_in.',
-    );
   });
 
   it("still sums a field the events carry", async () => {
@@ -167,5 +170,200 @@ describe("aggregate_events module filter resolution", () => {
     expect(data.module_scope?.other_version_ids).toEqual([V9]);
     expect(data.no_results_hint).toMatch(/module_scope\.other_version_ids/);
     expect(data.no_results_hint).not.toMatch(/event_type/);
+  });
+});
+
+describe("aggregate_events bounded event slices", () => {
+  beforeEach(() => { mockGqlQuery.mockReset(); });
+
+  const event = (amount: number) => ({
+    sender: { address: "0x1" },
+    transaction: { digest: `tx${amount}` },
+    contents: { type: { repr: "0x2::test::Event" }, json: { amount } },
+  });
+  const result = async (args: Record<string, unknown>) => {
+    const response = await tools.get("aggregate_events")!(args);
+    expect(response.isError).toBeUndefined();
+    return JSON.parse(response.content[0].text);
+  };
+
+  it("stops short and empty reads independently of event count, then resumes disjoint counts and sums", async () => {
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const n = Number(vars?.after ?? 0);
+      const nodes = n === 0 ? [event(100)] : n === 2 ? [event(200)] : n === 3 ? [event(300)] : [];
+      return { events: { nodes, pageInfo: { hasNextPage: n < 3, endCursor: String(n + 1) } } };
+    });
+    const args = { sender: "0x1", value_field: "amount", max_events: 50, max_reads: 3 };
+    const first = await result(args);
+    expect(first.events_scanned).toBe(2);
+    expect(first.groups[0]).toMatchObject({ key: "0x1", event_count: 2, value_sum: 300 });
+    expect(first.truncated).toBe(true);
+    expect(first.has_next_page).toBe(true);
+    expect(first.scan.stop_reason).toBe("read_budget");
+    expect(first.scan.reads).toBe(3);
+    expect(first.scan.next_call.tool).toBe("aggregate_events");
+    const second = await result({ ...args, ...first.scan.next_call.repeat_with });
+    expect(second.groups[0]).toMatchObject({ key: "0x1", event_count: 1, value_sum: 300 });
+    expect(second.has_next_page).toBe(false);
+    expect(second.truncated).toBe(true);
+    expect(second.scan.stop_reason).toBe("exhausted");
+    expect(second.scan.start_cursor).toBe(first.next_cursor);
+  });
+
+  it("bounds empty reads without declaring an empty window", async () => {
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const n = Number(vars?.after ?? 0);
+      return { events: { nodes: [], pageInfo: { hasNextPage: n < 4, endCursor: String(n + 1) } } };
+    });
+    const first = await result({ sender: "0x1", max_reads: 2 });
+    expect(first.events_scanned).toBe(0);
+    expect(first.truncated).toBe(true);
+    expect(first.has_next_page).toBe(true);
+    expect(first.scan.stop_reason).toBe("read_budget");
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+    expect(first.next_cursor).toBe("0|2");
+  });
+
+  it("shares the read cap across cutover segments and resumes in the unfinished segment", async () => {
+    const original = `0x${"a".repeat(64)}`;
+    const upgraded = `0x${"b".repeat(64)}`;
+    const cut = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    mockGqlQuery.mockImplementation(async (q, vars) => {
+      if (q?.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: original, version: 1 }, { address: upgraded, version: 2 }], pageInfo: { hasNextPage: false } } };
+      }
+      const filter = vars?.filter as { module: string };
+      const before = filter.module.startsWith(original);
+      const n = Number(vars?.after ?? 0);
+      return { events: { nodes: n ? [event(before ? 10 : 20)] : [], pageInfo: { hasNextPage: n === 0, endCursor: String(n + 1) } } };
+    });
+    const args = { module: `${upgraded}::test`, from: cut - 100, to: cut + 100, max_reads: 3, value_field: "amount" };
+    const first = await result(args);
+    expect(first.events_scanned).toBe(1);
+    expect(first.scan.stop_reason).toBe("read_budget");
+    expect(first.scan.reads).toBe(3);
+    expect(first.next_cursor).toBe("1|1");
+    const second = await result({ ...args, ...first.scan.next_call.repeat_with });
+    expect(second.events_scanned).toBe(1);
+    expect(second.groups[0].value_sum).toBe(20);
+    expect(second.has_next_page).toBe(false);
+    expect(second.scan.reads).toBe(1);
+  });
+
+  it("distinguishes an event-budget stop at a segment boundary and continues in the next segment", async () => {
+    const original = `0x${"c".repeat(64)}`;
+    const upgraded = `0x${"d".repeat(64)}`;
+    const cut = RELOCATE_EVENT_MODULE_CHECKPOINT.mainnet;
+    mockGqlQuery.mockImplementation(async (q, vars) => {
+      if (q?.includes("packageVersions")) {
+        return { packageVersions: { nodes: [{ address: original, version: 1 }, { address: upgraded, version: 2 }], pageInfo: { hasNextPage: false } } };
+      }
+      const filter = vars?.filter as { module: string };
+      const before = filter.module.startsWith(original);
+      return { events: { nodes: before ? Array.from({ length: 50 }, (_, i) => event(i)) : [event(100)], pageInfo: { hasNextPage: false, endCursor: "end" } } };
+    });
+    const args = { module: `${upgraded}::test`, from: cut - 100, to: cut + 100, max_reads: 5, max_events: 50 };
+    const first = await result(args);
+    expect(first.events_scanned).toBe(50);
+    expect(first.scan.stop_reason).toBe("event_budget");
+    expect(first.next_cursor).toBe("1|");
+    const second = await result({ ...args, ...first.scan.next_call.repeat_with });
+    expect(second.events_scanned).toBe(1);
+    expect(second.has_next_page).toBe(false);
+  });
+
+  it("marks a top-N slice's omitted groups so its rows cannot be treated as an additive total", async () => {
+    mockGqlQuery.mockResolvedValue({
+      events: {
+        nodes: [event(100), { ...event(200), contents: { type: { repr: "0x2::test::Other" }, json: { amount: 200 } } }],
+        pageInfo: { hasNextPage: true, endCursor: "next" },
+      },
+    });
+    const page = await result({ sender: "0x1", group_by: "event_type", max_reads: 1, top: 1, value_field: "amount" });
+    expect(page.groups).toEqual([{ key: "0x2::test::Other", event_count: 1, value_sum: 200, missing_value_count: 0 }]);
+    expect(page.distinct_keys).toBe(2);
+    expect(page.scan.groups_complete).toBe(false);
+  });
+});
+
+describe("aggregate_events default read bound", () => {
+  it("stops empty reads even when max_reads was not supplied", async () => {
+    mockGqlQuery.mockReset();
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const n = Number(vars?.after ?? 0);
+      return { events: { nodes: [], pageInfo: { hasNextPage: n < 201, endCursor: String(n + 1) } } };
+    });
+    const response = await tools.get("aggregate_events")!({ sender: "0x1" });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.truncated).toBe(true);
+    expect(result.scan.stop_reason).toBe("read_budget");
+    expect(result.scan.reads).toBe(200);
+    expect(result.next_cursor).toBe("0|200");
+  });
+});
+
+describe("aggregate_events MCP continuation arguments", () => {
+  it("continues bounded scans through the registered argument schema", async () => {
+    mockGqlQuery.mockReset();
+    mockGqlQuery.mockImplementation(async (_q, vars) => ({
+      events: {
+        nodes: vars?.after ? page.events.nodes : [],
+        pageInfo: { hasNextPage: !vars?.after, endCursor: vars?.after ? "end" : "boundary" },
+      },
+    }));
+    const schema = toolArgsSchema(schemas.get("aggregate_events")!);
+    const args = { sender: SENDER, from: "0", to: "100", max_reads: 1 };
+    const first = await tools.get("aggregate_events")!(schema.parse(args));
+    const partial = JSON.parse(first.content[0].text);
+    const continuation = schema.parse({ ...args, ...partial.scan.next_call.repeat_with });
+    const second = await tools.get("aggregate_events")!(continuation);
+    const remaining = JSON.parse(second.content[0].text);
+    expect(remaining.events_scanned).toBe(2);
+    expect(remaining.has_next_page).toBe(false);
+    expect(remaining.window).toMatchObject({ after_checkpoint: 0, before_checkpoint: 100 });
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars?.filter)).toEqual([
+      { sender: SENDER, afterCheckpoint: 0, beforeCheckpoint: 100 },
+      { sender: SENDER, afterCheckpoint: 0, beforeCheckpoint: 100 },
+    ]);
+  });
+});
+
+describe("aggregate_events value fields across slices", () => {
+  it("counts missing values and preserves continuation through partial and resumed all-missing slices", async () => {
+    mockGqlQuery.mockReset();
+    mockGqlQuery.mockImplementation(async (_q, vars) => {
+      const index = Number(vars?.after ?? 0);
+      return {
+        events: {
+          nodes: index === 1 ? page.events.nodes : [{
+            sender: { address: SENDER },
+            contents: { type: { repr: TYPE }, json: { msg: "synthetic" } },
+          }],
+          pageInfo: { hasNextPage: index < 3, endCursor: String(index + 1) },
+        },
+      };
+    });
+    const args = { sender: SENDER, value_field: "amount_in", max_reads: 1 };
+    let cursor: string | undefined;
+    for (const expected of [
+      { event_count: 1, missing_value_count: 1, value_sum: 0 },
+      { event_count: 2, missing_value_count: 0, value_sum: 300 },
+      { event_count: 1, missing_value_count: 1, value_sum: 0 },
+      { event_count: 1, missing_value_count: 1, value_sum: 0 },
+    ]) {
+      const response = await tools.get("aggregate_events")!({ ...args, cursor });
+      expect(response.isError).toBeUndefined();
+      const slice = JSON.parse(response.content[0].text);
+      expect(slice.groups).toEqual([{ key: SENDER, ...expected }]);
+      expect(slice.truncated).toBe(true);
+      if (slice.has_next_page) {
+        cursor = slice.scan.next_call.repeat_with.cursor;
+        expect(cursor).toBe(slice.next_cursor);
+      } else {
+        expect(slice.scan.stop_reason).toBe("exhausted");
+        expect(slice.next_cursor).toBeNull();
+      }
+    }
+    expect(mockGqlQuery.mock.calls.map(([, vars]) => vars?.after)).toEqual([undefined, "1", "2", "3"]);
   });
 });

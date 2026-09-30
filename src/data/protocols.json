@@ -467,6 +467,62 @@
     "0xad6769be9937a4a818d3a8b222de9c4e99d2bc9012a2828aaf24ada1ff7e81b4": {
       "name": "Koi",
       "type": "launchpad"
+    },
+    "0x5cfddf8ba23be6835644a8ea22482ff6ebb0081e42cc1bc052b5f770ca8bbdea": {
+      "name": "Vice",
+      "type": "launchpad"
+    },
+    "0x6c9ae8c688d80bd55e452788443d9fd7e00cf3dde4ad238f7c8b96db8c04da59": {
+      "name": "Vice",
+      "type": "launchpad"
+    },
+    "0x93d1a123f8955c344d83d571048cf2d53ab790ba9c202391e4ef54e467574558": {
+      "name": "Vice",
+      "type": "launchpad"
+    },
+    "0x779829966a2e8642c310bed79e6ba603e5acd3c31b25d7d4511e2c9303d6e3ef": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x7e6aa6e179466ab2814425a780b122575296d011119fa69d27f289f5a28814bd": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x7ec68f4115dc2944426239b13ce6804dd9971b24069fb4efe88360d29b17f0ce": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x9b5a8c1ff05fbae153fd27013f83f70d91dbc6dd3a85d3b8487ccea622ef9d2e": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x07cb654d8ae22bd18fff08f322d99fdf9d1673712812329b127430b155dc44ff": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0xa36cd2f2ab1d47c884cf564df780691a461e05bda1db1528772f8d0694cb184d": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x1a184ecf7d0652f8f1285a3b0b2e644bf86ae1742317fcdaa9b11a7f3a30bd70": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x099f7776a4d55ae21051a80e2de713389782ef30b610245c7606ded178036636": {
+      "name": "Interest Protocol",
+      "type": "launchpad"
+    },
+    "0x40e0c95f73af329e7a6a8eafee9d152a1f3090736d35052842288232f7eb5968": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x85fdb7e3d28162b99e0df758069a3d23cff874c400b2160fc0d4618aefd3ec5c": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x1749b76a3ae065dedfe847578b07826fa83d1e18ff485d9e4f9647f3698e104d": {
+      "name": "Blast.fun",
+      "type": "launchpad"
     }
   }
 }

@@ -57,6 +57,11 @@ follow `events_page.next_call` for the next offset.
 real hop, for example USDC to USDT to USDC. It lists the loop's action indices,
 coins and round-trip cost from the pools' own swap events, or null with a reason.
 
+Two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` and `swap_ba_cb`
+actions name the first and third type arguments as input and output. The
+middle type is the route's intermediate coin; the function suffix describes
+the pools' coin ordering.
+
 
 ## Why a transaction failed
 

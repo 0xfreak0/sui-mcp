@@ -157,3 +157,40 @@ of the newest version's public functions on that type make is raised as
 `ungated-older-version`, for example a version check added later.
 
 None of these need the optional [decompiler](/guides/decompiler/).
+
+## Governance and redeployed code
+
+`get_upgrade_history` accepts any version's ID or an MVR name. Each lineage
+version has its package ID, publish or upgrade transaction, time, sender,
+signing scheme and UpgradeCap holder then. Signing schemes include single
+key, zkLogin, passkey and multisig, with threshold and actual signing members.
+
+A round trip is flagged when the cap leaves its usual holder, an upgrade
+ships, and the cap returns within `round_trip_hours` (24 by default).
+Other flags cover a single-key upgrade while the cap is usually multisig-held,
+policy changes, and a cap destroyed to make the package immutable, wrapped,
+frozen, shared or sent to an unspendable address. `as_of` accepts an ISO time,
+`now` or a checkpoint and reports the holder and newest version then.
+
+Each version lists non-framework dependency relinks. The latest version and
+the version newest at `as_of` also list their dependencies' linked versions.
+Use `linked_id` with `disassemble_module`; bytecode names dependencies by
+original ID. Old versions remain callable, but this governance read does not
+compare their guards. `analyze_package` supplies `ungated-older-version` leads.
+
+`find_redeploys: true` searches for code carried by other lineages rather
+than upgrades in the same lineage. It starts from up to 250 UpgradeCaps each
+still held by the root publisher and current cap holder. Candidates sharing
+at least half the module names have every version compared, ignoring package
+addresses. Nearest-published candidates are read first, within 120 package reads.
+
+`module_origins` gives each module's earliest matching version, including
+this lineage. `function_origins` compares functions with table indices resolved
+and reports code predating its module's origin, or functions whose whole module
+appears in no compared lineage. Groups identify the module and origin version;
+`related_lineages` lists the related packages.
+
+Only this redeploy output is capped. The default summary fits function-origin
+groups within about 6,000 characters, prioritizing the code that most predates
+its module's origin. `omitted` counts excluded groups and functions;
+`detail: "full"` lists all groups.

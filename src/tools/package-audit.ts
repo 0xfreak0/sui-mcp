@@ -138,7 +138,7 @@ export function registerPackageAuditTools(server: McpServer) {
         .max(MAX_SAMPLE_LINES)
         .optional()
         .describe(
-          "Lines per changed module (default 60). Changed bodies rank by changed share; each gets its largest hunk first. Then added/removed functions, types, use lines and constants; changed lines precede context. sample_truncated, unsampled_functions and partly_sampled_functions report gaps; follow sample_next_call.",
+          "Lines per changed module (default 60). Changed bodies rank by changed share; each gets its largest hunk first. Then added/removed functions, types, use lines and constants; changed lines precede context. sample_truncated, unsampled_functions and partly_sampled_functions report gaps. The `sample_next_call` result field contains the follow-up tool and args for omitted code.",
         ),
     },
     async ({ package: pkgRef, from_version, to_version, max_sample_lines }) => {

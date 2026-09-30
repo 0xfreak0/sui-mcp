@@ -374,9 +374,9 @@ finding; a random 3+3 collision in a wide payout is kept the same way.
   dependency while its own modules barely change; each relinked dependency
   carries the `diff_package_upgrade` call that shows what changed inside it.
   When a module's sample is cut, `unsampled_functions` and
-  `partly_sampled_functions` name the functions it leaves out and
-  `sample_next_call` shows them; a function missing from the sample has not
-  been shown unchanged.
+  `partly_sampled_functions` name the functions it leaves out. Follow the tool
+  and args in the `sample_next_call` result field to read the omitted code;
+  a function missing from the sample has not been shown unchanged.
 - **Ask who could upgrade at the time, not only now.** `get_upgrade_history`
   joins every version to its publisher, the publisher's signing scheme and the
   UpgradeCap's holder at that moment, and `as_of` answers for one instant. It

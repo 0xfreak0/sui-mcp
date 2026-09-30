@@ -62,6 +62,25 @@ lists them. The index has a date, and every answer drawn from it names that
 date: a coin published later is found only by a bounded live scan of on-chain
 metadata, which says how far it got.
 
+`search_token` accepts a name or symbol, such as `USDC`, `deep`, `cetus` or
+`WAL`, or a full type such as `0x…::mod::TOKEN`. It returns full coin types,
+verified types first and then exact symbol matches, for use with
+`get_balance`, `get_coin_info` and `get_token_prices`. Verification vouches for
+the exact type, since names and symbols can be copied.
+
+The mainnet index's `symbol_index.synced_at` bounds its coverage. If more than
+100 coins use a symbol, it stores only the count and lists none of those coins.
+`unlisted_symbols` names each such symbol matching or containing the query
+and its coin count. With no index match, and on other networks, a bounded
+live CoinMetadata scan supplies unverified matches. `discovery_scan_truncated`
+marks a scan that did not reach the end; `discovery_scan_failed` names a read
+error that stopped it.
+
+`verify_onchain: true` checks each match and includes total supply; it defaults
+to false. `limit` defaults to 50, at most 500, while `total_matches` counts
+the complete matched set before that display limit.
+
+
 ## Frozen addresses
 
 `check_coin_restrictions` reads the on-chain deny list in two directions:

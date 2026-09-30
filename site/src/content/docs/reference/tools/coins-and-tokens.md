@@ -10,7 +10,7 @@ sidebar:
 | [`get_balance`](#get_balance) | Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. |
 | [`get_coin_info`](#get_coin_info) | Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). |
 | [`get_token_prices`](#get_token_prices) | Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. |
-| [`search_token`](#search_token) | Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). |
+| [`search_token`](#search_token) | Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. |
 
 ## get_balance
 
@@ -63,11 +63,11 @@ Get USD prices for Sui tokens, current by default or at a past moment when `at` 
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). Returns matching tokens with their full coin type, verified coins first, then exact symbol matches: `verified` says whether a curated list vouches for that exact type, since impostors copy the symbol and name of real coins. On mainnet unverified matches come from a symbol index of every CoinMetadata and coin registry entry up to its sync date (`symbol_index.synced_at`); a coin published after that date is missing from it. A symbol more than 100 coins use keeps only a count, so none of its coins is listed; `unlisted_symbols` names every such symbol that is or contains the query, with how many coins use it. When the index has no match at all, and off mainnet, they come from a bounded live scan of on-chain CoinMetadata, and `discovery_scan_truncated` says the scan did not reach the end; `discovery_scan_failed` names the error when a failed read ended it. Use this when you have a token name but need the coin type for get_balance, get_coin_info, or get_token_prices.
+Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. Verified types rank first, then exact symbol matches; verified means a curated list vouches for that exact type, not its copyable name. Mainnet's unverified matches use a CoinMetadata/coin-registry symbol index dated by symbol_index.synced_at; later coins are missing. Symbols used by over 100 coins list only counts in unlisted_symbols, including symbols containing the query. With no index match, or off mainnet, discovery uses a bounded live CoinMetadata scan. discovery_scan_truncated means it did not finish; discovery_scan_failed names a read error.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN') |
 | `verify_onchain` | boolean | no | If true, verify each match on-chain and include total supply (default: false) |
-| `limit` | integer (1 to 500) | no | Matches to return (default 50, max 500). Verified coins come first, then exact symbol matches; total_matches counts them all. |
+| `limit` | integer (1 to 500) | no | Matches returned (default 50, max 500); verified types then exact symbols. total_matches counts all matches. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

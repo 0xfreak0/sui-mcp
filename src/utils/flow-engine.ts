@@ -459,7 +459,7 @@ export class FlowEngine {
       node: n.id,
       share: job.share,
       usd: this.usdAt(job.need, n),
-      detail: stop.nodeLevel ? undefined : stop.detail,
+      detail: stop.detail,
     });
     return true;
   }

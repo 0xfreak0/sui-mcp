@@ -87,9 +87,18 @@ find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
     Wormhole, Sui Bridge
 ```
 
+If an unread branch prevents the search from establishing a path, the result
+is `search incomplete`, not a complete negative. `explored.terminals` retains
+the `read_failed` entries and their reasons. Raising the limits does not
+repair a failed read.
+
 ## Diagrams and exports
 
 `trace_flow_graph`, `find_flow_path`, `trace_funds` and `build_wallet_edges`
 take `format: "mermaid"` (a fenced diagram that renders in a markdown viewer),
 `"graph_json"` or `"csv"`. `export_case` with `format: "mermaid"` appends a
 fund-flow diagram of the transfers in the case's cited transactions.
+
+Graph JSON retains terminal reasons and coverage (`explored` for
+`find_flow_path`). Mermaid and CSV responses state unread reasons in the
+accompanying summary, without adding them to the diagram or CSV data.

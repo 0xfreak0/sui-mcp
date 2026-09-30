@@ -106,6 +106,22 @@
       "name": "DeepBook",
       "type": "dex"
     },
+    "0x4e1dd01465713c9d832313fed5f45c222a4d5c62a533d6da96764c8b2a245d58": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0x89aea622e7bb3bdd598bde87dde40ee31c9eed4971b9546e23ec83de3c48bbba": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0x9a068beffa019ae756f4a6d2611e9899d3c6dd888812dd9eca87535d2ac55e2a": {
+      "name": "DeepBook",
+      "type": "prediction_market"
+    },
+    "0xa6c8f32015b5b41d34ee09995a2e9d7a21cdecf0e1910a50b264fd252cd33831": {
+      "name": "DeepBook",
+      "type": "oracle"
+    },
     "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": {
       "name": "Dipcoin",
       "type": "perps"
@@ -476,6 +492,28 @@
       "signers": [
         "0x37f187e1e54e9c9b8c78b6c46a7281f644ebc62e75493623edcaa6d1dfcf64d2",
         "0xbd1d25f49cc9b65f1e41d6c264ad0e065923de7ce6fd8b86d87d25c0a58742b9"
+      ]
+    },
+    "0x4e1dd01465713c9d832313fed5f45c222a4d5c62a533d6da96764c8b2a245d58": {
+      "signers": [
+        "0x364c09b14bc64320dd8ced0848e7e4efe75510bd7ee05a88253a5330b6f22bef"
+      ]
+    },
+    "0x89aea622e7bb3bdd598bde87dde40ee31c9eed4971b9546e23ec83de3c48bbba": {
+      "signers": [
+        "0x364c09b14bc64320dd8ced0848e7e4efe75510bd7ee05a88253a5330b6f22bef",
+        "0x37f187e1e54e9c9b8c78b6c46a7281f644ebc62e75493623edcaa6d1dfcf64d2"
+      ]
+    },
+    "0x9a068beffa019ae756f4a6d2611e9899d3c6dd888812dd9eca87535d2ac55e2a": {
+      "signers": [
+        "0x364c09b14bc64320dd8ced0848e7e4efe75510bd7ee05a88253a5330b6f22bef",
+        "0x37f187e1e54e9c9b8c78b6c46a7281f644ebc62e75493623edcaa6d1dfcf64d2"
+      ]
+    },
+    "0xa6c8f32015b5b41d34ee09995a2e9d7a21cdecf0e1910a50b264fd252cd33831": {
+      "signers": [
+        "0x364c09b14bc64320dd8ced0848e7e4efe75510bd7ee05a88253a5330b6f22bef"
       ]
     },
     "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": {

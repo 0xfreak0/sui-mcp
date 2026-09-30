@@ -236,3 +236,26 @@ Genesis does not identify a funding wallet.
 If no gain was found and the balance changes could not all be read,
 `first_inflow` is null. `first_seen_unavailable` reports a failed first read.
 Use `find_funding_sources` to find funding when the first transaction was not it.
+
+## Screening exposure
+
+`screen_address` reads direct and indirect exposure to labelled malicious,
+sanctioned, exchange, bridge and mixer accounts. It defaults to two hops in
+both directions. Each exposure gives its path, per-leg digests and amounts,
+and the label's entity, evidence kind and `source_url`.
+
+Bridge beneficiaries decoded by `resolve_bridge_transfer` are screened
+against labels and OFAC's SDN digital currency list: CCTP, Sui Bridge,
+Wormhole, Mayan, LayerZero OFT, Axelar, Allbridge and Celer. Each exit counts
+once under the carrying protocol; `route` gives settlement bridges and
+`also_exited` identifies other bridges used in the same transaction.
+
+Coverage reports available label sources, the absence of Sui addresses from
+OFAC's list, and how much history was read for each address. The default
+subject window is 300 recent transactions in each direction; a 100-transaction
+window can miss an active address's largest exit. Expanded counterparties
+get 50 transactions. `max_expand` defaults to eight counterparties per hop,
+highest value first, and a call typically costs 15–60 requests.
+
+A CAIP-10 account on another chain, such as `eip155:1:0x…`, receives only a
+direct label and sanctions lookup; the server does not trace that chain.

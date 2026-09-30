@@ -59,7 +59,7 @@ export function registerScreeningTools(server: McpServer) {
 
   server.tool(
     "screen_address",
-    "(Incident investigation) Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. Every exposure carries the path, per-leg digests and amounts, and the label's entity, evidence kind and source_url. Bridge exits are screened too, each counted once under the protocol that carried it, with the bridges it settled over in `route` and any other bridge the same transaction used in `also_exited`: the beneficiaries resolve_bridge_transfer reads from chain data are matched against the labels and OFAC's SDN digital currency list. States its label and history coverage. windows[].incomplete_transactions names unread balances; their paths are withheld, affected bridge sent amounts are null. A CAIP-10 account on another chain gets a direct label and sanctions lookup only.",
+    "(Incident investigation) Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. Exposures include paths, per-leg digests and amounts, and label provenance. Screens chain-derived bridge beneficiaries against labels and OFAC's SDN list for CCTP, Sui Bridge, Wormhole, Mayan, LayerZero OFT, Axelar, Allbridge and Celer. Each exit counts once under its carrying protocol, with settlement bridges and other exits listed separately. Coverage names label sources and history read, and notes that OFAC lists no Sui addresses. windows[].incomplete_transactions names unread balances; their paths are withheld and affected bridge sent amounts are null. Reads up to 300 recent subject transactions each way by default, typically costing 15–60 requests. A non-Sui CAIP-10 account receives only direct label and sanctions lookups.",
     {
       address: z.string().describe("Sui address (0x...) or CAIP-10 account (e.g. 'eip155:1:0x...')."),
       hops: numArg().int().min(1).max(3).optional().describe("How far to follow counterparties (default 2)."),
@@ -73,7 +73,7 @@ export function registerScreeningTools(server: McpServer) {
         .max(300)
         .optional()
         .describe(
-          "Most recent transactions read for the subject (default 300, the schema max: a 100-transaction window can miss the one send that carries most of an active address's value). Expanded counterparties get 50.",
+          "Recent subject transactions per direction (default/max 300); expanded counterparties get 50.",
         ),
       max_expand: numArg()
         .int()

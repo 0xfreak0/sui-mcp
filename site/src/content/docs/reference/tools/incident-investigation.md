@@ -28,7 +28,7 @@ sidebar:
 | [`resolve_protocol_packages`](#resolve_protocol_packages) | Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. |
 | [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. |
 | [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
-| [`screen_address`](#screen_address) | Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. |
+| [`screen_address`](#screen_address) | Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. |
 | [`summarize_address_flows`](#summarize_address_flows) | Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. |
 | [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. |
@@ -396,14 +396,14 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. Every exposure carries the path, per-leg digests and amounts, and the label's entity, evidence kind and source_url. Bridge exits are screened too, each counted once under the protocol that carried it, with the bridges it settled over in `route` and any other bridge the same transaction used in `also_exited`: the beneficiaries resolve_bridge_transfer reads from chain data are matched against the labels and OFAC's SDN digital currency list. States its label and history coverage. windows[].incomplete_transactions names unread balances; their paths are withheld, affected bridge sent amounts are null. A CAIP-10 account on another chain gets a direct label and sanctions lookup only.
+(Incident investigation) Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. Exposures include paths, per-leg digests and amounts, and label provenance. Screens chain-derived bridge beneficiaries against labels and OFAC's SDN list for CCTP, Sui Bridge, Wormhole, Mayan, LayerZero OFT, Axelar, Allbridge and Celer. Each exit counts once under its carrying protocol, with settlement bridges and other exits listed separately. Coverage names label sources and history read, and notes that OFAC lists no Sui addresses. Reads up to 300 recent subject transactions each way by default, typically costing 15–60 requests. A non-Sui CAIP-10 account receives only direct label and sanctions lookups.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Sui address (0x...) or CAIP-10 account (e.g. 'eip155:1:0x...'). |
 | `hops` | integer (1 to 3) | no | How far to follow counterparties (default 2). |
 | `direction` | `both` \| `in` \| `out` | no | 'out' = where this address's funds went, 'in' = where they came from (default both). |
-| `max_transactions` | integer (10 to 300) | no | Most recent transactions read for the subject (default 300, the schema max: a 100-transaction window can miss the one send that carries most of an active address's value). Expanded counterparties get 50. |
+| `max_transactions` | integer (10 to 300) | no | Recent subject transactions per direction (default/max 300); expanded counterparties get 50. |
 | `max_expand` | integer (1 to 20) | no | Counterparties expanded per hop, highest value first (default 8). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

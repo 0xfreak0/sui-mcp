@@ -29,13 +29,13 @@ export function registerStakingTools(server: McpServer) {
         .min(1)
         .max(150)
         .optional()
-        .describe("When listing, keep at most N validators, plus any at-risk rows in summary. The summary output budget still applies; omitted rows name an unlimited full call."),
+        .describe("When listing, keep at most N validators; summary also keeps at-risk rows beyond N. The summary output budget still applies."),
       sort_by: z
         .enum(["stake", "commission"])
         .optional()
         .describe("Sort field when listing: stake (default) or commission"),
       detail: z.enum(["summary", "full"]).optional()
-        .describe("Listing detail: summary (default) caps compact rows and keeps at-risk validators; full returns all fields without a size cap. Does not affect address lookup."),
+        .describe("Listing detail: summary (default) caps compact rows; full returns all fields without a size cap. Ignored for an address lookup."),
     },
     async ({ address, limit, sort_by, detail }) => {
       // Detail branch — a single validator.

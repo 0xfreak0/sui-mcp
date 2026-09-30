@@ -378,6 +378,28 @@ the scope. After cutover any one ID, including the original, matches only
 that version, and `module_scope.other_version_ids` lists the rest. Framework
 packages such as `0x2` and `0x3` upgrade in place, so one ID covers all versions.
 
+## Ranking event activity
+
+`aggregate_events` answers questions such as "who were the top wallets on
+this protocol today" from one call, without paging `query_events`. Its
+`event_type` and `module` filters follow the rules above. Start without
+`value_field`:
+
+```json
+{ "module": "0x…::pool", "from": "2026-08-07T00:00:00Z", "to": "now" }
+```
+
+The answer lists the most frequent event types, each with a sample event and
+its numeric fields. Many protocols put their own USD valuation in an event, so
+one of those fields can often be summed directly. Re-run with `event_type` set
+to the action's event and `value_field` set to the field, and use
+`value_scale: 100` when a protocol reports USD cents.
+
+`sort_order: "asc"` ranks the smallest groups first. A swarm of wallets that
+each make one tiny action never reaches a top-N view, so coordinated dust
+activity shows at that end. Budget stops and continuations are described
+under [Partial event rankings](/concepts/truncation/#partial-event-rankings).
+
 ## Raw transaction filters
 
 `query_transactions` accepts a sender and range, plus only one of

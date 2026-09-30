@@ -78,7 +78,7 @@ interface SentPageResult {
 export function registerMultisigTools(server: McpServer) {
   server.tool(
     "analyze_multisig",
-    "(Multisig investigation) For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. The committee itself is fixed for the life of the address, so the only thing that varies is WHO signs each transaction, and this reads that across many transactions rather than one. Answers 'is this treasury really controlled by 7 people or by 2', 'has the active signer set shifted', and 'which key has never been used'. A member whose public key was written by hand (a long run of one byte, such as 'maven' followed by zeros) is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address first to learn a wallet is a multisig; use this to learn how it operates.",
+    "(Multisig investigation) Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. Answers whether a treasury is run by fewer keys than its committee, whether the active signer set shifted, and which keys are unused. A member whose public key was written by hand is marked `unsignable`, since nobody holds its private key, and `effective_committee` gives the threshold against the keys that can sign. Use identify_address to learn that a wallet is a multisig; use this to learn how it operates.",
     {
       address: addressArg().describe("The multisig wallet's address (0x...)"),
       max_transactions: numArg()
@@ -87,7 +87,7 @@ export function registerMultisigTools(server: McpServer) {
         .max(500)
         .optional()
         .describe(
-          "Sent transactions to examine, newest first (default 200). More is strictly better here: a key looks dormant until the one transaction it signed comes into view.",
+          "Sent transactions to examine, newest first (default 200). A key that signed only before this window looks dormant, so more is better.",
         ),
     },
     async ({ address, max_transactions }) => {
@@ -269,7 +269,7 @@ export function registerMultisigTools(server: McpServer) {
         .min(2)
         .max(5)
         .describe(
-          "2-5 addresses to test for a shared multisig. Member order is part of a multisig's address, so the search is factorial in committee size: 4 addresses is 192 candidates, 5 is 1,560, and 6 is refused.",
+          "2-5 addresses to test. Member order is part of a multisig's address, so candidates grow factorially and 6 addresses are refused.",
         ),
     },
     async ({ addresses }) => {

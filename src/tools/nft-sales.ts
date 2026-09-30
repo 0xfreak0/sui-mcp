@@ -96,7 +96,7 @@ export function registerNftSalesTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Keep only sales of this Move type. Most marketplaces do not name the collection in the sale event, and those sales are reported as unattributable_sales rather than filtered out silently, so a low count here is not evidence the collection did not trade.",
+          "Keep only sales of this Move type. Most sale events name no collection; those count as unattributable_sales, so a low count does not show the collection did not trade.",
         ),
       max_pages: numArg()
         .int()
@@ -109,12 +109,12 @@ export function registerNftSalesTools(server: McpServer) {
         .optional()
         .default(false)
         .describe(
-          "Return the individual sales as well as the totals, each with its checkpoint and time. Off by default because a busy window is thousands of rows. The default view lists the newest that fit and counts the rest under `omitted`; `detail: 'full'` lists every one.",
+          "Also return each sale with its checkpoint and time (default false, since a busy window has thousands of rows).",
         ),
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("With include_sales: 'summary' (default) lists the newest sales that fit; 'full' lists every sale."),
+        .describe("With include_sales: 'summary' (default) lists the newest sales that fit and counts the rest in `omitted`; 'full' lists every sale."),
     },
     async ({ hours, collection_type, max_pages, include_sales, detail }) => {
       const network = getNetwork();

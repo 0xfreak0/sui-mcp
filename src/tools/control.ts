@@ -34,7 +34,7 @@ export function registerControlTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Population: addresses that called this package/module. Before the relocate_event_module cutover (mainnet checkpoint 69,982,635 on 2024-10-17, testnet 118,397,835 on 2024-10-09, devnet at genesis), events carry the package's ORIGINAL id regardless of the version called; from the cutover on they carry the id of the version actually called. The filter is queried at whichever id (or both, merged) your window needs, and `module_scope` reports how. From the cutover on, any one id (the original included) matches calls through that version only, and `module_scope.other_version_ids` lists the lineage's other ids. Accepts 0x... or 0x...::module.",
+          "Population: addresses that called this package or module, 0x... or 0x...::module. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses.",
         ),
       event_type: z
         .string()

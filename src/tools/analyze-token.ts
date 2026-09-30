@@ -185,7 +185,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
     {
       query: z
         .string()
-        .describe("Symbol (e.g. 'USDC', 'deep') or full coin type (e.g. '0x2::sui::SUI'). A symbol is matched exactly; for a name or part of a symbol use search_token."),
+        .describe("Symbol ('deep') or full coin type ('0x2::sui::SUI'). A symbol matches exactly, in any case; use search_token for partial names."),
       include_holders: boolArg()
         .optional()
         .describe("Include top 5 holders (default: true). Set false for faster response."),

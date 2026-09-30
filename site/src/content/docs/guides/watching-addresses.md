@@ -27,9 +27,11 @@ transaction, which you read separately with `get_transaction`:
 
 Watching starts from the current checkpoint, so adding an address does not
 replay its history. `min_amount` filters coin movements only: a labelled sink
-or a transfer that moves no coin is reported whatever its size. An address
-busy enough to fill the per-poll cap is listed in `more_pending` rather than
-being silently truncated.
+or a transfer that moves no coin is reported whatever its size. The floor is in
+raw units of whichever coin moved, so `"500000000"` is 0.5 SUI (9 decimals).
+Pass `"0"` to clear a floor; re-adding an address without `min_amount` keeps
+its existing floor. An address busy enough to fill the per-poll cap is listed
+in `more_pending` rather than being silently truncated.
 
 Both tools require `SUI_STORE_PATH`; see
 [Optional local store](/guides/configuration/#optional-local-store). Both are

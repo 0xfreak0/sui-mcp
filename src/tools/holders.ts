@@ -713,7 +713,7 @@ export function registerHolderTools(server: McpServer) {
       type: coinTypeArg()
         .optional()
         .describe(
-          "Full Move type of the NFT or coin type (e.g. '0xabc::module::NFT' or '0x2::sui::SUI'). Auto-wraps coins in Coin<...> if needed."
+          "NFT struct type or coin type, e.g. '0xabc::module::NFT' or '0x2::sui::SUI'. A coin type is wrapped in Coin<...> automatically."
         ),
       collection_name: z
         .string()
@@ -724,7 +724,7 @@ export function registerHolderTools(server: McpServer) {
       mode: z
         .enum(["nft", "token"])
         .optional()
-        .describe("'nft' ranks by count, 'token' ranks by balance. Auto-detected if omitted: a type the chain knows as a coin (a Coin<T> object, an address balance, coin metadata or a registry entry) is scanned as a token, anything else as an NFT collection."),
+        .describe("'nft' ranks by count, 'token' by balance. If omitted, a type the chain knows as a coin is scanned as a token, anything else as an NFT collection."),
       limit: numArg()
         .int()
         .min(1)
@@ -736,7 +736,7 @@ export function registerHolderTools(server: McpServer) {
         .min(1)
         .max(50000)
         .optional()
-        .describe(`Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address-balance entries separately, each up to this bound. A ${SCAN_TIME_BUDGET_MS / 1000}s wall-clock budget applies regardless of this value. \`time_budget_reached\` says when that bound, not \`max_scan\`, stopped the scan, and the caveat says whether a slow endpoint or the requested depth was the cause.`),
+        .describe(`Objects to scan per walk (default 5000, max 50000). Token mode walks Coin<T> objects and address balances separately, each to this bound. The ${SCAN_TIME_BUDGET_MS / 1000}s time budget applies regardless.`),
     },
     async ({ type: rawType, collection_name, mode, limit, max_scan }) => {
       if (rawType && collection_name) {

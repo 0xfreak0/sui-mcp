@@ -38,7 +38,7 @@ const FORMAT_ARG = z
   .enum(EXPORT_FORMATS)
   .optional()
   .describe(
-    "Output format (default json). mermaid: a fenced ```mermaid flowchart that renders in a markdown viewer. graph_json: {nodes, edges} for graph tools, plus address_poisoning from trace_flow_graph, the lookalike check over every reached address. csv: one row per edge.",
+    "Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge.",
   );
 
 /** Who an address is, for labels: name, then label, then protocol, then the short address. */
@@ -546,16 +546,16 @@ export function registerFlowGraphTools(server: McpServer) {
 
   server.tool(
     "find_flow_path",
-    "(Incident investigation) Is there a value path from one address to another? Searches forward from `from` and backward from `to` on the trace_flow_graph engine, one node at a time and heaviest branch first, and returns each path found with the transaction digests and amounts of every hop, in time order. `to` may be an account on another chain (an EVM or Solana address, or CAIP-10): the path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found it says what was explored, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of that side's value they carry. A missing path is not evidence that none exists: every search here is bounded, and value can move off-chain or through a hub.",
+    "(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` on trace_flow_graph's engine, heaviest branch first, and returns each path with every hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.",
     {
       from: addressArg().describe("Address the value starts at."),
-      to: z.string().describe("Address the value should reach: a Sui address, a foreign-chain address a bridge exit pays (0x + 40 hex for EVM, base58 for Solana), or a CAIP-10 account."),
+      to: z.string().describe("Target: a Sui address, an EVM (0x + 40 hex) or Solana (base58) address a bridge exit pays, or a CAIP-10 account."),
       max_hops: numArg().int().min(1).max(6).optional().describe("Longest path to look for, in transfers (default 5, max 6)."),
       coin_type: coinTypeArg().optional().describe("Start by following only this coin. Swaps are still followed."),
       window_start: timePointArg().optional().describe("Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history."),
       window_end: timePointArg().optional().describe("Only transactions before this: ISO date or checkpoint."),
       max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100), the branches carrying the most value first."),
-      min_share: numArg().min(0).max(1).optional().describe("Do not expand branches below this fraction of each side's value (default 0.001), except a branch to an address that renders like one already reached."),
+      min_share: numArg().min(0).max(1).optional().describe("Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address."),
       format: FORMAT_ARG,
     },
     async ({ from, to, max_hops, coin_type, window_start, window_end, max_nodes, min_share, format }) => {

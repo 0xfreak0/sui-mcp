@@ -33,6 +33,10 @@ Objects received and later consumed retain each leg's historical value.
 `usd_basis.method` identifies that choice. Missing coin legs or objects make
 `totals.partial` true, not a claim that the total is a lower bound.
 
+With `group_pnl: true`, `aggregate_events` also prices each sender's balance
+changes by transaction day before netting them. Gas stays included. Check
+`pnl.usd_basis` before comparing senders with different missing-price coverage.
+
 ## Historical object flows
 
 `summarize_address_flows` lists valued objects a transaction deleted or wrapped,

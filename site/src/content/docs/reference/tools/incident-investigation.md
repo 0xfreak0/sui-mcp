@@ -60,7 +60,7 @@ sidebar:
 | `cursor` | string | no | Opaque next_cursor from a previous aggregate_events call. Keep the same filters and network. Reads the next disjoint event slice; counts are not cumulative and the ranking remains truncated for the original window. |
 | `group_pnl` | boolean | no | Also rank the senders of the matched transactions by profit: for each distinct transaction behind the events, sum its sender's own balance changes per coin (gas included), value them in USD at the median transaction time, and flag PTBs where the filtered package is one leg of several. Answers 'who else profited in this window'. |
 | `pnl_max_transactions` | integer (1 to 2000) | no | Distinct transactions read for group_pnl, oldest first (default 500). Check pnl.truncated. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): each P&L sender lists the coins that fit about 1.5k characters, largest USD first, and pnl.unpriced_coins what fits 3k; totals cover every coin, and `omitted` states the rest with the call that returns it. 'full': every coin. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) caps P&L coin and missing-price lists, with omissions and continuation. 'full' returns every row. Totals cover all rows. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## analyze_attack_tx

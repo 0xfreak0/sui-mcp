@@ -11,11 +11,12 @@ const mockSui = createMockClient();
 const batchGetTransactions = vi.fn();
 (mockSui.ledgerService as Record<string, unknown>).batchGetTransactions = batchGetTransactions;
 const mockGqlQuery = vi.fn();
+const mockPriceRead = vi.hoisted(() => vi.fn());
 vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 vi.mock("../../src/utils/valuation.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  priceUsdAtTime: async (types: string[]) => ({ points: new Map(), unpriced: types.map((t) => ({ coin_type: t, code: "not_listed", reason: "No price." })) }),
+  priceUsdAtTime: mockPriceRead,
   prefetchCoinScale: async () => undefined,
 }));
 vi.mock("../../src/utils/price-providers.js", async (importOriginal) => ({
@@ -69,6 +70,9 @@ const SUI = "0x0000000000000000000000000000000000000000000000000000000000000002:
 const DIGEST = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
 
 beforeEach(() => {
+  mockPriceRead.mockImplementation(async (types: string[]) => ({
+    points: new Map(), unpriced: types.map((t) => ({ coin_type: t, code: "not_listed", reason: "No price." })),
+  }));
   mockGqlQuery.mockImplementation(async (query: string) => {
     if (!String(query).includes("transactions(filter")) return {};
     return {
@@ -213,5 +217,30 @@ describe("summarize_address_flows objects", () => {
     });
     expect(d.top_recipients[0]).toMatchObject({ address: C, usd: 60, coins: [{ amount: 30, usd: 60 }] });
     expect(d.usd_basis).toMatchObject({ method: "daily_utc", priced_coin_days: 2, partial: true });
+  });
+
+  it("formats headline and unattributed amounts with provider decimals", async () => {
+    const coin = `0x${"ad".repeat(32)}::coin::SIX`;
+    mockPriceRead.mockImplementation(async (types: string[], at: number) => ({
+      points: new Map(types.map((c) => [c, { price: 2, decimals: 6, publishTime: at, source: "defillama" }])),
+      unpriced: [],
+    }));
+    mockGqlQuery.mockResolvedValue({ transactions: {
+      nodes: [-1, 2].map((amount, i) => ({
+        digest: `scale-fixture-${i}`, sender: { address: V }, kind: { commands: gqlPage([]) },
+        effects: {
+          status: "SUCCESS", timestamp: "2025-02-01T12:00:00Z", checkpoint: { sequenceNumber: 1000 + i },
+          gasEffects: { gasSummary: { computationCost: "0", storageCost: "0", storageRebate: "0" } },
+          balanceChanges: gqlPage([
+            { coinType: { repr: coin }, amount: String(amount * 1_000_000), owner: { address: V } },
+            ...(amount < 0 ? [{ coinType: { repr: coin }, amount: "1000000", owner: { address: C } }] : []),
+          ]), events: gqlPage([]),
+        },
+      })), pageInfo: { hasPreviousPage: false, startCursor: null },
+    } });
+    const d = JSON.parse((await handlers.get("summarize_address_flows")!({ address: V, coin_type: coin })).content[0].text);
+    expect(d.coins[0]).toMatchObject({ in: 2, out: 1, net: 1, usd: { in: 4, out: 2, net: 2 } });
+    expect(d.top_recipients[0].coins[0]).toMatchObject({ amount: 1, usd: 2 });
+    expect(d.unattributed_inflows[0]).toMatchObject({ amount: 2, usd: 4 });
   });
 });

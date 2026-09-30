@@ -13,13 +13,12 @@ import { CROSS_CHAIN_LEAD_MEANING, crossChainLeads } from "../utils/bridge/cross
 import { EVIDENCE_TIER_MEANING, type SuiEventNode } from "../utils/bridge/wormhole.js";
 import { describeAddresses, fetchKinds, identityNote, type AddressIdentity } from "../utils/identity.js";
 import { getLabel, labelProvenance } from "../utils/labels.js";
-import { displayCoin, prefetchCoinScale } from "../utils/valuation.js";
+import { displayCoin, prefetchCoinScale, pricingScale, toHumanAmount } from "../utils/valuation.js";
 import { WindowAmounts, windowPrices } from "../utils/window-prices.js";
 import { coinKey } from "../utils/trace-hop.js";
 import { ActivityLedger, lookalikeReport } from "../utils/address-lookalike.js";
 import type { Appearance } from "../utils/address-lookalike.js";
 import {
-  coinValuer,
   destinationKey,
   roundUsd as round,
   entryCandidates,
@@ -321,7 +320,9 @@ export function registerFlowTools(server: McpServer) {
             unreadTxs: r.unread,
           })),
         ]);
-        const v = coinValuer({ points: new Map(), unpriced: [] });
+        const scales = new Map<string, number>();
+        const human = (coin: string, raw: bigint) =>
+          (raw < 0n ? -1 : 1) * toHumanAmount(raw, scales.get(coin) ?? pricingScale(coin).decimals);
         const incoming = new WindowAmounts(prices);
         const outgoing = new WindowAmounts(prices);
         const valued = new Map<Map<string, bigint>, WindowAmounts>();
@@ -332,6 +333,8 @@ export function registerFlowTools(server: McpServer) {
         };
         for (const { at, summary: s } of timed) {
           for (const [coin, flow] of s.coins) {
+            const point = prices.point(coin, at);
+            if (point && !scales.has(coin)) scales.set(coin, pricingScale(coin, point).decimals);
             if (flow.in) incoming.add(coin, flow.in, at);
             if (flow.out) outgoing.add(coin, flow.out, at);
           }
@@ -339,7 +342,8 @@ export function registerFlowTools(server: McpServer) {
             add(summary[direction].get(addr)!.coins, c.coins, at);
           }
         }
-        const amounts = (m: Map<string, bigint>) => valued.get(m)?.amounts() ?? v.amounts(m);
+        const amounts = (m: Map<string, bigint>) => valued.get(m)?.amounts() ??
+          [...m].map(([coin, raw]) => ({ coin_type: coin, symbol: displayCoin(coin).symbol, amount: human(coin, raw), usd: null }));
         const txTime = new Map(txs.map((t) => [t.digest, t.timestamp]));
         // A kept object the transaction changed counts its signed change,
         // in or out by its sign, with no counterparty. An object wrapped,
@@ -460,9 +464,9 @@ export function registerFlowTools(server: McpServer) {
               coin_type: f.coinType,
               symbol: d.symbol,
               coin_verified: d.verified,
-              in: v.human(f.coinType, f.in),
-              out: v.human(f.coinType, f.out),
-              net: v.human(f.coinType, net),
+              in: human(f.coinType, f.in),
+              out: human(f.coinType, f.out),
+              net: human(f.coinType, net),
               raw: { in: f.in.toString(), out: f.out.toString(), net: net.toString() },
               transactions_in: f.txIn,
               transactions_out: f.txOut,
@@ -488,7 +492,7 @@ export function registerFlowTools(server: McpServer) {
               return {
                 symbol: displayCoin(u.coinType).symbol,
                 coin_type: u.coinType,
-                amount: v.human(u.coinType, u.amount),
+                amount: human(u.coinType, u.amount),
                 usd: usd === null ? null : round(usd),
                 ...legs.coverage(u.coinType),
                 transactions: u.digests.length,
@@ -598,7 +602,7 @@ export function registerFlowTools(server: McpServer) {
               }
             : {}),
           gas: {
-            paid_sui: v.human(sui, summary.gasPaid),
+            paid_sui: human(sui, summary.gasPaid),
             transactions: summary.gasTransactions,
             ...(summary.gasUnread ? { transactions_gas_unread: summary.gasUnread } : {}),
             note: "Net gas this address paid as gas payer (computation + storage - rebate). It is excluded from the SUI totals above.",

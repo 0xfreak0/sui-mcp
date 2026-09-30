@@ -75,18 +75,49 @@ replays every transaction affecting the address, including incoming objects:
 - `direction: forward` starts empty and applies changes from genesis through
   the requested checkpoint. Genesis is included when it affects the address.
 
-The tool chooses a direction from the address's first and latest transaction
-checkpoints, then tries the other if the first cannot finish. Each direction
-has its own `max_transactions` budget, which also bounds object-change pages.
-Every nested page must finish. Missing history, discontinuous ownership,
-ambiguous wrapped/unwrapped states or a budget stop give `complete: false`
-and a null total, never an intermediate set labelled as historical holdings.
+The first call chooses a direction from the address's first and latest
+transaction checkpoints, then tries the other if the first cannot finish.
+Each direction has its own `max_transactions` budget, which also bounds
+object-change pages, and a 45-second replay budget. Every nested page must
+finish. Missing history, discontinuous ownership, ambiguous wrapped/unwrapped
+states or a budget stop give `complete: false` and null totals, never an
+intermediate set labelled as historical holdings.
 Objects created already wrapped are skipped only when a gRPC effects read
 proves they never existed at top level; other missing states remain incomplete.
 When effects v1 omit an input holder, the tool reads that exact object version.
-`attempts` records the stopping point and budget. `continue_with` supplies a
-higher-budget call for transaction/page limits. A time-budget stop stays
-incomplete without suggesting that a larger transaction budget can help.
+
+A time, transaction or object-change-page stop returns `continue_with`, a
+complete `get_staking_summary` call with an opaque `continuation` argument.
+Call it unchanged to resume the selected direction with the same target and
+anchor, not to start again. The saved state carries the held object IDs,
+versions, principal, pool IDs and activation epochs, plus the transaction
+cursor, offset within its page and any unfinished object-change cursor.
+Already-applied changes are not applied twice. `max_transactions` can change
+between calls; increasing it is not required to pass a time stop.
+
+`replay_calls` counts the initial call and its resumes. `attempts` describes
+this call; `replay_transactions_scanned` and `replay_object_change_pages` count
+work across the selected replay. Totals and the historical position list remain
+unavailable until it finishes.
+
+`continuation_storage` explains where the state lives:
+
+- `argument`: authenticated, encrypted state of at most 8 KiB travels in the
+  argument. This avoids requiring a database for a small held set. It needs
+  the same server session.
+- `local_store`: a larger state is encrypted in the result store at
+  `SUI_STORE_PATH`, and the argument is a short capability for that saved
+  state. It survives a server restart with the same store. With no writable
+  store, `continuation_unavailable` explains how to enable one before starting
+  the replay again; no oversized argument or partial total is substituted.
+
+Both forms expire after 24 hours. Keep `address`, `as_of` and `network`
+unchanged. Altered tokens, another network, expired tokens, missing stored
+state and replay ranges the provider no longer retains are rejected rather
+than restarting against different data. A resumed reverse replay uses its
+saved owned set even after the anchor leaves the recent ownership range;
+an unfinished anchor enumeration still needs that range.
+
 `detail: full` returns all positions from a completed read. Display caps leave
 totals intact and give a saved-result page or full call for omitted rows.
 

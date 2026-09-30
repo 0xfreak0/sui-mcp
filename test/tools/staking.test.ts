@@ -47,6 +47,12 @@ it("validates historical staking timestamps and checkpoint strings before replay
   }
 });
 
+it("does not turn a continuation without as_of into a current-holdings read", async () => {
+  await expect(tools.get("get_staking_summary")!({
+    address: `0x${"a1".repeat(32)}`, continuation: "hs1.i.invalid",
+  })).rejects.toThrow(/original as_of/);
+});
+
 function makeValidator(name: string, stake: string, commission: string) {
   return {
     atRisk: 0,

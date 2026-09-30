@@ -30,7 +30,7 @@ export interface HistoricalStake {
   estimated_reward_mist?: string | null;
 }
 
-const STATE = `version owner { __typename ... on AddressOwner { address { address } } } asMoveObject { contents { type { repr } } }`;
+const STATE = `version owner { __typename ... on AddressOwner { address { address } } ... on ConsensusAddressOwner { address { address } } } asMoveObject { contents { type { repr } } }`;
 // Only ownership and type ride the scan. Large shared system objects' JSON is
 // unnecessary; the final held versions are hydrated once, after replay.
 const CHANGES = `nodes { address idCreated idDeleted inputState { ${STATE} } outputState { ${STATE} } } pageInfo { hasNextPage endCursor }`;
@@ -65,7 +65,9 @@ async function resolveAsOf(value: string | number): Promise<number> {
 function held(state: State | null, owner: string): boolean {
   if (!state) return false;
   if (!state.owner) throw new Error("An object owner is unavailable.");
-  if (state.owner.__typename !== "AddressOwner" || state.owner.address?.address !== owner) return false;
+  if (state.owner.__typename !== "AddressOwner" && state.owner.__typename !== "ConsensusAddressOwner") return false;
+  if (!state.owner.address?.address) throw new Error("A direct object owner's address is unavailable.");
+  if (state.owner.address.address !== owner) return false;
   if (!state.asMoveObject?.contents?.type?.repr) throw new Error("An owned object's type is unavailable.");
   return STAKE_TYPE.test(state.asMoveObject.contents.type.repr);
 }

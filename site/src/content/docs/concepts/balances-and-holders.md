@@ -64,6 +64,7 @@ rewards. Transferred stakes count for their holder, and split/joined positions
 use their historical object versions. Wrapped or object-owned stakes,
 FungibleStakedSui and liquid-staking tokens are outside this total. An empty
 set says nothing about those excluded holdings.
+Single-address consensus ownership counts as direct ownership.
 
 `method: checkpoint_objects` reads the owned set at that checkpoint when the
 provider retains it. Outside that range, `reconstructed_object_changes`

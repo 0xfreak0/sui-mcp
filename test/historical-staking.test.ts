@@ -11,7 +11,7 @@ const other = "0x" + "b".repeat(64);
 const type = "0x3::staking_pool::StakedSui";
 interface StateFixture { version: number; owner: { __typename: string; address: { address: string } }; asMoveObject: { contents: { type: { repr: string } } } }
 interface RangeFixture { first: { sequenceNumber: number; timestamp: string }; last: { sequenceNumber: number; timestamp: string } }
-const state = (version: number, who = owner) => ({ version, owner: { __typename: "AddressOwner", address: { address: who } }, asMoveObject: { contents: { type: { repr: type } } } });
+const state = (version: number, who = owner, kind = "AddressOwner") => ({ version, owner: { __typename: kind, address: { address: who } }, asMoveObject: { contents: { type: { repr: type } } } });
 const change = (id: string, input: StateFixture | null, output: StateFixture | null) => ({ address: id, inputState: input, outputState: output, idCreated: input === null, idDeleted: output === null });
 const page = (nodes: unknown[], more = false, cursor: string | null = null) => ({ nodes, pageInfo: { hasNextPage: more, endCursor: cursor, hasPreviousPage: more, startCursor: cursor } });
 const tx = (cp: number, changes: unknown[], more = false, cursor: string | null = null) => ({ digest: `tx${cp}`, effects: { checkpoint: { sequenceNumber: cp }, objectChanges: page(changes, more, cursor) } });
@@ -80,6 +80,27 @@ describe("historical staking holdings", () => {
       tx(900, [change("0xs", state(2), state(3)), change("0xsplit", state(2), state(3, other))])];
     const result = await historicalStaking(owner, 800);
     expect(result).toMatchObject({ complete: true, direction: "reverse", total_staked_mist: "100", positions: [{ object_id: "0xs", version: 1 }] });
+  });
+
+  it("tracks incoming, mutated and outgoing single-owner consensus stakes", async () => {
+    scanned = [
+      tx(10, [change("0xsent", state(1, other), state(2, owner, "ConsensusAddressOwner"))]),
+      tx(20, [change("0xsent", state(2, owner, "ConsensusAddressOwner"), state(3, owner, "ConsensusAddressOwner"))]),
+      tx(30, [change("0xsent", state(3, owner, "ConsensusAddressOwner"), state(4, other, "ConsensusAddressOwner"))]),
+      tx(40, [change("0xkept", null, state(1, owner, "ConsensusAddressOwner"))]),
+    ];
+    amounts = { "0xkept": "75" };
+    expect(await historicalStaking(owner, 100)).toMatchObject({
+      complete: true, total_staked_mist: "75", positions: [{ object_id: "0xkept", version: 1 }],
+    });
+  });
+
+  it("restores the previous version of a consensus-owned stake in reverse replay", async () => {
+    owned = [{ address: "0xs", version: 2 }];
+    scanned = [tx(850, [change("0xs", state(1, owner, "ConsensusAddressOwner"), state(2, owner, "ConsensusAddressOwner"))])];
+    expect(await historicalStaking(owner, 800)).toMatchObject({
+      complete: true, direction: "reverse", positions: [{ object_id: "0xs", version: 1 }],
+    });
   });
 
   it.each(["forward", "reverse"])("ignores proven created-and-wrapped objects during %s replay", async direction => {

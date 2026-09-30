@@ -5,11 +5,8 @@ description: Method for investigating activity on the Sui blockchain with sui-mc
 
 # Investigating on Sui
 
-The hard part of this work is not fetching data. It is knowing what the data
-does **not** say. Chain data is complete and public, which makes a wrong
-conclusion look exactly like a right one: fluent, specific, and sourced.
-
-Everything below exists because the plain reading was wrong at least once.
+Chain records are public, but a tool may not read all of them. Say what was
+read, what remains unread, and what the evidence does **not** establish.
 
 ## Evidence tiers, and what each licenses
 
@@ -36,6 +33,10 @@ not write that it is the same person: a key is **control**, and a custodian
 holds one for a client.
 
 ## Opening a case
+
+For someone who lost funds, the `what_happened_to_my_funds` prompt starts with
+who can still move what is left, then how it left, where it went and whom to
+report to. `was_i_scammed` is its compatibility alias for this release only.
 
 1. **Set your sinks first.** Labels decide where a trace stops. The shipped
    set is first-party disclosures (exchange proof-of-reserves wallets,
@@ -138,7 +139,7 @@ Do not read a cluster as having cleared a two-signal bar; read the edges.
 | `reciprocal` | Value moved **both** ways, and the counterparty is not a service |
 | `sponsor` | Same gas payer — 0.7, cannot merge alone. 1.0 when the sponsor also sent the address its first coin: that is an operator, not incidental gas payment, and merges alone |
 
-Three fields decide how much weight a cluster carries:
+These fields decide how much weight a cluster carries:
 
 - **`independent_intermediaries`** — 1 means every edge runs through a single
   address. That is one fact stated many times, not corroboration, and the whole
@@ -160,11 +161,9 @@ a narrow one, and a budget-starved probe must never quietly pass as measured.
 
 ## A coin's symbol is not its identity
 
-142,152 of the 174,685 coins on mainnet share their symbol with another
-(September 2026). 7,090 claim `SUI`, 1,260 claim `DEEP`. The imitators are
-named to be mistaken, for example "Sui v2 (migrate asset: suiv2.com)", and
-nothing cheap tells them apart: the fake USDC's supply is LARGER than
-Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
+Many unrelated coins share a symbol, including imitators named to be mistaken
+for the real asset. Supply and a familiar suffix such as `::usdc::USDC`
+prove nothing; a scammer can copy both.
 
 - **`verified: false` means nothing vouches for this coin**, not that it is
   fake. It is still the coin the transaction moved. What you may not write is
@@ -172,11 +171,10 @@ Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
 - **A balance change carries `coin_verified`.** Use it. A trace through an
   imitator reads exactly like a trace through the real asset.
 - **`assumed scale` means the amount itself may be wrong.** Decimals for an
-  unverified coin are a guess; 47 of 289 imitators declare a different scale
-  from the coin they imitate, one of them by 10^9. The tools read a coin's
-  `CoinMetadata` before formatting it, so the mark appears only for a coin
-  with none to read, or when that read failed and a rerun may succeed.
-- **An ambiguous symbol is an answer.** Several legitimate coins share `USDC` —
+  unverified coin are a guess and can differ from the asset it imitates. The
+  tools read `CoinMetadata` before formatting, so the mark appears only when
+  metadata is absent or its read failed.
+- **An ambiguous symbol is an answer.** Several legitimate coins share `USDC`:
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
 - **A symbol nothing curates lists every coin that uses it, up to 100.** When
@@ -184,22 +182,16 @@ Circle's, and `::usdc::USDC` costs a scammer nothing to copy.
   `candidates`, verified first and then by supply, from a symbol index synced from every
   `CoinMetadata` and coin registry entry. Above 100 coins the index keeps only
   the count: `analyze_token` returns the count and no candidates, and
-  `search_token` names such symbols in `unlisted_symbols` (124 coins use
-  `NFT RECEIVED`) without listing their coins. The index has a date (`symbol_index.synced_at`): a coin
-  published after it is missing from the list, and is found only by a bounded
-  live scan that says how far it got. Supply orders the list and proves
-  nothing: the fake USDC out-mints Circle's.
+  `search_token` names such symbols in `unlisted_symbols` without listing
+  their coins. The index has a date (`symbol_index.synced_at`): newer coins
+  may be missing and are found only by a bounded live scan that says how far
+  it got. Supply orders the list and proves nothing.
 
 ## A holder scan is not a ranking unless it finished
 
 `get_top_holders` and `analyze_token` walk `Coin<T>` objects and address
 balances in **object-id order**, which has nothing to do with balance. A scan
 that hits its budget returns the largest holder it happened to see.
-
-Measured on SUI: the reported top holder was 66 SUI at `max_scan` 200, 522 at
-400, 3,454 at 800 and 25,000 at 5,000. **Zero of the top five at 200 survived
-to 800**, and the real top holder holds millions. The number climbs with effort
-and never converges.
 
 - **Check `complete_ranking` before writing any concentration claim.** False
   means the result is `sampled_holders`, carries no rank and no percentage of
@@ -222,23 +214,20 @@ and never converges.
 ## What a balance change does not show
 
 A balance change nets each owner's coins and address balance per coin type.
-Everything that is not a coin (an NFT, a Kiosk, an admin capability) changes
-hands invisibly to fund tracing. Measured: of 90 sampled capability objects, 74
-had a last transfer with no non-gas balance change at all.
+Everything that is not a coin (an NFT, a Kiosk, an admin capability) can change
+hands with no non-gas balance change.
 
 `trace_funds` reports `object_flow` for this. What it changes about method:
 
-- **`gas only` is no longer a conclusion.** It used to mean both "nothing
-  moved" and "something moved that cannot be seen here". A hop showing no coin
-  movement is only empty if `object_flow` is also absent.
+- **Gas-only coin movement does not mean nothing moved.** Read `object_flow`
+  and any unread-object caveats before drawing a conclusion.
 - **A capability transfer is the finding, and the coin movement may come
   later.** Someone who takes a `TreasuryCap` mints afterwards; someone who
   takes an `UpgradeCap` changes the code afterwards. Trace forward from the
   recipient, not from the money.
 - **A renounced capability is the opposite finding.** A cap sent to an
   unspendable address appears in `renounced_capabilities`, not
-  `capability_transfers`: 27 of 30 real UpgradeCap departures go that way, and
-  it is a risk reduction. Do not write it up as a handover.
+  `capability_transfers`. It is a risk reduction, not a handover.
 - **`high_consequence` is narrow on purpose.** Only `UpgradeCap`,
   `TreasuryCap`, `DenyCap`, `DenyCapV2` and `Publisher` carry a stated power. A
   protocol's own `AdminCap` is flagged as a capability with no claim about what
@@ -257,9 +246,10 @@ had a last transfer with no non-gas balance change at all.
   `kiosk_cap_holder` is that wrapper's owner. The wrapper has no transfer
   function, so a thief who wraps a stolen cap this way owns the kiosk for
   good.
-- **`appeared` means the previous holder is not recorded**, which is normal
-  before roughly March 2024. It is not evidence of an unwrap, and not evidence
-  of a transfer. The chain did not say.
+- **An unrecorded holder is not evidence of a transfer.** `appeared` means
+  the prior holder is missing. Old `deleted` or `wrapped` objects may carry
+  `source_unrecorded`; valuation reads their input-version holder, or lists
+  them in `objects_unread` if that fails. An unrecorded wrap names no party.
 - **A mint to someone else is a delivery.** `get_transaction` lists objects
   created for an owner other than the sender under `created_for`. A publisher
   minting NFTs straight to two wallets produces no transfer and no balance
@@ -323,8 +313,7 @@ row out of their own transaction history.
 `summarize_address_flows` always report `address_poisoning`, with
 `addresses_compared` and the `pairs` of addresses they touched that are close
 enough to be mistaken for one another. An empty `pairs` covers only the
-addresses in that result, never the wallet's whole history. Measured on mainnet:
-zero flags across 75 random active wallets and 265 pages of history.
+addresses in that result, never the wallet's whole history.
 `trace_funds` and `trace_flow_graph` also state each pair in the summary,
 and a Mermaid or CSV export carries that summary. `trace_flow_graph` and
 `find_flow_path` never prune a branch to an address that renders like one
@@ -353,10 +342,8 @@ finding; a random 3+3 collision in a wide payout is kept the same way.
   a truncated view. Further corroboration: a poisoning wallet is funded,
   fires dust, and sweeps its change back, often inside ten seconds. Check the
   suspect with `get_transaction_history` before writing it up.
-- **A clean result covers what was read.** One page of history is not a
-  statement that the wallet was never targeted; the field is absent rather than
-  empty for that reason. The default page is the most recent activity; page
-  back with `next_cursor` to cover more of it.
+- **A clean result covers what was read.** One page cannot establish that the
+  wallet was never targeted. Page back with `next_cursor` to cover more.
 
 ## Packages: who deployed it, and who can change it
 
@@ -371,10 +358,8 @@ finding; a random 3+3 collision in a wide payout is kept the same way.
   object: one address owns it and only that address can use it.
 - **`holder_status` on the UpgradeCap** answers whether the code can still
   change. `burned` means the cap went somewhere unspendable and upgrade rights
-  are renounced. **That is a REDUCTION in risk**, and 27 of every 30 caps that
-  leave their publisher are burned rather than transferred. `transferred` is
-  the uncommon one (about 2%), and even then it is not wrong on its own: teams
-  move caps to treasuries and multisigs deliberately. Identify the holder.
+  are renounced. `transferred` means another holder, not wrongdoing on its
+  own: teams move caps to treasuries and multisigs deliberately. Identify it.
 - **`unresolved` is not `publisher`.** Publish transactions are frequently
   pruned. A failed lookup is "could not check", never "still with the deployer".
 - **Diff the upgrade, and its dependencies.** `diff_package_upgrade` returns
@@ -462,9 +447,8 @@ not sign.
 paying someone's gas moves no value of your own, so a relayer looks narrow by
 balance changes and is anything but.
 
-**`relayer` is proven; `private_sponsor` is provisional.** Breadth only grows
-with the window, and on one mainnet sponsor the count went 1 to 86 between a
-100- and an 800-transaction scan, crossing the threshold. If
+**`relayer` is proven; `private_sponsor` is provisional.** Breadth can grow
+with the window. If
 `sponsor_shape_provisional` is set, raise `max_transactions` before writing
 "narrow". Shared sponsorship through a relayer is not a link on its own, and
 it does not rule one out either.
@@ -510,7 +494,7 @@ plain reading gets wrong:
   with one such member is 2-of-3), and do not describe that member as a cold
   key or a backup.
 - **A wallet that has never SENT cannot be classified at all.** No signature, no
-  committee. `authentication: null` with a caveat means unknown, not ordinary —
+  committee. `authentication: null` with a caveat means unknown, not ordinary:
   a receive-only treasury multisig looks exactly like a fresh personal wallet.
 
 A dormancy claim is only as good as the count behind it. "Member 5 has never
@@ -535,14 +519,12 @@ state at `0xa`). `identify_address` reports this as `aliases`.
 - **Read `delegated_to`, not `aliases`.** `enable` seeds the set with the
   wallet's own address, so a set holding only the owner means the feature is on
   and nobody else was authorized. `delegated_to` is the set without the owner,
-  and an empty one widens nothing. Two of the 63 mainnet sets are that shape.
+  and an empty one widens nothing.
 - **Check `owner_can_authorize` before saying who controls the wallet.** The set
   replaces the signer rather than extending it, so a wallet absent from its own
   set cannot authorize for itself and only `delegated_to` can move its funds.
-  Measured: 50 of 63 mainnet sets are in that state.
 - **A key acting for many wallets is a service.** Treat it the way
-  `excluded_co_signers` treats a custody key. Two mainnet keys already act for
-  22 owners each.
+  `excluded_co_signers` treats a custody key.
 - **A wallet with no `AddressAliases` object has never enabled the feature**,
   which is the common case. That is an absent field, not a denial.
 - **The set is mutable.** `remove` and `replace_all` exist, so an alias is true
@@ -551,9 +533,6 @@ state at `0xa`). `identify_address` reports this as `aliases`.
   minutes older than the call; `alias_scan_as_of` is its read time.
 - **Check it before concluding a multisig committee is the only spender.** The
   committee cannot rotate; the wallet's alias set can.
-
-Measured on mainnet 2026-09-15: 63 wallets had enabled aliases. It is new, so
-absence is unremarkable and presence is worth a second look.
 
 ## Exploit transactions and incident losses
 
@@ -570,7 +549,7 @@ analyze_attack_tx(<digest>)
   anomaly shared-state-jump: <pool> Balance<<coin>> <before> -> <after>; <address> gained this coin
 
 summarize_incident_losses(digests: <every attack digest>)
-  $<total> across <n> priced coins; <m> more have no price, so a lower bound
+  $<total> across <n> priced coins; unpriced legs listed, totals.partial: true
   <k> pool groups, largest <pool> $<usd>
 ```
 
@@ -678,7 +657,8 @@ summarize_incident_losses(digests: <every attack digest>)
   coin, or a leg that borrows or repays, is valued at each leg's own time and
   counts only from 2x (`basis: "own-time"`), since a price move or leverage
   alone can make a day's trade gain a tenth. Read the entry transaction with
-  `analyze_attack_tx` next.
+  `analyze_attack_tx` next. `round_trips_unread` names unread comparisons;
+  their absence from `round_trips` is not a negative finding.
 - **`switched-before-execution` catches a bait-and-switch.** A signature
   binds a shared object by id, not by its contents, so whoever may write it,
   and whoever submits the signed bytes (a gas sponsor), can change where the
@@ -703,11 +683,18 @@ summarize_incident_losses(digests: <every attack digest>)
   only says an old version ran. A
   `transfers-to-non-sender` line marked `by effects` is a payout no command
   names.
-- **USD is a provider's price, not the chain's.** Each price carries its
-  source, confidence and `price_offset_sec`. A price sampled after the exploit
-  may already reflect it; `price_at` sets the moment every coin is priced at.
-- **A total with unpriced coins is a lower bound.** Say so, and quote
-  `unpriced_remainder` with it. An unpriced coin is not worth zero.
+- **USD is a provider's quote, not an execution price.** Coin legs in
+  `summarize_incident_losses`, `summarize_address_flows` and `aggregate_events`
+  P&L are priced near each transaction's time, per the pricing block's method,
+  then summed. Read `usd_basis` (`pnl.usd_basis` for P&L), not one median
+  price. Incident `price_at` overrides this with one fixed time.
+- **Unpriced legs make USD partial, not a lower bound.** Missing debits can
+  raise a net. Check incident `totals.partial` and `unpriced_remainder`,
+  flow `totals_usd.partial`, or P&L `pnl.usd_basis.partial`, and quote raw
+  priced/unpriced coverage. Unknown decimals, missing timestamps or prices,
+  and pricing-budget stops leave amounts unpriced; there is no current-price
+  fallback. `analyze_attack_tx` instead reports per-coin `price_offset_sec`
+  and optional confidence; a post-exploit quote may already reflect the loss.
 - **What the attacker sent on is not part of the take.** A coin the attacker
   paid to another address, in a transaction where that coin moved only
   between addresses, is listed in `transfers_out` with every recipient and
@@ -733,10 +720,10 @@ summarize_address_flows(<attacker>, from: <window start>, to: <window end>)
 - **Beneficiaries are chain-derived.** A Wormhole message whose payload names
   no recipient is listed in `unresolved_vaas`; `resolve_bridge_transfer` asks
   Wormholescan where it was redeemed.
-- **Every coin is priced once, at the median transaction time.** Over a long
-  window, quote `usd_basis` with the totals.
-- **Check `coverage.complete`.** A scan the budget stopped covers only
-  `coverage.oldest` onwards; `continue_with` is the next call.
+- **Check `coverage.complete` and `coverage.incomplete_transactions`.** A
+  stopped scan covers only `coverage.oldest` onwards.
+  `coverage.continue_with` re-reads the boundary checkpoint; drop duplicate
+  digests before combining results.
 
 `aggregate_events` with `group_pnl` asks who else profited from the
 manipulated state:
@@ -753,6 +740,11 @@ aggregate_events(module: "<called package id>::<module>", from: <window start>, 
 - **P&L is the sender's whole balance change in those transactions**, gas
   included. `multi_leg_transactions` and `other_packages` say when a PTB also
   went through another protocol, where the profit may have been made.
+- **Aggregate slices are not cumulative.** Continue with `scan.next_call`.
+  Only per-key counts and `value_sum` add across disjoint slices, subject to
+  rounding, and only if `scan.groups_complete` is true in every slice.
+  Top-N rankings, `distinct_keys`, distributions and group P&L do not add.
+  A resumed ranking stays `truncated` even when it reaches the end.
 
 ## Finding the flaw in the code
 
@@ -848,14 +840,13 @@ optional aid for reading, and every step above works without it.
 
 ## Which tool answers what
 
-Reaching for raw GraphQL is almost always a sign you missed a tool. Two of the
-worst bugs this server has shipped were found that way, and hand-written queries
-get the schema wrong in ways that fail silently.
+Use the tool for the question before writing raw GraphQL. Its response carries
+the coverage and continuation rules a hand-written query must supply itself.
 
 | question | tool |
 |---|---|
 | What is this address? | `identify_address`. For a package, `bridge_carrier` lists calls into a bridge's exit entry: it can send bridge transfers for its callers |
-| Is this address fresh? | `identify_address` → `first_seen` (oldest transaction, its sender, coins received; `first_inflow` true when another address funded it there) |
+| Is this address fresh? | `identify_address` → `first_seen` (oldest transaction, sender, coins received). `first_inflow` is also true for genesis allocations: their null sender names no funding wallet. A null `first_inflow` means unread balance changes |
 | Where did the money go / come from? | `trace_funds` (one branch), `find_funding_source` |
 | Where did ALL of it go, and how much reached each exit? | `trace_flow_graph` → `terminals`, `coverage` |
 | Is there any path from this wallet to that one (or to a foreign account a bridge paid)? | `find_flow_path` — a miss is not evidence; read `explored` |
@@ -878,6 +869,8 @@ get the schema wrong in ways that fail silently.
 | Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
 | Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
 | What did this address hold before/after the incident? | `get_balance` with `at` or `at_checkpoint` → `balance` only when `complete` is true |
+| What did this wallet stake then? | `get_staking_summary` with `as_of` (date or checkpoint): directly held StakedSui, including transfers and split/joined stakes. Historical rewards are separate estimates; incomplete reads give null totals. Wrapped stakes and liquid-staking tokens are excluded |
+| Which validators are active? | `get_validators` defaults to compact summary rows; `detail: "full"` returns all fields and rows unless `limit` is set. `active_validator_count` and `total_stake` cover the whole set; `validator_count` counts displayed rows |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — per-module API summary and capability audit; `modules: [...]` for those modules' struct shapes and signatures |
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
@@ -892,7 +885,7 @@ get the schema wrong in ways that fail silently.
 | Is this coin the real one? | `analyze_token` → `verified`; traces carry `coin_verified` per balance change |
 | Is this address the one it looks like? | `get_transaction_history`, `trace_funds`, `trace_flow_graph` or `summarize_address_flows` → `address_poisoning` |
 | Did something move that was not a coin? | `trace_funds` → `object_flow`, and `object_values` per hop with USD for staked SUI, LP positions, lending caps and vault receipts |
-| What is this wallet worth beyond its coins? | `get_wallet_overview` with `include_prices` → `positions_value_usd`, `unread`, `coverage`, and with `include_nfts` `nft_estimate_usd` (estimates, not in the total); `get_defi_positions` for every position with its `method` and `tier`. The total covers only what a reader recognised: `coverage.not_recognised_types` lists the owned objects left out by type and count (a receipt of a protocol no reader knows looks like any other object), so report the total as a floor while that list is not empty |
+| What is this wallet worth beyond its coins? | `get_wallet_overview` with `include_prices` → `positions_value_usd`, `unread`, `coverage`, and with `include_nfts` `nft_estimate_usd` (estimates, not in the total); `get_defi_positions` for every position with its `method` and `tier`. The total covers only recognised positions: `coverage.not_recognised_types` lists owned objects left out by type and count, so do not present it as the wallet's complete net worth |
 | Does this wallet run its money through a vault it does not own? | `get_wallet_overview` with `include_prices` or `get_defi_positions` → `leads` of kind `operated_shared_object`: a shared object its recent transactions used whose own fields name it (`members`, `owner`, `operator`, ...), with what it holds and the other addresses named. The naming is chain-derived; what the role lets the address do is in the package's functions |
 | What does this wallet owe or lend, and how close is it to liquidation? | `get_defi_positions` → lending positions with supply and borrow legs, `health` (what the protocol stores: Suilend's and AlphaLend's totals as of the last refresh, Bucket's minimum collateral ratio, plus `borrow_limit_used` and `liquidation_threshold_used` from those figures), `health_basis` when the stored figures and the legs' market value differ (use `health` for distance to liquidation, `usd` for worth), `leads` for a position within 5% of its borrow limit, and `price_check` wherever the protocol's oracle and a provider disagree by more than 2% (the provider's price is then used; a large gap is a lead on a borrowed or manipulated feed, not a verdict) |
 | Who can mint / upgrade / freeze, and did that change hands? | `trace_funds` → `object_flow.capability_transfers` |
@@ -927,10 +920,8 @@ failed. It is
 unknown, not zero, and not evidence of an empty or unused wallet. Retry before
 drawing anything from it.
 
-**Cost, roughly.** Clustering one seed is ~50 queries and rises with
-`expand_budget`. A fan-out measurement is up to 20. Batch digests through
-`get_transactions` rather than looping `get_transaction`. Ten separate calls is
-ten round trips for the same data.
+Batch digests through `get_transactions` rather than looping
+`get_transaction`.
 
 ## Conclusions to refuse
 
@@ -976,23 +967,32 @@ ten round trips for the same data.
 
 ## Traps in the data itself
 
-- **A listed row count is not the total.** A response with `truncated: true`
-  listed what fit its budget and computed every total, count and verdict over
-  all rows. `omitted.lists` says per list how many rows are missing, the USD
-  value of the priced ones, how many are unpriced (an unpriced row can be the
-  loot) and the largest by USD; flagged rows (bridge exits, lookalikes, labelled
-  addresses, capabilities, linked subjects, the sender's own changes) are
-  never among them. A `get_transaction` event row with `count` is several
-  events folded: its `varying` fields give totals, not one event's value.
-  Before concluding that an address is absent, repeat the
-  call with `detail: "full"`, or read the `page` URI of that list with
-  `match` set to the address when the store is on.
-
-- **`detail: "full"` lifts a default cap.** `analyze_attack_tx`,
-  `summarize_incident_losses`, `aggregate_events`, `get_transactions`,
-  `get_transaction_history` and `build_timeline` list what fits their budget
-  by default and take `detail: "full"` for every row. `omitted.next_call` is
-  the exact call.
+- **A display limit is not a scan limit.** `omitted.lists` names rows left out
+  of the answer, with their priced USD, unpriced count and largest value.
+  Display capping keeps totals over every row read and preserves flagged rows.
+  A scan stopped early has incomplete coverage; `detail: "full"` cannot
+  finish it. A folded `get_transaction` event row's `count` and `varying`
+  describe several events, not one event's values.
+- **`detail: "full"` lifts the display cap.** Follow `omitted.next_call`, or
+  read a list's `page` URI with `match` when the store is on. For validators
+  it also includes fields omitted from summary rows.
+- **An empty page can still have a next page.** For `query_events`,
+  `query_transactions` and `aggregate_events`, continue while
+  `has_next_page` is true, even with no rows. Queries fill across short
+  service reads; `scan` reports a read-budget stop. Aggregates also stop at
+  `max_events`: read `scan.stop_reason` to distinguish it from `max_reads`.
+  Follow `scan.next_call`; `repeat_with` patches the original arguments.
+  Keep the filters and order, and treat cursors as opaque, not checkpoints.
+- **Follow continuations on their own network.** Complete `next_call.args`
+  carries `network` when it differs from the server default. Follow it as
+  given; a `repeat_with` patch retains the original call's network.
+- **Unread balance changes are not a clean result.** Read
+  `incomplete_transactions` (screening: `windows[].incomplete_transactions`),
+  `round_trips_unread` and deposit `verdict: "unknown"` before drawing a
+  conclusion. Screening withholds unread paths; inbound bridge fulfilment
+  names no beneficiary from partial balances. Graph and path traces mark
+  unread branches `read_failed`, distinct from `budget` stops; raising a
+  budget does not repair a failed read.
 
 - **Dust is not funding.** A 1-MIST spam send is not who funded a wallet, and an
   inflow in a coin nobody prices is spam unless it is at least 1% of the coin's
@@ -1083,9 +1083,6 @@ ran through one funder, and that funder made a twenty-way uniform payout, which
 is a list rather than an operator. The finding records the payout as a fact and
 says the cluster was not relied upon.
 
-That last step is the job. The tools were right; the reading would have been
-wrong.
-
 ## When you are done
 
 Stop when the next query cannot change what you would write. Concretely: the
@@ -1093,8 +1090,6 @@ trace has reached a sink you can name, or a party you cannot go past without a
 subpoena; the funder is measured rather than assumed; and every claim in the
 report carries either a digest or an explicit statement that it could not be
 determined.
-
-If you are still collecting because more is available, you are past the point.
 
 ## Reporting
 

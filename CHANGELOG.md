@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Changed
+- **The forensics skill matches 1.25.** It uses the renamed funds-loss prompt,
+  distinguishes empty pages and read-budget stops from exhausted results,
+  and explains unread transactions, same-network continuations, validator
+  summaries and historical staking. Pricing guidance follows each transaction's
+  time and marks unpriced totals partial rather than a lower bound. Stale
+  counts and repeated guidance are removed.
 - **The docs site matches 1.25.** The pricing, flow, transaction, capability
   and getting-started pages describe daily pricing and partial totals.
   Contributor docs describe the context-cost workflow. Output-size figures

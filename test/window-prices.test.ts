@@ -16,13 +16,13 @@ beforeEach(() => { resetWindowPriceCache(); resetLiveCoinScale(); vi.clearAllMoc
 
 describe("window USD", () => {
   it("sums differently priced signed legs even when their raw net is zero", async () => {
-    historyRead.mockResolvedValue(new Map([[SUI, new Map([[JAN, { price: 4, at: JAN }], [JUL, { price: 2, at: JUL }]])]]));
+    historyRead.mockResolvedValue(new Map([[SUI, new Map([[JAN + 100, { price: 4, at: JAN }], [JUL + 200, { price: 2, at: JUL }]])]]));
     const prices = await windowPrices([{ at: JAN + 100, coins: [SUI] }, { at: JUL + 200, coins: [SUI] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(SUI, 10_000_000_000n, JAN + 100);
     amounts.add(SUI, -10_000_000_000n, JUL + 200);
-    expect(amounts.amounts()[0]).toMatchObject({ amount: 0, usd: 20, priced_raw: { in: "10000000000", out: "10000000000" } });
-    expect(prices.basis).toMatchObject({ priced_coin_days: 2, partial: false, approximate: true });
+    expect(amounts.amounts()[0]).toMatchObject({ amount: 0, usd: 20, raw: { in: "10000000000", out: "10000000000" } });
+    expect(prices.basis).toMatchObject({ priced_coin_samples: 2, partial: false, approximate: true });
   });
 
   it("excludes missing dates and timestamps without pricing them at a nearby day", async () => {
@@ -33,14 +33,14 @@ describe("window USD", () => {
     amounts.add(SUI, -2_000_000_000n, JUL);
     amounts.add(SUI, 3_000_000_000n, null);
     expect(amounts.amounts()[0]).toMatchObject({ amount: 2, usd: 4, unpriced_raw: { in: "3000000000", out: "2000000000" } });
-    expect(prices.basis).toMatchObject({ partial: true, priced_coin_days: 1, unknown_time_transactions: 1, missing_coin_days: [{ coin_type: SUI, days: 1 }] });
+    expect(prices.basis).toMatchObject({ partial: true, priced_coin_samples: 1, unknown_time_transactions: 1, missing_coin_samples: [{ coin_type: SUI, samples: 1 }] });
   });
 
-  it("prices one day once and reuses successful historical quotes", async () => {
+  it("prices one hour once and reuses successful historical quotes", async () => {
     pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN, source: "defillama" }]]), unpriced: [] });
-    const requests = [{ at: JAN + 1, coins: [SUI] }, { at: JAN + 86399, coins: [SUI] }];
-    expect((await windowPrices(requests)).point(SUI, JAN + 80000)?.price).toBe(4);
-    expect((await windowPrices(requests)).basis.priced_coin_days).toBe(1);
+    const requests = [{ at: JAN + 1, coins: [SUI] }, { at: JAN + 3599, coins: [SUI] }];
+    expect((await windowPrices(requests)).point(SUI, JAN + 3500)?.price).toBe(4);
+    expect((await windowPrices(requests)).basis.priced_coin_samples).toBe(1);
     expect(pointRead).toHaveBeenCalledTimes(1);
     expect(historyRead).not.toHaveBeenCalled();
   });
@@ -51,18 +51,18 @@ describe("window USD", () => {
     const prices = await windowPrices(requests);
     const amounts = new WindowAmounts(prices);
     for (const r of requests) amounts.add(SUI, 1_000_000_000n, r.at);
-    expect(prices.basis).toMatchObject({ budget_skipped_coin_days: 1, priced_coin_days: 366, partial: true });
-    expect(prices.basis.continue_with).toMatchObject({ from: "2025-01-01T00:00:00.000Z", to: "2025-01-01T23:59:59.999Z" });
+    expect(prices.basis).toMatchObject({ budget_skipped_coin_samples: 1, priced_coin_samples: 366, partial: true });
+    expect(prices.basis.continue_with).toMatchObject({ from: "2025-01-01T00:00:00.000Z", to: "2025-01-01T00:59:59.999Z" });
     expect(amounts.amounts()[0]).toMatchObject({ amount: 367, usd: 732, unpriced_raw: { in: "1000000000", out: "0" } });
   });
 
-  it("does not reuse stale samples or silently turn a failed day into zero USD", async () => {
-    pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN - 7200, source: "defillama" }]]), unpriced: [] });
+  it("does not reuse samples beyond two hours or turn a missing quote into zero USD", async () => {
+    pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN - 7201, source: "defillama" }]]), unpriced: [] });
     const prices = await windowPrices([{ at: JAN, coins: [SUI] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(SUI, 10_000_000_000n, JAN);
     expect(amounts.amounts()[0]).toMatchObject({ amount: 10, usd: null, unpriced_raw: { in: "10000000000", out: "0" } });
-    expect(prices.basis).toMatchObject({ partial: true, priced_coin_days: 0 });
+    expect(prices.basis).toMatchObject({ partial: true, priced_coin_samples: 0 });
   });
 
   it("resolves and caches decimals independently of batch quotes", async () => {
@@ -75,7 +75,7 @@ describe("window USD", () => {
     amounts.add(coin, 1_000_000n, JAN);
     amounts.add(coin, 1_000_000n, JUL);
     expect(amounts.amounts()[0]).toMatchObject({ amount: 2, usd: 4 });
-    expect(prices.basis).toMatchObject({ priced_coin_days: 2, partial: false });
+    expect(prices.basis).toMatchObject({ priced_coin_samples: 2, partial: false });
     await windowPrices(requests);
     expect(metadataRead).toHaveBeenCalledTimes(1);
   });
@@ -89,7 +89,7 @@ describe("window USD", () => {
     amounts.add(coin, 1_000_000n, JAN);
     amounts.add(coin, -1_000_000n, JUL);
     expect(amounts.amounts()[0]).toMatchObject({ usd: null, unpriced_raw: { in: "1000000", out: "1000000" } });
-    expect(prices.basis).toMatchObject({ priced_coin_days: 0, partial: true, missing_coin_days: [{ coin_type: coin, days: 2 }] });
+    expect(prices.basis).toMatchObject({ priced_coin_samples: 0, partial: true, missing_coin_samples: [{ coin_type: coin, samples: 2 }] });
   });
 
   it("does not reuse a mainnet Pyth quote on another network", async () => {
@@ -105,5 +105,46 @@ describe("window USD", () => {
     const test = await runWithNetwork("testnet", () => windowPrices(request));
     expect(main.point(SUI, JAN)).toMatchObject({ price: 4, source: "pyth" });
     expect(test.point(SUI, JAN)).toMatchObject({ price: 2, source: "defillama" });
+  });
+
+  it("uses the median leg time within the hour rather than its start on a crash day", async () => {
+    const hour = JAN + 10 * 3600;
+    pointRead.mockImplementation(async (_coins: string[], at: number) => ({
+      points: new Map([[SUI, { price: at === hour + 1800 ? 4 : 1, publishTime: at, source: "defillama" }]]), unpriced: [],
+    }));
+    const prices = await windowPrices([600, 1800, 2700].map((seconds) => ({ at: hour + seconds, coins: [SUI] })));
+    const amounts = new WindowAmounts(prices);
+    amounts.add(SUI, 10_000_000_000n, hour + 1800);
+    expect(amounts.usd(SUI)).toBe(40);
+    expect(prices.point(SUI, hour + 1800)?.publishTime).toBe(hour + 1800);
+  });
+
+  it("coarsens over-budget hours to each coin-day's exact median leg time", async () => {
+    const other = `0x${"be".repeat(32)}::coin::OTHER`;
+    metadataRead.mockResolvedValue({ response: { metadata: { decimals: 9 } } });
+    historyRead.mockImplementation(async (requests: Map<string, number[]>) => new Map([...requests].map(([coin, times]) => [
+      coin, new Map(times.map((at) => [at, { price: Math.floor((at % 86400) / 3600) + 1, at }])),
+    ])));
+    const requests = Array.from({ length: 4100 }, (_, i) => ({ at: JAN + i * 3600 + 120, coins: [SUI] }));
+    requests.push({ at: JAN + 18 * 3600, coins: [other] }, { at: JAN + 20 * 3600, coins: [other] });
+    const prices = await windowPrices(requests);
+    expect(prices.point(SUI, JAN + 2 * 3600)?.publishTime).toBe(JAN + 12 * 3600 + 120);
+    expect(prices.point(SUI, JAN + 20 * 3600)?.price).toBe(13);
+    expect(prices.point(other, JAN + 18 * 3600)?.publishTime).toBe(JAN + 20 * 3600);
+    expect(prices.basis).toMatchObject({ method: "daily_median_time", partial: false });
+  });
+
+  it("separates stale priced legs and rejects samples beyond two hours", async () => {
+    const times = [JAN, JAN + 3600, JAN + 7200, JAN + 10800];
+    const offsets = [-3600, 3601, -7200, 7201];
+    historyRead.mockResolvedValue(new Map([[SUI, new Map(times.map((at, i) => [at, { price: 2, at: at + offsets[i] }]))]]));
+    const prices = await windowPrices(times.map((at) => ({ at, coins: [SUI] })));
+    const amounts = new WindowAmounts(prices);
+    [1n, 2n, -3n, 4n].forEach((amount, i) => amounts.add(SUI, amount * 1_000_000_000n, times[i]));
+    expect(amounts.amounts()[0]).toMatchObject({ usd: 0,
+      priced_raw: { in: "1000000000", out: "0" },
+      stale_priced_raw: { in: "2000000000", out: "3000000000" },
+      unpriced_raw: { in: "4000000000", out: "0" } });
+    expect(prices.basis).toMatchObject({ stale_quotes: [{ coin_type: SUI, offset_sec: -7200 }], priced_coin_samples: 3, partial: true });
   });
 });

@@ -97,20 +97,26 @@
   address for canonical links and a sitemap.
 
 ### Fixed
-- **USD over long windows is priced per day.** `summarize_address_flows`
-  priced a multi-month window at one median-time price, so its USD totals
-  were unusable. Each coin movement is now priced at its own UTC day's
-  historical quote before it is summed. This applies to coin totals,
-  counterparties and bridges; objects keep their transaction-time valuation.
-  The same holds for:
+- **USD over long windows is priced near each transaction's time.**
+  `summarize_address_flows` priced a multi-month window at one median-time
+  price, so its USD totals were unusable. Each coin movement is now priced
+  before it is summed. The quote is taken at the median time of that coin's
+  movements within each UTC hour, or within each UTC day when the window
+  needs more quotes than the pricing budget allows. This applies to coin
+  totals, counterparties and bridges; objects keep their transaction-time
+  valuation. The same holds for:
   - `summarize_incident_losses` coin gains and pool losses (`price_at` still
     sets one fixed time);
   - `aggregate_events` participant P&L.
 
-  One pricing block states the method, the source and the coverage. Missing
-  coin-days, coins with unknown decimals, and a pricing-budget stop leave
-  those amounts unpriced and reported; there is no median or current-price
-  fallback. A one-day window costs the same as before.
+  One pricing block states the method, the source and the coverage. A quote
+  more than an hour from its sample time, up to two hours, is accepted and
+  listed as stale. Anything older, a missing price, unknown decimals or a
+  pricing-budget stop leaves the amount unpriced and reported. There is no
+  median or current-price fallback. A one-day window costs the same as
+  before. In `summarize_address_flows` the bridge transaction list is capped
+  like other lists: group totals and destinations stay complete, and the
+  omitted rows are reachable through the continuation.
 - **Continuations stay on the chain that produced them.** A `next_call`
   from a testnet or devnet call, or from a mainnet call on a server whose
   default is another network, omitted `network`, so following it read the
@@ -206,7 +212,7 @@
 
 ### Added
 - **Staking positions at a past date.** `get_staking_summary` takes `as_of`
-  (a date or a checkpoint) and returns the StakedSui objects the address held
+  (a date, or a checkpoint number as a string) and returns the StakedSui objects the address held
   directly at that checkpoint. Positions that were transferred, split or
   joined are included. Reward estimates come from the pools' exchange rates
   and are shown separately from principal. The answer is read directly when

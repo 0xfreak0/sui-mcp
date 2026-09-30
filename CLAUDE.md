@@ -3798,7 +3798,7 @@ Consumers value what a transaction moved through `src/utils/moved-value.ts`:
   transaction-time USD value; a later consumption is not repriced at the
   first receipt's quote. Objects handed on stay out of totals, as coins
   sent on do, valuing at most `MAX_OBJECT_VALUE_TXS` transactions.
-  Coins use daily historical quotes through `window-prices.ts`; `price_at`
+  Coins use hourly historical quotes through `window-prices.ts`; `price_at`
   explicitly selects one fixed time for both coins and objects.
   Missing credits and debits make incident totals `partial`, not a lower
   bound: an omitted debit can make a net too high.
@@ -4284,11 +4284,11 @@ summary, and event types. Rules a change is likely to break:
   arrival order, fourteen CCTP burns to one address used them all and left
   the Mayan group with none.
 - **Price each transaction before aggregating.** `window-prices.ts` shares
-  UTC-day quotes across totals, counterparties and bridge exits. Multi-day
-  DefiLlama reads use `batchHistorical`; Pyth is opt-in. The read and cache
-  are bounded, and missing prices never use a median or current quote.
-  `usd_basis` reports approximate/partial coverage and a missing day to
-  retry; `priced_raw` and `unpriced_raw` retain both sides of each coin.
+  per-coin UTC-hour median leg-time quotes across totals, counterparties and
+  bridge exits. Above the sample budget, each coin/day uses its median time.
+  DefiLlama reads use `batchHistorical`; Pyth is opt-in. Reads and cache are bounded; missing
+  prices never use current quotes. `usd_basis.method` discloses coarsening,
+  sample coverage and missing intervals; raw amounts retain both sides.
 
 `aggregate_events` `group_pnl` (`src/utils/participant-pnl.ts`) reads the
 distinct transactions behind the matched events over gRPC with archive

@@ -51,7 +51,7 @@ balance or a direct read within the consistent range.
 
 ## Staking at a past moment
 
-`get_staking_summary` takes `as_of`, an ISO 8601 date or checkpoint:
+`get_staking_summary` takes `as_of`, an ISO 8601 date or checkpoint string:
 
 ```json
 {"address":"0x…","as_of":"2025-06-01T00:00:00Z"}

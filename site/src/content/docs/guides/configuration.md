@@ -51,8 +51,9 @@ echoed back as `resolved_from`.
 
 Current USD prices in `get_token_prices` come from Aftermath, then DefiLlama
 for anything Aftermath does not list, then Pyth for verified coins when
-`PYTH_API_KEY` is set. The 24h change in `get_token_prices` and `analyze_token` is
-DefiLlama's, and null for a coin it does not list. Prices at a past moment
+`PYTH_API_KEY` is set. The 24h change in `get_token_prices` and `analyze_token`
+compares DefiLlama's current price with its price a day earlier, and is null
+when either is missing or the earlier price is zero. Prices at a past moment
 (`get_token_prices` with `at`, per-hop USD in `trace_funds`,
 `analyze_attack_tx`, `summarize_incident_losses`) use DefiLlama by default,
 then CoinGecko's public API and GeckoTerminal when a quote is missing or a

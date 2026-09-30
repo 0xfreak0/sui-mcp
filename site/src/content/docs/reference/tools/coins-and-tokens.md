@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`get_balance`](#get_balance) | Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. |
 | [`get_coin_info`](#get_coin_info) | Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). |
-| [`get_token_prices`](#get_token_prices) | Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. |
+| [`get_token_prices`](#get_token_prices) | Get USD prices for Sui coins by full coin type, current by default or at a past moment when `at` is set. |
 | [`search_token`](#search_token) | Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. |
 
 ## get_balance
@@ -49,12 +49,12 @@ Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. Needs no API key. Current prices come from Aftermath, then DefiLlama, then Pyth for coins on the verified list when PYTH_API_KEY is set; the 24h change is calculated from DefiLlama's current price and its price a day ago (null when either is missing or the earlier price is zero). Historical prices come from Pyth when PYTH_API_KEY is set and the coin is on the verified list, and from DefiLlama otherwise. Every price names its source, confidence and the time of the sample it came from, and every coin that could not be priced is listed under `unpriced` with the reason. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed. Accepts full coin type strings (e.g. 0x2::sui::SUI).
+Get USD prices for Sui coins by full coin type, current by default or at a past moment when `at` is set. Needs no API key. Each price names its source, confidence and sample time, and each coin that could not be priced is listed under `unpriced` with the reason. The 24h change is null when DefiLlama lacks the current or day-earlier price. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `coin_types` | array of string (1 to 100 items) | yes | Array of full coin type strings (e.g. ['0x2::sui::SUI', '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC']) |
-| `at` | number \| string | no | Optional: price AT this point in time, as Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices. |
+| `coin_types` | array of string (1 to 100 items) | yes | Full coin type strings, e.g. ['0x2::sui::SUI']. |
+| `at` | number \| string | no | Price at this moment, as Unix seconds or ISO 8601. Omit for current prices. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## search_token

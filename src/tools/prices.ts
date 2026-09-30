@@ -100,20 +100,20 @@ export async function fetchPythPrices(
 export function registerPriceTools(server: McpServer) {
   server.tool(
     "get_token_prices",
-    "Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. Needs no API key. Current prices come from Aftermath, then DefiLlama, then Pyth for coins on the verified list when PYTH_API_KEY is set; the 24h change is calculated from DefiLlama's current price and its price a day ago (null when either is missing or the earlier price is zero). Historical prices come from Pyth when PYTH_API_KEY is set and the coin is on the verified list, and from DefiLlama otherwise. Every price names its source, confidence and the time of the sample it came from, and every coin that could not be priced is listed under `unpriced` with the reason. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed. Accepts full coin type strings (e.g. 0x2::sui::SUI).",
+    "Get USD prices for Sui coins by full coin type, current by default or at a past moment when `at` is set. Needs no API key. Each price names its source, confidence and sample time, and each coin that could not be priced is listed under `unpriced` with the reason. The 24h change is null when DefiLlama lacks the current or day-earlier price. An unverified coin is priced only by its exact coin type, never by a symbol-matched feed.",
     {
       coin_types: z
         .array(coinTypeArg())
         .min(1)
         .max(100)
         .describe(
-          "Array of full coin type strings (e.g. ['0x2::sui::SUI', '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'])"
+          "Full coin type strings, e.g. ['0x2::sui::SUI']."
         ),
       at: z
         .union([numArg(), z.string()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Optional: price AT this point in time, as Unix seconds or ISO 8601 (e.g. '2025-01-15T00:00:00Z'). Omit for current prices."),
+        .describe("Price at this moment, as Unix seconds or ISO 8601. Omit for current prices."),
     },
     async ({ coin_types, at }) => {
       if (at !== undefined) {

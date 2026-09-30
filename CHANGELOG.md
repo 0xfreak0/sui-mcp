@@ -20,6 +20,9 @@
   `prediction_market` (`propbook` as `oracle`), so their calls, events and
   later upgrades are named from the registry rather than by publisher key.
 
+### Changed
+- **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
+
 ## 1.25.0 (2026-09-30)
 
 Investigations cost a model less context, and reads that stopped early now

@@ -152,6 +152,7 @@ export function registerPriceTools(server: McpServer) {
               query_timestamp: unixTs,
               query_date: new Date(unixTs * 1000).toISOString(),
               price_sources: availableSources(),
+              usd_note: "USD estimates use provider quotes near the requested time, not execution prices.",
               confidence_note:
                 "DefiLlama's confidence is a 0-1 score for how well its sources agreed; Pyth's is a USD confidence interval. A price whose sample is more than an hour from the moment asked for is marked stale.",
               prices,
@@ -228,7 +229,7 @@ export function registerPriceTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ prices }),
+            text: JSON.stringify({ usd_note: "USD estimates use current provider quotes, not execution prices.", prices }),
           },
         ],
       };

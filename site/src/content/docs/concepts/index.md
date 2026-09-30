@@ -15,6 +15,7 @@ qualifications, and the security model of the server.
 | [Coin identity and scale](/concepts/coins/) | `verified`, `coin_verified`, assumed decimals, ambiguous symbols, deny-list freezes |
 | [Reading a transaction](/concepts/transactions/) | abort codes, objects that are not coins, transactions with no commands, address balances |
 | [Fund flows](/concepts/fund-flows/) | `trace_flow_graph` terminals and first-in-first-out allocation, `find_flow_path`, export formats |
+| [How USD values are calculated](/concepts/pricing/) | current and historical price times, provider estimates, stale quotes and partial totals |
 | [Lookalike addresses](/concepts/address-poisoning/) | `address_poisoning` pairs and which side is the impostor |
 | [Shared funders](/concepts/shared-funders/) | `classification`, `flow_shape` and `out_in_ratio` from `get_address_fanout`, and when a shared funder links wallets |
 | [Gas sponsors](/concepts/gas-sponsors/) | `sponsor_shape` from `get_address_fanout` |

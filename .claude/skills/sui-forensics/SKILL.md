@@ -688,6 +688,7 @@ summarize_incident_losses(digests: <every attack digest>)
   P&L are priced near each transaction's time, per the pricing block's method,
   then summed. Read `usd_basis` (`pnl.usd_basis` for P&L), not one median
   price. Incident `price_at` overrides this with one fixed time.
+  Report raw token amounts as exact and USD as estimated; say when a total is partial.
 - **Unpriced legs make USD partial, not a lower bound.** Missing debits can
   raise a net. Check incident `totals.partial` and `unpriced_remainder`,
   flow `totals_usd.partial`, or P&L `pnl.usd_basis.partial`, and quote raw

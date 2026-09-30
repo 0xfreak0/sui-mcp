@@ -177,10 +177,10 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       ...(stale.size ? { stale_quotes: [...stale].map(([coin_type, offset_sec]) => ({ coin_type, offset_sec })) } : {}),
       budget_skipped_coin_samples: skipped,
       partial: missing.size > 0 || unknownTime > 0,
-      meaning: (fixedAt !== undefined ? "Coin USD uses the requested fixed time" : coarsened
-        ? "Quote budget exceeded: each coin/day uses its median leg time"
-        : "Each coin/UTC-hour uses its median leg time") +
-        ". Quotes within one hour are fresh; those over one and up to two hours are stale, listed in stale_quotes and stale_priced_raw. Older quotes, unknown decimals and timestamps are excluded. Not execution prices. Objects use their own methods.",
+      meaning: "USD estimates use provider quotes " + (fixedAt !== undefined ? "near the requested fixed time" : coarsened
+        ? "near transaction times: each coin/UTC-day at its median movement time (quote budget exceeded)"
+        : "near transaction times: each coin/UTC-hour at its median movement time") +
+        ". Quotes over 1h through 2h away are stale (stale_quotes, stale_priced_raw); older quotes, unknown decimals and times are excluded. Not execution prices. Objects use their own methods.",
       ...(missing.size || unknownTime ? { continue_with: {
         ...(continuationStart !== undefined ? {
           from: new Date(continuationStart * 1000).toISOString(),

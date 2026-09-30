@@ -256,7 +256,7 @@ sidebar:
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `addresses` | array of string (2 to 5 items) | yes | 2-5 addresses to test for a shared multisig. Member order is part of a multisig's address, so the search is factorial in committee size: 4 addresses is 192 candidates, 5 is 1,560, and 6 is refused. |
+| `addresses` | array of string (2 to 5 items) | yes | 2-5 addresses to test. Member order is part of a multisig's address, so candidates grow factorially and 6 addresses are refused. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_address_fanout

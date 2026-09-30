@@ -126,8 +126,9 @@ treated as custody or wallet-provider keys and listed under
 These limits are also stated in the tool output.
 
 Member order is part of the address, so `find_shared_multisig` is factorial in
-committee size and refuses past five keys. It covers equal-weight committees
-only, so a nil result is not a negative finding.
+committee size: four addresses give 192 candidate committees, five give 1,560,
+and six are refused. It covers equal-weight committees only, so a nil result
+is not a negative finding.
 
 A wallet that has never sent a transaction cannot be classified at all,
 because it has produced no signature. It comes back as unknown rather than as

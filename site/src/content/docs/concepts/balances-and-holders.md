@@ -168,3 +168,9 @@ they hold.
 The default summary keeps the most valuable positions within a display budget
 and every unpriced position. `omitted` reports the rest.
 `detail: "full"` returns every position.
+
+`get_wallet_overview` with `include_prices: true` values the same positions
+beside the wallet's coins and totals each group apart. Adding
+`include_nfts: true` walks every object and kiosk item the wallet holds and
+reads each collection's market, so a wallet holding many objects costs many
+requests. The NFT estimates stay out of the total.

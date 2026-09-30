@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`analyze_token`](#analyze_token) | Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. |
 | [`get_transaction_history`](#get_transaction_history) | Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. |
-| [`get_wallet_overview`](#get_wallet_overview) | Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. |
+| [`get_wallet_overview`](#get_wallet_overview) | Overview of a Sui wallet: every coin balance, SuiNS name, staked SUI and kiosk counts, and recent transactions. |
 | [`identify_address`](#identify_address) | Classify a Sui address as wallet, package, validator or object before choosing other tools. |
 
 ## analyze_token
@@ -49,14 +49,14 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended first tool for wallets) Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. Set include_prices=true for USD values: coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances held inside objects the wallet owns), each totalled apart. `coverage` says what the total covers of the objects the wallet owns and lists the ones no reader recognises by type and count; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. Add include_nfts=true for NFT estimates, kept out of the total. Start here before drilling into specific tools.
+(Recommended first tool for wallets) Overview of a Sui wallet: every coin balance, SuiNS name, staked SUI and kiosk counts, and recent transactions. include_prices adds USD values, coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances inside owned objects), each totalled apart. `coverage` says which owned objects the total covers and lists unrecognised types with counts; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. include_nfts adds NFT estimates, kept out of the total.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Wallet address (0x...) |
-| `include_prices` | boolean | no | Include USD prices and portfolio value, with DeFi positions valued beside the coins, coverage of the objects owned, and leads (default: false) |
-| `include_nfts` | boolean | no | With include_prices, also estimate the NFTs held (default: false). This walks every object and kiosk item the wallet holds and reads each collection's market, which on a wallet holding many objects takes many requests; list_nft_collections does the same on its own. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): the holdings and not-recognised object types that fit about 12k characters each, the rest stated in `omitted`. 'full': every row. |
+| `include_prices` | boolean | no | Add USD values, DeFi positions, coverage and leads (default: false). |
+| `include_nfts` | boolean | no | With include_prices, also estimate held NFTs (default: false). Takes many requests on a wallet with many objects; list_nft_collections does this alone. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): holdings and unrecognised object types that fit about 12k characters each, the rest in `omitted`. 'full': every row. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## identify_address

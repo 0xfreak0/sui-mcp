@@ -158,6 +158,10 @@
       "name": "Kai Finance",
       "type": "yield"
     },
+    "0xad6769be9937a4a818d3a8b222de9c4e99d2bc9012a2828aaf24ada1ff7e81b4": {
+      "name": "Koi",
+      "type": "launchpad"
+    },
     "0xa0eba10b173538c8fecca1dff298e488402cc9ff374f8a12ca7758eebe830b66": {
       "name": "Kriya",
       "type": "dex"
@@ -165,6 +169,10 @@
     "0x5415784bf0d7bbcbffadf8e3b62090aba53706808378e9340013fdda81ed0140": {
       "name": "Lotus Finance",
       "type": "yield"
+    },
+    "0xc935f0ab11a24b32b6f8796bc78d93ce6f2d2969f5d4b4f6657b24352b61408a": {
+      "name": "Maelstrom",
+      "type": "launchpad"
     },
     "0x4a35d3dfef55ed3631b7158544c6322a23bc434fe4fca1234cb680ce0505f82d": {
       "name": "Magma",
@@ -205,6 +213,10 @@
     "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a": {
       "name": "OriginByte",
       "type": "nft"
+    },
+    "0xaedb8c9a905a778e831aeb4928f660210a7a645925348a7c4ec1cb4a6a3fd16e": {
+      "name": "Perpsplexity",
+      "type": "launchpad"
     },
     "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0": {
       "name": "Pyth",
@@ -286,6 +298,10 @@
       "name": "SuiNS",
       "type": "name_service"
     },
+    "0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0": {
+      "name": "SuiPump",
+      "type": "launchpad"
+    },
     "0x06cefebb11191abd347654200a6fd8ae47fa97b54506e4e680db64dae54d0b12": {
       "name": "TradePort",
       "type": "nft"
@@ -333,6 +349,10 @@
     "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e": {
       "name": "WaterX",
       "type": "oracle"
+    },
+    "0x1914927baefaf7cccfe02f6567b7e24e28d33e3cb153f9628829b818954a0769": {
+      "name": "Whirlpool",
+      "type": "launchpad"
     },
     "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4": {
       "name": "Wormhole",
@@ -568,6 +588,11 @@
         "0x5f2855bf926f3f9f73d3846a528d95c50eb28ec61a53aa5c92e5eb8a22ad1735"
       ]
     },
+    "0xad6769be9937a4a818d3a8b222de9c4e99d2bc9012a2828aaf24ada1ff7e81b4": {
+      "signers": [
+        "0xc5440d045b9987300891e12fad972f7aa44c1606ad699094cd872b32490b02d0"
+      ]
+    },
     "0xa0eba10b173538c8fecca1dff298e488402cc9ff374f8a12ca7758eebe830b66": {
       "signers": [
         "0x2b089053b2fa5c5f836902473c78f6b485583770698ace3433de96cdb41206f4"
@@ -577,6 +602,11 @@
       "signers": [
         "0x3981268afdc77282ed70c42d3ead6dceb13b2f5d1d68dd97fb76dad2e8fef1e1",
         "0xe871306549fa1726d0bf25a3cdea04ab248e98df13ad9f16b3d51aae10c17313"
+      ]
+    },
+    "0xc935f0ab11a24b32b6f8796bc78d93ce6f2d2969f5d4b4f6657b24352b61408a": {
+      "signers": [
+        "0x336caf1a9176f23f030c7f972206cb319dced149ee1d0a6fc300a00b06396210"
       ]
     },
     "0x4a35d3dfef55ed3631b7158544c6322a23bc434fe4fca1234cb680ce0505f82d": {
@@ -635,6 +665,11 @@
     "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a": {
       "signers": [
         "0xf9935ad63df83d84c5c071a65f241548ac7c452af2912218c6d2b3faefba5dc2"
+      ]
+    },
+    "0xaedb8c9a905a778e831aeb4928f660210a7a645925348a7c4ec1cb4a6a3fd16e": {
+      "signers": [
+        "0x27cba495cbb84791511bc415b79c6f19509b07e9dcff4e7147c1a8eb381758e6"
       ]
     },
     "0x55300367a2d40813727ccac4ecee977a39fb9cdb46f2e6b2c354b9798f5de2c0": {
@@ -741,6 +776,11 @@
         "0xa81a2328b7bbf70ab196d6aca400b5b0721dec7615bf272d95e0b0df04517e72"
       ]
     },
+    "0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0": {
+      "signers": [
+        "0x4179b33ac5f37dc5b8f8f0f718cb03195cb95eee9861cce209e83ac1f9a4d35c"
+      ]
+    },
     "0x06cefebb11191abd347654200a6fd8ae47fa97b54506e4e680db64dae54d0b12": {
       "signers": [
         "0x4af7d47dd9f5c09292e1b136d721fcaeff286c56c9f5658512023042247ca984"
@@ -809,6 +849,12 @@
     "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e": {
       "signers": [
         "0xeaadff7edd13268918f649adbe9de20984646645e750b44bac929f35a12e0abe"
+      ]
+    },
+    "0x1914927baefaf7cccfe02f6567b7e24e28d33e3cb153f9628829b818954a0769": {
+      "signers": [
+        "0x0df853d2dc289dc6b20d65e16f1649cccdc44a0b0a4ffdb61382c3766c2d1cf3",
+        "0x715bbe374b3f79f38c01d48b7123d371c4f42d7ecebcb4a28f58e7bfc1b0c98e"
       ]
     },
     "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4": {

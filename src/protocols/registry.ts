@@ -26,6 +26,7 @@ export type ProtocolType =
   | "bridge"
   | "prediction_market"
   | "nft"
+  | "launchpad"
   /** Resolved from the Move Registry at runtime; category is not known. */
   | "unknown";
 

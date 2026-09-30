@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **`classify_deposit_address` answers for a chosen period.** It takes
+  `from` and `to` (a time or a checkpoint) and reports the window it read,
+  its limits and the continuation. An address whose older sweeps went
+  elsewhere no longer reads a bare `unknown`. Balances at the start of an
+  older window are rebuilt from a fixed checkpoint, and when the rebuild is
+  incomplete, that check is `unknown`.
 - **Vice and Blast.fun launchpads are known protocols.** Vice's launch
   packages (vicefun.com) are curated as Vice. Blast.fun's launchpad contracts
   are Interest Protocol's memez packages (launchpad, migrator, router,
@@ -30,6 +36,13 @@
 - **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
 
 ### Fixed
+- **Deposit roles show consistently across address tools.**
+  `summarize_address_flows`, `identify_address` and `manage_labels` lookup
+  report an address's inferred deposit label and any verdict
+  `classify_deposit_address` computed earlier in the session for the same
+  period. Otherwise they say `not classified` and give the call that
+  classifies it. They never run the classifier themselves. Label precedence
+  and trace stops are unchanged.
 - **Two-pool router swaps name the final output coin.** The decoded action
   showed the route's intermediate coin as the output; it now uses the input
   and final output types.

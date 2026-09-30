@@ -124,7 +124,7 @@ describe("list_nfts — kiosk discovery", () => {
     expect(kioskIds.has(STD_KIOSK_ID)).toBe(true);
     expect(kioskIds.has(PERSONAL_KIOSK_ID)).toBe(true);
 
-    const collections = new Set(data.nfts.map((n: { collection: string }) => n.collection));
+    const collections = new Set(data.nfts.map((n: { collection_ref: number }) => data.collection_types[n.collection_ref]));
     expect(collections.has(nftCollection("A"))).toBe(true);
     expect(collections.has(nftCollection("B"))).toBe(true);
   });
@@ -179,7 +179,7 @@ describe("list_nfts — kiosk discovery", () => {
   it("returns next_cursor when limit caps the result, and resumes correctly", async () => {
     // 5 NFTs in one kiosk. The mock pages the way GraphQL does: `first`
     // items after the cursor, which is the index reached so far.
-    const ITEMS = [1, 2, 3, 4, 5].map((i) => kioskItemNode(STD_KIOSK_ID, i, nftCollection("Z")));
+    const ITEMS = [1, 2, 3, 4, 5].map((i) => kioskItemNode(STD_KIOSK_ID, i, nftCollection(i <= 2 ? "A" : "B")));
     const kioskPage = (after: string | null, first: number) => {
       const start = after === null ? 0 : Number(after);
       const end = Math.min(ITEMS.length, start + first);
@@ -231,6 +231,18 @@ describe("list_nfts — kiosk discovery", () => {
     // Together the two pages must cover items 1..5 with no overlap or gap.
     const ids = [...d1.nfts, ...d2.nfts].map((n: { object_id: string }) => n.object_id);
     expect(new Set(ids).size).toBe(5);
+    // Each page resolves independently, including when its first type differs.
+    for (const page of [d1, d2]) {
+      expect(page.nfts.map((n: { object_id: string; collection_ref: number; kiosk_id: string }) => ({
+        object_id: n.object_id,
+        collection: page.collection_types[n.collection_ref],
+        kiosk_id: n.kiosk_id,
+      }))).toEqual(ITEMS.slice(page === d1 ? 0 : 2, page === d1 ? 2 : 5).map((item) => ({
+        object_id: item.value.address,
+        collection: item.value.contents.type.repr,
+        kiosk_id: STD_KIOSK_ID,
+      })));
+    }
   });
 
   it("walks OriginByte kiosks named by owner tokens, and does not list the token itself", async () => {
@@ -261,7 +273,7 @@ describe("list_nfts — kiosk discovery", () => {
     try {
       const data = JSON.parse((await tools.get("list_nfts")!({ address: OWNER, limit: 50 })).content[0].text);
       expect(data.kiosk_count).toBe(1);
-      expect(data.nfts.map((n: { collection: string }) => n.collection)).toEqual([nftCollection("OB")]);
+      expect(data.nfts.map((n: { collection_ref: number }) => data.collection_types[n.collection_ref])).toEqual([nftCollection("OB")]);
     } finally {
       obTokens.length = 0;
     }
@@ -334,7 +346,7 @@ describe("list_nfts — kiosk discovery", () => {
 
     expect(data.nfts).toHaveLength(1);
     expect(data.nfts[0].object_id).toBe("0xc04");
-    expect(data.nfts[0].collection).toBe(nftCollection("Direct"));
+    expect(data.collection_types[data.nfts[0].collection_ref]).toBe(nftCollection("Direct"));
   });
 
   // A page of 50 directly owned objects was returned whole, so `limit: 1` on

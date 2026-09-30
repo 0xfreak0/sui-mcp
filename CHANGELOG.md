@@ -87,6 +87,14 @@
   address for canonical links and a sitemap.
 
 ### Fixed
+- **Continuations stay on the chain that produced them.** A `next_call`
+  from a testnet or devnet call, or from a mainnet call on a server whose
+  default is another network, omitted `network`, so following it read the
+  default chain. Server-generated follow-up calls and stored results now
+  carry `network` whenever it differs from the server default. Decoded event
+  and object data is never altered. `repeat_with` is merged into the original
+  arguments, which keep their network. Package-lineage and wrapped-object
+  hints are now structured calls.
 - **Tools that read a transaction's balance changes now read all of them.**
   Several tools used only the first page of a transaction's balance changes,
   so a large transaction (an airdrop, a batch payout, an exploit) could hide

@@ -5,6 +5,28 @@ sidebar:
   order: 9
 ---
 
+## Choosing a package read
+
+`analyze_package` accepts a package ID or an MVR name such as `@org/app`.
+It summarizes modules, public and entry functions, and struct shapes, then
+scans for freeze/denylist and mint authority, admin capabilities, fund
+handling, randomness and hot-potato types. It is a heuristic surface scan,
+not a security audit; no finding proves a flaw and no empty scan proves safety.
+
+By default, `overview.modules` lists function and struct counts and entry
+and public function names. `modules: ["pool"]` returns just those modules'
+full signatures and struct field names and types. `detail: "full"` returns
+every module in full, every capability separately and every bytecode lead.
+The summary groups capabilities of one type while listing every holder.
+`audit_capabilities: false` skips the capability audit; `include_disassembly:
+true` adds each module's GraphQL bytecode assembly.
+
+Use `get_package` for module names and linkage, `get_move_function` for one
+signature, `disassemble_module` for instructions and `diff_package_upgrade`
+for code changes. Direct GraphQL reads need care: `structs` is a connection
+paged at 20 by default, while `fields` is a plain list with no `nodes`.
+
+
 ## Publisher and UpgradeCap holder
 
 `identify_address` reports `publisher`, the address that created the package,
@@ -108,22 +130,114 @@ disassemble_module { package_id: "0xe2b515f0…", module_name: "math_u256", func
 the ones whose instructions changed, and counts lines that only renumber
 locals, fields or instruction offsets apart from the hunks.
 
-`analyze_package` traces data flow through each function and the package's
-own callees and returns graded leads, each with its instructions:
+`analyze_package` traces bytecode data flow through each function and the
+package's own callees, without name lists. Each lead names the function and
+supporting instructions and is graded strong, medium or weak:
 
 - `discarded-check`: a bool from a comparison or a read-only call that reaches
   no branch, abort, return or store.
-- `sibling-guard-gap`: a public function that mutates an object type without a
-  check most of its module's public functions on that type make.
-- `unchecked-state-write`: a caller's value written into a shared object with
-  no comparison linking it to stored state.
+- `sibling-guard-gap`: a public function that mutates an object of a package
+  type without a check most of its module's public functions on that type
+  make, such as an ID binding, version check or pause check.
+- `unchecked-state-write`: a public function writes a plain-value argument
+  into a shared object's field without a comparison against stored state,
+  sender check or owned-object gate.
 
-Weak leads raise no finding and are listed in `bytecode_scan.weak_leads`,
-every one with `detail: 'full'`.
+Strong and medium leads raise findings listing the first leads. Weak leads
+raise no finding and appear in `bytecode_scan.weak_leads`, the first few by
+default. `detail: "full"` lists every lead, weak ones included;
+`bytecode_scan.read` gives the calls to inspect them.
 
-It also compares the lineage's older versions with its newest: every version
-of a package stays callable, so an older version whose public functions mutate
-a shared type without the check the newest version makes (a version check
-added later) is raised as `ungated-older-version`.
+It compares older versions' checks with the newest version, reading every
+version when there are at most 30. For longer lineages it reads the oldest 29
+versions and the newest. Every version stays callable against the same shared
+objects, whichever package ID you pass. An older
+version whose public functions mutate a shared type without a check most
+of the newest version's public functions on that type make is raised as
+`ungated-older-version`, for example a version check added later.
 
 None of these need the optional [decompiler](/guides/decompiler/).
+
+## Governance and redeployed code
+
+`get_upgrade_history` accepts any version's ID or an MVR name. Each lineage
+version has its package ID, publish or upgrade transaction, time, sender,
+signing scheme and UpgradeCap holder then. Signing schemes include single
+key, zkLogin, passkey and multisig, with threshold and actual signing members.
+
+A round trip is flagged when the cap leaves its usual holder, an upgrade
+ships, and the cap returns within `round_trip_hours` (24 by default).
+Other flags cover a single-key upgrade while the cap is usually multisig-held,
+policy changes, and a cap destroyed to make the package immutable, wrapped,
+frozen, shared or sent to an unspendable address. `as_of` accepts an ISO time,
+`now` or a checkpoint and reports the holder and newest version then.
+
+Each version lists non-framework dependency relinks. The latest version and
+the version newest at `as_of` also list their dependencies' linked versions.
+Use `linked_id` with `disassemble_module`; bytecode names dependencies by
+original ID. Old versions remain callable, but this governance read does not
+compare their guards. `analyze_package` supplies `ungated-older-version` leads.
+
+`find_redeploys: true` searches for code carried by other lineages rather
+than upgrades in the same lineage. It starts from up to 250 UpgradeCaps each
+still held by the root publisher and current cap holder. Candidates sharing
+at least half the module names have every version compared, ignoring package
+addresses. Nearest-published candidates are read first, within 120 package reads.
+
+`module_origins` gives each module's earliest matching version, including
+this lineage. `function_origins` compares functions with table indices resolved
+and reports code predating its module's origin, or functions whose whole module
+appears in no compared lineage. Groups identify the module and origin version;
+`related_lineages` lists the related packages.
+
+Only this redeploy output is capped. The default summary fits function-origin
+groups within about 6,000 characters, prioritizing the code that most predates
+its module's origin. `omitted` counts excluded groups and functions;
+`detail: "full"` lists all groups.
+
+## Reading upgrade hunks
+
+`diff_package_upgrade` resolves the requested two versions, each with its own
+package address, and disassembles both. It accepts any version's ID or an
+MVR name. By default it compares the latest to its predecessor; with
+`to_version`, an omitted `from_version` means the immediately preceding version.
+
+The summary names added and removed modules and functions, functions made
+more or less reachable (for example private to public), and `changed_functions`
+whose instructions changed. Changed modules have unified hunks; dependency
+relinks include a call to diff the dependency itself. Behavior can change
+through a dependency alone, with no local module changing.
+
+Functions, structs and constant-pool entries are matched by name. Each `@@`
+hunk stays within the named declaration even if compilation changed their
+order. Renumbered instruction offsets, local slots, field/struct/constant
+indices, branches and consistently renumbered locals are excluded from hunks
+and counted in `renumbered_lines`. A function with no other change appears in
+`renumbering_only_functions`. Clever abort codes, truncated constants, large
+integers and `Shl`/`Shr` instructions carry explanatory `//` notes.
+
+`max_sample_lines` budgets 60 lines per changed module by default. Changed
+function bodies rank by the fraction rewritten; each receives its largest
+hunk before any receives a second. Added and removed functions, types, `use`
+lines and constants follow, and changed lines take priority over context.
+`sample_truncated` marks a short sample; `unsampled_functions` and
+`partly_sampled_functions` name its gaps. Follow `sample_next_call` to read them.
+
+## Bytecode assembly annotations
+
+`disassemble_module` reads assembly through GraphQL without an external
+binary. The output is lower-level than decompiled source, with basic blocks
+and stack operations. It accepts a package ID or MVR name such as `@org/app`.
+Without `module_name` it lists modules; `all_modules: true` reads the package.
+For a smaller read, supply `function_name` and `module_name`: the result
+contains that function plus referenced `use` lines and constants. A whole
+module can reach 250 KB.
+
+Comments explain operands that the raw assembly leaves opaque:
+
+- A clever abort code's error name, message and source line.
+- A large integer's hexadecimal or shift form, such as `0xffff << 240`.
+- The full value of a truncated constant.
+- On `Shl` and `Shr`, the fact that shifted-out bits are dropped without an abort.
+- On dependency `use` lines, the version and ID selected by this package's
+  linkage table, rather than only the original ID printed in raw assembly.

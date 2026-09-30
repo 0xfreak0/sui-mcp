@@ -115,3 +115,32 @@ size.
 The finding tools (`save_finding`, `list_findings`, `export_case`,
 `delete_finding`) and the watch tools (`watch_addresses`, `poll_watch`) need
 the store. `get_nft_sales` needs it to keep the kiosk owners it learns.
+
+## Address labels
+
+`manage_labels` records exchanges, bridges, mixers, malicious wallets,
+protocols and other attributed addresses so traces can name them and stop at
+known sinks. `list` reads the registry, `lookup` reads one address, `add` and
+`remove` change a local label, `import` takes a batch, and `export` returns a
+batch in the import format for moving labels between machines.
+
+Added and imported labels persist when `SUI_STORE_PATH` is set and otherwise
+last only for the session. Removing one deletes its stored copy. The override
+file (`SUI_LABELS_FILE`) and shipped labels are read-only through this tool.
+Precedence is local additions, override file, shipped disclosed labels, then
+shipped inferred exchange deposit addresses (`source: "inferred"`).
+Export excludes the inferred deposits.
+
+Labels are chain-qualified. A bare address uses the call's network; a CAIP-10
+account such as `eip155:1:0x…` records a destination on another chain after a
+bridge hop. A label recorded on one chain does not apply on another.
+
+`add` requires address, label and category; confidence defaults to medium and
+notes are optional. The sink categories `cex`, `bridge`, `mixer` and `burn`
+terminate tracing. A `malicious` label alerts without stopping the trace
+because the investigator is following that wallet. Imports skip and report
+malformed entries without failing the whole batch.
+
+List counts every label by category and source. Its summary shows local
+additions first, then other labels fitting about 30,000 characters;
+`omitted` reports the rest. `detail: "full"` lists every label.

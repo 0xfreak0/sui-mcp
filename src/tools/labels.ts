@@ -49,20 +49,7 @@ function safeAccount(reference: string): string | null {
 export function registerLabelTools(server: McpServer) {
   server.tool(
     "manage_labels",
-    "Manage the address-label registry used for incident investigation and fund tracing. " +
-      "Labels attribute addresses (exchanges, bridges, mixers, malicious wallets, protocols, etc.) " +
-      "so traces are readable and stop at known sinks. Actions: 'list' all labels, 'lookup' one " +
-      "address, 'add' or 'remove' one label, 'import' a batch, and 'export' every label in the " +
-      "shape 'import' accepts, to move a set between machines. 'list' counts every label by " +
-      "category and source, lists the labels added here first, then the rest that fit about 30k " +
-      "characters, and states the rest under `omitted`; `detail: 'full'` lists all. " +
-      "Labels added or imported here are " +
-      "saved to the local store when SUI_STORE_PATH is set and last only for the session " +
-      "otherwise; 'remove' deletes the stored copy too. Only those labels can be removed: the " +
-      "override file (SUI_LABELS_FILE) and the shipped set are read-only here. Precedence: labels " +
-      "added here > override file > shipped disclosed set > shipped inferred exchange deposit " +
-      "addresses (source 'inferred'), which 'export' leaves out. Labels are chain-qualified: a label added while " +
-      "querying one chain does not apply on another.",
+    "Manage chain-qualified address labels for investigation and trace sinks. Actions list, lookup, add, remove, import a batch, or export in importable form. Added/imported labels persist with SUI_STORE_PATH; otherwise they last this session. Remove deletes their stored copy, but cannot remove the read-only SUI_LABELS_FILE or shipped labels. Precedence is local additions > override file > shipped disclosed labels > shipped inferred exchange deposits; export excludes inferred deposits. A label on one chain does not apply on another. List counts all categories/sources and shows local additions first within ~30k characters; omitted reports the rest and detail:'full' lists all.",
     {
       action: z
         .enum(["list", "lookup", "add", "remove", "import", "export"])
@@ -71,16 +58,14 @@ export function registerLabelTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Address to lookup/add/remove (required for those actions). A bare address refers to " +
-            "the network this call targets; a CAIP-10 id ('eip155:1:0x…') labels an account on " +
-            "another chain, useful for recording where funds landed after a bridge hop.",
+          "Required for lookup/add/remove. Bare addresses use this call's network; CAIP-10 IDs label accounts on other chains.",
         ),
       label: z.string().optional().describe("Human-readable label (required for 'add')."),
       category: z
         .enum(CATEGORIES)
         .optional()
         .describe(
-          "Label category (required for 'add'). Sink categories (cex, bridge, mixer, burn) terminate fund tracing. A malicious label is shown and alerted on but does not stop a trace: it marks the wallet being followed.",
+          "Required for add. cex, bridge, mixer and burn stop tracing; malicious labels alert but keep following the wallet.",
         ),
       confidence: z
         .enum(["high", "medium", "low"])
@@ -105,7 +90,7 @@ export function registerLabelTools(server: McpServer) {
         .enum(["summary", "full"])
         .optional()
         .describe(
-          "For 'list'. 'summary' (default): the labels added here, then the rest that fit about 30k characters, the rest counted under `omitted`. 'full': every label.",
+          "For list: summary (default) keeps local additions first within ~30k chars and counts omitted labels; full lists all.",
         ),
     },
     async ({ action, address, label, category, confidence, notes, labels: bulk, detail }) => {

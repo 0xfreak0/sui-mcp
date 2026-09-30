@@ -27,7 +27,7 @@ const UNVERIFIED_NOTE =
 export function registerTokenSearchTools(server: McpServer) {
   server.tool(
     "search_token",
-    "Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). Returns matching tokens with their full coin type, verified coins first, then exact symbol matches: `verified` says whether a curated list vouches for that exact type, since impostors copy the symbol and name of real coins. On mainnet unverified matches come from a symbol index of every CoinMetadata and coin registry entry up to its sync date (`symbol_index.synced_at`); a coin published after that date is missing from it. A symbol more than 100 coins use keeps only a count, so none of its coins is listed; `unlisted_symbols` names every such symbol that is or contains the query, with how many coins use it. When the index has no match at all, and off mainnet, they come from a bounded live scan of on-chain CoinMetadata, and `discovery_scan_truncated` says the scan did not reach the end; `discovery_scan_failed` names the error when a failed read ended it. Use this when you have a token name but need the coin type for get_balance, get_coin_info, or get_token_prices.",
+    "Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. Verified types rank first, then exact symbol matches; verified means a curated list vouches for that exact type, not its copyable name. Mainnet's unverified matches use a CoinMetadata/coin-registry symbol index dated by symbol_index.synced_at; later coins are missing. Symbols used by over 100 coins list only counts in unlisted_symbols, including symbols containing the query. With no index match, or off mainnet, discovery uses a bounded live CoinMetadata scan. discovery_scan_truncated means it did not finish; discovery_scan_failed names a read error.",
     {
       query: z.string().describe("Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN')"),
       verify_onchain: boolArg()
@@ -40,7 +40,7 @@ export function registerTokenSearchTools(server: McpServer) {
         .min(1)
         .max(MAX_LIMIT)
         .optional()
-        .describe(`Matches to return (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}). Verified coins come first, then exact symbol matches; total_matches counts them all.`),
+        .describe(`Matches returned (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}); verified types then exact symbols. total_matches counts all matches.`),
     },
     async ({ query, verify_onchain, limit }) => {
       const q = query.toLowerCase().trim();

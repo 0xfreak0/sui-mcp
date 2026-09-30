@@ -164,7 +164,7 @@ async function fetchAddressEntries(
 export function registerTimelineTools(server: McpServer) {
   server.tool(
     "build_timeline",
-    "(Incident investigation) Build one chronological, protocol-decoded timeline across up to 10 addresses, merged, de-duplicated and ordered by checkpoint. Use it to reconstruct what happened across a set of wallets/objects during an incident. Bound it with `from`/`to` (ISO 8601 or checkpoint numbers); a time is resolved to the checkpoints stamped inside the window and applied in the query. With `from`, each address is read forward from the window start; without it, each address's most recent `per_address` transactions (before `to`, if given) are read. `coverage` reports per address how many transactions were read, whether `per_address` stopped the walk early (`truncated`), the checkpoint it reached, and the `from`/`to` that continues it. Each entry's `subject_flow` holds every involved tracked address's own signed balance change per coin, keyed by address; `token_flow` is the transaction sender's, given only when the sender is not tracked (a tracked sender's side is its subject_flow entry). The timeline lists the entries that fit about 35k characters in order, keeping every failed entry and every entry two tracked addresses took part in, and `omitted` states the rest; detail: 'full' lists every entry.",
+    "(Incident investigation) Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. from/to accept ISO times or checkpoints and bound the chain query. With from, reads forward from the start; otherwise reads each address's latest per_address transactions before to, if given. coverage reports per-address counts, truncation, reached checkpoint and continuation bounds. subject_flow gives each tracked address's signed coin changes; token_flow gives the sender's only when it is untracked. Summary keeps ~35k characters in order, preserving failed entries and entries involving two tracked addresses; omitted reports the rest and detail:'full' lists entries up to limit.",
     {
       addresses: addressListArg().min(1).max(10).describe("Addresses to merge into one timeline (1-10)"),
       from: timePointArg().optional().describe("Window start: ISO date (e.g. 2024-11-11T00:00:00Z) or a checkpoint number"),
@@ -176,17 +176,17 @@ export function registerTimelineTools(server: McpServer) {
         .max(300)
         .optional()
         .describe(
-          "Max transactions to read per address before merging (default 30). An address with more in the window is reported `truncated` in `coverage`. Raise it for `activity_hours`: a daily rhythm needs 50+ transactions spanning a week or more, and the reading says so when it has less.",
+          "Transactions read per address (default 30); coverage marks truncation. For activity_hours, use 50+ spanning at least a week; smaller samples carry a warning.",
         ),
       activity_hours: boolArg()
         .optional()
         .describe(
-          "Also report when each address is active, by UTC hour (default false). Reports the distribution and only offers a timezone reading when sample size, span and depth support one. On Sui the common answer is 'flat, consistent with automation', which is itself a finding.",
+          "Report activity by UTC hour (default false). Timezone inference requires sufficient sample size, span and depth; a flat pattern may indicate automation.",
         ),
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): the entries that fit about 35k characters, in timeline order, keeping every failed entry and every entry two tracked addresses took part in; `omitted` states the rest. 'full': every entry up to `limit`."),
+        .describe("'summary' (default) keeps ~35k chars in order, retaining failures and entries involving two tracked addresses; omitted reports the rest. 'full' lists every entry up to limit."),
     },
     async ({ addresses, from, to, limit, per_address, activity_hours, detail }) => {
       try {

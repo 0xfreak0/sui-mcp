@@ -29,7 +29,7 @@ const SCREEN_CAVEATS = [
 export function registerScreeningTools(server: McpServer) {
   server.tool(
     "classify_deposit_address",
-    "(Incident investigation) Decide whether an address is an exchange DEPOSIT address, the per-customer address an exchange sweeps into its hot wallet and the identifier a subpoena names. Verdict likely|no|unknown, tier heuristic, from three checks: every outflow is a full-balance sweep to one destination (a sweep that pays its own gas may leave up to 1 SUI behind as its gas reserve; a balance equal to the deposits that arrived just before a sweep is the next sweep's, in left_for_next_sweep, when the next outflow of that coin empties it into the same destination or is not in the window yet; anything else left behind fails the check); the sweeps' gas is paid by a relayer-shaped sponsor; the destination is a labelled exchange wallet (with its source_url) or hub-shaped. Returns the hot wallet, exchange provenance, sponsor, sweeps and deposit sample. checks_not_run explains null checks. Unread balances give unknown, null checks/sweep_count/deposit_count, and incomplete_transactions. One initial query plus balance continuations and optional sponsor/destination reads.",
+    "(Incident investigation) Classify an exchange's per-customer deposit address, swept into its hot wallet and usable as a subpoena identifier. Verdict likely, no or unknown is heuristic. With complete balances it independently checks full-balance outflows to one destination, a relayer-shaped gas sponsor, and a labelled exchange or hub-shaped destination. Self-funded gas may leave up to 1 SUI. A balance equal to deposits just before the sweep may remain only if the next outflow empties that coin to the same destination or is not yet in the window; left_for_next_sweep records this. Other residual balances fail the sweep check. Returns hot wallet, exchange provenance, sponsor, sweep digests and sampled deposits. checks_not_run explains null checks. Unread balances give unknown, null checks/sweep_count/deposit_count, and incomplete_transactions. One initial query plus balance continuations and optional sponsor/destination reads.",
     {
       address: addressArg().describe("Candidate deposit address (0x...)."),
       max_transactions: numArg()
@@ -59,7 +59,7 @@ export function registerScreeningTools(server: McpServer) {
 
   server.tool(
     "screen_address",
-    "(Incident investigation) Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. Every exposure carries the path, per-leg digests and amounts, and the label's entity, evidence kind and source_url. Bridge exits are screened too, each counted once under the protocol that carried it, with the bridges it settled over in `route` and any other bridge the same transaction used in `also_exited`: the beneficiaries resolve_bridge_transfer reads from chain data are matched against the labels and OFAC's SDN digital currency list. States its label and history coverage. windows[].incomplete_transactions names unread balances; their paths are withheld, affected bridge sent amounts are null. A CAIP-10 account on another chain gets a direct label and sanctions lookup only.",
+    "(Incident investigation) Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. Exposures include paths, per-leg digests and amounts, and label provenance. Screens chain-derived bridge beneficiaries against labels and OFAC's SDN list for CCTP, Sui Bridge, Wormhole, Mayan, LayerZero OFT, Axelar, Allbridge and Celer. Each exit counts once under its carrying protocol, with settlement bridges and other exits listed separately. Coverage names label sources and history read, and notes that OFAC lists no Sui addresses. windows[].incomplete_transactions names unread balances; their paths are withheld and affected bridge sent amounts are null. Reads up to 300 recent subject transactions each way by default, typically costing 15–60 requests. A non-Sui CAIP-10 account receives only direct label and sanctions lookups.",
     {
       address: z.string().describe("Sui address (0x...) or CAIP-10 account (e.g. 'eip155:1:0x...')."),
       hops: numArg().int().min(1).max(3).optional().describe("How far to follow counterparties (default 2)."),
@@ -73,7 +73,7 @@ export function registerScreeningTools(server: McpServer) {
         .max(300)
         .optional()
         .describe(
-          "Most recent transactions read for the subject (default 300, the schema max: a 100-transaction window can miss the one send that carries most of an active address's value). Expanded counterparties get 50.",
+          "Recent subject transactions per direction (default/max 300); expanded counterparties get 50.",
         ),
       max_expand: numArg()
         .int()

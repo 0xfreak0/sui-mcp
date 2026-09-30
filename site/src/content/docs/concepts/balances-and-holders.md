@@ -5,6 +5,19 @@ sidebar:
   order: 7
 ---
 
+## Liquid balances
+
+`get_balance` reads one coin type, SUI by default, for an address or object.
+The total `balance` includes `coin_balance` held as `Coin<T>` objects and
+`address_balance` held without coin objects. A wallet with no coin objects
+can still hold funds. For an object, only its defining module can withdraw
+its address balance.
+
+Staked SUI and DeFi position value are excluded. Use `get_staking_summary`
+and `get_defi_positions` before concluding that an address holds little;
+`get_wallet_overview` reads all its coins together.
+
+
 ## Balance at a past moment
 
 `get_balance` takes `at` (ISO 8601) or `at_checkpoint`. GraphQL reads a
@@ -29,6 +42,13 @@ When that runs out, `complete` is false, `balance` is null, and
 transaction after it was read. A reconstructed balance has no coin/address
 split, so `coin_balance` and `address_balance` are null and `anchor` carries
 the split at the anchor.
+
+`at_checkpoint` asks for the balance at the end of that checkpoint.
+An ISO `at` selects the last checkpoint stamped at or before that time;
+the two arguments are mutually exclusive. Reconstruction uses one request
+per page of 50 transactions. `max_transactions` does not apply to a current
+balance or a direct read within the consistent range.
+
 
 ## Top holders
 
@@ -57,3 +77,26 @@ distinction.
 
 For NFT collections, `holder_kind` says how each holder was found; see
 [Kiosk-held NFTs](/concepts/nft-ownership/).
+
+## DeFi positions
+
+`get_defi_positions` values staked SUI with accrued rewards, liquid-staking
+coins at their issuer's exchange rate, CLMM and AMM liquidity, lending, and
+balances inside owned objects such as vaults, coin tables and wrapped
+positions.
+
+Each position has asset legs, its valuation `method`, evidence `tier` and
+`usd`. If any leg has no price, `usd` is null and `unpriced_reason` explains
+why. `total_usd` and `by_protocol` sum every priced position, not the missing
+ones. `coverage` compares supported positions with the wallet's owned objects
+and lists unrecognised types and counts; `unread` records failed reads.
+
+Lending `health` includes the protocol's `borrow_limit_used` and
+`liquidation_threshold_used`. When those figures differ from the legs' USD by
+more than 2%, `health_basis` explains the difference. `leads` flags positions
+near their borrow limit and shared vaults the wallet operates, including what
+they hold.
+
+The default summary keeps the most valuable positions fitting about 30k
+characters and every unpriced position. `omitted` reports the rest.
+`detail: "full"` returns every position.

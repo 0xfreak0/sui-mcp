@@ -7,10 +7,10 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`get_balance`](#get_balance) | Get the liquid balance of one coin type for a Sui address or object (defaults to SUI), now or at a past time or checkpoint. |
+| [`get_balance`](#get_balance) | Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. |
 | [`get_coin_info`](#get_coin_info) | Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). |
 | [`get_token_prices`](#get_token_prices) | Get USD prices for Sui tokens, current by default or at a past moment when `at` is set. |
-| [`search_token`](#search_token) | Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). |
+| [`search_token`](#search_token) | Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. |
 
 ## get_balance
 
@@ -18,7 +18,7 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Get the liquid balance of one coin type for a Sui address or object (defaults to SUI), now or at a past time or checkpoint. `balance` is the total the owner can spend: `coin_balance` is held as Coin&lt;T> objects and `address_balance` sits in the owner's address balance, which holds funds without any coin object, so a wallet with no coins can still hold a large balance. For an object id, `address_balance` is funds held by the object itself, which only its defining module can withdraw. Staked SUI and value locked in DeFi positions do not appear here, so a wallet that looks nearly empty may not be: pair it with get_staking_summary and get_defi_positions before concluding anything about what an address holds. For every coin at once, use get_wallet_overview. With `at` or `at_checkpoint`, a checkpoint inside GraphQL's consistent range (about the last hour) is read directly (`method: consistent_read`). An older one is reconstructed (`method: reconstructed`): the balance at a recent anchor checkpoint minus the owner's balance changes in every transaction after the requested checkpoint, which is exact when `complete` is true. Reconstruction reads at most `max_transactions`; when that runs out, `complete` is false, `balance` is null and `reached_checkpoint` says how far back the scan got. A reconstructed balance has no coin/address split (`coin_balance` and `address_balance` are null); `anchor` carries the split at the anchor checkpoint.
+Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. The total includes Coin&lt;T> objects and address-balance funds, so no coin objects does not mean no funds. Only its defining module can withdraw an object's address balance. This excludes staking and DeFi positions: check get_staking_summary and get_defi_positions before assessing holdings; use get_wallet_overview for every coin. Historical reads are direct within the consistent range (about the last hour), reconstructed for older points and exact only when complete:true. Reconstruction stops at max_transactions; an incomplete result has balance:null and reached_checkpoint marks progress. Reconstructed coin_balance and address_balance are null; anchor has the split at its checkpoint.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -26,8 +26,8 @@ Get the liquid balance of one coin type for a Sui address or object (defaults to
 | `address` | string | no | Alias for `owner`. |
 | `coin_type` | string | no | Coin type (default: 0x2::sui::SUI) |
 | `at_checkpoint` | integer (at least 0) | no | Balance as of the end of this checkpoint. Give this or `at`, not both. |
-| `at` | string | no | Balance as of this time (ISO 8601, e.g. 2025-09-07T16:00:00Z): the last checkpoint stamped at or before it. Give this or `at_checkpoint`, not both. |
-| `max_transactions` | integer (1 to 10000) | no | Most transactions a reconstruction reads (default 1000, max 10000). Each page of 50 is one request. Ignored for a current or consistent-range read. |
+| `at` | string | no | ISO 8601 time: use the last checkpoint at or before it. Give this or at_checkpoint, not both. |
+| `max_transactions` | integer (1 to 10000) | no | Reconstruction transaction limit (default 1000, max 10000); ignored for current or consistent-range reads. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_coin_info
@@ -63,11 +63,11 @@ Get USD prices for Sui tokens, current by default or at a past moment when `at` 
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Search for Sui tokens/coins by name or symbol (e.g. 'USDC', 'deep', 'cetus'). Returns matching tokens with their full coin type, verified coins first, then exact symbol matches: `verified` says whether a curated list vouches for that exact type, since impostors copy the symbol and name of real coins. On mainnet unverified matches come from a symbol index of every CoinMetadata and coin registry entry up to its sync date (`symbol_index.synced_at`); a coin published after that date is missing from it. A symbol more than 100 coins use keeps only a count, so none of its coins is listed; `unlisted_symbols` names every such symbol that is or contains the query, with how many coins use it. When the index has no match at all, and off mainnet, they come from a bounded live scan of on-chain CoinMetadata, and `discovery_scan_truncated` says the scan did not reach the end; `discovery_scan_failed` names the error when a failed read ended it. Use this when you have a token name but need the coin type for get_balance, get_coin_info, or get_token_prices.
+Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. Verified types rank first, then exact symbol matches; verified means a curated list vouches for that exact type, not its copyable name. Mainnet's unverified matches use a CoinMetadata/coin-registry symbol index dated by symbol_index.synced_at; later coins are missing. Symbols used by over 100 coins list only counts in unlisted_symbols, including symbols containing the query. With no index match, or off mainnet, discovery uses a bounded live CoinMetadata scan. discovery_scan_truncated means it did not finish; discovery_scan_failed names a read error.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN') |
 | `verify_onchain` | boolean | no | If true, verify each match on-chain and include total supply (default: false) |
-| `limit` | integer (1 to 500) | no | Matches to return (default 50, max 500). Verified coins come first, then exact symbol matches; total_matches counts them all. |
+| `limit` | integer (1 to 500) | no | Matches returned (default 50, max 500); verified types then exact symbols. total_matches counts all matches. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

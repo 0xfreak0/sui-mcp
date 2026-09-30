@@ -300,7 +300,7 @@ function linkedDependencies(linkage: LinkageEntry[]) {
 export function registerUpgradeHistoryTools(server: McpServer) {
   server.tool(
     "get_upgrade_history",
-    "(Incident investigation) Upgrade governance across a package's whole lineage. For every version: package id, publish/upgrade transaction, time, sender, the sender's signing scheme (single key, zkLogin, passkey, or multisig with its threshold and which members signed), and who held the UpgradeCap at that moment. Flags an UpgradeCap round trip (it leaves its usual holder, an upgrade ships, and it returns within `round_trip_hours`), an upgrade signed by a single key while the cap is usually multisig-held, an upgrade-policy change, and a cap that was destroyed (package made immutable), wrapped, frozen, shared or sent to an unspendable address. Pass `as_of` to ask who held upgrade authority at a moment and which version was the newest then. Also lists non-framework dependency relinks per version, and for the latest version and the one newest at `as_of`, `dependencies`: the version of each non-framework dependency that code runs (`linked_id` is the ID to read with disassemble_module; bytecode names a dependency by its original ID). Older versions stay callable after an upgrade; this tool reads no code for that, and analyze_package on any version compares the versions' code and names older versions whose public functions skip a check the newest version makes (`ungated-older-version`). Accepts any version's 0x id or an MVR name (@org/app).",
+    "(Incident investigation) Read upgrade governance across a package lineage: each version's ID, transaction, time, publisher, signing scheme and UpgradeCap holder then. Schemes include single key, zkLogin, passkey and multisig with threshold and actual signers. Flags cap round trips around upgrades, single-key upgrades of usually multisig-held caps, policy changes, and caps destroyed, wrapped, frozen, shared or sent to unspendable addresses. as_of gives the cap holder and newest version at that moment. It lists non-framework dependency relinks and the dependencies run by the latest and as_of versions; use linked_id with disassemble_module, not the original ID named in bytecode. Older versions stay callable, but this tool does not compare their guards: use analyze_package on any version for ungated-older-version leads.",
     {
       package: z.string().describe("Any version's package ID (0x...) or an MVR name (@org/app)"),
       as_of: timePointArg()
@@ -314,13 +314,13 @@ export function registerUpgradeHistoryTools(server: McpServer) {
       find_redeploys: boolArg()
         .optional()
         .describe(
-          `Also search for other lineages carrying this lineage's module code, a redeploy rather than an upgrade (default false). Candidates are the lineages whose UpgradeCap the root's publisher or the current cap holder still holds (up to ${REDEPLOY_CAP_PAGES * 50} caps each); those sharing at least half the module names have every version compared, ignoring addresses, nearest-published first within ${REDEPLOY_MAX_PACKAGE_READS} package reads. Returns module_origins (per module, the earliest version carrying the shared code, this lineage included), function_origins (functions whose code, compared function by function with table indices resolved, appears earlier than their module's origin, or whose module no compared lineage carries whole, grouped by module and origin version) and related_lineages.`,
+          `Find redeployed code in other lineages (default false). Searches up to ${REDEPLOY_CAP_PAGES * 50} caps still held by the root publisher and current cap holder each; candidates must share at least half the module names. Compares every version, ignoring addresses, nearest-published first within ${REDEPLOY_MAX_PACKAGE_READS} package reads. Returns module origins, function origins and related lineages.`,
         ),
       detail: z
         .enum(["summary", "full"])
         .optional()
         .describe(
-          `'summary' (default) lists the function_origins groups that fit about ${FUNCTION_ORIGINS_BUDGET / 1000}k characters, those whose code most predates their module's origin first, and \`omitted\` states how many groups and functions were left out. 'full' lists every group. Only find_redeploys output is capped.`,
+          `'summary' (default) caps function_origins at ~${FUNCTION_ORIGINS_BUDGET / 1000}k chars, prioritizing code that most predates its module; omitted counts excluded groups and functions. 'full' lists all groups. Only find_redeploys output is capped.`,
         ),
     },
     async ({ package: ref, as_of, round_trip_hours, find_redeploys, detail }) => {

@@ -78,7 +78,7 @@ export function registerNftTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): display fields only, and `omitted` counts the NFTs whose raw contents were left out. 'full' adds each NFT's raw Move struct contents."),
+        .describe("'summary' (default) leaves out raw contents and valuation evidence, counted in `omitted`. 'full' includes both."),
       value: boolArg()
         .optional()
         .default(true)
@@ -176,7 +176,7 @@ export function registerNftTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): priced collections plus the most-held others that fit, the rest counted under `omitted`. 'full': every collection."),
+        .describe("'summary' (default): priced collections, then the most-held others that fit; `omitted` counts the rest. 'full': every collection."),
     },
     async ({ address, value, detail }) => {
       const held = await readHeldCollections(address);

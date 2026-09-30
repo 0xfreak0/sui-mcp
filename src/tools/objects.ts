@@ -194,7 +194,7 @@ export function registerObjectTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): the objects that fit about 30k characters, in page order, the rest counted under `omitted`. 'full': every object of the page."),
+        .describe("'summary' (default): the page's objects that fit about 30k characters, the rest in `omitted`. 'full': the whole page."),
     },
     async ({ owner: ownerArg, address, object_type, limit, cursor, detail }) => {
       const owner = ownerArg ?? address;

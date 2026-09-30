@@ -24,10 +24,10 @@ NFT marketplace sales over a recent window, with volume and per-marketplace tota
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `hours` | number (1 to 168), default `24` | no | How far back to read, in hours (default 24, max 168) |
-| `collection_type` | string | no | Keep only sales of this Move type. Most marketplaces do not name the collection in the sale event, and those sales are reported as unattributable_sales rather than filtered out silently, so a low count here is not evidence the collection did not trade. |
+| `collection_type` | string | no | Keep only sales of this Move type. Most sale events name no collection; those count as unattributable_sales, so a low count does not show the collection did not trade. |
 | `max_pages` | integer (1 to 200), default `40` | no | Request cap across all marketplaces (default 40, 50 events per request) |
-| `include_sales` | boolean, default `false` | no | Return the individual sales as well as the totals, each with its checkpoint and time. Off by default because a busy window is thousands of rows. The default view lists the newest that fit and counts the rest under `omitted`; `detail: 'full'` lists every one. |
-| `detail` | `summary` \| `full` | no | With include_sales: 'summary' (default) lists the newest sales that fit; 'full' lists every sale. |
+| `include_sales` | boolean, default `false` | no | Also return each sale with its checkpoint and time (default false, since a busy window has thousands of rows). |
+| `detail` | `summary` \| `full` | no | With include_sales: 'summary' (default) lists the newest sales that fit and counts the rest in `omitted`; 'full' lists every sale. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_top_holders
@@ -40,11 +40,11 @@ Scan objects of a given type and return top holders. The scan is slow and pagina
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `type` | string | no | Full Move type of the NFT or coin type (e.g. '0xabc::module::NFT' or '0x2::sui::SUI'). Auto-wraps coins in Coin&lt;...> if needed. |
+| `type` | string | no | NFT struct type or coin type, e.g. '0xabc::module::NFT' or '0x2::sui::SUI'. A coin type is wrapped in Coin&lt;...> automatically. |
 | `collection_name` | string | no | NFT collection name or slug to look up in the registry (e.g. 'gawblenz'). Alternative to 'type'. |
-| `mode` | `nft` \| `token` | no | 'nft' ranks by count, 'token' ranks by balance. Auto-detected if omitted: a type the chain knows as a coin (a Coin&lt;T> object, an address balance, coin metadata or a registry entry) is scanned as a token, anything else as an NFT collection. |
+| `mode` | `nft` \| `token` | no | 'nft' ranks by count, 'token' by balance. If omitted, a type the chain knows as a coin is scanned as a token, anything else as an NFT collection. |
 | `limit` | integer (1 to 100) | no | Top N holders to return (default 20, max 100) |
-| `max_scan` | integer (1 to 50000) | no | Max objects to scan per walk (default 5000, max 50000). Token mode walks Coin&lt;T> objects and address-balance entries separately, each up to this bound. A 35s wall-clock budget applies regardless of this value. `time_budget_reached` says when that bound, not `max_scan`, stopped the scan, and the caveat says whether a slow endpoint or the requested depth was the cause. |
+| `max_scan` | integer (1 to 50000) | no | Objects to scan per walk (default 5000, max 50000). Token mode walks Coin&lt;T> objects and address balances separately, each to this bound. The 35s time budget applies regardless. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## list_nft_collections
@@ -59,7 +59,7 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 |---|---|---|---|
 | `address` | string | yes | Owner wallet address (0x...) |
 | `value` | boolean, default `true` | no | Estimate each collection's value from its market (default true). Costs a few requests per collection that has a market. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): priced collections plus the most-held others that fit, the rest counted under `omitted`. 'full': every collection. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): priced collections, then the most-held others that fit; `omitted` counts the rest. 'full': every collection. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## list_nfts
@@ -75,6 +75,6 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 | `address` | string | yes | Owner wallet address (0x...) |
 | `limit` | integer (1 to 1000) | no | Most NFTs to return (default 50, max 1000). |
 | `cursor` | string | no | Opaque pagination token from a prior response's `next_cursor`. Omit on first call. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): display fields only, and `omitted` counts the NFTs whose raw contents were left out. 'full' adds each NFT's raw Move struct contents. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) leaves out raw contents and valuation evidence, counted in `omitted`. 'full' includes both. |
 | `value` | boolean, default `true` | no | Estimate each NFT's value from its collection's market (default true). Costs a few requests per collection on the page. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

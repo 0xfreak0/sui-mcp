@@ -493,7 +493,7 @@ export function registerFundingTools(server: McpServer) {
         .max(3000)
         .optional()
         .describe(
-          "Transactions to scan, walking backwards from the most recent (default 1000). Counts both directions. Higher is slower but tighter; check `truncated` in the response.",
+          "Transactions to scan, newest first (default 1000). More is slower but tighter; check `truncated`.",
         ),
     },
     async ({ address, max_transactions }) => {

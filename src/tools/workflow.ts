@@ -57,19 +57,19 @@ const asError = (err: unknown): Error => (err instanceof Error ? err : new Error
 export function registerWorkflowTools(server: McpServer) {
   server.tool(
     "get_wallet_overview",
-    "(Recommended first tool for wallets) Get a comprehensive overview of a Sui wallet: every token balance, SuiNS name, staked SUI count, kiosk count, and recent transactions. Set include_prices=true for USD values: coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances held inside objects the wallet owns), each totalled apart. `coverage` says what the total covers of the objects the wallet owns and lists the ones no reader recognises by type and count; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. Add include_nfts=true for NFT estimates, kept out of the total. Start here before drilling into specific tools.",
+    "(Recommended first tool for wallets) Overview of a Sui wallet: every coin balance, SuiNS name, staked SUI and kiosk counts, and recent transactions. include_prices adds USD values, coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances inside owned objects), each totalled apart. `coverage` says which owned objects the total covers and lists unrecognised types with counts; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. include_nfts adds NFT estimates, kept out of the total.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
       include_prices: boolArg()
         .optional()
-        .describe("Include USD prices and portfolio value, with DeFi positions valued beside the coins, coverage of the objects owned, and leads (default: false)"),
+        .describe("Add USD values, DeFi positions, coverage and leads (default: false)."),
       include_nfts: boolArg()
         .optional()
-        .describe("With include_prices, also estimate the NFTs held (default: false). This walks every object and kiosk item the wallet holds and reads each collection's market, which on a wallet holding many objects takes many requests; list_nft_collections does the same on its own."),
+        .describe("With include_prices, also estimate held NFTs (default: false). Takes many requests on a wallet with many objects; list_nft_collections does this alone."),
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): the holdings and not-recognised object types that fit about 12k characters each, the rest stated in `omitted`. 'full': every row."),
+        .describe("'summary' (default): holdings and unrecognised object types that fit about 12k characters each, the rest in `omitted`. 'full': every row."),
     },
     async ({ address, include_prices, include_nfts, detail }) => {
       const [gqlResult, stakedResult, kioskResult] = await Promise.all([

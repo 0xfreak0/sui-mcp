@@ -41,6 +41,19 @@ analyze_multisig(0x045dadba…, max_transactions: 200)
 reported against `transactions_examined`, since the claim is only as good as
 the window.
 
+It answers questions such as whether a 4-of-7 treasury is in practice run by
+two people, and whether the set of keys that sign has changed. A key that
+signed only before the examined window shows as dormant, so raise
+`max_transactions` before calling a key unused.
+
+Some committee keys can never sign. A public key written by hand, such as a
+readable word followed by zero bytes, holds a long run of one byte that a
+generated key practically never has. Nobody holds its private key, so the
+member is listed in `unsignable_members` and `effective_committee` gives the
+threshold against the keys that can sign: a 2-of-4 with one such member is
+2-of-3. Such a member is dormant by construction, and the tool does not call
+it a cold or lost key.
+
 ## See who authorised one transaction
 
 `get_transaction` returns an `authorization` block naming the keys that signed
@@ -113,8 +126,9 @@ treated as custody or wallet-provider keys and listed under
 These limits are also stated in the tool output.
 
 Member order is part of the address, so `find_shared_multisig` is factorial in
-committee size and refuses past five keys. It covers equal-weight committees
-only, so a nil result is not a negative finding.
+committee size: four addresses give 192 candidate committees, five give 1,560,
+and six are refused. It covers equal-weight committees only, so a nil result
+is not a negative finding.
 
 A wallet that has never sent a transaction cannot be classified at all,
 because it has produced no signature. It comes back as unknown rather than as

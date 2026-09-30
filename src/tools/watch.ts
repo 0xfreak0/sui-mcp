@@ -41,7 +41,7 @@ export function registerWatchTools(server: McpServer) {
       min_amount: u64StringArg()
         .optional()
         .describe(
-          'Only report coin movements at or above this, in RAW units of any coin (SUI has 9 decimals, so 0.5 SUI is "500000000"). Sinks and transactions that move no coin are reported regardless. Pass "0" to clear a floor set earlier; omitting it on a re-add keeps the existing one.',
+          'Coin-movement floor in RAW units of any coin ("500000000" is 0.5 SUI). Sinks and coinless transactions report regardless. "0" clears a floor; omitting it on a re-add keeps it.',
         ),
     },
     async ({ action, addresses, label, min_amount }) => {

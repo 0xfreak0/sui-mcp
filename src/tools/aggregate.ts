@@ -56,23 +56,23 @@ const PNL_DIGESTS = 5;
 export function registerAggregateTools(server: McpServer) {
   server.tool(
     "aggregate_events",
-    "(Incident investigation) Rank addresses or event types by activity across a time window, answering 'who were the top wallets on this protocol today', in one call instead of paginating thousands of events yourself. " +
-      "Filter by event type, module or sender, bound by ISO timestamps or checkpoints, and group by sender or event type. " +
-      "Call it WITHOUT value_field first: it returns counts plus a sample event and the numeric fields available, so you can see what the protocol emits (many carry their own USD valuation) and then re-run naming that field. " +
-      "With group_pnl it also ranks the senders of the matched transactions by what their own balances did in them, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
-      "Always check `truncated`: a partial scan cannot establish the full-window ranking. The scan stops at max_events or max_reads, including empty reads; `scan.stop_reason` distinguishes the budgets and `scan.next_call` continues with aggregate_events itself. Pass its opaque cursor with the same filters and network. Each call ranks a disjoint event slice, not a cumulative window; a resumed ranking remains truncated even at exhaustion. Per-key event counts and value_sum add only when every group was retained in every slice (`scan.groups_complete`), subject to value rounding. Top-N rankings, distinct_keys, distribution and group_pnl are not additive.",
+    "(Incident investigation) Rank senders or event types by event count, or by a summed event field, across a window in one call instead of paging query_events. " +
+      "Call it first without value_field: it returns counts plus each event type's sample and numeric fields, then re-run naming one. " +
+      "group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
+      "Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. " +
+      "Each continuation ranks a disjoint slice, and a resumed ranking stays truncated even at exhaustion. Per-key counts and value_sum add across slices only when `scan.groups_complete`, subject to rounding; rankings, distinct_keys, distribution and P&L do not add.",
     {
       event_type: z
         .string()
         .optional()
         .describe(
-          "Filter by the event STRUCT's type: the package that DEFINES the event, which is often not the package you called. Accepts 0x..., 0x...::module, or 0x...::module::EventName. Any version's ID of the defining package works: the filter is rewritten to the version that defined the type, and `event_type_resolution` reports it.",
+          "Event struct type, matched by the package that DEFINES it, often not the one called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it.",
         ),
       module: z
         .string()
         .optional()
         .describe(
-          "Filter by the emitting module. Before the relocate_event_module cutover (mainnet checkpoint 69,982,635 on 2024-10-17, testnet 118,397,835 on 2024-10-09, devnet at genesis), events carry the package's ORIGINAL id regardless of the version called; from the cutover on they carry the id of the version actually called. The filter is queried at whichever id (or both, merged) your window needs, and `module_scope` reports how. From the cutover on, any one id (the original included) matches calls through that version only, and `module_scope.other_version_ids` lists the lineage's other ids. Accepts 0x... or 0x...::module.",
+          "Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses.",
         ),
       sender: addressArg().optional().describe("Only events sent by this address."),
       from: timePointArg()
@@ -100,7 +100,7 @@ export function registerAggregateTools(server: McpServer) {
         .enum(["desc", "asc"])
         .optional()
         .describe(
-          "'desc' (default) returns the largest: whales. 'asc' returns the smallest, which is where coordinated dust activity lives: a swarm of wallets each doing one tiny action is invisible in a top-N view.",
+          "'desc' (default) ranks the largest groups first. 'asc' ranks the smallest, where coordinated dust activity shows.",
         ),
       max_events: numArg()
         .int()
@@ -113,14 +113,14 @@ export function registerAggregateTools(server: McpServer) {
         .min(1)
         .max(1000)
         .optional()
-        .describe(`Event-connection read budget across all segments (default ${DEFAULT_MAX_READS}). Short or empty reads count too. A read-budget stop is truncated and scan.next_call continues the unread event slice.`),
+        .describe(`Read budget across all module segments (default ${DEFAULT_MAX_READS}), counting short and empty reads. A stop sets truncated; scan.next_call continues.`),
       cursor: z.string()
         .optional()
-        .describe("Opaque next_cursor from a previous aggregate_events call. Keep the same filters and network. Reads the next disjoint event slice; counts are not cumulative and the ranking remains truncated for the original window."),
+        .describe("Opaque cursor from scan.next_call. Keep the same filters and network."),
       group_pnl: boolArg()
         .optional()
         .describe(
-          "Rank senders by their own balance-change P&L, gas included, using historical quotes. Multi-leg PTBs may include gains from other packages.",
+          "Rank senders by own balance-change P&L, gas included, at historical prices. A multi-leg PTB's gains may come from other packages.",
         ),
       pnl_max_transactions: numArg()
         .int()
@@ -131,7 +131,7 @@ export function registerAggregateTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default) caps P&L coin and missing-price lists, with omissions and continuation. 'full' returns every row. Totals cover all rows."),
+        .describe("'summary' (default) caps P&L coin and missing-price lists and states omissions. 'full' returns every row. Totals cover all rows."),
     },
     async ({
       event_type,

@@ -35,6 +35,13 @@
   later upgrades are named from the registry rather than by publisher key.
 
 ### Changed
+- **Shorter tool descriptions, second pass.** Nineteen more tools, among them
+  `aggregate_events`, `analyze_multisig`, `get_token_prices`, `find_flow_path`
+  and `get_wallet_overview`, have their long tool and field descriptions
+  rewritten in fewer words. Selection, coverage limits, partial-output signals,
+  continuations and caveats stay in the descriptions; examples, provider order
+  and method details moved to the docs site. Tool definitions with all tools
+  enabled are about 3.5% smaller. Behaviour and input schemas are unchanged.
 - **The docs state ten known limits and what to do instead.** They cover:
   summary timelines; `analyze_token` not reading pools or LP custody; the
   affected-object index missing read-only users; caller-value detection;

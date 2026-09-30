@@ -58,7 +58,7 @@ Resolve fully-qualified Move struct names (e.g. '@suins/core::config::Config') t
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `types` | array of string (at least 1 items) | yes | One or more struct paths, each '@org/app::module::Type'. Version-pinned names ('@org/app/N::module::Type') also accepted. |
+| `types` | array of string (at least 1 items) | yes | Struct paths, each '@org/app::module::Type' or version-pinned '@org/app/N::module::Type'. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## mvr_reverse_resolve

@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`get_transaction`](#get_transaction) | Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields. |
+| [`get_transaction`](#get_transaction) | Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields; no hand-written GraphQL is needed to read event values. |
 | [`get_transactions`](#get_transactions) | Read up to 50 Sui transactions in ONE call, given their digests. |
 | [`query_events`](#query_events) | Query Sui events with filters (type, sender, emitting module, time or checkpoint range). |
 | [`query_transactions`](#query_transactions) | Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). |
@@ -19,15 +19,15 @@ sidebar:
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields. Identifies protocols from calls/events (including wrappers) and unnamed packages by curated publishing key; protocols_unchecked marks unread publishers. Shows address-balance deposits/withdrawals, requested withdrawals and gas source; non-sender object deliveries (coins separately when no other object moved); sender-owned capabilities mutated without transfer; and router coin round trips with cost from pool events (or null with reason). High-bit u256 event numbers get signed readings; full detail also gives high-bit u64/u128/u256 pure values' two's-complement readings. Use detail:'full' for typed/versioned inputs, resolved command arguments/Result origins and every changed object's ID/type/version by kind. Summary may fold/cap event rows past ~20k chars, retaining events emitted by called non-framework packages; omitted reports reductions. Full detail lists all events in pages: follow events_page.next_call. For command-only or pre-sign inspection use decode_ptb; for exploit profit, state deltas and anomaly leads use analyze_attack_tx.
+Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields; no hand-written GraphQL is needed to read event values. It identifies protocols from calls and events (including wrappers), and unnamed packages by their curated publishing key; protocols_unchecked marks unread publishers. It shows address-balance deposits and withdrawals, requested withdrawals and gas source; non-sender object deliveries (coins separately when no other object moved); sender-owned capabilities mutated without transfer; and router coin round trips with cost from pool events, or null with a reason. High-bit u256 event numbers get signed readings; full detail also gives two's-complement readings of high-bit u64/u128/u256 pure values. Use detail:'full' for inputs with declared types and object versions, resolved command arguments and Result origins, and every changed object's ID, type and version by kind. Summary may fold or cap event rows past ~20k chars, retaining events emitted by called non-framework packages; omitted reports reductions. Full detail lists all events in pages: follow events_page.next_call. For command-only or pre-sign inspection use decode_ptb; for exploit profit, state deltas and anomaly leads use analyze_attack_tx.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `digest` | string | yes | Transaction digest (Base58) |
 | `max_event_field_bytes` | integer (0 to 500000) | no | Decoded event-field byte cap; unset decodes every event. Set only to bound fields knowingly; skips are reported. 0 skips decoding. |
 | `detail` | `summary` \| `full` | no | 'summary' (default): object counts, no inputs/commands; ~20k chars of deliveries/transfers/balance changes, prioritizing all capabilities and, for SUI/verified coins, sender changes and largest credits/debits. omitted reports the rest. 'full': all rows plus typed inputs, resolved arguments and objects by kind; commands page at ~30k chars, non-framework Move calls first. |
-| `commands` | array of integer (at least 0) (at most 100 items) | no | Exact indices in full detail instead of the first page. Where attributable, narrows events to emitting calls and objects to commands taking them/returning their type; events_omitted/object_changes_omitted report exclusions. |
-| `event_offset` | integer (at least 0) | no | Full-detail event position after commands filtering; ~40k chars/page. Continue with events_page.next_call. |
+| `commands` | array of integer (at least 0) (at most 100 items) | no | Command indices to list with detail:'full', e.g. [3, 7], instead of the first page. Where attributable, events narrow to emitting calls and objects to commands taking them or returning their type; events_omitted and object_changes_omitted report exclusions. |
+| `event_offset` | integer (at least 0) | no | Where the full-detail event page starts (after any commands narrowing); pages are ~40k chars and events_page.next_call carries the next offset. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_transactions

@@ -267,7 +267,7 @@ function placesOrder(eventType: string | undefined, json: unknown): boolean {
 export function registerTransactionTools(server: McpServer) {
   server.tool(
     "get_transaction",
-    "Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields. Identifies protocols from calls/events (including wrappers) and unnamed packages by curated publishing key; protocols_unchecked marks unread publishers. Shows address-balance deposits/withdrawals, requested withdrawals and gas source; non-sender object deliveries (coins separately when no other object moved); sender-owned capabilities mutated without transfer; and router coin round trips with cost from pool events (or null with reason). High-bit u256 event numbers get signed readings; full detail also gives high-bit u64/u128/u256 pure values' two's-complement readings. Use detail:'full' for typed/versioned inputs, resolved command arguments/Result origins and every changed object's ID/type/version by kind. Summary may fold/cap event rows past ~20k chars, retaining events emitted by called non-framework packages; omitted reports reductions. Full detail lists all events in pages: follow events_page.next_call. For command-only or pre-sign inspection use decode_ptb; for exploit profit, state deltas and anomaly leads use analyze_attack_tx.",
+    "Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields; no hand-written GraphQL is needed to read event values. It identifies protocols from calls and events (including wrappers), and unnamed packages by their curated publishing key; protocols_unchecked marks unread publishers. It shows address-balance deposits and withdrawals, requested withdrawals and gas source; non-sender object deliveries (coins separately when no other object moved); sender-owned capabilities mutated without transfer; and router coin round trips with cost from pool events, or null with a reason. High-bit u256 event numbers get signed readings; full detail also gives two's-complement readings of high-bit u64/u128/u256 pure values. Use detail:'full' for inputs with declared types and object versions, resolved command arguments and Result origins, and every changed object's ID, type and version by kind. Summary may fold or cap event rows past ~20k chars, retaining events emitted by called non-framework packages; omitted reports reductions. Full detail lists all events in pages: follow events_page.next_call. For command-only or pre-sign inspection use decode_ptb; for exploit profit, state deltas and anomaly leads use analyze_attack_tx.",
     {
       digest: z.string().describe("Transaction digest (Base58)"),
       max_event_field_bytes: numArg()
@@ -288,12 +288,12 @@ export function registerTransactionTools(server: McpServer) {
         .array(numArg().int().min(0))
         .max(100)
         .optional()
-        .describe("Exact indices in full detail instead of the first page. Where attributable, narrows events to emitting calls and objects to commands taking them/returning their type; events_omitted/object_changes_omitted report exclusions."),
+        .describe("Command indices to list with detail:'full', e.g. [3, 7], instead of the first page. Where attributable, events narrow to emitting calls and objects to commands taking them or returning their type; events_omitted and object_changes_omitted report exclusions."),
       event_offset: numArg()
         .int()
         .min(0)
         .optional()
-        .describe("Full-detail event position after commands filtering; ~40k chars/page. Continue with events_page.next_call."),
+        .describe("Where the full-detail event page starts (after any commands narrowing); pages are ~40k chars and events_page.next_call carries the next offset."),
     },
     async ({ digest: rawDigest, max_event_field_bytes, detail, commands: pick, event_offset }) => {
       const full = detail === "full" || pick !== undefined;

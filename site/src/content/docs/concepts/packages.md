@@ -148,9 +148,10 @@ raise no finding and appear in `bytecode_scan.weak_leads`, the first few by
 default. `detail: "full"` lists every lead, weak ones included;
 `bytecode_scan.read` gives the calls to inspect them.
 
-It also compares the lineage's older versions with its newest, reading up to
-30 versions from the oldest and newest ends. Every version stays callable
-against the same shared objects, whichever package ID you pass. An older
+It compares older versions' checks with the newest version, reading every
+version when there are at most 30. For longer lineages it reads the oldest 29
+versions and the newest. Every version stays callable against the same shared
+objects, whichever package ID you pass. An older
 version whose public functions mutate a shared type without a check most
 of the newest version's public functions on that type make is raised as
 `ungated-older-version`, for example a version check added later.

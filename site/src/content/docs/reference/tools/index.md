@@ -33,7 +33,7 @@ These pages are generated from the `tools/list` response of the server started w
 
 | Tool | Summary | Group | Profile |
 |---|---|---|---|
-| [`aggregate_events`](/reference/tools/incident-investigation/#aggregate_events) | Rank addresses or event types by activity across a time window, answering 'who were the top wallets on this protocol today', in one call instead of paginating thousands of events yourself. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
+| [`aggregate_events`](/reference/tools/incident-investigation/#aggregate_events) | Rank senders or event types by event count, or by a summed event field, across a window in one call instead of paging query_events. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`analyze_attack_tx`](/reference/tools/incident-investigation/#analyze_attack_tx) | Investigate one exploit transaction. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`analyze_multisig`](/reference/tools/incident-investigation/#analyze_multisig) | For a multisig wallet, work out which committee keys are actually live and which have never signed, across its transaction history. | [Incident investigation](/reference/tools/incident-investigation/) | `forensics` |
 | [`analyze_package`](/reference/tools/packages/#analyze_package) | Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. | [Packages](/reference/tools/packages/) | `forensics`, `developer` |

@@ -305,3 +305,33 @@ on a newest-first page.
 `limit` defaults to 25. Newest-first and cursor pages show at most 49 versions,
 because one of the service's 50 rows supplies the predecessor needed to
 attribute the change into the oldest listed row.
+
+## Wallet activity pages
+
+`get_transaction_history` is the wallet-activity read, with protocol names
+such as Cetus and Suilend, decoded actions such as “Swap USDC to SUI”, and coin
+flows. `query_transactions` is for filtering transactions by other criteria.
+Each history row uses the transaction's complete balance changes and commands.
+The page reports `order`, `oldest_shown` and `newest_shown`; continue with
+`next_cursor` as `cursor`, preserving the order. Newest-first is the default;
+oldest-first starts at the address's first transaction.
+
+`subject_flow` is the queried wallet's signed balance change for each coin,
+with formatted amounts and `coin_verified`. `token_flow` describes the sender,
+so a received transfer shows the sender's outflow there. If the wallet sent
+the transaction, only `subject_flow` is listed because both describe the same
+side. `counterparties` lists up to 25 value recipients per row, with
+`counterparty_count` when the complete set is larger.
+
+`address_poisoning` always reports `addresses_compared` and lookalike `pairs`
+over the displayed page. Empty pairs on a recent page clear nothing older.
+The summary keeps about 35,000 characters in page order, retaining every
+failed row and every row involving a lookalike. `omitted` reports excluded
+rows; `detail: "full"` returns the whole page, not the wallet's whole history.
+
+`signed_as_alias` separately lists transactions signed as an
+`0x2::address_alias` delegate for another wallet. Their sender is the other
+wallet, so the ordinary activity page cannot show them. The scan of wallets
+naming this delegate is reused for up to five minutes; `alias_scan_as_of`
+records when it read the chain. `signed_as_alias_unavailable` marks an
+unfinished scan even when some matches were returned.

@@ -190,7 +190,7 @@ sidebar:
 |---|---|---|---|
 | `case_name` | string | yes | Case to render. |
 | `include_appendix` | boolean | no | Append the full-address list (default true). |
-| `format` | `markdown` \| `mermaid` \| `graph_json` \| `csv` | no | markdown (default): the report. mermaid: the report followed by a fund-flow diagram (a ```mermaid block) of the transfers in the findings' transactions between the case's addresses, including value the case's addresses took out of or paid into protocols' shared objects (drawn as one node per protocol set), with each finding's cross-chain accounts linked dashed; reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding. |
+| `format` | `markdown` \| `mermaid` \| `graph_json` \| `csv` | no | markdown (default): the report. mermaid: the report plus a fund-flow diagram of transfers between the case's addresses in the findings' transactions, including flows with protocols' shared objects; it reads those transactions from the chain. graph_json: that diagram as {nodes, edges}. csv: one row per finding. |
 
 ## find_flow_path
 

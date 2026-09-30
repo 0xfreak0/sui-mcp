@@ -167,7 +167,12 @@ repair a failed read.
 `trace_flow_graph`, `find_flow_path`, `trace_funds` and `build_wallet_edges`
 take `format: "mermaid"` (a fenced diagram that renders in a markdown viewer),
 `"graph_json"` or `"csv"`. `export_case` with `format: "mermaid"` appends a
-fund-flow diagram of the transfers in the case's cited transactions.
+fund-flow diagram to the case report, read from the chain: the transfers
+between the case's addresses in the findings' transactions, plus value those
+addresses took out of or paid into protocols' shared objects, drawn as one
+node per protocol set. Each finding's cross-chain accounts are linked by
+dashed edges. Its `graph_json` is the same diagram as nodes and edges, and its
+CSV has one row per finding.
 
 Graph JSON retains terminal reasons and coverage (`explored` for
 `find_flow_path`). `trace_flow_graph`'s graph JSON also carries

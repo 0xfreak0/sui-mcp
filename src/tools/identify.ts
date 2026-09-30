@@ -19,6 +19,7 @@ import { baseType } from "../utils/object-flow.js";
 import { KIOSK_TYPE, resolveKioskCapHolder, unresolvedCapHolderNote } from "../utils/kiosk.js";
 import { bridgeExitCalls, fetchModuleBytes } from "../utils/bridge/carrier.js";
 import { bridgeLabeledObjectsOf } from "../utils/bridge/labeled-package.js";
+import { depositRole } from "../utils/deposit-role.js";
 
 /**
  * The address's label with its provenance, spread into every case's result.
@@ -27,8 +28,10 @@ import { bridgeLabeledObjectsOf } from "../utils/bridge/labeled-package.js";
  */
 function labelFields(address: string) {
   const found = getLabel(address);
-  if (!found) return {};
+  const deposit_address = depositRole(address);
+  if (!found) return { deposit_address };
   return {
+    deposit_address,
     label: {
       label: found.label,
       category: found.category,

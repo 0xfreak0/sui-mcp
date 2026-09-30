@@ -7,6 +7,9 @@ import { isSponsorGasChange, isSuiCoinType } from "./sponsor-gas.js";
 import { BALANCE_CHANGES_SELECTION, completeTxConnections } from "./tx-connections.js";
 import type { GqlConnection } from "./tx-connections.js";
 import type { GqlBalanceChangeNode } from "./gql-adapters.js";
+import { describeWindow, resolveWindow } from "./checkpoint-time.js";
+import { anchorCheckpoint, readBalanceRange } from "./historical-balance.js";
+import { rememberDepositVerdict } from "./deposit-role.js";
 
 /**
  * Is this address an exchange deposit address?
@@ -49,6 +52,7 @@ export interface BalanceChange {
 export interface ScannedTx {
   digest: string;
   timestamp: string | null;
+  checkpoint?: number | null;
   sender: string | null;
   gasSponsor: string | null;
   changes: BalanceChange[];
@@ -58,9 +62,9 @@ export interface DepositScan {
   address: string;
   /** Oldest first. */
   txs: ScannedTx[];
-  /** True when the window reaches the address's first transaction. */
+  /** True when every transaction in the requested window was read. */
   complete: boolean;
-  /** Current balance per coin type, read in the same request as the window. Null when unreadable. */
+  /** Balance per coin at the window's upper end. Null when reconstruction is incomplete. */
   currentBalances: Map<string, bigint> | null;
 }
 
@@ -136,9 +140,9 @@ function netFor(tx: ScannedTx, owner: string): Map<string, bigint> {
 /**
  * Read the window into sweeps, other outflows and deposits.
  *
- * Balance after each transaction is reconstructed backwards from the current
- * balance, so it does not need the address's whole history, only a window
- * that runs up to now.
+ * Balance after each transaction is reconstructed backwards from the balance
+ * at the window's upper end. Historical scans first undo later changes from
+ * a checkpoint-pinned balance anchor.
  *
  * A sweep that leaves a balance is still full when that balance equals the
  * latest deposits of the coin since its previous outflow, and the next
@@ -432,7 +436,7 @@ export function decideDepositVerdict(
       );
     } else if (checks.full_balance_sweeps === null) {
       notRun.full_balance_sweeps =
-        "The balance after each transfer could not be reconstructed (the current balance list was unreadable or did not fit one page).";
+        "The balance after each transfer could not be reconstructed; see balance_reconstruction and window for unread balances or limits.";
     } else {
       const reserved = sweeps.filter((s) => s.kept_for_gas).length;
       const carried = sweeps.filter((s) => s.left_for_next_sweep);
@@ -521,18 +525,19 @@ export const SCANNED_TX_FIELDS = `digest
       gasInput { gasSponsor { address } }
       effects {
         timestamp
+        checkpoint { sequenceNumber }
         ${BALANCE_CHANGES_SELECTION}
       }`;
 
-const DEPOSIT_QUERY = `query ($addr: SuiAddress!, $last: Int!) {
-  address(address: $addr) {
+const DEPOSIT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $filter: TransactionFilter!, $before: String, $anchor: UInt53, $balances: Boolean!) {
+  address(address: $addr, atCheckpoint: $anchor) @include(if: $balances) {
     balances(first: 50) { nodes { coinType { repr } totalBalance } pageInfo { hasNextPage } }
   }
-  transactions(filter: { affectedAddress: $addr }, last: $last) {
+  transactions(filter: $filter, last: $last, before: $before) {
     nodes {
       ${SCANNED_TX_FIELDS}
     }
-    pageInfo { hasPreviousPage }
+    pageInfo { hasPreviousPage startCursor }
   }
 }`;
 
@@ -542,6 +547,7 @@ export interface ScannedTxNode {
   gasInput?: { gasSponsor?: { address?: string } | null } | null;
   effects?: {
     timestamp?: string | null;
+    checkpoint?: { sequenceNumber: number } | null;
     balanceChanges?: GqlConnection<GqlBalanceChangeNode> | null;
   } | null;
 }
@@ -555,7 +561,7 @@ interface DepositQueryResult {
   } | null;
   transactions: {
     nodes: ScannedTxNode[];
-    pageInfo: { hasPreviousPage: boolean };
+    pageInfo: { hasPreviousPage: boolean; startCursor?: string | null };
   };
 }
 
@@ -568,6 +574,7 @@ const tag = (t: string) => {
 };
 
 class IncompleteDepositScan extends Error {
+  window?: DepositWindow;
   constructor(readonly digests: string[], readonly transactions: number) {
     super(`Incomplete balance changes for transaction(s): ${digests.join(", ")}. Deposit-address checks were not run.`);
   }
@@ -585,6 +592,7 @@ export async function scannedTxsOf(nodes: ScannedTxNode[]): Promise<ScannedTx[]>
   return nodes.map((n, i) => ({
     digest: n.digest,
     timestamp: n.effects?.timestamp ?? null,
+    checkpoint: n.effects?.checkpoint?.sequenceNumber ?? null,
     sender: n.sender?.address ?? null,
     gasSponsor: n.gasInput?.gasSponsor?.address ?? null,
     changes: completed[i]!.balanceChanges
@@ -593,22 +601,157 @@ export async function scannedTxsOf(nodes: ScannedTxNode[]): Promise<ScannedTx[]>
   }));
 }
 
-/** The latest transactions and current balances, including every transaction's balance-change pages. */
-export async function scanForDeposit(address: string, last = 50): Promise<DepositScan> {
+export interface DepositWindow {
+  from: string | number | null;
+  to: string | number | null;
+  after_checkpoint: number | null;
+  before_checkpoint: number | null;
+  requested_before_checkpoint?: number;
+  anchor_limited?: boolean;
+  oldest: { checkpoint: number | null; timestamp: string | null; digest: string } | null;
+  newest: { checkpoint: number | null; timestamp: string | null; digest: string } | null;
+  max_transactions: number;
+  scanned_transactions: number;
+  reads: number;
+  max_reads: number;
+  older_transactions_remaining: boolean;
+  complete: boolean;
+  continue_with?: { to: string };
+  note: string;
+}
+
+export interface BalanceReconstruction {
+  anchor_checkpoint: number | null;
+  through_checkpoint: number | null;
+  scanned_transactions: number;
+  max_transactions: number;
+  reads: number;
+  max_reads: number;
+  complete: boolean;
+  reached_checkpoint?: number | null;
+  unavailable?: string;
+}
+
+interface DepositRead extends DepositScan {
+  window: DepositWindow;
+  balance_reconstruction: BalanceReconstruction | null;
+}
+
+/** Newest-first reads, returned oldest first for the sweep reconstruction. */
+export async function scanForDeposit(address: string, last = 50, options: ClassifyOptions = {}): Promise<DepositRead> {
   const addr = normalizeSuiAddress(address);
-  const res = await gqlQuery<DepositQueryResult>(DEPOSIT_QUERY, { addr, last: Math.min(50, last) });
-  const txs = await scannedTxsOf(res.transactions.nodes);
-  const balances = res.address?.balances;
-  // A balance list that did not fit one page cannot anchor the reconstruction.
-  const currentBalances =
-    balances && !balances.pageInfo?.hasNextPage
-      ? new Map(
-          balances.nodes
-            .filter((b) => b.coinType?.repr && b.totalBalance !== undefined)
-            .map((b) => [tag(b.coinType!.repr), BigInt(b.totalBalance!)] as const),
-        )
-      : null;
-  return { address: addr, txs, complete: !res.transactions.pageInfo.hasPreviousPage, currentBalances };
+  const resolved = await resolveWindow(options.from, options.to);
+  const filter: Record<string, string | number> = { affectedAddress: addr };
+  if (resolved.after?.checkpoint != null) filter.afterCheckpoint = resolved.after.checkpoint;
+  if (resolved.before?.checkpoint != null) filter.beforeCheckpoint = resolved.before.checkpoint;
+  const historical = resolved.before?.checkpoint != null;
+  const range = historical ? await readBalanceRange() : null;
+  const anchor = range ? anchorCheckpoint(range) : null;
+  // The anchor bounds the scan too: a newer sweep cannot be reconstructed
+  // from an older balance.
+  if (anchor !== null) filter.beforeCheckpoint = Math.min(Number(filter.beforeCheckpoint), anchor + 1);
+  const window: DepositWindow = {
+    ...describeWindow(options.from, options.to, resolved),
+    before_checkpoint: typeof filter.beforeCheckpoint === "number" ? filter.beforeCheckpoint : null,
+    oldest: null, newest: null, max_transactions: last, scanned_transactions: 0, complete: false,
+    reads: 0, max_reads: 100, older_transactions_remaining: false,
+    note: "Verdict covers only the transactions read, newest first, not the address's lifetime. Older sweeps can support a different verdict; choose from/to for the period in question.",
+  };
+  if (resolved.before?.checkpoint != null && filter.beforeCheckpoint !== resolved.before.checkpoint) {
+    window.requested_before_checkpoint = resolved.before.checkpoint;
+    window.anchor_limited = true;
+    window.note += ` The balance anchor caps the read before checkpoint ${filter.beforeCheckpoint}; the newer part of the requested period was not read. Retry later to include it.`;
+  }
+  const nodes: ScannedTxNode[] = [];
+  let before: string | undefined;
+  let balances: DepositQueryResult["address"] = null;
+  // Empty filtered pages may still have a continuation.
+  for (let reads = 0; reads < window.max_reads && nodes.length < last; reads++) {
+    const res = await gqlQuery<DepositQueryResult>(DEPOSIT_QUERY, {
+      addr, last: Math.min(50, last - nodes.length), filter, before, anchor, balances: reads === 0,
+    });
+    if (reads === 0) balances = res.address;
+    window.reads++;
+    nodes.unshift(...res.transactions.nodes);
+    const page = res.transactions.pageInfo;
+    window.older_transactions_remaining = page.hasPreviousPage;
+    if (!page.hasPreviousPage) { window.complete = !window.anchor_limited; break; }
+    if (!page.startCursor || page.startCursor === before) {
+      window.note += " The service reported older transactions without a usable continuation cursor.";
+      break;
+    }
+    before = page.startCursor;
+  }
+  const point = (n: ScannedTxNode | undefined) => n ? {
+    checkpoint: n.effects?.checkpoint?.sequenceNumber ?? null, timestamp: n.effects?.timestamp ?? null, digest: n.digest,
+  } : null;
+  window.oldest = point(nodes[0]);
+  window.newest = point(nodes.at(-1));
+  window.scanned_transactions = nodes.length;
+  if (window.older_transactions_remaining && window.oldest?.checkpoint != null) {
+    window.continue_with = { to: String(window.oldest.checkpoint + 1) };
+    window.note += " continue_with re-reads the boundary checkpoint; verdicts for separate windows are not a combined classification. Raise max_transactions if that checkpoint fills the scan.";
+  }
+  let txs: ScannedTx[];
+  try { txs = await scannedTxsOf(nodes); }
+  catch (err) {
+    if (err instanceof IncompleteDepositScan) err.window = { ...window, complete: false };
+    throw err;
+  }
+  const list = balances?.balances;
+  let currentBalances = list && !list.pageInfo?.hasNextPage
+    ? new Map(list.nodes.filter((b) => b.coinType?.repr && b.totalBalance !== undefined)
+      .map((b) => [tag(b.coinType!.repr), BigInt(b.totalBalance!)] as const))
+    : null;
+  let reconstruction: BalanceReconstruction | null = null;
+  if (historical) {
+    const through = Number(filter.beforeCheckpoint) - 1;
+    reconstruction = {
+      anchor_checkpoint: anchor, through_checkpoint: through,
+      scanned_transactions: 0, max_transactions: options.maxBalanceTransactions ?? 1000,
+      reads: 0, max_reads: 200,
+      complete: false,
+    };
+    if (through < 0) {
+      currentBalances = new Map();
+      reconstruction.complete = true;
+    } else if (anchor === null || !currentBalances) {
+      currentBalances = null;
+      reconstruction.unavailable = "The checkpoint-pinned balance anchor was unreadable or its coin list was incomplete.";
+    } else if (through === anchor) {
+      reconstruction.complete = true;
+    } else {
+      let cursor: string | undefined;
+      try {
+        for (let reads = 0; reads < reconstruction.max_reads && reconstruction.scanned_transactions < reconstruction.max_transactions; reads++) {
+          const later = await gqlQuery<DepositQueryResult>(DEPOSIT_QUERY, {
+            addr, anchor, balances: false, last: Math.min(50, reconstruction.max_transactions - reconstruction.scanned_transactions),
+            filter: { affectedAddress: addr, afterCheckpoint: through, beforeCheckpoint: anchor + 1 }, before: cursor,
+          });
+          reconstruction.reads++;
+          reconstruction.scanned_transactions += later.transactions.nodes.length;
+          reconstruction.reached_checkpoint = later.transactions.nodes[0]?.effects?.checkpoint?.sequenceNumber ?? reconstruction.reached_checkpoint ?? null;
+          for (const tx of await scannedTxsOf(later.transactions.nodes)) {
+            for (const [coin, delta] of netFor(tx, addr)) currentBalances.set(coin, (currentBalances.get(coin) ?? 0n) - delta);
+          }
+          const page = later.transactions.pageInfo;
+          if (!page.hasPreviousPage) { reconstruction.complete = true; break; }
+          if (!page.startCursor || page.startCursor === cursor) break;
+          cursor = page.startCursor;
+        }
+        if (!reconstruction.complete) reconstruction.unavailable =
+          "Later transactions remain unread within the transaction/read budgets, or their continuation cursor is unavailable. Raise max_balance_transactions, choose a later to, or retry an unavailable read; full-balance sweep checks are withheld.";
+        if ([...currentBalances.values()].some((v) => v < 0n)) {
+          reconstruction.complete = false;
+          reconstruction.unavailable = "Reconstruction produced a negative balance; full-balance sweep checks are withheld.";
+        }
+      } catch (err) {
+        reconstruction.unavailable = err instanceof Error ? err.message : String(err);
+      }
+      if (!reconstruction.complete) currentBalances = null;
+    }
+  }
+  return { address: addr, txs, complete: window.complete, currentBalances, window, balance_reconstruction: reconstruction };
 }
 
 export interface ClassifyOptions {
@@ -617,13 +760,16 @@ export interface ClassifyOptions {
   /** Measure an unlabelled destination's fan-out (up to ~6 requests). */
   measureDestination?: boolean;
   last?: number;
+  from?: string | number;
+  to?: string | number;
+  maxBalanceTransactions?: number;
 }
 
 export async function classifyDepositAddress(address: string, options: ClassifyOptions = {}) {
   const { measureSponsor = true, measureDestination = true, last = 50 } = options;
-  let scan: DepositScan;
+  let scan: DepositRead;
   try {
-    scan = await scanForDeposit(address, last);
+    scan = await scanForDeposit(address, last, options);
   } catch (err) {
     if (!(err instanceof IncompleteDepositScan)) throw err;
     const checks: VerdictResult["checks"] = {
@@ -633,7 +779,7 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
       sponsor_relayer_shaped: null,
       destination_is_exchange: null,
     };
-    return {
+    return rememberDepositVerdict({
       address: normalizeSuiAddress(address),
       verdict: "unknown" as const,
       tier: "heuristic" as const,
@@ -649,8 +795,10 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
       deposit_count: null,
       scanned_transactions: err.transactions,
       window_complete: false,
+      window: err.window!,
+      balance_reconstruction: null,
       incomplete_transactions: err.digests,
-    };
+    });
   }
   // Sweep and deposit amounts are formatted as the pattern is read.
   await prefetchCoinScale(scan.txs.flatMap((t) => t.changes.map((c) => c.coinType)));
@@ -691,10 +839,11 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
   }
 
   const decided = decideDepositVerdict(pattern, destination, sponsorFanout?.sponsor_shape ?? null, unmeasured);
-  return {
+  return rememberDepositVerdict({
     address: scan.address,
     verdict: decided.verdict,
     tier: "heuristic" as const,
+    supporting_checks_scope: "Sponsor and destination fan-out describe their recent activity, not the candidate's chosen period.",
     hot_wallet: hotWallet,
     exchange: hotLabel
       ? { label: hotLabel.label, category: hotLabel.category, ...labelProvenance(hotLabel) }
@@ -717,12 +866,14 @@ export async function classifyDepositAddress(address: string, options: ClassifyO
     checks: decided.checks,
     checks_not_run: decided.checks_not_run,
     reasons: decided.reasons,
-    sweeps: pattern.sweeps.slice(-10).reverse(),
+    sweeps: [...pattern.sweeps].reverse(),
     sweep_count: pattern.sweeps.length,
-    deposits: pattern.deposits.slice(-10).reverse(),
+    deposits: [...pattern.deposits].reverse(),
     deposit_count: pattern.deposits.length,
-    ...(pattern.otherOutflows.length ? { other_outflows: pattern.otherOutflows.slice(-5).reverse() } : {}),
+    ...(pattern.otherOutflows.length ? { other_outflows: [...pattern.otherOutflows].reverse() } : {}),
     scanned_transactions: scan.txs.length,
     window_complete: scan.complete,
-  };
+    window: scan.window,
+    balance_reconstruction: scan.balance_reconstruction,
+  });
 }

@@ -541,6 +541,8 @@ export function registerFundingTools(server: McpServer) {
                         hot_wallet: deposit.hot_wallet,
                         exchange: deposit.exchange,
                         reasons: deposit.reasons,
+                        window: deposit.window,
+                        window_complete: deposit.window_complete,
                         next_step: "classify_deposit_address measures the sweep sponsor and destination and lists sweeps and deposits.",
                       },
                     }

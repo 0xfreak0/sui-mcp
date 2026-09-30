@@ -9,6 +9,8 @@ const { addSessionLabel, allLabels, describeLabel, getLabel, inferredLabelNote, 
 const { classifyDepositAddress } = await import("../src/utils/deposit.js");
 const { runWithNetwork } = await import("../src/config.js");
 const { registerLabelTools } = await import("../src/tools/labels.js");
+// Load after the non-hoisted GraphQL mock above, as the registry imports it.
+const { depositRole } = await import("../src/utils/deposit-role.js");
 
 const tools = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>();
 registerLabelTools({ tool: (name: string, _d: string, _s: unknown, h: never) => tools.set(name, h) } as never);
@@ -105,6 +107,22 @@ describe("inferred deposit labels", () => {
     expect(accounts).not.toContain(`sui:mainnet:${DEPOSIT}`);
     expect(accounts).toContain(DISCLOSED_KEY);
     expect(exported.inferred_not_exported).toBeGreaterThan(0);
+  });
+
+  it("reports the inferred role through lookup, obeying network and label precedence without chain reads", async () => {
+    gqlQuery.mockRejectedValue(new Error("No implicit classifier reads"));
+    const found = await manageLabels({ action: "lookup", address: DEPOSIT });
+    expect(found.deposit_address).toMatchObject({
+      role: "likely exchange deposit", source: "inferred_label", stops_trace: true,
+      label_provenance: { inferred_from: inferredFrom },
+    });
+    addSessionLabel(DEPOSIT, { label: "Investigator correction", category: "other" }, false);
+    expect((await manageLabels({ action: "lookup", address: DEPOSIT })).deposit_address).toMatchObject({
+      role: null, status: "not classified", stops_trace: false,
+    });
+    expect(runWithNetwork("testnet", () => depositRole(DEPOSIT))).toMatchObject({
+      role: null, status: "not classified", stops_trace: false,
+    });
   });
 });
 

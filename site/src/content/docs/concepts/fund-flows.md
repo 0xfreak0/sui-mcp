@@ -355,9 +355,61 @@ With complete balances, each check runs regardless of the others' results.
 `incomplete_transactions`, not a negative deposit-address finding.
 
 Results identify the hot wallet, exchange label and provenance, sweep sponsor,
-sweep digests and sampled deposits. The read defaults to the most recent
-50 transactions. It uses one initial query, any balance continuations, and
-optional reads to measure the sponsor and an unlabelled destination.
+sweep digests and deposits. The default verdict covers the newest 50
+transactions, not the address's lifetime. An `unknown` result with no outflows
+does not rule out older exchange sweeps.
+
+Pass `from` and `to` for the period in question. ISO timestamps include both
+edges; checkpoint numbers are exclusive, as in `summarize_address_flows`.
+Bounds go into the transaction filter before the read:
+
+```
+classify_deposit_address(address: <candidate>,
+  from: "2026-09-29T00:00:00Z", to: "2026-09-30T00:00:00Z",
+  max_transactions: 500)
+```
+
+`window` reports the requested bounds, resolved checkpoints, oldest and newest
+transactions read, transaction and read budgets, and completeness.
+`window.continue_with` reads further back, repeating the boundary checkpoint.
+Each call judges its own window; separate verdicts are not a combined
+classification. Raise `max_transactions` or narrow the period when capped.
+The maximum scan is 5,000 transactions or 100 transaction-page reads.
+`detail: "full"` returns all scanned evidence rows; summary omissions name
+the call that returns them.
+
+A historical upper bound also needs the balances then. The tool pins a recent
+balance anchor and subtracts every later balance change, across all coins,
+before judging the requested sweeps. `balance_reconstruction` states its
+anchor, coverage and separate `max_balance_transactions` budget (default
+1,000, maximum 10,000), with at most 200 transaction-page reads. An unread or
+incomplete reconstruction leaves the
+full-balance check null, never a partial sum. A very recent requested bound
+can be newer than the balance anchor; `window.anchor_limited` then states that
+the newer part was not read. Retry later to include it.
+Sponsor and destination fan-out checks use their recent activity, not a
+historical reconstruction of their behaviour.
+
+`summarize_address_flows`, `identify_address` and `manage_labels` lookup share
+a `deposit_address` field without running the classifier. It reports an
+effective inferred deposit label with its sweep evidence and one applicable
+`session_verdict`. A flow summary selects that verdict by its resolved
+checkpoint bounds, so `from: "now"` is not confused with unbounded history.
+The same bounds apply to the subject, inflow sources, recipients and gas
+sponsors. Their classification follow-up calls retain the incident period.
+`other_session_observations` counts the other windows without repeating them
+on each row. `session_observations_call` returns all observations and their
+full checks through `manage_labels(action: "lookup", detail: "full")`.
+Without either applicable source it says `not classified` and returns the
+`classify_deposit_address` call. The session cache is network- and
+address-qualified, keeps the latest observation per resolved window and lasts
+only for the server process.
+
+An inferred `cex` label stops a trace. A session verdict alone does not create
+a label or stop it. [Label precedence](/guides/configuration/#address-labels)
+still applies: an investigator's `other` label overrides an inferred deposit
+label and lets the trace continue. Cached observations remain evidence, not
+an override of that decision.
 
 ## Following one fund-flow path
 

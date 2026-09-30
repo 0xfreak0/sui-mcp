@@ -146,6 +146,31 @@ Precedence is local additions, override file, shipped disclosed labels, then
 shipped inferred exchange deposit addresses (`source: "inferred"`).
 Export excludes the inferred deposits.
 
+Lookup reports `deposit_address` alongside the effective label. Shipped
+inferred deposit roles come from that same registry lookup, so an override
+does not leave a second, conflicting role active. The role includes its sweep
+provenance, not an assertion that the exchange disclosed the address.
+
+`classify_deposit_address` also keeps its verdict in a process-local cache,
+keyed by network, address and resolved window. Lookup, `identify_address` and
+`summarize_address_flows` select one observation without running a classifier
+or adding chain reads. Each cached verdict retains the period actually read,
+limits and checks not run. A flow summary matches resolved checkpoint bounds,
+not the spelling of a timestamp or checkpoint. `other_session_observations`
+counts other windows; `session_observations_call` points to
+`manage_labels(action: "lookup", detail: "full")`, which returns the full
+`deposit_observations` list, including checks, reasons and read limits.
+With neither an inferred role nor an applicable session verdict, the field
+says `not classified` and supplies a classification call.
+
+Cached verdicts are not registry labels and do not change precedence, exports,
+persistence or trace stops. An effective inferred `cex` label **does** stop a
+trace, even if a later cached verdict is `no` or `unknown` for a different
+window. Read both sets of evidence. To follow onward, add an `other` label
+through `manage_labels`. Removing that override reveals the inferred label
+again. A cached `likely` verdict on an unlabelled address does not by itself
+make a trace sink.
+
 Labels are chain-qualified. A bare address uses the call's network; a CAIP-10
 account such as `eip155:1:0x…` records a destination on another chain after a
 bridge hop. A label recorded on one chain does not apply on another.

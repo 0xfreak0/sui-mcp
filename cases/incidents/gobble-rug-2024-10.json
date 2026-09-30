@@ -491,14 +491,18 @@
           "value": "{funding_tx}"
         },
         {
-          "path": "transactions[0].token_flow[0].amount",
+          "path": "transactions[0].subject_flow[0].amount",
           "op": "equals",
           "value": "2003000000000"
+        },
+        {
+          "path": "transactions[0].token_flow[0].amount",
+          "op": "equals",
+          "value": "-2003001848880"
         }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: 7yCnBe6 credits the deployer +2003000000000 MIST; the sender 0x8b302e06 is debited 2003001848880.",
-      "known_defect": "token_flow on a transaction the address did not send shows the sender's flow (-2003.00184888 SUI), so an inbound funding reads as an outflow."
+      "basis": "Chain: 7yCnBe6 credits the queried deployer +2003000000000 MIST and debits its sender 0x8b302e06 -2003001848880 MIST. subject_flow is the queried wallet's side; token_flow is the sender's side. Both values were independently read from the complete GraphQL balanceChanges connection."
     },
     {
       "id": "proceeds-fund-next-rug",

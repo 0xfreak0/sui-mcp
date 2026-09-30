@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`get_staking_summary`](#get_staking_summary) | Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). |
+| [`get_staking_summary`](#get_staking_summary) | Get directly held StakedSui positions and principal, now or at as_of. |
 | [`get_validators`](#get_validators) | List current Sui validators, or return detailed info for one `address` (credentials, staking stats, network addresses). |
 
 ## get_staking_summary
@@ -16,13 +16,14 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Get directly held StakedSui positions and principal, now or at as_of (date/checkpoint). Historical reads include transfers and split/joined stakes; rewards are separate estimates. Incomplete history gives no total. Excludes wrapped stakes and liquid-staking tokens.
+Get directly held StakedSui positions and principal, now or at as_of. Historical budget stops return a continuation; totals stay null until replay finishes. Excludes wrapped stakes and liquid-staking tokens.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Wallet address (0x...) |
 | `as_of` | string | no | ISO 8601 date or checkpoint string; holdings at the end of the last checkpoint at or before it. |
 | `max_transactions` | integer (1 to 10000) | no | Historical replay budget per direction (default 1000); also bounds object-change pages. |
+| `continuation` | string | no | Opaque historical replay state from continue_with; keep address, as_of and network unchanged. |
 | `detail` | `summary` \| `full` | no | summary caps displayed positions; full returns every read position. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 

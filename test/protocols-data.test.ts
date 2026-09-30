@@ -28,6 +28,7 @@ const VALID_TYPES: ProtocolType[] = [
   "bridge",
   "prediction_market",
   "nft",
+  "launchpad",
   "unknown",
 ];
 

@@ -447,6 +447,26 @@
     "0x2b71664477755b90f9fb71c9c944d5d0d3832fec969260e3f18efc7d855f57c4": {
       "name": "Nemo",
       "type": "yield"
+    },
+    "0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0": {
+      "name": "SuiPump",
+      "type": "launchpad"
+    },
+    "0xc935f0ab11a24b32b6f8796bc78d93ce6f2d2969f5d4b4f6657b24352b61408a": {
+      "name": "Maelstrom",
+      "type": "launchpad"
+    },
+    "0x1914927baefaf7cccfe02f6567b7e24e28d33e3cb153f9628829b818954a0769": {
+      "name": "Whirlpool",
+      "type": "launchpad"
+    },
+    "0xaedb8c9a905a778e831aeb4928f660210a7a645925348a7c4ec1cb4a6a3fd16e": {
+      "name": "Perpsplexity",
+      "type": "launchpad"
+    },
+    "0xad6769be9937a4a818d3a8b222de9c4e99d2bc9012a2828aaf24ada1ff7e81b4": {
+      "name": "Koi",
+      "type": "launchpad"
     }
   }
 }

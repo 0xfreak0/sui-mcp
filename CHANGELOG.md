@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **Memecoin launchpads are known protocols.** SuiPump, Maelstrom, Whirlpool,
+  Perpsplexity and Koi are curated under a new `launchpad` category, so their
+  bonding-curve and launch calls, events and later upgrades are named instead
+  of showing as unknown packages. A package their deployers publish later is
+  named by publisher key as usual.
 - **DeepBook Predict is a known protocol.** Its mainnet `predict`, `sessions`,
   `account` and `propbook` packages are curated as DeepBook, typed
   `prediction_market` (`propbook` as `oracle`), so their calls, events and

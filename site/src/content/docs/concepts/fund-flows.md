@@ -7,6 +7,9 @@ sidebar:
 
 ## USD over a time window
 
+For an overview of quote times and reporting estimates, see
+[How USD values are calculated](/concepts/pricing/).
+
 `summarize_address_flows` values each coin movement using the median leg time
 for its coin and UTC hour, then sums those values. It does not multiply a
 multi-month coin total by one price. Counterparties, unattributed flows and bridge exits share the samples.
@@ -46,9 +49,9 @@ Objects received and later consumed retain each leg's historical value.
 `usd_basis.method` identifies that choice. Missing coin legs or objects make
 `totals.partial` true, not a claim that the total is a lower bound.
 
-With `group_pnl: true`, `aggregate_events` also prices each sender's balance
-changes at their transaction times before netting them. Gas stays included. Check
-`pnl.usd_basis` before comparing senders with different missing-price coverage.
+With `group_pnl: true`, `aggregate_events` uses the same median-time samples
+to price each sender's balance changes before netting them. Gas stays included.
+Check `pnl.usd_basis` before comparing senders with different missing-price coverage.
 
 ## Historical object flows
 

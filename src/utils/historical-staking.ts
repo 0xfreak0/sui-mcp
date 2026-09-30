@@ -408,8 +408,8 @@ export async function historicalStaking(address: string, asOf: string | number, 
           continue_with: { tool: "get_staking_summary", args: { address, network: getNetwork(), as_of: asOf, max_transactions: maxTransactions, continuation: stored.token } },
           continuation_storage: stored.storage,
           continuation_note: stored.storage === "argument"
-            ? "Resume this same replay with continue_with. The authenticated state fits in the argument (at most 8 KiB); it expires after 24 hours or a server restart."
-            : "Resume this same replay with continue_with. The state exceeds 8 KiB and is saved in SUI_STORE_PATH; this handle needs the same store and expires after 24 hours.",
+            ? "Resume this same replay with continue_with. The authenticated state fits in the argument; it expires after 24 hours or a server restart."
+            : "Resume this same replay with continue_with. The state is saved in SUI_STORE_PATH to keep the argument small; this handle needs the same store and expires after 24 hours.",
         };
       } catch (e) {
         next = { continuation_unavailable: e instanceof Error ? e.message : String(e) };

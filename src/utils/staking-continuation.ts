@@ -7,6 +7,7 @@ import { loadResult, saveResult } from "./store.js";
 // in the capability, so those continuations survive a server restart.
 const sessionKey = randomBytes(32);
 const INLINE_LIMIT = 8192;
+const STORE_INLINE_LIMIT = 1024;
 const TTL_MS = 24 * 60 * 60 * 1000;
 const STORE_TOOL = "get_staking_summary:replay";
 
@@ -29,10 +30,14 @@ function open(text: string, key: Buffer): string {
 export function saveStakingContinuation(state: unknown): { token: string; storage: "argument" | "local_store" } {
   const text = JSON.stringify({ version: 1, network: getNetwork(), expires: Date.now() + TTL_MS, state });
   const inline = `hs1.i.${seal(text, sessionKey)}`;
-  if (inline.length <= INLINE_LIMIT) return { token: inline, storage: "argument" };
+  const storeConfigured = !!process.env.SUI_STORE_PATH?.trim();
+  const inlineLimit = storeConfigured ? STORE_INLINE_LIMIT : INLINE_LIMIT;
+  if (inline.length <= inlineLimit) return { token: inline, storage: "argument" };
   const key = randomBytes(32);
   const id = saveResult(getNetwork(), STORE_TOOL, {}, { sealed: seal(text, key) });
-  if (!id) throw new Error("The replay state exceeds the 8 KiB argument limit. Set SUI_STORE_PATH to a writable local store and restart before replaying this address; the continuation could not be saved.");
+  if (!id) throw new Error(storeConfigured
+    ? "The replay state exceeds the 1 KiB inline limit with SUI_STORE_PATH configured, but the local store could not be written. Set SUI_STORE_PATH to a writable path and restart; the continuation could not be saved."
+    : "The replay state exceeds the 8 KiB argument limit. Set SUI_STORE_PATH to a writable local store and restart before replaying this address; the continuation could not be saved.");
   return { token: `hs1.s.${id}.${key.toString("base64url")}`, storage: "local_store" };
 }
 

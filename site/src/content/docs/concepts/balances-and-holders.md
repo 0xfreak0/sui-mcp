@@ -102,14 +102,17 @@ unavailable until it finishes.
 
 `continuation_storage` explains where the state lives:
 
-- `argument`: authenticated, encrypted state of at most 8 KiB travels in the
-  argument. This avoids requiring a database for a small held set. It needs
-  the same server session.
-- `local_store`: a larger state is encrypted in the result store at
-  `SUI_STORE_PATH`, and the argument is a short capability for that saved
-  state. It survives a server restart with the same store. With no writable
-  store, `continuation_unavailable` explains how to enable one before starting
-  the replay again; no oversized argument or partial total is substituted.
+- `argument`: authenticated, encrypted state travels in the argument when
+  the encoded token fits within 1 KiB with `SUI_STORE_PATH` configured, or
+  8 KiB without a configured store. This avoids requiring a database for
+  small held sets while keeping arguments smaller when storage is available.
+  It needs the same server session.
+- `local_store`: state above the applicable inline limit is encrypted in the
+  result store at `SUI_STORE_PATH`, and the argument is a short capability
+  for that saved state. It survives a server restart with the same store.
+  With no writable store, `continuation_unavailable` explains how to enable
+  one before starting the replay again; a configured but unwritable store
+  does not raise the inline limit to 8 KiB.
 
 Both forms expire after 24 hours. Keep `address`, `as_of` and `network`
 unchanged. Altered tokens, another network, expired tokens, missing stored

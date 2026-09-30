@@ -47,6 +47,27 @@ describe("staking continuation capabilities", () => {
     } finally { restartedStore.resetStore(); }
   });
 
+  it("keeps medium snapshots out of arguments when a store is configured", () => {
+    const medium = { ...state, positions: positions.slice(0, 10) };
+    const stored = saveStakingContinuation(medium);
+    expect(stored.storage).toBe("local_store");
+    expect(loadStakingContinuation(stored.token)).toEqual(medium);
+    delete process.env.SUI_STORE_PATH;
+    resetStore();
+    const inline = saveStakingContinuation(medium);
+    expect(inline.storage).toBe("argument");
+    expect(inline.token.length).toBeGreaterThan(1024);
+    expect(inline.token.length).toBeLessThanOrEqual(8192);
+    expect(loadStakingContinuation(inline.token)).toEqual(medium);
+  });
+
+  it("does not expand the inline limit when a configured store cannot be written", () => {
+    process.env.SUI_STORE_PATH = dir;
+    resetStore();
+    expect(() => saveStakingContinuation({ ...state, positions: positions.slice(0, 10) })).toThrow(/SUI_STORE_PATH/);
+    expect(saveStakingContinuation({ positions: [] }).storage).toBe("argument");
+  });
+
   it("does not trust altered stored handles, stored ciphertext or expired stored state", () => {
     const saved = saveStakingContinuation(state);
     const parts = saved.token.split(".");

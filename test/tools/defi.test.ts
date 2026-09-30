@@ -4,6 +4,15 @@ import type { ValuedPosition } from "../../src/utils/position-value.js";
 
 // The real readers are replaced by the synthetic ones registered below.
 vi.mock("../../src/utils/valuers/index.js", () => ({}));
+// The owned-object walk, the liquid-staking reader (registered through
+// lending.ts) and the operated-object lead read the network; the behaviour
+// tested here only concerns the synthetic readers below.
+vi.mock("../../src/utils/valuers/held-balances.js", () => ({ heldWalk: () => undefined }));
+vi.mock("../../src/utils/valuers/lst.js", () => ({ suiPerLst: async () => null }));
+vi.mock("../../src/utils/operated-objects.js", () => ({
+  operatedSharedObjects: async () => ({ leads: [], transactions_read: 0, objects_read: 0 }),
+  operatedLeadRow: () => ({}),
+}));
 
 // Imported after the mock above.
 const { registerValuer } = await import("../../src/utils/position-value.js");

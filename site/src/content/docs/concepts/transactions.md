@@ -271,3 +271,37 @@ The summary keeps rows within their shares of about 40,000 characters,
 preserving pools, holders and addresses named by anomalies or flash legs,
 the sender and the profit address. Totals and anomalies cover every row;
 `omitted` reports the rest and `detail: "full"` lists every row.
+
+## Object provenance
+
+`trace_object_history` lists versions with their producing transactions and
+times, and the ownership transitions found: transfers, sharing, freezing and
+party transfers. It can establish who created a pool, vault or capability and
+who held it at a given time. Deleted and wrapped objects have `current: null`;
+`end` identifies the ending transaction and kind.
+
+A party object has owner kind `consensus` and its single owner's address.
+A kiosk-held object's current row has owner kind `object`, with the kiosk ID
+or its dynamic-field wrapper. `kiosk_cap_holder` names who controls the kiosk
+today. These custody details are never attached to historical rows as though
+they identified the controller then.
+
+For a capability mutated on every privileged call, a checkpoint search reaches
+old transitions without paging every intervening version. It can only find
+checkpoints whose owner differs from the previous probe, so a round trip out
+and back within one probed span can be invisible. `owner_change_count` beyond
+the shown page is always a lower bound. `owner_change_note` and
+`more_versions_note` explain that limit. If read or time budgets stop the
+search, `owner_change_unpinned` lists checkpoint ranges with the owners at
+each end; each range contains a change that was not pinned.
+
+Oldest-first is the default, starting from the first retained version.
+`order: "newest"` starts at the current version and pages backward, useful
+for a busy shared object before an incident. Each page echoes its order;
+pass `next_cursor` as `cursor` with the same order, or use `next_call`.
+Ownership changes compare each row to its preceding version in time, even
+on a newest-first page.
+
+`limit` defaults to 25. Newest-first and cursor pages show at most 49 versions,
+because one of the service's 50 rows supplies the predecessor needed to
+attribute the change into the oldest listed row.

@@ -15,7 +15,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerDisassemblyTools(server: McpServer) {
   server.tool(
     "disassemble_module",
-    "(Developer) Disassemble Move module(s) from a Sui package into Move bytecode assembly, using the GraphQL endpoint. No external binary is needed, so it always works. Lower-level than decompiled source (basic blocks, stack ops). Pass function_name with module_name for one function's bytecode plus the `use` lines and constants it refers to; a module runs to 250 KB. If module_name is omitted, lists available modules. Set all_modules=true to disassemble the whole package. Operands the raw text leaves opaque carry a `//` note: a clever abort code's error name, message and source line; a large integer's hex or shift form (`0xffff << 240`); a truncated constant's full value; on a `Shl` or `Shr`, that the bits shifted out are dropped with no abort; and on each `use` line of a dependency, the version and ID this package's linkage table runs, since the line prints the dependency's original ID. Accepts a 0x package ID or an MVR name (@org/app).",
+    "(Developer) Read Move bytecode assembly for a package ID or MVR name, without an external binary. Lower-level than decompiled source. Omit module_name to list modules; set all_modules for the package. Use function_name with module_name to read one function with its referenced imports and constants; a whole module can reach 250 KB. Annotates abort messages, opaque constants, shift truncation and the linked dependency versions actually run.",
     {
       package_id: z
         .string()

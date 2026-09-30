@@ -222,3 +222,22 @@ hunk before any receives a second. Added and removed functions, types, `use`
 lines and constants follow, and changed lines take priority over context.
 `sample_truncated` marks a short sample; `unsampled_functions` and
 `partly_sampled_functions` name its gaps. Follow `sample_next_call` to read them.
+
+## Bytecode assembly annotations
+
+`disassemble_module` reads assembly through GraphQL without an external
+binary. The output is lower-level than decompiled source, with basic blocks
+and stack operations. It accepts a package ID or MVR name such as `@org/app`.
+Without `module_name` it lists modules; `all_modules: true` reads the package.
+For a smaller read, supply `function_name` and `module_name`: the result
+contains that function plus referenced `use` lines and constants. A whole
+module can reach 250 KB.
+
+Comments explain operands that the raw assembly leaves opaque:
+
+- A clever abort code's error name, message and source line.
+- A large integer's hexadecimal or shift form, such as `0xffff << 240`.
+- The full value of a truncated constant.
+- On `Shl` and `Shr`, the fact that shifted-out bits are dropped without an abort.
+- On dependency `use` lines, the version and ID selected by this package's
+  linkage table, rather than only the original ID printed in raw assembly.

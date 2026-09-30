@@ -10,7 +10,7 @@ sidebar:
 | [`analyze_package`](#analyze_package) | Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, mint and admin authority, fund handling, randomness and hot-potato types. |
 | [`decompile_module`](#decompile_module) | Decompile Move module(s) from a Sui package into readable source code. |
 | [`diff_package_upgrade`](#diff_package_upgrade) | Compare two Move package versions for upgrade changes or backdoors. |
-| [`disassemble_module`](#disassemble_module) | Disassemble Move module(s) from a Sui package into Move bytecode assembly, using the GraphQL endpoint. |
+| [`disassemble_module`](#disassemble_module) | Read Move bytecode assembly for a package ID or MVR name, without an external binary. |
 | [`get_move_function`](#get_move_function) | Get a specific Move function signature from a Sui package. |
 | [`get_package`](#get_package) | Get a Sui Move package by its ID. |
 | [`get_package_dependency_graph`](#get_package_dependency_graph) | Get the dependency graph of a Sui Move package from its linkage table. |
@@ -70,7 +70,7 @@ Scan a Move package's API, struct shapes and heuristic risks: freeze/denylist, m
 - Profile: `forensics`, `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Developer) Disassemble Move module(s) from a Sui package into Move bytecode assembly, using the GraphQL endpoint. No external binary is needed, so it always works. Lower-level than decompiled source (basic blocks, stack ops). Pass function_name with module_name for one function's bytecode plus the `use` lines and constants it refers to; a module runs to 250 KB. If module_name is omitted, lists available modules. Set all_modules=true to disassemble the whole package. Operands the raw text leaves opaque carry a `//` note: a clever abort code's error name, message and source line; a large integer's hex or shift form (`0xffff << 240`); a truncated constant's full value; on a `Shl` or `Shr`, that the bits shifted out are dropped with no abort; and on each `use` line of a dependency, the version and ID this package's linkage table runs, since the line prints the dependency's original ID. Accepts a 0x package ID or an MVR name (@org/app).
+(Developer) Read Move bytecode assembly for a package ID or MVR name, without an external binary. Lower-level than decompiled source. Omit module_name to list modules; set all_modules for the package. Use function_name with module_name to read one function with its referenced imports and constants; a whole module can reach 250 KB. Annotates abort messages, opaque constants, shift truncation and the linked dependency versions actually run.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

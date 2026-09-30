@@ -70,3 +70,47 @@ see [Gas sponsors](/concepts/gas-sponsors/).
   against a control group.
 - [Forensics skill](/guides/forensics-skill/): the base-rate check that keeps
   shared ancestry from reading as collusion.
+
+## Building shared-control edges
+
+`build_wallet_edges` asks whether a fresh address reached by a trace is a new
+party or another wallet of the same operator. It builds signals live, without
+an analytics warehouse, from six sources:
+
+- Multisig co-signature: a committee key can spend the wallet whose address
+  the committee hashes to. This is the non-behavioral signal.
+- A shared first funder.
+- One address first-funding another.
+- Value moving both ways between two non-service addresses.
+- A shared gas sponsor.
+- Co-appearance in one transaction.
+
+Every intermediary is measured before use. An exchange or sponsorship relayer
+is discarded rather than linking unrelated users. The `role_split` exception
+applies when most other wallets served by a sponsor were first funded by the
+seeds' own narrow, unlabelled funder: one operator may fund and sponsor from
+different addresses.
+
+`edges` are facts with transaction digests to check; `co_signer` instead cites
+the committee's address hash. `clusters` are inferences with their own
+`evidence_tier`, never proof of ownership.
+
+Supply all suspected wallets as seeds, up to 25; links among them are exactly
+verified. `expand` defaults to true, admitting unknown siblings only after
+checking their own first funder. The expansion budget defaults to 25 candidates,
+and unverified candidates are reported rather than hidden.
+
+`popularity_limit` defaults to 50 distinct counterparties. Funders' recipients
+count only if paid at least 0.01 SUI or $0.10. Raise this limit only with cause:
+otherwise a service can link thousands of unrelated wallets. Reciprocal
+counterparties are also checked for popularity before that signal is trusted,
+up to `reciprocal_budget` (15 by default).
+
+`min_signal_types: 2` is the stricter batch-pipeline rule, improving precision
+but missing ordinary personal alt-wallets that share one mechanism; the
+default is 1. `max_cluster_size` rejects merges above 100 by default.
+`query_budget` caps GraphQL requests at 150 by default; inspect `truncated`.
+
+Mermaid output has one box per cluster and signal-labelled edges, with
+unclustered pairs dashed. `graph_json` returns nodes and edges; CSV gives one
+row per edge. JSON is the default.

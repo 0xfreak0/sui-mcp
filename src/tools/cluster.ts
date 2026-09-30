@@ -44,16 +44,16 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerClusterTools(server: McpServer) {
   server.tool(
     "build_wallet_edges",
-    "(Incident investigation) Find addresses that appear to share an operator with the ones you give it, and say why. Builds shared-control signals live, with no analytics warehouse, from six sources: multisig co-signature (a key that can spend a wallet, read from the committee that hashes to its address; the one signal here that is not behavioural), a shared first funder, one address first-funding another, value moving in BOTH directions between two non-service addresses, a shared gas sponsor, and co-appearance in a single transaction. Every intermediary is measured before it is trusted, so an exchange or a sponsorship relayer is discarded rather than used to link thousands of strangers together, unless most of the other wallets that sponsor pays gas for were first funded by the seeds' own funder, itself narrow and unlabelled (`role_split`), one operator funding from one address and sponsoring from another. Returns `edges` (facts, each with the transaction digests to check it, except co_signer which cites the address hash itself) separately from `clusters` (an inference: each carries its own evidence_tier, and none is proof of ownership). Use it when a fund trace hands off to a fresh address and you want to know whether it is really a new party or the same one moving money between their own wallets.",
+    "(Incident investigation) Find possible shared operators when a fund trace reaches fresh wallets. Six live signals are multisig co-signature, shared first funder, one wallet first-funding another, reciprocal value between non-services, shared gas sponsor and co-appearance in a transaction. Co-signature proves a key can spend the wallet through its committee's address hash; the other signals are behavioral. Intermediaries are measured before linking: services are discarded unless most wallets a sponsor serves share the seeds' narrow, unlabelled funder (role_split). Edges cite transaction digests, or the address hash for co_signer. Clusters are separately tiered inferences, never proof of ownership.",
     {
       addresses: addressListArg()
         .min(1)
         .max(25)
-        .describe("Seed addresses to examine (1-25). Give it every address you already suspect belongs together; links between seeds are the exactly-verified ones."),
+        .describe("1–25 seed addresses suspected of shared control. Links among supplied seeds are exactly verified."),
       expand: boolArg()
         .optional()
         .describe(
-          "Also look for unknown siblings, not just links among the seeds (default true). Each candidate is verified by computing its own first funder before it is admitted.",
+          "Find unknown siblings too (default true); each candidate's first funder is verified before admission.",
         ),
       expand_budget: numArg()
         .int()
@@ -67,7 +67,7 @@ export function registerClusterTools(server: McpServer) {
         .max(500)
         .optional()
         .describe(
-          "Distinct counterparties past which a funder or sponsor is treated as a service and discarded (default 50). A funder's recipients count only when paid at least 0.01 SUI or $0.10. Raise it only if you have a reason: this is the control that stops an exchange from linking the whole chain together.",
+          "Discard funders/sponsors above this counterparty count (default 50). Funder recipients count at >=0.01 SUI or $0.10. Raise only with cause; service ancestry does not link users.",
         ),
       min_signal_types: numArg()
         .int()
@@ -75,7 +75,7 @@ export function registerClusterTools(server: McpServer) {
         .max(4)
         .optional()
         .describe(
-          "Independent signal types a pair needs before it may merge (default 1). Set 2 for the strict batch-pipeline rule: far higher precision, but it misses ordinary personal alt-wallets, which typically share exactly one mechanism.",
+          "Signal types needed to merge a pair (default 1). Set 2 for higher precision, but ordinary alt-wallets may share only one.",
         ),
       max_cluster_size: numArg()
         .int()
@@ -88,7 +88,7 @@ export function registerClusterTools(server: McpServer) {
         .min(0)
         .max(100)
         .optional()
-        .describe("Reciprocal counterparties to measure for popularity (default 15). Value moving both ways is a strong signal, but the counterparty must be checked before it is trusted."),
+        .describe("Reciprocal counterparties to check for service popularity before trusting the signal (default 15)."),
       query_budget: numArg()
         .int()
         .min(10)
@@ -99,7 +99,7 @@ export function registerClusterTools(server: McpServer) {
         .enum(EXPORT_FORMATS)
         .optional()
         .describe(
-          "Output format (default json). mermaid: a fenced ```mermaid diagram, one box per cluster, edges labelled with their signal types, pairs outside any cluster dashed. graph_json: {nodes, edges}. csv: one row per edge.",
+          "Default json. mermaid draws clusters and signal-labelled edges; graph_json gives nodes/edges; csv gives one row per edge.",
         ),
     },
     async ({

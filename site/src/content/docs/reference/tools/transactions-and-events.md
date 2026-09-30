@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`get_transaction`](#get_transaction) | Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields; no hand-written GraphQL is needed to read event values. |
 | [`get_transactions`](#get_transactions) | Read up to 50 Sui transactions in ONE call, given their digests. |
-| [`query_events`](#query_events) | Query Sui events with filters (type, sender, emitting module, time or checkpoint range). |
+| [`query_events`](#query_events) | Query events by type, sender, emitting module or time/checkpoint range. |
 | [`query_transactions`](#query_transactions) | Query raw Sui transactions with specific filters (sender, affected address/object, function, time or checkpoint range). |
 
 ## get_transaction
@@ -51,15 +51,15 @@ Read up to 50 Sui transactions in ONE call, given their digests. Returns sender,
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Query Sui events with filters (type, sender, emitting module, time or checkpoint range). Returns each event's type AND its DECODED FIELDS, so there is no need to hand-write a GraphQL query to read event values; the GraphQL Event has neither `type` nor `json` at its top level (both sit under `contents`). Use this to measure per-protocol flow: a transaction's balance changes cover the whole PTB and over-attribute, while a protocol's own events do not. Newest first by default; each page reports its `order`, `oldest_shown`/`newest_shown` and the resolved `window`, and `next_cursor` goes back as `cursor` with the same `order`. A page is filled to `limit` across several reads when the service returns short pages; if the read budget runs out first, `scan` says so and names the call that continues. An event carries the ID of the package version that DEFINED its struct, so an `event_type` written with an upgraded package ID is rewritten to the defining one and `event_type_resolution` says so. A module's emitting id depends on when the call happened: before mainnet checkpoint 69,982,635 (2024-10-17) Sui anchored it to the package's ORIGINAL id for the life of the lineage regardless of the version called; from that checkpoint on it is the id of the version that was actually called. A `module` filter is queried at whichever id (or both, merged, for a window spanning the cutover) the window needs, and `module_scope` reports how. A framework package upgraded in place (0x2, 0x3…) keeps one ID for every version, so its filter already covers the whole lineage. For the events of ONE known transaction, use get_transaction instead: it returns them already decoded.
+Query events by type, sender, emitting module or time/checkpoint range. Event fields are decoded; no hand-written GraphQL is needed. Use a protocol's own events to measure its flow: whole-PTB balance changes can over-attribute it. For one known transaction, use get_transaction. Pages default to newest first and report order, timestamp bounds and the resolved window. Continue with next_cursor as cursor, preserving order and filters; short service pages are filled to limit, and scan names the continuation if the read budget stops first. Event types use their struct's defining package ID: upgraded IDs are rewritten and event_type_resolution reports it. Module filters follow the network's emitting-ID cutover, using the original ID before it and the called version afterward, merging both for crossing windows. module_scope reports the scope and other version IDs; after cutover, one ID covers only that version. Framework packages upgraded in place keep one ID covering the lineage.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `event_type` | string | no | Filter by event type (e.g. 0x2::coin::CoinBalanceChange) |
 | `sender` | string | no | Filter by transaction sender |
-| `module` | string | no | Filter by emitting module (e.g. 0x2::coin or 0x2). Before the relocate_event_module cutover (mainnet checkpoint 69,982,635 on 2024-10-17, testnet 118,397,835 on 2024-10-09, devnet at genesis), events carry the package's ORIGINAL id regardless of the version called; from the cutover on they carry the id of the version actually called. The filter is queried at whichever id (or both, merged) your window needs, and `module_scope` reports how. From the cutover on, any one id (the original included) matches calls through that version only, and `module_scope.other_version_ids` lists the lineage's other ids. |
-| `after_checkpoint` | string \| number | no | Only events after this point: a checkpoint number, or an ISO 8601 time (2026-08-07T00:00:00Z), which includes events at that time |
-| `before_checkpoint` | string \| number | no | Only events before this point: a checkpoint number, or an ISO 8601 time, which includes events at that time |
+| `module` | string | no | Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
+| `after_checkpoint` | string \| number | no | Events after this checkpoint number (exclusive), or at/after this ISO 8601 time (inclusive). |
+| `before_checkpoint` | string \| number | no | Events before this checkpoint number (exclusive), or at/before this ISO 8601 time (inclusive). |
 | `order` | `newest` \| `oldest` | no | 'newest' (default) starts at the most recent event in range and pages back; 'oldest' starts at the earliest and pages forward. |
 | `limit` | integer (1 to 50) | no | Max results (default 20, max 50) |
 | `cursor` | string | no | `next_cursor` from the previous page. Pass the same `order` and filters. |

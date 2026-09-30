@@ -335,3 +335,41 @@ wallet, so the ordinary activity page cannot show them. The scan of wallets
 naming this delegate is reused for up to five minutes; `alias_scan_as_of`
 records when it read the chain. `signed_as_alias_unavailable` marks an
 unfinished scan even when some matches were returned.
+
+## Querying events across transactions
+
+`query_events` filters by event type, transaction sender, emitting module, or
+a time/checkpoint range. It returns event types and decoded fields, so there
+is no need to hand-write GraphQL for event values. In raw GraphQL, `type` and
+`json` are under `contents`, not on the Event itself. A protocol's own events
+are the right source for its flows: a whole-PTB balance change can include
+other protocols' activity. For events from one known transaction, use
+`get_transaction`.
+
+Newest-first is the default. Each page reports its order, oldest and newest
+timestamps, and resolved window. Preserve order and filters when passing
+`next_cursor` as `cursor`. The tool fills short service pages up to `limit`;
+if its read budget stops first, `scan` names the continuation. Checkpoint
+bounds are exclusive; ISO 8601 bounds include events at the stated time.
+For example, `after_checkpoint: "2026-08-07T00:00:00Z"` includes that instant.
+
+An event type carries the package ID that defined its struct.
+`event_type: "0x2::coin::CoinBalanceChange"` is a full type filter. If an
+upgraded package ID is supplied, the tool resolves it to the defining version
+and reports `event_type_resolution`.
+
+An emitting-module filter, such as `0x2::coin` or package-only `0x2`, follows
+the network's `relocate_event_module` cutover:
+
+| Network | Cutover |
+|---|---|
+| Mainnet | Checkpoint 69,982,635, 2024-10-17 |
+| Testnet | Checkpoint 118,397,835, 2024-10-09 |
+| Devnet | Genesis |
+
+Before cutover, events use the original package ID regardless of which
+version was called. Afterward, they use the called version's ID. A window
+crossing cutover queries both scopes and merges them; `module_scope` reports
+the scope. After cutover any one ID, including the original, matches only
+that version, and `module_scope.other_version_ids` lists the rest. Framework
+packages such as `0x2` and `0x3` upgrade in place, so one ID covers all versions.

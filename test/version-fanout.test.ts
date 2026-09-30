@@ -23,7 +23,11 @@ function serve(all: Tx[], order: ListOrder, cursor: string | undefined, size: nu
   const slice =
     order === "newest" ? all.slice(Math.max(0, at - size), at) : all.slice(at + 1, at + 1 + size);
   const hasMore = order === "newest" ? at - size > 0 : at + 1 + size < all.length;
-  return { edges: slice.map((t) => ({ cursor: t.digest, node: t })), hasMore };
+  return {
+    edges: slice.map((t) => ({ cursor: t.digest, node: t })),
+    hasMore,
+    nextCursor: (order === "newest" ? slice[0] : slice.at(-1))?.digest ?? null,
+  };
 }
 
 function walk(lineage: Tx[][], order: ListOrder, limit: number): Tx[][] {

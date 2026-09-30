@@ -27,6 +27,8 @@ export interface VersionPage<T> {
   edges: Array<{ cursor: string; node: T }>;
   /** More rows exist beyond this page in the walk's direction. */
   hasMore: boolean;
+  /** Boundary of the scanned range, including ranges with no matching rows. */
+  nextCursor: string | null;
 }
 
 interface CursorState {
@@ -97,6 +99,10 @@ export function mergeVersionPages<T>(
   const consumed = streams.map(() => 0);
   const lastCursor: Array<string | undefined> = streams.map(() => undefined);
   const blocked = new Set<number>();
+  // An empty, unfinished stream can still contain the next global row.
+  const needsRead = () => streams.some((s, i) =>
+    !s.done && (!pages[i] || (pages[i]!.hasMore && consumed[i] === pages[i]!.edges.length)),
+  );
   for (const item of items) {
     if (blocked.has(item.stream)) continue;
     const key = keyOf(item.node);
@@ -105,9 +111,9 @@ export function mergeVersionPages<T>(
       lastCursor[item.stream] = item.cursor;
       continue;
     }
-    if (taken.length >= limit) {
-      // Past the page: this stream stops here so its later rows are not
-      // consumed out of order. Duplicates of shown rows still advance others.
+    if (taken.length >= limit || needsRead()) {
+      // Stop at an unknown stream's frontier too. Only duplicates of rows
+      // already shown may advance another stream past this point.
       blocked.add(item.stream);
       continue;
     }
@@ -123,7 +129,7 @@ export function mergeVersionPages<T>(
     const all = consumed[i] === page.edges.length;
     return {
       address: s.address,
-      cursor: lastCursor[i] ?? s.cursor,
+      cursor: (all ? page.nextCursor : lastCursor[i]) ?? s.cursor,
       done: all && !page.hasMore,
     };
   });

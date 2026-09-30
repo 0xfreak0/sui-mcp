@@ -621,7 +621,10 @@ summarize_incident_losses(digests: <every attack digest>)
   event naming the object states the caller's value times another of its
   numbers, scaled by a power of ten (`product`). `caller_value_writes` lists
   every write with the `fields` that hold the value, and `value_signed` when
-  the value reads as negative. `outsized-mint` means a liquidity event
+  the value reads as negative. No `caller-value-used` does not clear a call:
+  a value restored before the final write can escape the rule when no event
+  tracks the field, so read `decode_ptb` and the called bytecode.
+  `outsized-mint` means a liquidity event
   credited more than its amounts buy on its own tick range at any price, or
   an event minted a share of an object's `Supply<T>` more than 100x the share
   of the object's own holdings its deposits make up.
@@ -702,6 +705,13 @@ summarize_incident_losses(digests: <every attack digest>)
   kept out of the totals and groups. Follow those recipients; they are often
   the attacker's own next wallets. A vault that emits no pool event is still
   a group: its `pool_basis` is `"state"`, read from the holdings that fell.
+- **Groups are exact pool sets, and a sender window is not the take.** A
+  transaction touching several pools has one attacker net that cannot be
+  split among them, and one vault's deposits and withdrawals over different
+  sets stay separate groups, so the largest group's `attacker_usd` need not be
+  that vault's total loss. `sender` mode nets the attacker's swaps, deposits,
+  withdrawals and bridge burns in the window against the exploit credits;
+  pass the exploit digests to measure the take.
 
 `summarize_address_flows` answers the next questions about the attacker's
 wallet: what it took per asset, who paid it, and what left Sui to where.
@@ -804,8 +814,9 @@ upgrade introduced the flaw, and many shipped with the first publish.
    `disassemble_module` at that version's package id. `diff_package_upgrade`
    between the two versions dates the gate and the move.
 4. **Read the objects around the exploit.** `query_transactions` with
-   `affected_object` lists every transaction that touched a shared object the
-   exploit changed, the attacker's setup included, and `get_object` with
+   `affected_object` lists the transactions that changed a shared object the
+   exploit changed, the attacker's setup included; one that only read it can
+   be absent. `get_object` with
    `version` reads its fields at any version. `get_transaction` with
    `detail: "full"` → `object_changes.by_kind` gives the version each
    transaction left a changed object at, which reaches an object held in a
@@ -854,7 +865,7 @@ the coverage and continuation rules a hand-written query must supply itself.
 | A diagram for the report? | `format: "mermaid"` on `trace_flow_graph`, `find_flow_path`, `trace_funds`, `build_wallet_edges`; `export_case` with `format: "mermaid"` |
 | Several addresses at once? | `find_funding_sources` — shares work, reports co-funding |
 | Is this funder an exchange? | `get_address_fanout` |
-| Is this an exchange deposit address, and whose? | `classify_deposit_address` |
+| Is this an exchange deposit address, and whose? | `classify_deposit_address`, with `from` and `to` for the period that matters. `summarize_address_flows`, `identify_address` and `manage_labels` lookup show the inferred deposit label or a verdict computed earlier in the session for the same period, and otherwise say `not classified` with the call to run |
 | Is this address exposed to an exploiter, exchange, bridge or sanctioned account? | `screen_address` |
 | Do these wallets share an operator? | `build_wallet_edges` |
 | Who really runs this multisig treasury? | `analyze_multisig` — live vs dormant keys across its history |
@@ -870,14 +881,14 @@ the coverage and continuation rules a hand-written query must supply itself.
 | Funds held by an object? | `identify_address` or `get_object` → `address_balances`; `get_balance` with the object id as `owner` |
 | Coin objects or address balance? | `get_balance`, `get_wallet_overview` → `coin_balance`, `address_balance` |
 | What did this address hold before/after the incident? | `get_balance` with `at` or `at_checkpoint` → `balance` only when `complete` is true |
-| What did this wallet stake then? | `get_staking_summary` with `as_of` (date or checkpoint): directly held StakedSui, including transfers and split/joined stakes. Historical rewards are separate estimates; incomplete reads give null totals. Wrapped stakes and liquid-staking tokens are excluded |
+| What did this wallet stake then? | `get_staking_summary` with `as_of` (date or checkpoint): directly held StakedSui, including transfers and split/joined stakes. Historical rewards are separate estimates; incomplete reads give null totals. A rebuild that stops returns `continue_with`, which resumes where it stopped. Wrapped stakes and liquid-staking tokens are excluded |
 | Which validators are active? | `get_validators` defaults to compact summary rows; `detail: "full"` returns all fields and rows unless `limit` is set. `active_validator_count` and `total_stake` cover the whole set; `validator_count` counts displayed rows |
 | Several digests at once? | `get_transactions` — up to 50 in one call |
 | What does this unknown package do? | `analyze_package` — per-module API summary and capability audit; `modules: [...]` for those modules' struct shapes and signatures |
 | Who deployed this package, and who pushed this version? | `analyze_package` → `root_publisher`, `version_publisher` (`identify_address` → `publisher`) |
 | What did an upgrade change? | `diff_package_upgrade` → `summary`, `changed_functions`, hunks, `visibility_changes`, `linkage_changes` |
 | How did this exploit work? | "Finding the flaw in the code": the calls (`decode_ptb`), then `get_move_function` and `disassemble_module` with `function_name` on each version of the lineage that ran |
-| What did a shared object hold before, between or after the attack's steps? | `query_transactions` with `affected_object` for every transaction that touched it, then `get_object` with `version`; `get_transaction` with `detail: "full"` → `object_changes.by_kind` gives the version each transaction left it at, and `decode_ptb` → `inputs` the version read for an object passed as an input |
+| What did a shared object hold before, between or after the attack's steps? | `query_transactions` with `affected_object` for the transactions that changed it (one that only read it can be absent), then `get_object` with `version`; `get_transaction` with `detail: "full"` → `object_changes.by_kind` gives the version each transaction left it at, and `decode_ptb` → `inputs` the version read for an object passed as an input |
 | Which version of a dependency did this package run? | The note on the dependency's `use` line in `disassemble_module`, or `get_package` → `dependencies`; `get_package_dependency_graph` for dependencies of dependencies |
 | Can the code still be changed, and by whom? | `analyze_package` → the UpgradeCap's `holder_status` |
 | Who pushed each version, with one key or a multisig, and who held the UpgradeCap at time T? | `get_upgrade_history` → per-version `signer`, `cap_holder`, `flags`; `as_of` for a moment |
@@ -900,7 +911,7 @@ the coverage and continuation rules a hand-written query must supply itself.
 | Which pools were drained in this incident, and for how much? | `summarize_incident_losses` — per-pool losses and a USD total, unpriced coins listed |
 | Who else profited in this window, and by how much? | `aggregate_events` with `module` and `group_pnl` — each sender's own balance changes in USD, multi-leg PTBs marked |
 | How much did this address take per asset, who paid it, and how much left Sui to where? | `summarize_address_flows` — per-coin totals in USD, valued objects in and out (`objects`, counted in `totals_usd` and with their counterparty), inflow sources, top recipients, gas sponsors, bridge exits grouped by destination; totals and `inflow_source_count` cover every row, and `detail: "full"` lists every source |
-| What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price |
+| What was this coin worth at the time? | `get_token_prices` with `at` — no key needed; says which coins it could not price and why: a failed request, no quote, or `out_of_range` when no selected provider serves that date |
 | Where did this object come from? How did it change just before the incident? | `trace_object_history` — reaches a deleted or wrapped object (`end`), and a distant transition on a capability mutated on every privileged call, without paging through every version; `order: "newest"` lists the latest versions first and `next_call` pages back |
 | Who holds this token? | `get_top_holders` — a ranking ONLY when `complete_ranking` is true; walks coins and address balances |
 | Has anything moved since I looked? | `watch_addresses` then `poll_watch` |
@@ -922,7 +933,9 @@ unknown, not zero, and not evidence of an empty or unused wallet. Retry before
 drawing anything from it.
 
 Batch digests through `get_transactions` rather than looping
-`get_transaction`.
+`get_transaction`. The batch reads coin balance changes, not object custody:
+where an NFT, position or StakedSui could have moved, read `get_transaction`
+→ `object_transfers`.
 
 ## Conclusions to refuse
 
@@ -1051,7 +1064,9 @@ Batch digests through `get_transactions` rather than looping
 - **A timeline walk has a budget.** In `build_timeline`, `coverage[].truncated`
   means `per_address` ended that address's walk inside the window. Past its
   `reached_checkpoint` the timeline is missing that address's activity; rerun
-  with its `continue_with` bound or a higher `per_address`.
+  with its `continue_with` bound or a higher `per_address`. A summary that
+  omits rows can hide a closing action even in a short window; follow
+  `omitted.next_call` before reading the sequence as complete.
 - **`token_flow` is the sender's.** On a `get_transaction_history` or
   `build_timeline` row it is the balance change of whoever sent the
   transaction, so a transfer the subject received shows the sender's outflow.

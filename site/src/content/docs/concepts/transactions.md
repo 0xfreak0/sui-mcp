@@ -266,7 +266,8 @@ a `decode_ptb` call selecting the medium and high flags' commands.
 Flash legs, oracle touches and anomalies are leads; `checks_run` names every
 check, and no match clears nothing.
 
-USD prices need no API key: DefiLlama supplies them, with Pyth for verified
+USD prices need no API key: DefiLlama supplies them, CoinGecko and
+GeckoTerminal price recent dates it cannot, and Pyth is used for verified
 coins when `PYTH_API_KEY` is set. Every unpriced coin is listed. `attacker`
 selects the profit address; a losing address is reported as a loss with the
 addresses that gained, as with a victim who signed a drain.
@@ -521,9 +522,9 @@ the gas-only threshold across those transactions becomes the default instead,
 reported in `attacker_defaulted_from_sender`. An unpriced gain by any other
 non-sender blocks this default. Set `attacker` to choose explicitly.
 
-Each coin movement uses a historical quote for its own UTC day before amounts
-are summed; each moved object uses its own transaction's time. `usd_basis`
-states the method, sources and coin-day coverage. Missing quotes, unknown
+Each coin is priced at its median movement time within each UTC hour before
+amounts are summed; each moved object uses its own transaction's time.
+`usd_basis` states the method, sources and coverage. Missing quotes, unknown
 decimals and pricing-budget stops leave amounts unpriced without falling back
 to another day's price. `price_at` sets one Unix-seconds or ISO 8601 moment for
 both coins and objects. See [USD over a time window](/concepts/fund-flows/#usd-over-a-time-window).

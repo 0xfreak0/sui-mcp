@@ -270,7 +270,7 @@ sidebar:
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Address to measure (0x...) |
-| `max_transactions` | integer (50 to 3000) | no | Transactions to scan, walking backwards from the most recent (default 1000). Counts both directions. Higher is slower but tighter; check `truncated` in the response. |
+| `max_transactions` | integer (50 to 3000) | no | Transactions to scan, newest first (default 1000). More is slower but tighter; check `truncated`. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_upgrade_history

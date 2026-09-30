@@ -200,21 +200,17 @@ export function registerDecompilerTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  package_id,
-                  modules,
-                  suivision_url: suivisionPackageUrl(package_id),
-                  decompiler_available: available,
-                  ...(available
-                    ? {}
-                    : {
-                        note: "No move-decompiler binary is configured, so decompiling these modules will fail. disassemble_module reads them with no binary (function_name for one function); SUI_DECOMPILER_PATH points the server at the optional decompiler.",
-                      }),
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                package_id,
+                modules,
+                suivision_url: suivisionPackageUrl(package_id),
+                decompiler_available: available,
+                ...(available
+                  ? {}
+                  : {
+                      note: "No move-decompiler binary is configured, so decompiling these modules will fail. disassemble_module reads them with no binary (function_name for one function); SUI_DECOMPILER_PATH points the server at the optional decompiler.",
+                    }),
+              }),
             },
           ],
         };
@@ -281,21 +277,17 @@ export function registerDecompilerTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  package_id,
-                  module_count: results.length,
-                  // Surfaced so a truncated result is never mistaken for the
-                  // whole package.
-                  total_modules_with_bytecode: modulesWithBytecode.length,
-                  complete: results.length === modulesWithBytecode.length,
-                  ...(notes.length ? { notes } : {}),
-                  suivision_url: suivisionPackageUrl(package_id),
-                  modules: results,
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                package_id,
+                module_count: results.length,
+                // Surfaced so a truncated result is never mistaken for the
+                // whole package.
+                total_modules_with_bytecode: modulesWithBytecode.length,
+                complete: results.length === modulesWithBytecode.length,
+                ...(notes.length ? { notes } : {}),
+                suivision_url: suivisionPackageUrl(package_id),
+                modules: results,
+              }),
             },
           ],
         };
@@ -309,14 +301,10 @@ export function registerDecompilerTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  error: `Module '${module_name}' not found`,
-                  available_modules: available,
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                error: `Module '${module_name}' not found`,
+                available_modules: available,
+              }),
             },
           ],
           isError: true,
@@ -340,11 +328,7 @@ export function registerDecompilerTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                { package_id, module: module_name, suivision_url: suivisionPackageUrl(package_id), source },
-                null,
-                2
-              ),
+              text: JSON.stringify({ package_id, module: module_name, suivision_url: suivisionPackageUrl(package_id), source }),
             },
           ],
         };
@@ -360,19 +344,15 @@ export function registerDecompilerTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                package_id,
-                module: module_name,
-                function: function_name,
-                suivision_url: suivisionPackageUrl(package_id),
-                source: fn.text,
-                ...(fn.uses.length ? { uses: fn.uses } : {}),
-                ...(fn.constants.length ? { constants: fn.constants } : {}),
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              package_id,
+              module: module_name,
+              function: function_name,
+              suivision_url: suivisionPackageUrl(package_id),
+              source: fn.text,
+              ...(fn.uses.length ? { uses: fn.uses } : {}),
+              ...(fn.constants.length ? { constants: fn.constants } : {}),
+            }),
           },
         ],
       };

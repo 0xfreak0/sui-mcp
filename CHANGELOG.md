@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Changed
+- **Tool JSON answers omit indentation.** Graph and fund traces, flow paths,
+  event queries and the other JSON tool responses keep every field, row,
+  summary, caveat and continuation without pretty-printing overhead. Graph
+  JSON exports and SuiNS name-resolution annotations use the same compact
+  encoding. Resource bodies, stored results and non-JSON exports are unchanged.
 - **`was_i_scammed` is now `what_happened_to_my_funds`, and it starts with
   stopping further loss.** Someone asking has usually lost funds already, so
   the prompt works in this order: whether anyone else can still move what is

@@ -596,7 +596,7 @@ export function registerUpgradeHistoryTools(server: McpServer) {
           },
           { full: detail === "full", next_call: { tool: "get_upgrade_history", repeat_with: { detail: "full" } } },
         );
-        return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

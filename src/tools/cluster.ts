@@ -220,7 +220,7 @@ export function registerClusterTools(server: McpServer) {
             })),
           };
           if (format === "graph_json") {
-            return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph), null, 2) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph)) }] };
           }
           const text =
             format === "mermaid"
@@ -258,106 +258,102 @@ export function registerClusterTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  seeds: addresses,
-                  examined_count: built.examined.length,
-                  queries_used: built.queries_used,
-                  truncated: built.truncated,
-
-                  // --- facts ---
-                  edge_count: allEdges.length,
-                  edges: allEdges.map((e) => ({
-                    ...e,
-                    wallet_a_info: describe(e.wallet_a),
-                    wallet_b_info: describe(e.wallet_b),
-                  })),
-
-                  // --- inference ---
-                  // Decided per cluster. A cluster built purely on
-                  // unilateral co-signature is read from the address hash, so
-                  // calling it heuristic alongside a shared-funder guess would
-                  // understate it as badly as the reverse would overstate one.
-                  // No cluster at all is the null result of a heuristic
-                  // search, so an empty result is `heuristic` although every
-                  // cluster of none passes the chain-derived test.
-                  evidence_tier:
-                    clustered.clusters.length > 0 && clustered.clusters.every((c) => c.evidence_tier === "chain-derived")
-                      ? "chain-derived"
-                      : clustered.clusters.some((c) => c.evidence_tier === "chain-derived")
-                        ? "mixed — see each cluster's evidence_tier"
-                        : "heuristic",
-                  clusters: clustered.clusters.map((c) => ({
-                    ...c,
-                    members: c.members.map(describe),
-                    ...(c.evidence_tier === "chain-derived"
-                      ? {
-                          basis:
-                            "Every merge in this cluster is a key that can spend the wallet it is linked to, on its own, read from the committee that hashes to the address. This is not a behavioural coincidence and no popularity judgement was made. It still shows CONTROL rather than ownership — a custodian holds a key for a client.",
-                        }
-                      : {}),
-                    ...(c.evidence_tier !== "chain-derived" && c.independent_intermediaries < 2
-                      ? {
-                          single_point_of_failure:
-                            "Every edge in this cluster rests on ONE intermediary. That is one fact stated many times, not corroboration — the edge count is not evidence of strength. If that address turns out to be a payout service or exchange, the whole cluster falls at once. Check it in used_intermediaries before relying on this.",
-                        }
-                      : {}),
-                  })),
-                  ...(clustered.size_capped
+              text: JSON.stringify({
+                seeds: addresses,
+                examined_count: built.examined.length,
+                queries_used: built.queries_used,
+                truncated: built.truncated,
+              
+                // --- facts ---
+                edge_count: allEdges.length,
+                edges: allEdges.map((e) => ({
+                  ...e,
+                  wallet_a_info: describe(e.wallet_a),
+                  wallet_b_info: describe(e.wallet_b),
+                })),
+              
+                // --- inference ---
+                // Decided per cluster. A cluster built purely on
+                // unilateral co-signature is read from the address hash, so
+                // calling it heuristic alongside a shared-funder guess would
+                // understate it as badly as the reverse would overstate one.
+                // No cluster at all is the null result of a heuristic
+                // search, so an empty result is `heuristic` although every
+                // cluster of none passes the chain-derived test.
+                evidence_tier:
+                  clustered.clusters.length > 0 && clustered.clusters.every((c) => c.evidence_tier === "chain-derived")
+                    ? "chain-derived"
+                    : clustered.clusters.some((c) => c.evidence_tier === "chain-derived")
+                      ? "mixed — see each cluster's evidence_tier"
+                      : "heuristic",
+                clusters: clustered.clusters.map((c) => ({
+                  ...c,
+                  members: c.members.map(describe),
+                  ...(c.evidence_tier === "chain-derived"
                     ? {
-                        size_capped_merges: clustered.size_capped,
-                        size_cap_note:
-                          "Merges were refused for exceeding max_cluster_size. That usually means an intermediary slipped past the popularity filter — inspect excluded_intermediaries and the widest edges before raising the cap.",
+                        basis:
+                          "Every merge in this cluster is a key that can spend the wallet it is linked to, on its own, read from the committee that hashes to the address. This is not a behavioural coincidence and no popularity judgement was made. It still shows CONTROL rather than ownership — a custodian holds a key for a client.",
                       }
                     : {}),
-                  ...(clustered.untrusted_edges.length
+                  ...(c.evidence_tier !== "chain-derived" && c.independent_intermediaries < 2
                     ? {
-                        observed_but_below_threshold: clustered.untrusted_edges,
-                        below_threshold_note:
-                          "These pairs share a signal but not enough to merge under the current rule. Reported rather than dropped — they are leads, and lowering min_signal_types or reading the evidence yourself may change the picture.",
+                        single_point_of_failure:
+                          "Every edge in this cluster rests on ONE intermediary. That is one fact stated many times, not corroboration — the edge count is not evidence of strength. If that address turns out to be a payout service or exchange, the whole cluster falls at once. Check it in used_intermediaries before relying on this.",
                       }
                     : {}),
-
-                  ...(built.used_intermediaries.length
-                    ? {
-                        used_intermediaries: built.used_intermediaries,
-                        used_intermediary_note:
-                          "The shared funders and sponsors the edges above rest on. `scan_complete: false` means the scan stopped at its page cap or the query budget before reaching the end of that address's history, so calling it narrow is provisional — a widely-distributing address that has since gone quiet can read as narrow from recent activity alone.",
-                      }
-                    : {}),
-                  ...(coSigner.excluded.length
-                    ? {
-                        excluded_co_signers: coSigner.excluded,
-                        excluded_co_signer_note:
-                          "These keys sit on more committees than the co-signer limit, so they are wallet-provider or custody keys rather than operators. Each one CAN spend every wallet it signs for — that part is chain-derived and may matter on its own — but it says nothing about whether those wallets share an owner, so no edges were drawn through them. The count is over the committees examined here, so it is a lower bound.",
-                      }
-                    : {}),
-                  ...(built.excluded_intermediaries.length
-                    ? {
-                        excluded_intermediaries: built.excluded_intermediaries,
-                        exclusion_note:
-                          "Discarded, with the reason on each entry. Most were measured and pay or sponsor too many distinct parties for shared ancestry through them to mean anything, which is the control that keeps a single exchange from linking every wallet on the chain into one cluster. An entry whose reason says it was never measured (the budget ran out, or the read failed) was dropped because nobody looked, not because it is wide, and edges through it were not looked for.",
-                      }
-                    : {}),
-                  ...(labeledSeeds.length
-                    ? {
-                        warning_labeled_seeds: labeledSeeds.map((x) => ({
-                          address: x.address,
-                          label: x.label!.label,
-                          category: x.label!.category,
-                        })),
-                        labeled_seed_note:
-                          "One or more seeds is a known exchange, bridge or protocol. Those share funders and sponsors with everyone, so edges touching them describe the service, not an operator.",
-                      }
-                    : {}),
-                  ...(built.notes.length ? { notes: built.notes } : {}),
-
-                  caveat:
-                    "Edges are facts; clusters are an inference — never record a heuristic-tier one as a finding without confirming it yourself. The exception is `co_signer`, which is read from the committee that hashes to the multisig's address rather than from behaviour, so a cluster marked `chain-derived` rests on arithmetic; it still shows control, not ownership. Critically, ABSENCE OF AN EDGE IS NOT EVIDENCE OF SEPARATE CONTROL: every behavioural signal here comes from a capped scan of public data, so two wallets funded out-of-band, sponsored by nobody and never sharing a transaction produce no edge no matter who controls them. And a multi-party committee is as much evidence its members are SEPARATE parties as that they share an operator — that is what a treasury multisig is for.",
-                },
-                null,
-                2,
-              ),
+                })),
+                ...(clustered.size_capped
+                  ? {
+                      size_capped_merges: clustered.size_capped,
+                      size_cap_note:
+                        "Merges were refused for exceeding max_cluster_size. That usually means an intermediary slipped past the popularity filter — inspect excluded_intermediaries and the widest edges before raising the cap.",
+                    }
+                  : {}),
+                ...(clustered.untrusted_edges.length
+                  ? {
+                      observed_but_below_threshold: clustered.untrusted_edges,
+                      below_threshold_note:
+                        "These pairs share a signal but not enough to merge under the current rule. Reported rather than dropped — they are leads, and lowering min_signal_types or reading the evidence yourself may change the picture.",
+                    }
+                  : {}),
+              
+                ...(built.used_intermediaries.length
+                  ? {
+                      used_intermediaries: built.used_intermediaries,
+                      used_intermediary_note:
+                        "The shared funders and sponsors the edges above rest on. `scan_complete: false` means the scan stopped at its page cap or the query budget before reaching the end of that address's history, so calling it narrow is provisional — a widely-distributing address that has since gone quiet can read as narrow from recent activity alone.",
+                    }
+                  : {}),
+                ...(coSigner.excluded.length
+                  ? {
+                      excluded_co_signers: coSigner.excluded,
+                      excluded_co_signer_note:
+                        "These keys sit on more committees than the co-signer limit, so they are wallet-provider or custody keys rather than operators. Each one CAN spend every wallet it signs for — that part is chain-derived and may matter on its own — but it says nothing about whether those wallets share an owner, so no edges were drawn through them. The count is over the committees examined here, so it is a lower bound.",
+                    }
+                  : {}),
+                ...(built.excluded_intermediaries.length
+                  ? {
+                      excluded_intermediaries: built.excluded_intermediaries,
+                      exclusion_note:
+                        "Discarded, with the reason on each entry. Most were measured and pay or sponsor too many distinct parties for shared ancestry through them to mean anything, which is the control that keeps a single exchange from linking every wallet on the chain into one cluster. An entry whose reason says it was never measured (the budget ran out, or the read failed) was dropped because nobody looked, not because it is wide, and edges through it were not looked for.",
+                    }
+                  : {}),
+                ...(labeledSeeds.length
+                  ? {
+                      warning_labeled_seeds: labeledSeeds.map((x) => ({
+                        address: x.address,
+                        label: x.label!.label,
+                        category: x.label!.category,
+                      })),
+                      labeled_seed_note:
+                        "One or more seeds is a known exchange, bridge or protocol. Those share funders and sponsors with everyone, so edges touching them describe the service, not an operator.",
+                    }
+                  : {}),
+                ...(built.notes.length ? { notes: built.notes } : {}),
+              
+                caveat:
+                  "Edges are facts; clusters are an inference — never record a heuristic-tier one as a finding without confirming it yourself. The exception is `co_signer`, which is read from the committee that hashes to the multisig's address rather than from behaviour, so a cluster marked `chain-derived` rests on arithmetic; it still shows control, not ownership. Critically, ABSENCE OF AN EDGE IS NOT EVIDENCE OF SEPARATE CONTROL: every behavioural signal here comes from a capped scan of public data, so two wallets funded out-of-band, sponsored by nobody and never sharing a transaction produce no edge no matter who controls them. And a multi-party committee is as much evidence its members are SEPARATE parties as that they share an operator — that is what a treasury multisig is for.",
+              }),
             },
           ],
         };

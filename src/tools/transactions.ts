@@ -1190,22 +1190,18 @@ export function registerTransactionTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  order: direction,
-                  window: describeWindow(after_checkpoint, before_checkpoint, window),
-                  ...shownRange(nodes.map((n) => n.effects?.timestamp)),
-                  ...(all_versions && versions
-                    ? { versions_read: versions.map((v) => ({ package: v.address, version: v.version })) }
-                    : {}),
-                  ...(functionScope ? { function_scope: functionScope } : {}),
-                  transactions,
-                  has_next_page: hasNextPage,
-                  next_cursor: nextCursor,
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                order: direction,
+                window: describeWindow(after_checkpoint, before_checkpoint, window),
+                ...shownRange(nodes.map((n) => n.effects?.timestamp)),
+                ...(all_versions && versions
+                  ? { versions_read: versions.map((v) => ({ package: v.address, version: v.version })) }
+                  : {}),
+                ...(functionScope ? { function_scope: functionScope } : {}),
+                transactions,
+                has_next_page: hasNextPage,
+                next_cursor: nextCursor,
+              }),
             },
           ],
         };

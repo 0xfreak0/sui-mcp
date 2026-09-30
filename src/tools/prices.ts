@@ -156,7 +156,7 @@ export function registerPriceTools(server: McpServer) {
                 "DefiLlama's confidence is a 0-1 score for how well its sources agreed; Pyth's is a USD confidence interval. A price whose sample is more than an hour from the moment asked for is marked stale.",
               prices,
               ...(unpriced.length ? { unpriced } : {}),
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -228,7 +228,7 @@ export function registerPriceTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ prices }, null, 2),
+            text: JSON.stringify({ prices }),
           },
         ],
       };

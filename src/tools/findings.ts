@@ -25,7 +25,7 @@ import { normalizeSuiAddress } from "@mysten/sui/utils";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const ok = (payload: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(payload) }],
 });
 
 /** Shared refusal, since every tool here is useless without the store. */
@@ -275,7 +275,7 @@ export function registerFindingsTools(server: McpServer) {
       if (format === "mermaid" || format === "graph_json") {
         const flow = await caseFlowGraph(findings);
         if (format === "graph_json") {
-          return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(flow.graph), ...flow.notes }, null, 2) }] };
+          return { content: [{ type: "text" as const, text: JSON.stringify({ ...toGraphJson(flow.graph), ...flow.notes }) }] };
         }
         const report = renderCaseReport({ caseName: case_name, findings, includeAppendix: include_appendix });
         const diagram = flow.graph.edges.length

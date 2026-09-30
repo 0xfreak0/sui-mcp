@@ -99,7 +99,7 @@ export function registerCoinTools(server: McpServer) {
                 coin_balance: bal.coin_balance,
                 address_balance: bal.address_balance,
                 transactions_scanned: 0,
-              }, null, 2),
+              }),
             }],
           };
         }
@@ -124,7 +124,7 @@ export function registerCoinTools(server: McpServer) {
               ...asked,
               checkpoint_timestamp: checkpointTimestamp,
               ...result,
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -138,17 +138,13 @@ export function registerCoinTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                coin_type: res.balance.coinType,
-                balance: res.balance.balance,
-                balance_formatted: formatCoinAmount(res.balance.balance, res.balance.coinType),
-                coin_balance: res.balance.coinBalance,
-                address_balance: res.balance.addressBalance,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              coin_type: res.balance.coinType,
+              balance: res.balance.balance,
+              balance_formatted: formatCoinAmount(res.balance.balance, res.balance.coinType),
+              coin_balance: res.balance.coinBalance,
+              address_balance: res.balance.addressBalance,
+            }),
           },
         ],
       };
@@ -173,19 +169,15 @@ export function registerCoinTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                coin_type: res.coinType,
-                name: meta?.name,
-                symbol: meta?.symbol,
-                decimals: meta?.decimals,
-                description: meta?.description,
-                icon_url: meta?.iconUrl,
-                total_supply: treasury?.totalSupply?.toString(),
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              coin_type: res.coinType,
+              name: meta?.name,
+              symbol: meta?.symbol,
+              decimals: meta?.decimals,
+              description: meta?.description,
+              icon_url: meta?.iconUrl,
+              total_supply: treasury?.totalSupply?.toString(),
+            }),
           },
         ],
       };

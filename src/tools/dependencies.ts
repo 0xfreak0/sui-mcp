@@ -93,16 +93,12 @@ export function registerDependencyTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                root: package_id,
-                depth: maxDepth,
-                package_count: visited.size,
-                graph: [...visited.values()],
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              root: package_id,
+              depth: maxDepth,
+              package_count: visited.size,
+              graph: [...visited.values()],
+            }),
           },
         ],
       };

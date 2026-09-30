@@ -24,7 +24,7 @@ export function registerMvrTools(server: McpServer) {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ resolution: { [names[0]]: { package_id: data?.package_id ?? null } } }, null, 2),
+                  text: JSON.stringify({ resolution: { [names[0]]: { package_id: data?.package_id ?? null } } }),
                 },
               ],
             };
@@ -35,7 +35,7 @@ export function registerMvrTools(server: McpServer) {
                 content: [
                   {
                     type: "text" as const,
-                    text: JSON.stringify({ resolution: { [names[0]]: { package_id: null } } }, null, 2),
+                    text: JSON.stringify({ resolution: { [names[0]]: { package_id: null } } }),
                   },
                 ],
               };
@@ -50,7 +50,7 @@ export function registerMvrTools(server: McpServer) {
         const resolution: Record<string, { package_id: string | null }> = {};
         for (const n of names) resolution[n] = data.resolution[n] ?? { package_id: null };
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ resolution }, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ resolution }) }],
         };
       } catch (e) {
         return errorResult((e as Error).message);
@@ -75,11 +75,7 @@ export function registerMvrTools(server: McpServer) {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify(
-                    { resolution: { [package_ids[0]]: { name: data?.name ?? null } } },
-                    null,
-                    2,
-                  ),
+                  text: JSON.stringify({ resolution: { [package_ids[0]]: { name: data?.name ?? null } } }),
                 },
               ],
             };
@@ -88,7 +84,7 @@ export function registerMvrTools(server: McpServer) {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ resolution: { [package_ids[0]]: { name: null } } }, null, 2),
+                  text: JSON.stringify({ resolution: { [package_ids[0]]: { name: null } } }),
                 },
               ],
             };
@@ -101,7 +97,7 @@ export function registerMvrTools(server: McpServer) {
         const resolution: Record<string, { name: string | null }> = {};
         for (const id of package_ids) resolution[id] = data.resolution[id] ?? { name: null };
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ resolution }, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ resolution }) }],
         };
       } catch (e) {
         return errorResult((e as Error).message);
@@ -123,7 +119,7 @@ export function registerMvrTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ ...data, registry_url: moveRegistryUrl(name) }, null, 2),
+              text: JSON.stringify({ ...data, registry_url: moveRegistryUrl(name) }),
             },
           ],
         };
@@ -157,7 +153,7 @@ export function registerMvrTools(server: McpServer) {
         const qs = params.toString();
         const data = await mvrFetch(`/names${qs ? `?${qs}` : ""}`);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(data) }],
         };
       } catch (e) {
         return errorResult((e as Error).message);
@@ -184,11 +180,7 @@ export function registerMvrTools(server: McpServer) {
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify(
-                  { resolution: { [types[0]]: { type_tag: data?.type_tag ?? null } } },
-                  null,
-                  2,
-                ),
+                text: JSON.stringify({ resolution: { [types[0]]: { type_tag: data?.type_tag ?? null } } }),
               },
             ],
           };
@@ -200,7 +192,7 @@ export function registerMvrTools(server: McpServer) {
         const resolution: Record<string, { type_tag: string | null }> = {};
         for (const t of types) resolution[t] = data.resolution[t] ?? { type_tag: null };
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ resolution }, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ resolution }) }],
         };
       } catch (e) {
         return errorResult((e as Error).message);

@@ -282,21 +282,17 @@ export function registerPackageTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                name: f.name,
-                visibility: f.visibility,
-                is_entry: f.isEntry,
-                type_parameters: f.typeParameters.map((tp) => ({
-                  constraints: tp.constraints,
-                  is_phantom: tp.isPhantom,
-                })),
-                parameters: f.parameters.map(formatSdkSignature),
-                returns: f.returns.map(formatSdkSignature),
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              name: f.name,
+              visibility: f.visibility,
+              is_entry: f.isEntry,
+              type_parameters: f.typeParameters.map((tp) => ({
+                constraints: tp.constraints,
+                is_phantom: tp.isPhantom,
+              })),
+              parameters: f.parameters.map(formatSdkSignature),
+              returns: f.returns.map(formatSdkSignature),
+            }),
           },
         ],
       };

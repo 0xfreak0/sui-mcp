@@ -201,29 +201,25 @@ export function registerEventTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  order: direction,
-                  window: describeWindow(after_checkpoint, before_checkpoint, window),
-                  ...shownRange(rawNodes.map((n) => n.timestamp)),
-                  ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
-                  ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
-                  events,
-                  has_next_page: hasNextPage,
-                  next_cursor: nextCursor,
-                  ...(budgetSpent
-                    ? {
-                        scan: {
-                          reads,
-                          note: `The service reads a bounded range per request and can return fewer events than asked, or none, while more remain. This call spent its ${reads} reads with ${events.length} of ${pageSize} events found; the list continues at next_call.`,
-                          next_call: { tool: "query_events", repeat_with: { order: direction, cursor: nextCursor } },
-                        },
-                      }
-                    : {}),
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                order: direction,
+                window: describeWindow(after_checkpoint, before_checkpoint, window),
+                ...shownRange(rawNodes.map((n) => n.timestamp)),
+                ...(typeFilter?.resolution ? { event_type_resolution: typeFilter.resolution } : {}),
+                ...(moduleFilter?.resolution ? { module_scope: moduleFilter.resolution } : {}),
+                events,
+                has_next_page: hasNextPage,
+                next_cursor: nextCursor,
+                ...(budgetSpent
+                  ? {
+                      scan: {
+                        reads,
+                        note: `The service reads a bounded range per request and can return fewer events than asked, or none, while more remain. This call spent its ${reads} reads with ${events.length} of ${pageSize} events found; the list continues at next_call.`,
+                        next_call: { tool: "query_events", repeat_with: { order: direction, cursor: nextCursor } },
+                      },
+                    }
+                  : {}),
+              }),
             },
           ],
         };

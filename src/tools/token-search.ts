@@ -63,7 +63,7 @@ export function registerTokenSearchTools(server: McpServer) {
           return {
             content: [{
               type: "text" as const,
-              text: JSON.stringify({ query, results: [result], total_matches: 1 }, null, 2),
+              text: JSON.stringify({ query, results: [result], total_matches: 1 }),
             }],
           };
         }
@@ -155,22 +155,18 @@ export function registerTokenSearchTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                query,
-                results: shown,
-                total_matches: results.length,
-                ...(shown.length < results.length
-                  ? {
-                      more_matches_note: `${results.length - shown.length} more matches are not shown. Pass limit (max ${MAX_LIMIT}) or a more specific query.`,
-                    }
-                  : {}),
-                ...found,
-                ...(shown.some((r) => !r.verified) ? { note: UNVERIFIED_NOTE } : {}),
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              query,
+              results: shown,
+              total_matches: results.length,
+              ...(shown.length < results.length
+                ? {
+                    more_matches_note: `${results.length - shown.length} more matches are not shown. Pass limit (max ${MAX_LIMIT}) or a more specific query.`,
+                  }
+                : {}),
+              ...found,
+              ...(shown.some((r) => !r.verified) ? { note: UNVERIFIED_NOTE } : {}),
+            }),
           },
         ],
       };

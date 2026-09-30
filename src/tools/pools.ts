@@ -220,22 +220,18 @@ export function registerPoolTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                pool_id,
-                object_type: objectType,
-                protocol: poolInfo.protocol,
-                protocol_type: poolInfo.protocol_type,
-                token_a: poolInfo.token_a,
-                token_b: poolInfo.token_b,
-                reserves: poolInfo.reserves,
-                fee_info: poolInfo.fee_info,
-                extra: poolInfo.extra,
-                prices: tokenPrices,
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              pool_id,
+              object_type: objectType,
+              protocol: poolInfo.protocol,
+              protocol_type: poolInfo.protocol_type,
+              token_a: poolInfo.token_a,
+              token_b: poolInfo.token_b,
+              reserves: poolInfo.reserves,
+              fee_info: poolInfo.fee_info,
+              extra: poolInfo.extra,
+              prices: tokenPrices,
+            }),
           },
         ],
       };
@@ -319,25 +315,21 @@ export function registerPoolTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                query: { token_a: typeA, token_b: typeB, protocol: protocolFilter ?? "all" },
-                pools,
-                total: pools.length,
-                ...(failures.length
-                  ? {
-                      incomplete: true,
-                      failed_searches: failures,
-                      incomplete_note: "Some pool types could not be read, so pools of those protocols may be missing from this list.",
-                    }
-                  : {}),
-                hint: pools.length > 0
-                  ? "Use get_pool_stats with a pool_id for detailed reserves, fees, and prices."
-                  : "No pools found. Try different token pairs or check that the coin types are correct.",
-              },
-              null,
-              2
-            ),
+            text: JSON.stringify({
+              query: { token_a: typeA, token_b: typeB, protocol: protocolFilter ?? "all" },
+              pools,
+              total: pools.length,
+              ...(failures.length
+                ? {
+                    incomplete: true,
+                    failed_searches: failures,
+                    incomplete_note: "Some pool types could not be read, so pools of those protocols may be missing from this list.",
+                  }
+                : {}),
+              hint: pools.length > 0
+                ? "Use get_pool_stats with a pool_id for detailed reserves, fees, and prices."
+                : "No pools found. Try different token pairs or check that the coin types are correct.",
+            }),
           },
         ],
       };

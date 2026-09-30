@@ -205,60 +205,56 @@ export function registerMultisigTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                address,
-                committee: {
-                  threshold: committee.threshold,
-                  member_count: committee.members.length,
-                  total_weight: committee.total_weight,
-                  shape: committee.members.every((m) => m.weight === 1)
-                    ? `${committee.threshold}-of-${committee.members.length}`
-                    : `threshold ${committee.threshold} of ${committee.total_weight} weight`,
-                },
-                transactions_examined: history.transactions_examined,
-                // The count is what a dormancy claim rests on. Said next to the
-                // claim, not only in the metadata.
-                history_complete: complete,
-                ...(foreign.length
-                  ? {
-                      not_self_signed: {
-                        count: foreign.length,
-                        digests: foreign.map((f) => f.digest),
-                        authorized_by: [...new Set(foreign.flatMap((f) => f.authorized_by))],
-                        note: "These transactions were sent in this wallet's name but authorized by another address (an address alias or a protocol-level substitution). They are excluded from the signer statistics.",
-                      },
-                    }
-                  : {}),
-                members: history.members.map((m) => {
-                  const id = m.address ? identities.get(m.address) : undefined;
-                  return {
-                    ...m,
-                    ...(id?.name ? { name: id.name } : {}),
-                    ...(id?.label ? { label: id.label, category: id.label_category } : {}),
-                    ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
-                  };
-                }),
-                key_exposure: {
-                  ...footprintSummary,
-                  members: footprints,
-                },
-                signer_sets: history.signer_sets,
-                dormant_members: history.dormant_members,
-                always_present: history.always_present,
-                active_signers_meet_threshold: history.active_signers_meet_threshold,
-                ...(history.effective_committee
-                  ? { unsignable_members: history.unsignable_members, effective_committee: history.effective_committee }
-                  : {}),
-                ...(signerHistoryNote(history, committee.threshold)
-                  ? { note: signerHistoryNote(history, committee.threshold) }
-                  : {}),
-                caveat:
-                  "The committee cannot change — it is part of the address hash — so a shifting signer set is a change in who ACTS, never in who is authorised. A key that signed none of the transactions examined is dormant over that window only: it still holds its weight and can sign at any time. Nothing here shows ownership; a key is control, and a custodian may hold one for someone else.",
+            text: JSON.stringify({
+              address,
+              committee: {
+                threshold: committee.threshold,
+                member_count: committee.members.length,
+                total_weight: committee.total_weight,
+                shape: committee.members.every((m) => m.weight === 1)
+                  ? `${committee.threshold}-of-${committee.members.length}`
+                  : `threshold ${committee.threshold} of ${committee.total_weight} weight`,
               },
-              null,
-              2,
-            ),
+              transactions_examined: history.transactions_examined,
+              // The count is what a dormancy claim rests on. Said next to the
+              // claim, not only in the metadata.
+              history_complete: complete,
+              ...(foreign.length
+                ? {
+                    not_self_signed: {
+                      count: foreign.length,
+                      digests: foreign.map((f) => f.digest),
+                      authorized_by: [...new Set(foreign.flatMap((f) => f.authorized_by))],
+                      note: "These transactions were sent in this wallet's name but authorized by another address (an address alias or a protocol-level substitution). They are excluded from the signer statistics.",
+                    },
+                  }
+                : {}),
+              members: history.members.map((m) => {
+                const id = m.address ? identities.get(m.address) : undefined;
+                return {
+                  ...m,
+                  ...(id?.name ? { name: id.name } : {}),
+                  ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+                  ...(id?.names_held?.length ? { names_held: id.names_held } : {}),
+                };
+              }),
+              key_exposure: {
+                ...footprintSummary,
+                members: footprints,
+              },
+              signer_sets: history.signer_sets,
+              dormant_members: history.dormant_members,
+              always_present: history.always_present,
+              active_signers_meet_threshold: history.active_signers_meet_threshold,
+              ...(history.effective_committee
+                ? { unsignable_members: history.unsignable_members, effective_committee: history.effective_committee }
+                : {}),
+              ...(signerHistoryNote(history, committee.threshold)
+                ? { note: signerHistoryNote(history, committee.threshold) }
+                : {}),
+              caveat:
+                "The committee cannot change — it is part of the address hash — so a shifting signer set is a change in who ACTS, never in who is authorised. A key that signed none of the transactions examined is dormant over that window only: it still holds its weight and can sign at any time. Nothing here shows ownership; a key is control, and a custodian may hold one for someone else.",
+            }),
           },
         ],
       };
@@ -372,34 +368,30 @@ export function registerMultisigTools(server: McpServer) {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                addresses_tested: keys.map((k) => k.address),
-                ...(unusable.length ? { addresses_skipped: unusable } : {}),
-                candidates_checked: candidates.length,
-                found_count: found.length,
-                found: found.map((f) => {
-                  const id = identities.get(f.address);
-                  const note = id ? identityNote(id) : undefined;
-                  return {
-                    address: f.address,
-                    shape: `${f.threshold}-of-${f.members.length}`,
-                    threshold: f.threshold,
-                    members_in_order: f.members,
-                    evidence_tier: "chain-derived",
-                    basis:
-                      "This address IS the hash of this committee. Its existence on chain is not a match against a pattern — the derivation reproduces the address exactly.",
-                    ...(id?.name ? { name: id.name } : {}),
-                    ...(id?.label ? { label: id.label, category: id.label_category } : {}),
-                    ...(note ? { note } : {}),
-                  };
-                }),
-                caveat:
-                  "WEIGHT-1 COMMITTEES ONLY. Weights are unbounded, so admitting them makes the search space infinite; a committee giving one member weight 2 is invisible here. A nil result therefore means 'no equal-weight multisig of these exact keys', NOT 'these addresses share no multisig'. It also only tests the keys given — a committee including one more member than you passed will not be found.",
-              },
-              null,
-              2,
-            ),
+            text: JSON.stringify({
+              addresses_tested: keys.map((k) => k.address),
+              ...(unusable.length ? { addresses_skipped: unusable } : {}),
+              candidates_checked: candidates.length,
+              found_count: found.length,
+              found: found.map((f) => {
+                const id = identities.get(f.address);
+                const note = id ? identityNote(id) : undefined;
+                return {
+                  address: f.address,
+                  shape: `${f.threshold}-of-${f.members.length}`,
+                  threshold: f.threshold,
+                  members_in_order: f.members,
+                  evidence_tier: "chain-derived",
+                  basis:
+                    "This address IS the hash of this committee. Its existence on chain is not a match against a pattern — the derivation reproduces the address exactly.",
+                  ...(id?.name ? { name: id.name } : {}),
+                  ...(id?.label ? { label: id.label, category: id.label_category } : {}),
+                  ...(note ? { note } : {}),
+                };
+              }),
+              caveat:
+                "WEIGHT-1 COMMITTEES ONLY. Weights are unbounded, so admitting them makes the search space infinite; a committee giving one member weight 2 is invisible here. A nil result therefore means 'no equal-weight multisig of these exact keys', NOT 'these addresses share no multisig'. It also only tests the keys given — a committee including one more member than you passed will not be found.",
+            }),
           },
         ],
       };

@@ -1524,7 +1524,7 @@ export function registerTraceTools(server: McpServer) {
       if (format !== "json") {
         const graph = traceGraph(direction, followed, enrichedHops, bridgeExits, terminationReason, nameMap);
         if (format === "graph_json") {
-          return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph), null, 2) }] };
+          return { content: [{ type: "text" as const, text: JSON.stringify(toGraphJson(graph)) }] };
         }
         return {
           content: [
@@ -1542,7 +1542,7 @@ export function registerTraceTools(server: McpServer) {
           },
           {
             type: "text" as const,
-            text: JSON.stringify(fullData, null, 2),
+            text: JSON.stringify(fullData),
           },
         ],
       };

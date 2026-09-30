@@ -125,19 +125,15 @@ export function registerPackageLineageTools(server: McpServer) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(
-                {
-                  queried: { protocol, package_id },
-                  seeds_from_registry: package_id ? undefined : seeds,
-                  probe_window: { after_checkpoint: afterCheckpoint, latest_checkpoint: latest.seq },
-                  ...summary,
-                  next_step: summary.emitting_package_ids.length
-                    ? `aggregate_events(module: "${summary.emitting_package_ids[0]}", group_by: "event_type") to see what it emits.`
-                    : undefined,
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify({
+                queried: { protocol, package_id },
+                seeds_from_registry: package_id ? undefined : seeds,
+                probe_window: { after_checkpoint: afterCheckpoint, latest_checkpoint: latest.seq },
+                ...summary,
+                next_step: summary.emitting_package_ids.length
+                  ? `aggregate_events(module: "${summary.emitting_package_ids[0]}", group_by: "event_type") to see what it emits.`
+                  : undefined,
+              }),
             },
           ],
         };

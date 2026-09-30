@@ -16,7 +16,7 @@ async function buildResult(tx: Transaction, extra: Record<string, unknown>) {
   const bytes = await tx.build({ client: sui });
   const transaction_bcs = Buffer.from(bytes).toString("base64");
   return {
-    content: [{ type: "text" as const, text: JSON.stringify({ transaction_bcs, ...extra }, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify({ transaction_bcs, ...extra }) }],
   };
 }
 

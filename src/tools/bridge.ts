@@ -726,5 +726,5 @@ const COMMANDS_INCOMPLETE =
   "This transaction has more Move calls than could be read, so a bridge detected only by its call (Meson) may be missing from this result.";
 
 const ok = (payload: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(payload) }],
 });

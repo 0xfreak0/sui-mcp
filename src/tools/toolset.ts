@@ -281,18 +281,14 @@ export function registerToolsetTool(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                enabled_profiles: requested,
-                active_profiles: [...state.active],
-                newly_available_tools: turnedOn,
-                note: turnedOn.length
-                  ? "These tools are callable now."
-                  : "Already enabled — no change.",
-              },
-              null,
-              2,
-            ),
+            text: JSON.stringify({
+              enabled_profiles: requested,
+              active_profiles: [...state.active],
+              newly_available_tools: turnedOn,
+              note: turnedOn.length
+                ? "These tools are callable now."
+                : "Already enabled — no change.",
+            }),
           },
         ],
       };

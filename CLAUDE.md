@@ -46,6 +46,16 @@ testnet value to mainnet).
 - Never use JSON-RPC. Fullnode JSON-RPC is deprecated/removed; all on-chain reads
   go through gRPC (`@mysten/sui/grpc`) or GraphQL. `@mysten/sui/client` may only be
   imported for types (`import type`), never as a runtime client.
+- Return complete follow-up calls as `{ tool, args }`, not JSON embedded in
+  prose. The network wrapper fills a missing `args.network` when the call's
+  chain differs from `DEFAULT_NETWORK`, including in nested continuations.
+  `repeat_with` and `continue_with` are patches to the original arguments, so
+  they retain the caller's network without repeating it. Stored-result reads
+  bind calls and the recorded arguments using the result's stored network,
+  not the reader's context. Summaries should point to the structured call.
+  Standard continuation paths are bound centrally. Register nonstandard paths
+  in `utils/continuation-network.ts`; never search decoded chain content for
+  objects that happen to resemble tool calls.
 
 ### Which transport to use
 

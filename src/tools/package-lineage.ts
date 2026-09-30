@@ -130,9 +130,9 @@ export function registerPackageLineageTools(server: McpServer) {
                 seeds_from_registry: package_id ? undefined : seeds,
                 probe_window: { after_checkpoint: afterCheckpoint, latest_checkpoint: latest.seq },
                 ...summary,
-                next_step: summary.emitting_package_ids.length
-                  ? `aggregate_events(module: "${summary.emitting_package_ids[0]}", group_by: "event_type") to see what it emits.`
-                  : undefined,
+                ...(summary.emitting_package_ids.length
+                  ? { next_call: { tool: "aggregate_events", args: { module: summary.emitting_package_ids[0], group_by: "event_type" } } }
+                  : {}),
               }),
             },
           ],

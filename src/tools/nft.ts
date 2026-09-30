@@ -62,7 +62,7 @@ function decodeCursor(s: string): ListNftsCursor {
 export function registerNftTools(server: McpServer) {
   server.tool(
     "list_nfts",
-    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Each NFT carries an estimated value, `est_usd` (tier heuristic, from its collection's lowest active listing and last sale, explained per collection under `valuation`); an object another reader values, such as a liquidity position, carries `value_usd` and the reader's tier instead. `value: false` skips the valuation. Backed by GraphQL: one query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper per-collection summary with a wallet total.",
+    "(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Each row has an object id, `collection_ref` (zero-based index into this page's exact `collection_types`), kiosk and display metadata. `detail: 'full'` adds raw Move contents and valuation evidence. `est_usd` is a heuristic NFT estimate; other valued objects carry `value_usd` and a tier. `value: false` skips valuation. Pass `next_cursor` as `cursor` for the next page; its absence means the wallet is fully enumerated. Use list_nft_collections for a per-collection summary and wallet total.",
     {
       address: addressArg().describe("Owner wallet address (0x...)"),
       limit: numArg()
@@ -294,8 +294,8 @@ function collectionValue(p: ValuedPosition): Record<string, unknown> {
 }
 
 /**
- * One page of list_nfts. A row's `collection` is its struct type, and fields
- * with no value are left out. The summary view leaves out raw contents and
+ * One page of list_nfts. Each `collection_ref` indexes the page's exact
+ * struct types. Fields with no value are left out. The summary leaves out raw contents and
  * each collection's valuation evidence, and counts both under `omitted` with
  * the call that returns them.
  */
@@ -316,9 +316,13 @@ function nftPage(
     if (p.kind === "nft") return { est_usd: p.usd_net === null ? null : Number(p.usd_net.toPrecision(4)) };
     return { value_usd: p.usd_net, valued_as: p.kind, ...(p.protocol ? { protocol: p.protocol } : {}), tier: p.tier };
   };
+  const collectionRefs = new Map<string, number>();
+  for (const n of nfts) {
+    if (!collectionRefs.has(n.collection)) collectionRefs.set(n.collection, collectionRefs.size);
+  }
   const rows = nfts.map((n) => ({
     object_id: n.object_id,
-    collection: n.collection,
+    collection_ref: collectionRefs.get(n.collection)!,
     ...(n.kiosk_id ? { kiosk_id: n.kiosk_id } : {}),
     ...(n.name !== null ? { name: n.name } : {}),
     ...(n.description !== null ? { description: n.description } : {}),
@@ -326,7 +330,7 @@ function nftPage(
     ...rowValue(n),
     ...(full && n.content !== null ? { content: n.content } : {}),
   }));
-  const page = valuation ? pageValuation(address, nfts, byObject, valuation, full) : null;
+  const page = valuation ? pageValuation(address, nfts, byObject, valuation, full, collectionRefs) : null;
   const omitted = {
     ...(!full && withContent ? { content: { count: withContent } } : {}),
     ...(page?.omitted ?? {}),
@@ -336,6 +340,7 @@ function nftPage(
       ? { truncated: true, omitted: { ...omitted, next_call: { tool: "list_nfts", repeat_with: { detail: "full" } } } }
       : {}),
     address,
+    collection_types: [...collectionRefs.keys()],
     ...(page ? { valuation: page.valuation } : {}),
     nfts: rows,
     page_size: nfts.length,
@@ -362,6 +367,7 @@ function pageValuation(
   byObject: Map<string, ValuedPosition>,
   valuation: PageValuation,
   full: boolean,
+  collectionRefs: Map<string, number>,
 ) {
   let usd = 0;
   let priced = 0;
@@ -389,12 +395,12 @@ function pageValuation(
   if (full) {
     estimates = all.map(([collection, c]) => {
       const { usd: _one, ...facts } = collectionValue(c.position);
-      return { collection, ...facts };
+      return { collection_ref: collectionRefs.get(collection)!, ...facts };
     });
   } else {
-    type Brief = { collection: string; unit_sui: unknown; basis: unknown; page_usd: number };
+    type Brief = { collection_ref: number; unit_sui: unknown; basis: unknown; page_usd: number };
     const briefs: Brief[] = pricedCollections.map(([collection, c]) => ({
-      collection,
+      collection_ref: collectionRefs.get(collection)!,
       unit_sui: c.position.detail?.unit_sui,
       basis: c.position.detail?.basis,
       page_usd: Number(c.page_usd!.toPrecision(4)),
@@ -403,7 +409,7 @@ function pageValuation(
       budget: PAGE_ESTIMATES_BUDGET,
       rank: (a, b) => b.page_usd - a.page_usd,
       usd: (b) => b.page_usd,
-      brief: (b) => ({ collection: b.collection, page_usd: b.page_usd }),
+      brief: (b) => ({ collection_ref: b.collection_ref, page_usd: b.page_usd }),
     });
     estimates = capped.rows;
     if (all.length > 0) {

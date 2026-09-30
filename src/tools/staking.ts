@@ -199,9 +199,12 @@ export function registerStakingTools(server: McpServer) {
       if (continuation && as_of === undefined) throw new Error("A staking continuation requires its original as_of.");
       if (as_of !== undefined) {
         const historical = await historicalStaking(address, as_of, max_transactions, continuation);
-        const args = { address, as_of, max_transactions, continuation, network: getNetwork(), detail: "full" };
-        const { payload } = capPayload("get_staking_summary", args, historical,
-          { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args } });
+        const fullArgs = { address, as_of, max_transactions, network: getNetwork(), detail: "full" };
+        // A stored replay capability contains its decryption key. Never copy it
+        // into readable result metadata or a completed result's full-call link.
+        const recordedArgs = { ...fullArgs, ...(continuation ? { continuation: "<redacted>" } : {}) };
+        const { payload } = capPayload("get_staking_summary", recordedArgs, historical,
+          { positions: { budget: 6000 } }, { full: detail === "full", next_call: { tool: "get_staking_summary", args: fullArgs } });
         return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
       }
       const { objects, complete } = await listOwnedWithJson(address, STAKED_SUI_TYPE, MAX_STAKE_POSITIONS);

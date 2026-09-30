@@ -120,6 +120,9 @@ an unfinished anchor enumeration still needs that range.
 
 `detail: full` returns all positions from a completed read. Display caps leave
 totals intact and give a saved-result page or full call for omitted rows.
+Saved-result arguments redact the incoming continuation, and the full-call
+link omits it. Read the saved-result pages to avoid replaying; the full-call
+fallback starts a fresh replay without exposing the previous capability.
 
 `estimated_reward_mist` is separate. Each position's principal converts to
 pool tokens at its activation-epoch exchange rate, then back to SUI at the

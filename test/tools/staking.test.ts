@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { DEFAULT_NETWORK, getNetwork } from "../../src/config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readStoredResult } from "../../src/utils/output-cap.js";
-import { resetStore } from "../../src/utils/store.js";
+import { loadResult, resetStore } from "../../src/utils/store.js";
+import { saveStakingContinuation } from "../../src/utils/staking-continuation.js";
 
 const mockSui = createMockClient();
 const mockGqlQuery = createMockGraphql();
@@ -385,6 +386,61 @@ describe("get_staking_summary", () => {
     mockSui.listOwnedObjects.mockResolvedValue({ objects: [], hasNextPage: false, cursor: null });
     mockGqlQuery.mockRejectedValue(new Error("Historical data unavailable"));
     await expect(tools.get("get_staking_summary")!({ address: "0xwallet", as_of: "100" })).rejects.toThrow();
+  });
+
+  it("does not expose a replay capability or its key through a capped stored result", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "staking-result-store-"));
+    const previous = process.env.SUI_STORE_PATH;
+    process.env.SUI_STORE_PATH = join(dir, "store.db");
+    resetStore();
+    try {
+      const address = `0x${"a1".repeat(32)}`;
+      const positions = Array.from({ length: 60 }, (_, i) => ({
+        object_id: `0x${i.toString(16).padStart(64, "0")}`, version: 1,
+        pool_id: `0x${"b2".repeat(32)}`, principal_mist: "100", stake_activation_epoch: "10",
+      }));
+      const saved = saveStakingContinuation({
+        address, as_of: "100", checkpoint: 100, anchor: 990, direction: "forward",
+        method: "reconstructed_object_changes", calls: 1, transactions_scanned: 1,
+        object_change_pages: 1, progress: { phase: "transactions", cursor: "fixture", offset: 0 }, positions,
+      });
+      expect(saved.storage).toBe("local_store");
+      mockGqlQuery.mockImplementation(async (query: string) => {
+        const range = (first: number, last: number) => ({
+          first: { sequenceNumber: first, timestamp: "2025-01-01T00:00:00Z" },
+          last: { sequenceNumber: last, timestamp: "2025-01-02T00:00:00Z" },
+        });
+        if (query.includes("serviceConfig")) return {
+          serviceConfig: { owned: range(990, 1000), transactions: range(0, 1000), objects: range(0, 1000) },
+          checkpoint: { sequenceNumber: 100, timestamp: "2025-01-01T00:00:00Z", epoch: { epochId: 50 } },
+        };
+        if (query.includes("transactions(filter:")) return { transactions: {
+          nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, endCursor: null, startCursor: null },
+        } };
+        throw new Error("Fixture reward rates unavailable");
+      });
+      const data = JSON.parse((await tools.get("get_staking_summary")!({
+        address, as_of: "100", continuation: saved.token,
+      })).content[0].text);
+      expect(data).toMatchObject({ complete: true, position_count: 60, total_staked_mist: "6000", truncated: true });
+      const id = data.omitted.result.uri.split("/").at(-1);
+      const resource = readStoredResult(id, {});
+      const stored = loadResult(id);
+      const key = saved.token.split(".")[3];
+      for (const exposed of [resource, stored, data]) {
+        expect(JSON.stringify(exposed)).not.toContain(saved.token);
+        expect(JSON.stringify(exposed)).not.toContain(key);
+      }
+      expect(resource.args).toMatchObject({ continuation: "<redacted>" });
+      expect(data.omitted.next_call.args).toEqual({ address, as_of: "100", network: getNetwork(), detail: "full" });
+      expect(readStoredResult(id, { path: "total_staked_mist" }).value).toBe("6000");
+      expect(readStoredResult(id, { path: "positions" }).total).toBe(60);
+    } finally {
+      if (previous === undefined) delete process.env.SUI_STORE_PATH;
+      else process.env.SUI_STORE_PATH = previous;
+      resetStore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("keeps complete totals when display-capping positions and returns omissions on the full call", async () => {

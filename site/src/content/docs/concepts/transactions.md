@@ -399,3 +399,30 @@ Use its own events through `query_events`. `include_functions` lists every
 Move call for inspection. With `function`, `matched_calls` counts matching
 calls at the filter's function, module or package granularity and version
 scope; `total_calls` counts all calls.
+
+## Combining an incident timeline
+
+`build_timeline` merges up to 10 wallets or objects into one protocol-decoded
+timeline, deduplicated and ordered by checkpoint. `from` and `to` accept ISO
+times or checkpoint numbers. Times resolve to checkpoints inside the window
+and constrain the query, rather than filtering a previously fetched page.
+With `from`, each address is read forward from the start. Without it, the most
+recent `per_address` transactions are read, before `to` if supplied.
+
+`coverage` reports each address's read count, whether `per_address` truncated
+the walk, the checkpoint reached, and continuing `from`/`to` bounds.
+`subject_flow` is keyed by tracked address and contains each participant's
+own signed change per coin. `token_flow` is the sender's, present only when
+that sender is not already tracked in `subject_flow`.
+
+The default summary fits about 35,000 characters in order, always retaining
+failures and entries involving two tracked addresses. `omitted` describes
+display exclusions; `detail: "full"` returns entries up to `limit`, which
+defaults to 60. The read budget defaults to 30 transactions per address.
+
+`activity_hours` is off by default. It reports distributions by UTC hour and
+offers a timezone reading only when sample size, time span and read depth
+support it. A daily rhythm needs at least 50 transactions spanning a week;
+raise `per_address` accordingly, and heed the warning on smaller samples.
+A flat pattern consistent with automation is common on Sui and is itself
+useful evidence, without a timezone claim.

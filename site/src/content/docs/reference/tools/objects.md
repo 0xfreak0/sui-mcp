@@ -56,5 +56,5 @@ List raw objects owned by a Sui address with optional type filter and pagination
 | `object_type` | string | no | Filter by object type (e.g. 0x2::coin::Coin&lt;0x2::sui::SUI>) |
 | `limit` | integer (1 to 1000) | no | Max results (default 50, max 1000) |
 | `cursor` | string | no | Pagination cursor from previous response |
-| `detail` | `summary` \| `full` | no | 'summary' (default): the objects that fit about 30k characters, in page order, the rest counted under `omitted`. 'full': every object of the page. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): the page's objects that fit about 30k characters, the rest in `omitted`. 'full': the whole page. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

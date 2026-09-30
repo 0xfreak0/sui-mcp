@@ -36,6 +36,10 @@ page identifies the unread seed scan. Both set `truncated: true`. Complete
 transactions still contribute signals, and gas sponsorship remains usable
 because it is read independently of balance changes.
 
+The same `truncated` flag and `notes` accompany every wallet-edge format.
+`graph_json` includes them beside its nodes and edges; Mermaid and CSV results
+include a separate JSON text item, leaving the diagram or CSV data unchanged.
+
 The small unpriced-coin grant check uses a bounded send window. If that window
 or any transaction's balance changes exceed one page, the send cannot qualify
 as a targeted grant. A partial recipient count is never proof of a small send.

@@ -21,6 +21,10 @@ DefiLlama is the default historical source. If it has no quote or its request
 fails, CoinGecko is asked first, then GeckoTerminal. These fallbacks cover
 recent history only; dates outside each public API's history range are skipped
 before any request. They never substitute a current price.
+Skipped providers are recorded in `out_of_range_sources` on an unpriced coin.
+If every selected market provider was skipped, its code is `out_of_range`.
+When another provider answered without a quote or failed, that outcome is
+kept alongside the skipped-source list.
 
 CoinGecko resolves the full Sui coin type as a contract on its `sui` platform,
 then reads its [USD history chart](https://docs.coingecko.com/demo/reference/contract-address-market-chart-range).
@@ -103,6 +107,8 @@ include losses. A missing price does not mean a token is worth zero.
   `unread` or `unpriced_reason` where present, alongside raw priced/unpriced
   coverage. `request_failed_samples` within a missing-coin row counts samples
   whose provider reads failed, rather than establishing that no quote exists.
+  `out_of_range_coin_samples` lists each skipped provider's coin sample count
+  and time interval separately from answered missing quotes and failed reads.
   Scan coverage is separate from price coverage.
 - **`stale_quotes`** lists each coin's largest signed quote offset in a window.
   **`price_offset_sec`** in `get_token_prices` and `analyze_attack_tx` is the

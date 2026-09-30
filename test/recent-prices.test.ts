@@ -23,6 +23,36 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("recent historical fallbacks", () => {
+  it("reports out-of-range when no selected market provider can serve the date", async () => {
+    const result = await priceUsdAtTime([COIN], NOW - 366 * 86400, { sources: ["coingecko", "geckoterminal"] });
+    expect(result.unpriced).toMatchObject([{ coin_type: COIN, code: "out_of_range",
+      out_of_range_sources: ["coingecko", "geckoterminal"] }]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a served no-quote answer separate from another provider's skipped range", async () => {
+    const at = NOW - 181 * 86400;
+    fetchMock.mockImplementation(async (url: string) => coinGeckoReply(url, []));
+    const result = await priceUsdAtTime([COIN], at, { sources: ["coingecko", "geckoterminal"] });
+    expect(result.unpriced).toMatchObject([{ coin_type: COIN, code: "not_listed", out_of_range_sources: ["geckoterminal"] }]);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("api.geckoterminal.com"))).toBe(false);
+  });
+
+  it.each([false, true])("carries out-of-range sources into window coverage (fixed=%s)", async (fixed) => {
+    const sui = "0x2::sui::SUI";
+    const at = NOW - 400 * 86400;
+    fetchMock.mockResolvedValue({ ok: false, status: 429 });
+    const prices = await windowPrices([{ at, coins: [sui] }, { at: at + 3600, coins: [sui] }], fixed ? at : undefined);
+    expect(prices.basis).toMatchObject({ partial: true, out_of_range_coin_samples: [
+      { coin_type: sui, source: "coingecko", samples: fixed ? 1 : 2 },
+      { coin_type: sui, source: "geckoterminal", samples: fixed ? 1 : 2 },
+    ], missing_coin_samples: [{ samples: fixed ? 1 : 2, request_failed_samples: fixed ? 1 : 2 }] });
+    const amounts = new WindowAmounts(prices);
+    amounts.add(sui, 1_000_000_000n, at);
+    expect(amounts.coverage(sui)).toMatchObject({ unpriced_raw: { in: "1000000000", out: "0" } });
+    expect(fetchMock.mock.calls.every(([url]) => String(url).includes("coins.llama.fi"))).toBe(true);
+  });
+
   it.each(["0xabc::coin::coin", "0xabc::Coin::COIN"])("rejects CoinGecko case-insensitive matches for %s", async (coin) => {
     fetchMock.mockImplementation(async (url: string) => url.includes("/market_chart/")
       ? ok({ prices: [[AT * 1000, 9]] }) : ok({ platforms: { sui: COIN }, contract_address: coin }));
@@ -80,6 +110,10 @@ describe("recent historical fallbacks", () => {
       const result = await fetchRecentHistory(new Map([[COIN, [NOW - days * 86400 - 1, NOW + 1]]]), source);
       expect(result.quotes.size).toBe(0);
       expect(result.unanswered.size).toBe(0);
+      expect(result.outOfRange).toEqual([
+        { coin_type: COIN, at: NOW - days * 86400 - 1, source },
+        { coin_type: COIN, at: NOW + 1, source },
+      ]);
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });

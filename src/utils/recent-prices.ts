@@ -4,10 +4,13 @@ import { defiLlamaKey, fetchDefiLlamaHistory } from "./price-providers.js";
 import type { PriceQuote } from "./price-providers.js";
 
 export type RecentPriceSource = "coingecko" | "geckoterminal";
+export interface OutOfRangePriceRequest { coin_type: string; at: number; source: RecentPriceSource }
 export interface HistoricalMarketPrices {
   quotes: Map<string, Map<number, PriceQuote>>;
   /** Failed reads, even when another provider subsequently supplies the quote. */
   unanswered: Map<string, Set<number>>;
+  /** Requests skipped before discovery because their dates cannot be served. */
+  outOfRange: OutOfRangePriceRequest[];
 }
 const DAY = 86400;
 const HOUR = 3600;
@@ -133,6 +136,7 @@ async function geckoTerminal(coin: string, day: number, oldest: number, now: num
 export async function fetchRecentHistory(requests: Map<string, number[]>, source: RecentPriceSource): Promise<HistoricalMarketPrices> {
   const quotes = new Map<string, Map<number, PriceQuote>>();
   const unanswered = new Map<string, Set<number>>();
+  const outOfRange: OutOfRangePriceRequest[] = [];
   const now = Math.floor(Date.now() / 1000);
   const oldest = now - HISTORY_DAYS[source] * DAY;
   const groups = new Map<string, { coin: string; day: number; targets: Array<{ coin: string; time: number }> }>();
@@ -141,7 +145,11 @@ export async function fetchRecentHistory(requests: Map<string, number[]>, source
     if (!canonical) continue;
     for (const time of new Set(times)) {
       // A complete hourly candle cannot be read right on the retention edge.
-      if (!Number.isFinite(time) || time < oldest + (source === "geckoterminal" ? HOUR : 1) || time > now) continue;
+      if (!Number.isFinite(time)) continue;
+      if (time < oldest + (source === "geckoterminal" ? HOUR : 1) || time > now) {
+        outOfRange.push({ coin_type: coin, at: time, source });
+        continue;
+      }
       const day = Math.floor(time / DAY) * DAY;
       const key = `${canonical}:${day}`;
       const group = groups.get(key) ?? { coin: canonical, day, targets: [] };
@@ -172,12 +180,13 @@ export async function fetchRecentHistory(requests: Map<string, number[]>, source
       }
     }
   }));
-  return { quotes, unanswered };
+  return { quotes, unanswered, outOfRange };
 }
 
 /** DefiLlama first, then keyless recent history, never a current-price endpoint. */
 export async function fetchHistoricalMarketPrices(requests: Map<string, number[]>): Promise<HistoricalMarketPrices> {
   const unanswered = new Map<string, Set<number>>();
+  const outOfRange: OutOfRangePriceRequest[] = [];
   const quotes = await fetchDefiLlamaHistory(requests, unanswered);
   for (const source of ["coingecko", "geckoterminal"] as const) {
     const missing = new Map<string, number[]>();
@@ -186,6 +195,7 @@ export async function fetchHistoricalMarketPrices(requests: Map<string, number[]
       if (rest.length) missing.set(coin, rest);
     }
     const result = await fetchRecentHistory(missing, source);
+    outOfRange.push(...result.outOfRange);
     for (const [coin, values] of result.quotes) {
       const target = quotes.get(coin) ?? new Map<number, PriceQuote>();
       for (const [time, quote] of values) target.set(time, quote);
@@ -197,5 +207,5 @@ export async function fetchHistoricalMarketPrices(requests: Map<string, number[]
       unanswered.set(coin, target);
     }
   }
-  return { quotes, unanswered };
+  return { quotes, unanswered, outOfRange };
 }

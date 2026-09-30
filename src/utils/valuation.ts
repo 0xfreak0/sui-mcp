@@ -3,6 +3,7 @@ import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
 import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
 import type { PriceQuote, PriceSource } from "./price-providers.js";
 import { fetchRecentHistory } from "./recent-prices.js";
+import type { RecentPriceSource } from "./recent-prices.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
@@ -354,9 +355,10 @@ export interface PricePoint {
 /** A coin that has no price, and why. A missing price is never a zero. */
 export interface UnpricedCoin {
   coin_type: string;
-  /** `request_failed` says nothing about the coin; the others are answers. */
-  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price";
+  /** Unanswered and out-of-range reads establish nothing about a coin's listing. */
+  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price" | "out_of_range";
   reason: string;
+  out_of_range_sources?: RecentPriceSource[];
 }
 
 export interface HistoricalPrices {
@@ -381,6 +383,7 @@ export function explainUnpriced(
   ctx: {
     sources: ReadonlyArray<HistoricalSource>; pythKey: boolean; llama: DefiLlamaResult | null;
     fallbackFailures?: Map<string, string[]>;
+    outOfRange?: Map<string, RecentPriceSource[]>;
   },
 ): UnpricedCoin[] {
   const out: UnpricedCoin[] = [];
@@ -397,6 +400,7 @@ export function explainUnpriced(
     let code: UnpricedCoin["code"];
     let reason: string;
     const failed = [...(ctx.fallbackFailures?.get(coinType) ?? [])];
+    const outOfRange = ctx.outOfRange?.get(coinType) ?? [];
     if (ctx.llama?.unanswered.has(coinType)) failed.push("defillama");
     if (failed.length) {
       code = "request_failed";
@@ -407,11 +411,16 @@ export function explainUnpriced(
     } else if (ctx.llama?.unsupported.has(coinType)) {
       code = "type_parameters";
       reason = `Providers cannot be asked about this coin type: it has type parameters or is not a well-formed coin type.${pythNote}`;
+    } else if (outOfRange.length && ctx.sources.every((s) => s === "pyth" || outOfRange.some((missing) => missing === s))) {
+      code = "out_of_range";
+      reason = `All selected historical market providers were skipped because the requested time is outside their served history ranges.${pythNote}`;
     } else {
       code = "not_listed";
-      reason = `No selected provider has a historical quote for this exact coin type near that time. Recent-history providers are skipped outside their supported dates.${pythNote}`;
+      reason = `Queried providers returned no historical quote for this exact coin type near that time.${pythNote}`;
     }
-    out.push({ coin_type: coinType, code, reason: reason.trim() });
+    if (outOfRange.length) reason += ` Out-of-range sources: ${outOfRange.join(", ")}.`;
+    out.push({ coin_type: coinType, code, reason: reason.trim(),
+      ...(outOfRange.length ? { out_of_range_sources: outOfRange } : {}) });
   }
   return out;
 }
@@ -479,11 +488,17 @@ export async function priceUsdAtTime(
     }
   }
   const fallbackFailures = new Map<string, string[]>();
+  const outOfRange = new Map<string, RecentPriceSource[]>();
   if (unixTs !== undefined) for (const source of ["coingecko", "geckoterminal"] as const) {
     if (!sources.includes(source)) continue;
     const rest = uniq.filter((ct) => !points.has(ct));
     if (!rest.length) break;
     const result = await fetchRecentHistory(new Map(rest.map((coin) => [coin, [unixTs]])), source);
+    for (const row of result.outOfRange) {
+      const skipped = outOfRange.get(row.coin_type) ?? [];
+      skipped.push(row.source);
+      outOfRange.set(row.coin_type, skipped);
+    }
     for (const [coin, quotes] of result.quotes) {
       const q = quotes.get(unixTs);
       if (!q) continue;
@@ -495,7 +510,7 @@ export async function priceUsdAtTime(
     }
   }
 
-  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures }) };
+  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures, outOfRange }) };
 }
 
 // Beyond this gap between a price's sample time and the block time, the

@@ -75,6 +75,10 @@ is included only when the provider supplies it. A sample more than an hour
 away is marked `stale`. Every coin that could not be priced is listed under
 `unpriced` with the reason. Non-JSON replies and HTTP 429 responses are failed
 requests, distinct from an answered request with no price.
+An unpriced coin's `out_of_range_sources` names providers skipped for the
+requested date. Its code is `out_of_range` when all selected market providers
+were skipped; otherwise the answered or failed outcome remains separate.
+Window coverage reports these skips under `out_of_range_coin_samples`.
 
 CoinGecko resolves the full type as a contract on the `sui` platform and reads
 its historical USD chart. GeckoTerminal uses the full type on `sui-network`,

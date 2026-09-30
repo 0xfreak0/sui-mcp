@@ -330,6 +330,10 @@
       "name": "SuiPump",
       "type": "launchpad"
     },
+    "0xc3c7e6eb7202e9fb0389a2f7542b91cc40e4f7a33c02554fec11c4c92f938ea3": {
+      "name": "Switchboard",
+      "type": "oracle"
+    },
     "0x06cefebb11191abd347654200a6fd8ae47fa97b54506e4e680db64dae54d0b12": {
       "name": "TradePort",
       "type": "nft"
@@ -850,6 +854,11 @@
     "0xb205fea41ccedac051bc66498e6ca68cb802c4a6ea06da12e524bed09c80d9b0": {
       "signers": [
         "0x4179b33ac5f37dc5b8f8f0f718cb03195cb95eee9861cce209e83ac1f9a4d35c"
+      ]
+    },
+    "0xc3c7e6eb7202e9fb0389a2f7542b91cc40e4f7a33c02554fec11c4c92f938ea3": {
+      "signers": [
+        "0x697998fab24bb575840bc66c4d176a63e7db1830c7c9494cbe9a807752cf00a5"
       ]
     },
     "0x06cefebb11191abd347654200a6fd8ae47fa97b54506e4e680db64dae54d0b12": {

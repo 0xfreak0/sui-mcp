@@ -861,8 +861,7 @@
         }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: lineage 0xc3c7e6eb defines aggregator::Aggregator, oracle::Oracle and queue::Queue and its queue 0x662f5642 is named 'Mainnet Guardian Queue'; the incident reports name the oracle Switchboard.",
-      "known_defect": "identify_address returns protocol null for Switchboard's on-demand package."
+      "basis": "Chain: lineage 0xc3c7e6eb defines aggregator::Aggregator, oracle::Oracle and queue::Queue and its queue 0x662f5642 is named 'Mainnet Guardian Queue'. Switchboard's official github.com/switchboard-xyz/sui README names mainnet deployment 0xe6717fb7, version 2 of this lineage; the queried package is version 4."
     }
   ]
 }

@@ -183,3 +183,33 @@ rows; `detail: "full"` lists every node and edge.
 
 Expansion costs about one search plus the spends found per node; 40 nodes
 typically require 100–300 requests.
+
+## Summarizing one address's window
+
+`summarize_address_flows` gives each coin's inflow, outflow and net in raw
+and human units, with `coin_verified` and USD valued at the window's time.
+It lists every funder with amounts and digests, the top recipients by value
+with identity and labels, and both the address's gas sponsors and the parties
+whose gas it paid.
+
+Bridge exits include far-side beneficiaries decoded from CCTP, Sui Bridge,
+Wormhole Token Bridge and NTT payloads, and Mayan. Up to 20 other sends whose
+value reached no address are read for message-shaped events from an
+unrecognized bridge. Their `cross_chain_leads` are heuristic leads, never
+proof of exits.
+
+Gas is separate from coin totals. Value with no counterparty address is
+`unattributed`, as in a swap, withdrawal or exploit. `address_poisoning`
+always reports `addresses_compared` and lookalike `pairs` across sources,
+recipients and received dust in this window. Empty pairs clear nothing outside it.
+
+The scan runs newest first. Check `coverage.complete`; a budget stop gives
+`coverage.continue_with`. `from` accepts an ISO time such as
+`2025-09-07T00:00:00Z` or checkpoint; omitting it scans backward subject to
+the budget. A `coin_type` filter affects totals and counterparties, while gas
+and bridge exits stay complete.
+
+The summary fits about 20,000 characters of counterparties, coins and
+unattributed rows, ranked by value and preserving every labelled or non-wallet
+address and lookalike. Totals and counts cover every row; `omitted` counts
+display exclusions, and `detail: "full"` lists every row.

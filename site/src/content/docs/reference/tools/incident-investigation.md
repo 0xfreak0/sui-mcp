@@ -29,7 +29,7 @@ sidebar:
 | [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. |
 | [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
 | [`screen_address`](#screen_address) | Screen an address for direct and indirect exposure (default 2 hops, both directions) to labelled malicious, sanctioned, exchange, bridge and mixer accounts. |
-| [`summarize_address_flows`](#summarize_address_flows) | What one address took in and paid out over a window, in one call. |
+| [`summarize_address_flows`](#summarize_address_flows) | Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total what an attacker took across many transactions, grouped by the pool or vault each one drained, in USD at the time of the attack. |
 | [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. |
 | [`trace_funds`](#trace_funds) | Trace fund flow from a transaction across hops. |
@@ -414,17 +414,17 @@ Manage the address-label registry used for incident investigation and fund traci
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) What one address took in and paid out over a window, in one call: per coin in/out/net (raw, human, coin_verified, USD at the window's time), every address that paid it with amounts and digests, the top recipients by value with identity and labels, the parties that paid its gas and those it paid gas for, and every bridge exit it sent with the far-side beneficiary read from chain data (CCTP, Sui Bridge, Wormhole Token Bridge and NTT payloads, Mayan). Up to 20 other sends in which its value reached no address are read for the shape of a cross-chain message from an unrecognised bridge (`cross_chain_leads`, tier heuristic, a lead and never an exit). Gas is reported apart from the coin totals; value that arrived or left with no counterparty address (a swap, a withdrawal, an exploit) is `unattributed`. `address_poisoning` is always present: `addresses_compared` and the `pairs` of addresses seen in the scan (as a source, a recipient, or dust the subject received) that render alike enough to be mistaken for one another. An empty `pairs` covers only this window's addresses. Scans the address's transactions newest first inside the window; check `coverage.complete`, and when the budget stops it, `coverage.continue_with` is the next call.
+(Incident investigation) Summarize one address's inflows, outflows and net per coin over a window, with USD at the scan's median time, all funders, top recipients, identities, labels and gas sponsorship in both directions. Reports every sent bridge exit with chain-derived beneficiaries for CCTP, Sui Bridge, Wormhole Token Bridge/NTT and Mayan. Up to 20 other sends without an address recipient are checked for unknown cross-chain messages; cross_chain_leads are heuristic leads, never exits. Gas is separate from coin totals; value without a counterparty address is unattributed. address_poisoning always checks sources, recipients and received dust in this window only; empty pairs clear nothing outside it. Scans newest first. Check coverage.complete and follow coverage.continue_with if the scan budget stops it.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Address to summarise (0x... or a SuiNS name). |
-| `from` | string | no | Window start: ISO 8601 time (2025-09-07T00:00:00Z) or a checkpoint number. Omit for the address's whole history back to the scan budget. |
+| `from` | string | no | Window start as ISO 8601 time or checkpoint. Omit to scan the whole history, subject to the scan budget. |
 | `to` | string | no | Window end: ISO 8601 time, 'now', or a checkpoint number. |
 | `coin_type` | string | no | Only this coin in the totals and counterparties (e.g. 0x2::sui::SUI). Bridge exits and gas are always reported in full. |
 | `max_transactions` | integer (50 to 5000) | no | Transactions to scan, newest first (default 1000). |
 | `top` | integer (1 to 50) | no | Recipients to list, and counterparties to identify in each direction (default 10). |
-| `detail` | `summary` \| `full` | no | 'summary' (default) lists the counterparties, coins and unattributed rows that fit about 20k characters: the top ranked by value, plus every labelled or non-wallet address and every lookalike, always. Totals and counts cover every row, and `omitted` states what each list left out. 'full' lists every row. |
+| `detail` | `summary` \| `full` | no | 'summary' (default) keeps ~20k chars of counterparties, coins and unattributed rows by value, retaining all labelled, non-wallet and lookalike addresses. Totals/counts cover all rows; omitted reports the rest. 'full': every row. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## summarize_incident_losses

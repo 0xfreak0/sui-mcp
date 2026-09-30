@@ -160,7 +160,12 @@ export const GRAPHQL_TRANSPORT = {
  */
 export const GRPC_TRANSPORT = GRAPHQL_TRANSPORT;
 
-/** Default requests per {@link RATE_WINDOW_MS} window to a `*.sui.io` host. */
+/**
+ * Default requests per {@link RATE_WINDOW_MS} window to one `*.sui.io` host.
+ * The public mainnet endpoints allow more than the others; each default sits
+ * below the level at which a burst from one IP was answered with HTTP 429.
+ */
+export const MAINNET_RATE_LIMIT = 900;
 export const PUBLIC_RATE_LIMIT = 180;
 export const RATE_WINDOW_MS = 10_000;
 
@@ -175,6 +180,7 @@ export function rateLimitFor(host: string): number | null {
     if (Number.isInteger(n) && n >= 0) return n === 0 ? null : n;
     process.stderr.write(`[config] ignoring SUI_RATE_LIMIT=${JSON.stringify(raw)}: expected a whole number of requests per 10 seconds, or 0\n`);
   }
+  if (/(^|\.)mainnet\.sui\.io$/.test(host)) return MAINNET_RATE_LIMIT;
   return /(^|\.)sui\.io$/.test(host) ? PUBLIC_RATE_LIMIT : null;
 }
 

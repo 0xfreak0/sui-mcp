@@ -5,6 +5,51 @@ sidebar:
   order: 8
 ---
 
+## Listing a wallet's NFTs
+
+`list_nfts` walks the wallet's kiosks, then its directly owned objects. Each
+response contains a page-local `collection_types` array of complete Move
+struct types. An NFT's numeric `collection_ref` is a zero-based index into
+that array: `collection_types[nft.collection_ref]` gives its exact type,
+including package addresses and generic arguments.
+
+For example, this excerpt shows two synthetic objects of the same type:
+
+```json
+{
+  "collection_types": [
+    "0x00000000000000000000000000000000000000000000000000000000000000aa::art::Item"
+  ],
+  "nfts": [
+    {
+      "object_id": "0x0000000000000000000000000000000000000000000000000000000000000010",
+      "collection_ref": 0
+    },
+    {
+      "object_id": "0x0000000000000000000000000000000000000000000000000000000000000011",
+      "collection_ref": 0
+    }
+  ]
+}
+```
+
+References are local to one response, not stable collection identifiers.
+Pass `next_cursor` as the next call's `cursor`, and use that response's own
+table to resolve its rows. Every page includes all its referenced types,
+even with `value: false` or `detail: "full"`. Kiosk-held rows keep `kiosk_id`;
+object IDs, display fields and per-item values remain on each row.
+
+Collection estimates under `valuation.nft_estimates.collections`, including
+any estimate named under `omitted`, use the same table. `est_usd` is a
+heuristic estimate from collection market evidence; objects handled by
+another valuation reader carry `value_usd` and its tier instead.
+`detail: "full"` adds raw Move contents and valuation evidence, while
+`value: false` skips valuation.
+
+`list_nft_collections` keeps the exact type in `collection`, since it already
+returns one row per type. The wallet overview's NFT section lists compact
+valuation summaries; use `list_nft_collections` for their collection details.
+
 ## The kiosk owner field
 
 A kiosk-held NFT is owned by the Kiosk object, and a kiosk carries an `owner`

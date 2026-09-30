@@ -68,7 +68,7 @@ Summary of the NFT collections a wallet holds: every kiosk plus directly owned o
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Returns each NFT's id, collection (its struct type), kiosk, and display metadata (name, description, image URL); `detail: 'full'` adds the raw Move struct contents. Each NFT carries an estimated value, `est_usd` (tier heuristic, from its collection's lowest active listing and last sale, explained per collection under `valuation`); an object another reader values, such as a liquidity position, carries `value_usd` and the reader's tier instead. `value: false` skips the valuation. Backed by GraphQL: one query per kiosk page, no fullnode rate-limit risk. Pagination: pass `cursor` from a prior response to fetch the next page; the response omits `next_cursor` when the wallet is fully enumerated. Returns at most `limit` NFTs. Use list_nft_collections for a cheaper per-collection summary with a wallet total.
+(Recommended for NFTs) List NFTs owned by a wallet, including kiosk-stored NFTs. Each row has an object id, `collection_ref` (zero-based index into this page's exact `collection_types`), kiosk and display metadata. `detail: 'full'` adds raw Move contents and valuation evidence. `est_usd` is a heuristic NFT estimate; other valued objects carry `value_usd` and a tier. `value: false` skips valuation. Pass `next_cursor` as `cursor` for the next page; its absence means the wallet is fully enumerated. Use list_nft_collections for a per-collection summary and wallet total.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

@@ -11,10 +11,10 @@ import type { ValuedPosition } from "../../src/utils/position-value.js";
 const pad = (hex: string) => `0x${hex.padStart(64, "0")}`;
 const OWNER = pad("0a");
 const KIOSK = pad("aaa1");
-const PRICED = `${pad("aa")}::nft::Priced`;
-const UNPRICED = `${pad("bb")}::nft::Unpriced`;
+const PRICED = `${pad("aa")}::nft::Item<${pad("cc")}::rarity::Rare>`;
+const UNPRICED = `${pad("bb")}::nft::Item<${pad("cc")}::rarity::Rare>`;
 /** Enough priced collections that their short rows pass the summary budget. */
-const MANY = Array.from({ length: 40 }, (_, i) => `${pad((0x1000 + i).toString(16))}::a_long_module_name_for_size::SomeCollectionName`);
+const MANY = Array.from({ length: 60 }, (_, i) => `${pad((0x1000 + i).toString(16))}::a_long_module_name_for_size::SomeCollectionName`);
 
 const items: Array<{ id: string; type: string }> = [
   { id: pad("f1"), type: PRICED },
@@ -90,15 +90,17 @@ const run = async (args: Record<string, unknown>) => {
 describe("list_nfts page values", () => {
   it("totals every row, and the summary keeps estimates short, most page value first, with the evidence named", async () => {
     const { text, body } = await run({});
-    expect(body.valuation).toMatchObject({ usd: 60.25, priced: 42, unpriced: 1 });
+    expect(body.valuation).toMatchObject({ usd: 80.25, priced: 62, unpriced: 1 });
     expect(body.nfts.find((n: { object_id: string }) => n.object_id === pad("f1")).est_usd).toBe(10.12);
     const listed = body.valuation.nft_estimates.collections;
-    expect(listed[0]).toEqual({ collection: PRICED, unit_sui: 5.061728, basis: "floor", page_usd: 20.25 });
+    const { collection_ref, ...estimate } = listed[0];
+    expect(body.collection_types[collection_ref]).toBe(PRICED);
+    expect(estimate).toEqual({ unit_sui: 5.061728, basis: "floor", page_usd: 20.25 });
     expect(JSON.stringify(listed).length).toBeLessThanOrEqual(3_000);
     expect(body.valuation.nft_estimates.unpriced_collections).toBe(1);
     const evidence = body.omitted.valuation_evidence;
-    expect(evidence.collections).toBe(42);
-    expect(evidence.priced_collections_not_listed.count).toBe(41 - listed.length);
+    expect(evidence.collections).toBe(62);
+    expect(evidence.priced_collections_not_listed.count).toBe(61 - listed.length);
     expect(evidence.next_call).toEqual({ tool: "list_nft_collections", args: { address: OWNER } });
     expect(text).not.toContain('"listed_at"');
   });
@@ -106,9 +108,21 @@ describe("list_nfts page values", () => {
   it("carries each collection's evidence, unpriced ones included, in the full view", async () => {
     const { body } = await run({ detail: "full" });
     const rows = body.valuation.nft_estimates.collections;
-    expect(rows).toHaveLength(42);
-    expect(rows.find((c: { collection: string }) => c.collection === PRICED).floor.source).toBe("TradePort orderbook");
-    expect(rows.find((c: { collection: string }) => c.collection === UNPRICED).unpriced).toBeTruthy();
+    expect(rows).toHaveLength(62);
+    expect(rows.find((c: { collection_ref: number }) => body.collection_types[c.collection_ref] === PRICED).floor.source).toBe("TradePort orderbook");
+    expect(rows.find((c: { collection_ref: number }) => body.collection_types[c.collection_ref] === UNPRICED).unpriced).toBeTruthy();
     expect(body.omitted).toBeUndefined();
+  });
+
+  it.each(["summary", "full"])("resolves every %s row to its exact type without changing ownership or value", async (detail) => {
+    const { body } = await run({ detail });
+    expect(body.nfts.map((n: { object_id: string; collection_ref: number; kiosk_id: string; est_usd: number | null }) => ({
+      id: n.object_id,
+      type: body.collection_types[n.collection_ref],
+      kiosk: n.kiosk_id,
+      usd: n.est_usd,
+    }))).toEqual(items.map(({ id, type }) => ({
+      id, type, kiosk: KIOSK, usd: type === UNPRICED ? null : type === PRICED ? 10.12 : 1,
+    })));
   });
 });

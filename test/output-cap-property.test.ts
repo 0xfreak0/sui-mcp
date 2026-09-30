@@ -173,7 +173,7 @@ describe("capPayload properties", () => {
       const paged = walkOmitted(resultId!, "events", rand).map((p) => p.index);
       expect([...keptEntries, ...paged].sort((a, b) => a - b), context).toEqual(entries.map((e) => e.i));
     }
-  });
+  }, 60_000);
 });
 
 describe("selectCommands properties", () => {

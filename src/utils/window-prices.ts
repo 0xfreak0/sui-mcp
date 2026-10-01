@@ -22,6 +22,7 @@ export interface WindowPrices {
     price_samples: Array<{ coin_type: string; requested_at: number; source: string; price_usd: number; price_time: number; price_offset_sec: number; market?: BasePricePoint["market"] }>;
     missing_coin_samples: Array<{ coin_type: string; samples: number; first_at: string; last_at: string; request_failed_samples?: number }>;
     out_of_range_coin_samples: Array<{ coin_type: string; source: RecentPriceSource; samples: number; first_at: string; last_at: string }>;
+    out_of_range_sources: Array<{ source: RecentPriceSource; samples: number; coins: number; first_at: string; last_at: string }>;
     unknown_time_transactions: number; budget_skipped_coin_samples: number; partial: boolean;
     meaning: string; priced_as?: Record<string, string>;
     stale_quotes?: Array<{ coin_type: string; offset_sec: number }>;
@@ -147,6 +148,15 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
     if (date > row.last_at) row.last_at = date;
     rangeCoverage.set(key, row);
   }
+  const sourceCoverage = new Map<RecentPriceSource, WindowPrices["basis"]["out_of_range_sources"][number]>();
+  for (const { source, samples, first_at, last_at } of rangeCoverage.values()) {
+    const row = sourceCoverage.get(source) ?? { source, samples: 0, coins: 0, first_at, last_at };
+    row.samples += samples;
+    row.coins++;
+    if (first_at < row.first_at) row.first_at = first_at;
+    if (last_at > row.last_at) row.last_at = last_at;
+    sourceCoverage.set(source, row);
+  }
   const missing = new Map<string, WindowPrices["basis"]["missing_coin_samples"][number]>();
   const priceSamples: WindowPrices["basis"]["price_samples"] = [];
   let priced = 0;
@@ -208,6 +218,7 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       price_samples: priceSamples,
       missing_coin_samples: [...missing.values()],
       out_of_range_coin_samples: [...rangeCoverage.values()],
+      out_of_range_sources: [...sourceCoverage.values()],
       unknown_time_transactions: unknownTime,
       ...(stale.size ? { stale_quotes: [...stale].map(([coin_type, offset_sec]) => ({ coin_type, offset_sec })) } : {}),
       budget_skipped_coin_samples: skipped,

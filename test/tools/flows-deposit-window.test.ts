@@ -32,7 +32,6 @@ function observe(address: string, after: number, before: number) {
 
 describe("flow counterparty deposit windows", () => {
   it("selects only incident-window observations for sources, recipients and gas sponsors, retaining classification bounds", async () => {
-    for (const address of [source, recipient, sponsor]) observe(address, 70, 101);
     gqlQuery.mockResolvedValue({
       transactions: {
         nodes: [
@@ -53,6 +52,17 @@ describe("flow counterparty deposit windows", () => {
     const tools = new Map<string, Handler>();
     registerFlowTools({ tool: (name: string, _description: string, _schema: unknown, handler: Handler) => tools.set(name, handler) } as never);
     const args = { address: subject, from: "10", to: "21", coin_type: coin };
+    const unclassified = JSON.parse((await tools.get("summarize_address_flows")!(args)).content[0].text);
+    expect(unclassified.deposit_address_row_defaults).toMatchObject({
+      role: null, source: null, other_session_observations: 0, stops_trace: false,
+    });
+    for (const counterparty of [unclassified.inflow_sources[0], unclassified.top_recipients[0], unclassified.gas_sponsorship.sponsored_by[0]]) {
+      expect(counterparty.deposit_address).toEqual({
+        status: "not classified",
+        next_call: { tool: "classify_deposit_address", args: { address: counterparty.address, network: "mainnet", from: "10", to: "21" } },
+      });
+    }
+    for (const address of [source, recipient, sponsor]) observe(address, 70, 101);
     const result = JSON.parse((await tools.get("summarize_address_flows")!(args)).content[0].text);
     for (const counterparty of [result.inflow_sources[0], result.top_recipients[0], result.gas_sponsorship.sponsored_by[0]]) {
       expect(counterparty.deposit_address).toMatchObject({

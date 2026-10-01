@@ -167,13 +167,15 @@ function who(address: string, identity: AddressIdentity | undefined, roleWindow:
   const label = getLabel(address);
   const provenance = label ? labelProvenance(label) : undefined;
   const note = identity ? identityNote(identity) : undefined;
+  const deposit = depositRole(address, roleWindow);
+  const unclassified = !label && deposit?.status === "not classified" && deposit.other_session_observations === 0 && !deposit.stops_trace;
   return {
     address,
     ...(identity && identity.kind !== "wallet" ? { kind: identity.kind } : {}),
     ...(identity?.name ? { name: identity.name } : {}),
     ...(label ? { label: label.label, label_category: label.category } : {}),
     ...(provenance ? { label_provenance: provenance } : {}),
-    deposit_address: depositRole(address, roleWindow),
+    deposit_address: unclassified ? { status: deposit.status, next_call: deposit.next_call } : deposit,
     ...(identity?.protocol ? { protocol: identity.protocol } : {}),
     ...(note ? { note } : {}),
   };
@@ -555,6 +557,10 @@ export function registerFlowTools(server: McpServer) {
           address,
           window: describeWindow(from, to, window),
           deposit_address: depositRole(address, roleWindow),
+          deposit_address_row_defaults: {
+            role: null, source: null, other_session_observations: 0, stops_trace: false,
+            note: "A counterparty deposit_address with only status and next_call has these default values.",
+          },
           ...(coin_type ? { coin_filter: coinKey(coin_type) } : {}),
           coverage: {
             scanned_transactions: txs.length,
@@ -692,6 +698,67 @@ export function registerFlowTools(server: McpServer) {
           ...(leads.length ? { cross_chain_leads: leads, cross_chain_leads_meaning: CROSS_CHAIN_LEAD_MEANING } : {}),
         };
 
+        // A bridge exit is a flagged row: retain every digest and beneficiary
+        // in the summary. Repeated provider accounting stays in the full view;
+        // invariant totals and full destination evidence remain in by_bridge.
+        let visible: Record<string, unknown> = payload;
+        if (detail !== "full" && exits.length) {
+          const bridgeTraits = new Map(bridgeGroups.map((group) => {
+            const rows = payload.bridge_exits.transactions.filter((row) => row.bridge === group.bridge);
+            const sources = new Set(rows.flatMap((row) => row.beneficiaries.map((b) => b.source)));
+            const chains = new Set(rows.flatMap((row) => row.beneficiaries.map((b) => b.chain)));
+            const protocols = new Set(rows.map((row) => JSON.stringify(row.protocols ?? [])));
+            return [group.bridge, {
+              source: sources.size === 1 ? [...sources][0] : undefined,
+              chain: chains.size === 1 ? [...chains][0] : undefined,
+              protocols: protocols.size === 1 ? rows[0]?.protocols : undefined,
+              sharedProtocols: protocols.size === 1,
+              singleCoin: group.sent.size === 1,
+            }] as const;
+          }));
+          visible = {
+            ...payload,
+            bridge_exits: {
+              ...payload.bridge_exits,
+              transaction_detail: {
+                next_call: { tool: "summarize_address_flows", repeat_with: { detail: "full" } },
+                note: "Each transaction below retains its beneficiaries and sent amounts. A single bridge's beneficiary source, chain and extra protocols are named in by_bridge; the full view includes per-transaction raw amounts, provider coverage and retained-on-Sui details.",
+              },
+              by_bridge: payload.bridge_exits.by_bridge.map((group) => {
+                const common = bridgeTraits.get(group.bridge)!;
+                return {
+                  ...group,
+                  ...(common.source ? { beneficiary_source: common.source } : {}),
+                  ...(common.chain ? { beneficiary_chain: common.chain } : {}),
+                  ...(common.protocols ? { protocols: common.protocols } : {}),
+                };
+              }),
+              transactions: payload.bridge_exits.transactions.map((row) => {
+                const common = bridgeTraits.get(row.bridge)!;
+                return {
+                  digest: row.digest, timestamp: row.timestamp, bridge: row.bridge,
+                  ...(common.sharedProtocols ? {} : row.protocols ? { protocols: row.protocols } : {}),
+                  sent: row.sent.map((coin) => ({
+                    ...(common.singleCoin ? {} : { coin_type: coin.coin_type }),
+                    amount: coin.amount, usd: coin.usd,
+                  })),
+                  ...(row.retained_on_sui ? { retained_on_sui: row.retained_on_sui.map((coin) => ({
+                    coin_type: coin.coin_type, amount: coin.amount, usd: coin.usd,
+                  })) } : {}),
+                  beneficiaries: row.beneficiaries.map(({ source, chain, ...rest }) => ({
+                    ...(source === common.source ? {} : { source }),
+                    ...(chain === common.chain ? {} : { chain }),
+                    ...rest,
+                  })),
+                  ...(row.unresolved_vaas ? { unresolved_vaas: row.unresolved_vaas } : {}),
+                  ...(row.events_incomplete ? { events_incomplete: true } : {}),
+                  ...(row.next_step ? { next_step: row.next_step } : {}),
+                };
+              }),
+            },
+          };
+        }
+
         // Every list is ranked above; the cap keeps the identified top rows,
         // flagged rows and whatever else fits, and states the rest.
         const topSources = new Set(sources.slice(0, topN).map((s) => s.c.address));
@@ -713,13 +780,16 @@ export function registerFlowTools(server: McpServer) {
         const { payload: out } = capPayload(
           "summarize_address_flows",
           args,
-          payload,
+          visible,
           {
             "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
             "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
+            "usd_basis.price_samples": { budget: 2_000, keepOrder: true },
+            "usd_basis.out_of_range_coin_samples": { budget: 1_500, keepOrder: true },
             "bridge_exits.transactions": {
               budget: 8_000,
               keepOrder: true,
+              keep: () => true, // Every bridge exit is a flagged transaction, including its beneficiaries.
               usd: (row) => row.sent.some((coin) => coin.usd !== null) ? row.sent.reduce((sum, coin) => sum + (coin.usd ?? 0), 0) : null,
               brief: (row) => ({ digest: row.digest, bridge: row.bridge }),
             } satisfies ListCap<(typeof payload.bridge_exits.transactions)[number]>,
@@ -766,7 +836,12 @@ export function registerFlowTools(server: McpServer) {
               brief: (r: ObjRow) => ({ digest: r.digest, direction: r.direction, object_id: r.object_id, usd: r.usd }),
             } satisfies ListCap<ObjRow>,
           },
-          { full: detail === "full", next_call: { tool: "summarize_address_flows", repeat_with: { detail: "full" } } },
+          {
+            full: detail === "full",
+            stored: payload,
+            paged: detail === "full" ? {} : { "bridge_exits.transactions": exits.map((_, i) => i) },
+            next_call: { tool: "summarize_address_flows", repeat_with: { detail: "full" } },
+          },
         );
 
         return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };

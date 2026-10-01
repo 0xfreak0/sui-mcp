@@ -1519,9 +1519,10 @@ export function registerAttackTools(server: McpServer) {
           {
             "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
             "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
-            "usd_basis.price_samples": { budget: 12_000, keepOrder: true },
+            "usd_basis.price_samples": { budget: 2_000, keepOrder: true },
+            "usd_basis.out_of_range_coin_samples": { budget: 1_500, keepOrder: true },
             groups: {
-              budget: 14_000,
+              budget: 10_000,
               usd: (g: Group) => Math.max(g.attacker_usd, -g.pool_usd),
               brief: (g: Group) => ({ pools: g.pools, attacker_usd: g.attacker_usd, pool_usd: g.pool_usd, transaction_count: g.transaction_count }),
             } satisfies ListCap<Group>,

@@ -5,9 +5,15 @@ description: Every sui-mcp release, newest first, with a summary and links to it
 sidebar:
   order: 3
 ---
-The current release is 1.25.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
+The current release is 1.26.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
 
 Published versions are on npm as [`sui-analytics-mcp`](https://www.npmjs.com/package/sui-analytics-mcp). To check that an installed tarball was built by the project's CI, see [Verifying a release](/concepts/security/#verifying-a-release).
+
+## 1.26.0 (2026-10-01)
+
+Historical prices keep working when DefiLlama cannot answer, and several long-standing gaps close. Keyless CoinGecko and GeckoTerminal fallbacks price recent dates, with exact coin identity. `classify_deposit_address` answers for a chosen period, and deposit roles show in the flow, identity and label tools. Historical staking on busy addresses finishes through resumable continuations. Memecoin launchpads, Vice, Blast.fun and DeepBook Predict are known protocols. Long tool descriptions are shorter, `list_nfts` pages are smaller, and ten known limits are documented with what to do instead.
+
+[Full entry](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md#1260-2026-10-01) · [GitHub release](https://github.com/0xfreak0/sui-mcp/releases/tag/v1.26.0)
 
 ## 1.25.0 (2026-09-30)
 

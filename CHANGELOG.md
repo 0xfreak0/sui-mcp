@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.26.0 (2026-10-01)
+
+Historical prices keep working when DefiLlama cannot answer, and several
+long-standing gaps close. Keyless CoinGecko and GeckoTerminal fallbacks
+price recent dates, with exact coin identity. `classify_deposit_address`
+answers for a chosen period, and deposit roles show in the flow, identity
+and label tools. Historical staking on busy addresses finishes through
+resumable continuations. Memecoin launchpads, Vice, Blast.fun and DeepBook
+Predict are known protocols. Long tool descriptions are shorter, `list_nfts`
+pages are smaller, and ten known limits are documented with what to do
+instead.
+
 ### Added
 - **Keyless fallbacks for recent historical prices.** When DefiLlama has no
   quote or its request fails, the price comes from CoinGecko, then from
@@ -33,33 +45,6 @@
   `account` and `propbook` packages are curated as DeepBook, typed
   `prediction_market` (`propbook` as `oracle`), so their calls, events and
   later upgrades are named from the registry rather than by publisher key.
-
-### Changed
-- **Flow and incident summaries stay compact.** The new pricing coverage
-  and deposit roles made `summarize_address_flows` and
-  `summarize_incident_losses` summaries much larger. Summaries now keep the
-  exact counts and leave the per-coin detail to `detail: "full"`, which pages
-  it when needed, with or without a local store. Every bridge-exit
-  transaction and beneficiary is kept, with shared bridge fields stated once.
-- **The docs and the forensics skill cover 1.26.** Pages that list price
-  providers name CoinGecko and GeckoTerminal, incident totals are described as
-  priced near each transaction's time, and the skill covers deposit windows,
-  shared deposit roles, resumable historical staking, `out_of_range` prices and
-  the newly documented limits.
-- **Shorter tool descriptions, second pass.** Nineteen more tools, among them
-  `aggregate_events`, `analyze_multisig`, `get_token_prices`, `find_flow_path`
-  and `get_wallet_overview`, have their long tool and field descriptions
-  rewritten in fewer words. Selection, coverage limits, partial-output signals,
-  continuations and caveats stay in the descriptions; examples, provider order
-  and method details moved to the docs site. Tool definitions with all tools
-  enabled are about 3.5% smaller. Behaviour and input schemas are unchanged.
-- **The docs state ten known limits and what to do instead.** They cover:
-  summary timelines; `analyze_token` not reading pools or LP custody; the
-  affected-object index missing read-only users; caller-value detection;
-  incident grouping by exact pool set; flow graphs seeding from coins only;
-  batch reads without object custody; sender-window totals; and Orbiter
-  memos, which are not decoded.
-- **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
 
 ### Fixed
 - **`summarize_incident_losses` stays within its output limit.** A very
@@ -97,6 +82,33 @@
   official deployment is curated, so every version of its lineage is named.
 - **`find_pools` finds BlueMove v1 pools**, in both token orders and when
   object-owned. `protocol: "bluemove"` restricts the search to them.
+
+### Changed
+- **Flow and incident summaries stay compact.** The new pricing coverage
+  and deposit roles made `summarize_address_flows` and
+  `summarize_incident_losses` summaries much larger. Summaries now keep the
+  exact counts and leave the per-coin detail to `detail: "full"`, which pages
+  it when needed, with or without a local store. Every bridge-exit
+  transaction and beneficiary is kept, with shared bridge fields stated once.
+- **The docs and the forensics skill cover 1.26.** Pages that list price
+  providers name CoinGecko and GeckoTerminal, incident totals are described as
+  priced near each transaction's time, and the skill covers deposit windows,
+  shared deposit roles, resumable historical staking, `out_of_range` prices and
+  the newly documented limits.
+- **Shorter tool descriptions, second pass.** Nineteen more tools, among them
+  `aggregate_events`, `analyze_multisig`, `get_token_prices`, `find_flow_path`
+  and `get_wallet_overview`, have their long tool and field descriptions
+  rewritten in fewer words. Selection, coverage limits, partial-output signals,
+  continuations and caveats stay in the descriptions; examples, provider order
+  and method details moved to the docs site. Tool definitions with all tools
+  enabled are about 3.5% smaller. Behaviour and input schemas are unchanged.
+- **The docs state ten known limits and what to do instead.** They cover:
+  summary timelines; `analyze_token` not reading pools or LP custody; the
+  affected-object index missing read-only users; caller-value detection;
+  incident grouping by exact pool set; flow graphs seeding from coins only;
+  batch reads without object custody; sender-window totals; and Orbiter
+  memos, which are not decoded.
+- **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
 
 ## 1.25.0 (2026-09-30)
 

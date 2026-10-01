@@ -953,7 +953,7 @@ export function registerAttackTools(server: McpServer) {
 
   server.tool(
     "summarize_incident_losses",
-    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.",
+    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest. Detail 'full' returns all rows unless the 500k-character transport ceiling requires paging oversized lists through omitted.result. No API key; transaction reads use archive fallback.",
     {
       digests: z
         .array(z.string())
@@ -998,7 +998,7 @@ export function registerAttackTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows."),
+        .describe("'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows when they fit 500k characters; otherwise omitted.result pages excess rows without dropping totals."),
     },
     async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, detail }) => {
       try {
@@ -1511,6 +1511,7 @@ export function registerAttackTools(server: McpServer) {
           {
             "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
             "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
+            "usd_basis.price_samples": { budget: 12_000, keepOrder: true },
             groups: {
               budget: 14_000,
               usd: (g: Group) => Math.max(g.attacker_usd, -g.pool_usd),
@@ -1554,6 +1555,7 @@ export function registerAttackTools(server: McpServer) {
           },
           {
             full: detail === "full",
+            maxChars: 498_000,
             stored: payload,
             next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } },
           },

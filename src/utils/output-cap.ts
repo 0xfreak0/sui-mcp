@@ -188,6 +188,8 @@ export function capPayload(
     full: boolean;
     next_call: NextCall;
     stored?: Record<string, unknown>;
+    /** A full view that exceeds this wire limit pages its largest lists instead of overflowing it. */
+    maxChars?: number;
     /** Lists the caller folded before capping: how many entries became how many rows. */
     folded?: Record<string, { entries: number; rows: number }>;
     /**
@@ -198,7 +200,29 @@ export function capPayload(
     paged?: Record<string, number[]>;
   },
 ): CapResult {
-  if (options.full) return { payload: full, resultId: null };
+  if (options.full && (!options.maxChars || JSON.stringify(full).length <= options.maxChars)) return { payload: full, resultId: null };
+  if (options.full) {
+    // A full answer exceeding the transport ceiling lives in the store;
+    // page its largest lists rather than dropping totals or oversizing wire.
+    const available = Object.keys(caps).filter((path) => Array.isArray(readPath(full, path)));
+    const selected: Record<string, ListCap<never>> = {};
+    while (available.length) {
+      available.sort((a, b) => JSON.stringify(readPath(full, b)).length - JSON.stringify(readPath(full, a)).length);
+      const path = available.shift()!;
+      const rows = readPath(full, path) as unknown[];
+      const budget = Math.max(0, JSON.stringify(rows).length - (JSON.stringify(full).length - options.maxChars!) - 4_000);
+      selected[path] = { ...caps[path], budget, keep: undefined };
+      const result = capPayload(tool, args, full, selected, {
+        full: false, stored: options.stored ?? full, next_call: options.next_call,
+      });
+      if (JSON.stringify(result.payload).length <= options.maxChars!) {
+        const omitted = result.payload.omitted as { next_call?: NextCall };
+        if (omitted) delete omitted.next_call;
+        return result;
+      }
+    }
+    throw new Error(`The ${tool} result cannot fit ${options.maxChars} characters even after paging its lists.`);
+  }
   const folded = options.folded ?? {};
   let payload = full;
   const lists: Record<string, OmittedRows & { page?: string }> = {};

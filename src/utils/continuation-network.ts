@@ -5,9 +5,11 @@ import { DEFAULT_NETWORK } from "../config.js";
 const CALL_PATHS = [
   "next_call",
   "omitted.next_call",
+  "omitted.previous_call",
   "omitted.lists.*.next_call",
   "omitted.valuation_evidence.next_call",
   "scan.next_call",
+  "bridge_exits.transaction_detail.next_call",
   "events_page.next_call",
   "commands_omitted.next_call",
   "events_omitted.next_call",

@@ -97,8 +97,10 @@ include losses. A missing price does not mean a token is worth zero.
 - **`usd_basis` or the pricing block** states the method, sources and coverage.
   `hourly_utc` means hourly median samples, `daily_median_time` means daily
   median samples, and `fixed_time` means the requested `price_at`.
-  `price_samples` names each coin's provider, requested time, sample time and
-  signed `price_offset_sec`, with timestamps in Unix seconds.
+  `price_samples` names each coin's requested time, sample time and signed
+  `price_offset_sec`, with timestamps in Unix seconds. Its `source` is named
+  per sample when several providers contributed, or once under `sources`
+  when all samples use the same provider.
   `priced_by_source` in raw amount coverage splits incoming and outgoing
   amounts by the provider that valued them, including stale priced amounts.
   Position asset legs keep their provider quote in `price_sample`.

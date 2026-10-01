@@ -35,6 +35,12 @@
   later upgrades are named from the registry rather than by publisher key.
 
 ### Changed
+- **Flow and incident summaries stay compact.** The new pricing coverage
+  and deposit roles made `summarize_address_flows` and
+  `summarize_incident_losses` summaries much larger. Summaries now keep the
+  exact counts and leave the per-coin detail to `detail: "full"`, which pages
+  it when needed, with or without a local store. Every bridge-exit
+  transaction and beneficiary is kept, with shared bridge fields stated once.
 - **The docs and the forensics skill cover 1.26.** Pages that list price
   providers name CoinGecko and GeckoTerminal, incident totals are described as
   priced near each transaction's time, and the skill covers deposit windows,

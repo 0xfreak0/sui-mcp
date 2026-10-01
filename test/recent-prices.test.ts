@@ -4,6 +4,7 @@ import { priceUsdAtTime } from "../src/utils/valuation.js";
 import { fetchHistoricalMarketPrices, fetchRecentHistory, resetRecentPriceCache } from "../src/utils/recent-prices.js";
 import { defiLlamaKey } from "../src/utils/price-providers.js";
 import { WindowAmounts, resetWindowPriceCache, windowPrices } from "../src/utils/window-prices.js";
+import { capPayload } from "../src/utils/output-cap.js";
 
 const COIN = "0xabc::coin::COIN";
 const NOW = Date.parse("2026-09-30T12:00:00Z") / 1000;
@@ -47,6 +48,20 @@ describe("recent historical fallbacks", () => {
       { coin_type: sui, source: "coingecko", samples: fixed ? 1 : 2 },
       { coin_type: sui, source: "geckoterminal", samples: fixed ? 1 : 2 },
     ], missing_coin_samples: [{ samples: fixed ? 1 : 2, request_failed_samples: fixed ? 1 : 2 }] });
+    expect(prices.basis.out_of_range_sources).toEqual([
+      { source: "coingecko", samples: fixed ? 1 : 2, coins: 1,
+        first_at: new Date(at * 1000).toISOString(), last_at: new Date((fixed ? at : at + 3600) * 1000).toISOString() },
+      { source: "geckoterminal", samples: fixed ? 1 : 2, coins: 1,
+        first_at: new Date(at * 1000).toISOString(), last_at: new Date((fixed ? at : at + 3600) * 1000).toISOString() },
+    ]);
+    const { payload } = capPayload("summarize_address_flows", {}, { usd_basis: prices.basis }, {
+      "usd_basis.out_of_range_coin_samples": { budget: 0 },
+    }, { full: false, next_call: { tool: "summarize_address_flows", repeat_with: { detail: "full" } } });
+    const coverage = payload.usd_basis as typeof prices.basis;
+    expect(coverage.out_of_range_coin_samples).toHaveLength(1);
+    expect(coverage.out_of_range_sources.reduce((sum, source) => sum + source.samples, 0)).toBe(fixed ? 2 : 4);
+    const omitted = payload.omitted as { lists: Record<string, { count: number }> };
+    expect(omitted.lists["usd_basis.out_of_range_coin_samples"].count).toBe(1);
     const amounts = new WindowAmounts(prices);
     amounts.add(sui, 1_000_000_000n, at);
     expect(amounts.coverage(sui)).toMatchObject({ unpriced_raw: { in: "1000000000", out: "0" } });

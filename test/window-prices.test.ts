@@ -23,6 +23,12 @@ describe("window USD", () => {
     amounts.add(SUI, -10_000_000_000n, JUL + 200);
     expect(amounts.amounts()[0]).toMatchObject({ amount: 0, usd: 20, raw: { in: "10000000000", out: "10000000000" } });
     expect(prices.basis).toMatchObject({ priced_coin_samples: 2, partial: false, approximate: true });
+    expect(prices.basis.sources).toEqual(["defillama"]);
+    expect(prices.basis.price_samples).toEqual([
+      expect.objectContaining({ coin_type: SUI, price_usd: 4 }),
+      expect.objectContaining({ coin_type: SUI, price_usd: 2 }),
+    ]);
+    expect(prices.basis.price_samples.every((sample) => sample.source === undefined)).toBe(true);
   });
 
   it("excludes missing dates and timestamps without pricing them at a nearby day", async () => {

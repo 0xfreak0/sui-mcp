@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capPayload, capRows, readStoredResult } from "../src/utils/output-cap.js";
 import { resetStore } from "../src/utils/store.js";
+import { pageIncidentCoverage } from "../src/tools/attack.js";
+import type { WindowPrices } from "../src/utils/window-prices.js";
 
 type Row = { id: number; usd: number; flagged?: boolean; pad: string };
 const row = (id: number, usd: number, flagged = false): Row => ({ id, usd, ...(flagged ? { flagged } : {}), pad: "x".repeat(80) });
@@ -166,6 +168,44 @@ describe("capPayload", () => {
       offset = omitted.next_call.args.group_offset;
     }
     expect(seen).toEqual(groups.map((group) => group.id));
+  });
+
+  it("pages oversized full incident coverage without a store or losing any per-coin sample", () => {
+    const priced = Array.from({ length: 3_200 }, (_, i) => ({
+      coin_type: `0x${i.toString(16).padStart(64, "0")}::coin::COIN`,
+      requested_at: 1_700_000_000 + i, price_time: 1_700_000_100 + i,
+      price_offset_sec: 100, price_usd: i + 1,
+    }));
+    const outOfRange = Array.from({ length: 800 }, (_, i) => ({
+      coin_type: priced[i].coin_type, source: "coingecko" as const,
+      samples: 2, first_at: "2025-05-22T00:00:00Z", last_at: "2025-05-22T01:00:00Z",
+    }));
+    const basis: WindowPrices["basis"] = {
+      method: "hourly_utc", approximate: true, sources: ["defillama"],
+      requested_coin_hours: 4_000, requested_coin_samples: 4_000, priced_coin_samples: 3_200,
+      price_samples: priced, out_of_range_coin_samples: outOfRange,
+      out_of_range_sources: [{ source: "coingecko", samples: 1_600, coins: 800,
+        first_at: "2025-05-22T00:00:00Z", last_at: "2025-05-22T01:00:00Z" }],
+      missing_coin_samples: [], unknown_time_transactions: 0,
+      budget_skipped_coin_samples: 0, partial: true, meaning: "historical",
+    };
+    expect(JSON.stringify(basis).length).toBeGreaterThan(498_000);
+    const seenPrices: typeof priced = [];
+    const seenRanges: typeof outOfRange = [];
+    let offset = 0;
+    do {
+      const page = pageIncidentCoverage(basis, offset);
+      expect(JSON.stringify(page.basis).length).toBeLessThan(70_000);
+      expect(page.basis.priced_coin_samples).toBe(3_200);
+      expect(page.basis.out_of_range_sources[0]).toMatchObject({ samples: 1_600, coins: 800 });
+      seenPrices.push(...page.basis.price_samples as typeof priced);
+      seenRanges.push(...page.basis.out_of_range_coin_samples as typeof outOfRange);
+      if (page.nextOffset === null) break;
+      expect(page.nextOffset).toBeGreaterThan(offset);
+      offset = page.nextOffset;
+    } while (offset < 4_000);
+    expect(seenPrices).toEqual(priced);
+    expect(seenRanges).toEqual(outOfRange);
   });
 
   it("stores the full result with the store on, and its resource pages every omitted row", () => {

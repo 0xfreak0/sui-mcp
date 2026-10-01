@@ -207,4 +207,28 @@ describe("historical date batches", () => {
     expect(prices.get(SUI)?.get(dates[99])?.price).toBe(2);
     expect(prices.get(SUI)?.has(dates[100])).toBe(false);
   });
+  it("reads a wide incident's historical batches concurrently without dropping quotes", async () => {
+    const at = 1747909800;
+    const coins = Array.from({ length: 500 }, (_, i) => `0x${i.toString(16).padStart(64, "0")}::coin::TOKEN`);
+    let active = 0;
+    let peak = 0;
+    const gate = Promise.withResolvers<void>();
+    fetchMock.mockImplementation(async (url: string) => {
+      active++;
+      peak = Math.max(peak, active);
+      await gate.promise;
+      active--;
+      const requested = JSON.parse(new URL(url).searchParams.get("coins")!) as Record<string, number[]>;
+      return ok({ coins: Object.fromEntries(Object.entries(requested).map(([key, times]) => [
+        key, { prices: times.map((timestamp) => ({ timestamp, price: 2 })) },
+      ])) });
+    });
+    const pending = fetchDefiLlamaHistory(new Map(coins.map((coin) => [coin, [at]])));
+    await Promise.resolve();
+    gate.resolve();
+    const quotes = await pending;
+    expect(peak).toBe(8);
+    expect(quotes.size).toBe(coins.length);
+    expect(coins.every((coin) => quotes.get(coin)?.get(at)?.price === 2)).toBe(true);
+  });
 });

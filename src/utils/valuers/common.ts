@@ -295,13 +295,22 @@ export async function priceCoinTypes(coinTypes: string[], ctx: ValuationContext)
   const answers = new Map(unique.map((c) => [c, memo.get(keyOf(c)) as Promise<HistoricalPrices>]));
   const points: HistoricalPrices["points"] = new Map();
   const unpriced: HistoricalPrices["unpriced"] = [];
+  const providerFailures = new Map<string, HistoricalPrices["provider_unavailable"][number]>();
+  const seen = new Set<HistoricalPrices>();
   for (const c of unique) {
     const r = await answers.get(c)!;
+    if (!seen.has(r)) {
+      seen.add(r);
+      for (const row of r.provider_unavailable ?? []) {
+        const previous = providerFailures.get(row.source);
+        providerFailures.set(row.source, { ...row, samples: (previous?.samples ?? 0) + row.samples });
+      }
+    }
     const point = r.points.get(c);
     if (point) points.set(c, point);
     else unpriced.push(...r.unpriced.filter((u) => u.coin_type === c));
   }
-  return { points, unpriced };
+  return { points, unpriced, provider_unavailable: [...providerFailures.values()] };
 }
 
 export interface Leg {

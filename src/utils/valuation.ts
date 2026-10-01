@@ -366,6 +366,8 @@ export interface UnpricedCoin {
 export interface HistoricalPrices {
   points: Map<string, PricePoint>;
   unpriced: UnpricedCoin[];
+  /** Failed provider reads, even when a different source ultimately priced the coin. */
+  provider_unavailable: ProviderUnavailable[];
 }
 
 export type HistoricalSource = Exclude<PriceSource, "aftermath">;
@@ -457,7 +459,7 @@ async function readPriceUsdAtTime(
   const sources = opts.sources ?? ["pyth", "defillama", "coingecko", "geckoterminal"];
   const points = new Map<string, PricePoint>();
   const uniq = [...new Set(coinTypes)];
-  if (uniq.length === 0) return { points, unpriced: [] };
+  if (uniq.length === 0) return { points, unpriced: [], provider_unavailable: [] };
   const pythKey = pythApiKey() !== null;
 
   if (sources.includes("pyth") && pythKey) {
@@ -498,6 +500,9 @@ async function readPriceUsdAtTime(
       }
     }
   }
+  const providerUnavailable: ProviderUnavailable[] = llama?.unanswered.size
+    ? [{ source: "defillama", reason: providerFailureReason("defillama"), samples: llama.unanswered.size }]
+    : [];
   const fallbackFailures = new Map<string, string[]>();
   const outOfRange = new Map<string, RecentPriceSource[]>();
   if (unixTs !== undefined) for (const source of ["coingecko", "geckoterminal"] as const) {
@@ -505,6 +510,7 @@ async function readPriceUsdAtTime(
     const rest = uniq.filter((ct) => !points.has(ct));
     if (!rest.length) break;
     const result = await fetchRecentHistory(new Map(rest.map((coin) => [coin, [unixTs]])), source);
+    providerUnavailable.push(...(result.provider_unavailable ?? []));
     for (const row of result.outOfRange) {
       const skipped = outOfRange.get(row.coin_type) ?? [];
       skipped.push(row.source);
@@ -521,7 +527,8 @@ async function readPriceUsdAtTime(
     }
   }
 
-  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures, outOfRange }) };
+  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures, outOfRange }),
+    provider_unavailable: providerUnavailable };
 }
 
 // Beyond this gap between a price's sample time and the block time, the

@@ -115,9 +115,9 @@ async function readWindowPrices(requests: PriceRequest[], fixedAt?: number): Pro
     const days = [...pending];
     for (let i = 0; i < days.length; i += 4) await Promise.all(days.slice(i, i + 4).map(async ([day, coins]) => {
       const result = await priceUsdAtTime(coins, day);
-      for (const row of result.unpriced) for (const provider of row.provider_unavailable ?? []) {
-        const previous = unavailable.get(provider.source);
-        unavailable.set(provider.source, { ...provider, samples: (previous?.samples ?? 0) + provider.samples });
+      for (const row of result.provider_unavailable) {
+        const previous = unavailable.get(row.source);
+        unavailable.set(row.source, { ...row, samples: (previous?.samples ?? 0) + row.samples });
       }
       for (const row of result.unpriced) {
         if (row.code === "provider_unavailable") {

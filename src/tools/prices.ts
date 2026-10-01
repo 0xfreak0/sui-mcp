@@ -125,7 +125,7 @@ export function registerPriceTools(server: McpServer) {
           if (isNaN(parsed)) return errorResult("Invalid `at`. Use Unix seconds or ISO 8601 format.");
           unixTs = Math.floor(parsed / 1000);
         }
-        const { points, unpriced } = await priceUsdAtTime(coin_types, unixTs);
+        const { points, unpriced, provider_unavailable } = await priceUsdAtTime(coin_types, unixTs);
         const prices = coin_types.map((ct) => {
           const coin = displayCoin(ct);
           const p = points.get(ct);
@@ -157,6 +157,7 @@ export function registerPriceTools(server: McpServer) {
               confidence_note:
                 "DefiLlama's confidence is a 0-1 score for how well its sources agreed; Pyth's is a USD confidence interval. A price whose sample is more than an hour from the moment asked for is marked stale.",
               prices,
+              ...(provider_unavailable.length ? { provider_unavailable } : {}),
               ...(unpriced.length ? { unpriced } : {}),
             }),
           }],

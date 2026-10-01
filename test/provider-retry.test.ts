@@ -7,6 +7,7 @@ import { withPriceProviderCall } from "../src/utils/price-call-context.js";
 import { priceUsdAtTime } from "../src/utils/valuation.js";
 import { fetchHistoricalMarketPrices, resetRecentPriceCache } from "../src/utils/recent-prices.js";
 import { resetWindowPriceCache, windowPrices, WindowAmounts } from "../src/utils/window-prices.js";
+import { registerPriceTools } from "../src/tools/prices.js";
 
 const COIN = "0x2::sui::SUI";
 const AT = Date.parse("2025-01-01T00:00:00Z") / 1000;
@@ -121,4 +122,32 @@ it("attributes only failed DefiLlama samples to DefiLlama when fallbacks fail to
   expect(firstChunkSize).toBeLessThan(times.length);
   expect(counts).toMatchObject({ defillama: firstChunkSize, coingecko: times.length, geckoterminal: times.length });
   expect(result.unanswered.get(COIN)?.size).toBe(times.length);
+});
+
+it("keeps outage coverage when a fallback prices the point or fixed-time window", async () => {
+  const at = Math.floor(Date.now() / 1000) - 86400;
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.includes("coins.llama.fi")) return json({}, 503);
+    if (url.includes("/market_chart/")) return json({ prices: [[at * 1000, 2]] });
+    if (url.includes("api.coingecko.com")) return json({ platforms: { sui: `0x${"0".repeat(63)}2::sui::SUI` } });
+    throw new Error(`Unexpected provider: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const point = await priceUsdAtTime([COIN], at);
+  expect(point.points.get(COIN)).toMatchObject({ source: "coingecko", price: 2 });
+  expect(point.unpriced).toEqual([]);
+  expect(point.provider_unavailable).toMatchObject([{ source: "defillama", samples: 1 }]);
+
+  const prices = await windowPrices([{ at, coins: [COIN] }], at);
+  expect(prices.basis).toMatchObject({
+    priced_coin_samples: 1, missing_coin_samples: [], provider_unavailable: [{ source: "defillama", samples: 1 }],
+  });
+  const amounts = new WindowAmounts(prices);
+  amounts.add(COIN, 1_000_000_000n, at);
+  expect(amounts.coverage(COIN)).toMatchObject({ raw: { in: "1000000000", out: "0" } });
+
+  let call: ((args: { coin_types: string[]; at: number }) => Promise<{ content: Array<{ text: string }> }>) | undefined;
+  registerPriceTools({ tool: (_name: string, _description: string, _schema: unknown, handler: typeof call) => { call = handler; } } as never);
+  const output = JSON.parse((await call!({ coin_types: [COIN], at })).content[0].text) as Record<string, unknown>;
+  expect(output.provider_unavailable).toMatchObject([{ source: "defillama", samples: 1 }]);
 });

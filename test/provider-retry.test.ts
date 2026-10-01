@@ -5,7 +5,7 @@ import { retryingJson } from "../src/clients/graphql.js";
 import { fetchDefiLlama } from "../src/utils/price-providers.js";
 import { withPriceProviderCall } from "../src/utils/price-call-context.js";
 import { priceUsdAtTime } from "../src/utils/valuation.js";
-import { resetRecentPriceCache } from "../src/utils/recent-prices.js";
+import { fetchHistoricalMarketPrices, resetRecentPriceCache } from "../src/utils/recent-prices.js";
 import { resetWindowPriceCache, windowPrices, WindowAmounts } from "../src/utils/window-prices.js";
 
 const COIN = "0x2::sui::SUI";
@@ -99,4 +99,26 @@ it("shares the breaker across separate price reads in one tool call but not acro
   expect(fetchMock).toHaveBeenCalledTimes(6);
   await handler!({});
   expect(fetchMock).toHaveBeenCalledTimes(12);
+});
+
+it("attributes only failed DefiLlama samples to DefiLlama when fallbacks fail too", async () => {
+  const times = Array.from({ length: 101 }, (_, i) => Math.floor(Date.now() / 1000) - 86400 + i * 60);
+  let firstChunkSize = 0;
+  let firstBatchUrl: string | undefined;
+  const fetchMock = vi.fn(async (url: string) => {
+    if (!url.includes("/batchHistorical")) return json({}, 503);
+    if (firstBatchUrl === undefined) {
+      firstBatchUrl = url;
+      const entries = JSON.parse(new URL(url).searchParams.get("coins")!) as Record<string, number[]>;
+      firstChunkSize = Object.values(entries)[0].length;
+    }
+    return url === firstBatchUrl ? json({}, 503) : json({ coins: {} });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await fetchHistoricalMarketPrices(new Map([[COIN, times]]));
+  const counts = Object.fromEntries(result.provider_unavailable.map(({ source, samples }) => [source, samples]));
+  expect(firstChunkSize).toBeGreaterThan(0);
+  expect(firstChunkSize).toBeLessThan(times.length);
+  expect(counts).toMatchObject({ defillama: firstChunkSize, coingecko: times.length, geckoterminal: times.length });
+  expect(result.unanswered.get(COIN)?.size).toBe(times.length);
 });

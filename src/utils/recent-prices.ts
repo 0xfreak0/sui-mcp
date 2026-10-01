@@ -191,9 +191,9 @@ export async function fetchHistoricalMarketPrices(requests: Map<string, number[]
 async function readHistoricalMarketPrices(requests: Map<string, number[]>): Promise<HistoricalMarketPrices> {
   const unanswered = new Map<string, Set<number>>();
   const quotes = await fetchDefiLlamaHistory(requests, unanswered);
-  const llamaFailures = new Map(unanswered);
   const outOfRange: OutOfRangePriceRequest[] = [];
   const failures = new Map<PriceSource, number>();
+  failures.set("defillama", [...unanswered.values()].reduce((sum, times) => sum + times.size, 0));
   for (const source of ["coingecko", "geckoterminal"] as const) {
     const missing = new Map<string, number[]>();
     for (const [coin, times] of requests) {
@@ -214,6 +214,5 @@ async function readHistoricalMarketPrices(requests: Map<string, number[]>): Prom
       unanswered.set(coin, target);
     }
   }
-  failures.set("defillama", [...llamaFailures.values()].reduce((sum, times) => sum + times.size, 0));
   return { quotes, unanswered, outOfRange, provider_unavailable: unavailableProviders(failures).filter((row) => row.samples > 0) };
 }

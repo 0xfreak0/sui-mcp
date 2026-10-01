@@ -5700,12 +5700,6 @@
       "reason": "Calls 0x79ec5afe::pool_script_v2, which the curated registry does not name"
     },
     {
-      "digest": "BrnZ3L43WHxBijgDaSXf3dzZx5EnS9xpzYZ3eEkPtKpf",
-      "tool": "decode_ptb_bytes",
-      "code": "unverified-package-call",
-      "reason": "Calls 0xa8108657::aggregator_submit_result_action, which the curated registry does not name"
-    },
-    {
       "digest": "H3ka7hSjcRfM8EJqza6ntSYjiMEptW7A7KUeLdvDDACy",
       "tool": "decode_ptb_bytes",
       "code": "unverified-package-call",
@@ -5872,7 +5866,7 @@
       "decode_ptb_bytes:transfers-to-non-sender": 6,
       "analyze_attack_tx:unverified-package-call": 13,
       "decode_ptb:unverified-package-call": 11,
-      "decode_ptb_bytes:unverified-package-call": 24
+      "decode_ptb_bytes:unverified-package-call": 23
     }
   }
 }

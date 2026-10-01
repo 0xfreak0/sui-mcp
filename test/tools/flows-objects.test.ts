@@ -246,7 +246,7 @@ describe("summarize_address_flows objects", () => {
     expect(d.unattributed_inflows[0]).toMatchObject({ amount: 2, usd: 4 });
   });
 
-  it("caps bridge details without changing totals, destinations or full recovery", async () => {
+  it("retains every bridge exit beneficiary within the summary budget, with full accounting recoverable", async () => {
     const eventType = "0xecf47609::deposit_for_burn::DepositForBurn";
     const destination = `0x${"d3".repeat(20)}`;
     const timestamp = "2025-10-01T12:30:00Z";
@@ -273,17 +273,19 @@ describe("summarize_address_flows objects", () => {
     const call = handlers.get("summarize_address_flows")!;
     const summary = JSON.parse((await call({ address: V })).content[0].text);
     const full = JSON.parse((await call({ address: V, detail: "full" })).content[0].text);
-    expect(new Set(full.bridge_exits.transactions.map((tx: { digest: string }) => tx.digest))).toEqual(new Set(nodes.map((tx) => tx.digest)));
     expect(summary.bridge_exits.transaction_count).toBe(80);
-    expect(summary.bridge_exits.by_bridge).toEqual(full.bridge_exits.by_bridge);
+    expect(summary.bridge_exits.transactions).toHaveLength(80);
+    expect(summary.bridge_exits.transactions.map((tx: { digest: string; beneficiaries: Array<{ address: string }> }) =>
+      [tx.digest, tx.beneficiaries[0]?.address])).toEqual(full.bridge_exits.transactions.map((tx: { digest: string; beneficiaries: Array<{ address: string }> }) =>
+      [tx.digest, tx.beneficiaries[0]?.address]));
     expect(summary.bridge_exits.by_bridge[0]).toMatchObject({ transactions: 80, sent: [{ amount: 80, usd: 320 }],
       destinations: [{ address: destination, transactions: 80, sent: [{ amount: 80, usd: 320 }] }] });
+    expect(summary.bridge_exits.by_bridge[0].beneficiary_source).toBe(full.bridge_exits.transactions[0].beneficiaries[0].source);
     expect(summary.totals_usd).toEqual(full.totals_usd);
-    expect(summary.omitted.lists["bridge_exits.transactions"].count + summary.bridge_exits.transactions.length).toBe(80);
-    expect(summary.omitted.next_call).toMatchObject({ tool: "summarize_address_flows", repeat_with: { detail: "full" } });
-    expect(JSON.stringify(summary.bridge_exits.transactions).length).toBeLessThan(8100);
-    expect(summary.bridge_exits.transactions[0].sent[0]).toMatchObject({ raw: { in: "1000000000", out: "0" }, usd: 4 });
-    expect(summary.bridge_exits.transactions[0].sent[0]).not.toHaveProperty("priced_raw");
-    expect(summary.bridge_exits.transactions[0].sent[0]).not.toHaveProperty("unpriced_raw");
+    expect(summary.bridge_exits.transactions.reduce((total: number, tx: { sent: Array<{ amount: number }> }) =>
+      total + tx.sent.reduce((sum, coin) => sum + coin.amount, 0), 0)).toBe(80);
+    expect(summary.bridge_exits.transaction_detail.next_call).toMatchObject({ tool: "summarize_address_flows", repeat_with: { detail: "full" } });
+    expect(full.bridge_exits.transactions[0].sent[0]).toMatchObject({ raw: { in: "1000000000", out: "0" }, usd: 4 });
+    expect(JSON.stringify(summary).length).toBeLessThan(75_000);
   });
 });

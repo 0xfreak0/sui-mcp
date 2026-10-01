@@ -476,8 +476,13 @@ through `next_call`.
 For oversized `summarize_incident_losses` full views, `groups` stays a
 consecutive slice starting at `group_offset`; `omitted.next_call` advances that
 offset and carries the original arguments and network, even without a store.
-Each page keeps the totals over the entire incident. The stored result, when
-available, is another way to read the omitted groups.
+Full historical pricing coverage is not silently capped: when its rows alone
+would overflow the wire limit, `coverage_offset` pages consecutive samples
+across `price_samples`, `out_of_range_coin_samples`, `missing_coin_samples` and
+`stale_quotes`. Group pages finish first, then `omitted.next_call` advances the
+coverage cursor; `omitted.previous_call` reaches earlier coverage pages. Every
+page keeps the totals over the entire incident. With a store, result pages
+retrieve omitted rows from the complete original payload.
 
 Measured 2026-09 on the case set, summary view before and after:
 `summarize_address_flows` on the Suisses drainer 273k to 29k and on its fee

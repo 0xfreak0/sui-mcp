@@ -451,7 +451,8 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
 | `group_offset` | integer (at least 0) | no | First group to return with detail: 'full' when an oversized view is paged. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. 'full': consecutive group pages under 500k characters; follow omitted.next_call to read the rest. Totals always cover every group. |
+| `coverage_offset` | integer (at least 0) | no | First historical pricing coverage row for an oversized detail: 'full' view; follow omitted.next_call to page. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. 'full': consecutive group and historical pricing coverage pages under 500k characters; follow omitted.next_call to read the rest. Totals always cover every group. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## trace_flow_graph

@@ -252,10 +252,22 @@ try {
   const END = Date.parse("2025-05-22T10:46:00Z");
   const lossArgs = { sender: CETUS_ATTACKER, start: new Date(START).toISOString(), end: new Date(END).toISOString() };
   // The default view lists what fits its budget and counts the rest in
-  // `omitted`; the full view lists every group and coin, and is what the
-  // counts and sums below are checked on.
+  // `omitted`; full plus any oversized stored-result pages carries every
+  // group and coin checked below.
   const lossesSummary = await call("summarize_incident_losses", lossArgs);
   const losses = await call("summarize_incident_losses", { ...lossArgs, detail: "full" });
+  // Even detail: full must page an oversized list when its wire result
+  // crosses 500k; hydrate those pages before checking the whole incident.
+  for (const [key, omitted] of Object.entries(losses.omitted?.lists ?? {})) {
+    if (key.includes(".")) continue;
+    let pageUri = omitted.page;
+    while (pageUri) {
+      const response = await rpc("resources/read", { uri: pageUri });
+      const page = JSON.parse(response.result?.contents?.[0]?.text ?? "{}");
+      losses[key].push(...(page.rows ?? []).map(({ row }) => row));
+      pageUri = page.next_page;
+    }
+  }
   // Wide checkpoint bounds (10:27 to 10:49), then the window applied by each
   // transaction's own timestamp.
   const sent = (await rawTxs({ sentAddress: CETUS_ATTACKER, afterCheckpoint: 148114000, beforeCheckpoint: 148119500 })).filter((t) => {

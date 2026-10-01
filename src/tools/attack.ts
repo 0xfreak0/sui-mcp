@@ -9,6 +9,7 @@ import { packageOfEventType } from "../utils/event-json.js";
 import { originIncomplete } from "../protocols/package-custody.js";
 import { foldSwaps } from "../utils/swap-fold.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
+import { MAX_RESULT_SIZE_CHARS } from "./tool-meta.js";
 import { flagPtbAnomalies, isSystemPackage, NO_MATCH_NOTE, PTB_CHECKS, SEVERITY_RANK, supersededWrites, type FormattedCommand, type PtbAnomaly } from "../utils/ptb-anomalies.js";
 import { readSupersededChanges } from "../utils/superseded-diff.js";
 import { ptbDataFromBcs, resolvePtb, type ExecutedObjects } from "../utils/ptb-resolve.js";
@@ -1555,7 +1556,7 @@ export function registerAttackTools(server: McpServer) {
           },
           {
             full: detail === "full",
-            maxChars: 498_000,
+            maxChars: MAX_RESULT_SIZE_CHARS - 2_000, // Room for the prose content item.
             stored: payload,
             next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } },
           },

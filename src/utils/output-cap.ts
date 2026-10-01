@@ -173,7 +173,8 @@ export interface CapResult {
 }
 
 /**
- * Cap the listed paths of a payload. `full` returns the payload untouched.
+ * Cap the listed paths of a payload. `full` normally returns it untouched;
+ * with `maxChars`, an oversized full view pages lists into its stored result.
  * When anything is omitted the response leads with `truncated` and
  * `omitted`, and `stored` (the payload itself by default; a tool whose
  * summary rows are shorter than its full rows passes the full view) is

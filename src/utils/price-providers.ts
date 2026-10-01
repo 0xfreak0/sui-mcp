@@ -227,6 +227,8 @@ const SUI_BRIDGE_ASSET: Record<string, string> = Object.fromEntries(
  * latency.
  */
 const DEFILLAMA_CONCURRENCY = 4;
+/** Wide incident windows need more historical batches in flight to meet the call budget. */
+const DEFILLAMA_HISTORY_CONCURRENCY = 8;
 
 /**
  * Ask DefiLlama for `keyToCoins`' keys in batches, adding each answer to
@@ -332,8 +334,8 @@ export async function fetchDefiLlamaHistory(
       count++;
     }
     if (count) chunks.push(chunk);
-    for (let i = 0; i < chunks.length; i += DEFILLAMA_CONCURRENCY) {
-      await Promise.all(chunks.slice(i, i + DEFILLAMA_CONCURRENCY).map(async (coins) => {
+    for (let i = 0; i < chunks.length; i += DEFILLAMA_HISTORY_CONCURRENCY) {
+      await Promise.all(chunks.slice(i, i + DEFILLAMA_HISTORY_CONCURRENCY).map(async (coins) => {
         try {
           const response = await fetch(`https://coins.llama.fi/batchHistorical?coins=${encodeURIComponent(JSON.stringify(coins))}&searchWidth=2h`, {
             headers: { accept: "application/json" },

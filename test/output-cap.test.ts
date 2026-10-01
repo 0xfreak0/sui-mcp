@@ -100,6 +100,74 @@ describe("capPayload", () => {
     expect(capPayload("t", {}, full, { rows: { budget: 0 } }, { full: true, next_call: next }).payload).toBe(full);
   });
 
+  it("pages an oversized full incident without losing totals or unreachable rows", () => {
+    process.env.SUI_STORE_PATH = join(dir, "store.db");
+    resetStore();
+    const groups = Array.from({ length: 300 }, (_, id) => ({ id, usd: id, pad: "g".repeat(1_100) }));
+    const samples = Array.from({ length: 140 }, (_, id) => ({ id, pad: "p".repeat(1_000) }));
+    const unread = Array.from({ length: 70 }, (_, id) => ({ id, pad: "u".repeat(1_000) }));
+    const incident = { totals: { usd_net: 321_000 }, groups, usd_basis: { price_samples: samples }, objects_unread: unread };
+    const { payload, resultId } = capPayload("summarize_incident_losses", {}, incident, {
+      groups: { budget: 14_000 }, "usd_basis.price_samples": { budget: 12_000 }, objects_unread: { budget: 2_000 },
+    }, { full: true, maxChars: 498_000, next_call: next });
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(498_000);
+    expect(payload.totals).toEqual(incident.totals);
+    expect(payload.omitted).not.toHaveProperty("next_call");
+    if (!Array.isArray(payload.groups)) throw new Error("Missing incident groups");
+    const displayed = payload.groups.map((g: { id: number }) => g.id);
+    const seen = [...displayed];
+    let offset: string | null = "0";
+    while (offset !== null) {
+      const page = readStoredResult(resultId!, { path: "groups", omitted: "1", offset }) as {
+        rows: Array<{ row: { id: number } }>; next_offset?: number;
+      };
+      seen.push(...page.rows.map(({ row }) => row.id));
+      offset = page.next_offset === undefined ? null : String(page.next_offset);
+    }
+    expect(seen.sort((a, b) => a - b)).toEqual(groups.map((g) => g.id));
+  });
+
+  it("walks every oversized incident group without a store, retaining exact totals and call arguments", () => {
+    const args = { sender: "0xabc", start: "2025-05-22T10:30:00Z", end: "2025-05-22T10:46:00Z", network: "testnet" };
+    const groups = Array.from({ length: 600 }, (_, id) => ({ id, usd: id + 1, pad: "g".repeat(1_100) }));
+    const basis = { price_samples: Array.from({ length: 140 }, (_, id) => ({ id, pad: "p".repeat(1_000) })) };
+    const totals = { usd_net: groups.reduce((sum, group) => sum + group.usd, 0), groups: groups.length };
+    const seen: number[] = [];
+    let offset = 0;
+    for (;;) {
+      const { payload, resultId } = capPayload("summarize_incident_losses", args,
+        { totals, usd_basis: basis, group_offset: offset, groups: groups.slice(offset) },
+        { groups: { budget: 14_000, usd: (group: { usd: number }) => group.usd } },
+        {
+          full: true, maxChars: 498_000,
+          next_call: { tool: "summarize_incident_losses", args: { ...args, detail: "full" } },
+          fullContinuation: {
+            path: "groups",
+            nextCall: (shown) => ({
+              tool: "summarize_incident_losses",
+              args: { ...args, detail: "full", group_offset: offset + shown },
+            }),
+          },
+        });
+      expect(resultId).toBeNull();
+      expect(JSON.stringify(payload).length).toBeLessThanOrEqual(498_000);
+      expect(payload.totals).toEqual(totals);
+      expect(payload.group_offset).toBe(offset);
+      const shown = payload.groups as Array<{ id: number }>;
+      expect(shown.length).toBeGreaterThan(0);
+      seen.push(...shown.map((group) => group.id));
+      const omitted = payload.omitted as { next_call?: { tool: string; args: typeof args & { detail: string; group_offset: number } }; result?: unknown } | undefined;
+      expect(omitted?.result).toBeUndefined();
+      if (!omitted?.next_call) break;
+      expect(omitted.next_call).toEqual({
+        tool: "summarize_incident_losses",
+        args: { ...args, detail: "full", group_offset: offset + shown.length },
+      });
+      offset = omitted.next_call.args.group_offset;
+    }
+    expect(seen).toEqual(groups.map((group) => group.id));
+  });
+
   it("stores the full result with the store on, and its resource pages every omitted row", () => {
     process.env.SUI_STORE_PATH = join(dir, "store.db");
     resetStore();

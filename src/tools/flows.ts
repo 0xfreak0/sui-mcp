@@ -167,15 +167,13 @@ function who(address: string, identity: AddressIdentity | undefined, roleWindow:
   const label = getLabel(address);
   const provenance = label ? labelProvenance(label) : undefined;
   const note = identity ? identityNote(identity) : undefined;
-  const deposit = depositRole(address, roleWindow);
-  const unclassified = !label && deposit?.status === "not classified" && deposit.other_session_observations === 0 && !deposit.stops_trace;
   return {
     address,
     ...(identity && identity.kind !== "wallet" ? { kind: identity.kind } : {}),
     ...(identity?.name ? { name: identity.name } : {}),
     ...(label ? { label: label.label, label_category: label.category } : {}),
     ...(provenance ? { label_provenance: provenance } : {}),
-    deposit_address: unclassified ? { status: deposit.status, next_call: deposit.next_call } : deposit,
+    deposit_address: depositRole(address, roleWindow),
     ...(identity?.protocol ? { protocol: identity.protocol } : {}),
     ...(note ? { note } : {}),
   };
@@ -557,10 +555,6 @@ export function registerFlowTools(server: McpServer) {
           address,
           window: describeWindow(from, to, window),
           deposit_address: depositRole(address, roleWindow),
-          deposit_address_row_defaults: {
-            role: null, source: null, other_session_observations: 0, stops_trace: false,
-            note: "A counterparty deposit_address with only status and next_call has these default values.",
-          },
           ...(coin_type ? { coin_filter: coinKey(coin_type) } : {}),
           coverage: {
             scanned_transactions: txs.length,
@@ -702,6 +696,27 @@ export function registerFlowTools(server: McpServer) {
         // in the summary. Repeated provider accounting stays in the full view;
         // invariant totals and full destination evidence remain in by_bridge.
         let visible: Record<string, unknown> = payload;
+        if (detail !== "full") {
+          const compactRole = <T extends { deposit_address?: { status: string; other_session_observations: number; stops_trace: boolean; next_call: unknown } }>(row: T) => {
+            const role = row.deposit_address;
+            return role?.status === "not classified" && role.other_session_observations === 0 && !role.stops_trace && !("label" in row)
+              ? { ...row, deposit_address: { status: role.status, next_call: role.next_call } }
+              : row;
+          };
+          visible = {
+            ...payload,
+            deposit_address_row_defaults: {
+              role: null, source: null, other_session_observations: 0, stops_trace: false,
+              note: "A counterparty deposit_address with only status and next_call has these default values.",
+            },
+            inflow_sources: payload.inflow_sources.map(compactRole),
+            top_recipients: payload.top_recipients.map(compactRole),
+            gas_sponsorship: {
+              ...payload.gas_sponsorship,
+              sponsored_by: payload.gas_sponsorship.sponsored_by.map(compactRole),
+            },
+          };
+        }
         if (detail !== "full" && exits.length) {
           const bridgeTraits = new Map(bridgeGroups.map((group) => {
             const rows = payload.bridge_exits.transactions.filter((row) => row.bridge === group.bridge);
@@ -717,7 +732,7 @@ export function registerFlowTools(server: McpServer) {
             }] as const;
           }));
           visible = {
-            ...payload,
+            ...visible,
             bridge_exits: {
               ...payload.bridge_exits,
               transaction_detail: {

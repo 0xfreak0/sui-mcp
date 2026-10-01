@@ -62,6 +62,14 @@ describe("flow counterparty deposit windows", () => {
         next_call: { tool: "classify_deposit_address", args: { address: counterparty.address, network: "mainnet", from: "10", to: "21" } },
       });
     }
+    const full = JSON.parse((await tools.get("summarize_address_flows")!({ ...args, detail: "full" })).content[0].text);
+    expect(full.deposit_address_row_defaults).toBeUndefined();
+    for (const counterparty of [full.inflow_sources[0], full.top_recipients[0], full.gas_sponsorship.sponsored_by[0]]) {
+      expect(counterparty.deposit_address).toMatchObject({
+        status: "not classified", role: null, source: null, other_session_observations: 0, stops_trace: false,
+        next_call: { tool: "classify_deposit_address", args: { address: counterparty.address, from: "10", to: "21" } },
+      });
+    }
     for (const address of [source, recipient, sponsor]) observe(address, 70, 101);
     const result = JSON.parse((await tools.get("summarize_address_flows")!(args)).content[0].text);
     for (const counterparty of [result.inflow_sources[0], result.top_recipients[0], result.gas_sponsorship.sponsored_by[0]]) {

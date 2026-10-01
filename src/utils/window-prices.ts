@@ -19,7 +19,7 @@ export interface WindowPrices {
   basis: {
     method: "fixed_time" | "hourly_utc" | "daily_median_time"; at?: string; approximate: boolean; sources: string[];
     requested_coin_hours: number; requested_coin_samples: number; priced_coin_samples: number;
-    price_samples: Array<{ coin_type: string; requested_at: number; source: string; price_usd: number; price_time: number; price_offset_sec: number; market?: BasePricePoint["market"] }>;
+    price_samples: Array<{ coin_type: string; requested_at: number; source?: string; price_usd: number; price_time: number; price_offset_sec: number; market?: BasePricePoint["market"] }>;
     missing_coin_samples: Array<{ coin_type: string; samples: number; first_at: string; last_at: string; request_failed_samples?: number }>;
     out_of_range_coin_samples: Array<{ coin_type: string; source: RecentPriceSource; samples: number; first_at: string; last_at: string }>;
     out_of_range_sources: Array<{ source: RecentPriceSource; samples: number; coins: number; first_at: string; last_at: string }>;
@@ -215,7 +215,8 @@ export async function windowPrices(requests: PriceRequest[], fixedAt?: number): 
       requested_coin_hours: requestedHours,
       requested_coin_samples: [...wanted.values()].reduce((n, coins) => n + coins.size, 0),
       priced_coin_samples: priced,
-      price_samples: priceSamples,
+      // With one provider, basis.sources supplies the common source for every sample.
+      price_samples: sources.size === 1 ? priceSamples.map(({ source: _source, ...sample }) => sample) : priceSamples,
       missing_coin_samples: [...missing.values()],
       out_of_range_coin_samples: [...rangeCoverage.values()],
       out_of_range_sources: [...sourceCoverage.values()],

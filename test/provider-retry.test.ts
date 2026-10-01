@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { withNetworkParam } from "../src/tools/with-network.js";
 import { retryingJson } from "../src/clients/graphql.js";
-import { fetchDefiLlama, withPriceProviderCall } from "../src/utils/price-providers.js";
+import { fetchDefiLlama } from "../src/utils/price-providers.js";
+import { withPriceProviderCall } from "../src/utils/price-call-context.js";
 import { priceUsdAtTime } from "../src/utils/valuation.js";
 import { resetRecentPriceCache } from "../src/utils/recent-prices.js";
 import { resetWindowPriceCache, windowPrices, WindowAmounts } from "../src/utils/window-prices.js";
@@ -78,4 +81,22 @@ it("opens a per-call DefiLlama circuit instead of retrying every batch, then res
   expect(initialCalls).toBeGreaterThan(0);
   await withPriceProviderCall(() => fetchDefiLlama([COIN], AT));
   expect(fetchMock.mock.calls.length).toBe(initialCalls + 3);
+});
+
+it("shares the breaker across separate price reads in one tool call but not across calls", async () => {
+  const fetchMock = vi.fn(async () => json({}, 503));
+  vi.stubGlobal("fetch", fetchMock);
+  let handler: ((args: unknown) => Promise<unknown>) | undefined;
+  const server = { registerTool: (_name: string, _config: unknown, call: typeof handler) => { handler = call; } } as unknown as McpServer;
+  withNetworkParam(server).tool("probe", "Pricing probe", {}, async () => {
+    for (let hour = 0; hour < 3; hour++) {
+      const result = await priceUsdAtTime([COIN], AT + hour * 3600, { sources: ["defillama"] });
+      expect(result.unpriced[0]?.code).toBe("provider_unavailable");
+    }
+    return { content: [] };
+  });
+  await handler!({});
+  expect(fetchMock).toHaveBeenCalledTimes(6);
+  await handler!({});
+  expect(fetchMock).toHaveBeenCalledTimes(12);
 });

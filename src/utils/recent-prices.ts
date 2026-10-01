@@ -1,7 +1,8 @@
 import { normalizeCoinType } from "./coin-registry.js";
-import { defiLlamaKey, fetchDefiLlamaHistory, priceResponse, readPriceJson, unavailableProviders, withPriceProviderCall } from "./price-providers.js";
+import { defiLlamaKey, fetchDefiLlamaHistory, priceResponse, readPriceJson, unavailableProviders } from "./price-providers.js";
 import type { PriceQuote, PriceSource, ProviderUnavailable } from "./price-providers.js";
 import { RetryableResponseError } from "../clients/graphql.js";
+import { withPriceProviderCall } from "./price-call-context.js";
 
 export type RecentPriceSource = "coingecko" | "geckoterminal";
 export interface OutOfRangePriceRequest { coin_type: string; at: number; source: RecentPriceSource }

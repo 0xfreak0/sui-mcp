@@ -1,7 +1,8 @@
 import { buildPythFeedMap } from "../discovery.js";
 import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
-import { fetchDefiLlama, providerFailureReason, pythApiKey, withPriceProviderCall, type DefiLlamaResult } from "./price-providers.js";
+import { fetchDefiLlama, providerFailureReason, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
 import type { PriceQuote, PriceSource, ProviderUnavailable } from "./price-providers.js";
+import { withPriceProviderCall } from "./price-call-context.js";
 import { fetchRecentHistory } from "./recent-prices.js";
 import type { RecentPriceSource } from "./recent-prices.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";

@@ -1,5 +1,6 @@
 import { getNetwork } from "../config.js";
-import { pythApiKey, withPriceProviderCall, type ProviderUnavailable, type PriceSource } from "./price-providers.js";
+import { pythApiKey, type ProviderUnavailable, type PriceSource } from "./price-providers.js";
+import { withPriceProviderCall } from "./price-call-context.js";
 import { fetchHistoricalMarketPrices } from "./recent-prices.js";
 import type { OutOfRangePriceRequest, RecentPriceSource } from "./recent-prices.js";
 import { displayCoin, prefetchCoinScale, priceUsdAtTime, pricingScale, toHumanAmount, type PricePoint as BasePricePoint } from "./valuation.js";

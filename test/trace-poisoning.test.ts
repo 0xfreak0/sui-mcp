@@ -22,7 +22,6 @@ vi.mock("../src/utils/identity.js", () => ({
 }));
 vi.mock("../src/utils/labels.js", () => ({ getLabel: () => null, isSink: () => false }));
 vi.mock("../src/utils/price-providers.js", () => ({
-  withPriceProviderCall: (read: () => Promise<unknown>) => read(),
   pricesForRanking: async () => new Map(),
   pythApiKey: () => null,
   fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),

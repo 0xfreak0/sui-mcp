@@ -11,7 +11,6 @@ const mockPrices = new Map<string, number>();
 /** Requests the mocked DefiLlama received. */
 const llamaRequests = { count: 0 };
 vi.mock("../src/utils/price-providers.js", () => ({
-  withPriceProviderCall: (read: () => Promise<unknown>) => read(),
   pricesForRanking: async () => new Map(),
   pythApiKey: () => null,
   fetchDefiLlama: async (coinTypes: string[]) => {

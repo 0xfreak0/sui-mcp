@@ -25,10 +25,10 @@
  * priced from a symbol-keyed feed would carry the real asset's price.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { RetryableResponseError, retryingJson } from "../clients/graphql.js";
 import { normalizeCoinType } from "./coin-registry.js";
+import { providerContext } from "./price-call-context.js";
 
 export type PriceSource = "aftermath" | "defillama" | "pyth" | "coingecko" | "geckoterminal";
 
@@ -38,13 +38,7 @@ export interface ProviderUnavailable {
   samples: number;
 }
 
-type ProviderState = { failures: number; reason: string };
-const providerContext = new AsyncLocalStorage<Map<PriceSource, ProviderState>>();
 const BREAK_AFTER = 2;
-/** Share a circuit across every price read spawned by one valuation call. */
-export function withPriceProviderCall<T>(read: () => Promise<T>): Promise<T> {
-  return providerContext.getStore() ? read() : providerContext.run(new Map(), read);
-}
 
 const PRICE_TRANSPORT = {
   attempts: 3, baseDelayMs: 150, maxDelayMs: 500,

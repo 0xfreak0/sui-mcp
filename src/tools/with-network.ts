@@ -3,6 +3,7 @@ import { type SuiNetwork, DEFAULT_NETWORK, isSuiNetwork, runWithNetwork } from "
 import { sui } from "../clients/grpc.js";
 import { cleanErrorMessage, describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { bindContinuationNetwork } from "../utils/continuation-network.js";
+import { withPriceProviderCall } from "../utils/price-call-context.js";
 import { isAddressSchema, isSuinsName, toolArgsSchema } from "./args.js";
 import { toolPolicy, withStructuredContent } from "./tool-meta.js";
 import { CallToolRequestSchema, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
@@ -279,7 +280,7 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
         ? toolArgs.network
         : undefined;
     const network: SuiNetwork = isSuiNetwork(requested) ? requested : DEFAULT_NETWORK;
-    return runWithNetwork(network, async () => {
+    return runWithNetwork(network, () => withPriceProviderCall(async () => {
       try {
         let callArgs = toolArgs;
         let resolved: ResolvedName[] = [];
@@ -296,7 +297,7 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
       } catch (err) {
         return errorResult(escapeControl(describeError(err, network)));
       }
-    });
+    }));
   };
 
   const inputSchema: z.ZodRawShape = policy.network ? { ...shape, network: networkParam } : shape;

@@ -453,10 +453,10 @@ A tool may cap a list in its default view only through
    rows carry a value and otherwise `first` (the first omitted row in rank
    order, never called the largest), `entries` for a folded list, and
    `from`, the first omitted index.
-4. **Everything omitted is reachable.** `omitted.next_call` is the exact call
-   that returns it, usually this call repeated with `detail: "full"`; a list
-   another call pages names that call (`decode_ptb` with `command_offset`, or
-   `commands: [i, j]`).
+4. **Everything omitted is reachable.** `omitted.next_call` gives the next
+   retrieval step, usually this call repeated with `detail: "full"`; a paged
+   full view points to its next offset. A list another call pages names that
+   call (`decode_ptb` with `command_offset`, or `commands: [i, j]`).
 5. **With `SUI_STORE_PATH` set, the full result is stored** (`results` table,
    keyed by a 12-hex content hash) and `omitted.result.uri` is
    `sui://results/{id}`. Each list's `page` URI reads it as an MCP resource
@@ -472,6 +472,12 @@ A resource was chosen over a paging tool because a tool definition costs
 context on every turn and Claude Code already reads resources
 (ReadMcpResource). A client without resource support still reaches every row
 through `next_call`.
+
+For oversized `summarize_incident_losses` full views, `groups` stays a
+consecutive slice starting at `group_offset`; `omitted.next_call` advances that
+offset and carries the original arguments and network, even without a store.
+Each page keeps the totals over the entire incident. The stored result, when
+available, is another way to read the omitted groups.
 
 Measured 2026-09 on the case set, summary view before and after:
 `summarize_address_flows` on the Suisses drainer 273k to 29k and on its fee

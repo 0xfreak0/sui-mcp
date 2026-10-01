@@ -9,9 +9,8 @@
  *   3. `omitted` states each capped list's count, USD value where rows carry
  *      one, and the largest omitted row, `omitted.folded` each list whose
  *      identical rows were folded first, and the response carries `truncated`.
- *   4. `omitted.next_call` is the exact call that returns everything (usually
- *      this call repeated with `detail: "full"`), and a list whose rows
- *      another call pages names that call instead.
+ *   4. `omitted.next_call` either retrieves everything or advances to the next
+ *      page; a list another call pages names that call instead.
  *   5. With the store on, the full result is saved and `omitted.result` is its
  *      `sui://results/{id}` resource, which pages any list of it.
  */
@@ -174,7 +173,8 @@ export interface CapResult {
 
 /**
  * Cap the listed paths of a payload. `full` normally returns it untouched;
- * with `maxChars`, an oversized full view pages lists into its stored result.
+ * with `maxChars`, an oversized full view pages lists, adding a next-call
+ * continuation when supplied and a stored resource when available.
  * When anything is omitted the response leads with `truncated` and
  * `omitted`, and `stored` (the payload itself by default; a tool whose
  * summary rows are shorter than its full rows passes the full view) is
@@ -191,6 +191,8 @@ export function capPayload(
     stored?: Record<string, unknown>;
     /** A full view that exceeds this wire limit pages its largest lists instead of overflowing it. */
     maxChars?: number;
+    /** A capped full list whose next slice is retrievable by another tool call, even without the store. */
+    fullContinuation?: { path: string; nextCall: (shown: number) => NextCall };
     /** Lists the caller folded before capping: how many entries became how many rows. */
     folded?: Record<string, { entries: number; rows: number }>;
     /**
@@ -201,26 +203,38 @@ export function capPayload(
     paged?: Record<string, number[]>;
   },
 ): CapResult {
-  if (options.full && (!options.maxChars || JSON.stringify(full).length <= options.maxChars)) return { payload: full, resultId: null };
+  const fullSize = options.full && options.maxChars ? JSON.stringify(full).length : 0;
+  if (options.full && (!options.maxChars || fullSize <= options.maxChars)) return { payload: full, resultId: null };
   if (options.full) {
-    // A full answer exceeding the transport ceiling lives in the store;
-    // page its largest lists rather than dropping totals or oversizing wire.
+    // A full answer exceeding the transport ceiling pages its largest lists;
+    // the stored copy is optional, while caller-supplied continuation is not.
     const available = Object.keys(caps).filter((path) => Array.isArray(readPath(full, path)));
+    const listSizes = new Map(available.map((path) => [path, JSON.stringify(readPath(full, path)).length]));
+    const continuation = options.fullContinuation;
+    const all = continuation ? readPath(full, continuation.path) : null;
+    const continuationChars = continuation && Array.isArray(all)
+      ? JSON.stringify(continuation.nextCall(all.length)).length
+      : 0;
     const selected: Record<string, ListCap<never>> = {};
     while (available.length) {
-      available.sort((a, b) => JSON.stringify(readPath(full, b)).length - JSON.stringify(readPath(full, a)).length);
+      available.sort((a, b) =>
+        a === continuation?.path ? -1 : b === continuation?.path ? 1 : listSizes.get(b)! - listSizes.get(a)!);
       const path = available.shift()!;
-      const rows = readPath(full, path) as unknown[];
-      const budget = Math.max(0, JSON.stringify(rows).length - (JSON.stringify(full).length - options.maxChars!) - 4_000);
+      const budget = Math.max(0, listSizes.get(path)! - (fullSize - options.maxChars!) - 4_000 - continuationChars);
       selected[path] = { ...caps[path], budget, keep: undefined };
       const result = capPayload(tool, args, full, selected, {
         full: false, stored: options.stored ?? full, next_call: options.next_call,
       });
-      if (JSON.stringify(result.payload).length <= options.maxChars!) {
-        const omitted = result.payload.omitted as { next_call?: NextCall };
-        if (omitted) delete omitted.next_call;
-        return result;
+      const omitted = result.payload.omitted as { next_call?: NextCall } | undefined;
+      if (omitted) {
+        const shown = continuation ? readPath(result.payload, continuation.path) : null;
+        if (continuation && Array.isArray(shown) && Array.isArray(all) && shown.length < all.length) {
+          omitted.next_call = continuation.nextCall(shown.length);
+        } else {
+          delete omitted.next_call;
+        }
       }
+      if (JSON.stringify(result.payload).length <= options.maxChars!) return result;
     }
     throw new Error(`The ${tool} result cannot fit ${options.maxChars} characters even after paging its lists.`);
   }

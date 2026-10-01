@@ -204,9 +204,11 @@ active since 2023 returned nothing, and its `activity_hours` described 2023.
 - **`resolveWindow` / `toFilterBound`** (`src/utils/checkpoint-time.ts`) turn an
   ISO edge into the exclusive checkpoint the filter takes, using
   `checkpointBracket`, which refines to two ADJACENT checkpoints either side of
-  the time. `toCheckpoint` stops within a minute, which is fine for a point
-  and wrong for an edge: a minute is a third of a three-minute incident
-  window. Both edges are inclusive in time.
+  the time. It probes up to eight checkpoints in one aliased GraphQL request,
+  rather than spending one network turn per candidate. `toCheckpoint` stops
+  within a minute, which is fine for a point and wrong for an edge: a minute
+  is a third of a three-minute incident window. Both edges are inclusive in
+  time; they resolve concurrently against one latest-checkpoint anchor.
 - **Parse before probing.** An unparseable bound is an error before any
   request, never a silently unbounded read.
 - **A budget that stops a walk says where.** `build_timeline` reports per
@@ -451,10 +453,10 @@ A tool may cap a list in its default view only through
    rows carry a value and otherwise `first` (the first omitted row in rank
    order, never called the largest), `entries` for a folded list, and
    `from`, the first omitted index.
-4. **Everything omitted is reachable.** `omitted.next_call` is the exact call
-   that returns it, usually this call repeated with `detail: "full"`; a list
-   another call pages names that call (`decode_ptb` with `command_offset`, or
-   `commands: [i, j]`).
+4. **Everything omitted is reachable.** `omitted.next_call` gives the next
+   retrieval step, usually this call repeated with `detail: "full"`; a paged
+   full view points to its next offset. A list another call pages names that
+   call (`decode_ptb` with `command_offset`, or `commands: [i, j]`).
 5. **With `SUI_STORE_PATH` set, the full result is stored** (`results` table,
    keyed by a 12-hex content hash) and `omitted.result.uri` is
    `sui://results/{id}`. Each list's `page` URI reads it as an MCP resource
@@ -470,6 +472,12 @@ A resource was chosen over a paging tool because a tool definition costs
 context on every turn and Claude Code already reads resources
 (ReadMcpResource). A client without resource support still reaches every row
 through `next_call`.
+
+For oversized `summarize_incident_losses` full views, `groups` stays a
+consecutive slice starting at `group_offset`; `omitted.next_call` advances that
+offset and carries the original arguments and network, even without a store.
+Each page keeps the totals over the entire incident. The stored result, when
+available, is another way to read the omitted groups.
 
 Measured 2026-09 on the case set, summary view before and after:
 `summarize_address_flows` on the Suisses drainer 273k to 29k and on its fee
@@ -1622,8 +1630,8 @@ body over 5,000, so the coin types go inline rather than as variables). A
 null answer is "no metadata", the answer gRPC gives as NOT_FOUND; a failed
 request falls back to one gRPC read per coin. Under a rate limit the request
 count is the latency, so a meme-coin drain's hundreds of coins cost one
-GraphQL request per 20 instead of one read each. DefiLlama price batches run
-four at a time.
+GraphQL request per 20 instead of one read each. DefiLlama current-price
+batches run four at a time; wide historical windows run eight at a time.
 
 **A caller that VALUES an amount must warm before it judges, not after.**
 The funding walk used to prefetch after `pickFundingTx` had applied the $0.10
@@ -3985,7 +3993,8 @@ account value.
   and 103 events.
 - **`batchGetTransactions` is bounded by the 4 MiB response, not a count.** 100
   Cetus-exploit transactions fit in one call and 200 did not. Batches are 25,
-  and an overflowing batch is re-read one digest at a time.
+  up to four independent batches read concurrently, and an overflowing batch
+  is re-read one digest at a time. Archive fallback preserves requested order.
 - **Flash pairing ignores framework singletons.** Nearly every DeFi call takes
   the Clock (`0x6`); counting it as the object a borrow and a repay share
   pairs any borrow with any repay.

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { normalizeStructTag } from "@mysten/sui/utils";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getNetwork } from "../config.js";
 import { numArg, refinePoint } from "./args.js";
 import { errorResult } from "../utils/errors.js";
 import { isDigest, invalidDigestMessage, normalizeDigest } from "../utils/digest.js";
@@ -9,6 +10,7 @@ import { packageOfEventType } from "../utils/event-json.js";
 import { originIncomplete } from "../protocols/package-custody.js";
 import { foldSwaps } from "../utils/swap-fold.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
+import { MAX_RESULT_SIZE_CHARS } from "./tool-meta.js";
 import { flagPtbAnomalies, isSystemPackage, NO_MATCH_NOTE, PTB_CHECKS, SEVERITY_RANK, supersededWrites, type FormattedCommand, type PtbAnomaly } from "../utils/ptb-anomalies.js";
 import { readSupersededChanges } from "../utils/superseded-diff.js";
 import { ptbDataFromBcs, resolvePtb, type ExecutedObjects } from "../utils/ptb-resolve.js";
@@ -953,7 +955,7 @@ export function registerAttackTools(server: McpServer) {
 
   server.tool(
     "summarize_incident_losses",
-    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.",
+    "(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance<T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters. Oversized full views page groups through omitted.next_call, without requiring a store; stored-result pages are optional extras. No API key; transaction reads use archive fallback.",
     {
       digests: z
         .array(z.string())
@@ -995,13 +997,15 @@ export function registerAttackTools(server: McpServer) {
         .min(1)
         .optional()
         .describe("List only the largest N groups; the totals still cover all of them and the omission is reported."),
+      group_offset: numArg().int().min(0).optional().describe("First group to return with detail: 'full' when an oversized view is paged."),
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows."),
+        .describe("'summary' (default): largest rows fitting about 40k characters. 'full': consecutive group pages under 500k characters; follow omitted.next_call to read the rest. Totals always cover every group."),
     },
-    async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, detail }) => {
+    async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, group_offset, detail }) => {
       try {
+        if (group_offset !== undefined && detail !== "full") return errorResult("group_offset requires detail: 'full'.");
         if (!digests && !sender) return errorResult("Give `digests`, or `sender` with an optional window.");
         if (digests && sender) return errorResult("Give `digests` or `sender`, not both.");
         if (digests && (start !== undefined || end !== undefined)) {
@@ -1503,14 +1507,19 @@ export function registerAttackTools(server: McpServer) {
         type Group = (typeof groups)[number];
         type Unpriced = (typeof unpricedRemainder)[number];
         type Sent = (typeof transfersOut)[number];
-        const args = { digests, sender, start, end, max_transactions, attacker, price_at, max_groups };
+        const args = { digests, sender, start, end, max_transactions, attacker, price_at, max_groups, network: getNetwork() };
+        const offset = group_offset ?? 0;
+        const visible = detail === "full"
+          ? { ...payload, group_offset: offset, groups: groups.slice(offset) }
+          : { ...payload, groups: shownGroups };
         const { payload: capped } = capPayload(
           "summarize_incident_losses",
           args,
-          detail === "full" ? payload : { ...payload, groups: shownGroups },
+          visible,
           {
             "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
             "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
+            "usd_basis.price_samples": { budget: 12_000, keepOrder: true },
             groups: {
               budget: 14_000,
               usd: (g: Group) => Math.max(g.attacker_usd, -g.pool_usd),
@@ -1554,8 +1563,18 @@ export function registerAttackTools(server: McpServer) {
           },
           {
             full: detail === "full",
-            stored: payload,
+            maxChars: MAX_RESULT_SIZE_CHARS - 2_000, // Room for the prose content item.
+            stored: detail === "full" ? visible : payload,
             next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } },
+            ...(detail === "full" ? {
+              fullContinuation: {
+                path: "groups",
+                nextCall: (shown: number) => ({
+                  tool: "summarize_incident_losses",
+                  args: { ...args, detail: "full", group_offset: offset + shown },
+                }),
+              },
+            } : {}),
           },
         );
         return {

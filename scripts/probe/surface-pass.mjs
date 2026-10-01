@@ -167,7 +167,13 @@ try {
   }
   const p2 = await call("poll_watch", { max_per_address: 10 });
   const hits = [...(p1.hits ?? []), ...(p2.hits ?? [])].filter((h) => h.address === BINANCE_HOT);
-  ck("poll_watch reports the watched address's first raw transaction after the watch began", !!firstRaw && hits.some((h) => h.digest === firstRaw.digest && Number(h.checkpoint) === Number(firstRaw.effects.checkpoint.sequenceNumber)), `${firstRaw?.digest} in ${hits.length} hits`);
+  ck(firstRaw
+    ? "poll_watch reports the watched address's first raw transaction after the watch began"
+    : "poll_watch has no hot-wallet hits while raw chain has no newer transaction",
+    firstRaw
+      ? hits.some((h) => h.digest === firstRaw.digest && Number(h.checkpoint) === Number(firstRaw.effects.checkpoint.sequenceNumber))
+      : hits.length === 0,
+    firstRaw ? `${firstRaw.digest} in ${hits.length} hits` : `no transaction in 20 raw checks; ${hits.length} hits`);
   const wr = await call("watch_addresses", { action: "remove", addresses: [NEMO_ATTACKER] });
   const wl = await call("watch_addresses", { action: "list" });
   ck("remove leaves one watch", wr.removed === 1 && wl.watched === 1 && wl.watches[0].address === BINANCE_HOT);
@@ -269,6 +275,7 @@ try {
     "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::Pool<{A}, {B}>",
     "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool<{A}, {B}>",
     "0x158f2027f60c89bb91526d9bf08831d27f5a0fcb0f74e6698b9f0e1fb2be5d05::clob_v2::Pool<{A}, {B}>",
+    "0xb24b6789e088b876afabca733bed2299fbc9e2d6369be4d1acfa17d8145454d9::swap::Pool<{A}, {B}>",
     ...feeMap.map((f) => `0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool<{A}, {B}, ${f}>`),
   ];
   const rawPools = [];

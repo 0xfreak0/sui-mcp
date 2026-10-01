@@ -29,6 +29,8 @@ const READ_MASK = {
 
 /** Digests per batch request. See the module note on the 4 MiB limit. */
 const BATCH = 25;
+/** Bound multi-get concurrency without serializing every page of a busy incident. */
+const BATCH_CONCURRENCY = 4;
 
 const COMMAND_KIND: Record<string, string> = {
   moveCall: "MoveCall",
@@ -238,15 +240,19 @@ export interface AttackRead {
  */
 export async function readAttackTransactions(digests: string[]): Promise<AttackRead> {
   const found: Found = new Map();
-  for (let i = 0; i < digests.length; i += BATCH) {
-    await batchRead(sui, digests.slice(i, i + BATCH), found);
+  for (let i = 0; i < digests.length; i += BATCH * BATCH_CONCURRENCY) {
+    const batches = Array.from({ length: Math.min(BATCH_CONCURRENCY, Math.ceil((digests.length - i) / BATCH)) },
+      (_, n) => digests.slice(i + n * BATCH, i + (n + 1) * BATCH));
+    await Promise.all(batches.map((batch) => batchRead(sui, batch, found)));
   }
   let servedByArchive = 0;
   const pruned = digests.filter((d) => !found.has(d));
   if (pruned.length > 0 && getNetworkConfig().archive !== null) {
     const before = found.size;
-    for (let i = 0; i < pruned.length; i += BATCH) {
-      await batchRead(archive, pruned.slice(i, i + BATCH), found);
+    for (let i = 0; i < pruned.length; i += BATCH * BATCH_CONCURRENCY) {
+      const batches = Array.from({ length: Math.min(BATCH_CONCURRENCY, Math.ceil((pruned.length - i) / BATCH)) },
+        (_, n) => pruned.slice(i + n * BATCH, i + (n + 1) * BATCH));
+      await Promise.all(batches.map((batch) => batchRead(archive, batch, found)));
     }
     servedByArchive = found.size - before;
   }

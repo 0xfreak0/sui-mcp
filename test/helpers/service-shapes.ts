@@ -96,8 +96,8 @@ export function pagedTxConnection<T>(digest: string, all: T[], kind: "balanceCha
 
 /**
  * A chain of checkpoints for time-to-checkpoint lookups: `msAt(seq)` gives the
- * timestamp of checkpoint `seq`, which must not decrease. Answers the two
- * queries `checkpoint-time.ts` sends, and undefined for anything else.
+ * timestamp of checkpoint `seq`, which must not decrease. Answers point and
+ * aliased checkpoint queries; undefined for anything else.
  */
 export function checkpointChain(latest: number, msAt: (seq: number) => number) {
   const iso = (seq: number) => new Date(msAt(seq)).toISOString();
@@ -108,6 +108,13 @@ export function checkpointChain(latest: number, msAt: (seq: number) => number) {
     if (query.includes("checkpoint(sequenceNumber: $seq)")) {
       const seq = Number(vars?.seq);
       return { checkpoint: seq >= 0 && seq <= latest ? { sequenceNumber: seq, timestamp: iso(seq) } : null };
+    }
+    if (query.includes(":checkpoint(sequenceNumber:")) {
+      const fields = [...query.matchAll(/(c\d+):checkpoint\(sequenceNumber:(\d+)\)/g)];
+      return Object.fromEntries(fields.map(([, alias, number]) => {
+        const seq = Number(number);
+        return [alias, seq >= 0 && seq <= latest ? { sequenceNumber: seq, timestamp: iso(seq) } : null];
+      }));
     }
     return undefined;
   };

@@ -40,6 +40,14 @@ describe("checkpointBracket", () => {
     }
   });
 
+  it("reaches an exact historical boundary with fewer network round trips than individual probes", async () => {
+    const bracket = await checkpointBracket(uneven(3_210_987) + 37);
+    const batches = mockGqlQuery.mock.calls.filter(([query]) => query.includes(":checkpoint(sequenceNumber:"));
+    expect(bracket.atOrAfter!.seq - bracket.before!.seq).toBe(1);
+    expect(batches.length).toBeGreaterThan(0);
+    expect(mockGqlQuery.mock.calls.length).toBeLessThan(12);
+  });
+
   it("puts a shared timestamp wholly after the edge, so no checkpoint at that time is dropped", async () => {
     const b = await checkpointBracket(uneven(2_000_000));
     expect(b.atOrAfter!.seq).toBe(2_000_000);
@@ -79,5 +87,31 @@ describe("resolveWindow", () => {
   it("rejects an unparseable bound before making any request", async () => {
     await expect(resolveWindow("yesterday", undefined)).rejects.toThrow(/Could not parse 'yesterday'/);
     expect(mockGqlQuery).not.toHaveBeenCalled();
+  });
+  it("resolves both time edges concurrently against one latest checkpoint", async () => {
+    const chain = checkpointChain(LATEST, uneven);
+    const gate = Promise.withResolvers<void>();
+    const firstProbe = Promise.withResolvers<void>();
+    let probes = 0;
+    mockGqlQuery.mockImplementation(async (query: string, variables: Record<string, unknown>) => {
+      if (query.includes("checkpoint(sequenceNumber:")) {
+        probes++;
+        firstProbe.resolve();
+        await gate.promise;
+      }
+      return chain(query, variables);
+    });
+    const start = new Date(uneven(3_000_000)).toISOString();
+    const end = new Date(uneven(3_001_000)).toISOString();
+    const pending = resolveWindow(start, end);
+    await firstProbe.promise;
+    await Promise.resolve();
+    const initialProbes = probes;
+    gate.resolve();
+    const window = await pending;
+    expect(initialProbes).toBe(2);
+    expect(window.after?.checkpoint).toBe(2_999_999);
+    expect(window.before?.checkpoint).toBe(3_001_001);
+    expect(mockGqlQuery.mock.calls.filter(([query]) => query.includes("checkpoints(last: 1)"))).toHaveLength(1);
   });
 });

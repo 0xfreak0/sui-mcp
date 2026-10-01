@@ -56,6 +56,13 @@
 - **`list_nfts` shares exact collection types within each page.** NFT rows and collection valuation entries carry a numeric `collection_ref` into the response's `collection_types` array. Each page resolves on its own, including resumed pages and full-detail responses. Object IDs, kiosk IDs, display fields, values, every NFT row and the cursor are preserved. A live kiosk-heavy page shrank from 29,005 to 22,545 characters, about 22%.
 
 ### Fixed
+- **`summarize_incident_losses` stays within its output limit.** A very
+  large `detail: "full"` answer is now split into consecutive pages of
+  groups. `omitted.next_call` reads the next page with `group_offset`, and
+  this works without a local store. Totals always cover every group.
+- **Wide incident summaries are faster.** Transaction batches, historical
+  price batches and the checkpoint searches for time bounds now run in
+  bounded parallel. Results and their order are unchanged.
 - **Historical staking can finish on busy addresses.** When
   `get_staking_summary` with `as_of` runs out of time or its transaction
   budget, it now returns `continue_with`. The next call resumes the same

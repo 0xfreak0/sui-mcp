@@ -284,7 +284,7 @@ export async function priceCoinTypes(coinTypes: string[], ctx: ValuationContext)
     // A failed request says nothing about the coins; the next caller asks again.
     asked.then(
       (r) => {
-        for (const u of r.unpriced) if (u.code === "request_failed") memo.delete(keyOf(u.coin_type));
+        for (const u of r.unpriced) if (u.code === "provider_unavailable") memo.delete(keyOf(u.coin_type));
       },
       () => {
         for (const c of missing) memo.delete(keyOf(c));

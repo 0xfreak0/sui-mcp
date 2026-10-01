@@ -1,7 +1,7 @@
 import { buildPythFeedMap } from "../discovery.js";
 import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
-import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
-import type { PriceQuote, PriceSource } from "./price-providers.js";
+import { fetchDefiLlama, providerFailureReason, pythApiKey, withPriceProviderCall, type DefiLlamaResult } from "./price-providers.js";
+import type { PriceQuote, PriceSource, ProviderUnavailable } from "./price-providers.js";
 import { fetchRecentHistory } from "./recent-prices.js";
 import type { RecentPriceSource } from "./recent-prices.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
@@ -356,9 +356,10 @@ export interface PricePoint {
 export interface UnpricedCoin {
   coin_type: string;
   /** Unanswered and out-of-range reads establish nothing about a coin's listing. */
-  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price" | "out_of_range";
+  code: "not_listed" | "provider_unavailable" | "type_parameters" | "no_oracle_price" | "out_of_range";
   reason: string;
   out_of_range_sources?: RecentPriceSource[];
+  provider_unavailable?: ProviderUnavailable[];
 }
 
 export interface HistoricalPrices {
@@ -403,8 +404,8 @@ export function explainUnpriced(
     const outOfRange = ctx.outOfRange?.get(coinType) ?? [];
     if (ctx.llama?.unanswered.has(coinType)) failed.push("defillama");
     if (failed.length) {
-      code = "request_failed";
-      reason = `Historical price requests failed (${failed.join(", ")}); this says nothing about whether the coin had a price.${pythNote}`;
+      code = "provider_unavailable";
+      reason = `Historical price providers unavailable (${failed.join(", ")}); this says nothing about whether the coin had a price.${pythNote}`;
     } else if (!ctx.sources.some((s) => s !== "pyth")) {
       code = "no_oracle_price";
       reason = `No oracle price.${pythNote}`;
@@ -420,6 +421,7 @@ export function explainUnpriced(
     }
     if (outOfRange.length) reason += ` Out-of-range sources: ${outOfRange.join(", ")}.`;
     out.push({ coin_type: coinType, code, reason: reason.trim(),
+      ...(failed.length ? { provider_unavailable: failed.map((source) => ({ source: source as PriceSource, reason: providerFailureReason(source as PriceSource), samples: 1 })) } : {}),
       ...(outOfRange.length ? { out_of_range_sources: outOfRange } : {}) });
   }
   return out;
@@ -439,6 +441,14 @@ export function explainUnpriced(
  * since comparing a market against a market aggregate is not an oracle check.
  */
 export async function priceUsdAtTime(
+  coinTypes: string[],
+  unixTs?: number,
+  opts: { sources?: ReadonlyArray<HistoricalSource> } = {},
+): Promise<HistoricalPrices> {
+  return withPriceProviderCall(() => readPriceUsdAtTime(coinTypes, unixTs, opts));
+}
+
+async function readPriceUsdAtTime(
   coinTypes: string[],
   unixTs?: number,
   opts: { sources?: ReadonlyArray<HistoricalSource> } = {},

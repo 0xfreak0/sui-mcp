@@ -25,10 +25,71 @@
  * priced from a symbol-keyed feed would carry the real asset's price.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
+import { RetryableResponseError, retryingJson } from "../clients/graphql.js";
 import { normalizeCoinType } from "./coin-registry.js";
 
 export type PriceSource = "aftermath" | "defillama" | "pyth" | "coingecko" | "geckoterminal";
+
+export interface ProviderUnavailable {
+  source: PriceSource;
+  reason: string;
+  samples: number;
+}
+
+type ProviderState = { failures: number; reason: string };
+const providerContext = new AsyncLocalStorage<Map<PriceSource, ProviderState>>();
+const BREAK_AFTER = 2;
+/** Share a circuit across every price read spawned by one valuation call. */
+export function withPriceProviderCall<T>(read: () => Promise<T>): Promise<T> {
+  return providerContext.getStore() ? read() : providerContext.run(new Map(), read);
+}
+
+const PRICE_TRANSPORT = {
+  attempts: 3, baseDelayMs: 150, maxDelayMs: 500,
+  timeoutMs: Math.min(EXTERNAL_HTTP_TIMEOUT_MS, 2500),
+  concurrency: 4, rateLimit: null, service: "Price provider",
+};
+
+/** A skipped circuit is still an outage, not a provider's no-quote answer. */
+export async function readPriceJson<T>(
+  source: PriceSource,
+  url: string,
+  parse: (body: unknown, status: number) => T,
+): Promise<T> {
+  const context = providerContext.getStore();
+  const state = context?.get(source);
+  if (state && state.failures >= BREAK_AFTER) throw new Error(`${source} unavailable: ${state.reason}`);
+  try {
+    const value = await retryingJson(url, parse, PRICE_TRANSPORT);
+    if (state) state.failures = 0;
+    return value;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (context) context.set(source, { failures: (state?.failures ?? 0) + 1, reason });
+    throw err;
+  }
+}
+/** Reason retained after a failed read (even when a later provider succeeds). */
+export function providerFailureReason(source: PriceSource): string {
+  return providerContext.getStore()?.get(source)?.reason ?? "Provider request failed after retries";
+}
+
+export function priceResponse(body: unknown, status: number): Record<string, unknown> | null {
+  if (status === 404) return null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new RetryableResponseError("Invalid price response");
+  return body as Record<string, unknown>;
+}
+
+export function unavailableProviders(
+  failures: Map<PriceSource, number>,
+): ProviderUnavailable[] {
+  const context = providerContext.getStore();
+  return [...failures].map(([source, samples]) => ({
+    source, samples, reason: context?.get(source)?.reason ?? "Provider request failed after retries",
+  }));
+}
 
 export interface PriceQuote {
   /** USD unit price. */
@@ -246,21 +307,20 @@ async function requestDefiLlama(
   for (let i = 0; i < keys.length; i += DEFILLAMA_BATCH) chunks.push(keys.slice(i, i + DEFILLAMA_BATCH));
   const request = async (chunk: string[]) => {
     try {
-      const resp = await fetch(base + chunk.join(","), {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const chunkMap = new Map(chunk.map((k) => [k, keyToCoins.get(k)!]));
-      const body = await resp.json() as { coins?: unknown } | null;
-      if (!body?.coins || typeof body.coins !== "object" || Array.isArray(body.coins)) throw new Error("Invalid price response");
+      const body = await readPriceJson("defillama", base + chunk.join(","), (data, status) => {
+        if (status === 404) return { coins: {} };
+        const parsed = priceResponse(data, status);
+        if (!parsed?.coins || typeof parsed.coins !== "object" || Array.isArray(parsed.coins)) {
+          throw new RetryableResponseError("Invalid price response");
+        }
+        return parsed;
+      });
       for (const [coinType, q] of parseDefiLlamaPrices(body, chunkMap)) {
         if (base.includes("/historical/") && q.at === undefined) continue;
         quotes.set(coinType, q);
       }
     } catch {
-      // Best-effort, but never silent: these coins are reported as unanswered,
-      // which is a different finding from "DefiLlama has no price".
       for (const k of chunk) for (const coinType of keyToCoins.get(k)!) unanswered.add(coinType);
     }
   };
@@ -337,13 +397,16 @@ export async function fetchDefiLlamaHistory(
     for (let i = 0; i < chunks.length; i += DEFILLAMA_HISTORY_CONCURRENCY) {
       await Promise.all(chunks.slice(i, i + DEFILLAMA_HISTORY_CONCURRENCY).map(async (coins) => {
         try {
-          const response = await fetch(`https://coins.llama.fi/batchHistorical?coins=${encodeURIComponent(JSON.stringify(coins))}&searchWidth=2h`, {
-            headers: { accept: "application/json" },
-            signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS),
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const body = await response.json() as { coins?: Record<string, { symbol?: string; prices?: DefiLlamaEntry[] }> };
-          if (!body?.coins || typeof body.coins !== "object" || Array.isArray(body.coins)) throw new Error("Invalid price response");
+          const body = await readPriceJson("defillama",
+            `https://coins.llama.fi/batchHistorical?coins=${encodeURIComponent(JSON.stringify(coins))}&searchWidth=2h`,
+            (data, status) => {
+              if (status === 404) return { coins: {} };
+              const parsed = priceResponse(data, status);
+              if (!parsed?.coins || typeof parsed.coins !== "object" || Array.isArray(parsed.coins)) {
+                throw new RetryableResponseError("Invalid price response");
+              }
+              return parsed as { coins: Record<string, { symbol?: string; prices?: DefiLlamaEntry[] }> };
+            });
           for (const [key, times] of Object.entries(coins)) {
             const entries = (body.coins?.[key]?.prices ?? []).filter(
               (p): p is DefiLlamaEntry & { timestamp: number; price: number } =>

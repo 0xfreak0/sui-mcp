@@ -42,6 +42,7 @@ vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
 const mockPrices = new Map<string, number>();
 vi.mock("../src/utils/price-providers.js", () => ({
+  withPriceProviderCall: (read: () => Promise<unknown>) => read(),
   pricesForRanking: async () => new Map(),
   pythApiKey: () => null,
   fetchDefiLlama: async (coinTypes: string[]) => ({

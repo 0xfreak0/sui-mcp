@@ -14,6 +14,7 @@ vi.mock("../src/utils/archive-fallback.js", () => ({ withArchiveFallback: async 
 vi.mock("../src/utils/identity.js", () => ({ describeAddresses: async () => new Map(), identityNote: () => null }));
 vi.mock("../src/utils/labels.js", () => ({ getLabel: () => null, isSink: () => false }));
 vi.mock("../src/utils/price-providers.js", () => ({
+  withPriceProviderCall: (read: () => Promise<unknown>) => read(),
   pricesForRanking: async () => new Map(),
   pythApiKey: () => null,
   fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),

@@ -13,6 +13,7 @@ vi.mock("../src/clients/grpc.js", () => ({
 // makes the test depend on two live services and time out when either is slow.
 // Only the GraphQL query shape is under test here.
 vi.mock("../src/utils/price-providers.js", () => ({
+  withPriceProviderCall: (read: () => Promise<unknown>) => read(),
   pricesForRanking: async () => new Map(),
   pythApiKey: () => null,
   fetchDefiLlama: async () => ({ quotes: new Map(), unanswered: new Set(), unsupported: new Set() }),

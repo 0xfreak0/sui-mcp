@@ -438,7 +438,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest and detail: 'full' returns all rows. No API key; transaction reads use archive fallback.
+(Incident investigation) Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. Reports attacker net per coin and pool reserve changes, with USD. Reserves use decoded events or, if none yields amounts, drained-object Balance&lt;T> holdings at input/output versions. Address-only onward coin transfers are transfers_out, not take. Unpriced legs make USD totals partial, not a lower bound. Summary keeps the largest rows fitting about 40k characters; omitted reports the rest. Detail 'full' returns all rows unless the 500k-character transport ceiling requires paging oversized lists through omitted.result. No API key; transaction reads use archive fallback.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -450,7 +450,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `attacker` | string | no | Gain address; defaults to sender or each transaction's sender. If every successful sender only paid gas, uses the largest priced gainer above the gas-only threshold across those transactions, reported in attacker_defaulted_from_sender. An unpriced gain by another non-sender blocks that default. Pass attacker to override. |
 | `price_at` | number \| string | no | Fixed-time valuation for every coin and object (Unix seconds or ISO 8601). Default: hourly coin quotes; objects at their transaction times. Check usd_basis for coarsening. |
 | `max_groups` | integer (at least 1) | no | List only the largest N groups; the totals still cover all of them and the omission is reported. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): largest rows fitting about 40k characters. Totals cover all rows; omitted gives count, USD, largest row and retrieval call. 'full': all rows when they fit 500k characters; otherwise omitted.result pages excess rows without dropping totals. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## trace_flow_graph

@@ -171,10 +171,10 @@ export interface CheckpointBracket {
  *
  * `resolveCheckpointAtTime` stops within a minute of the target, which is fine
  * for a point and wrong for a window edge: an incident window of three minutes
- * loses a third of itself to a one-minute error. This refines the bracket until
- * the two checkpoints are adjacent. Interpolation lands within a few
- * checkpoints, and a step that fails to halve the bracket is followed by a
- * bisection, so a stretch of uneven timestamps cannot stall it.
+ * loses a third of itself to a one-minute error. Batched candidates refine
+ * the bracket until the checkpoints are adjacent: each aliased request
+ * divides the remaining sequence range into at most nine intervals, so
+ * uneven timestamps cannot stall the search at one estimate.
  *
  * `before` is null when the target precedes genesis; `atOrAfter` is null when
  * it is later than the latest checkpoint. When a probe finds a checkpoint

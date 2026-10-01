@@ -45,6 +45,7 @@ const DIGEST2 = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR";
 mockPriceUsdAtTime.mockImplementation(async (coinTypes: string[], at = 0) => ({
   points: new Map(coinTypes.filter((c) => c === SUI).map((c) => [c, { price: 1, publishTime: at, source: "defillama" as const, decimals: 9 }])),
   unpriced: coinTypes.filter((c) => c !== SUI).map((c) => ({ coin_type: c, code: "not_listed" as const, reason: "No price." })),
+  provider_unavailable: [],
 }));
 
 // Imported after the mocks above, which the factories close over.
@@ -222,7 +223,7 @@ describe("summarize_incident_losses counts the attacker's objects", () => {
     mockReadAttackTransactions.mockResolvedValue(read([received, unstake]));
     mockPriceUsdAtTime.mockImplementationOnce(async (coinTypes: string[], at: number) => ({
       points: new Map(coinTypes.filter((c) => c === SUI).map((c) => [c, { price: 3.6, publishTime: at, source: "defillama", decimals: 9 }])),
-      unpriced: [],
+      unpriced: [], provider_unavailable: [],
     }));
     const payload = payloadOf(await handlers.summarize_incident_losses({ digests: [DIGEST1, DIGEST2], attacker: C }));
 

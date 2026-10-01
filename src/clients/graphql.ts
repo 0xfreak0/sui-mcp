@@ -22,6 +22,9 @@ const RETRYABLE_CODES = new Set([
   "UND_ERR_CONNECT_TIMEOUT",
 ]);
 
+/** An answered request with a transient, unusable body. */
+export class RetryableResponseError extends Error {}
+
 /** Settings for {@link retryingFetch}; defaults to {@link GRAPHQL_TRANSPORT}. */
 export interface GraphqlTransportOptions {
   attempts: number;
@@ -136,6 +139,34 @@ export function retryingFetch(
   endpoint: string,
   options: GraphqlTransportOptions = GRAPHQL_TRANSPORT,
 ): typeof fetch {
+  const run = retryingRead(endpoint, options, (response) => Promise.resolve(response));
+  return (input, init) => run(input, init);
+}
+
+/** Retry JSON parsing in the same transport loop as HTTP and connection failures. */
+export function retryingJson<T>(
+  endpoint: string,
+  parse: (body: unknown, status: number) => T,
+  options: GraphqlTransportOptions,
+): Promise<T> {
+  return retryingRead(endpoint, options, async (response) => {
+    if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+    if (response.status === 404) return parse(null, 404);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new RetryableResponseError("Non-JSON price response");
+    }
+    return parse(body, response.status);
+  })(endpoint, { headers: { accept: "application/json" } });
+}
+
+function retryingRead<T>(
+  endpoint: string,
+  options: GraphqlTransportOptions,
+  read: (response: Response) => Promise<T>,
+): (input: RequestInfo | URL, init?: RequestInit) => Promise<T> {
   const limiter = new Limiter(options.concurrency);
   const url = new URL(endpoint);
   const host = url.host;
@@ -153,9 +184,9 @@ export function retryingFetch(
       );
 
       await limiter.acquire();
-      if (window) await window.acquire();
       let response: Response;
       try {
+        if (window) await window.acquire();
         const timeout = AbortSignal.timeout(options.timeoutMs);
         const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
         response = await globalThis.fetch(input, { ...init, signal });
@@ -164,20 +195,26 @@ export function retryingFetch(
           throw new Error(`${service} request to ${host} timed out after ${options.timeoutMs / 1000}s`);
         }
         const code = errorCode(err);
-        if (!code || !RETRYABLE_CODES.has(code)) throw err;
-        if (last) {
-          throw new Error(`${service} request to ${host} failed (${code}); tried ${attempt} times`);
-        }
+        if ((!code || !RETRYABLE_CODES.has(code)) && !(err instanceof TypeError)) throw err;
+        if (last) throw new Error(`${service} request to ${host} failed (${code ?? "connection error"}); tried ${attempt} times`);
         await wait(backoff);
         continue;
       } finally {
         limiter.release();
       }
 
-      if (last || (response.status !== 429 && response.status < 500)) return response;
-      const asked = retryAfterMs(response.headers.get("retry-after"));
-      await response.body?.cancel().catch(() => {});
-      await wait(asked === null ? backoff : Math.min(asked, options.maxDelayMs));
+      if (!last && (response.status === 429 || response.status >= 500)) {
+        const asked = retryAfterMs(response.headers?.get("retry-after") ?? null);
+        await response.body?.cancel().catch(() => {});
+        await wait(asked === null ? backoff : Math.min(asked, options.maxDelayMs));
+        continue;
+      }
+      try {
+        return await read(response);
+      } catch (err) {
+        if (!(err instanceof RetryableResponseError) || last) throw err;
+        await wait(backoff);
+      }
     }
   };
 }

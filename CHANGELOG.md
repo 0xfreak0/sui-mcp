@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **A brief price-provider outage no longer blanks USD.** Historical price
+  reads from DefiLlama, CoinGecko and GeckoTerminal are retried a bounded
+  number of times. If a provider keeps failing, the rest of that tool call
+  stops asking it. The pricing block names the provider as unavailable,
+  distinct from a coin that is not listed or a date out of range, even when
+  another provider supplied the quote.
+
 ## 1.26.0 (2026-10-01)
 
 Historical prices keep working when DefiLlama cannot answer, and several

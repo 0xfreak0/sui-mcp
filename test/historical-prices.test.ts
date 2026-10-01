@@ -142,7 +142,7 @@ describe("explainUnpriced", () => {
       llama: llama({ unanswered: new Set([HASUI]), unsupported: new Set([lp]) }),
     });
     expect(out.map((u) => [u.coin_type, u.code])).toEqual([
-      [HASUI, "request_failed"],
+      [HASUI, "provider_unavailable"],
       [FAKE_SUI, "not_listed"],
       [lp, "type_parameters"],
     ]);

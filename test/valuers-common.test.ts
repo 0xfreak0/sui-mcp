@@ -44,7 +44,7 @@ describe("priceCoinTypes with a memo", () => {
   });
 
   it("asks again after a failed request", async () => {
-    priceUsdAtTime.mockResolvedValueOnce({ points: new Map(), unpriced: [{ coin_type: A, code: "request_failed", reason: "down" }] });
+    priceUsdAtTime.mockResolvedValueOnce({ points: new Map(), unpriced: [{ coin_type: A, code: "provider_unavailable", reason: "down" }] });
     const memo = new Map<string, Promise<unknown>>();
     const first = await priceCoinTypes([A], { owner: "0x1", atTime: 100, memo });
     const second = await priceCoinTypes([A], { owner: "0x1", atTime: 100, memo });

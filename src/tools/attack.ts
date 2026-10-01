@@ -9,8 +9,9 @@ import { lookupPackageTrust, prefetchProtocolCustody, prefetchProtocolNames, loo
 import { packageOfEventType } from "../utils/event-json.js";
 import { originIncomplete } from "../protocols/package-custody.js";
 import { foldSwaps } from "../utils/swap-fold.js";
-import { capPayload, type ListCap } from "../utils/output-cap.js";
+import { capPayload, resultUri, type ListCap } from "../utils/output-cap.js";
 import { MAX_RESULT_SIZE_CHARS } from "./tool-meta.js";
+import { saveResult } from "../utils/store.js";
 import { flagPtbAnomalies, isSystemPackage, NO_MATCH_NOTE, PTB_CHECKS, SEVERITY_RANK, supersededWrites, type FormattedCommand, type PtbAnomaly } from "../utils/ptb-anomalies.js";
 import { readSupersededChanges } from "../utils/superseded-diff.js";
 import { ptbDataFromBcs, resolvePtb, type ExecutedObjects } from "../utils/ptb-resolve.js";
@@ -28,7 +29,7 @@ import {
 import { effectsPayouts } from "../utils/payouts.js";
 import { getLabel } from "../utils/labels.js";
 import { resolveWindow } from "../utils/checkpoint-time.js";
-import { windowPrices } from "../utils/window-prices.js";
+import { windowPrices, type WindowPrices } from "../utils/window-prices.js";
 import { valueWindowDeltas, type TimedDeltas } from "../utils/window-deltas.js";
 import {
   displayCoin,
@@ -220,6 +221,40 @@ const STATE_READ_CONCURRENCY = 4;
 
 /** Digests a summary group row lists; `transaction_count` and the full view carry every one. */
 const GROUP_DIGESTS = 5;
+/** The full view reserves room for groups, other lists and its omission metadata. */
+const FULL_COVERAGE_BUDGET = 60_000;
+const COVERAGE_LISTS = ["price_samples", "out_of_range_coin_samples", "missing_coin_samples", "stale_quotes"] as const;
+
+/** Consecutive coverage rows across all four lists; one cursor works without a store. */
+export function pageIncidentCoverage(basis: WindowPrices["basis"], offset: number, budget = FULL_COVERAGE_BUDGET) {
+  const slices: Record<string, unknown[]> = {};
+  const shown: Record<string, number[]> = {};
+  const omitted: Record<string, { count: number; from: number; first: unknown; page?: string }> = {};
+  let before = 0;
+  let spent = 0;
+  let taken = 0;
+  for (const field of COVERAGE_LISTS) {
+    const rows = basis[field] ?? [];
+    const from = Math.min(rows.length, Math.max(0, offset - before));
+    let end = from;
+    while (end < rows.length) {
+      const size = JSON.stringify(rows[end]).length + 1;
+      if (spent + size > budget && taken) break;
+      spent += size;
+      end++;
+      taken++;
+    }
+    slices[field] = rows.slice(from, end);
+    shown[`usd_basis.${field}`] = Array.from({ length: end - from }, (_, i) => from + i);
+    if (end - from < rows.length) {
+      const first = from ? 0 : end;
+      omitted[`usd_basis.${field}`] = { count: rows.length - (end - from), from: first, first: rows[first] };
+    }
+    before += rows.length;
+  }
+  const nextOffset = offset + taken < before ? offset + taken : null;
+  return { basis: { ...basis, ...slices } as WindowPrices["basis"], shown, omitted, nextOffset, total: before };
+}
 
 /**
  * The losses of every transaction no event decodes into pool amounts, read
@@ -998,14 +1033,16 @@ export function registerAttackTools(server: McpServer) {
         .optional()
         .describe("List only the largest N groups; the totals still cover all of them and the omission is reported."),
       group_offset: numArg().int().min(0).optional().describe("First group to return with detail: 'full' when an oversized view is paged."),
+      coverage_offset: numArg().int().min(0).optional().describe("First historical pricing coverage row for an oversized detail: 'full' view; follow omitted.next_call to page."),
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): largest rows fitting about 40k characters. 'full': consecutive group pages under 500k characters; follow omitted.next_call to read the rest. Totals always cover every group."),
+        .describe("'summary' (default): largest rows fitting about 40k characters. 'full': consecutive group and historical pricing coverage pages under 500k characters; follow omitted.next_call to read the rest. Totals always cover every group."),
     },
-    async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, group_offset, detail }) => {
+    async ({ digests, sender, start, end, max_transactions, attacker, price_at, max_groups, group_offset, coverage_offset, detail }) => {
       try {
         if (group_offset !== undefined && detail !== "full") return errorResult("group_offset requires detail: 'full'.");
+        if (coverage_offset !== undefined && detail !== "full") return errorResult("coverage_offset requires detail: 'full'.");
         if (!digests && !sender) return errorResult("Give `digests`, or `sender` with an optional window.");
         if (digests && sender) return errorResult("Give `digests` or `sender`, not both.");
         if (digests && (start !== undefined || end !== undefined)) {
@@ -1509,18 +1546,27 @@ export function registerAttackTools(server: McpServer) {
         type Sent = (typeof transfersOut)[number];
         const args = { digests, sender, start, end, max_transactions, attacker, price_at, max_groups, network: getNetwork() };
         const offset = group_offset ?? 0;
+        const coverage = detail === "full" && (
+          coverage_offset !== undefined ||
+          JSON.stringify({ ...payload, groups: [] }).length > MAX_RESULT_SIZE_CHARS - 10_000
+        ) ? pageIncidentCoverage(payload.usd_basis, coverage_offset ?? 0) : null;
+        if (coverage && coverage_offset !== undefined && coverage_offset >= coverage.total) {
+          return errorResult("coverage_offset is past the historical pricing coverage.");
+        }
         const visible = detail === "full"
-          ? { ...payload, group_offset: offset, groups: groups.slice(offset) }
+          ? { ...payload, group_offset: offset, groups: groups.slice(offset), ...(coverage ? { usd_basis: coverage.basis } : {}) }
           : { ...payload, groups: shownGroups };
         const { payload: capped } = capPayload(
           "summarize_incident_losses",
           args,
           visible,
           {
-            "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
-            "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
-            "usd_basis.price_samples": { budget: 2_000, keepOrder: true },
-            "usd_basis.out_of_range_coin_samples": { budget: 1_500, keepOrder: true },
+            ...(detail === "full" ? {} : {
+              "usd_basis.missing_coin_samples": { budget: 2_000, keepOrder: true },
+              "usd_basis.stale_quotes": { budget: 2_000, keepOrder: true },
+              "usd_basis.price_samples": { budget: 2_000, keepOrder: true },
+              "usd_basis.out_of_range_coin_samples": { budget: 1_500, keepOrder: true },
+            }),
             groups: {
               budget: 10_000,
               usd: (g: Group) => Math.max(g.attacker_usd, -g.pool_usd),
@@ -1564,26 +1610,61 @@ export function registerAttackTools(server: McpServer) {
           },
           {
             full: detail === "full",
-            maxChars: MAX_RESULT_SIZE_CHARS - 2_000, // Room for the prose content item.
-            stored: detail === "full" ? visible : payload,
+            maxChars: MAX_RESULT_SIZE_CHARS - (coverage ? 6_000 : 2_000), // Room for coverage continuation metadata and prose.
+            stored: payload,
             next_call: { tool: "summarize_incident_losses", repeat_with: { detail: "full" } },
             ...(detail === "full" ? {
               fullContinuation: {
                 path: "groups",
                 nextCall: (shown: number) => ({
                   tool: "summarize_incident_losses",
-                  args: { ...args, detail: "full", group_offset: offset + shown },
+                  args: { ...args, detail: "full", group_offset: offset + shown, ...(coverage ? { coverage_offset: coverage_offset ?? 0 } : {}) },
                 }),
               },
             } : {}),
           },
         );
+        let out = capped;
+        if (coverage && Object.keys(coverage.omitted).length) {
+          const current = capped.omitted as { lists?: Record<string, { count: number; page?: string }>; next_call?: unknown; result?: { uri: string; read: string } } | undefined;
+          const groupRows = capped.groups as Group[];
+          const storedId = saveResult(getNetwork(), "summarize_incident_losses", args, payload, {
+            ...coverage.shown,
+            groups: groupRows.map((_, i) => offset + i),
+          });
+          const lists: Record<string, { count: number; from?: number; first?: unknown; page?: string }> = { ...current?.lists, ...coverage.omitted };
+          if (storedId) for (const path of Object.keys(lists)) lists[path].page = resultUri(storedId, { path, omitted: true });
+          const nextCall = current?.lists?.groups?.count && current.next_call
+            ? current.next_call
+            : coverage.nextOffset !== null ? {
+                tool: "summarize_incident_losses",
+                args: { ...args, detail: "full", group_offset: groups.length, coverage_offset: coverage.nextOffset },
+              } : undefined;
+          const previousCall = (coverage_offset ?? 0) > 0 ? {
+            tool: "summarize_incident_losses",
+            args: { ...args, detail: "full", group_offset: groups.length, coverage_offset: 0 },
+          } : undefined;
+          const { omitted: _previous, truncated: _truncated, ...body } = capped;
+          out = {
+            truncated: true,
+            omitted: {
+              lists,
+              ...(nextCall ? { next_call: nextCall } : {}),
+              ...(previousCall ? { previous_call: previousCall } : {}),
+              ...(storedId ? { result: {
+                uri: resultUri(storedId),
+                read: current?.result?.read ?? "Read a list's page URI with omitted=1 to retrieve only rows not listed here.",
+              } } : {}),
+            },
+            ...body,
+          };
+        }
         return {
           content: [
             { type: "text" as const, text: lines.join("\n") },
             // Compact: an incident runs to hundreds of groups, and indentation
             // alone is a large share of the payload.
-            { type: "text" as const, text: JSON.stringify(capped) },
+            { type: "text" as const, text: JSON.stringify(out) },
           ],
         };
       } catch (err) {

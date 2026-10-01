@@ -5,6 +5,7 @@ import { DEFAULT_NETWORK } from "../config.js";
 const CALL_PATHS = [
   "next_call",
   "omitted.next_call",
+  "omitted.previous_call",
   "omitted.lists.*.next_call",
   "omitted.valuation_evidence.next_call",
   "scan.next_call",

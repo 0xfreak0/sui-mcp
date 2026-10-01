@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { checkpointChain } from "./helpers/service-shapes.js";
 
 const mockGqlQuery = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
@@ -25,14 +26,10 @@ const EVENTS = [
   { checkpoint: 102_001, sender: who("e") },
 ];
 
+const checkpoints = checkpointChain(LATEST, stampMs);
 mockGqlQuery.mockImplementation(async (query: string, v: Record<string, unknown>) => {
-  if (query.includes("checkpoints(last: 1)")) {
-    return { checkpoints: { nodes: [{ sequenceNumber: LATEST, timestamp: new Date(stampMs(LATEST)).toISOString() }] } };
-  }
-  if (query.includes("checkpoint(sequenceNumber")) {
-    const seq = Number(v.seq);
-    return { checkpoint: seq > LATEST ? null : { sequenceNumber: seq, timestamp: new Date(stampMs(seq)).toISOString() } };
-  }
+  const point = checkpoints(query, v);
+  if (point !== undefined) return point;
   // events(filter: { afterCheckpoint, beforeCheckpoint }): both exclusive.
   const f = v.filter as { afterCheckpoint?: number; beforeCheckpoint?: number };
   const nodes = EVENTS.filter(

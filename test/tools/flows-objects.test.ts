@@ -74,6 +74,7 @@ beforeEach(() => {
   resetWindowPriceCache();
   mockPriceRead.mockImplementation(async (types: string[]) => ({
     points: new Map(), unpriced: types.map((t) => ({ coin_type: t, code: "not_listed", reason: "No price." })),
+    provider_unavailable: [],
   }));
   mockGqlQuery.mockImplementation(async (query: string) => {
     if (!String(query).includes("transactions(filter")) return {};
@@ -225,7 +226,7 @@ describe("summarize_address_flows objects", () => {
     const coin = `0x${"ad".repeat(32)}::coin::SIX`;
     mockPriceRead.mockImplementation(async (types: string[], at: number) => ({
       points: new Map(types.map((c) => [c, { price: 2, decimals: 6, publishTime: at, source: "defillama" }])),
-      unpriced: [],
+      unpriced: [], provider_unavailable: [],
     }));
     mockGqlQuery.mockResolvedValue({ transactions: {
       nodes: [-1, 2].map((amount, i) => ({
@@ -251,7 +252,7 @@ describe("summarize_address_flows objects", () => {
     const destination = `0x${"d3".repeat(20)}`;
     const timestamp = "2025-10-01T12:30:00Z";
     mockPriceRead.mockImplementation(async (_coins: string[], at: number) => ({
-      points: new Map([[SUI, { price: 4, publishTime: at, source: "defillama" }]]), unpriced: [],
+      points: new Map([[SUI, { price: 4, publishTime: at, source: "defillama" }]]), unpriced: [], provider_unavailable: [],
     }));
     const nodes = Array.from({ length: 80 }, (_, i) => ({
       digest: `synthetic-bridge-${i}`, sender: { address: V }, kind: { commands: gqlPage([]) },

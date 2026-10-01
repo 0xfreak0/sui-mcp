@@ -204,9 +204,11 @@ active since 2023 returned nothing, and its `activity_hours` described 2023.
 - **`resolveWindow` / `toFilterBound`** (`src/utils/checkpoint-time.ts`) turn an
   ISO edge into the exclusive checkpoint the filter takes, using
   `checkpointBracket`, which refines to two ADJACENT checkpoints either side of
-  the time. `toCheckpoint` stops within a minute, which is fine for a point
-  and wrong for an edge: a minute is a third of a three-minute incident
-  window. Both edges are inclusive in time.
+  the time. It probes up to eight checkpoints in one aliased GraphQL request,
+  rather than spending one network turn per candidate. `toCheckpoint` stops
+  within a minute, which is fine for a point and wrong for an edge: a minute
+  is a third of a three-minute incident window. Both edges are inclusive in
+  time; they resolve concurrently against one latest-checkpoint anchor.
 - **Parse before probing.** An unparseable bound is an error before any
   request, never a silently unbounded read.
 - **A budget that stops a walk says where.** `build_timeline` reports per
@@ -1622,8 +1624,8 @@ body over 5,000, so the coin types go inline rather than as variables). A
 null answer is "no metadata", the answer gRPC gives as NOT_FOUND; a failed
 request falls back to one gRPC read per coin. Under a rate limit the request
 count is the latency, so a meme-coin drain's hundreds of coins cost one
-GraphQL request per 20 instead of one read each. DefiLlama price batches run
-four at a time.
+GraphQL request per 20 instead of one read each. DefiLlama current-price
+batches run four at a time; wide historical windows run eight at a time.
 
 **A caller that VALUES an amount must warm before it judges, not after.**
 The funding walk used to prefetch after `pickFundingTx` had applied the $0.10
@@ -3985,7 +3987,8 @@ account value.
   and 103 events.
 - **`batchGetTransactions` is bounded by the 4 MiB response, not a count.** 100
   Cetus-exploit transactions fit in one call and 200 did not. Batches are 25,
-  and an overflowing batch is re-read one digest at a time.
+  up to four independent batches read concurrently, and an overflowing batch
+  is re-read one digest at a time. Archive fallback preserves requested order.
 - **Flash pairing ignores framework singletons.** Nearly every DeFi call takes
   the Clock (`0x6`); counting it as the object a borrow and a repay share
   pairs any borrow with any repay.

@@ -42,6 +42,16 @@ export async function checkpointAt(seq: number): Promise<CheckpointPoint | null>
   return { seq: d.checkpoint.sequenceNumber, ms: Date.parse(d.checkpoint.timestamp) };
 }
 
+/** Refine several checkpoint candidates in one GraphQL request (at most eight). */
+async function checkpointsAt(seqs: number[]): Promise<Array<CheckpointPoint | null>> {
+  const fields = seqs.map((seq, i) => `c${i}:checkpoint(sequenceNumber:${seq}){sequenceNumber timestamp}`);
+  const data = await gqlQuery<Record<string, { sequenceNumber: number; timestamp: string } | null>>(`query { ${fields.join(" ")} }`);
+  return seqs.map((_, i) => {
+    const point = data[`c${i}`];
+    return point ? { seq: point.sequenceNumber, ms: Date.parse(point.timestamp) } : null;
+  });
+}
+
 /**
  * The checkpoint closest to `targetMs`.
  *
@@ -199,31 +209,27 @@ export async function checkpointBracket(targetMs: number, latest?: CheckpointPoi
   if (!lo) return { before: null, atOrAfter: top, probes };
 
   let hi = top;
-  let lastWidth = hi.seq - lo.seq;
-  let bisect = false;
+  // A single aliased request narrows the interval at up to eight positions.
+  // The older one-at-a-time interpolation spent ~16 serial network turns per
+  // edge of a historical window even when its two ends were minutes apart.
   while (probes < MAX_BRACKET_PROBES && hi.seq - lo.seq > 1) {
-    let guess: number;
-    if (bisect || hi.ms <= lo.ms) {
-      guess = lo.seq + Math.floor((hi.seq - lo.seq) / 2);
-    } else {
-      const frac = (targetMs - lo.ms) / (hi.ms - lo.ms);
-      guess = Math.round(lo.seq + (hi.seq - lo.seq) * frac);
+    const lower = lo.seq;
+    const width = hi.seq - lower;
+    const count = Math.min(8, width - 1, MAX_BRACKET_PROBES - probes);
+    const seqs = Array.from({ length: count }, (_, i) => lower + Math.floor((width * (i + 1)) / (count + 1)));
+    const points = await checkpointsAt(seqs);
+    probes += count;
+    if (points.some((point) => point === null)) break;
+    for (const point of points) {
+      if (point!.ms < targetMs) lo = point!;
+      else if (point!.seq < hi.seq) hi = point!;
     }
-    guess = Math.min(hi.seq - 1, Math.max(lo.seq + 1, guess));
-    const point = await checkpointAt(guess);
-    probes++;
-    if (!point) break;
-    if (point.ms < targetMs) lo = point;
-    else hi = point;
-    const width = hi.seq - lo.seq;
-    bisect = width * 2 > lastWidth;
-    lastWidth = width;
   }
   return { before: lo, atOrAfter: hi, probes };
 }
 
-/** Probe budget for one exact bracket. Interpolation usually needs under 15. */
-const MAX_BRACKET_PROBES = 40;
+/** Bound on keyed checkpoint values; eight share each GraphQL round trip. */
+const MAX_BRACKET_PROBES = 96;
 
 /** One edge of a window, as the exclusive checkpoint a GraphQL filter takes. */
 export interface FilterBound {
@@ -299,10 +305,11 @@ export async function resolveWindow(
   // Both edges are parsed before any request, so a typo costs nothing.
   for (const v of [from, to]) if (v !== undefined && isTimeBound(v)) parseTimeBound(v);
   const latest = isTimeBound(from) || isTimeBound(to) ? await latestCheckpoint() : undefined;
-  return {
-    after: await toFilterBound(from, "after", latest),
-    before: await toFilterBound(to, "before", latest),
-  };
+  const [after, before] = await Promise.all([
+    toFilterBound(from, "after", latest),
+    toFilterBound(to, "before", latest),
+  ]);
+  return { after, before };
 }
 
 /** A window as reported back: the input, and the exclusive checkpoints it resolved to. */

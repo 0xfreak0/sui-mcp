@@ -527,6 +527,14 @@
     "0x1749b76a3ae065dedfe847578b07826fa83d1e18ff485d9e4f9647f3698e104d": {
       "name": "Blast.fun",
       "type": "launchpad"
+    },
+    "0x97fea95545c04dc73f8174c6195013b100a26e3fa978e7cf8b100a51dfaf8354": {
+      "name": "derps.xyz",
+      "type": "launchpad"
+    },
+    "0x70798463adae26d663d67b152e6531a4eaf48b541d6d3db11d730663dab20e8a": {
+      "name": "derps.xyz",
+      "type": "launchpad"
     }
   }
 }

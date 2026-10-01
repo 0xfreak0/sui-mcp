@@ -10,6 +10,13 @@
   distinct from a coin that is not listed or a date out of range, even when
   another provider supplied the quote.
 
+### Added
+- **derps.xyz is a known protocol.** Its composite-pool lineage (the
+  contracts behind derps.xyz's backed coins) is curated as derps.xyz, type
+  `launchpad`, and every version of it is named. Perpsplexity's original
+  lineage keeps its name. The two share a deployer key, so other packages
+  from that key are not named from it.
+
 ## 1.26.0 (2026-10-01)
 
 Historical prices keep working when DefiLlama cannot answer, and several

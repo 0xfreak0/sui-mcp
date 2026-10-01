@@ -49,7 +49,7 @@ mockPriceUsdAtTime.mockImplementation(async (coinTypes: string[], at = 0) => {
     if (p) points.set(c, { price: p.price, publishTime: at, source: "defillama", decimals: p.decimals });
     else unpriced.push({ coin_type: c, code: "not_listed", reason: "No price." });
   }
-  return { points, unpriced };
+  return { points, unpriced, provider_unavailable: [] };
 });
 
 const { registerAttackTools } = await import("../../src/tools/attack.js");

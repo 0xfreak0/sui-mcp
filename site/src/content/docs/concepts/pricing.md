@@ -49,8 +49,13 @@ the reported sample time is the candle end. Empty intervals are not filled.
 Both fallbacks accept only samples within an hour of the requested time.
 Charts are grouped by coin and UTC day; discovery and charts share a bounded
 cache, including concurrent requests. Failed reads are not cached as absent
-prices. Non-JSON replies, provider errors and HTTP 429 responses are request
-failures, distinct from an answered request with no historical quote.
+prices. DefiLlama and both fallbacks retry transient rate limits, service
+errors, connection failures and non-JSON replies with bounded backoff.
+Repeated failures open a per-call circuit: later samples skip that provider
+instead of repeating the outage. A provider that remains unavailable is named
+under `provider_unavailable` with its reason and affected sample count,
+separately from `not_listed` and `out_of_range`. Its missing amounts remain
+unpriced; an answered request without a historical quote is not an outage.
 
 ## Which time is used?
 
@@ -107,11 +112,15 @@ include losses. A missing price does not mean a token is worth zero.
 - **`partial` and unpriced lists** identify excluded amounts. Check
   `missing_coin_samples`, `unpriced`, `unpriced_remainder` and object
   `unread` or `unpriced_reason` where present, alongside raw priced/unpriced
-  coverage. `request_failed_samples` within a missing-coin row counts samples
+  coverage.
+  `request_failed_samples` within a missing-coin row counts samples
   whose provider reads failed, rather than establishing that no quote exists.
-  `out_of_range_coin_samples` lists each skipped provider's coin sample count
-  and time interval separately from answered missing quotes and failed reads.
-  Scan coverage is separate from price coverage.
+  `provider_unavailable` identifies failed providers, reasons and affected
+  samples in a point result or the window's pricing block; raw coverage
+  records the amounts left unpriced. `out_of_range_coin_samples` lists each
+  skipped provider's coin sample count and time interval separately from
+  answered missing quotes and failed reads. Scan coverage is separate from
+  price coverage.
 - **`stale_quotes`** lists each coin's largest signed quote offset in a window.
   **`price_offset_sec`** in `get_token_prices` and `analyze_attack_tx` is the
   quote time minus the requested time: negative means earlier, positive later.

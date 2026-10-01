@@ -117,7 +117,7 @@ describe("recent historical fallbacks", () => {
   ])("reports an unanswered fallback instead of no price", async (failure) => {
     fetchMock.mockImplementation(async (url: string) => url.includes("coins.llama.fi") ? ok({ coins: {} })
       : url.includes("api.coingecko.com") ? failure : ok({ data: [] }));
-    expect((await priceUsdAtTime([COIN], AT)).unpriced).toMatchObject([{ coin_type: COIN, code: "request_failed" }]);
+    expect((await priceUsdAtTime([COIN], AT)).unpriced).toMatchObject([{ coin_type: COIN, code: "provider_unavailable" }]);
   });
 
   it("skips expired and future dates before any discovery or chart request", async () => {
@@ -154,7 +154,10 @@ describe("recent historical fallbacks", () => {
   });
 
   it("does not cache a failed read as an absent coin", async () => {
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 429 }).mockImplementation(async (url: string) => coinGeckoReply(url, [[AT * 1000, 2]]));
+    fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 429 }))
+      .mockImplementationOnce(async () => ({ ok: false, status: 429 }))
+      .mockImplementationOnce(async () => ({ ok: false, status: 429 }))
+      .mockImplementation(async (url: string) => coinGeckoReply(url, [[AT * 1000, 2]]));
     const request = new Map([[COIN, [AT]]]);
     expect((await fetchRecentHistory(request, "coingecko")).unanswered.get(COIN)?.has(AT)).toBe(true);
     expect((await fetchRecentHistory(request, "coingecko")).quotes.get(COIN)?.get(AT)?.price).toBe(2);

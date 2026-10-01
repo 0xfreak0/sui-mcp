@@ -43,7 +43,7 @@ describe("window USD", () => {
   });
 
   it("prices one hour once and reuses successful historical quotes", async () => {
-    pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN, source: "defillama" }]]), unpriced: [] });
+    pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN, source: "defillama" }]]), unpriced: [], provider_unavailable: [] });
     const requests = [{ at: JAN + 1, coins: [SUI] }, { at: JAN + 3599, coins: [SUI] }];
     expect((await windowPrices(requests)).point(SUI, JAN + 3500)?.price).toBe(4);
     expect((await windowPrices(requests)).basis.priced_coin_samples).toBe(1);
@@ -63,7 +63,7 @@ describe("window USD", () => {
   });
 
   it("does not reuse samples beyond two hours or turn a missing quote into zero USD", async () => {
-    pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN - 7201, source: "defillama" }]]), unpriced: [] });
+    pointRead.mockResolvedValue({ points: new Map([[SUI, { price: 4, publishTime: JAN - 7201, source: "defillama" }]]), unpriced: [], provider_unavailable: [] });
     const prices = await windowPrices([{ at: JAN, coins: [SUI] }]);
     const amounts = new WindowAmounts(prices);
     amounts.add(SUI, 10_000_000_000n, JAN);
@@ -104,7 +104,7 @@ describe("window USD", () => {
     pointRead.mockImplementation(async (_coins: string[], at: number) => ({
       points: new Map([[SUI, { price: getNetwork() === "mainnet" ? 4 : 2, publishTime: at,
         source: getNetwork() === "mainnet" ? "pyth" : "defillama", decimals: 9 }]]),
-      unpriced: [],
+      unpriced: [], provider_unavailable: [],
     }));
     const request = [{ at: JAN, coins: [SUI] }];
     const main = await runWithNetwork("mainnet", () => windowPrices(request));
@@ -116,7 +116,7 @@ describe("window USD", () => {
   it("uses the median leg time within the hour rather than its start on a crash day", async () => {
     const hour = JAN + 10 * 3600;
     pointRead.mockImplementation(async (_coins: string[], at: number) => ({
-      points: new Map([[SUI, { price: at === hour + 1800 ? 4 : 1, publishTime: at, source: "defillama" }]]), unpriced: [],
+      points: new Map([[SUI, { price: at === hour + 1800 ? 4 : 1, publishTime: at, source: "defillama" }]]), unpriced: [], provider_unavailable: [],
     }));
     const prices = await windowPrices([600, 1800, 2700].map((seconds) => ({ at: hour + seconds, coins: [SUI] })));
     const amounts = new WindowAmounts(prices);

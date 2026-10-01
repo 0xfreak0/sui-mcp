@@ -1,7 +1,8 @@
 import { buildPythFeedMap } from "../discovery.js";
 import { isVerifiedCoin, verifiedCoin, vouchFor } from "./coin-registry.js";
-import { fetchDefiLlama, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
-import type { PriceQuote, PriceSource } from "./price-providers.js";
+import { fetchDefiLlama, providerFailureReason, pythApiKey, type DefiLlamaResult } from "./price-providers.js";
+import type { PriceQuote, PriceSource, ProviderUnavailable } from "./price-providers.js";
+import { withPriceProviderCall } from "./price-call-context.js";
 import { fetchRecentHistory } from "./recent-prices.js";
 import type { RecentPriceSource } from "./recent-prices.js";
 import { fetchPythPrices, parsePythPrice } from "../tools/prices.js";
@@ -356,14 +357,17 @@ export interface PricePoint {
 export interface UnpricedCoin {
   coin_type: string;
   /** Unanswered and out-of-range reads establish nothing about a coin's listing. */
-  code: "not_listed" | "request_failed" | "type_parameters" | "no_oracle_price" | "out_of_range";
+  code: "not_listed" | "provider_unavailable" | "type_parameters" | "no_oracle_price" | "out_of_range";
   reason: string;
   out_of_range_sources?: RecentPriceSource[];
+  provider_unavailable?: ProviderUnavailable[];
 }
 
 export interface HistoricalPrices {
   points: Map<string, PricePoint>;
   unpriced: UnpricedCoin[];
+  /** Failed provider reads, even when a different source ultimately priced the coin. */
+  provider_unavailable: ProviderUnavailable[];
 }
 
 export type HistoricalSource = Exclude<PriceSource, "aftermath">;
@@ -403,8 +407,8 @@ export function explainUnpriced(
     const outOfRange = ctx.outOfRange?.get(coinType) ?? [];
     if (ctx.llama?.unanswered.has(coinType)) failed.push("defillama");
     if (failed.length) {
-      code = "request_failed";
-      reason = `Historical price requests failed (${failed.join(", ")}); this says nothing about whether the coin had a price.${pythNote}`;
+      code = "provider_unavailable";
+      reason = `Historical price providers unavailable (${failed.join(", ")}); this says nothing about whether the coin had a price.${pythNote}`;
     } else if (!ctx.sources.some((s) => s !== "pyth")) {
       code = "no_oracle_price";
       reason = `No oracle price.${pythNote}`;
@@ -420,6 +424,7 @@ export function explainUnpriced(
     }
     if (outOfRange.length) reason += ` Out-of-range sources: ${outOfRange.join(", ")}.`;
     out.push({ coin_type: coinType, code, reason: reason.trim(),
+      ...(failed.length ? { provider_unavailable: failed.map((source) => ({ source: source as PriceSource, reason: providerFailureReason(source as PriceSource), samples: 1 })) } : {}),
       ...(outOfRange.length ? { out_of_range_sources: outOfRange } : {}) });
   }
   return out;
@@ -443,10 +448,18 @@ export async function priceUsdAtTime(
   unixTs?: number,
   opts: { sources?: ReadonlyArray<HistoricalSource> } = {},
 ): Promise<HistoricalPrices> {
+  return withPriceProviderCall(() => readPriceUsdAtTime(coinTypes, unixTs, opts));
+}
+
+async function readPriceUsdAtTime(
+  coinTypes: string[],
+  unixTs?: number,
+  opts: { sources?: ReadonlyArray<HistoricalSource> } = {},
+): Promise<HistoricalPrices> {
   const sources = opts.sources ?? ["pyth", "defillama", "coingecko", "geckoterminal"];
   const points = new Map<string, PricePoint>();
   const uniq = [...new Set(coinTypes)];
-  if (uniq.length === 0) return { points, unpriced: [] };
+  if (uniq.length === 0) return { points, unpriced: [], provider_unavailable: [] };
   const pythKey = pythApiKey() !== null;
 
   if (sources.includes("pyth") && pythKey) {
@@ -487,6 +500,9 @@ export async function priceUsdAtTime(
       }
     }
   }
+  const providerUnavailable: ProviderUnavailable[] = llama?.unanswered.size
+    ? [{ source: "defillama", reason: providerFailureReason("defillama"), samples: llama.unanswered.size }]
+    : [];
   const fallbackFailures = new Map<string, string[]>();
   const outOfRange = new Map<string, RecentPriceSource[]>();
   if (unixTs !== undefined) for (const source of ["coingecko", "geckoterminal"] as const) {
@@ -494,6 +510,7 @@ export async function priceUsdAtTime(
     const rest = uniq.filter((ct) => !points.has(ct));
     if (!rest.length) break;
     const result = await fetchRecentHistory(new Map(rest.map((coin) => [coin, [unixTs]])), source);
+    providerUnavailable.push(...(result.provider_unavailable ?? []));
     for (const row of result.outOfRange) {
       const skipped = outOfRange.get(row.coin_type) ?? [];
       skipped.push(row.source);
@@ -510,7 +527,8 @@ export async function priceUsdAtTime(
     }
   }
 
-  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures, outOfRange }) };
+  return { points, unpriced: explainUnpriced(uniq, points, { sources, pythKey, llama, fallbackFailures, outOfRange }),
+    provider_unavailable: providerUnavailable };
 }
 
 // Beyond this gap between a price's sample time and the block time, the

@@ -1,7 +1,8 @@
-import { EXTERNAL_HTTP_TIMEOUT_MS } from "../config.js";
 import { normalizeCoinType } from "./coin-registry.js";
-import { defiLlamaKey, fetchDefiLlamaHistory } from "./price-providers.js";
-import type { PriceQuote } from "./price-providers.js";
+import { defiLlamaKey, fetchDefiLlamaHistory, priceResponse, readPriceJson, unavailableProviders } from "./price-providers.js";
+import type { PriceQuote, PriceSource, ProviderUnavailable } from "./price-providers.js";
+import { RetryableResponseError } from "../clients/graphql.js";
+import { withPriceProviderCall } from "./price-call-context.js";
 
 export type RecentPriceSource = "coingecko" | "geckoterminal";
 export interface OutOfRangePriceRequest { coin_type: string; at: number; source: RecentPriceSource }
@@ -11,6 +12,7 @@ export interface HistoricalMarketPrices {
   unanswered: Map<string, Set<number>>;
   /** Requests skipped before discovery because their dates cannot be served. */
   outOfRange: OutOfRangePriceRequest[];
+  provider_unavailable: ProviderUnavailable[];
 }
 const DAY = 86400;
 const HOUR = 3600;
@@ -33,15 +35,13 @@ function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
   return entry.value;
 }
 
-async function json(url: string): Promise<Record<string, unknown> | null> {
-  const response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(EXTERNAL_HTTP_TIMEOUT_MS) });
-  // A 429 or a non-JSON error is a failed read, never an absent coin.
-  if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
-  const body = await response.json() as Record<string, unknown> | null;
-  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid price response");
-  if (response.status === 404 && (body.error || body.errors)) return null;
-  if (!response.ok || body.error || body.errors) throw new Error("Provider error");
-  return body;
+async function json(url: string, source: RecentPriceSource): Promise<Record<string, unknown> | null> {
+  return readPriceJson(source, url, (data, status) => {
+    const body = priceResponse(data, status);
+    if (status === 404) return null;
+    if (body?.error || body?.errors) throw new RetryableResponseError("Provider error");
+    return body;
+  });
 }
 
 function samples(rows: unknown, source: RecentPriceSource, divisor: number, priceIndex: number, offset: number): PriceQuote[] {
@@ -62,7 +62,7 @@ function matchesCoinType(providerType: unknown, coin: string): boolean {
 
 async function coinGeckoIdentity(coin: string): Promise<boolean> {
   return cached(`coingecko-identity:${coin}`, async () => {
-    const body = await json(`https://api.coingecko.com/api/v3/coins/sui/contract/${encodeURIComponent(coin)}`);
+    const body = await json(`https://api.coingecko.com/api/v3/coins/sui/contract/${encodeURIComponent(coin)}`, "coingecko");
     if (!body) return false;
     const platforms = body.platforms;
     if (!platforms || typeof platforms !== "object" || Array.isArray(platforms)) throw new Error("Missing contract identity");
@@ -76,7 +76,7 @@ async function coinGecko(coin: string, day: number, oldest: number, now: number)
     if (!await coinGeckoIdentity(coin)) return [];
     const from = Math.max(oldest + 1, day - HOUR);
     const to = Math.min(now, day + DAY + HOUR);
-    const body = await json(`https://api.coingecko.com/api/v3/coins/sui/contract/${encodeURIComponent(coin)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`);
+    const body = await json(`https://api.coingecko.com/api/v3/coins/sui/contract/${encodeURIComponent(coin)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`, "coingecko");
     return body ? samples(body.prices, "coingecko", 1000, 1, 0) : [];
   });
 }
@@ -97,7 +97,7 @@ async function mostLiquidPool(coin: string): Promise<Pool | null> {
     const key = coin.replace(/^0x0+([0-9a-f])/, "0x$1");
     let best: Pool | null = null;
     for (let page = 1; page <= 10; page++) {
-      const body = await json(`${GECKO}/tokens/${encodeURIComponent(key)}/pools?sort=h24_volume_usd_liquidity_desc&page=${page}`);
+      const body = await json(`${GECKO}/tokens/${encodeURIComponent(key)}/pools?sort=h24_volume_usd_liquidity_desc&page=${page}`, "geckoterminal");
       if (!body) return null;
       if (!Array.isArray(body.data)) throw new Error("Missing pools");
       for (const pool of body.data as PoolRow[]) {
@@ -121,7 +121,7 @@ async function geckoTerminal(coin: string, day: number, oldest: number, now: num
   if (!pool) return [];
   return cached(`geckoterminal:${coin}:${pool.address}:${day}`, async () => {
     const before = Math.min(Math.floor(now / HOUR) * HOUR, day + DAY + HOUR);
-    const body = await json(`${GECKO}/pools/${encodeURIComponent(pool.address)}/ohlcv/hour?aggregate=1&before_timestamp=${before}&limit=26&currency=usd&token=${pool.side}&include_empty_intervals=false`);
+    const body = await json(`${GECKO}/pools/${encodeURIComponent(pool.address)}/ohlcv/hour?aggregate=1&before_timestamp=${before}&limit=26&currency=usd&token=${pool.side}&include_empty_intervals=false`, "geckoterminal");
     if (!body) return [];
     const data = body.data as { attributes?: { ohlcv_list?: unknown } } | undefined;
     // OHLCV timestamps are candle starts in seconds. Close prices belong to
@@ -180,14 +180,20 @@ export async function fetchRecentHistory(requests: Map<string, number[]>, source
       }
     }
   }));
-  return { quotes, unanswered, outOfRange };
+  return { quotes, unanswered, outOfRange, provider_unavailable: unavailableProviders(new Map([[source, [...unanswered.values()].reduce((sum, times) => sum + times.size, 0)]])).filter((row) => row.samples > 0) };
 }
 
 /** DefiLlama first, then keyless recent history, never a current-price endpoint. */
 export async function fetchHistoricalMarketPrices(requests: Map<string, number[]>): Promise<HistoricalMarketPrices> {
+  return withPriceProviderCall(() => readHistoricalMarketPrices(requests));
+}
+
+async function readHistoricalMarketPrices(requests: Map<string, number[]>): Promise<HistoricalMarketPrices> {
   const unanswered = new Map<string, Set<number>>();
-  const outOfRange: OutOfRangePriceRequest[] = [];
   const quotes = await fetchDefiLlamaHistory(requests, unanswered);
+  const outOfRange: OutOfRangePriceRequest[] = [];
+  const failures = new Map<PriceSource, number>();
+  failures.set("defillama", [...unanswered.values()].reduce((sum, times) => sum + times.size, 0));
   for (const source of ["coingecko", "geckoterminal"] as const) {
     const missing = new Map<string, number[]>();
     for (const [coin, times] of requests) {
@@ -195,6 +201,7 @@ export async function fetchHistoricalMarketPrices(requests: Map<string, number[]
       if (rest.length) missing.set(coin, rest);
     }
     const result = await fetchRecentHistory(missing, source);
+    for (const row of result.provider_unavailable) failures.set(row.source, (failures.get(row.source) ?? 0) + row.samples);
     outOfRange.push(...result.outOfRange);
     for (const [coin, values] of result.quotes) {
       const target = quotes.get(coin) ?? new Map<number, PriceQuote>();
@@ -207,5 +214,5 @@ export async function fetchHistoricalMarketPrices(requests: Map<string, number[]
       unanswered.set(coin, target);
     }
   }
-  return { quotes, unanswered, outOfRange };
+  return { quotes, unanswered, outOfRange, provider_unavailable: unavailableProviders(failures).filter((row) => row.samples > 0) };
 }

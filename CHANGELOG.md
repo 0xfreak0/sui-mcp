@@ -11,11 +11,11 @@
   another provider supplied the quote.
 
 ### Added
-- **derps.xyz is a known protocol.** Its composite-pool lineage (the
-  contracts behind derps.xyz's backed coins) is curated as derps.xyz, type
-  `launchpad`, and every version of it is named. Perpsplexity's original
-  lineage keeps its name. The two share a deployer key, so other packages
-  from that key are not named from it.
+- **Perpsplexity's current contracts are named.** Its upgradeable
+  composite-pool lineage, the contracts behind its backed coins (which
+  derps.xyz also lists), is curated as Perpsplexity, type `launchpad`,
+  alongside its original lineage. Every version, and other packages from
+  its deployer key, are named Perpsplexity.
 
 ## 1.26.0 (2026-10-01)
 

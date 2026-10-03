@@ -134,10 +134,6 @@
       "name": "DeepBook",
       "type": "oracle"
     },
-    "0x97fea95545c04dc73f8174c6195013b100a26e3fa978e7cf8b100a51dfaf8354": {
-      "name": "derps.xyz",
-      "type": "launchpad"
-    },
     "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": {
       "name": "Dipcoin",
       "type": "perps"
@@ -245,6 +241,10 @@
     "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a": {
       "name": "OriginByte",
       "type": "nft"
+    },
+    "0x97fea95545c04dc73f8174c6195013b100a26e3fa978e7cf8b100a51dfaf8354": {
+      "name": "Perpsplexity",
+      "type": "launchpad"
     },
     "0xaedb8c9a905a778e831aeb4928f660210a7a645925348a7c4ec1cb4a6a3fd16e": {
       "name": "Perpsplexity",
@@ -595,11 +595,6 @@
         "0x364c09b14bc64320dd8ced0848e7e4efe75510bd7ee05a88253a5330b6f22bef"
       ]
     },
-    "0x97fea95545c04dc73f8174c6195013b100a26e3fa978e7cf8b100a51dfaf8354": {
-      "signers": [
-        "0x27cba495cbb84791511bc415b79c6f19509b07e9dcff4e7147c1a8eb381758e6"
-      ]
-    },
     "0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001": {
       "signers": [
         "0xf5fe6a868bae59c109f8fa82a139a5302bd11587c811606e9938cf435b0f3906"
@@ -749,6 +744,11 @@
     "0x4e0629fa51a62b0c1d7c7b9fc89237ec5b6f630d7798ad3f06d820afb93a995a": {
       "signers": [
         "0xf9935ad63df83d84c5c071a65f241548ac7c452af2912218c6d2b3faefba5dc2"
+      ]
+    },
+    "0x97fea95545c04dc73f8174c6195013b100a26e3fa978e7cf8b100a51dfaf8354": {
+      "signers": [
+        "0x27cba495cbb84791511bc415b79c6f19509b07e9dcff4e7147c1a8eb381758e6"
       ]
     },
     "0xaedb8c9a905a778e831aeb4928f660210a7a645925348a7c4ec1cb4a6a3fd16e": {

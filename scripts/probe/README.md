@@ -31,6 +31,12 @@ node scripts/probe/incident-pass.mjs
 node scripts/probe/surface-pass.mjs
 ```
 
+Run the full tier with its default `--jobs 1`. Concurrent cases share the Sui
+endpoint's request budget but can exhaust public historical-price providers,
+leaving valuations and price-dependent detector checks incomplete. The full
+runner refuses `--jobs` above 1; `case-pass --jobs <n>` remains available for
+shorter diagnostic runs. Every case and detector still runs in the full tier.
+
 The adversarial event checks distinguish a budget-limited or resumed slice,
 which reports missing values, from a complete nonempty window, which refuses
 a numeric field that no event carries. A partial scan must also supply its

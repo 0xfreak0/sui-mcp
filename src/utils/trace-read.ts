@@ -28,6 +28,7 @@ import {
   completeTxConnections,
   readAllBalanceChanges,
   readAllCommands,
+  readAllObjectChanges,
   type GqlConnection,
 } from "./tx-connections.js";
 import {
@@ -198,83 +199,6 @@ export interface FetchedTx {
  * named `Position` defined by a curated DEX does. Synchronous and cache-only,
  * per the registry contract, so it adds no requests.
  */
-/**
- * Read the remaining object changes of a transaction that exceeded one page.
- *
- * The connection is ordered by object id, not by importance, so which 50
- * arrive first is arbitrary with respect to whether the interesting transfer
- * is among them, and truncating silently could drop a capability transfer.
- *
- * Bounded rather than exhaustive: the caller states the cap it hit, which is
- * the one thing a truncated read must never leave unsaid.
- */
-export const OBJECT_CHANGE_PAGES = 5;
-
-const MORE_OBJECT_CHANGES = `
-  query($digest: String!, $after: String) {
-    transaction(digest: $digest) {
-      effects {
-        objectChanges(first: 50, after: $after) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            address
-            idCreated
-            idDeleted
-            inputState {
-              asMoveObject { contents { type { repr } } }
-              owner {
-                __typename
-                ... on AddressOwner { address { address } }
-                ... on ObjectOwner { address { address } }
-                ... on ConsensusAddressOwner { address { address } }
-              }
-            }
-            outputState {
-              asMoveObject { contents { type { repr } } }
-              owner {
-                __typename
-                ... on AddressOwner { address { address } }
-                ... on ObjectOwner { address { address } }
-                ... on ConsensusAddressOwner { address { address } }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-async function readAllObjectChanges(
-  digest: string,
-  first: { pageInfo?: { hasNextPage?: boolean; endCursor?: string }; nodes: GqlObjectChange[] } | undefined,
-): Promise<{ nodes: GqlObjectChange[]; truncated: boolean }> {
-  const nodes = [...(first?.nodes ?? [])];
-  // `more` and `cursor` are tracked apart on purpose. A connection can claim
-  // another page and hand back a NULL cursor, and collapsing the two would
-  // report a complete read of a list we know is incomplete — the cursor trap
-  // CLAUDE.md documents, in the field that says whether to trust the answer.
-  let more = first?.pageInfo?.hasNextPage === true;
-  let cursor = more ? first?.pageInfo?.endCursor : undefined;
-  let pages = 1;
-
-  while (more && cursor && pages < OBJECT_CHANGE_PAGES) {
-    const next = await gqlQuery<GqlTxResult>(MORE_OBJECT_CHANGES, { digest, after: cursor }).catch(
-      () => null,
-    );
-    const conn = next?.transaction?.effects?.objectChanges;
-    // A failed follow-up is not an empty one: leave `more` set so the caller
-    // says the list is incomplete rather than asserting it is whole.
-    if (!conn) break;
-    nodes.push(...conn.nodes);
-    pages++;
-    more = conn.pageInfo?.hasNextPage === true;
-    cursor = conn.pageInfo?.endCursor;
-  }
-
-  return { nodes, truncated: more };
-}
-
 export function protocolForPackage(packageId: string): { name: string; type?: string } | null {
   const p = lookupProtocol(packageId);
   return p ? { name: p.name, type: (p as { type?: string }).type } : null;

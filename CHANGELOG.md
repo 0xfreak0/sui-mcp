@@ -10,6 +10,11 @@
   distinct from a coin that is not listed or a date out of range, even when
   another provider supplied the quote.
 
+- **Batch transaction reads report non-coin custody.** `get_transactions`
+  returns object transfers and objects created for other owners, including
+  their owner kinds. Object pages are bounded and report incomplete reads;
+  an archive-recovered digest uses its complete gRPC object effects.
+
 ### Added
 - **Perpsplexity's current contracts are named.** Its upgradeable
   composite-pool lineage, the contracts behind its backed coins (which

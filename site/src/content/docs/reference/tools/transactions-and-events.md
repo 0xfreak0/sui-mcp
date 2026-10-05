@@ -8,7 +8,7 @@ sidebar:
 | Tool | Summary |
 |---|---|
 | [`get_transaction`](#get_transaction) | Read one Sui transaction's sender, status, gas, balance changes, decoded actions and event fields; no hand-written GraphQL is needed to read event values. |
-| [`get_transactions`](#get_transactions) | Read 1-50 transaction digests in one call instead of repeated get_transaction calls. |
+| [`get_transactions`](#get_transactions) | Read 1-50 transaction digests in batched calls. |
 | [`query_events`](#query_events) | Query events by type, sender, emitting module or time/checkpoint range. |
 | [`query_transactions`](#query_transactions) | Query raw transactions by sender, affected address or object, Move function, or time/checkpoint range. |
 
@@ -37,12 +37,12 @@ Read one Sui transaction's sender, status, gas, balance changes, decoded actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-Read 1-50 transaction digests in one call instead of repeated get_transaction calls. Returns sender, status, timing, balance changes, ordered Move targets, decoded event fields and protocols named as in get_transaction. Unread digests appear in not_found. Summary shares about 30k characters across transactions' events, calls and balances, retaining sender balances; event_count and move_call_count give counts and omitted reports hidden rows. detail: 'full' removes display limits. For one transaction or more than 50 events, use get_transaction, which pages events to the end.
+Read 1-50 transaction digests in batched calls. Returns sender, status, timing, balance changes, non-coin object transfers and objects created for other owners, Move calls, decoded events and protocols. GraphQL misses are retried through the archive. object_changes_truncated marks an incomplete bounded object read; use get_transaction for that digest. Summary caps displayed rows with counts and omitted retrieval; detail: 'full' removes display caps, not object or event read bounds.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `digests` | array of string (1 to 50 items) | yes | Transaction digests, Base58 (1-50). Duplicates are collapsed. |
-| `detail` | `summary` \| `full` | no | 'summary' (default): events, calls and balances share about 30k characters across the batch. 'full': every fetched row. |
+| `detail` | `summary` \| `full` | no | 'summary' (default): events, calls, balances and object custody share about 30k characters across the batch. 'full': every fetched row, subject to read bounds. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## query_events

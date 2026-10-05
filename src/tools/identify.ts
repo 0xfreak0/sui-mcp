@@ -20,6 +20,7 @@ import { KIOSK_TYPE, resolveKioskCapHolder, unresolvedCapHolderNote } from "../u
 import { bridgeExitCalls, fetchModuleBytes } from "../utils/bridge/carrier.js";
 import { bridgeLabeledObjectsOf } from "../utils/bridge/labeled-package.js";
 import { depositRole } from "../utils/deposit-role.js";
+import { readWalletPackageActivityBounded } from "../utils/wallet-packages.js";
 
 /**
  * The address's label with its provenance, spread into every case's result.
@@ -149,7 +150,7 @@ const BRIDGE_CARRIER_UNREAD =
 export function registerIdentifyTools(server: McpServer) {
   server.tool(
     "identify_address",
-    "(Recommended first step) Classify a Sui address as wallet, package, validator or object before choosing other tools. It adds contextual balance/name, module or stake information. Packages can be identified from bridge labels on their defined objects; bridge_carrier identifies bytecode calls into curated bridge exits. A wallet's first_seen is the oldest transaction GraphQL returns where it sent or was affected, with received coins read across all balance-change pages. first_inflow means it gained coins without sending, including genesis with sender:null; genesis names no funding wallet. If no gain is found in incomplete changes, first_inflow is null. first_seen_unavailable means the first read failed. Use find_funding_sources when the first transaction was not funding.",
+    "(Recommended first step) Classify a Sui address as wallet, package, validator or object before choosing other tools. A wallet includes package_activity: publish/upgrade transactions it sent in the first 20 sent transactions, with next_call to continue the scan. It adds contextual balance/name, module or stake information. Packages can be identified from bridge labels on their defined objects; bridge_carrier identifies bytecode calls into curated bridge exits. A wallet's first_seen is the oldest transaction GraphQL returns where it sent or was affected, with received coins read across all balance-change pages. first_inflow means it gained coins without sending, including genesis with sender:null; genesis names no funding wallet. If no gain is found in incomplete changes, first_inflow is null. first_seen_unavailable means the first read failed. Use find_funding_sources when the first transaction was only a token airdrop.",
     {
       address: addressArg().describe("Sui address or object ID (0x...)"),
     },
@@ -368,7 +369,7 @@ export function registerIdentifyTools(server: McpServer) {
       }
 
       // CASE 4: Treat as a wallet address — fetch summary data in parallel
-      const [balanceRes, nameRes, ownedRes, identities, firstSeenRes] = await Promise.all([
+      const [balanceRes, nameRes, ownedRes, identities, firstSeenRes, packageActivity] = await Promise.all([
         // Each read reports its own failure: a failed balance read is not a
         // zero balance, and a failed name lookup is not the absence of a name.
         sui.getBalance({ owner: address }).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
@@ -399,6 +400,7 @@ export function registerIdentifyTools(server: McpServer) {
         // How old the address is, so "is this address fresh" needs no
         // history call. A failed read is reported, never shown as no history.
         readFirstSeen(address).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
+        readWalletPackageActivityBounded(address).catch((err: unknown) => ({ failed: describeError(err, getNetwork()) })),
       ]);
 
       const balanceFailed = "failed" in balanceRes ? balanceRes.failed : null;
@@ -475,6 +477,13 @@ export function registerIdentifyTools(server: McpServer) {
               : firstSeen
                 ? {}
                 : { first_seen_note: "The GraphQL service returns no transaction with this address as sender or affected party." }),
+            package_activity: "failed" in packageActivity ? null : packageActivity,
+            ...("failed" in packageActivity
+              ? {
+                package_activity_unavailable: `The package publication scan failed (${packageActivity.failed}), so whether this wallet published or upgraded packages is unknown.`,
+                package_activity_next_call: { tool: "get_wallet_packages", args: { address } },
+              }
+              : {}),
             // Absent means this address has never SENT a transaction, so it
             // has produced no signature to read. That is not the same as an
             // ordinary single-key wallet, and the caveat says so rather than

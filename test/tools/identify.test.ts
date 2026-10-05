@@ -417,6 +417,79 @@ describe("identify_address error handling", () => {
     expect(data.token_count_unavailable).toBeDefined();
   });
 
+  it("lists the packages a wallet published in package_activity", async () => {
+    const WALLET = `0x${"b".repeat(64)}`;
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockSui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "0" } });
+    mockSui.nameService.reverseLookupName.mockResolvedValue({ response: {} });
+    mockSui.listBalances.mockResolvedValue({ balances: [] });
+    mockSui.movePackageService.getPackage.mockResolvedValue({ response: { package: { originalId: "0xpkg", version: 1n } } });
+    mockGqlQuery.mockImplementation(async (q: string, variables?: { digest?: string }) => {
+      if (q.includes("validatorSet")) {
+        return { epoch: { validatorSet: { activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } };
+      }
+      if (q.includes("sentAddress: $address")) {
+        return {
+          transactions: {
+            nodes: [{
+              digest: "pubtx",
+              effects: { timestamp: "2024-07-26T10:32:18Z" },
+              kind: {
+                __typename: "ProgrammableTransaction",
+                commands: { nodes: [{ __typename: "PublishCommand" }], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        };
+      }
+      if (variables?.digest === "pubtx") {
+        return {
+          transaction: {
+            effects: {
+              status: "SUCCESS",
+              objectChanges: {
+                nodes: [{ idCreated: true, outputState: { asMovePackage: { address: "0xpkg" } } }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        };
+      }
+      return {};
+    });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: WALLET })).content[0].text);
+    expect(data.type).toBe("wallet");
+    expect(data.package_activity.packages).toEqual([
+      expect.objectContaining({ package_id: "0xpkg", root_package_id: "0xpkg", action: "published", transaction_digest: "pubtx" }),
+    ]);
+    expect(data.package_activity.scan.complete).toBe(true);
+    expect(data.package_activity_unavailable).toBeUndefined();
+    expect(data.package_activity_next_call).toBeUndefined();
+  });
+
+  it("reports a failed package scan as unknown with the call that retries it", async () => {
+    const WALLET = `0x${"b".repeat(64)}`;
+    mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
+    mockSui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "0" } });
+    mockSui.nameService.reverseLookupName.mockResolvedValue({ response: {} });
+    mockSui.listBalances.mockResolvedValue({ balances: [] });
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (q.includes("validatorSet")) {
+        return { epoch: { validatorSet: { activeValidators: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } };
+      }
+      if (q.includes("sentAddress: $address")) throw new Error("GraphQL request failed (503)");
+      return {};
+    });
+
+    const data = JSON.parse((await tools.get("identify_address")!({ address: WALLET })).content[0].text);
+    expect(data.type).toBe("wallet");
+    expect(data.package_activity).toBeNull();
+    expect(data.package_activity_unavailable).toMatch(/package publication scan failed .*503.*unknown/);
+    expect(data.package_activity_next_call).toEqual({ tool: "get_wallet_packages", args: { address: WALLET } });
+  });
+
   it("does not flag a name lookup that found no name", async () => {
     mockSui.ledgerService.getObject.mockRejectedValue(notFoundError());
     mockGqlQuery.mockResolvedValue({

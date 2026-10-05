@@ -354,6 +354,14 @@ finding; a random 3+3 collision in a wide payout is kept the same way.
   upgrade that created the version you passed. That is who pushed that code,
   which is the question to ask of an exploited version. The UpgradeCap's
   holder is judged against the root publisher.
+- **A wallet's published code is a paged history read.** `identify_address`
+  and `get_wallet_overview` list package versions in transactions sent from the
+  wallet in its first 20 sent transactions under `package_activity`. A slow
+  optional scan returns `package_activity_next_call` for the unbounded
+  `get_wallet_packages` tool. Follow `scan.next_call` across pages;
+  `scan.complete` requires every page to have no unread transaction. The
+  signer may have been an alias, and sending a publish transaction does not
+  establish who holds the UpgradeCap now.
 - **A party-held cap is held, not shared.** Owner `consensus` is a party
   object: one address owns it and only that address can use it.
 - **`holder_status` on the UpgradeCap** answers whether the code can still

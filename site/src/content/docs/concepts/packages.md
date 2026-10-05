@@ -40,6 +40,19 @@ departing caps did. A cap sent to an unspendable address (0x0,
 0x2…) reads the same way even when the object itself still exists: nobody
 holds a key for it, so the risk it once carried is gone.
 
+## Packages published by a wallet
+
+`identify_address` and `get_wallet_overview` show package versions created by
+the wallet's first 20 sent transactions under `package_activity`. The optional
+scan has a short time limit; if `package_activity` is unavailable, use its
+`package_activity_next_call` to run `get_wallet_packages` without that limit.
+Follow `scan.next_call` with its opaque cursor to inspect older sent transactions.
+`scan.complete` is false while pages remain or a transaction on any page
+could not be checked. `incomplete_transactions` names unread digests on this
+page, and `prior_incomplete_transactions` counts unread digests on earlier
+pages. Sending a publish transaction does not prove who holds its UpgradeCap
+now, and an alias may have authorized the sender.
+
 ## Capability audit
 
 The audit is not limited to caps minted at publish. It also walks the

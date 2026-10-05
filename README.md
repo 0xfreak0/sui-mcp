@@ -79,7 +79,7 @@ For people without investigation experience
 - `what_happened_to_my_funds`: whether anyone can still move what is left, how the funds left, where they went, and whom to report to
 - `who_controls_this_token`: who can mint, freeze or upgrade a coin
 - `who_controls_this_protocol`: who can upgrade a protocol's code or use its admin caps
-- `who_is_this_wallet`: what kind of account an address is, its labels, funding and activity
+- `who_is_this_wallet`: what kind of account an address is, its labels, funding, published packages and activity
 
 ## Security
 

@@ -11,6 +11,15 @@
   another provider supplied the quote.
 
 ### Added
+- **Wallet profiles show code the wallet published.** `identify_address`
+  and `get_wallet_overview` list package versions in transactions sent from
+  the wallet on their first page of sent history. `get_wallet_packages`
+  continues through older pages and separates publications from upgrades by lineage;
+  cursors carry earlier unread counts, so a final page cannot claim a complete
+  scan when an earlier transaction was unread. The overview bounds its optional
+  package scan and offers a full follow-up call when it times out. It shows up
+  to 50 recent transactions with a continuation to older activity.
+
 - **Perpsplexity's current contracts are named.** Its upgradeable
   composite-pool lineage, the contracts behind its backed coins (which
   derps.xyz also lists), is curated as Perpsplexity, type `launchpad`,

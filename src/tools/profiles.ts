@@ -45,6 +45,7 @@ export const PROFILES = {
   core: [
     "identify_address",
     "get_wallet_overview",
+    "get_wallet_packages",
     "get_transaction",
     "get_transactions",
     "get_transaction_history",

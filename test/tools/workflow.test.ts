@@ -61,25 +61,56 @@ describe("get_wallet_overview recent_transactions", () => {
     mockSui.listOwnedObjects.mockResolvedValue({ objects: [] });
   });
 
-  it("lists the five most recent transactions, newest first", async () => {
-    // The service answers `first` with the address's oldest transactions and
-    // `last` with its newest, each page ascending.
-    const page = (days: number[]) =>
-      days.map((d) => ({ digest: `day${d}`, effects: { status: "SUCCESS", timestamp: `2025-11-${String(d).padStart(2, "0")}T00:00:00Z` } }));
-    mockGqlQuery.mockImplementation(async (q: string) => ({
-      address: { defaultNameRecord: null, balances: { nodes: [], pageInfo: { hasNextPage: false } } },
-      transactions: { nodes: /\blast: \$txFirst/.test(q) ? page([20, 21, 22, 23, 24]) : page([1, 2, 3, 4, 5]) },
-    }));
+  it("shows the 50 newest rows in order and links to older decoded history", async () => {
+    mockGqlQuery.mockImplementation(async (q: string, variables: { txFirst?: number }) => {
+      if (q.includes("sentAddress: $address")) return { transactions: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+      return {
+        address: { defaultNameRecord: null, balances: { nodes: [], pageInfo: { hasNextPage: false } } },
+        transactions: {
+          nodes: /\blast: \$txFirst/.test(q)
+            ? Array.from({ length: variables.txFirst ?? 0 }, (_, n) => ({ digest: `tx${n + 3}`, effects: { status: "SUCCESS" } }))
+            : [{ digest: "tx1", effects: { status: "SUCCESS" } }],
+          pageInfo: { hasPreviousPage: true, startCursor: "earlier" },
+        },
+      };
+    });
 
-    const result = await tools.get("get_wallet_overview")!({ address: `0x${"a".repeat(64)}` });
+    const address = `0x${"a".repeat(64)}`;
+    const result = await tools.get("get_wallet_overview")!({ address });
     const data = JSON.parse(result.content[0].text);
-
-    expect(data.recent_transactions.map((t: { digest: string }) => t.digest)).toEqual([
-      "day24",
-      "day23",
-      "day22",
-      "day21",
-      "day20",
-    ]);
+    expect(data.recent_transactions.map((t: { digest: string }) => t.digest)).toEqual(Array.from({ length: 50 }, (_, n) => `tx${52 - n}`));
+    expect(data.recent_transactions_truncated).toBe(true);
+    expect(data.recent_transactions_next_call).toEqual({
+      tool: "get_transaction_history",
+      args: { address, order: "newest", cursor: "earlier" },
+    });
   });
+
+  it("bounds package enrichment and offers the full scan when it stalls", async () => {
+    let aborted = false;
+    mockGqlQuery.mockImplementation(async (q: string, _variables: unknown, options?: { signal?: AbortSignal }) => {
+      if (q.includes("sentAddress: $address")) {
+        const { promise, reject } = Promise.withResolvers<unknown>();
+        options?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(options.signal?.reason);
+        }, { once: true });
+        return promise;
+      }
+      return {
+        address: { defaultNameRecord: null, balances: { nodes: [], pageInfo: { hasNextPage: false } } },
+        transactions: { nodes: [{ digest: "recent" }], pageInfo: { hasPreviousPage: false, startCursor: null } },
+      };
+    });
+
+    const address = `0x${"a".repeat(64)}`;
+    const response = tools.get("get_wallet_overview")!({ address });
+    const data = JSON.parse((await response).content[0].text);
+    expect(data.recent_transactions.map((t: { digest: string }) => t.digest)).toEqual(["recent"]);
+    expect(data.package_activity).toBeNull();
+    expect(data.package_activity_unavailable).toMatch(/exceeded 3000ms/);
+    expect(data.package_activity_next_call).toEqual({ tool: "get_wallet_packages", args: { address } });
+    expect(aborted).toBe(true);
+    // The bound is a real 3-second timer; the default 5-second test timeout leaves too little room on a loaded runner.
+  }, 15_000);
 });

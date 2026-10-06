@@ -172,11 +172,12 @@ function retryingRead<T>(
   const host = url.host;
   const limit = options.rateLimit === undefined ? rateLimitFor(url.hostname) : options.rateLimit;
   const window = limit ? windowFor(url.hostname, limit, options) : null;
-  const wait = options.sleep ?? sleep;
+  const wait = (ms: number, signal?: AbortSignal) => (options.sleep ? options.sleep(ms) : sleep(ms, undefined, { signal }));
   const service = options.service ?? "GraphQL";
 
   return async (input, init) => {
     for (let attempt = 1; ; attempt++) {
+      init?.signal?.throwIfAborted();
       const last = attempt >= options.attempts;
       const backoff = Math.min(
         options.maxDelayMs,
@@ -186,7 +187,9 @@ function retryingRead<T>(
       await limiter.acquire();
       let response: Response;
       try {
+        init?.signal?.throwIfAborted();
         if (window) await window.acquire();
+        init?.signal?.throwIfAborted();
         const timeout = AbortSignal.timeout(options.timeoutMs);
         const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
         response = await globalThis.fetch(input, { ...init, signal });
@@ -197,7 +200,7 @@ function retryingRead<T>(
         const code = errorCode(err);
         if ((!code || !RETRYABLE_CODES.has(code)) && !(err instanceof TypeError)) throw err;
         if (last) throw new Error(`${service} request to ${host} failed (${code ?? "connection error"}); tried ${attempt} times`);
-        await wait(backoff);
+        await wait(backoff, init?.signal ?? undefined);
         continue;
       } finally {
         limiter.release();
@@ -206,14 +209,14 @@ function retryingRead<T>(
       if (!last && (response.status === 429 || response.status >= 500)) {
         const asked = retryAfterMs(response.headers?.get("retry-after") ?? null);
         await response.body?.cancel().catch(() => {});
-        await wait(asked === null ? backoff : Math.min(asked, options.maxDelayMs));
+        await wait(asked === null ? backoff : Math.min(asked, options.maxDelayMs), init?.signal ?? undefined);
         continue;
       }
       try {
         return await read(response);
       } catch (err) {
         if (!(err instanceof RetryableResponseError) || last) throw err;
-        await wait(backoff);
+        await wait(backoff, init?.signal ?? undefined);
       }
     }
   };
@@ -272,15 +275,18 @@ const TRANSIENT_GRAPHQL_ERRORS: ReadonlySet<string> = new Set([
 /** Retries of a query the service failed transiently, after the transport's own. */
 const TRANSIENT_RETRIES = 2;
 
-export async function gqlQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
+export async function gqlQuery<T>(query: string, variables?: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<T> {
   const network = getNetwork();
+  const signal = options?.signal;
   for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
     try {
-      return await getGraphqlClient(network).request<T>(query, variables);
+      return await getGraphqlClient(network).request<T>({ document: query, variables, signal });
     } catch (err) {
+      signal?.throwIfAborted();
       const message = err instanceof ClientError ? err.response.errors?.[0]?.message : undefined;
       if (attempt < TRANSIENT_RETRIES && message !== undefined && TRANSIENT_GRAPHQL_ERRORS.has(message)) {
-        await sleep(GRAPHQL_TRANSPORT.baseDelayMs * 2 ** attempt);
+        await sleep(GRAPHQL_TRANSPORT.baseDelayMs * 2 ** attempt, undefined, { signal });
         continue;
       }
       throw graphqlError(err, getNetworkConfig(network).graphql);

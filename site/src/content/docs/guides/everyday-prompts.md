@@ -27,7 +27,7 @@ user's own orders or positions, keeping evidence and whom to report to.
 | `what_happened_to_my_funds` | optional `address`, `digest`, `network` | Whether anyone else can still move what is left (a leaked key, an address the wallet authorized to act for it), how the funds left (a drainer transaction, a lookalike address, an approval on a website), where they went up to the first exchange deposit address or bridge, and whom to report to with which digests and addresses. When nothing was taken, such as an unwanted coin sent to the wallet or coins sitting in the user's own order, it says so |
 | `who_controls_this_token` | `coin_type`, optional `network` | Who can mint, freeze or upgrade the coin, how concentrated its holders are, which pools trade it, and whether the Sui wallet blocklist lists it |
 | `who_controls_this_protocol` | `protocol` (package ID, MVR name or protocol name), optional `network` | Who can upgrade the code or use the admin caps, how they sign, and what changed recently |
-| `who_is_this_wallet` | `address` (or SuiNS name), optional `network` | What kind of account it is, its labels and their evidence, its funding, activity and exchange deposit behaviour |
+| `who_is_this_wallet` | `address` (or SuiNS name), optional `network` | What kind of account it is, its labels and evidence, its funding, published packages, activity and exchange deposit behaviour |
 
 `was_i_scammed` is the former name of `what_happened_to_my_funds`. It still
 renders the same prompt, with a first line giving the new name, and will be

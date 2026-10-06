@@ -19,6 +19,8 @@ const { registerDecodeTools } = await import("../../src/tools/decode.js");
 const { registerEventTools } = await import("../../src/tools/events.js");
 const { registerAggregateTools } = await import("../../src/tools/aggregate.js");
 const { registerIdentifyTools } = await import("../../src/tools/identify.js");
+const { registerWorkflowTools } = await import("../../src/tools/workflow.js");
+const { registerHistoryTools } = await import("../../src/tools/history.js");
 const { registerStakingTools } = await import("../../src/tools/staking.js");
 const { DEFAULT_NETWORK, getNetwork, runWithNetwork } = await import("../../src/config.js");
 const { readStoredResult } = await import("../../src/utils/output-cap.js");
@@ -39,6 +41,8 @@ registerEventTools(server);
 registerAggregateTools(server);
 registerIdentifyTools(server);
 registerStakingTools(server);
+registerWorkflowTools(server);
+registerHistoryTools(server);
 
 function calls(value: unknown): Call[] {
   if (!value || typeof value !== "object") return [];
@@ -111,6 +115,9 @@ describe("continuations stay on the originating chain", () => {
     { tool: "query_events", args: { sender: OWNER, limit: 1 }, path: "scan.next_call", next: "query_events" },
     { tool: "query_transactions", args: { sender: OWNER, limit: 1 }, path: "scan.next_call", next: "query_transactions" },
     { tool: "aggregate_events", args: { sender: OWNER, max_reads: 1 }, path: "scan.next_call", next: "aggregate_events" },
+    { tool: "get_wallet_packages", args: { address: OWNER }, path: "scan.next_call", next: "get_wallet_packages" },
+    { tool: "get_wallet_overview", args: { address: OWNER }, path: "package_activity.scan.next_call", next: "get_wallet_packages" },
+    { tool: "get_wallet_overview", args: { address: OWNER }, path: "recent_transactions_next_call", next: "get_transaction_history" },
     { tool: "identify_address", args: { address: OWNER }, path: "next_call", next: "get_validators" },
   ])("$tool ($path) preserves testnet when followed", async ({ tool, args, path, next }) => {
     const original = { ...args, network: "testnet" };
@@ -129,6 +136,39 @@ describe("continuations stay on the originating chain", () => {
     reads = [];
     const target = tools.get(expected.tool)!;
     const followed = await target.handler(target.schema.parse(nextArgs));
+    expect(followed.isError, followed.content[0].text).toBeUndefined();
+    expect(new Set(reads)).toEqual(new Set(["testnet"]));
+  });
+
+  it("identify_address (package_activity_next_call) retries a failed package scan on testnet", async () => {
+    const WALLET = `0x${"22".repeat(32)}`;
+    sui.getBalance.mockResolvedValue({ balance: { coinType: "0x2::sui::SUI", balance: "0" } });
+    sui.nameService.reverseLookupName.mockResolvedValue({ response: {} });
+    sui.listBalances.mockResolvedValue({ balances: [] });
+    const answer = query.getMockImplementation()!;
+    let scanFails = true;
+    query.mockImplementation(async (q: string, vars: unknown) => {
+      if (scanFails && String(q).includes("sentAddress: $address")) {
+        reads.push(getNetwork());
+        throw new Error("GraphQL request failed (503)");
+      }
+      return answer(q, vars);
+    });
+    const original = { address: WALLET, network: "testnet" };
+    const registered = tools.get("identify_address")!;
+    const result = await registered.handler(registered.schema.parse(original));
+    expect(result.isError, result.content[0].text).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.type).toBe("wallet");
+    expect(payload.package_activity).toBeNull();
+    expect(payload.package_activity_next_call).toMatchObject({ tool: "get_wallet_packages", args: { address: WALLET } });
+    for (const continuation of calls(payload)) {
+      expect((continuation.args ?? { ...original, ...continuation.repeat_with }).network ?? DEFAULT_NETWORK).toBe("testnet");
+    }
+    scanFails = false;
+    reads = [];
+    const target = tools.get("get_wallet_packages")!;
+    const followed = await target.handler(target.schema.parse(payload.package_activity_next_call.args));
     expect(followed.isError, followed.content[0].text).toBeUndefined();
     expect(new Set(reads)).toEqual(new Set(["testnet"]));
   });

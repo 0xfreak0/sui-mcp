@@ -101,6 +101,7 @@ const BASE = {
   analyze_package: { package_id: NEMO_PKG },
   resolve_name: { address: NEMO },
   get_wallet_overview: { address: NEMO, include_prices: false },
+  get_wallet_packages: { address: NEMO },
   get_token_prices: { coin_types: [SUI] },
   get_defi_positions: { address: NEMO },
   list_nfts: { address: NEMO, limit: 1 },

@@ -76,6 +76,29 @@ describe("get_wallet_overview positions", () => {
     expect(data.holdings.find((h: { coin_type: string }) => h.coin_type === LST).value_counted_in).toBe("positions");
   });
 
+  it("excludes an unpriced coin without claiming a complete portfolio total", async () => {
+    const UNPRICED = `0x${"a".repeat(64)}::dust::DUST`;
+    const query = mockGqlQuery.getMockImplementation();
+    mockGqlQuery.mockImplementation(async (...args: Parameters<NonNullable<typeof query>>) => {
+      const response = structuredClone(await query!(...args));
+      if (response?.address?.balances?.nodes) {
+        response.address.balances.nodes.push({
+          coinType: { repr: UNPRICED },
+          totalBalance: "9000000000",
+          coinBalance: "9000000000",
+          addressBalance: "0",
+        });
+      }
+      return response;
+    });
+    const data = await overview();
+    expect(data.coins_value_usd).toBe(6);
+    expect(data.total_value_usd).toBe(20.2);
+    expect(data.unpriced_holdings).toBe(1);
+    expect(data.holdings.find((h: { coin_type: string }) => h.coin_type === UNPRICED).value_usd).toBeNull();
+    expect(data.total_value_note).toContain("Treat this as a floor");
+  });
+
   it("keeps NFT estimates out of the total", async () => {
     const data = await overview();
     expect(data.nft_estimate_usd).toBe(50);

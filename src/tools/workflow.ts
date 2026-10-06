@@ -16,6 +16,7 @@ import { heldWalk } from "../utils/valuers/held-balances.js";
 import { ownedCoverage, type OwnedCoverage } from "../utils/owned-coverage.js";
 import { operatedLeadRow, operatedSharedObjects } from "../utils/operated-objects.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readWalletPackageActivity, readWalletPackageActivityBounded } from "../utils/wallet-packages.js";
 
 /** GraphQL's largest page of balances. */
 const BALANCE_PAGE = 50;
@@ -39,6 +40,7 @@ const FIRST_QUERY = `query($address: SuiAddress!, $first: Int, $txFirst: Int) {
     }
   }
   transactions(filter: { affectedAddress: $address }, last: $txFirst) {
+        pageInfo { hasPreviousPage startCursor }
     nodes { digest sender { address } effects { status timestamp } }
   }
 }`;
@@ -57,7 +59,7 @@ const asError = (err: unknown): Error => (err instanceof Error ? err : new Error
 export function registerWorkflowTools(server: McpServer) {
   server.tool(
     "get_wallet_overview",
-    "(Recommended first tool for wallets) Overview of a Sui wallet: every coin balance, SuiNS name, staked SUI and kiosk counts, and recent transactions. include_prices adds USD values, coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances inside owned objects), each totalled apart. `coverage` says which owned objects the total covers and lists unrecognised types with counts; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. include_nfts adds NFT estimates, kept out of the total.",
+    "(Recommended first tool for wallets) Overview of a Sui wallet: every coin balance, SuiNS name, staked SUI and kiosk counts, 50 newest transactions with an older-history continuation, and a time-bounded scan of package versions it published or upgraded in the first 20 sent transactions (`package_activity.scan.next_call` continues; `package_activity_next_call` retries if unavailable). include_prices adds USD values, coins ranked by value, and DeFi positions (staked SUI with rewards, liquid staking, liquidity, lending, and balances inside owned objects), each totalled apart. `coverage` says which owned objects the total covers and lists unrecognised types with counts; `leads` names lending positions near their borrow limit and shared vaults the wallet operates, with what they hold. include_nfts adds NFT estimates, kept out of the total.",
     {
       address: addressArg().describe("Wallet address (0x...)"),
       include_prices: boolArg()
@@ -72,15 +74,16 @@ export function registerWorkflowTools(server: McpServer) {
         .describe("'summary' (default): holdings and unrecognised object types that fit about 12k characters each, the rest in `omitted`. 'full': every row."),
     },
     async ({ address, include_prices, include_nfts, detail }) => {
-      const [gqlResult, stakedResult, kioskResult] = await Promise.all([
+      const [gqlResult, stakedResult, kioskResult, packageActivity] = await Promise.all([
         // A failed read is an error, never an empty wallet: `holdings: []`
         // and no transactions is exactly what a real unused address returns.
         gqlQuery<{
           address: { defaultNameRecord: { domain: string } | null; balances: BalancePage } | null;
-          transactions: { nodes: Array<{ digest: string; sender?: { address: string }; effects?: { status: string; timestamp?: string } }> };
-        }>(FIRST_QUERY, { address, first: BALANCE_PAGE, txFirst: 5 }).catch(asError),
+          transactions: { nodes: Array<{ digest: string; sender?: { address: string }; effects?: { status: string; timestamp?: string } }>; pageInfo?: { hasPreviousPage: boolean; startCursor: string | null } };
+        }>(FIRST_QUERY, { address, first: BALANCE_PAGE, txFirst: 50 }).catch(asError),
         countOwned(address, STAKED_SUI_TYPE, MAX_STAKES_COUNTED).catch(asError),
         discoverKiosks(address).catch(asError),
+        readWalletPackageActivityBounded(address).catch(asError),
       ]);
 
       if (gqlResult instanceof Error) {
@@ -188,9 +191,8 @@ export function registerWorkflowTools(server: McpServer) {
       // Most valuable first, unpriced last.
       if (include_prices) holdings.sort((a, b) => ((b.value_usd as number | null) ?? -1) - ((a.value_usd as number | null) ?? -1));
 
-      // `last` returns the five newest in ascending order; reversed so the
-      // first row is the most recent. `first` would return the address's
-      // five OLDEST transactions under a field named "recent".
+      // `last` returns the 50 newest in ascending order; reverse for display.
+      // A full page is not a complete history; pageInfo says whether older rows exist.
       const recentTransactions = [...(gqlResult.transactions?.nodes ?? [])].reverse().map((n) => ({
         digest: n.digest,
         sender: n.sender?.address,
@@ -215,6 +217,11 @@ export function registerWorkflowTools(server: McpServer) {
         ...(stakedResult instanceof Error || stakedResult.complete ? {} : { staked_sui_count_truncated: `Counted up to ${MAX_STAKES_COUNTED}; the count is a floor.` }),
         kiosk_count: kioskResult instanceof Error ? null : kioskResult.length,
         recent_transactions: recentTransactions,
+        package_activity: packageActivity instanceof Error ? null : packageActivity,
+        recent_transactions_truncated: gqlResult.transactions?.pageInfo?.hasPreviousPage === true,
+        ...(gqlResult.transactions?.pageInfo?.hasPreviousPage && gqlResult.transactions.pageInfo.startCursor
+          ? { recent_transactions_next_call: { tool: "get_transaction_history", args: { address, order: "newest", cursor: gqlResult.transactions.pageInfo.startCursor } } }
+          : {}),
       };
       // A failed read is reported as unknown, not as zero.
       if (stakedResult instanceof Error) {
@@ -222,6 +229,10 @@ export function registerWorkflowTools(server: McpServer) {
       }
       if (kioskResult instanceof Error) {
         result.kiosk_unavailable = `The kiosk read failed (${describeError(kioskResult, getNetwork())}), so whether this wallet owns kiosks is unknown.`;
+      }
+      if (packageActivity instanceof Error) {
+        result.package_activity_unavailable = `The package publication scan failed (${describeError(packageActivity, getNetwork())}); whether this wallet published or upgraded packages is unknown.`;
+        result.package_activity_next_call = { tool: "get_wallet_packages", args: { address } };
       }
 
       if (include_prices) {
@@ -326,6 +337,21 @@ export function registerWorkflowTools(server: McpServer) {
         { full: detail === "full", next_call: { tool: "get_wallet_overview", repeat_with: { detail: "full" } } },
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
+    },
+  );
+  server.tool(
+    "get_wallet_packages",
+    "List package versions created by publish or upgrade transactions sent from this wallet address. Scans 20 sent transactions per call, oldest first; `scan.complete` is true only when all pages and transactions were read. `scan.next_call` continues with an opaque cursor that carries prior unread counts. `scan.incomplete_transactions` names unread digests on this page and `scan.prior_incomplete_transactions` counts them on earlier pages. Each package carries its creating transaction, lineage root and version; an alias may have signed for the sender, and the sender is not necessarily the current UpgradeCap holder.",
+    {
+      address: addressArg().describe("Wallet address (0x...)"),
+      cursor: z.string().optional().describe("Opaque cursor from scan.next_call, to scan the next 20 sent transactions."),
+    },
+    async ({ address, cursor }) => {
+      try {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ address, ...(await readWalletPackageActivity(address, cursor)) }) }] };
+      } catch (err) {
+        return errorResult(`Could not scan the sent transactions of ${address}: ${describeError(err, getNetwork())}. This is not evidence the address published no packages.`);
+      }
     },
   );
 }

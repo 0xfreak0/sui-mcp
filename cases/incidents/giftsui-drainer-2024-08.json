@@ -297,6 +297,18 @@
       "basis": "On chain 661kmJN5 transferred two StakedSui to 0x2a6f4852; get_transaction and get_transactions list their owner change under object_transfers."
     },
     {
+      "id": "publisher-wallet-packages",
+      "question": "Which packages did the wallet that sent the drainer's publish transaction also publish?",
+      "tool": "get_wallet_packages",
+      "args": { "address": "{publisher}" },
+      "expect": [
+        { "path": "packages[*].package_id", "op": "includes", "value": "{lure_package}" },
+        { "path": "packages[*].transaction_digest", "op": "includes", "value": "HP5xLcH6kgDj3PYH8Di9uoqfAme33aj3VBVcHgwNf9Ja" }
+      ],
+      "tier": "chain-derived",
+      "basis": "On chain HP5xLcH6 is a transaction sent by this wallet that created 0x3f29377b, before the same address published the drainer package."
+    },
+    {
       "id": "lure-package-same-publisher",
       "question": "Who published the GiftSui voucher NFTs, and is the type a known scam object?",
       "tool": "analyze_package",

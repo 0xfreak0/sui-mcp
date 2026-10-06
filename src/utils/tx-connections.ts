@@ -1,5 +1,6 @@
 import { gqlQuery } from "../clients/graphql.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "./gql-adapters.js";
+import type { GqlObjectChange } from "./object-flow.js";
 
 /**
  * A transaction's balance changes and commands are GraphQL connections, and a
@@ -11,8 +12,8 @@ import type { GqlBalanceChangeNode, GqlCommandNode } from "./gql-adapters.js";
  * with 202 balance changes read as 20, and the sender's debit, which sorts
  * past row 20, was missing entirely. Every read that draws a conclusion from
  * these lists selects them through the constants below and completes them with
- * `completeTxConnections` (a page of transactions) or the two `readAll*`
- * helpers (one transaction).
+ * `completeTxConnections` (a page of transactions) or the `readAll*` helpers
+ * (one transaction).
  *
  * Completion pages the same connection by digest. A transaction under 50 rows
  * costs nothing extra. A continuation read that fails leaves `truncated` set,
@@ -41,6 +42,13 @@ export interface CompletedConnection<T> {
 const BALANCE_CHANGE_PAGE = "pageInfo { hasNextPage endCursor } nodes { coinType { repr } amount owner { address } }";
 const COMMAND_PAGE =
   "pageInfo { hasNextPage endCursor } nodes { __typename ... on MoveCallCommand { function { name module { name package { address } } } } }";
+const OWNER_SELECTION =
+  "owner { __typename ... on AddressOwner { address { address } } ... on ObjectOwner { address { address } } ... on ConsensusAddressOwner { address { address } } }";
+const OBJECT_STATE = `asMoveObject { contents { type { repr } } } ${OWNER_SELECTION}`;
+
+/** The page and node selection of `effects.objectChanges`, as `readObjectMovements` reads it. */
+export const OBJECT_CHANGE_PAGE =
+  `pageInfo { hasNextPage endCursor } nodes { address idCreated idDeleted inputState { ${OBJECT_STATE} } outputState { ${OBJECT_STATE} } }`;
 
 /** Select inside `effects { }`. */
 export const BALANCE_CHANGES_SELECTION = `balanceChanges(first: ${NESTED_PAGE_SIZE}) { ${BALANCE_CHANGE_PAGE} }`;
@@ -59,12 +67,22 @@ const MORE_COMMANDS = `query ($digest: String!, $after: String) {
   } }
 }`;
 
+const MORE_OBJECT_CHANGES = `query ($digest: String!, $after: String) {
+  transaction(digest: $digest) { effects { objectChanges(first: ${NESTED_PAGE_SIZE}, after: $after) { ${OBJECT_CHANGE_PAGE} } } }
+}`;
+
 /**
  * Page cap per connection. A PTB holds at most 1,024 commands, so this is a
  * guard against a cursor that never advances, not a budget a real transaction
  * reaches.
  */
 const MAX_PAGES = 100;
+
+/**
+ * Page cap for a transaction's object changes. The connection is ordered by
+ * object id, not importance; a caller reaching the cap states it.
+ */
+export const OBJECT_CHANGE_PAGES = 5;
 
 /** Continuation reads in flight at once across a page of transactions. */
 const CONCURRENCY = 4;
@@ -77,11 +95,16 @@ interface MoreCommands {
   transaction: { kind: { commands?: GqlConnection<GqlCommandNode> | null } | null } | null;
 }
 
+interface MoreObjectChanges {
+  transaction: { effects: { objectChanges?: GqlConnection<GqlObjectChange> | null } | null } | null;
+}
+
 async function drain<T, R>(
   digest: string,
   first: GqlConnection<T> | null | undefined,
   query: string,
   pick: (r: R) => GqlConnection<T> | null | undefined,
+  maxPages = MAX_PAGES,
 ): Promise<CompletedConnection<T>> {
   const nodes = [...(first?.nodes ?? [])];
   // `more` and `cursor` are tracked apart: a connection can claim another page
@@ -90,11 +113,12 @@ async function drain<T, R>(
   let cursor = more ? first?.pageInfo?.endCursor : undefined;
   let pages = 1;
   let reads = 0;
-  while (more && cursor && pages < MAX_PAGES) {
+  while (more && cursor && pages < maxPages) {
     reads++;
     const next = await gqlQuery<R>(query, { digest, after: cursor }).catch(() => null);
     const conn = next ? pick(next) : null;
-    if (!conn) break;
+    // A failed or malformed follow-up is not an empty one: `more` stays set.
+    if (!conn || !Array.isArray(conn.nodes)) break;
     nodes.push(...conn.nodes);
     pages++;
     more = conn.pageInfo?.hasNextPage === true;
@@ -117,6 +141,23 @@ export function readAllCommands(
   first: GqlConnection<GqlCommandNode> | null | undefined,
 ): Promise<CompletedConnection<GqlCommandNode>> {
   return drain(digest, first, MORE_COMMANDS, (r: MoreCommands) => r.transaction?.kind?.commands);
+}
+
+/**
+ * A transaction's object changes, starting from the page already read, up to
+ * `OBJECT_CHANGE_PAGES` pages.
+ */
+export function readAllObjectChanges(
+  digest: string,
+  first: GqlConnection<GqlObjectChange> | null | undefined,
+): Promise<CompletedConnection<GqlObjectChange>> {
+  return drain(
+    digest,
+    first,
+    MORE_OBJECT_CHANGES,
+    (r: MoreObjectChanges) => r.transaction?.effects?.objectChanges,
+    OBJECT_CHANGE_PAGES,
+  );
 }
 
 export interface TxConnections {

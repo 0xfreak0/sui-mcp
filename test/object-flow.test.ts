@@ -164,6 +164,14 @@ describe("pre-2024 effects do not record the input owner", () => {
     expect(m!.note).toMatch(/did not record who held this/i);
     expect(m!.from).toBeNull();
   });
+
+  it("reads a change with no state on either side as an unrecorded wrap, not a transfer", () => {
+    const [m] = readObjectMovements([
+      { address: "0xwrapped", idCreated: false, idDeleted: false, inputState: null, outputState: null },
+    ]);
+    expect(m).toMatchObject({ kind: "wrapped", from: null, to: null, source_unrecorded: true });
+    expect(custodyChanges([m!])).toEqual([]);
+  });
 });
 
 describe("renouncing is not handing over", () => {

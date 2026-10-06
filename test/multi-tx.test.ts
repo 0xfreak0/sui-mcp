@@ -50,13 +50,17 @@ beforeEach(() => {
 });
 
 describe("fetchTransactions", () => {
-  it("reads many digests in ONE request", async () => {
-    // Read one at a time, each digest costs a round trip and a model turn;
-    // the batch reads them all in one request.
-    mockGqlQuery.mockResolvedValue({ multiGetTransactions: [tx(D1), tx(D2)] });
+  it("reads ordinary digests in two batched requests, not one per digest", async () => {
+    mockGqlQuery.mockImplementation(async (query: string) =>
+      query.includes("objectChanges")
+        ? { multiGetTransactions: [D1, D2].map(() => ({ effects: { objectChanges: { nodes: [], pageInfo: { hasNextPage: false } } } })) }
+        : { multiGetTransactions: [tx(D1), tx(D2)] },
+    );
     const r = await fetchTransactions([D1, D2], 0);
-    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+    expect(mockGqlQuery.mock.calls[1][1].keys).toEqual([D1, D2]);
     expect(r.found.map((t) => t.digest)).toEqual([D1, D2]);
+    expect(r.found.every((t) => !t.object_changes_truncated)).toBe(true);
   });
 
   it("carries decoded event fields and Move call targets", async () => {
@@ -238,6 +242,56 @@ describe("fetchTransactions", () => {
     expect(r.found[0].balance_changes_truncated).toBeUndefined();
   });
 
+  it("reads later object pages without declaring a short page complete", async () => {
+    const change = {
+      address: "0xstake", inputState: { owner: { __typename: "AddressOwner", address: { address: "0xsender" } } },
+      outputState: {
+        owner: { __typename: "ObjectOwner", address: { address: "0xkiosk" } },
+        asMoveObject: { contents: { type: { repr: "0x3::staking_pool::StakedSui" } } },
+      },
+    };
+    const first = { nodes: Array.from({ length: 50 }, () => change), pageInfo: { hasNextPage: true, endCursor: "page1" } };
+    mockGqlQuery.mockImplementation(async (query: string, variables: { after?: string }) => {
+      if (query.includes("transaction(digest:")) {
+        expect(variables.after).toBe("page1");
+        return { transaction: { effects: { objectChanges: { nodes: [change], pageInfo: { hasNextPage: false } } } } };
+      }
+      if (query.includes("objectChanges")) return { multiGetTransactions: [{ effects: { objectChanges: first } }] };
+      return { multiGetTransactions: [{ ...tx(D1), effects: { ...tx(D1).effects, balanceChanges: { nodes: [] } } }] };
+    });
+    const r = await fetchTransactions([D1], 0);
+    expect(r.found[0].balance_changes).toEqual([]);
+    expect(r.found[0].object_changes).toEqual({ gql: [...first.nodes, change] });
+    expect(r.found[0].object_changes_truncated).toBeUndefined();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(3);
+  });
+
+  it("flags a missing cursor and a failed object batch rather than asserting zero custody", async () => {
+    mockGqlQuery.mockImplementation(async (query: string) =>
+      query.includes("objectChanges")
+        ? { multiGetTransactions: [{ effects: { objectChanges: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } } } }] }
+        : { multiGetTransactions: [tx(D1)] },
+    );
+    expect((await fetchTransactions([D1], 0)).found[0].object_changes_truncated).toBe(true);
+    mockGqlQuery.mockImplementation(async (query: string) => {
+      if (query.includes("objectChanges")) throw new Error("Object read unavailable");
+      return { multiGetTransactions: [tx(D1)] };
+    });
+    expect((await fetchTransactions([D1], 0)).found[0].object_changes_truncated).toBe(true);
+  });
+
+  it("flags the five-page object bound when another page exists", async () => {
+    mockGqlQuery.mockImplementation(async (query: string) => {
+      const conn = { nodes: [{ address: "0xobject" }], pageInfo: { hasNextPage: true, endCursor: "next" } };
+      if (query.includes("transaction(digest:")) return { transaction: { effects: { objectChanges: conn } } };
+      if (query.includes("objectChanges")) return { multiGetTransactions: [{ effects: { objectChanges: conn } }] };
+      return { multiGetTransactions: [tx(D1)] };
+    });
+    const r = await fetchTransactions([D1], 0);
+    expect(r.found[0].object_changes).toEqual({ gql: Array(5).fill({ address: "0xobject" }) });
+    expect(r.found[0].object_changes_truncated).toBe(true);
+    expect(mockGqlQuery).toHaveBeenCalledTimes(6);
+  });
   it("makes no request when nothing survives validation", async () => {
     const r = await fetchTransactions(["nope!"], 0);
     expect(mockGqlQuery).not.toHaveBeenCalled();
@@ -276,6 +330,23 @@ describe("archive fallback scope", () => {
     const r = await fetchTransactions([D1,D2]);
     expect(r.found.map(t=>t.digest)).toEqual([D2]);
     expect(r.not_found).toEqual([D1]);
+  });
+
+  it("keeps complete changed-object effects on the archive fallback", async () => {
+    mockGqlQuery.mockResolvedValue({ multiGetTransactions: [null] });
+    const changed = {
+      objectId: "0xstake", objectType: "0x3::staking_pool::StakedSui",
+      inputState: 2, outputState: 2, inputOwner: { kind: 1, address: "0xsender" },
+      outputOwner: { kind: 2, address: "0xkiosk" },
+    };
+    mockArchive.mockResolvedValue({
+      transaction: { ...grpcTx(D1).transaction, effects: { changedObjects: [changed] } },
+    });
+    const r = await fetchTransactions([D1]);
+    expect(r.found[0].object_changes).toEqual({ grpc: [changed] });
+    expect(r.found[0].object_changes_truncated).toBeUndefined();
+    expect(mockArchive.mock.calls[0][0].readMask.paths).toContain("effects");
+    expect(mockGqlQuery).toHaveBeenCalledTimes(1);
   });
 
   it("a GraphQL failure falls back to the archive for EVERY digest", async () => {

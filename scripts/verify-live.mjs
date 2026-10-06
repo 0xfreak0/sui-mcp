@@ -76,6 +76,10 @@ if (rangeArg && tier !== "affected") {
   console.error("--range goes with --tier affected");
   process.exit(2);
 }
+if (tier === "full" && Number(jobs ?? 1) > 1) {
+  console.error("Full live verification must run with --jobs 1: public GraphQL and price providers throttle concurrent case checks.");
+  process.exit(2);
+}
 
 if (!existsSync(join(root, "dist/index.js"))) {
   console.error("dist/ is missing — run `npm run build` first. These checks drive the built tools.");

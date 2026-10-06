@@ -240,10 +240,10 @@
       "args": { "address": "{operator}", "max_transactions": 1000 },
       "expect": [
         { "path": "sponsor_shape", "op": "equals", "value": "operator" },
-        { "path": "sponsored_and_paid_count", "op": "gte", "value": 300 }
+        { "path": "sponsored_and_paid_count", "op": "gte", "value": 50 }
       ],
       "tier": "heuristic",
-      "basis": "Chain: in the operator's last 1,000 transactions it paid gas for 377 addresses and sent a coin to all 377 of them (D2sWimff and 9FuGZMtL are two such seeds, 132ZLNFk a sponsored dust send)."
+      "basis": "Chain: in the operator's newest 1,000 transactions it pays gas for and sends coins to service-scale numbers of addresses; the exact count shifts as that window advances. D2sWimff and 9FuGZMtL seed two of those wallets, and 132ZLNFk is a sponsored dust send."
     },
     {
       "id": "real-recipient-forwarding",

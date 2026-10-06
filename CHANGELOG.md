@@ -9,6 +9,10 @@
   stops asking it. The pricing block names the provider as unavailable,
   distinct from a coin that is not listed or a date out of range, even when
   another provider supplied the quote.
+- **Full live checks stay within public provider limits.** Release verification
+  runs cases serially, retries transient transaction-content and gRPC overload
+  errors in detector reads, and checks the operator's moving-window sponsorship
+  at service scale rather than against a fixed count.
 
 ### Added
 - **Perpsplexity's current contracts are named.** Its upgradeable

@@ -30,7 +30,7 @@ export const GROUPS = [
   {
     slug: "starting-points",
     title: "Recommended starting points",
-    tools: ["identify_address", "get_wallet_overview", "get_transaction_history", "analyze_token"],
+    tools: ["identify_address", "get_wallet_overview", "get_wallet_packages", "get_transaction_history", "analyze_token"],
   },
   {
     slug: "chain-and-network",
@@ -172,7 +172,7 @@ const SUMMARY_MAX = 160;
 
 function firstSentence(text) {
   const end = /[.?!](?=\s|$)/g;
-  for (let m; (m = end.exec(text)); ) {
+  for (let m; (m = end.exec(text));) {
     const sentence = text.slice(0, m.index + 1);
     if (!ABBREVIATION.test(sentence)) return sentence;
   }

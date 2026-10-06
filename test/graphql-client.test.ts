@@ -165,6 +165,20 @@ describe("gqlQuery errors", () => {
       "Rate-limited by graphql.mainnet.sui.io (HTTP 429) after 4 attempts. Retry shortly, or set SUI_GRAPHQL_URL to a private endpoint for heavy use.",
     );
   });
+  it("cancels a pending GraphQL request instead of retrying after its caller aborts", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn((_input: unknown, init: RequestInit) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      return promise;
+    });
+    vi.stubGlobal("fetch", fetch);
+    const pending = gqlQuery("query { a }", {}, { signal: controller.signal });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    controller.abort(new Error("wallet profile budget expired"));
+    await expect(pending).rejects.toThrow("wallet profile budget expired");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("request rate window", () => {

@@ -99,7 +99,7 @@ if (!picked.length) {
 }
 
 const server = await startServer({ name: "detector-pass", replay: true });
-const transient = (msg) => /timed out|429|rate|fetch failed|ECONNRESET|503|502|UNAVAILABLE|DEADLINE|Unexpected token/i.test(msg);
+const transient = (msg) => /timed out|429|rate|fetch failed|Failed to fetch transaction contents|too_many_internal_resets|Some resource has been exhausted|ECONNRESET|503|502|UNAVAILABLE|DEADLINE|Unexpected token/i.test(msg);
 
 /** Retry once after a transient failure. Returns `{ value }` or `{ error }`. */
 async function retried(what, fn) {

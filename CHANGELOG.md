@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.27.0 (2026-10-06)
+
+Wallet profiles report packages they published or upgraded, and batched
+transaction reads show non-coin object custody. Historical pricing distinguishes
+provider failures from missing quotes. Perpsplexity's current contracts are named.
 
 ### Fixed
 - **A brief price-provider outage no longer blanks USD.** Historical price

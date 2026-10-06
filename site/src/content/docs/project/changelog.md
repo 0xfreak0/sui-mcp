@@ -5,9 +5,15 @@ description: Every sui-mcp release, newest first, with a summary and links to it
 sidebar:
   order: 3
 ---
-The current release is 1.26.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
+The current release is 1.27.0. Each release below links to its full entry in [CHANGELOG.md](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md), which lists what was added, changed and fixed, and to its GitHub release.
 
 Published versions are on npm as [`sui-analytics-mcp`](https://www.npmjs.com/package/sui-analytics-mcp). To check that an installed tarball was built by the project's CI, see [Verifying a release](/concepts/security/#verifying-a-release).
+
+## 1.27.0 (2026-10-06)
+
+Wallet profiles report packages they published or upgraded, and batched transaction reads show non-coin object custody. Historical pricing distinguishes provider failures from missing quotes. Perpsplexity's current contracts are named.
+
+[Full entry](https://github.com/0xfreak0/sui-mcp/blob/main/CHANGELOG.md#1270-2026-10-06) · [GitHub release](https://github.com/0xfreak0/sui-mcp/releases/tag/v1.27.0)
 
 ## 1.26.0 (2026-10-01)
 

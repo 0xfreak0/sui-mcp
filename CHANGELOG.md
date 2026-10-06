@@ -13,6 +13,10 @@
   runs cases serially, retries transient transaction-content and gRPC overload
   errors in detector reads, and checks the operator's moving-window sponsorship
   at service scale rather than against a fixed count.
+- **Live samples select only the data they need.** The zkLogin candidate scan
+  reads signature schemes without fetching every transaction's rendered effects.
+  The Nemo first-funder check asserts the transaction's payer without pinning
+  a stop determined by the funder's moving activity window.
 
 - **Batch transaction reads report non-coin custody.** `get_transactions`
   returns object transfers and objects created for other owners, including

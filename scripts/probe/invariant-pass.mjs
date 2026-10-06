@@ -397,7 +397,10 @@ async function sample(tip) {
   if (!have("zklogin")) {
     for (let i = 0; i < 30 && !have("zklogin"); i++) {
       const s = randInt(tip - 50_000_000, tip);
-      const d = await gql(CP_QUERY, { s });
+      const d = await gql(
+        `query($s:UInt53){ checkpoint(sequenceNumber:$s){ transactions(first:50){ nodes{ digest signatures{ scheme{ __typename } } } } } }`,
+        { s },
+      );
       const z = pick((d.checkpoint?.transactions?.nodes ?? []).filter((n) => tagsOf(n).has("zklogin")));
       if (z) picked.set(z.digest, `zklogin (checkpoint ${s})`);
     }

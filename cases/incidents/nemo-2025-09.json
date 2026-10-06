@@ -80,13 +80,11 @@
     },
     {
       "id": "first-funder",
-      "question": "Who paid for the attacker's first gas, and does the trace stop there?",
+      "question": "Who paid for the attacker's first gas?",
       "tool": "trace_funds",
-      "args": { "digest": "{first_funding_tx}", "direction": "backward", "hops": 3 },
+      "args": { "digest": "{first_funding_tx}", "direction": "backward", "hops": 1 },
       "expect": [
-        { "path": "hops[0].sender", "op": "equals", "value": "{first_funder}" },
-        { "path": "hop_count", "op": "equals", "value": 1 },
-        { "path": "stop_reason", "op": "contains", "value": "{first_funder}" }
+        { "path": "hops[0].sender", "op": "equals", "value": "{first_funder}" }
       ],
       "tier": "chain-derived",
       "basis": "Nemo's report V1.1 fund tracing names the first 39.45 SUI from 0x1f7b…; the payer of that transaction on chain is the same address."

@@ -1,34 +1,12 @@
 /**
- * Reading many transactions in one request.
+ * Read up to 50 transactions in one GraphQL batch. A second, smaller batched
+ * query reads object changes without adding a network call per ordinary digest.
+ * Missing transactions use the gRPC archive fallback, whose effects include
+ * complete changed-object records.
  *
- * `get_transaction` answers one digest and, for depth, is the right tool: it
- * pages events to completion and decodes commands from gRPC. But an
- * investigation routinely holds a handful of digests at once (the outputs of a
- * fan-out, the evidence on a cluster edge, a set of hops someone wants
- * compared), and reading them one at a time costs a round trip *and a model
- * turn* each. One `multiGetTransactions` request reads them all in a single
- * tool call.
- *
- * One query carries everything needed: sender, status, timing, balance changes,
- * Move call targets, and events with their decoded fields.
- *
- * `multiGetTransactions` reads the fullnode only, and the fullnode prunes
- * continuously. Anything the batch misses is therefore retried one at a time
- * through the same archive path `get_transaction` uses, so the batch tool
- * knows as much as the single tool: the caller reached for it to save round
- * trips, not to accept a worse answer.
- *
- * The archive cannot decode event fields (gRPC carries no parsed JSON and the
- * pruned transaction is gone from GraphQL), so recovered events arrive typed
- * but unparsed, and say so. That is the one thing `get_transaction` also cannot
- * do for a pruned digest, so the two remain equally capable.
- *
- * Events are the one place this trades depth for breadth. The connection is
- * asked for a page and reports whether more exist, rather than being paged to
- * exhaustion for every transaction in a batch, which would put a batch of
- * fifty back into dozens of requests. A transaction with more events says so
- * and names `get_transaction` as the way to read all of them, so the limit is
- * visible rather than a silent truncation.
+ * Connections for commands and balances are completed. Events are a 50-row
+ * page; object changes are read for up to five 50-row pages per transaction.
+ * An incomplete read is flagged so callers can use get_transaction for depth.
  */
 
 import type { GrpcTypes } from "@mysten/sui/grpc";
@@ -46,7 +24,16 @@ import {
   type FailureDetail,
 } from "./formatting.js";
 import { isDigest } from "./digest.js";
-import { BALANCE_CHANGES_SELECTION, COMMANDS_SELECTION, completeTxConnections, type GqlConnection } from "./tx-connections.js";
+import {
+  BALANCE_CHANGES_SELECTION,
+  COMMANDS_SELECTION,
+  completeTxConnections,
+  NESTED_PAGE_SIZE,
+  OBJECT_CHANGE_PAGE,
+  readAllObjectChanges,
+  type GqlConnection,
+} from "./tx-connections.js";
+import type { GqlObjectChange, GrpcChangedObject } from "./object-flow.js";
 import type { GqlBalanceChangeNode, GqlCommandNode } from "./gql-adapters.js";
 
 /**
@@ -63,6 +50,41 @@ export const MAX_DIGESTS = 50;
 
 /** Events fetched per transaction inside a batch. */
 const EVENTS_PER_TX = 50;
+
+/** At most ten object connections per GraphQL document. */
+const OBJECT_BATCH_SIZE = 10;
+
+const OBJECT_BATCH_QUERY = `query($keys: [String!]!) {
+    multiGetTransactions(keys: $keys) {
+        digest effects { objectChanges(first: ${NESTED_PAGE_SIZE}) { ${OBJECT_CHANGE_PAGE} } }
+    }
+}`;
+
+async function objectChangesForBatch(keys: string[]): Promise<Map<string, { nodes: GqlObjectChange[]; truncated: boolean }>> {
+  const results = new Map<string, { nodes: GqlObjectChange[]; truncated: boolean }>();
+  for (let start = 0; start < keys.length; start += OBJECT_BATCH_SIZE) {
+    const chunk = keys.slice(start, start + OBJECT_BATCH_SIZE);
+    let rows: Array<{ effects?: { objectChanges?: GqlConnection<GqlObjectChange> | null } | null } | null> | undefined;
+    try {
+      const response = await gqlQuery<{ multiGetTransactions: typeof rows }>(OBJECT_BATCH_QUERY, { keys: chunk });
+      rows = response.multiGetTransactions;
+    } catch {
+      // A failed batch is unknown, not evidence that these transactions moved no objects.
+    }
+    const read = await Promise.all(chunk.map(async (digest, i) => {
+      const first = rows?.[i]?.effects?.objectChanges;
+      if (!first || !Array.isArray(first.nodes)) return { nodes: [], truncated: true };
+      // A first page that does not say it is the last is not read as complete.
+      const page = first.pageInfo?.hasNextPage === false
+        ? first
+        : { nodes: first.nodes, pageInfo: { hasNextPage: true, endCursor: first.pageInfo?.endCursor } };
+      const all = await readAllObjectChanges(digest, page);
+      return { nodes: all.nodes, truncated: all.truncated };
+    }));
+    chunk.forEach((digest, i) => results.set(digest, read[i]!));
+  }
+  return results;
+}
 
 const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
   multiGetTransactions(keys: $keys) {
@@ -197,6 +219,10 @@ export interface BatchedTx {
   /** `package::module::function` for each Move call, in order. */
   move_calls: string[];
   balance_changes: Array<{ address: string; coin_type: string; amount: string }>;
+  /** Internal chain rows, rendered as custody and creations after protocol prefetch. */
+  object_changes: { gql: GqlObjectChange[] } | { grpc: GrpcChangedObject[] };
+  /** The object read failed, ran out of cursor, or reached its five-page bound. */
+  object_changes_truncated?: boolean;
   event_count: number;
   events: Array<{ type: string | null; parsed: unknown }>;
   /** True for a system transaction — consensus, randomness, checkpoint plumbing. */
@@ -259,6 +285,7 @@ function fromGrpc(res: GrpcTypes.GetTransactionResponse, digest: string): Batche
     balance_changes: (tx.balanceChanges ?? [])
       .filter((b) => b.address && b.amount)
       .map((b) => ({ address: b.address!, coin_type: b.coinType ?? "", amount: b.amount! })),
+    object_changes: { grpc: e?.changedObjects ?? [] },
     event_count: events.length,
     events,
     ...(kind?.data.oneofKind && kind.data.oneofKind !== "programmableTransaction"
@@ -268,7 +295,7 @@ function fromGrpc(res: GrpcTypes.GetTransactionResponse, digest: string): Batche
     ...(events.length > 0
       ? {
           events_note:
-            "Recovered from the archive, where events carry a type but no decoded fields — the parsed values live only in GraphQL, which no longer has this transaction.",
+            "The batch archive path reports event types without decoded fields. Use get_transaction on this digest to read the archive event JSON.",
         }
       : {}),
   };
@@ -348,6 +375,12 @@ export async function fetchTransactions(
     })),
   );
 
+  const objectRows = await objectChangesForBatch(
+    r.multiGetTransactions.flatMap((tx, i) =>
+      tx && (tx.kind?.__typename || tx.effects?.balanceChanges?.nodes?.length || tx.effects?.events?.nodes?.length)
+        ? [keys[i]] : []),
+  );
+
   // Positional: entry i answers key i, and a null means nothing was found for
   // that digest rather than a dropped result.
   r.multiGetTransactions.forEach((tx, i) => {
@@ -404,6 +437,8 @@ export async function fetchTransactions(
           coin_type: b.coinType?.repr ?? "",
           amount: b.amount!,
         })),
+      object_changes: { gql: objectRows.get(keys[i])?.nodes ?? [] },
+      ...(objectRows.get(keys[i])?.truncated ? { object_changes_truncated: true } : {}),
       event_count: events.length,
       events,
       ...(isSystem ? { is_system: true } : {}),

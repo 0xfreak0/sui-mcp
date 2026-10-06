@@ -120,7 +120,7 @@ One query carries sender, status, timing, balance changes, Move call targets and
 events with decoded fields, so protocols are identified from both calls and
 events without a second request.
 
-Two rules:
+Three rules:
 
 - **Digests are decoded before the request.** The server rejects the WHOLE batch
   over one malformed key, so a single typo among fifty returned nothing at all.
@@ -132,10 +132,17 @@ Two rules:
   to the end. Breadth here, depth there, and the boundary is stated rather than
   silently applied. Balance changes and commands are NOT a page here: they are
   completed (below), because protocols and flows are concluded from them.
+- **Object changes are batched separately and bounded.** Up to ten digests
+  share each object-change request, so ordinary batches do not spend a request
+  per transaction. A transaction with more than five pages of 50 changes,
+  a failed continuation or a missing cursor sets `object_changes_truncated`.
+  `object_transfer_count` and `created_for_count` count the rows fetched before
+  display capping; they cannot establish absence of custody when the read is
+  incomplete. `get_transaction` reads complete gRPC effects for that digest.
 
-A null entry is positional: it means that digest returned nothing, which is a
-wrong digest or a pruned transaction and the two are indistinguishable at this
-layer. `get_transaction` falls back to the archive; this does not.
+A null entry is positional: the digest was not available through GraphQL, so
+`get_transactions` retries it through gRPC with archive fallback. After both
+paths miss, `not_found` cannot distinguish a wrong digest from unavailable data.
 
 ## Nested connections are pages
 
@@ -157,9 +164,10 @@ was missing from history, traces, funding and fan-out alike.
   returning null rather than an understated recipient count.
 - **Metered callers charge the follow-ups.** `CompletedTx.reads` counts them;
   `edge-probe.ts` charges them to its `Budget`, `watch-probe.ts` to `requests`.
-- `objectChanges` defaults to 1,024 per page; `trace-read.ts` pages it and
-  `watch-probe.ts` flags `object_changes_truncated`. Events of one transaction
-  are paged by `event-json.ts`.
+- `objectChanges` defaults to 1,024 per page; `tx-connections.ts` pages it
+  for `trace-read.ts` and `get_transactions`, while `watch-probe.ts` flags
+  `object_changes_truncated`. Events of one transaction are paged by
+  `event-json.ts`.
 
 The service also caps a query document at 5,000 bytes, 300 query nodes and 21
 aliased connections, which is why the selections are compact strings and
@@ -3096,6 +3104,9 @@ Seven rules, every one of them a bug that shipped to `main` first:
   reported as `deleted` or `wrapped` (`isDeletion`: effects v1 lists a wrap
   as DELETED with the wrapped marker digest) with `source_unrecorded`. Such a
   wrap names no party, so it is not a custody change.
+  GraphQL can render the same old wrapped change with both states null and
+  neither `idCreated` nor `idDeleted`; it remains `wrapped` with
+  `source_unrecorded`, not a null-to-null custody transfer.
 - **`appeared` is custody ONLY when it lands on a party** — an address, an
   object or a consensus owner. Admitting every `appeared` turned ordinary
   shared-object traffic into custody changes: a live Pyth price update reported

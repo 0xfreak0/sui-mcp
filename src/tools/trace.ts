@@ -27,11 +27,11 @@ import {
   HUB_SCAN_TRANSACTIONS,
   isPassThroughAddress,
   MOVES_PER_NODE,
-  OBJECT_CHANGE_PAGES,
   stopsAsHub,
   type BalanceChangeInfo,
   type FetchedTx,
 } from "../utils/trace-read.js";
+import { OBJECT_CHANGE_PAGES } from "../utils/tx-connections.js";
 import { assignSignerRoles } from "../utils/multisig.js";
 import { measureFanout } from "../utils/fanout.js";
 import {

@@ -294,8 +294,7 @@
         { "path": "transactions[*].object_transfers[*].to.address", "op": "includes", "value": "{collector_1}" }
       ],
       "tier": "chain-derived",
-      "basis": "On chain 661kmJN5 transferred two StakedSui to 0x2a6f4852; get_transaction on the same digest lists them under object_transfers.",
-      "known_defect": "Batch-read limit: get_transactions selects balance changes, calls and events, but no object custody changes, even with detail: full. A zero coin loss cannot rule out a StakedSui or NFT drain. Use get_transaction for object_transfers; see concepts/transactions, Reading a batch of digests."
+      "basis": "On chain 661kmJN5 transferred two StakedSui to 0x2a6f4852; get_transaction and get_transactions list their owner change under object_transfers."
     },
     {
       "id": "lure-package-same-publisher",

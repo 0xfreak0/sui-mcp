@@ -158,8 +158,11 @@ export const FUNDING_METHOD_VERSION = 4;
  * Bump this whenever the shape or the meaning of anything derived in
  * `fetchTx` changes. Same reasoning as FUNDING_METHOD_VERSION, which exists
  * because the answer depends on the dust floors that produced it.
+ *
+ * 4 reads an object change with no state on either side as an unrecorded
+ * wrap. Earlier rows carry it as a transfer between two absent owners.
  */
-export const TX_METHOD_VERSION = 3;
+export const TX_METHOD_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (

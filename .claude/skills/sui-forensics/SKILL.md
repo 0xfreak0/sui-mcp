@@ -933,9 +933,11 @@ unknown, not zero, and not evidence of an empty or unused wallet. Retry before
 drawing anything from it.
 
 Batch digests through `get_transactions` rather than looping
-`get_transaction`. The batch reads coin balance changes, not object custody:
-where an NFT, position or StakedSui could have moved, read `get_transaction`
-→ `object_transfers`.
+`get_transaction`. Check `object_transfers` and `created_for` even when coin
+balances did not change: an NFT, position or StakedSui can move on its own.
+Owner `kind` distinguishes an object or kiosk from a wallet. When
+`object_changes_truncated` is true, read `get_transaction` for the complete
+object changes before concluding that nothing moved.
 
 ## Conclusions to refuse
 

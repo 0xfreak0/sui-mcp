@@ -470,25 +470,37 @@ useful evidence, without a timezone claim.
 
 ## Reading a batch of digests
 
-Use `get_transactions` when you already have several digests, such as fan-out
-results, cluster-edge evidence or hops to compare. One call reads up to 50
-digests instead of a separate `get_transaction` round trip for each; duplicates
-are collapsed. Each result includes sender, status, timing, balance changes,
-ordered Move call targets, events with decoded fields and protocol names
-resolved as in `get_transaction`. Digests that could not be read remain in
-`not_found`.
+Use `get_transactions` for several known digests. It accepts up to 50 and
+collapses duplicates. Each transaction reports sender, status, timing, coin
+balance changes, ordered Move calls, decoded events, protocol names, non-coin
+`object_transfers`, and `created_for` objects delivered to someone other than
+the sender. Object owners carry a `kind` (`address`, `object`, or `consensus`)
+alongside their address; a kiosk-owned NFT is not attributed to a wallet.
+Opened or frozen capabilities can instead have a `shared` or `immutable`
+destination. `created_for` includes only creations for a party, not shared or
+immutable objects. GraphQL misses are retried through the archive.
 
-The default view shares a display budget across each transaction's
-events, calls and balances, keeping the sender's own balance changes.
-`event_count` and `move_call_count` count the rows before display trimming;
-`omitted` describes what was left out. `detail: "full"` removes that display
-limit, not the event-read bound. For one transaction, or any transaction with
-more than 50 events, use `get_transaction` to page events to the end.
+```json
+{"digests":["<digest-1>","<digest-2>"]}
+```
 
-The batch does not read object custody changes, including transfers of NFTs,
-positions or `StakedSui`. `detail: "full"` does not add these reads. Use
-`get_transaction` and its `object_transfers` when value can move without a coin
-balance change; a batch showing no coin loss does not rule out an object drain.
+For a transaction with no coin balance change, the relevant part of the
+response can still be:
+
+```json
+{"balance_changes":[],"object_transfer_count":1,"object_transfers":[{"object_id":"0x<object-id>","type":"collectible::Item","kind":"transferred","from":{"kind":"address","address":"0x<sender>"},"to":{"kind":"address","address":"0x<recipient>"},"category":"asset"}]}
+```
+
+The default view budgets the displayed events, calls, balances and object
+custody across the batch. `event_count`, `move_call_count`,
+`object_transfer_count` and `created_for_count` count rows before display
+trimming; `omitted.next_call` retrieves rows left out of the summary.
+`detail: "full"` removes display limits but not read bounds. Events stop at
+50 per transaction (`events_truncated`); object changes stop after five
+pages of 50 per transaction, and a failed page or missing cursor also sets
+`object_changes_truncated`. Use `get_transaction` on the flagged digest for
+the complete event or object list. A non-coin custody list is conclusive only
+when its object-change read is complete.
 
 ## Totalling incident losses
 

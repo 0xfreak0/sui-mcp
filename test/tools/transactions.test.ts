@@ -823,3 +823,187 @@ describe("get_transactions with no well-formed digest", () => {
     expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 });
+
+describe("get_transactions object custody", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGqlQuery.mockReset();
+  });
+
+  const owner = (kind: string, address: string) => ({ __typename: kind, address: { address } });
+  const state = (kind: string, address: string, type: string) => ({
+    owner: owner(kind, address), asMoveObject: { contents: { type: { repr: type } } },
+  });
+  const stakeType = "0x3::staking_pool::StakedSui";
+  const capType = "0x2::package::UpgradeCap";
+
+  it("names zero-coin object transfers and created-for recipients with owner kinds", async () => {
+    const changes = [
+      {
+        address: "0xstake", inputState: state("AddressOwner", "0xsender", stakeType),
+        outputState: state("ObjectOwner", "0xkiosk", stakeType)
+      },
+      {
+        address: "0xcap", idCreated: true,
+        outputState: state("ConsensusAddressOwner", "0xrecipient", capType)
+      },
+      {
+        address: "0xcoin", inputState: state("AddressOwner", "0xsender", "0x2::coin::Coin<0x2::sui::SUI>"),
+        outputState: state("AddressOwner", "0xrecipient", "0x2::coin::Coin<0x2::sui::SUI>")
+      },
+    ];
+    mockGqlQuery.mockImplementation(async (query: string) => query.includes("objectChanges")
+      ? { multiGetTransactions: [{ effects: { objectChanges: { nodes: changes, pageInfo: { hasNextPage: false } } } }] }
+      : {
+        multiGetTransactions: [{
+          digest: TEST_DIGEST, sender: { address: "0xsender" },
+          kind: { __typename: "ProgrammableTransaction", commands: { nodes: [] } },
+          effects: { status: "SUCCESS", balanceChanges: { nodes: [] }, events: { nodes: [], pageInfo: { hasNextPage: false } } }
+        }]
+      });
+
+    const result = await tools.get("get_transactions")!({ digests: [TEST_DIGEST], detail: "full" });
+    const row = JSON.parse(result.content[0].text).transactions[0];
+    expect(row.balance_changes).toEqual([]);
+    expect(row.object_transfer_count).toBe(1);
+    expect(row.object_transfers[0]).toMatchObject({
+      object_id: "0xstake", from: { kind: "address", address: "0xsender" },
+      to: { kind: "object", address: "0xkiosk" },
+    });
+    expect(row.created_for_count).toBe(1);
+    expect(row.created_for[0]).toMatchObject({
+      object_id: "0xcap", category: "capability",
+      to: { kind: "consensus", address: "0xrecipient" },
+    });
+    expect(row.object_changes_truncated).toBeUndefined();
+    expect(row.object_changes).toBeUndefined();
+    expect(mockGqlQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders complete archive effects as object custody when GraphQL misses", async () => {
+    mockGqlQuery.mockResolvedValue({ multiGetTransactions: [null] });
+    mockSui.ledgerService.getTransaction.mockRejectedValue(new Error("NOT_FOUND"));
+    mockArchive.ledgerService.getTransaction.mockResolvedValue({
+      response: {
+        transaction: {
+          digest: ARCHIVED_DIGEST,
+          transaction: {
+            sender: "0xsender", kind: {
+              data: {
+                oneofKind: "programmableTransaction",
+                programmableTransaction: { commands: [] }
+              }
+            }
+          },
+          effects: {
+            changedObjects: [{
+              objectId: "0xnft", objectType: "0x45::gallery::Artwork",
+              inputState: 2, outputState: 2, inputOwner: { kind: 2, address: "0xoldkiosk" },
+              outputOwner: { kind: 1, address: "0xrecipient" }
+            }]
+          },
+          balanceChanges: [], events: { events: [] },
+        }
+      }
+    });
+    const result = await tools.get("get_transactions")!({ digests: [ARCHIVED_DIGEST], detail: "full" });
+    const row = JSON.parse(result.content[0].text).transactions[0];
+    expect(row.from_archive).toBe(true);
+    expect(row.object_transfer_count).toBe(1);
+    expect(row.object_transfers[0]).toMatchObject({
+      object_id: "0xnft", from: { kind: "object", address: "0xoldkiosk" },
+      to: { kind: "address", address: "0xrecipient" },
+    });
+    expect(row.object_changes_truncated).toBeUndefined();
+    expect(mockArchive.ledgerService.getTransaction).toHaveBeenCalled();
+  });
+  it("counts all fetched custody rows before summary omission and retrieves them in full", async () => {
+    const changes = Array.from({ length: 40 }, (_, i) => ({
+      address: `0xitem${i}`, inputState: state("AddressOwner", "0xsender", "0x45::gallery::Artwork"),
+      outputState: state("AddressOwner", `0xreceiver${i}`, "0x45::gallery::Artwork"),
+    }));
+    mockGqlQuery.mockImplementation(async (query: string) => query.includes("objectChanges")
+      ? { multiGetTransactions: [{ effects: { objectChanges: { nodes: changes, pageInfo: { hasNextPage: false } } } }] }
+      : {
+        multiGetTransactions: [{
+          digest: TEST_DIGEST, sender: { address: "0xsender" },
+          kind: { __typename: "ProgrammableTransaction", commands: { nodes: [] } },
+          effects: { status: "SUCCESS", balanceChanges: { nodes: [] }, events: { nodes: [], pageInfo: { hasNextPage: false } } }
+        }]
+      });
+    const handler = tools.get("get_transactions")!;
+    const summary = JSON.parse((await handler({ digests: [TEST_DIGEST] })).content[0].text);
+    expect(summary.transactions[0].object_transfer_count).toBe(40);
+    expect(summary.transactions[0].object_transfers.length).toBeLessThan(40);
+    expect(summary.omitted.lists["transactions.0.object_transfers"].count).toBeGreaterThan(0);
+    expect(summary.omitted.next_call).toMatchObject({ tool: "get_transactions", repeat_with: { detail: "full" } });
+    const full = JSON.parse((await handler({ digests: [TEST_DIGEST], detail: "full" })).content[0].text);
+    expect(full.transactions[0].object_transfers).toHaveLength(40);
+    expect(full.transactions[0].object_changes_truncated).toBeUndefined();
+  });
+
+  it("does not describe an unread custody page as a complete empty result", async () => {
+    mockGqlQuery.mockImplementation(async (query: string) => query.includes("objectChanges")
+      ? { multiGetTransactions: [{ effects: { objectChanges: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } } } }] }
+      : {
+        multiGetTransactions: [{
+          digest: TEST_DIGEST, sender: { address: "0xsender" },
+          kind: { __typename: "ProgrammableTransaction", commands: { nodes: [] } },
+          effects: { status: "SUCCESS", balanceChanges: { nodes: [] }, events: { nodes: [], pageInfo: { hasNextPage: false } } }
+        }]
+      });
+    const response = await tools.get("get_transactions")!({ digests: [TEST_DIGEST], detail: "full" });
+    const row = JSON.parse(response.content[0].text).transactions[0];
+    expect(row.object_transfer_count).toBe(0);
+    expect(row.object_changes_truncated).toBe(true);
+    expect(row.object_changes_note).toContain("only those read");
+    expect(row.object_changes_note).toContain("get_transaction");
+  });
+
+  const batchWith = (changes: unknown[]) =>
+    mockGqlQuery.mockImplementation(async (query: string) => query.includes("objectChanges")
+      ? { multiGetTransactions: [{ effects: { objectChanges: { nodes: changes, pageInfo: { hasNextPage: false } } } }] }
+      : {
+        multiGetTransactions: [{
+          digest: TEST_DIGEST, sender: { address: "0xsender" },
+          kind: { __typename: "ProgrammableTransaction", commands: { nodes: [] } },
+          effects: { status: "SUCCESS", balanceChanges: { nodes: [] }, events: { nodes: [], pageInfo: { hasNextPage: false } } }
+        }]
+      });
+
+  it("bounds a kiosk sweep in the summary while keeping its capability and reaching every row in full", async () => {
+    const nftType = "0x45::gallery::Artwork";
+    const sweep = Array.from({ length: 300 }, (_, i) => ({
+      address: `0xnft${i}`, inputState: state("ObjectOwner", "0xsellerkiosk", nftType),
+      outputState: state("ObjectOwner", "0xbuyerkiosk", nftType),
+    }));
+    const cap = {
+      address: "0xcap", inputState: state("AddressOwner", "0xsender", capType),
+      outputState: state("AddressOwner", "0xnewholder", capType),
+    };
+    batchWith([...sweep, cap]);
+    const handler = tools.get("get_transactions")!;
+    const text = (await handler({ digests: [TEST_DIGEST] })).content[0].text;
+    const summary = JSON.parse(text);
+    const row = summary.transactions[0];
+    expect(row.object_transfer_count).toBe(301);
+    expect(row.object_transfers.length).toBeLessThan(100);
+    expect(row.object_transfers).toContainEqual(expect.objectContaining({ object_id: "0xcap", category: "capability" }));
+    expect(row.object_transfers[0]).toMatchObject({ from: { kind: "object" }, to: { kind: "object" } });
+    expect(text.length).toBeLessThan(40_000);
+    const omitted = summary.omitted.lists["transactions.0.object_transfers"];
+    expect(omitted.count + row.object_transfers.length).toBe(301);
+    expect(summary.omitted.next_call).toMatchObject({ tool: "get_transactions", repeat_with: { detail: "full" } });
+    const full = JSON.parse((await handler({ digests: [TEST_DIGEST], detail: "full" })).content[0].text);
+    expect(full.transactions[0].object_transfers).toHaveLength(301);
+  });
+
+  it("does not report an old wrap with no state on either side as a transfer", async () => {
+    batchWith([{ address: "0xwrapped", idCreated: false, idDeleted: false, inputState: null, outputState: null }]);
+    const result = await tools.get("get_transactions")!({ digests: [TEST_DIGEST], detail: "full" });
+    const row = JSON.parse(result.content[0].text).transactions[0];
+    expect(row.object_transfer_count).toBe(0);
+    expect(row.object_transfers).toBeUndefined();
+  });
+
+});

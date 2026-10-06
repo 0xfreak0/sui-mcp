@@ -23,6 +23,7 @@ import {
   listObjectChanges,
   mutatedCapabilities,
   readGrpcObjectChanges,
+  readObjectMovements,
   summarizeObjectChanges,
   type ObjectMovement,
 } from "../utils/object-flow.js";
@@ -930,7 +931,7 @@ export function registerTransactionTools(server: McpServer) {
 
   server.tool(
     "get_transactions",
-    "Read 1-50 transaction digests in one call instead of repeated get_transaction calls. Returns sender, status, timing, balance changes, ordered Move targets, decoded event fields and protocols named as in get_transaction. Unread digests appear in not_found. Summary shares about 30k characters across transactions' events, calls and balances, retaining sender balances; event_count and move_call_count give counts and omitted reports hidden rows. detail: 'full' removes display limits. For one transaction or more than 50 events, use get_transaction, which pages events to the end.",
+    "Read 1-50 transaction digests in batched calls. Returns sender, status, timing, balance changes, non-coin object transfers and objects created for other owners, Move calls, decoded events and protocols. GraphQL misses are retried through the archive. object_changes_truncated marks an incomplete bounded object read; use get_transaction for that digest. Summary caps displayed rows with counts and omitted retrieval; detail: 'full' removes display caps, not object or event read bounds.",
     {
       digests: z
         .array(z.string())
@@ -940,7 +941,7 @@ export function registerTransactionTools(server: McpServer) {
       detail: z
         .enum(["summary", "full"])
         .optional()
-        .describe("'summary' (default): events, calls and balances share about 30k characters across the batch. 'full': every fetched row."),
+        .describe("'summary' (default): events, calls, balances and object custody share about 30k characters across the batch. 'full': every fetched row, subject to read bounds."),
     },
     async ({ digests, detail }) => {
       try {
@@ -991,15 +992,42 @@ export function registerTransactionTools(server: McpServer) {
             ? {
                 not_found,
                 not_found_note:
-                  "These digests returned nothing from GraphQL. Do NOT read that as 'the transaction does not exist' — this batch path has no archive fallback, so a pruned transaction looks identical to a wrong digest. get_transaction DOES fall back to the archive and will often return these; retry each one there before concluding anything. Old digests are pruned continuously, so a digest that resolved minutes ago can land here.",
+                  "These digests were not recovered by GraphQL or the archive. A wrong digest and a transaction unavailable on this network remain indistinguishable here; check the network and use get_transaction for an individual lookup.",
               }
             : {}),
-          transactions: found.map((t) => ({ ...t, move_call_count: t.move_calls.length, protocols: protocolsFor(t) })),
+          transactions: found.map((t) => {
+            const { object_changes, ...tx } = t;
+            const movements = "gql" in object_changes
+              ? readObjectMovements(object_changes.gql, protocolForObjectType)
+              : readGrpcObjectChanges(object_changes.grpc, protocolForObjectType);
+            const transfers = custodyChanges(movements);
+            const delivered = createdFor(movements, t.sender);
+            return {
+              ...tx,
+              move_call_count: t.move_calls.length,
+              protocols: protocolsFor(t),
+              object_transfer_count: transfers.length,
+              created_for_count: delivered.length,
+              ...(transfers.length ? { object_transfers: transfers.map(movementOut) } : {}),
+              ...(delivered.length ? { created_for: delivered.map(movementOut) } : {}),
+              ...(t.object_changes_truncated
+                ? { object_changes_note: "The object-change read is incomplete (failed, missing cursor or past five pages of 50). Object transfers and creations shown are only those read; call get_transaction on this digest for the complete custody changes." }
+                : {}),
+            };
+          }),
         };
-        // Each transaction's events, Move calls and balance changes share
-        // the budget evenly; the sender's own changes survive it.
+        // Each transaction's events, Move calls, balance changes and object
+        // custody share the display budget; counts precede display trimming.
         const share = (total: number, floor: number) => Math.max(floor, Math.floor(total / Math.max(1, found.length)));
         type Change = { address: string };
+        type Moved = { category: string; high_consequence?: boolean; from: { kind: string } | null; to: { kind: string } | null };
+        // Only capabilities survive any budget: a kiosk sweep moves hundreds of
+        // object-owned NFTs, and each listed row carries its owner kinds anyway.
+        // The rest rank kiosk, position and asset moves first, and among those
+        // the moves with an object party, which a bare address would misread.
+        const categoryRank: Record<string, number> = { kiosk: 0, "defi-position": 1, asset: 2 };
+        const movedRank = (m: Moved) =>
+          (categoryRank[m.category] ?? 3) * 2 + (m.from?.kind === "object" || m.to?.kind === "object" ? 0 : 1);
         type Event = { type: string | null };
         const { payload: out } = capPayload(
           "get_transactions",
@@ -1007,12 +1035,21 @@ export function registerTransactionTools(server: McpServer) {
           payload,
           Object.fromEntries(
             found.flatMap((t, i) => [
-              [`transactions.${i}.events`, { budget: share(14_000, 700), keepOrder: true, brief: (e: Event) => e.type } satisfies ListCap<Event>],
-              [`transactions.${i}.move_calls`, { budget: share(10_000, 500), keepOrder: true } satisfies ListCap<never>],
+              [`transactions.${i}.events`, { budget: share(10_000, 500), keepOrder: true, brief: (e: Event) => e.type } satisfies ListCap<Event>],
+              [`transactions.${i}.move_calls`, { budget: share(8_000, 400), keepOrder: true } satisfies ListCap<never>],
               [
                 `transactions.${i}.balance_changes`,
-                { budget: share(5_000, 300), keepOrder: true, keep: (b: Change) => b.address === t.sender } satisfies ListCap<Change>,
+                { budget: share(4_000, 250), keepOrder: true, keep: (b: Change) => b.address === t.sender } satisfies ListCap<Change>,
               ],
+              [`transactions.${i}.object_transfers`, {
+                budget: share(5_000, 300), keepOrder: true,
+                keep: (m: Moved) => m.category === "capability" || m.high_consequence === true,
+                rank: (a: Moved, b: Moved) => movedRank(a) - movedRank(b),
+              } satisfies ListCap<Moved>],
+              [`transactions.${i}.created_for`, {
+                budget: share(3_000, 200), keepOrder: true,
+                keep: (m: Moved) => m.category === "capability",
+              } satisfies ListCap<Moved>],
             ]),
           ),
           { full: detail === "full", next_call: { tool: "get_transactions", repeat_with: { detail: "full" } } },

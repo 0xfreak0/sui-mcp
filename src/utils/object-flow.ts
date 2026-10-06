@@ -586,11 +586,16 @@ export function readObjectMovements(
 
     const from = readOwner(change.inputState?.owner);
     const to = readOwner(change.outputState?.owner);
+    // Effects version 1 records no input state, so an object it wrapped has a
+    // state on neither side and is neither created nor deleted. It is read as
+    // a wrap with its holder unrecorded, as `readGrpcObjectChanges` reads the
+    // same effects, never as a transfer between two absent owners.
+    const endedUnrecorded = !change.inputState && !change.outputState && !change.idCreated && !change.idDeleted;
     const kind = classifyKind(
       {
         created: !!change.idCreated,
         deleted: !!change.idDeleted,
-        hasInput: !!change.inputState,
+        hasInput: !!change.inputState || endedUnrecorded,
         hasOutput: !!change.outputState,
       },
       from,
@@ -611,6 +616,7 @@ export function readObjectMovements(
         to,
         category,
         high_consequence: isHighConsequence(type),
+        ...(endedUnrecorded ? { source_unrecorded: true } : {}),
         ...(protocol ? { protocol: protocol.name } : {}),
       }),
     );

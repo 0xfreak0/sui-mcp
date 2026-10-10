@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
+- **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
+- **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.
+- **Data refreshes ship as weekly releases.** A scheduled job reruns the label, sanctions, blocklist, coin and protocol-lineage syncs, checks the result with the test suite and opens a pull request summarizing what changed and which sources went stale. Merging it publishes a patch release through the existing provenance-signed workflow. Weeks where only retrieval dates, epochs or checkpoints moved open no pull request.
+- **Issuer freezes carry per-coin provenance.** `check_coin_restrictions` returns active `frozen_by_issuer` entries with config object, DenyList object and epoch; incomplete enumeration or failed chunks are marked, and pending restrictions stay separate.
+
 ## 1.27.0 (2026-10-06)
 
 Wallet profiles report packages they published or upgraded, and batched

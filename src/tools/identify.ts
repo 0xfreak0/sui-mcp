@@ -357,6 +357,7 @@ export function registerIdentifyTools(server: McpServer) {
             text: JSON.stringify({
               address,
               type: "validator",
+              ...labelFields(address),
               name: validator.name,
               staking_pool_sui_balance: validator.staking_pool_sui_balance,
               staking_pool_sui_balance_formatted: formatCoinAmount(validator.staking_pool_sui_balance, "0x2::sui::SUI"),

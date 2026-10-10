@@ -102,3 +102,36 @@ export function extractNotionText(json) {
   }
   return lines.join("\n");
 }
+
+/** Only the Sui mainnet LayerZero V2 deployment, not DVNs or other chains. */
+export function layerZeroSuiContracts(json) {
+  if (!Array.isArray(json)) throw new Error("LayerZero deployment document has no rows");
+  const matches = json.filter((row) => row.chainKey === "sui" && row.stage === "mainnet" && row.eid === "30378");
+  if (matches.length !== 1) throw new Error("LayerZero Sui mainnet deployment is missing or ambiguous");
+  const row = matches[0];
+  const fields = [["endpointV2", "Endpoint V2"], ["executor", "Executor"], ["sendUln302", "Send ULN302"], ["receiveUln302", "Receive ULN302"]];
+  const entries = fields.map(([field, role]) => {
+    const address = row[field]?.address;
+    if (typeof address !== "string" || !/^0x[0-9a-f]{64}$/i.test(address)) {
+      throw new Error(`LayerZero ${role} has no full Sui address`);
+    }
+    return { address, label: `LayerZero ${role} (Sui)` };
+  });
+  return entries.filter((entry, i) => entries.findIndex((other) => other.address.toLowerCase() === entry.address.toLowerCase()) === i);
+}
+
+/** Axelar's own deployment inventory identifies Sui mainnet and contract roles. */
+export function axelarSuiContracts(json) {
+  const sui = json?.chains?.sui;
+  if (sui?.networkType !== "mainnet" || sui?.chainType !== "sui" || sui?.axelarId !== "sui") {
+    throw new Error("Axelar mainnet inventory does not identify the Sui chain");
+  }
+  return [["AxelarGateway", "Gateway"], ["GasService", "Gas Service"], ["InterchainTokenService", "Interchain Token Service"]]
+    .map(([field, role]) => {
+      const address = sui.contracts?.[field]?.address;
+      if (typeof address !== "string" || !/^0x[0-9a-f]{64}$/i.test(address)) {
+        throw new Error(`Axelar ${role} has no full Sui address`);
+      }
+      return { address, label: `Axelar ${role} package (Sui)` };
+    });
+}

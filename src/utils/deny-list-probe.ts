@@ -12,9 +12,9 @@
  * `ConfigKey` is a u64 plus a length-prefixed string, `AddressKey` is 32 raw
  * bytes, and `GlobalPauseKey` is empty.
  *
- * "Is this address frozen anywhere" still has no index. Callers answer it
- * against the coins that matter (the ones the address actually holds)
- * because being denied for a coin it has never touched is not a finding.
+ * "Is this address frozen anywhere" has no reverse index. Address-only
+ * checks enumerate configured coins; checking holdings would miss freezes
+ * because a frozen address can no longer acquire or move that coin.
  */
 
 import { gqlQuery } from "../clients/graphql.js";
@@ -196,22 +196,21 @@ export async function checkAddress(
  * regulated": a question about one coin should use {@link findCoinConfig},
  * and one about one address {@link checkAddress}.
  */
-/**
- * Cached because the walk is slow and the map is append-mostly: a new
- * regulated coin appears when someone creates one, and missing it for an hour
- * degrades to "not checked against that coin" rather than a wrong answer.
- */
-let coinMapCache: { at: number; map: Map<string, string> } | null = null;
+/** The coin configs and whether pagination reached the end. */
+interface ConfiguredCoins {
+  map: Map<string, string>;
+  complete: boolean;
+}
+
+let coinMapCache: ({ at: number } & ConfiguredCoins) | null = null;
 const COIN_MAP_TTL_MS = 60 * 60 * 1000;
 
-/** Every coin config, cached. See {@link listConfiguredCoins}. */
-export async function cachedConfiguredCoins(): Promise<Map<string, string>> {
-  if (coinMapCache && Date.now() - coinMapCache.at < COIN_MAP_TTL_MS) return coinMapCache.map;
-  const map = await listConfiguredCoins();
-  // Only cache a non-trivial result: a walk cut short by an outage would
-  // otherwise pin an almost-empty map for an hour and silently under-report.
-  if (map.size > 0) coinMapCache = { at: Date.now(), map };
-  return map;
+/** Cache only complete config walks; an incomplete list cannot support a negative finding. */
+export async function cachedConfiguredCoins(): Promise<ConfiguredCoins> {
+  if (coinMapCache && Date.now() - coinMapCache.at < COIN_MAP_TTL_MS) return coinMapCache;
+  const coins = await listConfiguredCoins();
+  if (coins.complete && coins.map.size > 0) coinMapCache = { at: Date.now(), ...coins };
+  return coins;
 }
 
 /** Reset the coin-config cache. Tests only. */
@@ -235,14 +234,14 @@ export function resetCoinMapCache(): void {
 export async function checkAddressAcrossCoins(
   address: string,
   epoch: number,
-): Promise<{ denied: string[]; pending: string[]; coins_checked: number; complete: boolean }> {
+): Promise<{ denied: string[]; pending: string[]; coins_checked: number; complete: boolean; configs: Map<string, string> }> {
   const coins = await cachedConfiguredCoins();
-  const entries = [...coins.entries()];
+  const entries = [...coins.map.entries()];
   const bcs = addressKeyBcs(address);
   const denied: string[] = [];
   const pending: string[] = [];
   let checked = 0;
-  let complete = true;
+  let complete = coins.complete;
 
   // Chunks are packed to a byte budget as well as an alias count. The service
   // caps a request at 5000 bytes of query text as well as at 20 store-backed
@@ -291,30 +290,27 @@ export async function checkAddressAcrossCoins(
     }
   }
 
-  return { denied, pending, coins_checked: checked, complete };
+  return { denied, pending, coins_checked: checked, complete, configs: coins.map };
 }
 
-export async function listConfiguredCoins(maxPages = 25): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+export async function listConfiguredCoins(maxPages = 25): Promise<ConfiguredCoins> {
+  const map = new Map<string, string>();
   let cursor: string | null = null;
   for (let i = 0; i < maxPages; i++) {
     const conn = await page(DENY_LIST_ID, cursor);
-    if (!conn) break;
+    if (!conn) return { map, complete: false };
     for (const n of conn.nodes) {
       const key = (n.name?.json as { per_type_key?: string } | undefined)?.per_type_key;
       const config = n.value?.address;
       if (!key || !config) continue;
       const coin = coinTypeFromKey(key);
-      if (coin) out.set(coin, config);
+      if (coin) map.set(coin, config);
     }
-    if (!conn.pageInfo.hasNextPage) break;
+    if (!conn.pageInfo.hasNextPage) return { map, complete: true };
     cursor = conn.pageInfo.endCursor;
-    // Another page claimed with no cursor restarts the walk. Bounded by
-    // maxPages so it terminates, but it would re-read page one and report the
-    // same denied addresses twice.
-    if (!cursor) break;
+    if (!cursor) return { map, complete: false };
   }
-  return out;
+  return { map, complete: false };
 }
 
 /**

@@ -175,9 +175,28 @@ batch in the import format for moving labels between machines.
 Added and imported labels persist when `SUI_STORE_PATH` is set and otherwise
 last only for the session. Removing one deletes its stored copy. The override
 file (`SUI_LABELS_FILE`) and shipped labels are read-only through this tool.
-Precedence is local additions, override file, shipped disclosed labels, then
-shipped inferred exchange deposit addresses (`source: "inferred"`).
-Export excludes the inferred deposits.
+Precedence is local additions, override file, hand-curated labels, first-party
+disclosures, mainnet validator snapshots, then inferred exchange deposit addresses
+(`source: "inferred"`). Export excludes the inferred deposits.
+
+Run `npm run sync:disclosed-labels` in a source checkout to regenerate first-party exchange, bridge,
+incident and protocol disclosures. Each entry names the source URL and retrieval
+date. If one disclosure becomes unavailable, its retained labels carry `stale`
+and `stale_since`; the source was not reverified on that run. Run
+`npm run sync:validator-labels` to record active mainnet validators from
+SuiSystemState. A validator label includes its recorded epoch, checkpoint,
+staking pool and operation-cap ownership in `chain_state`. The validator-supplied
+name and project URL do not independently establish the operator’s legal identity.
+An operation cap owned by another object does not identify its controller. A
+failed refresh marks the retained snapshot `stale`; compare its epoch to the
+current chain epoch before treating membership or cap custody as current.
+
+Shipped labels update only through npm releases, so they carry the same
+provenance attestation as the code. A weekly job reruns these syncs and opens a
+pull request; merging it publishes a patch release. The server never fetches
+label data at runtime. `npx sui-analytics-mcp` resolves the newest release on
+each start; a pinned or globally installed copy keeps its labels until you
+update it.
 
 Lookup reports `deposit_address` alongside the effective label. Shipped
 inferred deposit roles come from that same registry lookup, so an override

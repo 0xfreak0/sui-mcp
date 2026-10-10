@@ -1,0 +1,56 @@
+name: Data release
+
+# Publishes a merged data-sync PR. data-sync.yml already bumped the version and
+# wrote the CHANGELOG section, so all that is left is the tag publish.yml
+# releases from.
+#
+# A tag pushed with GITHUB_TOKEN does not start publish.yml (GitHub runs no
+# workflow for events that token causes), so this job dispatches it on the tag.
+# workflow_dispatch is the exception to that rule, and publish.yml already
+# supports it: with `--ref <tag>` its tag/version check and GitHub release job
+# both see refs/tags/v<version>.
+#
+# Only PRs from data-sync/weekly in this repository qualify. Hand-cut releases
+# keep their existing flow: push the tag yourself.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'data-sync/weekly' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      # Push the tag. No id-token: publishing happens in publish.yml.
+      contents: write
+      # Dispatch publish.yml.
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # SHA-pinned; see publish.yml for why. Comments record the tag.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Tag the merged release and publish it
+        run: |
+          set -euo pipefail
+          tag="v$(node -p "require('./package.json').version")"
+          # A re-run after the tag was pushed must not fail on it; it still
+          # dispatches, and publish.yml skips an already-published npm version.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists."
+          else
+            git tag "$tag"
+            git push origin "refs/tags/$tag"
+          fi
+          gh workflow run publish.yml --ref "$tag" -f dry_run=false
+          echo "Dispatched publish.yml for $tag." >> "$GITHUB_STEP_SUMMARY"

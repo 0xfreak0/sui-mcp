@@ -1,0 +1,178 @@
+name: Data sync
+
+# Shipped attribution and screening data only reaches users in an npm release,
+# and a release is the one update channel that carries provenance. This job
+# reruns the syncs every week and, when something real changed, opens one PR
+# with the version bump and CHANGELOG section already in it. Merging that PR is
+# the review; data-release.yml then tags and publishes it.
+#
+# Not synced here:
+#   - coin-symbols.json: 12.8 MB of every coin on mainnet, near its size budget,
+#     and changed by new memecoins every week. Run `npm run sync:coin-symbols`
+#     by hand when the symbol index needs refreshing.
+#   - deposit-labels.json: reads the latest transactions of every exchange
+#     counterparty and runs long. Opt in with the deposit_labels input.
+#   - The vendored framework sources: pinned to an upstream ref on purpose.
+on:
+  schedule:
+    # Mondays, before drift.yml, so the live checks run against fresh data.
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      deposit_labels:
+        description: "Also regenerate inferred exchange deposit labels (slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One sync at a time: two runs would force-push the same branch.
+concurrency:
+  group: data-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      # Push the data-sync/weekly branch. No id-token: this job cannot publish.
+      contents: write
+      pull-requests: write
+      # Dispatch ci.yml on the PR branch; see the last step.
+      actions: write
+    env:
+      BRANCH: data-sync/weekly
+      GH_TOKEN: ${{ github.token }}
+      DATA_FILES: >-
+        src/data/disclosed-labels.json
+        src/data/validator-labels.json
+        src/data/sanctions.json
+        src/data/guardians-blocklist.json
+        src/data/coins.json
+        src/data/protocol-roots.json
+    steps:
+      # SHA-pinned; see publish.yml for why. Comments record the tag.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      # pdftotext reads the Bybit, KuCoin and MEXC proof-of-reserves PDFs;
+      # unzip (Binance, OKX) is already on the runner.
+      - run: sudo apt-get update -q && sudo apt-get install -yq poppler-utils
+
+      # --ignore-scripts: unattended job with write access to the repo.
+      - run: npm ci --ignore-scripts
+
+      # Each sync keeps the previous entries of a source it cannot read and
+      # marks them stale, so one failure must not stop the others. Failures are
+      # listed in the PR; a sync that writes nothing leaves its file unchanged.
+      - name: Run the syncs
+        id: sync
+        env:
+          DEPOSIT_LABELS: ${{ inputs.deposit_labels }}
+        run: |
+          set -uo pipefail
+          failed=()
+          run() {
+            local name="$1"; shift
+            echo "::group::$name"
+            if ! timeout 45m "$@"; then failed+=("$name"); echo "::warning::$name sync failed"; fi
+            echo "::endgroup::"
+          }
+          run disclosed-labels node scripts/sync-disclosed-labels.mjs
+          run validator-labels node scripts/sync-validator-labels.mjs
+          run sanctions node scripts/sync-sanctions.mjs
+          run guardians node scripts/sync-guardians.mjs
+          run verified-coins node scripts/sync-verified-coins.mjs
+          run protocol-roots node scripts/sync-protocol-roots.mjs
+          files="$DATA_FILES"
+          if [ "${DEPOSIT_LABELS:-false}" = "true" ]; then
+            # Reads disclosed-labels.json, so it runs after that sync.
+            run deposit-labels npm run sync:labels
+            files="$files src/data/deposit-labels.json"
+          fi
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed[*]:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize the change
+        id: summary
+        env:
+          FILES: ${{ steps.sync.outputs.files }}
+        run: |
+          # shellcheck disable=SC2086 # the file list is split on purpose
+          node scripts/data-sync-summary.mjs --out /tmp/summary.md --changelog /tmp/changelog-note.md \
+            --github-output "$GITHUB_OUTPUT" $FILES
+          cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # The tests include the admission check on the label files
+      # (test/label-file-check.test.ts) and the registry integrity tests, so a
+      # sync that wrote inadmissible data fails here and opens no PR.
+      - name: Build and test the synced data
+        if: steps.summary.outputs.material == 'true'
+        run: |
+          npx tsc --noEmit
+          npm run build
+          npm test
+
+      - name: Prepare the release commit
+        id: release
+        if: steps.summary.outputs.material == 'true'
+        env:
+          FILES: ${{ steps.sync.outputs.files }}
+        run: |
+          # Recorded before data-release-prep.mjs renames the section.
+          if grep -q '^## Unreleased' CHANGELOG.md; then echo "unreleased=true" >> "$GITHUB_OUTPUT"; fi
+          version="$(node scripts/data-release-prep.mjs /tmp/changelog-note.md | tail -n 1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          # Only the synced data and the version bump; dist/ and scratch files stay out.
+          # shellcheck disable=SC2086
+          git add CHANGELOG.md package.json package-lock.json server.json $FILES
+          git commit -q -m "Data refresh for $version"
+          # Rebuilt from main every week, so last week's unmerged run is replaced, not stacked.
+          git push --force origin "$BRANCH"
+
+      - name: Open or update the pull request
+        if: steps.summary.outputs.material == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          UNRELEASED: ${{ steps.release.outputs.unreleased }}
+          FAILED: ${{ steps.sync.outputs.failed }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Weekly data refresh. Merging publishes **$VERSION** through publish.yml (npm with provenance, MCP Registry, GitHub release)."
+            echo
+            cat /tmp/summary.md
+            if [ -n "$FAILED" ]; then
+              echo
+              echo "### Syncs that failed"
+              for s in $FAILED; do echo "- \`$s\` (see the run log)"; done
+            fi
+            if [ "$UNRELEASED" = "true" ]; then
+              echo
+              echo "> main had unreleased CHANGELOG entries. They ship in this release too; their section is now $VERSION."
+            fi
+            echo
+            echo "Run: $RUN"
+          } > /tmp/pr-body.md
+          existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "Data refresh $VERSION" --body-file /tmp/pr-body.md
+          else
+            gh pr create --base main --head "$BRANCH" --title "Data refresh $VERSION" --body-file /tmp/pr-body.md
+          fi
+
+      # GitHub starts no workflow for events caused by GITHUB_TOKEN, so the PR
+      # above gets no pull_request CI run and branch protection would wait on
+      # its required checks forever. A workflow_dispatch is the exception to
+      # that rule; the run reports the same checks on the branch's head commit.
+      - name: Run CI on the pull request branch
+        if: steps.summary.outputs.material == 'true'
+        run: gh workflow run ci.yml --ref "$BRANCH"

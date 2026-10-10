@@ -528,6 +528,42 @@
       "name": "Blast.fun",
       "type": "launchpad"
     },
+    "0xdebad36861e0f1390eeb549fd100b1783a3331e88f4785cec703387494e6b612": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x726fb49b880faa89719b95c6ef3a91be794f771ed3560fe5894d0a605c8469f9": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x304819d5da5b2a53422976b81b8ae9a799c48d30201cbc29b2b1629b6ce817f2": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x96fbe2db7337dea5ef6926203d32cf602e527d5e2dcae176fbbc3e3d2a30d94f": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0xafbd425a6668d9a26d7b3dc668232d779d76b2f719e2f4178a51fd41078d69c3": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x7d48e654ef9cea54040fe1e50f2baa7afde167d01fa53c2bbf723cbbfd0bfef0": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x2d300f3d8819c6e09fd1558e518c2ffab97b324479843d4f94b561b10a441fd0": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x33897a946e231652f00d712834665831ada3e3ffb3cd3ef11f4a449058ab43c6": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0xac58d338925ac96304ca573a4dab80d442df6f2427291bcddbea7fc65279678e": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
     "0x97fea95545c04dc73f8174c6195013b100a26e3fa978e7cf8b100a51dfaf8354": {
       "name": "Perpsplexity",
       "type": "launchpad"
@@ -535,6 +571,18 @@
     "0x70798463adae26d663d67b152e6531a4eaf48b541d6d3db11d730663dab20e8a": {
       "name": "Perpsplexity",
       "type": "launchpad"
+    },
+    "0xa10b7229fe2dde62280a48386be883fefe073e31a7b3c69291e6a72e74fd363e": {
+      "name": "yolo.casa",
+      "type": "dex"
+    },
+    "0xf7c213b74eea8e6251e78c409ab5920a8fbf5af0651696d9472dea5e7858aa25": {
+      "name": "yolo.casa",
+      "type": "dex"
+    },
+    "0x853e125caee695cfc9916adb4302df8913aae1ab1ad9ee2c277d43acf5491924": {
+      "name": "yolo.casa",
+      "type": "dex"
     }
   }
 }

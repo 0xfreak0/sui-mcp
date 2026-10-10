@@ -2,7 +2,9 @@ import { z } from "zod";
 import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { searchTokens, probeOnChain } from "../discovery.js";
-import { normalizeCoinType, searchVerifiedCoins, vouchFor } from "../utils/coin-registry.js";
+import { normalizeCoinType, searchVerifiedCoins, vouchFor, resolveVerifiedSymbol } from "../utils/coin-registry.js";
+import { guardiansFlagsForCoin, type GuardiansFlag } from "../utils/guardians.js";
+import type { TickerCandidate } from "../utils/ticker-search.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 interface SearchResult {
@@ -13,21 +15,29 @@ interface SearchResult {
   /** A curated list vouches for this exact coin type. */
   verified: boolean;
   verified_by?: "verified" | "live";
-  /** `symbol_index`: the synced index of every mainnet coin; `discovery`: the bounded live scan. */
-  source: "verified_list" | "symbol_index" | "discovery" | "on_chain";
+  /** The verified list, a pool-backed DEX search, the bounded scan, or an exact type. */
+  source: "verified_list" | "dex_search" | "discovery" | "on_chain";
   total_supply?: string | null;
+  liquidity_usd?: number;
+  pool_count?: number;
+  volume_24h?: number | null;
+  providers?: TickerCandidate["providers"];
+  impostor_of?: string;
+  flagged_by?: GuardiansFlag[];
+  package_id?: string;
+  publisher_hint?: string;
 }
 
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 150;
 const MAX_LIMIT = 500;
 
 const UNVERIFIED_NOTE =
-  "Results with verified: false are claims made by whoever minted the coin. Impostors copy the symbol and name of real assets, so identify a coin by its full coin_type, and prefer a verified one.";
+  "Unverified coins claim their own name and symbol. Mainnet live matches have a DEX pool on DexScreener or, when needed, GeckoTerminal and are confirmed by exact coin type on chain; coins without a pool are not searched by indexers, and other coins may use this symbol. Check the full coin_type; pool liquidity is not proof of legitimacy.";
 
 export function registerTokenSearchTools(server: McpServer) {
   server.tool(
     "search_token",
-    "Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. Verified types rank first, then exact symbol matches; verified means a curated list vouches for that exact type, not its copyable name. Mainnet's unverified matches use a CoinMetadata/coin-registry symbol index dated by symbol_index.synced_at; later coins are missing. Symbols used by over 100 coins list only counts in unlisted_symbols, including symbols containing the query. With no index match, or off mainnet, discovery uses a bounded live CoinMetadata scan. discovery_scan_truncated means it did not finish; discovery_scan_failed names a read error.",
+    "Find a Sui coin type by name or symbol. Verified types rank first. Mainnet searches DexScreener for the ticker and ticker + SUI; GeckoTerminal is used when results are missing, capped or unavailable. Up to 25 pool-backed candidates are confirmed by exact coin type on chain and clean searches are cached for 10 minutes. Symbols are not unique; partial result caps, provider outages and failed on-chain confirmations are reported separately. Without confirmed live matches or off mainnet, a bounded CoinMetadata scan is used; pass a full coin type to inspect a coin without a pool.",
     {
       query: z.string().describe("Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN')"),
       verify_onchain: boolArg()
@@ -50,14 +60,23 @@ export function registerTokenSearchTools(server: McpServer) {
         const probed = await probeOnChain(query);
         if (probed) {
           const vouch = vouchFor(probed.coin_type);
-          const verified = vouch === "verified" || vouch === "live";
+          const verified = vouch !== null && vouch !== "not-curated-here";
+          const trusted = resolveVerifiedSymbol(probed.symbol);
+          const package_id = probed.coin_type.split("::")[0];
+          const flagged_by = guardiansFlagsForCoin(probed.coin_type);
           const result: SearchResult = {
             coin_type: probed.coin_type,
             name: probed.name,
             symbol: probed.symbol,
             decimals: probed.decimals,
             verified,
-            ...(verified ? { verified_by: vouch } : {}),
+            ...(vouch === "verified" || vouch === "live" ? { verified_by: vouch } : {}),
+            ...(!verified && trusted.status === "resolved" &&
+              normalizeCoinType(trusted.coin.coin_type) !== normalizeCoinType(probed.coin_type)
+              ? { impostor_of: trusted.coin.coin_type } : {}),
+            ...(flagged_by.length ? { flagged_by } : {}),
+            package_id,
+            publisher_hint: `Use identify_address on package ${package_id} to find its publisher, then get_wallet_packages on that publisher to pivot across deployed packages.`,
             source: "on_chain",
           };
           return {
@@ -69,8 +88,8 @@ export function registerTokenSearchTools(server: McpServer) {
         }
       }
 
-      // Curated coins first: an index or scan match only says some coin claims
-      // the symbol, and impostors named after a real coin sit beside it.
+      // Curated coins always rank first. Pool-backed matches can include
+      // impostors with the same symbol as a verified coin.
       const [curated, discovered] = await Promise.all([searchVerifiedCoins(q), searchTokens(q)]);
       const seen = new Set(curated.map((c) => c.coin_type));
       const results: SearchResult[] = curated.map((c) => ({
@@ -82,17 +101,34 @@ export function registerTokenSearchTools(server: McpServer) {
         verified_by: c.via,
         source: "verified_list",
       }));
-      // Exact symbol matches before substring ones: "SUI" matches thousands of
-      // names that merely contain it.
-      const ranked = [...discovered.tokens].sort(
-        (a, b) => Number(a.symbol.trim().toLowerCase() !== q) - Number(b.symbol.trim().toLowerCase() !== q),
-      );
-      const source = discovered.source === "symbol_index" ? "symbol_index" : "discovery";
+      // Live candidates are already ordered verified, exact symbol, liquidity.
+      const ranked = discovered.source === "dex_search" ? discovered.tokens
+        : [...discovered.tokens].sort(
+            (a, b) => Number(a.symbol.trim().toLowerCase() !== q) - Number(b.symbol.trim().toLowerCase() !== q),
+          );
       for (const t of ranked) {
         const type = normalizeCoinType(t.coin_type) ?? t.coin_type;
         if (seen.has(type)) continue;
         seen.add(type);
-        results.push({ coin_type: t.coin_type, name: t.name, symbol: t.symbol, decimals: t.decimals, verified: false, source });
+        const vouch = vouchFor(t.coin_type);
+        const verified = vouch !== null && vouch !== "not-curated-here";
+        const real = resolveVerifiedSymbol(t.symbol);
+        const indexed = discovered.source === "dex_search" ? t as TickerCandidate : null;
+        results.push({
+          coin_type: t.coin_type, name: t.name, symbol: t.symbol, decimals: t.decimals,
+          verified,
+          ...(verified && (vouch === "verified" || vouch === "live") ? { verified_by: vouch } : {}),
+          source: indexed ? "dex_search" : "discovery",
+          ...(indexed ? {
+            total_supply: indexed.total_supply, liquidity_usd: indexed.liquidity_usd,
+            pool_count: indexed.pool_count, volume_24h: indexed.volume_24h,
+            providers: indexed.providers, package_id: indexed.package_id,
+            publisher_hint: indexed.publisher_hint,
+          } : {}),
+          ...(indexed?.impostor_of || (!verified && real.status === "resolved" && normalizeCoinType(real.coin.coin_type) !== type)
+            ? { impostor_of: indexed?.impostor_of ?? (real.status === "resolved" ? real.coin.coin_type : undefined) } : {}),
+          ...(guardiansFlagsForCoin(type).length ? { flagged_by: guardiansFlagsForCoin(type) } : {}),
+        });
       }
       const shown = results.slice(0, limit ?? DEFAULT_LIMIT);
 
@@ -109,47 +145,35 @@ export function registerTokenSearchTools(server: McpServer) {
         );
       }
 
-      const unlisted =
-        discovered.source === "symbol_index"
-          ? [
-              ...(discovered.unlisted_exact_count !== null ? [{ symbol: q, count: discovered.unlisted_exact_count }] : []),
-              ...discovered.unlisted_containing,
-            ]
-          : [];
-      const found =
-        discovered.source === "symbol_index"
-          ? {
-              symbol_index: { synced_at: discovered.index.synced_at, checkpoint: discovered.index.checkpoint },
-              ...(unlisted.length ? { unlisted_symbols: unlisted.map((u) => ({ symbol: u.symbol, coins: u.count })) } : {}),
-              symbol_index_note:
-                `Unverified matches come from the symbol index: every CoinMetadata and coin registry entry on mainnet at checkpoint ${discovered.index.checkpoint} (${discovered.index.synced_at}). A coin published after that is not in it; pass its full coin type to look it up.` +
-                (discovered.unlisted_exact_count !== null
-                  ? ` ${discovered.unlisted_exact_count} coins use the symbol "${query.trim()}" exactly, more than the ${discovered.index.max_rows_per_symbol} the index lists for one symbol, so none of them is listed: a symbol that common cannot identify a coin.`
-                  : "") +
-                (discovered.unlisted_containing.length
-                  ? ` ${discovered.unlisted_containing.length} longer symbol(s) containing "${query.trim()}" are each used by more than ${discovered.index.max_rows_per_symbol} coins, so none of their ${discovered.unlisted_containing.reduce((s, u) => s + u.count, 0)} coins is listed or counted in total_matches: ${discovered.unlisted_containing
-                      .slice(0, 5)
-                      .map((u) => `"${u.symbol}" (${u.count} coins)`)
-                      .join(", ")}${discovered.unlisted_containing.length > 5 ? `, and ${discovered.unlisted_containing.length - 5} more in unlisted_symbols` : ""}. Pass the full coin type to look one of them up.`
-                  : ""),
-            }
-          : {
-              ...(discovered.index
-                ? {
-                    symbol_index: { synced_at: discovered.index.synced_at, checkpoint: discovered.index.checkpoint },
-                    symbol_index_note: `The symbol index (every mainnet coin up to ${discovered.index.synced_at}) has no coin whose symbol contains this query and no listed coin whose name does, so these results come from a bounded live scan. It keeps no names for a symbol more than ${discovered.index.max_rows_per_symbol} coins use, and a coin published after ${discovered.index.synced_at} is reachable only by the scan.`,
-                  }
-                : {}),
-              ...(discovered.truncated
-                ? {
-                    discovery_scan_truncated: true,
-                    ...(discovered.failed ? { discovery_scan_failed: discovered.failed } : {}),
-                    discovery_scan_note: discovered.failed
-                      ? `The on-chain scan failed after reading ${discovered.scanned} CoinMetadata objects (${discovered.failed}), so these results cover only what it read before the failure. A coin not listed here may still exist; retry, or pass its full coin type to look it up directly.`
-                      : `The on-chain scan read ${discovered.scanned} CoinMetadata objects in object-ID order and stopped before the end. A coin not listed here may still exist; pass its full coin type to look it up directly.`,
-                  }
-                : {}),
-            };
+      const scan = discovered.scan;
+      const found = {
+        search_coverage: {
+          providers: discovered.coverage,
+          unavailable_providers: discovered.unavailable_providers,
+          partial: discovered.partial,
+          unconfirmed: discovered.unconfirmed,
+          ...(discovered.unconfirmed_reason ? { unconfirmed_reason: discovered.unconfirmed_reason } : {}),
+          note: (discovered.partial
+            ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. "
+            : "") +
+            (discovered.unconfirmed
+              ? `${discovered.unconfirmed} candidates could not be confirmed on chain (${discovered.unconfirmed_reason ?? "metadata unavailable"}). `
+              : "") +
+            (discovered.source === "dex_search"
+              ? "Only candidates with a DEX pool were searched; up to 25 high-liquidity candidates were confirmed by their exact on-chain coin metadata. Other coins may use the same symbol."
+              : discovered.unavailable_providers.length === 2
+                ? "Both live DEX search providers were unavailable (possibly rate limited); these matches come only from a bounded on-chain CoinMetadata scan. Zero results is not evidence that the symbol does not exist."
+                : discovered.coverage.dexscreener === "skipped"
+                  ? "Live DEX ticker search is mainnet-only. These matches are from a bounded on-chain CoinMetadata scan; other coins may use this symbol."
+                  : "Live search had no confirmed pool-backed hits or is unavailable; these matches come from a bounded on-chain CoinMetadata scan. Other coins may use the same symbol."),
+        },
+        ...(scan ? {
+          discovery_scan_scanned: scan.scanned,
+          discovery_scan_truncated: scan.truncated,
+          ...(scan.failed ? { discovery_scan_failed: scan.failed } : {}),
+          ...(scan.failed ? { discovery_scan_note: `The on-chain scan failed after ${scan.scanned} objects (${scan.failed}); absence is not evidence of nonexistence.` } : {}),
+        } : {}),
+      };
 
       return {
         content: [
@@ -157,6 +181,7 @@ export function registerTokenSearchTools(server: McpServer) {
             type: "text" as const,
             text: JSON.stringify({
               query,
+              ...(shown.length === 0 && discovered.unconfirmed > 0 ? { status: "could_not_confirm" } : {}),
               results: shown,
               total_matches: results.length,
               ...(shown.length < results.length

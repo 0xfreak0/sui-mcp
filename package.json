@@ -31,7 +31,6 @@
     "sync:labels": "npm run build && node scripts/sync-deposit-labels.mjs",
     "sync:sanctions": "node scripts/sync-sanctions.mjs",
     "sync:guardians": "node scripts/sync-guardians.mjs",
-    "sync:coin-symbols": "node scripts/sync-coin-symbols.mjs",
     "sync:framework": "node scripts/sync-framework.mjs",
     "hooks:install": "git config core.hooksPath .githooks && echo \"hooks enabled — copy .githooks/patterns.local.example to .githooks/patterns.local\"",
     "verify:live": "node scripts/verify-live.mjs",

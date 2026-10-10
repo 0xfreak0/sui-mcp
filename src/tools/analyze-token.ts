@@ -14,8 +14,8 @@ import { fetchDefiLlamaChange24h } from "../utils/price-providers.js";
 import { describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { getNetwork } from "../config.js";
 import { resolveSymbolDetailed, type SymbolDetail } from "../discovery.js";
-import type { IndexedCoin } from "../utils/coin-symbols.js";
-import { vouchFor } from "../utils/coin-registry.js";
+import type { TickerCandidate } from "../utils/ticker-search.js";
+import { resolveVerifiedSymbol, vouchFor, normalizeCoinType } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin } from "../utils/guardians.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -61,127 +61,71 @@ export function decimalsTier(input: {
   return "assumed";
 }
 
-/** Index candidates ranked by supply at most; each costs one getCoinInfo. */
-const SUPPLY_RANKED_MAX = 50;
-const SUPPLY_CONCURRENCY = 8;
+const POOL_COVERAGE_NOTE =
+  "Candidates have a DEX pool on DexScreener or (when needed) GeckoTerminal and were confirmed by exact coin type on chain. Coins without a pool are not searched by indexers; other coins may use this symbol. Pool liquidity is not proof of identity.";
 
-interface SymbolCandidate {
-  coin_type: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-  verified: boolean;
-  total_supply: string | null;
-}
-
-/**
- * Candidates for a symbol several coins use: verified first, then by total
- * supply in whole coins, largest first. Supply is read only for up to
- * `SUPPLY_RANKED_MAX` coins; past that the order is verified, then coin type.
- */
-async function rankSymbolCandidates(coins: IndexedCoin[]): Promise<{ candidates: SymbolCandidate[]; by_supply: boolean }> {
-  const candidates: SymbolCandidate[] = coins.map((c) => ({ ...c, verified: vouchFor(c.coin_type) !== null, total_supply: null }));
-  const bySupply = candidates.length <= SUPPLY_RANKED_MAX;
-  if (bySupply) {
-    let next = 0;
-    const worker = async () => {
-      while (next < candidates.length) {
-        const c = candidates[next++];
-        try {
-          const { response } = await sui.stateService.getCoinInfo({ coinType: c.coin_type });
-          c.total_supply = response.treasury?.totalSupply?.toString() ?? null;
-          if (response.metadata?.decimals != null) c.decimals = response.metadata.decimals;
-        } catch {
-          // Left null and ranked last: a failed read says nothing about the coin.
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(SUPPLY_CONCURRENCY, candidates.length) }, worker));
-  }
-  const whole = (c: SymbolCandidate) => (c.total_supply === null ? -1 : Number(BigInt(c.total_supply)) / 10 ** c.decimals);
-  candidates.sort(
-    (a, b) =>
-      Number(b.verified) - Number(a.verified) ||
-      (bySupply ? whole(b) - whole(a) : 0) ||
-      (a.coin_type < b.coin_type ? -1 : a.coin_type > b.coin_type ? 1 : 0),
-  );
-  return { candidates, by_supply: bySupply };
-}
-
-async function ambiguousFromIndex(
-  query: string,
-  detailed: Extract<SymbolDetail, { status: "ambiguous"; source: "symbol_index" }>,
-) {
-  const { candidates, by_supply } = await rankSymbolCandidates(detailed.candidates);
-  const verifiedCount = candidates.filter((c) => c.verified).length;
-  const message =
-    candidates.length === 0
-      ? `${detailed.count} coins on mainnet use the symbol "${query}". The symbol index lists no candidates for a symbol more than ${detailed.index.max_rows_per_symbol} coins use, since no list that long identifies a coin. Pass the full coin type (0x...::module::TOKEN) that the transaction or balance you are investigating names.`
-      : `${detailed.count} coins on mainnet use the symbol "${query}", ${verifiedCount === 0 ? "and no curated list vouches for any of them" : `${verifiedCount} of them verified`}. A symbol does not identify a coin on Sui: pass one of these coin_type values instead.`;
-  return {
-    query,
-    status: "ambiguous_symbol",
-    message,
-    coin_count: detailed.count,
-    candidates,
-    ...(candidates.length > 0
-      ? {
-          candidate_order: by_supply
-            ? "Verified coins first, then by total supply in whole coins, largest first. Supply is not evidence that a coin is the one you meant: an impostor can mint more than the real asset."
-            : `Verified coins first, then by coin type. Not ranked by supply: that costs one request per coin, and ${candidates.length} is more than ${SUPPLY_RANKED_MAX}.`,
-        }
-      : {}),
-    symbol_index: {
-      synced_at: detailed.index.synced_at,
-      checkpoint: detailed.index.checkpoint,
-      note: `Coins published after ${detailed.index.synced_at} (checkpoint ${detailed.index.checkpoint}) are not in the symbol index, so a newer coin using this symbol is not listed.`,
-    },
-  };
-}
-
-function notFoundMessage(query: string, detailed: Extract<SymbolDetail, { status: "not_found" }>): string {
-  const index = detailed.index
-    ? `the symbol index (every mainnet coin up to ${detailed.index.synced_at}, checkpoint ${detailed.index.checkpoint}) has no coin with this symbol, and `
+function notFoundMessage(query: string, detailed: Extract<SymbolDetail, { status: "not_found" | "could_not_confirm" }>): string {
+  const incomplete = detailed.unconfirmed > 0
+    ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). `
     : "";
+  const partial = detailed.partial
+    ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. "
+    : "";
+  const failures = detailed.unavailable_providers.length
+    ? `Live search providers unavailable: ${detailed.unavailable_providers.map((p) => `${p.provider}: ${p.reason}`).join("; ")}. `
+    : "";
+  const coverage = detailed.coverage.dexscreener === "skipped"
+    ? "Live DEX search is mainnet-only. "
+    : "DEX search covers only coins with indexed pools, not every coin using a symbol. ";
   if (detailed.scan.failed) {
-    return `Token "${query}" could not be looked up: ${index}the live scan of CoinMetadata failed after ${detailed.scan.scanned} objects (${detailed.scan.failed}). A failed read says nothing about the objects after it, so the symbol may still exist: retry, or pass its full coin type (e.g. '0x...::module::TOKEN').`;
+    return `Token "${query}" could not be looked up: ${incomplete}${partial}${failures}${coverage}The bounded CoinMetadata scan failed after ${detailed.scan.scanned} objects (${detailed.scan.failed}); a failed read is not a miss. Pass the full coin type to look up a coin directly.`;
   }
-  const scan = `a live scan of ${detailed.scan.scanned} CoinMetadata objects in object-ID order ${detailed.scan.truncated ? "stopped before the end without finding one" : "found none"}`;
-  if (detailed.index) {
-    return `Token "${query}" not found: ${index}${scan}. A coin published after ${detailed.index.synced_at} is reachable only by that scan: pass its full coin type (e.g. '0x...::module::TOKEN'), or use search_token for a name or part of a symbol.`;
-  }
-  return `Token "${query}" not found: ${scan}. Try using the full coin type string (e.g. '0x...::module::TOKEN'), or use search_token for fuzzy search.`;
+  const unavailable = detailed.coverage.dexscreener === "rate_limited" || detailed.coverage.dexscreener === "unavailable";
+  const fallbackUnavailable = detailed.coverage.geckoterminal === "rate_limited" || detailed.coverage.geckoterminal === "unavailable";
+  const prefix = detailed.status === "could_not_confirm"
+    ? `Token "${query}" could not be confirmed by live search and the bounded scan found no exact match`
+    : unavailable && fallbackUnavailable
+      ? `Token "${query}" could not be confirmed by live search: both providers were unavailable; the bounded scan found no exact match`
+      : `Token "${query}" not found in the available pool-backed candidates or bounded on-chain scan`;
+  return `${prefix}: ${incomplete}${partial}${failures}${coverage}The scan read ${detailed.scan.scanned} objects${detailed.scan.truncated ? " and stopped before the end" : ""}. Other coins may use this symbol; pass the full coin type to inspect one directly.`;
 }
 
-/** How an unverified symbol reached its coin, and what that route cannot see. */
+/** Which limited search found this exact type, not a claim of symbol uniqueness. */
 interface SymbolResolutionNote {
-  via: "symbol_index" | "live_scan";
-  synced_at?: string;
-  checkpoint?: number;
+  via: "dex_search" | "live_scan";
   note: string;
+  coverage: Extract<SymbolDetail, { status: "unverified" }>["coverage"];
+  unavailable_providers: Extract<SymbolDetail, { status: "unverified" }>["unavailable_providers"];
+  partial: boolean;
+  unconfirmed: number;
+  unconfirmed_reason?: string;
+  liquidity_usd?: number;
+  pool_count?: number;
 }
 
 function symbolResolution(detailed: Extract<SymbolDetail, { status: "unverified" }>): SymbolResolutionNote {
-  if (detailed.source === "symbol_index") {
-    return {
-      via: "symbol_index",
-      synced_at: detailed.index.synced_at,
-      checkpoint: detailed.index.checkpoint,
-      note: `The only coin using this symbol in the symbol index. A coin published after ${detailed.index.synced_at} (checkpoint ${detailed.index.checkpoint}) with the same symbol is not counted, so check coin_type against the transaction or balance you are investigating.`,
-    };
-  }
   return {
-    via: "live_scan",
-    note: detailed.index
-      ? `The symbol index (synced ${detailed.index.synced_at}) has no coin with this symbol, so it was found by a live scan of CoinMetadata in object-ID order, which stops at the first match. It was probably published after ${detailed.index.synced_at}, and other coins using the symbol may exist outside the scanned window.`
-      : "Found by a live scan of CoinMetadata in object-ID order, which stops at the first match. Other coins using the symbol may exist outside the scanned window.",
+    via: detailed.source === "dex_search" ? "dex_search" : "live_scan",
+    coverage: detailed.coverage,
+    unavailable_providers: detailed.unavailable_providers,
+    partial: detailed.partial,
+    unconfirmed: detailed.unconfirmed,
+    ...(detailed.unconfirmed_reason ? { unconfirmed_reason: detailed.unconfirmed_reason } : {}),
+    note: (detailed.partial ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. " : "") +
+      (detailed.unconfirmed ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). ` : "") +
+      (detailed.source === "dex_search"
+        ? POOL_COVERAGE_NOTE
+        : "Found by a bounded CoinMetadata scan in object-ID order, which stops at the first exact symbol match. Other coins using the same symbol may exist outside the scanned window."),
+    ...(detailed.source === "dex_search"
+      ? { liquidity_usd: detailed.token.liquidity_usd, pool_count: detailed.token.pool_count }
+      : {}),
   };
 }
 
 export function registerAnalyzeTokenTools(server: McpServer) {
   server.tool(
     "analyze_token",
-    "(Recommended for token research) Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. Accepts either a coin type (e.g. '0x2::sui::SUI') or a symbol (e.g. 'DEEP', 'cetus'). A symbol several coins use returns status ambiguous_symbol with candidates (verified first, then by supply) from a symbol index of every mainnet coin up to its sync date. A symbol more than 100 coins use returns its count and no candidates, since the index keeps only the count; a coin published after the sync date is found only by a bounded live scan.",
+    "(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, total supply and top holders. Verified symbols resolve from the curated list; other mainnet symbols use two DexScreener searches (ticker and ticker + SUI), with GeckoTerminal fallback for missing, capped or unavailable results. Up to 25 pool-backed coin types are confirmed on chain; only clean results are cached for 10 minutes. Multiple exact symbols return ambiguous_symbol. Provider caps and failed confirmations are reported, not mistaken for absent coins; a bounded on-chain scan is the fallback when no live match is confirmed.",
     {
       query: z
         .string()
@@ -202,6 +146,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       let discoveredSymbol: string | null = null;
       let discoveredDecimals: number | null = null;
       let resolvedBySymbol: SymbolResolutionNote | null = null;
+      let resolvedCandidate: TickerCandidate | null = null;
 
       if (query.includes("::")) {
         coinType = query;
@@ -212,21 +157,36 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         const detailed = await resolveSymbolDetailed(query);
         if (detailed.status === "ambiguous") {
           const body =
-            detailed.source === "symbol_index"
-              ? await ambiguousFromIndex(query, detailed)
+            detailed.source === "dex_search"
+              ? {
+                  query,
+                  status: "ambiguous_symbol",
+                  message: `${detailed.candidates.length} pool-backed, on-chain-confirmed coins matched "${query}" exactly. A symbol does not identify a coin on Sui: pass a full coin_type instead. ${detailed.partial ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. " : ""}${detailed.unconfirmed ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). ` : ""}${POOL_COVERAGE_NOTE}`,
+                  coin_count: detailed.candidates.length,
+                  candidates: detailed.candidates,
+                  candidate_order: "Verified first, then exact symbol, then descending DEX pool liquidity; liquidity is not proof of legitimacy.",
+                  search_coverage: {
+                    providers: detailed.coverage, unavailable_providers: detailed.unavailable_providers,
+                    partial: detailed.partial, unconfirmed: detailed.unconfirmed,
+                    ...(detailed.unconfirmed_reason ? { unconfirmed_reason: detailed.unconfirmed_reason } : {}),
+                  },
+                }
               : {
                   query,
                   status: "ambiguous_symbol",
                   message: `${detailed.candidates.length} verified coins use the symbol "${query}". A symbol does not identify a coin on Sui — pass one of these coin_type values instead.`,
                   candidates: detailed.candidates.map((c) => ({
                     coin_type: c.coin_type, symbol: c.symbol, name: c.name, decimals: c.decimals,
+                    verified: true, liquidity_usd: null,
+                    ...(guardiansFlagsForCoin(c.coin_type).length ? { flagged_by: guardiansFlagsForCoin(c.coin_type) } : {}),
                   })),
                 };
           return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
         }
-        if (detailed.status === "not_found") return errorResult(notFoundMessage(query, detailed));
+        if (detailed.status === "not_found" || detailed.status === "could_not_confirm") return errorResult(notFoundMessage(query, detailed));
         symbolVerified = detailed.status === "resolved";
         if (detailed.status === "unverified") resolvedBySymbol = symbolResolution(detailed);
+        if (detailed.status === "unverified" && detailed.source === "dex_search") resolvedCandidate = detailed.token;
         const match = detailed.token;
         coinType = match.coin_type;
         discoveredName = match.name;
@@ -306,6 +266,8 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         marketCapUsd = Math.round(priceUsd * humanSupply * 100) / 100;
       }
 
+      const verifiedSymbol = resolveVerifiedSymbol(symbol);
+
       const result: Record<string, unknown> = {
         coin_type: coinType,
         // Reported for the COIN, not for how it was reached. A full coin type
@@ -324,13 +286,20 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         ...(vouchFor(coinType) === null
           ? {
               unverified_note:
-                "No curated list vouches for this coin. 142,152 mainnet coins share a symbol with another and impostors are named to be mistaken for the real asset, so treat the symbol and name here as claims made by whoever minted it, not as identification." +
-                (symbolVerified
-                  ? ""
-                  : " It was reached through its symbol, from metadata anyone can write, which is the weakest way to arrive at a coin."),
+                "No curated list vouches for this coin. Symbols and names are self-declared by the issuer; check the full coin type against the transaction or balance you are investigating." +
+                (symbolVerified ? "" : " A symbol search is not a unique identification, even with pool-backed on-chain confirmation."),
             }
           : { verified_by: vouchFor(coinType) }),
         ...(resolvedBySymbol ? { symbol_resolution: resolvedBySymbol } : {}),
+        ...(resolvedCandidate ? {
+          liquidity_usd: resolvedCandidate.liquidity_usd, pool_count: resolvedCandidate.pool_count,
+          volume_24h: resolvedCandidate.volume_24h, providers: resolvedCandidate.providers,
+        } : {}),
+        ...(vouchFor(coinType) === null && verifiedSymbol.status === "resolved" &&
+          normalizeCoinType(verifiedSymbol.coin.coin_type) !== normalizeCoinType(coinType)
+          ? { impostor_of: verifiedSymbol.coin.coin_type } : {}),
+        package_id: coinType.split("::")[0],
+        publisher_hint: `Use identify_address on package ${coinType.split("::")[0]} to find its publisher, then get_wallet_packages on that publisher to pivot across deployed packages.`,
         // A third-party scam list, stated beside the curated answer rather
         // than folded into it: it is evidence about the coin, weaker than the
         // curated list and never attribution of anyone who holds it.
@@ -348,7 +317,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         ...(decimalsSource === "symbol_scan"
           ? {
               decimals_note:
-                "These decimals came from the metadata found when the symbol was resolved (the synced symbol index or a live scan), because this coin's own metadata could not be read now. Nothing curated vouches for the scale.",
+                "These decimals came from this exact coin type's on-chain metadata during symbol resolution, because the later metadata read did not return them. This is not a curated endorsement of the coin.",
             }
           : {}),
         // The registry is Sui's canonical on-chain metadata, not a whitelist:

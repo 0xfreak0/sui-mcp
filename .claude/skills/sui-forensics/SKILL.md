@@ -177,15 +177,19 @@ prove nothing; a scammer can copy both.
 - **An ambiguous symbol is an answer.** Several legitimate coins share `USDC`:
   Circle's, Wormhole's, Celer's. `analyze_token` returns candidates rather than
   picking. Pass a full coin type; it is the only unambiguous identifier.
-- **A symbol nothing curates lists every coin that uses it, up to 100.** When
-  dozens of coins share one, `analyze_token` returns them all as
-  `candidates`, verified first and then by supply, from a symbol index synced from every
-  `CoinMetadata` and coin registry entry. Above 100 coins the index keeps only
-  the count: `analyze_token` returns the count and no candidates, and
-  `search_token` names such symbols in `unlisted_symbols` without listing
-  their coins. The index has a date (`symbol_index.synced_at`): newer coins
-  may be missing and are found only by a bounded live scan that says how far
-  it got. Supply orders the list and proves nothing.
+- **Uncurated mainnet symbols are live search leads, not an inventory.**
+  `analyze_token` searches DexScreener pools; GeckoTerminal is queried only
+  if DexScreener fails, is rate-limited, or has no Sui hits. Candidate coin
+  types are confirmed against on-chain metadata. Multiple matches return
+  `candidates`, not a selected coin; curated verified types take precedence.
+  Search is cached for 10 minutes and checks at most the top 25 indexer
+  pools, so neither one candidate nor no candidates proves how many coins
+  use a symbol. Pool liquidity and volume are indexer-attested, not proof
+  that a coin is genuine. Provider availability is reported. When providers
+  yield no match, and on testnet/devnet, a bounded CoinMetadata scan may
+  find a candidate; its truncated or failed coverage is not proof of absence.
+  Pass an exact coin type from the transaction or balance before attributing
+  funds.
 
 ## A holder scan is not a ranking unless it finished
 

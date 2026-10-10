@@ -10,7 +10,7 @@ sidebar:
 | [`get_balance`](#get_balance) | Read one coin's liquid balance for a Sui address or object, now or at a past time/checkpoint; the default coin is SUI. |
 | [`get_coin_info`](#get_coin_info) | Get on-chain metadata for a token/coin given its exact coin type string (e.g. '0x2::sui::SUI'). |
 | [`get_token_prices`](#get_token_prices) | Get USD prices for Sui coins by full coin type, current by default or at a past moment when `at` is set. |
-| [`search_token`](#search_token) | Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. |
+| [`search_token`](#search_token) | Find a Sui coin type by name or symbol. |
 
 ## get_balance
 
@@ -63,11 +63,11 @@ Get USD prices for Sui coins by full coin type, current by default or at a past 
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Find a Sui coin type by name or symbol for get_balance, get_coin_info or get_token_prices. Verified types rank first, then exact symbol matches; verified means a curated list vouches for that exact type, not its copyable name. Mainnet's unverified matches use a CoinMetadata/coin-registry symbol index dated by symbol_index.synced_at; later coins are missing. Symbols used by over 100 coins list only counts in unlisted_symbols, including symbols containing the query. With no index match, or off mainnet, discovery uses a bounded live CoinMetadata scan. discovery_scan_truncated means it did not finish; discovery_scan_failed names a read error.
+Find a Sui coin type by name or symbol. Verified types rank first. Mainnet searches DexScreener for the ticker and ticker + SUI; GeckoTerminal is used when results are missing, capped or unavailable. Up to 25 pool-backed candidates are confirmed by exact coin type on chain and clean searches are cached for 10 minutes. Symbols are not unique; partial result caps, provider outages and failed on-chain confirmations are reported separately. Without confirmed live matches or off mainnet, a bounded CoinMetadata scan is used; pass a full coin type to inspect a coin without a pool.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Token name, symbol (e.g. 'USDC', 'WAL'), or full coin type (e.g. '0x...::mod::TOKEN') |
 | `verify_onchain` | boolean | no | If true, verify each match on-chain and include total supply (default: false) |
-| `limit` | integer (1 to 500) | no | Matches returned (default 50, max 500); verified types then exact symbols. total_matches counts all matches. |
+| `limit` | integer (1 to 500) | no | Matches returned (default 150, max 500); verified types then exact symbols. total_matches counts all matches. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

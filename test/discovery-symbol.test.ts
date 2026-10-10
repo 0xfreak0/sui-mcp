@@ -1,25 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { buildSymbolIndex } from "../scripts/lib/coin-symbols-encode.mjs";
 import { runWithNetwork } from "../src/config.js";
-import type { SymbolIndex } from "../src/utils/coin-symbols.js";
-import type * as CoinSymbols from "../src/utils/coin-symbols.js";
 
 const mockGqlQuery = vi.fn();
+const mockSearchLiveTickers = vi.fn();
 vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
+vi.mock("../src/utils/ticker-search.js", () => ({ searchLiveTickers: mockSearchLiveTickers }));
 
-// The index the resolver sees. Each test installs the one it needs.
-const shipped = vi.hoisted(() => ({ index: null as SymbolIndex | null }));
-vi.mock("../src/utils/coin-symbols.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof CoinSymbols>()),
-  symbolIndex: () => shipped.index,
-}));
-
-// Imported after the mocks above, whose factories close over this file's mocks.
 const { resolveSymbolDetailed, resolveTokenBySymbol, searchTokens } = await import("../src/discovery.js");
-const { createSymbolIndex } = await import("../src/utils/coin-symbols.js");
 
-/** One page of `0x2::coin::CoinMetadata` objects, shaped as mainnet GraphQL returns it. */
+/** One page of `0x2::coin::CoinMetadata` objects, shaped as GraphQL returns it. */
 function metadataPage(
   coins: Array<{ coinType: string; name: string; symbol: string; decimals?: number }>,
   hasNextPage = false,
@@ -42,213 +32,160 @@ function metadataPage(
 const YUNGOG = "0x009f33ecca62cb3a6eff9df6517f4bc2cd3f879003e3c69454f5271f6674be26::yungog::YUNGOG";
 const KONG_SUI = "0xb0c3e7ae67c9161273aab9a06e589c1c13479337d14c794251a97df46822f2cb::kong::KONG";
 const KONG_DING_DONG = "0xcc345bb9b0d5ddd2d01a4e303a9fa4c00b6da760e4618ed31e303c585df962ca::kong::KONG";
+const coverage = { dexscreener: "ok" as const, geckoterminal: "ok" as const };
+const unavailable = { dexscreener: "unavailable" as const, geckoterminal: "unavailable" as const };
 
-function indexOf(coins: Array<{ coin_type: string; symbol: string; name: string; decimals: number }>, maxRows = 100) {
-  return createSymbolIndex({
-    synced_at: "2026-09-26",
-    checkpoint: 190000000,
-    counts: { coins: coins.length },
-    max_rows_per_symbol: maxRows,
-    symbols: buildSymbolIndex(coins, maxRows).symbols,
-  });
+function ticker(coin_type: string, symbol: string, name: string, decimals = 9) {
+  return {
+    coin_type, symbol, name, decimals,
+    total_supply: "1000000000", liquidity_usd: 20000, pool_count: 2, volume_24h: 3500,
+    providers: ["dexscreener", "geckoterminal"], verified: false,
+    package_id: coin_type.split("::")[0], publisher_hint: coin_type.split("::")[0],
+  };
 }
-
-const BOTH_KONGS = [
-  { coin_type: KONG_SUI, symbol: "KONG", name: "KONG SUI", decimals: 1 },
-  { coin_type: KONG_DING_DONG, symbol: "KONG", name: "Kong Ding Dong", decimals: 6 },
-  { coin_type: YUNGOG, symbol: "YUNGOG", name: "Yung Kong Khan", decimals: 9 },
-];
 
 beforeEach(() => {
   mockGqlQuery.mockReset();
-  shipped.index = null;
+  mockSearchLiveTickers.mockReset();
+  mockSearchLiveTickers.mockResolvedValue({ candidates: [], providers: coverage, unavailable_providers: [] });
 });
 
-describe("resolveSymbolDetailed with the symbol index", () => {
-  /**
-   * A symbol several coins use is answered from the index with every coin that
-   * uses it. The live scan reads CoinMetadata in object-ID order and can stop
-   * before reaching any of them, so it does not run.
-   */
-  it("answers a symbol several coins use with every one of them, without scanning", async () => {
-    shipped.index = indexOf(BOTH_KONGS);
-    const result = await resolveSymbolDetailed("KONG");
-    expect(result).toMatchObject({ status: "ambiguous", source: "symbol_index", count: 2 });
-    expect(result.status === "ambiguous" ? result.candidates.map((c) => c.coin_type) : []).toEqual([KONG_SUI, KONG_DING_DONG]);
+describe("resolveSymbolDetailed with live ticker discovery", () => {
+  it("keeps a curated verified symbol authoritative even when a pooled lookalike exists", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [ticker("0x1::fake::SUI", "SUI", "Sui")], providers: coverage, unavailable_providers: [],
+    });
+    const result = await resolveSymbolDetailed("SUI");
+    expect(result).toMatchObject({ status: "resolved", verified: true, token: { coin_type: `0x${"0".repeat(63)}2::sui::SUI` } });
+    expect(mockSearchLiveTickers).not.toHaveBeenCalled();
     expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 
-  it("resolves a symbol exactly one indexed coin uses, still unverified", async () => {
-    shipped.index = indexOf(BOTH_KONGS.slice(0, 1));
-    const result = await resolveSymbolDetailed("kong");
-    expect(result).toMatchObject({ status: "unverified", source: "symbol_index", token: { coin_type: KONG_SUI, decimals: 1 } });
-    expect(mockGqlQuery).not.toHaveBeenCalled();
+  it("preserves ambiguity among curated verified symbols without consulting DEXs", async () => {
+    expect(await resolveSymbolDetailed("USDC")).toMatchObject({ status: "ambiguous", source: "curated" });
+    expect(mockSearchLiveTickers).not.toHaveBeenCalled();
   });
 
-  it("reports a symbol too common to list as ambiguous with its count", async () => {
-    const spam = Array.from({ length: 3 }, (_, i) => ({
-      coin_type: `0x${(i + 1).toString(16).padStart(64, "0")}::fwp::FWP`,
-      symbol: "FWP",
-      name: "fixwalletspls",
-      decimals: 9,
-    }));
-    shipped.index = indexOf(spam, 2);
-    expect(await resolveSymbolDetailed("FWP")).toMatchObject({ status: "ambiguous", source: "symbol_index", count: 3, candidates: [] });
-  });
-
-  it("refuses to pick one of several indexed coins for callers that need a single type", async () => {
-    shipped.index = indexOf(BOTH_KONGS);
+  it("reports every exact on-chain-confirmed ticker and refuses to choose one", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [ticker(KONG_SUI, "KONG", "KONG SUI", 1), ticker(KONG_DING_DONG, "KONG", "Kong Ding Dong", 6), ticker(YUNGOG, "YUNGOG", "Yung Kong Khan")],
+      providers: coverage, unavailable_providers: [],
+    });
+    expect(await resolveSymbolDetailed("KONG")).toMatchObject({
+      status: "ambiguous", source: "dex_search", coverage, unavailable_providers: [],
+      candidates: [{ coin_type: KONG_SUI }, { coin_type: KONG_DING_DONG }],
+    });
     expect(await resolveTokenBySymbol("KONG")).toBeNull();
-    shipped.index = indexOf(BOTH_KONGS.slice(0, 1));
-    expect((await resolveTokenBySymbol("KONG"))?.coin_type).toBe(KONG_SUI);
     expect(mockGqlQuery).not.toHaveBeenCalled();
   });
-});
 
-describe("resolveSymbolDetailed for a symbol the index does not have", () => {
-  /**
-   * A coin whose name contains the query but whose symbol differs (`Yung Kong
-   * Khan`, symbol YUNGOG) does not match a symbol query. The scan is the
-   * fallback for a symbol the index lacks, and it matches symbols exactly.
-   */
-  it("does not resolve a symbol query to a coin whose NAME merely contains it", async () => {
-    shipped.index = indexOf([BOTH_KONGS[2]]);
-    mockGqlQuery.mockResolvedValue(
-      metadataPage([{ coinType: YUNGOG, name: "Yung Kong Khan", symbol: "YUNGOG" }]),
-    );
-    const result = await resolveSymbolDetailed("NEWKONG");
-    expect(result).toMatchObject({
-      status: "not_found",
-      scan: { scanned: 1, truncated: false },
-      index: { synced_at: "2026-09-26" },
+  it("returns a sole exact live ticker as unverified, not a verified coin", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [ticker(KONG_SUI, "KONG", "KONG SUI", 1)], providers: coverage, unavailable_providers: [],
+    });
+    expect(await resolveSymbolDetailed("kong")).toMatchObject({
+      status: "unverified", source: "dex_search", token: { coin_type: KONG_SUI, verified: false }, coverage,
+    });
+  });
+  it("does not silently resolve one partial candidate as the only exact symbol", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [ticker(KONG_SUI, "KONG", "Kong", 1)], providers: coverage,
+      unavailable_providers: [], partial: true, unconfirmed: 0,
+    });
+    expect(await resolveSymbolDetailed("KONG")).toMatchObject({
+      status: "unverified", source: "dex_search", partial: true, token: { coin_type: KONG_SUI },
+    });
+    expect(await resolveTokenBySymbol("KONG")).toBeNull();
+  });
+
+  it("reports an unconfirmed candidate as a read failure instead of not_found", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [], providers: coverage, unavailable_providers: [],
+      partial: false, unconfirmed: 1, unconfirmed_reason: "gRPC unavailable",
+    });
+    mockGqlQuery.mockResolvedValue(metadataPage([]));
+    expect(await resolveSymbolDetailed("UNCHECKED")).toMatchObject({
+      status: "could_not_confirm", scan: { scanned: 0, truncated: false },
+      unconfirmed: 1, unconfirmed_reason: "gRPC unavailable",
+    });
+    expect(await searchTokens("UNCHECKED")).toMatchObject({
+      source: "scan", tokens: [], unconfirmed: 1, unconfirmed_reason: "gRPC unavailable",
     });
   });
 
-  it("still resolves an exact symbol match found within the scanned window", async () => {
-    shipped.index = indexOf([BOTH_KONGS[2]]);
-    mockGqlQuery.mockResolvedValue(
-      metadataPage([
-        { coinType: YUNGOG, name: "Yung Kong Khan", symbol: "YUNGOG" },
-        { coinType: KONG_SUI, name: "KONG SUI", symbol: "KONG", decimals: 1 },
-      ]),
-    );
-    const result = await resolveSymbolDetailed("KONG");
-    expect(result).toMatchObject({
-      status: "unverified",
-      source: "scan",
-      token: { coin_type: KONG_SUI, symbol: "KONG", decimals: 1 },
-      index: { synced_at: "2026-09-26" },
+
+  it("does not resolve a symbol to a token whose name merely contains it", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [ticker(YUNGOG, "YUNGOG", "Yung Kong Khan")], providers: coverage, unavailable_providers: [],
     });
-  });
-
-  /**
-   * A scan stopped at its page budget does not show the symbol is absent, so
-   * the miss says whether the scan reached the end.
-   */
-  it("reports a miss as partial when the scan stopped before the last page", async () => {
-    vi.useFakeTimers();
-    try {
-      mockGqlQuery.mockResolvedValue(metadataPage([{ coinType: YUNGOG, name: "Yung Kong Khan", symbol: "YUNGOG" }], true));
-      // A symbol no earlier test resolved: a resolved symbol is cached.
-      const pending = resolveSymbolDetailed("DINGDONG");
-      await vi.runAllTimersAsync();
-      const result = await pending;
-      expect(result).toMatchObject({ status: "not_found", scan: { truncated: true } });
-      expect(result).not.toHaveProperty("scan.failed");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("reports a miss as complete when the scan read the last page", async () => {
     mockGqlQuery.mockResolvedValue(metadataPage([{ coinType: YUNGOG, name: "Yung Kong Khan", symbol: "YUNGOG" }]));
-    expect(await resolveSymbolDetailed("NOSUCHCOIN")).toMatchObject({ status: "not_found", scan: { truncated: false } });
-  });
-
-  /**
-   * A failed page is reported with its error, distinct from a spent page
-   * budget, so an outage does not read as "not found".
-   */
-  it("reports a failed page as a read failure, with its error", async () => {
-    mockGqlQuery.mockRejectedValue(new TypeError("fetch failed"));
-    expect(await resolveSymbolDetailed("FAILEDREAD")).toMatchObject({
-      status: "not_found",
-      scan: { truncated: true, scanned: 0, failed: expect.stringContaining("fetch failed") },
+    expect(await resolveSymbolDetailed("NEWKONG")).toMatchObject({
+      status: "not_found", scan: { scanned: 1, truncated: false }, coverage,
     });
   });
 });
 
 describe("searchTokens", () => {
-  it("answers from the index when it has a match, exact symbols first, without scanning", async () => {
-    shipped.index = indexOf(BOTH_KONGS);
+  it("returns DEX matches with liquidity evidence and provider coverage without scanning", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [ticker(KONG_SUI, "KONG", "KONG SUI", 1), ticker(YUNGOG, "YUNGOG", "Yung Kong Khan")],
+      providers: coverage, unavailable_providers: [],
+    });
     const result = await searchTokens("kong");
-    expect(result.source).toBe("symbol_index");
-    expect(result.tokens.map((t) => t.coin_type)).toEqual([KONG_SUI, KONG_DING_DONG, YUNGOG]);
+    expect(result).toMatchObject({ source: "dex_search", coverage, unavailable_providers: [], tokens: [{ coin_type: KONG_SUI, liquidity_usd: 20000 }, { coin_type: YUNGOG }] });
     expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 
-  it("falls back to the live scan when the index has nothing, and says which index missed", async () => {
-    shipped.index = indexOf(BOTH_KONGS);
+  it("falls back to scanning when both indexers fail, exposing both outages", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [], providers: unavailable,
+      unavailable_providers: [
+        { provider: "dexscreener", reason: "timeout" },
+        { provider: "geckoterminal", reason: "HTTP 503" },
+      ],
+    });
     mockGqlQuery.mockResolvedValue(metadataPage([{ coinType: "0x5::fresh::FRESH", name: "Fresh", symbol: "FRESH" }]));
     const result = await searchTokens("fresh");
-    expect(result).toMatchObject({ source: "scan", truncated: false, index: { synced_at: "2026-09-26" } });
-    expect(result.tokens.map((t) => t.symbol)).toEqual(["FRESH"]);
+    expect(result).toMatchObject({
+      source: "scan", coverage: unavailable,
+      unavailable_providers: [{ provider: "dexscreener", reason: "timeout" }, { provider: "geckoterminal", reason: "HTTP 503" }],
+      scan: { scanned: 1, truncated: false }, tokens: [{ symbol: "FRESH" }],
+    });
   });
 
-  /**
-   * A symbol too common to list still counts as a match for a query it
-   * contains, so the index answers and the live scan does not run.
-   */
-  it("counts a symbol too common to list that contains the query as a match, without scanning", async () => {
-    const nftReceived = Array.from({ length: 3 }, (_, i) => ({
-      coin_type: `0x${(i + 1).toString(16).padStart(64, "0")}::nft::NFT`,
-      symbol: "NFT RECEIVED",
-      name: "Claim at nft-sui.io",
-      decimals: 0,
-    }));
-    shipped.index = indexOf([...nftReceived, ...BOTH_KONGS], 2);
-    const result = await searchTokens("nft receiv");
-    expect(result).toMatchObject({ source: "symbol_index", tokens: [], unlisted_exact_count: null, unlisted_containing: [{ symbol: "nft received", count: 3 }] });
-    expect(mockGqlQuery).not.toHaveBeenCalled();
-  });
-
-  it("lists what the index lists beside the symbols too common to list", async () => {
-    const usdc = Array.from({ length: 3 }, (_, i) => ({
-      coin_type: `0x${(i + 1).toString(16).padStart(64, "0")}::usdc::USDC`,
-      symbol: "USDC",
-      name: "USD Coin",
-      decimals: 6,
-    }));
-    const usdx = { coin_type: `0x${"9".repeat(64)}::usdx::USDX`, symbol: "USDX", name: "USDX", decimals: 6 };
-    shipped.index = indexOf([...usdc, usdx, ...BOTH_KONGS], 2);
-    const result = await searchTokens("usd");
-    expect(result).toMatchObject({ source: "symbol_index", unlisted_containing: [{ symbol: "usdc", count: 3 }] });
-    expect(result.tokens.map((t) => t.coin_type)).toEqual([usdx.coin_type]);
-    // The exact symbol stays in unlisted_exact_count, not in the containing list.
-    expect(await searchTokens("usdc")).toMatchObject({ unlisted_exact_count: 3, unlisted_containing: [] });
+  it("uses skipped provider coverage on other networks", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [], providers: { dexscreener: "skipped", geckoterminal: "skipped" }, unavailable_providers: [],
+    });
+    await runWithNetwork("testnet", async () => {
+      mockGqlQuery.mockResolvedValue(metadataPage([{ coinType: "0x7::testcoin::TESTCOIN", name: "Test Coin", symbol: "TESTCOIN" }]));
+      expect(await searchTokens("testcoin")).toMatchObject({
+        source: "scan", coverage: { dexscreener: "skipped", geckoterminal: "skipped" },
+        unavailable_providers: [], tokens: [{ symbol: "TESTCOIN" }],
+      });
+      expect(mockSearchLiveTickers).toHaveBeenCalledWith("testcoin");
+    });
   });
 });
 
-describe("searchTokens when a metadata page fails", () => {
+describe("searchTokens when an off-mainnet metadata page fails", () => {
   it("reports the failure and reads again next time instead of caching the partial list", async () => {
     const FRESH = { coinType: "0x5::fresh::FRESH", name: "Fresh", symbol: "FRESH" };
     const FRESHER = { coinType: "0x6::fresher::FRESHER", name: "Fresher", symbol: "FRESHER" };
-    // Devnet: the mainnet scan cache holds the earlier tests' list.
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [], providers: { dexscreener: "skipped", geckoterminal: "skipped" }, unavailable_providers: [],
+    });
     await runWithNetwork("devnet", async () => {
       mockGqlQuery.mockResolvedValueOnce(metadataPage([FRESH], true)).mockRejectedValueOnce(new TypeError("fetch failed"));
       expect(await searchTokens("fresh")).toMatchObject({
-        source: "scan",
-        truncated: true,
-        scanned: 1,
-        failed: expect.stringContaining("fetch failed"),
+        source: "scan", scan: { truncated: true, scanned: 1, failed: expect.stringContaining("fetch failed") },
         tokens: [{ symbol: "FRESH" }],
       });
-
       mockGqlQuery.mockResolvedValueOnce(metadataPage([FRESH, FRESHER]));
       const retried = await searchTokens("fresh");
-      expect(retried).toMatchObject({ source: "scan", truncated: false, scanned: 2 });
-      expect(retried).not.toHaveProperty("failed");
+      expect(retried).toMatchObject({ source: "scan", scan: { truncated: false, scanned: 2 } });
       expect(retried.tokens.map((t) => t.symbol)).toEqual(["FRESH", "FRESHER"]);
+      expect(mockSearchLiveTickers).toHaveBeenCalledTimes(2);
     });
   });
 });

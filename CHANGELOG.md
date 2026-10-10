@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Uncurated mainnet coin lookup now uses live DEX search instead of a
+  shipped symbol index.** `analyze_token` and `search_token` search DexScreener
+  with both the ticker and `ticker SUI` to reduce cross-chain crowding, then
+  ask GeckoTerminal when Sui matches are missing, capped or unavailable.
+  They confirm candidate coin types against on-chain metadata, cache only
+  clean results for 10 minutes, and report partial provider coverage and
+  candidates that could not be confirmed rather than calling them absent.
+  Curated verified coins take precedence. The search confirms at most 25
+  candidate coin types by pool liquidity; a bounded CoinMetadata scan is the
+  fallback when no candidate can be confirmed and off mainnet.
+  Coins without a DEX pool are found only by full coin type or that bounded
+  scan, and pooled lookalikes of verified coins are flagged `impostor_of`.
+  A missing result cannot establish that no coin uses a symbol. `npm pack
+  --dry-run --json` shrank from 8,567,545 to 2,290,345 compressed bytes
+  (19,631,575 to 6,837,760 unpacked bytes).
+
 ## 1.27.0 (2026-10-06)
 
 Wallet profiles report packages they published or upgraded, and batched

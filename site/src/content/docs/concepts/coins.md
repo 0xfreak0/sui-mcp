@@ -54,13 +54,18 @@ An ambiguous symbol returns candidates rather than a coin. `USDC` matches
 several legitimate verified coins on Sui (Circle's, Wormhole's, Celer's), so
 picking one would misreport which asset moved.
 
-A symbol no curated list covers is looked up in a symbol index of every coin
-on mainnet, synced from each `CoinMetadata` and coin registry entry by
-`npm run sync:coin-symbols`. Many coins use `KONG`, so `analyze_token` returns
-them as candidates, verified first and then by supply, and `search_token`
-lists them. The index has a date, and every answer drawn from it names that
-date: a coin published later is found only by a bounded live scan of on-chain
-metadata, which says how far it got.
+A symbol no curated list covers is searched live on mainnet: DexScreener is
+queried for both the ticker and `ticker SUI`, so other chains do not crowd
+Sui pairs out of its 30-pair response. GeckoTerminal is queried if those
+results are missing, capped or unavailable; its public results also have a
+20-pool cap. Candidate coin types are confirmed against on-chain metadata;
+a DEX listing is a lead, not verification of the asset's identity.
+`analyze_token` returns multiple matches as candidates rather than choosing
+one. The search confirms at most 25 candidate coin types by pool liquidity;
+only searches without provider or metadata failures are cached for 10 minutes.
+Coins without an indexed pool cannot appear in live results. If no candidate
+can be confirmed, a bounded CoinMetadata scan is the fallback, not a complete
+inventory.
 
 `search_token` accepts a name or symbol, such as `USDC`, `deep`, `cetus` or
 `WAL`, or a full type such as `0x…::mod::TOKEN`. It returns full coin types,
@@ -68,17 +73,19 @@ verified types first and then exact symbol matches, for use with
 `get_balance`, `get_coin_info` and `get_token_prices`. Verification vouches for
 the exact type, since names and symbols can be copied.
 
-The mainnet index's `symbol_index.synced_at` bounds its coverage. If more than
-100 coins use a symbol, it stores only the count and lists none of those coins.
-`unlisted_symbols` names each such symbol matching or containing the query
-and its coin count. With no index match, and on other networks, a bounded
-live CoinMetadata scan supplies unverified matches. `discovery_scan_truncated`
-marks a scan that did not reach the end; `discovery_scan_failed` names a read
-error that stopped it.
+Mainnet search reports provider availability, `partial` when provider result
+caps may hide matches, and the number of candidates `unconfirmed` because their
+own on-chain metadata could not be read. Neither a capped result nor a failed
+metadata check establishes that a symbol is absent or unique. Candidate
+liquidity, pool counts and 24-hour volume are indexer-reported; they do not
+establish legitimacy or ownership. The indexers cover pools, not every coin,
+and the top-25 confirmation limit and bounded scan leave some coins unread.
+On testnet and devnet, discovery uses the bounded CoinMetadata scan instead
+of mainnet DEX indexers. `discovery_scan_truncated` marks an unfinished scan;
+`discovery_scan_failed` names a read error that stopped it.
 
-`verify_onchain: true` checks each match and includes total supply; it defaults
-to false. `limit` defaults to 50, at most 500, while `total_matches` counts
-the complete matched set before that display limit.
+`verify_onchain: true` additionally checks matches and includes total supply;
+`limit` controls how many matches are displayed, not how many coins exist.
 
 
 ## Frozen addresses

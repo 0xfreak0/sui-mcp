@@ -21,7 +21,7 @@ src/
 ├── protocols/            # Protocol registry for tx decoding
 ├── data/                 # Static JSON data (token registry, etc.)
 ├── utils/                # Shared helpers (formatting, SuiNS, etc.)
-├── discovery.ts          # Token discovery (static + Aftermath fallback)
+├── discovery.ts          # Curated resolution, sequential live mainnet DEX search + bounded scan fallback
 ├── discovery-nft.ts      # NFT collection discovery
 ├── prompts.ts            # MCP prompts (task + forensics skill sections)
 └── resources.ts          # MCP resources (chain reads, sui://case/{name}, sui://results/{id})
@@ -978,7 +978,6 @@ npm start         # node dist/index.js
 npm run verify:live          # live mainnet checks — see below
 npm run sync:verified-coins  # regenerate src/data/coins.json
 npm run sync:protocol-roots  # regenerate src/data/protocol-roots.json
-npm run sync:coin-symbols    # regenerate src/data/coin-symbols.json (about 13 minutes)
 npm run sync:labels -- --exclude FILE   # build, then regenerate src/data/deposit-labels.json; FILE lists private case addresses
 npm run sync:framework -- REF   # vendor the Sui framework sources test/sui-framework.test.ts checks claims against
 ```
@@ -1655,77 +1654,39 @@ process had happened to warm KONG. `fundingValuer` warms every coin the
 address received alongside the price request, and values through
 `pricingScale`.
 
-### A symbol scan is exact, not fuzzy, and can honestly find nothing
+### Symbol resolution: exact identity, incomplete discovery
 
-`discovery.ts`'s `scanForSymbol` (behind `resolveSymbolDetailed`,
-`resolveTokenBySymbol`, `resolveTokenType`) matches a query against
-CoinMetadata's `symbol` field ONLY, case-insensitive. It used to fall back to
-a NAME-or-symbol SUBSTRING match when no exact hit turned up in the scanned
-window — which let `analyze_token {"query":"KONG"}` resolve to
-`0x009f33ec…::yungog::YUNGOG` (name "Yung Kong Khan", symbol YUNGOG) as a
-confident single answer, because its NAME merely contains "Kong". A
-substring fallback here is worse than no answer: the caller cannot tell a
-real match from a coincidence, and reports the coincidence as an
-identification. `searchTokens` (`search_token`'s fuzzy search) does its own
-substring filter and was never routed through this function.
+`analyze_token` accepts exact symbol matches or full coin types; it must
+never resolve a name substring as a symbol. The earlier name-or-symbol
+substring fallback could mistake `KONG` for YUNGOG (name "Yung Kong Khan")
+and report the wrong asset. `search_token` separately supports fuzzy name
+and symbol searches, but results are leads for choosing an exact coin type.
 
-The scan's bound (`MAX_SCAN_PAGES`, object-ID order) means an exact match
-can still go unfound for a symbol nothing curates: measured live scanning for
-KONG's two symbol-exact coins, 30,257 CoinMetadata objects (600 pages) in 100
-continuous seconds found neither. The scan is therefore the LAST resort, below
-the symbol index. When it finds nothing, `resolveSymbolDetailed` returns
-`{status: "not_found", scan, index}`: an honest "could not identify this
-symbol" that says how far the scan got and which index missed, never a guess.
-A page read that fails ends the walk with `scan.failed` set to its error, and
-is a read failure, never a miss: `analyze_token` says the symbol could not be
-looked up, `search_token` reports `discovery_scan_failed`, and the partial
-list is not cached, so the next call reads again.
+Resolution order: the curated verified registry first, then live mainnet
+DexScreener pool searches for both the ticker and `ticker SUI` to limit
+cross-chain crowding. Query GeckoTerminal if DexScreener fails, finds no Sui
+candidates, or returns a capped mixed-chain page. GeckoTerminal has its own
+20-pool result cap; report `partial` if it fills the page. Indexers report
+liquidity/volume, not legitimacy; confirm each candidate's exact coin type
+against on-chain metadata. Only clean results are cached for 10 minutes;
+failed confirmations report `unconfirmed`, not an absent coin. Confirm
+at most 25 coin types ranked by pool liquidity.
+Do not describe one candidate as the only coin using a symbol:
+indexers omit coins without covered pools, and a bound cannot establish
+uniqueness. Several exact matches are `ambiguous_symbol` with candidates;
+`resolveTokenBySymbol` refuses to pick one. A curated verified type vouches
+only for that type, not a shared name or symbol.
 
-### A symbol is answered from the synced index before the scan
-
-`src/data/coin-symbols.json` lists every coin on mainnet by its symbol
-(trimmed, lower-cased), with decimals and name. `npm run sync:coin-symbols`
-regenerates it by walking every `CoinMetadata` and every registry
-`Currency<T>`: 174,685 coins on 2026-09-26, 173,064 with CoinMetadata and
-1,621 with only a registry entry. The walk takes about 13 minutes, which is
-why no tool call can do it. `src/utils/coin-symbols.ts` reads the file on the
-first symbol lookup; it is mainnet only, since coin types embed package IDs.
-
-Resolution order in `resolveSymbolDetailed` and `resolveTokenBySymbol`: the
-curated list, then the index, then the live scan for a symbol the index lacks.
-
-- **One indexed coin resolves**, still `verified: false`, with
-  `symbol_resolution` naming the index date.
-- **Several is `ambiguous_symbol` with candidates.** Sharing is the normal
-  case: 142,152 coins share their symbol with another, and 30 use KONG.
-  `analyze_token` ranks candidates verified first, then by total supply in
-  whole coins, reading supply with one `getCoinInfo` per coin for up to 50.
-  Supply is an ordering, never evidence: an impostor can mint more than the
-  real asset. `resolveTokenBySymbol` answers null, the same refusal as a
-  curated ambiguity.
-- **Above 100 coins a symbol keeps only its count** (65 symbols, SUI alone
-  7,090). No list that long identifies a coin, and it would add about 3 MB.
-- **Coins published after the sync are the known limit.** Every answer drawn
-  from the index carries `synced_at` and `checkpoint`, and a symbol it lacks
-  goes to the live scan, whose not-found message names both.
-- `searchTokens` takes the index's matches when it has any, exact symbols
-  first, and runs the scan only when the index has none. A count-only symbol
-  that is or contains the query is a match too: `search()` returns it in
-  `unlisted`, and `search_token` names it in `unlisted_symbols` with its
-  count. Skipped silently, "nft receiv" ran the 15-second scan and reported
-  that the index had no such coin while 124 coins use `NFT RECEIVED`, and
-  "usd" said nothing about the 735 USDC and 1,093 USDT coins it left out.
-  Count-only symbols keep no names, so the scan's note says the index has no
-  listed coin whose name matches, never no coin.
-- `buildSymbolIndex` builds `symbols` without a prototype, so a coin whose
-  symbol is `__proto__` gets a key instead of setting the prototype.
-
-The file is about 13 MB, nearly all package IDs, which are 32 random bytes per
-coin that nothing compresses. Parsing it costs about 70 ms and 45 MB of heap,
-once per process, and a substring search over it about 20 ms.
-`SIZE_BUDGET_BYTES` in the script refuses a larger write. The row encoding is
-in `scripts/lib/coin-symbols-encode.mjs`, and `test/coin-symbols.test.ts`
-round-trips it through the decoder, so the two cannot drift apart.
+If no candidate is confirmed, `discovery.ts` falls back to a bounded live
+CoinMetadata scan; off-mainnet discovery uses that scan instead of mainnet
+indexers. Its object-ID order and page/time bounds leave coins unread.
+`resolveSymbolDetailed` reports scan coverage on `not_found` and returns
+`could_not_confirm` when a candidate's metadata could not be checked and
+the scan had no exact match. `search_token` reports the separate provider,
+`partial`, `unconfirmed`, `discovery_scan_truncated`, and
+`discovery_scan_failed` fields. A failed provider is not evidence of absence.
+Supply and pool volume may help order leads, never prove identity. Pass the
+full coin type from a transaction or balance to identify the actual asset.
 
 ### Address aliases: an address CAN delegate spending authority
 

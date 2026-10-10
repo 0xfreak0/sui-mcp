@@ -17,7 +17,8 @@ in the repository. It covers:
   reference, store overrides, tests and a live check.
 - Running a blind investigation and writing a case file.
 - Changing an anomaly detector.
-- Keeping the protocol registry and the coin symbol index current.
+- Keeping the protocol registry and curated verified coins current; uncurated
+  mainnet symbol discovery searches live DEX pools, not a shipped coin index.
 - Citing the Sui framework source for claims about it.
 - Writing mocks that match what a service can return.
 - Adding a bridge.

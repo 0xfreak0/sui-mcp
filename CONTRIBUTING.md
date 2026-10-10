@@ -232,23 +232,19 @@ coverage, which catches a forgotten re-run.
 A protocol that redeploys rather than upgrades mints an unrelated root.
 Use `find-unknown-packages` below to discover new lineages.
 
-## Keeping the coin symbol index current
+## Keeping curated coins current
 
-`src/data/coin-symbols.json` lists every mainnet coin by symbol, so
-`analyze_token` and `search_token` can return candidates when several coins
-share a symbol without a live scan that cannot reach them all. A coin
-published after the sync is found only by the bounded live scan, and tools
-say which date the index has. Regenerate it before a release:
-
-```bash
-npm run sync:coin-symbols                  # rewrites src/data/coin-symbols.json
-```
-
-The script walks every `CoinMetadata` and coin registry `Currency` object. It
-refuses to write when the walk returns fewer coins than the shipped file holds,
-which means it was cut short, and when the file would exceed the size budget
-stated at the top of the script. Raise the budget on purpose if the chain has
-outgrown it; the tarball carries the file.
+The curated verified coin registry vouches for exact coin types, not symbols.
+Keep curated entries current with `npm run sync:verified-coins`. Uncurated
+mainnet names and symbols are searched through two DexScreener queries
+(ticker and `ticker SUI`), with GeckoTerminal queried when results are absent,
+capped or unavailable. Candidate coin types are checked against their exact
+on-chain metadata. Only clean searches are cached for 10 minutes; capped
+results report `partial` and failed confirmations report `unconfirmed` rather
+than claiming absence. At most 25 candidate coin types are confirmed, ranked
+by pool liquidity. A bounded CoinMetadata scan is the fallback when no live
+candidate is confirmed and is also used off mainnet. Neither search path is
+a complete coin inventory; no release-time symbol sync is required.
 
 ## Claims about the Sui framework cite its source
 

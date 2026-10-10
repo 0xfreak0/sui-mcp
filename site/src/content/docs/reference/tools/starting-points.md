@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`analyze_token`](#analyze_token) | Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. |
+| [`analyze_token`](#analyze_token) | Analyze a Sui coin type or symbol: metadata, current price, 24h change, total supply and top holders. |
 | [`get_transaction_history`](#get_transaction_history) | Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. |
 | [`get_wallet_overview`](#get_wallet_overview) | Overview of a Sui wallet. |
 | [`get_wallet_packages`](#get_wallet_packages) | List package versions created by publish or upgrade transactions sent from this wallet address. |
@@ -19,7 +19,7 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for token research) Get a comprehensive analysis of a Sui token in one call: metadata, current price, 24h change, total supply, and top 5 holders. Accepts either a coin type (e.g. '0x2::sui::SUI') or a symbol (e.g. 'DEEP', 'cetus'). A symbol several coins use returns status ambiguous_symbol with candidates (verified first, then by supply) from a symbol index of every mainnet coin up to its sync date. A symbol more than 100 coins use returns its count and no candidates, since the index keeps only the count; a coin published after the sync date is found only by a bounded live scan.
+(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, total supply and top holders. Verified symbols resolve from the curated list; other mainnet symbols use two DexScreener searches (ticker and ticker + SUI), with GeckoTerminal fallback for missing, capped or unavailable results. Up to 25 pool-backed coin types are confirmed on chain; only clean results are cached for 10 minutes. Multiple exact symbols return ambiguous_symbol. Provider caps and failed confirmations are reported, not mistaken for absent coins; a bounded on-chain scan is the fallback when no live match is confirmed.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

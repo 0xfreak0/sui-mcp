@@ -42,11 +42,39 @@
       "name": "Blast.fun",
       "type": "launchpad"
     },
+    "0x2d300f3d8819c6e09fd1558e518c2ffab97b324479843d4f94b561b10a441fd0": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x304819d5da5b2a53422976b81b8ae9a799c48d30201cbc29b2b1629b6ce817f2": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
     "0x40e0c95f73af329e7a6a8eafee9d152a1f3090736d35052842288232f7eb5968": {
       "name": "Blast.fun",
       "type": "launchpad"
     },
+    "0x726fb49b880faa89719b95c6ef3a91be794f771ed3560fe5894d0a605c8469f9": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
     "0x85fdb7e3d28162b99e0df758069a3d23cff874c400b2160fc0d4618aefd3ec5c": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0x96fbe2db7337dea5ef6926203d32cf602e527d5e2dcae176fbbc3e3d2a30d94f": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0xac58d338925ac96304ca573a4dab80d442df6f2427291bcddbea7fc65279678e": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0xafbd425a6668d9a26d7b3dc668232d779d76b2f719e2f4178a51fd41078d69c3": {
+      "name": "Blast.fun",
+      "type": "launchpad"
+    },
+    "0xdebad36861e0f1390eeb549fd100b1783a3331e88f4785cec703387494e6b612": {
       "name": "Blast.fun",
       "type": "launchpad"
     },
@@ -402,6 +430,10 @@
       "name": "Wormhole",
       "type": "bridge"
     },
+    "0xa10b7229fe2dde62280a48386be883fefe073e31a7b3c69291e6a72e74fd363e": {
+      "name": "yolo.casa",
+      "type": "dex"
+    },
     "0x2ba57e9bd6f4a86ef3861f8317cae4c54c40a45027b5f161dda79f4e5c1e023a": {
       "name": "Yoso",
       "type": "prediction_market"
@@ -466,14 +498,49 @@
         "0x52ecee5e58e2f3a7461cc604f4efcc3b68031e4715456d821e3a2719b0593600"
       ]
     },
+    "0x2d300f3d8819c6e09fd1558e518c2ffab97b324479843d4f94b561b10a441fd0": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
+      ]
+    },
+    "0x304819d5da5b2a53422976b81b8ae9a799c48d30201cbc29b2b1629b6ce817f2": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
+      ]
+    },
     "0x40e0c95f73af329e7a6a8eafee9d152a1f3090736d35052842288232f7eb5968": {
       "signers": [
         "0x52ecee5e58e2f3a7461cc604f4efcc3b68031e4715456d821e3a2719b0593600"
       ]
     },
+    "0x726fb49b880faa89719b95c6ef3a91be794f771ed3560fe5894d0a605c8469f9": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
+      ]
+    },
     "0x85fdb7e3d28162b99e0df758069a3d23cff874c400b2160fc0d4618aefd3ec5c": {
       "signers": [
         "0x52ecee5e58e2f3a7461cc604f4efcc3b68031e4715456d821e3a2719b0593600"
+      ]
+    },
+    "0x96fbe2db7337dea5ef6926203d32cf602e527d5e2dcae176fbbc3e3d2a30d94f": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
+      ]
+    },
+    "0xac58d338925ac96304ca573a4dab80d442df6f2427291bcddbea7fc65279678e": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
+      ]
+    },
+    "0xafbd425a6668d9a26d7b3dc668232d779d76b2f719e2f4178a51fd41078d69c3": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
+      ]
+    },
+    "0xdebad36861e0f1390eeb549fd100b1783a3331e88f4785cec703387494e6b612": {
+      "signers": [
+        "0x612fa27ba229021c5a1c32022fd6341ffbd58a87ac928a0dc32d8d6d1dba9fed"
       ]
     },
     "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267": {
@@ -959,6 +1026,12 @@
     "0x99de5c967d8206ef4b75c0afab3df2a59eb02b05c282821db803831008ac25b4": {
       "signers": [
         "0xe9ca39d84ead6a433860a7a3e283d75e53f01ab237f29cc78dbb05da1c93252d"
+      ]
+    },
+    "0xa10b7229fe2dde62280a48386be883fefe073e31a7b3c69291e6a72e74fd363e": {
+      "signers": [
+        "0x1dd4889f1ba614d0b44bd0fda31dedbb734d4edf8f25254f7d6b69671903ff06",
+        "0x5f74c6a525a88ce2b92cface75f9a7df112370364f801f0389d499e4095fef09"
       ]
     },
     "0x2ba57e9bd6f4a86ef3861f8317cae4c54c40a45027b5f161dda79f4e5c1e023a": {

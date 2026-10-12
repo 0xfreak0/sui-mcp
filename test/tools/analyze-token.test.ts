@@ -119,7 +119,10 @@ describe("analyze_token resolving a symbol", () => {
     mockGqlQuery.mockResolvedValue({ objects: { nodes: [], pageInfo: { hasNextPage: false } } });
     const result = await tools.get("analyze_token")!({ query: "NEWCOIN", include_holders: false });
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text).error).toMatch(/both providers were unavailable.*HTTP 429.*HTTP 503.*scan read 0 objects/i);
+    const error = JSON.parse(result.content[0].text).error;
+    expect(error).toContain("HTTP 429");
+    expect(error).toContain("HTTP 503");
+    expect(error).not.toMatch(/Token "NEWCOIN" not found/);
   });
 
   it("calls a failed CoinMetadata page a read failure, not a miss", async () => {
@@ -142,6 +145,19 @@ describe("analyze_token resolving a symbol", () => {
     expect(error).toMatch(/could not be confirmed.*2 candidates could not be confirmed on chain \(gRPC overloaded\)/i);
     expect(error).toMatch(/coverage is partial/);
     expect(error).not.toMatch(/Token "UNCONFIRMED" not found/);
+  });
+
+  it("flags a whitespace/case USDC lookalike against every verified issuer using its own decimals", async () => {
+    mockSui.stateService.getCoinInfo.mockResolvedValue({
+      response: { metadata: { symbol: " uSdC ", name: "Fake USDC", decimals: 1 }, treasury: { totalSupply: 100n } },
+    });
+    mockGqlQuery.mockResolvedValue({ objects: { nodes: [] } });
+    const result = await tools.get("analyze_token")!({ query: KONG_SUI, include_holders: false });
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toMatchObject({ verified: false, decimals: 1, total_supply_human: "10" });
+    expect(data.impostor_of.length).toBeGreaterThan(1);
+    expect(data.impostor_of).toContain("0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC");
   });
 
 });

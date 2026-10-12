@@ -1,7 +1,7 @@
 import { sui } from "./clients/grpc.js";
 import { gqlQuery } from "./clients/graphql.js";
 import {
-  resolveVerifiedSymbol,
+  resolveSymbolWithLive,
   type RegistryCoin,
 } from "./utils/coin-registry.js";
 import { searchLiveTickers, type LiveTickerSearch, type TickerCandidate } from "./utils/ticker-search.js";
@@ -254,18 +254,9 @@ export async function searchTokens(query: string): Promise<TokenSearch> {
   };
 }
 
-/**
- * Resolve a single token by symbol/name. Prefers exact symbol match.
- */
+/** Resolve only trusted symbols for callers that cannot report discovery uncertainty. */
 export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | null> {
-  const q = query.toLowerCase();
-
-  // The curated registry decides first, and its "no" is load-bearing. Scanning
-  // coin metadata and taking the first exact symbol match returns whichever
-  // coin is indexed earliest, and for a popular symbol that can be an
-  // impostor. Callers that need to distinguish "verified" from "found
-  // something" should use resolveSymbolDetailed.
-  const verified = resolveVerifiedSymbol(query);
+  const verified = await resolveSymbolWithLive(query);
   if (verified.status === "resolved") {
     return {
       coin_type: verified.coin.coin_type,
@@ -274,17 +265,9 @@ export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | n
       decimals: verified.coin.decimals ?? 0,
     };
   }
-  // Ambiguous among verified coins: refuse rather than pick. Several
-  // legitimate coins share USDC on Sui, and choosing one silently misreports
-  // which asset moved.
-  if (verified.status === "ambiguous") return null;
-
-  const live = await searchLiveTickers(query);
-  const exact = live.candidates.filter((candidate) => candidate.symbol.trim().toLowerCase() === q.trim());
-  if (exact.length > 1) return null;
-  if (exact.length === 1) return live.partial || live.unconfirmed > 0 ? null : exact[0];
-
-  return (await scanForSymbol(query)).token;
+  // A bounded pool search or first scan hit cannot establish uniqueness.
+  // Discovery callers can inspect unverified leads via resolveSymbolDetailed.
+  return null;
 }
 
 /**
@@ -362,7 +345,7 @@ export type SymbolDetail =
   | ({ status: "not_found"; scan: ScanReport } & SymbolSearchCoverage);
 
 export async function resolveSymbolDetailed(query: string): Promise<SymbolDetail> {
-  const verified = resolveVerifiedSymbol(query);
+  const verified = await resolveSymbolWithLive(query);
   if (verified.status === "resolved") {
     return {
       status: "resolved",
@@ -389,15 +372,14 @@ export async function resolveSymbolDetailed(query: string): Promise<SymbolDetail
   if (exact.length > 1) return { status: "ambiguous", source: "dex_search", candidates: exact, ...coverage };
   const found = await scanForSymbol(query);
   if (found.token === null) {
-    return { status: live.unconfirmed > 0 ? "could_not_confirm" : "not_found", scan: found.scan, ...coverage };
+    return { status: live.unconfirmed > 0 || live.unavailable_providers.length > 0 || found.scan.failed ? "could_not_confirm" : "not_found", scan: found.scan, ...coverage };
   }
   return { status: "unverified", source: "scan", token: found.token, ...coverage };
 }
 
 /**
  * If input contains `::`, return as-is (it's a full coin type). Otherwise
- * resolve the symbol through `resolveTokenBySymbol`, which answers null for a
- * symbol several coins use.
+ * resolve only a curated symbol; unverified discovery requires an explicit type.
  */
 export async function resolveTokenType(
   symbolOrType: string,

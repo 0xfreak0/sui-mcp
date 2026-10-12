@@ -232,7 +232,7 @@ try {
   const circle = (search.results ?? []).find((r) => r.coin_type === USDC);
   const firstUnverified = (search.results ?? []).findIndex((r) => !r.verified);
   ck("search_token lists Circle USDC as verified, before any unverified match", circle?.verified === true && (firstUnverified === -1 || firstUnverified > search.results.indexOf(circle)), short(circle));
-  ck("search_token marks live and scan results unverified and reports provider coverage", (search.results ?? []).every((r) => (r.source !== "dex_search" && r.source !== "discovery") || r.verified === false) && search.search_coverage?.providers?.dexscreener !== undefined && search.search_coverage?.providers?.geckoterminal !== undefined);
+  ck("search_token vouches only with curated provenance and reports provider coverage", (search.results ?? []).every((r) => r.verified === (r.verified_by === "verified" || r.verified_by === "live")) && search.search_coverage?.providers?.dexscreener !== undefined && search.search_coverage?.providers?.geckoterminal !== undefined);
 
   // ======================================================================
   // NFTs, DeFi, staking

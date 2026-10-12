@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runWithNetwork } from "../src/config.js";
+import { resetLiveCoins } from "../src/utils/coin-registry.js";
 
 const mockGqlQuery = vi.fn();
 const mockSearchLiveTickers = vi.fn();
@@ -7,7 +8,8 @@ vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 vi.mock("../src/clients/grpc.js", () => ({ sui: {}, archive: {} }));
 vi.mock("../src/utils/ticker-search.js", () => ({ searchLiveTickers: mockSearchLiveTickers }));
 
-const { resolveSymbolDetailed, resolveTokenBySymbol, searchTokens } = await import("../src/discovery.js");
+// Load after installing the mocked discovery transports.
+const { resolveSymbolDetailed, resolveTokenBySymbol, resolveTokenType, searchTokens } = await import("../src/discovery.js");
 
 /** One page of `0x2::coin::CoinMetadata` objects, shaped as GraphQL returns it. */
 function metadataPage(
@@ -86,6 +88,9 @@ describe("resolveSymbolDetailed with live ticker discovery", () => {
     expect(await resolveSymbolDetailed("kong")).toMatchObject({
       status: "unverified", source: "dex_search", token: { coin_type: KONG_SUI, verified: false }, coverage,
     });
+    expect(await resolveTokenBySymbol("kong")).toBeNull();
+    expect(await resolveTokenType("kong")).toBeNull();
+    expect(await resolveTokenType(KONG_SUI)).toBe(KONG_SUI);
   });
   it("does not silently resolve one partial candidate as the only exact symbol", async () => {
     mockSearchLiveTickers.mockResolvedValue({
@@ -111,6 +116,50 @@ describe("resolveSymbolDetailed with live ticker discovery", () => {
     expect(await searchTokens("UNCHECKED")).toMatchObject({
       source: "scan", tokens: [], unconfirmed: 1, unconfirmed_reason: "gRPC unavailable",
     });
+  });
+
+  it("consults the live curated list before an unverified pooled lookalike", async () => {
+    const trusted = `0x${"a".repeat(64)}::newcoin::NEWCOIN`;
+    vi.stubEnv("SUI_DISABLE_LIVE_COIN_LIST", "");
+    resetLiveCoins();
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [trusted] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ symbol: "CURATEDNEW", name: "New", decimals: 4 }] }));
+    try {
+      expect(await resolveSymbolDetailed("CURATEDNEW")).toMatchObject({
+        status: "resolved", verified: true, token: { coin_type: trusted, decimals: 4 },
+      });
+      expect(await resolveTokenType("CURATEDNEW")).toBe(trusted);
+      expect(mockSearchLiveTickers).not.toHaveBeenCalled();
+      expect(mockGqlQuery).not.toHaveBeenCalled();
+    } finally {
+      resetLiveCoins();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not report provider or scan failures as a missing symbol", async () => {
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [], providers: unavailable, partial: true, unconfirmed: 0,
+      unavailable_providers: [{ provider: "dexscreener", reason: "HTTP 429" }],
+    });
+    mockGqlQuery.mockResolvedValue(metadataPage([]));
+    expect(await resolveSymbolDetailed("PROVIDEROUTAGE")).toMatchObject({ status: "could_not_confirm" });
+    mockSearchLiveTickers.mockResolvedValue({
+      candidates: [], providers: coverage, partial: false, unconfirmed: 0, unavailable_providers: [],
+    });
+    mockGqlQuery.mockRejectedValue(new Error("scan outage"));
+    expect(await resolveSymbolDetailed("SCANOUTAGE")).toMatchObject({
+      status: "could_not_confirm", scan: { failed: expect.stringContaining("scan outage") },
+    });
+  });
+
+  it("never silently chooses a first scan hit for an uncurated symbol", async () => {
+    mockGqlQuery.mockResolvedValue(metadataPage([{ coinType: KONG_SUI, symbol: "FIRSTHIT", name: "First hit" }]));
+    expect(await resolveTokenType("FIRSTHIT")).toBeNull();
+    expect(mockSearchLiveTickers).not.toHaveBeenCalled();
+    expect(mockGqlQuery).not.toHaveBeenCalled();
   });
 
 

@@ -139,7 +139,7 @@ describe("live ticker indexer evidence", () => {
       response: { metadata: { name: "Pepex", symbol: "PEPEX", decimals: 6 }, treasury: { totalSupply: 1n } },
     });
     const result = await searchLiveTickers("PEPEX");
-    expect(result.partial).toBe(false);
+    expect(result.partial).toBe(true);
     expect(result.providers).toEqual({ dexscreener: "ok", geckoterminal: "ok" });
     expect(result.candidates).toHaveLength(2);
     expect(result.candidates.find((c) => c.coin_type === KONG)).toMatchObject({
@@ -189,6 +189,63 @@ describe("live ticker indexer evidence", () => {
     expect(first.providers.dexscreener).toBe("rate_limited");
     expect(second.providers.dexscreener).toBe("ok");
     expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps an all-Sui capped page partial even if the fallback is empty, and does not cache it", async () => {
+    const pairs = Array.from({ length: 30 }, (_, i) => dexPair(KONG, "SUICAP", "Sui cap", `0xcap${i}`));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => response(url.includes("geckoterminal") ? { data: [] } : { pairs })));
+    mockSui.stateService.getCoinInfo.mockResolvedValue({ response: { metadata: { symbol: "SUICAP", name: "Sui cap", decimals: 2 } } });
+    const first = await searchLiveTickers("SUICAP");
+    const second = await searchLiveTickers("SUICAP");
+    expect(first).toMatchObject({ partial: true, providers: { dexscreener: "ok", geckoterminal: "ok" } });
+    expect(second.partial).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it("prioritizes verified types and exact symbols before the local confirmation cap", async () => {
+    const pairs = Array.from({ length: 25 }, (_, i) =>
+      dexPair(`0x${(i + 100).toString(16)}::coin::COIN`, "FUZZY", "Sui fuzzy", `0xfuzzy${i}`, 100000));
+    pairs.push(dexPair(KONG, " SUI ", "Lookalike", "0xexact", 1), dexPair(QUOTE, "SUI", "Sui", "0xreal", 1));
+    // Do not let each fuzzy pool's quote side spend SUI's exact-match budget.
+    for (const pair of pairs) pair.quoteToken = { address: "0x8::quote::QUOTE", symbol: "QUOTE", name: "Quote" };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ pairs })));
+    mockSui.stateService.getCoinInfo.mockImplementation(async ({ coinType }: { coinType: string }) => ({
+      response: { metadata: { symbol: coinType === KONG ? " SUI " : coinType.endsWith("::sui::SUI") ? "SUI" : "FUZZY", name: "Sui fuzzy", decimals: coinType === KONG ? 1 : 9 } },
+    }));
+    const result = await searchLiveTickers("SUI");
+    expect(result).toMatchObject({ partial: true, unconfirmed: 0 });
+    expect(mockSui.stateService.getCoinInfo).toHaveBeenCalledTimes(25);
+    expect(result.candidates[0]).toMatchObject({ verified: true, symbol: "SUI" });
+    expect(result.candidates[1]).toMatchObject({ coin_type: KONG, impostor_of: `0x${"0".repeat(63)}2::sui::SUI`, decimals: 1 });
+  });
+
+  it("coalesces concurrent normalized queries and caches only clean confirmations", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ pairs: [dexPair(KONG, "COALESCE", "Coalesce", "0xcoalesce")] })));
+    mockSui.stateService.getCoinInfo.mockResolvedValue({ response: { metadata: { symbol: "COALESCE", decimals: 3 } } });
+    const [a, b] = await Promise.all([searchLiveTickers(" COALESCE "), searchLiveTickers("coalesce")]);
+    expect(a).toEqual(b);
+    expect(await searchLiveTickers("Coalesce")).toEqual(a);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(mockSui.stateService.getCoinInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an unconfirmed candidate on the next call", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ pairs: [dexPair(KONG, "RECONFIRM", "Reconfirm", "0xretry")] })));
+    mockSui.stateService.getCoinInfo.mockRejectedValueOnce(new Error("temporary"))
+      .mockResolvedValueOnce({ response: { metadata: { symbol: "RECONFIRM", decimals: 0 } } });
+    expect(await searchLiveTickers("RECONFIRM")).toMatchObject({ unconfirmed: 1, candidates: [] });
+    expect(await searchLiveTickers("RECONFIRM")).toMatchObject({ unconfirmed: 0, candidates: [{ decimals: 0 }] });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("encodes query delimiters and treats malformed provider responses as unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(response({ pairs: null })).mockResolvedValueOnce(response({ data: {} })));
+    const result = await searchLiveTickers("A&B #?");
+    expect(result).toMatchObject({ candidates: [], partial: true, providers: { dexscreener: "unavailable", geckoterminal: "unavailable" } });
+    const urls = vi.mocked(fetch).mock.calls.map(([url]) => new URL(String(url)));
+    expect(urls[0].searchParams.get("q")).toBe("a&b #?");
+    expect(urls[1].searchParams.get("query")).toBe("a&b #?");
+    expect(urls[1].searchParams.get("network")).toBe("sui-network");
   });
 
   it("does not query either public indexer off mainnet", async () => {

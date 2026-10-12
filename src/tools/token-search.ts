@@ -2,7 +2,7 @@ import { z } from "zod";
 import { boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { searchTokens, probeOnChain } from "../discovery.js";
-import { normalizeCoinType, searchVerifiedCoins, vouchFor, resolveVerifiedSymbol } from "../utils/coin-registry.js";
+import { normalizeCoinType, searchVerifiedCoins, vouchFor, impostorOf } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin, type GuardiansFlag } from "../utils/guardians.js";
 import type { TickerCandidate } from "../utils/ticker-search.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,7 +22,7 @@ interface SearchResult {
   pool_count?: number;
   volume_24h?: number | null;
   providers?: TickerCandidate["providers"];
-  impostor_of?: string;
+  impostor_of?: string | string[];
   flagged_by?: GuardiansFlag[];
   package_id?: string;
   publisher_hint?: string;
@@ -61,7 +61,7 @@ export function registerTokenSearchTools(server: McpServer) {
         if (probed) {
           const vouch = vouchFor(probed.coin_type);
           const verified = vouch !== null && vouch !== "not-curated-here";
-          const trusted = resolveVerifiedSymbol(probed.symbol);
+          const impostor_of = impostorOf(probed.coin_type, probed.symbol);
           const package_id = probed.coin_type.split("::")[0];
           const flagged_by = guardiansFlagsForCoin(probed.coin_type);
           const result: SearchResult = {
@@ -71,9 +71,7 @@ export function registerTokenSearchTools(server: McpServer) {
             decimals: probed.decimals,
             verified,
             ...(vouch === "verified" || vouch === "live" ? { verified_by: vouch } : {}),
-            ...(!verified && trusted.status === "resolved" &&
-              normalizeCoinType(trusted.coin.coin_type) !== normalizeCoinType(probed.coin_type)
-              ? { impostor_of: trusted.coin.coin_type } : {}),
+            ...(impostor_of ? { impostor_of } : {}),
             ...(flagged_by.length ? { flagged_by } : {}),
             package_id,
             publisher_hint: `Use identify_address on package ${package_id} to find its publisher, then get_wallet_packages on that publisher to pivot across deployed packages.`,
@@ -112,7 +110,7 @@ export function registerTokenSearchTools(server: McpServer) {
         seen.add(type);
         const vouch = vouchFor(t.coin_type);
         const verified = vouch !== null && vouch !== "not-curated-here";
-        const real = resolveVerifiedSymbol(t.symbol);
+        const impostor_of = impostorOf(t.coin_type, t.symbol);
         const indexed = discovered.source === "dex_search" ? t as TickerCandidate : null;
         results.push({
           coin_type: t.coin_type, name: t.name, symbol: t.symbol, decimals: t.decimals,
@@ -125,8 +123,7 @@ export function registerTokenSearchTools(server: McpServer) {
             providers: indexed.providers, package_id: indexed.package_id,
             publisher_hint: indexed.publisher_hint,
           } : {}),
-          ...(indexed?.impostor_of || (!verified && real.status === "resolved" && normalizeCoinType(real.coin.coin_type) !== type)
-            ? { impostor_of: indexed?.impostor_of ?? (real.status === "resolved" ? real.coin.coin_type : undefined) } : {}),
+          ...(impostor_of ? { impostor_of } : {}),
           ...(guardiansFlagsForCoin(type).length ? { flagged_by: guardiansFlagsForCoin(type) } : {}),
         });
       }
@@ -154,13 +151,13 @@ export function registerTokenSearchTools(server: McpServer) {
           unconfirmed: discovered.unconfirmed,
           ...(discovered.unconfirmed_reason ? { unconfirmed_reason: discovered.unconfirmed_reason } : {}),
           note: (discovered.partial
-            ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. "
+            ? "Live search coverage is partial: a provider was unavailable or a provider/local candidate cap left results unread. "
             : "") +
             (discovered.unconfirmed
               ? `${discovered.unconfirmed} candidates could not be confirmed on chain (${discovered.unconfirmed_reason ?? "metadata unavailable"}). `
               : "") +
             (discovered.source === "dex_search"
-              ? "Only candidates with a DEX pool were searched; up to 25 high-liquidity candidates were confirmed by their exact on-chain coin metadata. Other coins may use the same symbol."
+              ? "Only candidates with a DEX pool were searched; up to 25 candidates, prioritized by verified type, exact symbol and then liquidity, were checked against their own on-chain metadata. Other coins may use the same symbol."
               : discovered.unavailable_providers.length === 2
                 ? "Both live DEX search providers were unavailable (possibly rate limited); these matches come only from a bounded on-chain CoinMetadata scan. Zero results is not evidence that the symbol does not exist."
                 : discovered.coverage.dexscreener === "skipped"
@@ -181,7 +178,7 @@ export function registerTokenSearchTools(server: McpServer) {
             type: "text" as const,
             text: JSON.stringify({
               query,
-              ...(shown.length === 0 && discovered.unconfirmed > 0 ? { status: "could_not_confirm" } : {}),
+              ...(shown.length === 0 && (discovered.unconfirmed > 0 || discovered.unavailable_providers.length > 0 || scan?.failed) ? { status: "could_not_confirm" } : {}),
               results: shown,
               total_matches: results.length,
               ...(shown.length < results.length

@@ -179,11 +179,13 @@ prove nothing; a scammer can copy both.
   picking. Pass a full coin type; it is the only unambiguous identifier.
 - **Uncurated mainnet symbols are live search leads, not an inventory.**
   `analyze_token` searches DexScreener pools; GeckoTerminal is queried only
-  if DexScreener fails, is rate-limited, or has no Sui hits. Candidate coin
+  if DexScreener fails, is rate-limited, hits its cap, or has no Sui hits. Candidate coin
   types are confirmed against on-chain metadata. Multiple matches return
   `candidates`, not a selected coin; curated verified types take precedence.
-  Search is cached for 10 minutes and checks at most the top 25 indexer
-  pools, so neither one candidate nor no candidates proves how many coins
+  Only clean searches are cached for 10 minutes. At most 25 candidate coin
+  types are checked, verified types and exact symbols before pool liquidity.
+  Provider/local caps and outages remain `partial`, even with a successful
+  fallback. Neither one candidate nor no candidates proves how many coins
   use a symbol. Pool liquidity and volume are indexer-attested, not proof
   that a coin is genuine. Provider availability is reported. When providers
   yield no match, and on testnet/devnet, a bounded CoinMetadata scan may

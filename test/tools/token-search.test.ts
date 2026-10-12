@@ -4,9 +4,10 @@ import { createMockClient } from "../helpers/mock-grpc.js";
 
 const mockSui = createMockClient();
 const searchTokens = vi.fn();
+const probeOnChain = vi.fn(async () => null as null | { coin_type: string; symbol: string; name: string; decimals: number });
 
 vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
-vi.mock("../../src/discovery.js", () => ({ searchTokens, probeOnChain: vi.fn(async () => null) }));
+vi.mock("../../src/discovery.js", () => ({ searchTokens, probeOnChain }));
 
 // Import after installing the mocked discovery boundary.
 const { registerTokenSearchTools } = await import("../../src/tools/token-search.js");
@@ -38,7 +39,7 @@ async function search(query: string, options: Record<string, unknown> = {}) {
 
 describe("search_token", () => {
   beforeAll(() => { process.env.SUI_DISABLE_LIVE_COIN_LIST = "1"; });
-  beforeEach(() => searchTokens.mockReset());
+  beforeEach(() => { searchTokens.mockReset(); probeOnChain.mockReset(); });
 
   it("lists the verified type first and marks a pooled symbol lookalike as an impostor", async () => {
     searchTokens.mockResolvedValue({
@@ -106,7 +107,6 @@ describe("search_token", () => {
     });
     const data = await search("SUI");
     expect(data.search_coverage).toMatchObject({ partial: true, unconfirmed: 0 });
-    expect(data.search_coverage.note).toMatch(/coverage is partial.*providers' result caps/i);
     expect(data.results.find((r: { coin_type: string }) => r.coin_type === IMPOSTOR).impostor_of).toBe(SUI);
   });
 
@@ -119,6 +119,31 @@ describe("search_token", () => {
     const data = await search("UNKNOWN-CANDIDATE");
     expect(data.status).toBe("could_not_confirm");
     expect(data.search_coverage.note).toMatch(/2 candidates could not be confirmed on chain \(gRPC timed out\)/);
+  });
+
+  it("flags all verified USDC lookalikes without borrowing their decimals or flagging verified types", async () => {
+    searchTokens.mockResolvedValue({
+      source: "dex_search", coverage, unavailable_providers: [],
+      tokens: [{ ...liveCoin(IMPOSTOR, " uSdC ", "Fake"), decimals: 1 }],
+    });
+    const data = await search("USDC");
+    const trusted = data.results.filter((r: { verified: boolean; symbol: string }) => r.verified && r.symbol.trim().toUpperCase() === "USDC");
+    const fake = data.results.find((r: { coin_type: string }) => r.coin_type === IMPOSTOR);
+    expect(fake).toMatchObject({ verified: false, decimals: 1 });
+    expect(fake.impostor_of).toEqual(expect.arrayContaining(trusted.map((r: { coin_type: string }) => r.coin_type)));
+    expect(fake.impostor_of.length).toBeGreaterThan(1);
+    expect(trusted.every((r: { impostor_of?: unknown }) => r.impostor_of === undefined)).toBe(true);
+    probeOnChain.mockResolvedValue({ coin_type: IMPOSTOR, symbol: " uSdC ", name: "Fake", decimals: 1 });
+    const direct = await search(IMPOSTOR);
+    expect(direct.results[0]).toMatchObject({ impostor_of: fake.impostor_of, decimals: 1 });
+  });
+
+  it("reports an empty provider outage as could_not_confirm even without metadata failures", async () => {
+    searchTokens.mockResolvedValue({
+      source: "scan", coverage, unavailable_providers: unavailable, tokens: [],
+      partial: true, unconfirmed: 0, scan: { scanned: 0, truncated: false },
+    });
+    expect(await search("OUTAGE")).toMatchObject({ status: "could_not_confirm", results: [] });
   });
 
 });

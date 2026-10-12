@@ -1665,24 +1665,28 @@ and symbol searches, but results are leads for choosing an exact coin type.
 Resolution order: the curated verified registry first, then live mainnet
 DexScreener pool searches for both the ticker and `ticker SUI` to limit
 cross-chain crowding. Query GeckoTerminal if DexScreener fails, finds no Sui
-candidates, or returns a capped mixed-chain page. GeckoTerminal has its own
-20-pool result cap; report `partial` if it fills the page. Indexers report
+candidates, or returns a capped page, including an all-Sui page. GeckoTerminal
+has its own 20-pool cap. Any provider/local cap or outage remains `partial`,
+even with a successful fallback; one indexer cannot fill another's omissions. Indexers report
 liquidity/volume, not legitimacy; confirm each candidate's exact coin type
 against on-chain metadata. Only clean results are cached for 10 minutes;
 failed confirmations report `unconfirmed`, not an absent coin. Confirm
-at most 25 coin types ranked by pool liquidity.
+at most 25 coin types ranked by verified type, exact symbol, then pool liquidity.
 Do not describe one candidate as the only coin using a symbol:
 indexers omit coins without covered pools, and a bound cannot establish
 uniqueness. Several exact matches are `ambiguous_symbol` with candidates;
-`resolveTokenBySymbol` refuses to pick one. A curated verified type vouches
-only for that type, not a shared name or symbol.
+`resolveTokenBySymbol` and `resolveTokenType` accept only curated symbols and
+never silently select an unverified discovery lead. A curated verified type
+vouches only for that type, not a shared name or symbol. `impostor_of` lists
+symbol lookalikes (case/whitespace-insensitive), with an array of all verified
+types when several share a symbol; it does not assert malicious intent.
 
 If no candidate is confirmed, `discovery.ts` falls back to a bounded live
 CoinMetadata scan; off-mainnet discovery uses that scan instead of mainnet
 indexers. Its object-ID order and page/time bounds leave coins unread.
 `resolveSymbolDetailed` reports scan coverage on `not_found` and returns
-`could_not_confirm` when a candidate's metadata could not be checked and
-the scan had no exact match. `search_token` reports the separate provider,
+`could_not_confirm` when metadata, provider or scan reads fail and the scan
+had no exact match. `search_token` reports the separate provider,
 `partial`, `unconfirmed`, `discovery_scan_truncated`, and
 `discovery_scan_failed` fields. A failed provider is not evidence of absence.
 Supply and pool volume may help order leads, never prove identity. Pass the

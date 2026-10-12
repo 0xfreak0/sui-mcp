@@ -239,10 +239,11 @@ Keep curated entries current with `npm run sync:verified-coins`. Uncurated
 mainnet names and symbols are searched through two DexScreener queries
 (ticker and `ticker SUI`), with GeckoTerminal queried when results are absent,
 capped or unavailable. Candidate coin types are checked against their exact
-on-chain metadata. Only clean searches are cached for 10 minutes; capped
-results report `partial` and failed confirmations report `unconfirmed` rather
-than claiming absence. At most 25 candidate coin types are confirmed, ranked
-by pool liquidity. A bounded CoinMetadata scan is the fallback when no live
+on-chain metadata. Only clean searches are cached for 10 minutes; provider
+failures and provider/local caps report `partial`, and failed confirmations
+report `unconfirmed` rather than claiming absence. At most 25 coin types are
+confirmed, ranked by verified type, exact symbol, then pool liquidity.
+A bounded CoinMetadata scan is the fallback when no live
 candidate is confirmed and is also used off mainnet. Neither search path is
 a complete coin inventory; no release-time symbol sync is required.
 

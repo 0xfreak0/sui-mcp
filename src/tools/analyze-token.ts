@@ -15,7 +15,7 @@ import { describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { getNetwork } from "../config.js";
 import { resolveSymbolDetailed, type SymbolDetail } from "../discovery.js";
 import type { TickerCandidate } from "../utils/ticker-search.js";
-import { resolveVerifiedSymbol, vouchFor, normalizeCoinType } from "../utils/coin-registry.js";
+import { vouchFor, impostorOf } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin } from "../utils/guardians.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -69,7 +69,7 @@ function notFoundMessage(query: string, detailed: Extract<SymbolDetail, { status
     ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). `
     : "";
   const partial = detailed.partial
-    ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. "
+    ? "Live search coverage is partial: a provider was unavailable or a provider/local candidate cap left results unread. "
     : "";
   const failures = detailed.unavailable_providers.length
     ? `Live search providers unavailable: ${detailed.unavailable_providers.map((p) => `${p.provider}: ${p.reason}`).join("; ")}. `
@@ -111,7 +111,7 @@ function symbolResolution(detailed: Extract<SymbolDetail, { status: "unverified"
     partial: detailed.partial,
     unconfirmed: detailed.unconfirmed,
     ...(detailed.unconfirmed_reason ? { unconfirmed_reason: detailed.unconfirmed_reason } : {}),
-    note: (detailed.partial ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. " : "") +
+    note: (detailed.partial ? "Live search coverage is partial: a provider was unavailable or a provider/local candidate cap left results unread. " : "") +
       (detailed.unconfirmed ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). ` : "") +
       (detailed.source === "dex_search"
         ? POOL_COVERAGE_NOTE
@@ -161,7 +161,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
               ? {
                   query,
                   status: "ambiguous_symbol",
-                  message: `${detailed.candidates.length} pool-backed, on-chain-confirmed coins matched "${query}" exactly. A symbol does not identify a coin on Sui: pass a full coin_type instead. ${detailed.partial ? "Live search coverage is partial for this ticker: popular symbols exceed the providers' result caps. " : ""}${detailed.unconfirmed ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). ` : ""}${POOL_COVERAGE_NOTE}`,
+                  message: `${detailed.candidates.length} pool-backed, on-chain-confirmed coins matched "${query}" exactly. A symbol does not identify a coin on Sui: pass a full coin_type instead. ${detailed.partial ? "Live search coverage is partial: a provider was unavailable or a provider/local candidate cap left results unread. " : ""}${detailed.unconfirmed ? `${detailed.unconfirmed} candidates could not be confirmed on chain (${detailed.unconfirmed_reason ?? "metadata unavailable"}). ` : ""}${POOL_COVERAGE_NOTE}`,
                   coin_count: detailed.candidates.length,
                   candidates: detailed.candidates,
                   candidate_order: "Verified first, then exact symbol, then descending DEX pool liquidity; liquidity is not proof of legitimacy.",
@@ -266,7 +266,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
         marketCapUsd = Math.round(priceUsd * humanSupply * 100) / 100;
       }
 
-      const verifiedSymbol = resolveVerifiedSymbol(symbol);
+      const impostor_of = impostorOf(coinType, symbol);
 
       const result: Record<string, unknown> = {
         coin_type: coinType,
@@ -295,9 +295,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           liquidity_usd: resolvedCandidate.liquidity_usd, pool_count: resolvedCandidate.pool_count,
           volume_24h: resolvedCandidate.volume_24h, providers: resolvedCandidate.providers,
         } : {}),
-        ...(vouchFor(coinType) === null && verifiedSymbol.status === "resolved" &&
-          normalizeCoinType(verifiedSymbol.coin.coin_type) !== normalizeCoinType(coinType)
-          ? { impostor_of: verifiedSymbol.coin.coin_type } : {}),
+        ...(impostor_of ? { impostor_of } : {}),
         package_id: coinType.split("::")[0],
         publisher_hint: `Use identify_address on package ${coinType.split("::")[0]} to find its publisher, then get_wallet_packages on that publisher to pivot across deployed packages.`,
         // A third-party scam list, stated beside the curated answer rather

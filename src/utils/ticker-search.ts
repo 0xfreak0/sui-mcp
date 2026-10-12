@@ -1,7 +1,7 @@
 import { RetryableResponseError, retryingJson } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS, getNetwork } from "../config.js";
-import { normalizeCoinType, resolveVerifiedSymbol, searchVerifiedCoins, vouchFor } from "./coin-registry.js";
+import { normalizeCoinType, impostorOf, refreshLiveCoins, vouchFor } from "./coin-registry.js";
 import { guardiansFlagsForCoin, type GuardiansFlag } from "./guardians.js";
 
 export type TickerProvider = "dexscreener" | "geckoterminal";
@@ -18,7 +18,7 @@ export interface TickerCandidate {
   volume_24h: number | null;
   providers: TickerProvider[];
   verified: boolean;
-  impostor_of?: string;
+  impostor_of?: string | string[];
   flagged_by?: GuardiansFlag[];
   package_id: string;
   publisher_hint: string;
@@ -28,7 +28,7 @@ export interface LiveTickerSearch {
   candidates: TickerCandidate[];
   providers: Record<TickerProvider, ProviderStatus>;
   unavailable_providers: Array<{ provider: TickerProvider; reason: string }>;
-  /** A provider hit its result cap without a complete fallback. */
+  /** A provider failed or a provider/local result cap left candidates unread. */
   partial: boolean;
   /** Indexer candidates whose own on-chain metadata could not be checked. */
   unconfirmed: number;
@@ -46,7 +46,7 @@ const TRANSPORT = {
 
 interface PoolToken { address: string; symbol: string; name: string }
 interface Pool { id: string; liquidity: number; volume: number | null; tokens: PoolToken[]; provider: TickerProvider }
-interface IndexedCandidate { coin_type: string; pools: Map<string, { liquidity: number; volume: number | null }>; providers: Set<TickerProvider> }
+interface IndexedCandidate { coin_type: string; exact: boolean; pools: Map<string, { liquidity: number; volume: number | null }>; providers: Set<TickerProvider> }
 
 function record(body: unknown): Record<string, unknown> | null {
   return body !== null && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
@@ -72,20 +72,16 @@ function dexPools(body: unknown): PoolPage {
   const pairs = record(body)?.pairs;
   if (!Array.isArray(pairs)) throw new RetryableResponseError("Invalid DexScreener search response");
   const pools: Pool[] = [];
-  let hasOtherChain = false;
   for (const value of pairs) {
     const pair = record(value);
-    if (pair?.chainId !== "sui") {
-      hasOtherChain = true;
-      continue;
-    }
+    if (pair?.chainId !== "sui") continue;
     const tokens = [poolToken(pair.baseToken), poolToken(pair.quoteToken)].filter((t): t is PoolToken => t !== null);
     const id = string(pair.pairAddress).toLowerCase();
     if (!id || !tokens.length) continue;
     const volume = record(pair.volume)?.h24;
     pools.push({ id, tokens, provider: "dexscreener", liquidity: usd(record(pair.liquidity)?.usd), volume: volume == null ? null : usd(volume) });
   }
-  return { pools, truncated: pairs.length >= 30 && hasOtherChain };
+  return { pools, truncated: pairs.length >= 30 };
 }
 
 function geckoPools(body: unknown): PoolPage {
@@ -151,9 +147,10 @@ async function search(query: string): Promise<LiveTickerSearch> {
             if (!token.symbol.toLowerCase().includes(q) && !token.name.toLowerCase().includes(q)) continue;
             let candidate = indexed.get(token.address);
             if (!candidate) {
-              candidate = { coin_type: token.address, pools: new Map(), providers: new Set() };
+              candidate = { coin_type: token.address, exact: false, pools: new Map(), providers: new Set() };
               indexed.set(token.address, candidate);
             }
+            candidate.exact ||= token.symbol.trim().toLowerCase() === q;
             candidate.providers.add(provider);
             const old = candidate.pools.get(pool.id);
             candidate.pools.set(pool.id, {
@@ -175,22 +172,16 @@ async function search(query: string): Promise<LiveTickerSearch> {
     // with historical pricing. Spend it only if DexScreener was incomplete.
     if (provider === "dexscreener" && indexed.size > 0 && !dexTruncated && providers.dexscreener === "ok") break;
   }
-  const partial = geckoTruncated || (dexTruncated && providers.geckoterminal !== "ok");
+  const partial = dexTruncated || geckoTruncated || unavailable_providers.length > 0 || indexed.size > MAX_CANDIDATES;
 
+  await refreshLiveCoins();
+  // Preserve verified and exact-symbol leads before fuzzy high-liquidity hits
+  // spend the confirmation budget. Indexer symbols remain untrusted below.
   const top = [...indexed.values()]
-    .sort((a, b) => liquidity(b) - liquidity(a) || a.coin_type.localeCompare(b.coin_type))
+    .sort((a, b) => Number(vouchFor(b.coin_type) !== null) - Number(vouchFor(a.coin_type) !== null) ||
+      Number(b.exact) - Number(a.exact) ||
+      liquidity(b) - liquidity(a) || a.coin_type.localeCompare(b.coin_type))
     .slice(0, MAX_CANDIDATES);
-  // Verified symbol names are used only to flag a different *type* copying one;
-  // neither the indexer's name nor its purported decimals vouch for an asset.
-  const verifiedCoins = await searchVerifiedCoins(query);
-  const verifiedBySymbol = new Map<string, string>();
-  for (const coin of verifiedCoins) {
-    const symbol = coin.symbol.toLowerCase();
-    if (!verifiedBySymbol.has(symbol)) {
-      const pinned = resolveVerifiedSymbol(coin.symbol);
-      verifiedBySymbol.set(symbol, pinned.status === "resolved" ? pinned.coin.coin_type : coin.coin_type);
-    }
-  }
   const candidates: TickerCandidate[] = [];
   let unconfirmed = 0;
   let unconfirmed_reason: string | undefined;
@@ -208,7 +199,7 @@ async function search(query: string): Promise<LiveTickerSearch> {
         }
         if (!meta.symbol.toLowerCase().includes(q) && !(meta.name ?? "").toLowerCase().includes(q)) continue;
         const verified = vouchFor(indexedCoin.coin_type);
-        const canonical = verifiedBySymbol.get(meta.symbol.toLowerCase());
+        const impostor_of = impostorOf(indexedCoin.coin_type, meta.symbol);
         const package_id = indexedCoin.coin_type.split("::")[0];
         let liquidity_usd = 0;
         let volume_24h = 0;
@@ -232,7 +223,7 @@ async function search(query: string): Promise<LiveTickerSearch> {
           volume_24h: hasVolume ? volume_24h : null,
           providers: [...indexedCoin.providers],
           verified: verified !== null && verified !== "not-curated-here",
-          ...(verified === null && canonical && normalizeCoinType(canonical) !== indexedCoin.coin_type ? { impostor_of: canonical } : {}),
+          ...(impostor_of ? { impostor_of } : {}),
           ...(flagged_by.length ? { flagged_by } : {}),
           package_id,
           publisher_hint: `Use identify_address on package ${package_id} to find its publisher, then get_wallet_packages on that publisher to pivot across deployed packages.`,
@@ -244,7 +235,7 @@ async function search(query: string): Promise<LiveTickerSearch> {
     }
   }));
   candidates.sort((a, b) => Number(b.verified) - Number(a.verified) ||
-    Number(b.symbol.toLowerCase() === q) - Number(a.symbol.toLowerCase() === q) ||
+    Number(b.symbol.trim().toLowerCase() === q) - Number(a.symbol.trim().toLowerCase() === q) ||
     b.liquidity_usd - a.liquidity_usd || a.coin_type.localeCompare(b.coin_type));
   return { candidates, providers, unavailable_providers, partial, unconfirmed, ...(unconfirmed_reason ? { unconfirmed_reason } : {}) };
 }

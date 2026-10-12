@@ -61,8 +61,9 @@ results are missing, capped or unavailable; its public results also have a
 20-pool cap. Candidate coin types are confirmed against on-chain metadata;
 a DEX listing is a lead, not verification of the asset's identity.
 `analyze_token` returns multiple matches as candidates rather than choosing
-one. The search confirms at most 25 candidate coin types by pool liquidity;
-only searches without provider or metadata failures are cached for 10 minutes.
+one. The search confirms at most 25 candidate coin types, prioritizing verified
+types and exact symbols before pool liquidity. Only searches without caps,
+provider failures or metadata failures are cached for 10 minutes.
 Coins without an indexed pool cannot appear in live results. If no candidate
 can be confirmed, a bounded CoinMetadata scan is the fallback, not a complete
 inventory.
@@ -73,9 +74,10 @@ verified types first and then exact symbol matches, for use with
 `get_balance`, `get_coin_info` and `get_token_prices`. Verification vouches for
 the exact type, since names and symbols can be copied.
 
-Mainnet search reports provider availability, `partial` when provider result
-caps may hide matches, and the number of candidates `unconfirmed` because their
-own on-chain metadata could not be read. Neither a capped result nor a failed
+Mainnet search reports provider availability, `partial` when a provider fails
+or provider/local caps hide matches, and the number of candidates `unconfirmed`
+because their own on-chain metadata could not be read. A successful fallback
+does not clear another provider's cap. Neither a capped result nor a failed
 metadata check establishes that a symbol is absent or unique. Candidate
 liquidity, pool counts and 24-hour volume are indexer-reported; they do not
 establish legitimacy or ownership. The indexers cover pools, not every coin,
@@ -86,6 +88,13 @@ of mainnet DEX indexers. `discovery_scan_truncated` marks an unfinished scan;
 
 `verify_onchain: true` additionally checks matches and includes total supply;
 `limit` controls how many matches are displayed, not how many coins exist.
+
+Tools that need a single asset type, such as `find_pools`, accept only curated
+symbols. Pass an explicit coin type for an unverified discovery lead.
+`impostor_of` flags unverified symbol lookalikes ignoring case and surrounding
+whitespace; it is a string for one verified type or an array when several
+verified types share that symbol. It does not assert malicious intent, and
+never supplies the lookalike's decimals.
 
 
 ## Frozen addresses

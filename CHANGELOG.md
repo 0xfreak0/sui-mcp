@@ -11,13 +11,24 @@
   clean results for 10 minutes, and report partial provider coverage and
   candidates that could not be confirmed rather than calling them absent.
   Curated verified coins take precedence. The search confirms at most 25
-  candidate coin types by pool liquidity; a bounded CoinMetadata scan is the
-  fallback when no candidate can be confirmed and off mainnet.
+  candidate coin types, prioritizing verified types and exact symbols before
+  pool liquidity; a bounded CoinMetadata scan is the fallback when no
+  candidate can be confirmed and off mainnet.
   Coins without a DEX pool are found only by full coin type or that bounded
   scan, and pooled lookalikes of verified coins are flagged `impostor_of`.
   A missing result cannot establish that no coin uses a symbol. `npm pack
   --dry-run --json` shrank from 8,567,545 to 2,290,345 compressed bytes
   (19,631,575 to 6,837,760 unpacked bytes).
+- **Incomplete ticker discovery cannot silently identify an asset.**
+  `resolveTokenType` and `resolveTokenBySymbol` accept only curated symbols;
+  unverified leads require an explicit coin type. Provider outages, every
+  provider cap and the 25-candidate local cap remain partial and uncached,
+  even after a successful fallback. Read failures return `could_not_confirm`.
+  `impostor_of` ignores case and surrounding whitespace, lists every verified
+  type sharing the symbol when there are several (an array rather than a
+  single string), and never labels a verified type as an impostor. This field
+  identifies symbol lookalikes, not malicious intent; decimals remain the
+  candidate's own.
 
 ## 1.27.0 (2026-10-06)
 

@@ -320,6 +320,16 @@ If no gain was found and the balance changes could not all be read,
 `first_inflow` is null. `first_seen_unavailable` reports a failed first read.
 Use `find_funding_sources` to find funding when the first transaction was not it.
 
+## Issuer freezes
+
+`check_coin_restrictions({"address":"0x…"})` scans configured coin deny lists
+regardless of the address’s holdings. `frozen_by_issuer` lists active per-coin
+entries with the DenyList and coin-config object IDs, epoch and chain-derived
+evidence tier. Pending restrictions are reported separately; a partial config
+walk or failed chunk sets `scan_complete: false`, so an empty list cannot prove
+that no issuer froze the address. A validator can refuse transactions through
+its off-chain node configuration; this read cannot detect that.
+
 ## Screening exposure
 
 `screen_address` reads direct and indirect exposure to labelled malicious,

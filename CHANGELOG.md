@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **yolo.casa's orders contracts and Blast.fun's presale suite are named.** yolo.casa's limit, stop, DCA and OTC order lineage, published by `yolo.sui`, is curated as yolo.casa, type `dex`. Blast.fun's presale, access-control, partners and Aftermath DAO adapter packages, from both its October deployments, join its existing `launchpad` entries; their deployer shares a first funder with the earlier Blast.fun deployer.
+
 ### Changed
 - **Uncurated mainnet coin lookup now uses live DEX search instead of a
   shipped symbol index.** `analyze_token` and `search_token` search DexScreener

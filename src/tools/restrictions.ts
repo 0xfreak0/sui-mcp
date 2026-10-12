@@ -16,6 +16,7 @@ import { errorResult, describeError } from "../utils/errors.js";
 import { getNetwork } from "../config.js";
 import { describeAddresses } from "../utils/identity.js";
 import { restrictionNote } from "../utils/deny-list.js";
+import { issuerFreezeFromScan } from "../utils/issuer-freeze.js";
 import {
   checkAddressAcrossCoins,
   currentEpoch,
@@ -75,14 +76,17 @@ export function registerRestrictionTools(server: McpServer) {
 
         const identities = await describeAddresses([address]).catch(() => new Map());
         const id = identities.get(address);
+        const freeze = issuerFreezeFromScan(scan, epoch, scan.configs);
 
         return json({
           address,
           epoch,
           ...(id?.name ? { name: id.name } : {}),
           ...(id?.label ? { label: id.label, category: id.label_category } : {}),
-          coins_checked: scan.coins_checked,
-          scan_complete: scan.complete,
+          coins_checked: freeze.coins_checked,
+          scan_complete: freeze.scan_complete,
+          frozen_by_issuer: freeze.frozen_by_issuer,
+          ...(freeze.scan_note ? { scan_note: freeze.scan_note } : {}),
           denied_by_count: scan.denied.length,
           denied_by: scan.denied,
           ...(scan.pending.length ? { pending: scan.pending } : {}),
@@ -95,8 +99,7 @@ export function registerRestrictionTools(server: McpServer) {
           ...(scan.complete
             ? {}
             : {
-                incomplete_note:
-                  "Part of the scan failed, so some coins were never checked. A short list here is not evidence of a short list on chain.",
+                incomplete_note: freeze.scan_note,
               }),
           caveat:
             "A freeze is the issuer's own decision recorded on chain, reversible by whoever holds the DenyCap. Note that a frozen address usually holds NONE of the coin that froze it — being denied and holding are anti-correlated — so the absence of a balance says nothing either way.",

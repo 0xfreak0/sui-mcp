@@ -352,7 +352,7 @@ describe("identify_address", () => {
               {
                 contents: {
                   json: {
-                    metadata: { sui_address: "0xval", name: "Big Validator" },
+                    metadata: { sui_address: `0x${"a".repeat(64)}`, name: "Big Validator" },
                     staking_pool: { sui_balance: "9000000000000" },
                     commission_rate: "200",
                   },
@@ -365,7 +365,7 @@ describe("identify_address", () => {
     });
 
     const handler = tools.get("identify_address")!;
-    const result = await handler({ address: "0xval" });
+    const result = await handler({ address: `0x${"a".repeat(64)}` });
     const data = JSON.parse(result.content[0].text);
 
     expect(data.type).toBe("validator");

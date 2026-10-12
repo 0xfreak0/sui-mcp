@@ -3,14 +3,11 @@
  * Regenerate `src/data/disclosed-labels.json`: address labels taken only from a
  * first-party disclosure, each with the document it came from.
  *
- * Three kinds of source, and nothing else:
+ * First-party disclosures only:
  *
- *   - proof-of-reserves-listed: an exchange's own proof-of-reserves wallet list
- *     (Binance, OKX, Bybit, KuCoin). A listing is the exchange saying "this is
- *     ours"; it is not a verified ownership proof. OKX attaches a signature to
- *     each address, but its scheme has not been reproduced here, so OKX rows
- *     make no stronger claim than the others.
- *   - official-docs: a bridge's own deployment documentation.
+ *   - proof-of-reserves-listed: an exchange's own SUI-network wallet list.
+ *     A listing is not independently verified ownership.
+ *   - official-docs: a bridge's or protocol's own mainnet deployment list.
  *   - victim-postmortem: the exploited protocol's own incident report naming
  *     the attacker's addresses.
  *
@@ -21,7 +18,7 @@
  * Keys are CAIP-10 `sui:mainnet:0x…`: the documents describe mainnet, and a
  * package or object id means nothing on another network.
  *
- * Needs `unzip` (Binance, OKX) and `pdftotext` (Bybit, KuCoin) on PATH. A
+ * Needs `unzip` (Binance, OKX) and `pdftotext` (Bybit, KuCoin, MEXC) on PATH. A
  * source that cannot be read keeps its entries from the previous file and is
  * reported as stale, so one exchange being down does not delete another's
  * labels.
@@ -29,7 +26,7 @@
  *   node scripts/sync-disclosed-labels.mjs
  *
  * Env overrides: BINANCE_AUDIT_ID (e.g. PR01SEP26), OKX_POR_ZIP_URL,
- * BYBIT_POR_PDF_URL, KUCOIN_POR_PDF_URL.
+ * BYBIT_POR_PDF_URL, KUCOIN_POR_PDF_URL, MEXC_POR_PDF_URL.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -38,8 +35,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   addressesInPdfText,
+  axelarSuiContracts,
   extractNotionText,
   htmlToText,
+  layerZeroSuiContracts,
   mentionsAddress,
 } from "./lib/disclosure-parse.mjs";
 
@@ -47,6 +46,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(root, "src/data/disclosed-labels.json");
 const GRAPHQL = "https://graphql.mainnet.sui.io/graphql";
 const TIMEOUT_MS = 180_000;
+// Proof-of-reserves archives are tens of MB (Binance's October zip is over
+// 48 MB) and their CDNs can serve a few hundred KB/s, so a whole-file
+// download gets far longer than a page or API read.
+const DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 const UA = { "user-agent": "Mozilla/5.0 (sui-analytics-mcp sync-disclosed-labels)" };
 const TODAY = new Date().toISOString().slice(0, 10);
 const SUI_HEX = /^0x[0-9a-f]{64}$/;
@@ -54,11 +57,11 @@ const SUI_HEX = /^0x[0-9a-f]{64}$/;
 const work = mkdtempSync(join(tmpdir(), "disclosed-labels-"));
 process.on("exit", () => rmSync(work, { recursive: true, force: true }));
 
-async function fetchOk(url, init = {}) {
+async function fetchOk(url, init = {}, timeoutMs = TIMEOUT_MS) {
   const res = await fetch(url, {
     ...init,
     headers: { ...UA, ...(init.headers ?? {}) },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   return res;
@@ -67,7 +70,7 @@ const fetchText = async (url, init) => (await fetchOk(url, init)).text();
 const fetchJson = async (url, init) => (await fetchOk(url, init)).json();
 async function download(url, name) {
   const path = join(work, name);
-  writeFileSync(path, Buffer.from(await (await fetchOk(url)).arrayBuffer()));
+  writeFileSync(path, Buffer.from(await (await fetchOk(url, {}, DOWNLOAD_TIMEOUT_MS)).arrayBuffer()));
   return path;
 }
 /** One member of a zip, by glob, as text. */
@@ -200,11 +203,18 @@ async function kucoin() {
   return fromPdf("KuCoin", url, "https://www.kucoin.com/proof-of-reserves", snapshot);
 }
 
+async function mexc() {
+  const url = process.env.MEXC_POR_PDF_URL ??
+    "https://por.mocortech.com/MEXC_PoR_Audit_20260910.pdf";
+  return fromPdf("MEXC", url, "https://www.mexc.com/proof-of-reserve/audit-report", /Audit_(\d{8})/.exec(url)?.[1] ?? null);
+}
+
 const EXCHANGES = [
   { id: "binance", entity: "Binance", run: binance },
   { id: "okx", entity: "OKX", run: okx },
   { id: "bybit", entity: "Bybit", run: bybit },
   { id: "kucoin", entity: "KuCoin", run: kucoin },
+  { id: "mexc", entity: "MEXC", run: mexc },
 ];
 
 // ---------------------------------------------------------------------------
@@ -251,6 +261,65 @@ const BRIDGE_DOCS = [
       { address: "0xe42174b6d742f40bd2b67b967542b21e6d7433f2d277a80bb59866ac73ff3f52", label: "Mayan Swift fee manager state (Sui)" },
       { address: "0xb787fe0f7530b4fd2162fa0cc92f4f6c5a97c54b4c5c55eb04ab29f4b803ac9c", label: "Mayan MCTP state (Sui)" },
       { address: "0xa1b4a96ce93d36dd0bbce0adc39533a07d2f32928918c80cd6fe7868320978f2", label: "Mayan MCTP fee manager state (Sui)" },
+    ],
+  },
+  {
+    id: "allbridge-core",
+    entity: "Allbridge Core",
+    url: "https://docs-core.allbridge.io/product/how-does-allbridge-core-work/allbridge-core-contracts.md",
+    entries: [
+      { address: "0x83d6f864a6b0f16898376b486699aa6321eb6466d1daf6a2e3764a51908fe99d", label: "Allbridge Core main bridge package (deprecated, Sui)" },
+      { address: "0x647e874d024e3dcbb77ac023ea6a506d2c8ff832ec58c4b2ad14e71ac465546c", label: "Allbridge Core CCTP interface package (Sui)" },
+      { address: "0xbeefbb4e4b435ba0c0dc12fa6369859715b600d38fd9c4924b9a526b89b3ce2c", label: "Allbridge Core USDC liquidity pool (deprecated, Sui)" },
+    ],
+  },
+  {
+    id: "layerzero",
+    entity: "LayerZero",
+    url: "https://docs.layerzero.network/data/deploymentsV2.json",
+    parse: layerZeroSuiContracts,
+  },
+  {
+    id: "axelar",
+    entity: "Axelar",
+    url: "https://raw.githubusercontent.com/axelarnetwork/axelar-contract-deployments/main/axelar-chains-config/info/mainnet.json",
+    parse: axelarSuiContracts,
+  },
+];
+
+// A package, cap, or market object is a protocol component, not a team wallet.
+// Never infer treasury control or fee recipients from an object's name.
+const PROTOCOL_DOCS = [
+  {
+    id: "suilend",
+    entity: "Suilend",
+    url: "https://docs.suilend.fi/ecosystem/suilend-integration-links.md",
+    entries: [
+      { address: "0xf95b06141ed4a174f239417323bde3f209b972f5930d8521ea38a52aff3a6ddf", label: "Suilend smart contract package (Sui)" },
+    ],
+  },
+  {
+    id: "scallop",
+    entity: "Scallop",
+    url: "https://docs.scallop.io/integrations/package-addresses/mainnet.md",
+    entries: [
+      { address: "0xa757975255146dc9686aa823b7838b507f315d704f428cbadad2f4ea061939d9", label: "Scallop market object (Sui)" },
+      { address: "0x09689d018e71c337d9db6d67cbca06b74ed92196103624028ccc3ecea411777c", label: "Scallop admin cap object (Sui)" },
+      { address: "0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf", label: "Scallop initial protocol package (Sui)" },
+    ],
+  },
+  {
+    id: "bucket",
+    entity: "Bucket Protocol",
+    url: "https://docs.bucketprotocol.io/developer-and-security/technical-resources.md",
+    entries: [
+      { address: "0x665188033384920a5bb5dcfb2ef21f54b4568d08b431718b97e02e5c184b92cc", label: "Bucket framework package (Sui)" },
+      { address: "0xe14726c336e81b32328e92afc37345d159f5b550b09fa92bd43640cfdd0a0cfd", label: "Bucket USDB package (Sui)" },
+      { address: "0xf2ab9aa60c5e879675351a1a89f47131de9dea7cc927327dd0e7282e295c7f5e", label: "Bucket oracle package (Sui)" },
+      { address: "0x9f835c21d21f8ce519fec17d679cd38243ef2643ad879e7048ba77374be4036e", label: "Bucket CDP package (Sui)" },
+      { address: "0xc2ae6693383e4a81285136effc8190c7baaf0e75aafa36d1c69cd2170cfc3803", label: "Bucket PSM package (Sui)" },
+      { address: "0x0f51f9eb63574a1d12b62295599ac4f8231197f95b3cce9a516daba64f419d06", label: "Bucket flash loan and mint package (Sui)" },
+      { address: "0x872d08a70db3db498aa7853276acea8091fdd9871b2d86bc8dcb8524526df622", label: "Bucket savings pool package (Sui)" },
     ],
   },
 ];
@@ -305,9 +374,9 @@ const sources = [];
 
 function keepPrevious(sourceId, reason) {
   const kept = Object.entries(previous.labels ?? {}).filter(([, v]) => v.source_id === sourceId);
-  for (const [k, v] of kept) labels[k] = v;
+  for (const [k, v] of kept) labels[k] = { ...v, stale: true, stale_since: v.stale_since ?? TODAY };
   const prev = (previous.sources ?? []).find((s) => s.id === sourceId);
-  sources.push({ ...(prev ?? { id: sourceId }), stale: true, stale_reason: reason });
+  if (prev) sources.push({ ...prev, stale: true, stale_reason: reason });
   console.warn(`${sourceId}: FAILED (${reason}); kept ${kept.length} entries from the previous file`);
 }
 
@@ -372,38 +441,46 @@ for (const ex of EXCHANGES) {
   }
 }
 
-for (const doc of BRIDGE_DOCS) {
-  try {
-    const text = htmlToText(await fetchText(doc.url));
-    let count = 0;
-    for (const e of doc.entries) {
-      if (!mentionsAddress(text, e.address)) {
+for (const [category, docs] of [["bridge", BRIDGE_DOCS], ["defi", PROTOCOL_DOCS]]) {
+  for (const doc of docs) {
+    try {
+      const raw = await fetchText(doc.url);
+      const parsed = doc.parse ? JSON.parse(raw) : null;
+      const text = parsed ? JSON.stringify(parsed) : doc.url.endsWith(".md") ? raw : htmlToText(raw);
+      const entries = doc.parse ? doc.parse(parsed) : doc.entries;
+      const confirmed = entries.filter((e) => {
+        if (mentionsAddress(text, e.address)) return true;
         console.warn(`${doc.id}: ${e.address} is not in ${doc.url}; dropped`);
-        continue;
+        return false;
+      });
+      if (confirmed.length === 0) throw new Error("source returned no confirmed Sui addresses");
+      for (const e of confirmed) {
+        const key = e.chain ? evmKey(e.chain, e.address) : suiKey(e.address);
+        labels[key] = {
+          label: e.label,
+          category,
+          entity: doc.entity,
+          evidence: "official-docs",
+          source_url: doc.url,
+          retrieved_at: TODAY,
+          confidence: "high",
+          source_id: doc.id,
+        };
       }
-      const key = e.chain ? evmKey(e.chain, e.address) : suiKey(e.address);
-      labels[key] = {
-        label: e.label,
-        category: "bridge",
-        entity: doc.entity,
-        evidence: "official-docs",
-        source_url: doc.url,
-        retrieved_at: TODAY,
-        confidence: "high",
-        source_id: doc.id,
-      };
-      count++;
+      sources.push({ id: doc.id, entity: doc.entity, evidence: "official-docs", source_url: doc.url, retrieved_at: TODAY, count: confirmed.length });
+      console.log(`${doc.id}: ${confirmed.length}/${entries.length} addresses confirmed in the docs`);
+    } catch (err) {
+      keepPrevious(doc.id, err.message);
     }
-    sources.push({ id: doc.id, entity: doc.entity, evidence: "official-docs", source_url: doc.url, retrieved_at: TODAY, count });
-    console.log(`${doc.id}: ${count}/${doc.entries.length} addresses confirmed in the docs`);
-  } catch (err) {
-    keepPrevious(doc.id, err.message);
   }
 }
 
 for (const pm of POSTMORTEMS) {
   try {
     const text = await notionText(pm.notion);
+    if (!pm.entries.some((e) => mentionsAddress(text, e.address))) {
+      throw new Error("source returned no confirmed attacker addresses");
+    }
     let count = 0;
     for (const e of pm.entries) {
       if (!mentionsAddress(text, e.address)) {
@@ -452,7 +529,7 @@ writeFileSync(
   JSON.stringify(
     {
       _comment:
-        "GENERATED by scripts/sync-disclosed-labels.mjs; do not edit by hand. First-party disclosed labels only: exchange proof-of-reserves wallet lists (evidence proof-of-reserves-listed, a listing and not a verified ownership proof), bridge deployment docs (official-docs), and attacker addresses named in the exploited protocol's own incident report (victim-postmortem). Every address was found in the text of its source_url on retrieved_at. Keys are CAIP-10: sui:mainnet for Sui, eip155:1 for Ethereum.",
+        "GENERATED by scripts/sync-disclosed-labels.mjs; do not edit by hand. First-party disclosed labels only: exchange proof-of-reserves wallet lists (evidence proof-of-reserves-listed, a listing and not a verified ownership proof), bridge and protocol deployment docs (official-docs), and attacker addresses named in the exploited protocol's own incident report (victim-postmortem). Every address was found in the text of its source_url on retrieved_at. Keys are CAIP-10: sui:mainnet for Sui, eip155:1 for Ethereum.",
       generated_at: TODAY,
       sources,
       labels: sorted,

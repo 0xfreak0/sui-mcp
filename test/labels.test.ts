@@ -6,6 +6,8 @@ import {
   isSink,
   isSinkCategory,
   isWatchAlert,
+  labelProvenance,
+  describeLabel,
   removeSessionLabel,
 } from "../src/utils/labels.js";
 import { runWithNetwork } from "../src/config.js";
@@ -24,6 +26,14 @@ describe("isSinkCategory", () => {
     for (const c of ["malicious", "protocol", "defi", "validator", "other"] as const) {
       expect(isSinkCategory(c)).toBe(false);
     }
+  });
+});
+
+describe("stale source provenance", () => {
+  it("marks a retained public label as historical in both structured and trace text", () => {
+    const prior = { label: "Exchange reserve", category: "cex" as const, source: "disclosed", evidence: "proof-of-reserves-listed", source_url: "https://issuer.example/reserves", stale: true, stale_since: "2026-10-06" };
+    expect(labelProvenance(prior)).toMatchObject({ stale: true, stale_since: "2026-10-06" });
+    expect(describeLabel(prior)).toContain("stale snapshot");
   });
 });
 

@@ -255,9 +255,10 @@ export function registerPoolTools(server: McpServer) {
         resolveTokenType(token_b),
       ]);
 
-      // Null covers a symbol several coins use and one nothing found: neither names a coin.
-      if (!typeA) return errorResult(`Could not resolve token: ${token_a}. Several coins use that symbol, or none could be found. Provide the full coin type (0x...::module::TYPE); search_token lists the coins using a symbol.`);
-      if (!typeB) return errorResult(`Could not resolve token: ${token_b}. Several coins use that symbol, or none could be found. Provide the full coin type (0x...::module::TYPE); search_token lists the coins using a symbol.`);
+      // Null covers every symbol the curated verified list does not name exactly once:
+      // shared, unverified or not found. None of those identifies a coin.
+      if (!typeA) return errorResult(`Could not resolve token: ${token_a}. Only symbols on the curated verified coin list resolve by name. Provide the full coin type (0x...::module::TYPE); search_token lists candidate coins for a symbol.`);
+      if (!typeB) return errorResult(`Could not resolve token: ${token_b}. Only symbols on the curated verified coin list resolve by name. Provide the full coin type (0x...::module::TYPE); search_token lists candidate coins for a symbol.`);
 
       const wanted = protocolFilter?.toLowerCase();
       if (wanted && !POOL_PROTOCOLS.includes(wanted as PoolProtocol)) {

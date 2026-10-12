@@ -7,9 +7,6 @@ name: Data sync
 # the review; data-release.yml then tags and publishes it.
 #
 # Not synced here:
-#   - coin-symbols.json: 12.8 MB of every coin on mainnet, near its size budget,
-#     and changed by new memecoins every week. Run `npm run sync:coin-symbols`
-#     by hand when the symbol index needs refreshing.
 #   - deposit-labels.json: reads the latest transactions of every exchange
 #     counterparty and runs long. Opt in with the deposit_labels input.
 #   - The vendored framework sources: pinned to an upstream ref on purpose.

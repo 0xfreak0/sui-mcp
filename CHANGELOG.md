@@ -8,6 +8,35 @@
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.
 - **Data refreshes ship as weekly releases.** A scheduled job reruns the label, sanctions, blocklist, coin and protocol-lineage syncs from main, checks the result with the test suite and opens a pull request summarizing what changed and which sources went stale. A maintainer approves the bot-triggered PR CI runs before merging; manually dispatched checks cannot satisfy GitHub's required PR checks. Merging publishes a patch release through the existing provenance-signed workflow, refusing any version tag already attached to another commit. Known run stamps and collection reordering open no pull request, but corrections to attribution URLs and changes within actual data remain material.
 - **Issuer freezes carry per-coin provenance.** `check_coin_restrictions` returns active `frozen_by_issuer` entries with config object, DenyList object and epoch; incomplete enumeration or failed chunks are marked, and pending restrictions stay separate. A failed later enumeration page preserves previously discovered configs without caching the incomplete scope.
+- **yolo.casa's orders contracts and Blast.fun's presale suite are named.** yolo.casa's limit, stop, DCA and OTC order lineage, published by `yolo.sui`, is curated as yolo.casa, type `dex`. Blast.fun's presale, access-control, partners and Aftermath DAO adapter packages, from both its October deployments, join its existing `launchpad` entries; their deployer shares a first funder with the earlier Blast.fun deployer.
+
+### Changed
+- **Uncurated mainnet coin lookup now uses live DEX search instead of a
+  shipped symbol index.** `analyze_token` and `search_token` search DexScreener
+  with both the ticker and `ticker SUI` to reduce cross-chain crowding, then
+  ask GeckoTerminal when Sui matches are missing, capped or unavailable.
+  They confirm candidate coin types against on-chain metadata, cache results
+  for 10 minutes unless a provider or confirmation failed, and report partial provider coverage and
+  candidates that could not be confirmed rather than calling them absent.
+  Curated verified coins take precedence. The search confirms at most 25
+  candidate coin types, prioritizing verified types and exact symbols before
+  pool liquidity; a bounded CoinMetadata scan is the fallback when no
+  candidate can be confirmed and off mainnet.
+  Coins without a DEX pool are found only by full coin type or that bounded
+  scan, and pooled lookalikes of verified coins are flagged `impostor_of`.
+  A missing result cannot establish that no coin uses a symbol. `npm pack
+  --dry-run --json` shrank from 8,567,545 to 2,290,345 compressed bytes
+  (19,631,575 to 6,837,760 unpacked bytes).
+- **Incomplete ticker discovery cannot silently identify an asset.**
+  `resolveTokenType` and `resolveTokenBySymbol` accept only curated symbols;
+  unverified leads require an explicit coin type. Provider outages, every
+  provider cap and the 25-candidate local cap remain partial, even after a
+  successful fallback; outages are retried rather than cached. Read failures return `could_not_confirm`.
+  `impostor_of` ignores case and surrounding whitespace, lists every verified
+  type sharing the symbol when there are several (an array rather than a
+  single string), and never labels a verified type as an impostor. This field
+  identifies symbol lookalikes, not malicious intent; decimals remain the
+  candidate's own.
 
 ## 1.27.0 (2026-10-06)
 

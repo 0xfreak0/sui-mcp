@@ -1,10 +1,10 @@
 import { sui } from "./clients/grpc.js";
 import { gqlQuery } from "./clients/graphql.js";
 import {
-  resolveVerifiedSymbol,
+  resolveSymbolWithLive,
   type RegistryCoin,
 } from "./utils/coin-registry.js";
-import { symbolIndex, type IndexedCoin, type SymbolIndexInfo, type UnlistedSymbol } from "./utils/coin-symbols.js";
+import { searchLiveTickers, type LiveTickerSearch, type TickerCandidate } from "./utils/ticker-search.js";
 import { EXTERNAL_HTTP_TIMEOUT_MS, getNetwork } from "./config.js";
 import { describeError } from "./utils/errors.js";
 
@@ -213,79 +213,50 @@ async function fetchDiscoveryTokens(): Promise<TokenScan> {
   return p;
 }
 
-/** Where `searchTokens` found its matches. */
-export type TokenSearch =
-  | {
-      source: "symbol_index";
-      tokens: TokenInfo[];
-      index: SymbolIndexInfo;
-      /** The exact symbol is used by more coins than the index lists: how many. */
-      unlisted_exact_count: number | null;
-      /** Other symbols containing the query that too many coins use to list, most-used first. */
-      unlisted_containing: UnlistedSymbol[];
-    }
-  | {
-      source: "scan";
-      tokens: TokenInfo[];
-      /** The scan stopped before the end, so a coin absent here may still exist. */
-      truncated: boolean;
-      /** CoinMetadata objects the scan read. */
-      scanned: number;
-      /** The error of the page read that ended the scan, if one did. */
-      failed?: string;
-      /** The index that had no match, on mainnet. */
-      index: SymbolIndexInfo | null;
-    };
+/** Live search is pool-backed, whereas a bounded scan samples on-chain metadata. */
+export type TokenSearch = {
+  source: "dex_search" | "scan";
+  tokens: Array<TokenInfo | TickerCandidate>;
+  coverage: LiveTickerSearch["providers"];
+  unavailable_providers: LiveTickerSearch["unavailable_providers"];
+  partial: boolean;
+  unconfirmed: number;
+  unconfirmed_reason?: string;
+  scan?: ScanReport;
+};
 
-/**
- * Coins whose symbol or name contains `query`.
- *
- * On mainnet the symbol index answers first, since it holds every coin up to
- * its sync. A symbol too common to list still counts as a match: its coins
- * exist, and the index keeps only their count. The bounded live scan runs
- * only when the index has no match at all, which is what a coin published
- * after the sync looks like.
- */
 export async function searchTokens(query: string): Promise<TokenSearch> {
-  const index = symbolIndex();
-  if (index) {
-    const { exact, coins, unlisted } = index.search(query);
-    if (coins.length > 0 || exact.status === "count_only" || unlisted.length > 0) {
-      return {
-        source: "symbol_index",
-        tokens: coins,
-        index: index.info,
-        unlisted_exact_count: exact.status === "count_only" ? exact.count : null,
-        unlisted_containing: unlisted,
-      };
-    }
+  const live = await searchLiveTickers(query);
+  if (live.candidates.length > 0) {
+    return {
+      source: "dex_search",
+      tokens: live.candidates,
+      coverage: live.providers,
+      unavailable_providers: live.unavailable_providers,
+      partial: live.partial,
+      unconfirmed: live.unconfirmed,
+      ...(live.unconfirmed_reason ? { unconfirmed_reason: live.unconfirmed_reason } : {}),
+    };
   }
   const scan = await fetchDiscoveryTokens();
-  const q = query.toLowerCase();
+  const q = query.trim().toLowerCase();
   return {
     source: "scan",
     tokens: scan.tokens.filter(
       (t) => t.name.toLowerCase().includes(q) || t.symbol.toLowerCase().includes(q),
     ),
-    truncated: scan.truncated,
-    scanned: scan.scanned,
-    ...(scan.failed ? { failed: scan.failed } : {}),
-    index: index?.info ?? null,
+    coverage: live.providers,
+    unavailable_providers: live.unavailable_providers,
+    partial: live.partial,
+    unconfirmed: live.unconfirmed,
+    ...(live.unconfirmed_reason ? { unconfirmed_reason: live.unconfirmed_reason } : {}),
+    scan: { scanned: scan.scanned, truncated: scan.truncated, ...(scan.failed ? { failed: scan.failed } : {}) },
   };
 }
 
-/**
- * Resolve a single token by symbol/name. Prefers exact symbol match.
- */
+/** Resolve only trusted symbols for callers that cannot report discovery uncertainty. */
 export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | null> {
-  const q = query.toLowerCase();
-
-  // The curated registry decides first, and its "no" is load-bearing. Scanning
-  // coin metadata and taking the first exact symbol match returns whichever
-  // coin is indexed earliest, and for a popular symbol that can be an
-  // impostor. Callers that need to distinguish "verified" from "found
-  // something" should use resolveSymbolDetailed.
-  const verified = resolveVerifiedSymbol(query);
+  const verified = await resolveSymbolWithLive(query);
   if (verified.status === "resolved") {
     return {
       coin_type: verified.coin.coin_type,
@@ -294,18 +265,9 @@ export async function resolveTokenBySymbol(query: string): Promise<TokenInfo | n
       decimals: verified.coin.decimals ?? 0,
     };
   }
-  // Ambiguous among verified coins: refuse rather than pick. Several
-  // legitimate coins share USDC on Sui, and choosing one silently misreports
-  // which asset moved.
-  if (verified.status === "ambiguous") return null;
-
-  // The index lists every coin using the symbol up to its sync, so it can say
-  // there is exactly one. Several is the same refusal as above.
-  const indexed = symbolIndex()?.lookup(query);
-  if (indexed?.status === "listed") return indexed.coins.length === 1 ? indexed.coins[0] : null;
-  if (indexed?.status === "count_only") return null;
-
-  return (await scanForSymbol(query)).token;
+  // A bounded pool search or first scan hit cannot establish uniqueness.
+  // Discovery callers can inspect unverified leads via resolveSymbolDetailed.
+  return null;
 }
 
 /**
@@ -364,38 +326,26 @@ async function scanForSymbol(
   return { token: exact, scan };
 }
 
-/** `resolveSymbolDetailed`'s answer. */
+/** Search coverage is necessary to interpret an unverified symbol candidate. */
+export interface SymbolSearchCoverage {
+  coverage: LiveTickerSearch["providers"];
+  unavailable_providers: LiveTickerSearch["unavailable_providers"];
+  partial: boolean;
+  unconfirmed: number;
+  unconfirmed_reason?: string;
+}
+
 export type SymbolDetail =
   | { status: "resolved"; token: TokenInfo; verified: true }
   | { status: "ambiguous"; source: "curated"; candidates: RegistryCoin[] }
-  | {
-      status: "ambiguous";
-      source: "symbol_index";
-      /** Coins using the symbol. Above the index's row limit `candidates` is empty. */
-      count: number;
-      candidates: IndexedCoin[];
-      index: SymbolIndexInfo;
-    }
-  /** The only coin the index lists under the symbol. */
-  | { status: "unverified"; source: "symbol_index"; token: TokenInfo; index: SymbolIndexInfo }
-  /** The live scan's first exact match. `index` had no coin with this symbol; null off mainnet. */
-  | { status: "unverified"; source: "scan"; token: TokenInfo; index: SymbolIndexInfo | null }
-  | { status: "not_found"; scan: ScanReport; index: SymbolIndexInfo | null };
+  | ({ status: "ambiguous"; source: "dex_search"; candidates: TickerCandidate[] } & SymbolSearchCoverage)
+  | ({ status: "unverified"; source: "dex_search"; token: TickerCandidate } & SymbolSearchCoverage)
+  | ({ status: "unverified"; source: "scan"; token: TokenInfo } & SymbolSearchCoverage)
+  | ({ status: "could_not_confirm"; scan: ScanReport } & SymbolSearchCoverage)
+  | ({ status: "not_found"; scan: ScanReport } & SymbolSearchCoverage);
 
-/**
- * Symbol resolution with the reason attached.
- *
- * `resolveTokenBySymbol` collapses everything to a coin or null, which cannot
- * distinguish "no such symbol" from "several coins claim it" from "found one,
- * but nothing verifies it". A tool reporting on an asset needs that
- * difference: the last case is where an impostor gets presented as the
- * answer.
- *
- * Order: the curated list, then the symbol index (mainnet), then the live
- * scan for a symbol the index does not have.
- */
 export async function resolveSymbolDetailed(query: string): Promise<SymbolDetail> {
-  const verified = resolveVerifiedSymbol(query);
+  const verified = await resolveSymbolWithLive(query);
   if (verified.status === "resolved") {
     return {
       status: "resolved",
@@ -411,34 +361,25 @@ export async function resolveSymbolDetailed(query: string): Promise<SymbolDetail
   if (verified.status === "ambiguous") {
     return { status: "ambiguous", source: "curated", candidates: verified.candidates };
   }
-  // Not curated. Whatever is found from here is unverified, so the caller
-  // never presents a symbol match as an identification.
-  const index = symbolIndex();
-  const indexed = index?.lookup(query);
-  if (index && indexed?.status === "listed") {
-    if (indexed.coins.length === 1) {
-      return { status: "unverified", source: "symbol_index", token: indexed.coins[0], index: index.info };
-    }
-    return {
-      status: "ambiguous",
-      source: "symbol_index",
-      count: indexed.coins.length,
-      candidates: indexed.coins,
-      index: index.info,
-    };
-  }
-  if (index && indexed?.status === "count_only") {
-    return { status: "ambiguous", source: "symbol_index", count: indexed.count, candidates: [], index: index.info };
-  }
+  const live = await searchLiveTickers(query);
+  const exact = live.candidates.filter((candidate) => candidate.symbol.trim().toLowerCase() === query.trim().toLowerCase());
+  const coverage: SymbolSearchCoverage = {
+    coverage: live.providers, unavailable_providers: live.unavailable_providers,
+    partial: live.partial, unconfirmed: live.unconfirmed,
+    ...(live.unconfirmed_reason ? { unconfirmed_reason: live.unconfirmed_reason } : {}),
+  };
+  if (exact.length === 1) return { status: "unverified", source: "dex_search", token: exact[0], ...coverage };
+  if (exact.length > 1) return { status: "ambiguous", source: "dex_search", candidates: exact, ...coverage };
   const found = await scanForSymbol(query);
-  if (found.token === null) return { status: "not_found", scan: found.scan, index: index?.info ?? null };
-  return { status: "unverified", source: "scan", token: found.token, index: index?.info ?? null };
+  if (found.token === null) {
+    return { status: live.unconfirmed > 0 || live.unavailable_providers.length > 0 || found.scan.failed ? "could_not_confirm" : "not_found", scan: found.scan, ...coverage };
+  }
+  return { status: "unverified", source: "scan", token: found.token, ...coverage };
 }
 
 /**
  * If input contains `::`, return as-is (it's a full coin type). Otherwise
- * resolve the symbol through `resolveTokenBySymbol`, which answers null for a
- * symbol several coins use.
+ * resolve only a curated symbol; unverified discovery requires an explicit type.
  */
 export async function resolveTokenType(
   symbolOrType: string,

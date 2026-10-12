@@ -191,7 +191,7 @@ describe("live ticker indexer evidence", () => {
     expect(fetch).toHaveBeenCalledTimes(5);
   });
 
-  it("keeps an all-Sui capped page partial even if the fallback is empty, and does not cache it", async () => {
+  it("keeps an all-Sui capped page partial even if the fallback is empty, and caches it instead of re-asking GeckoTerminal", async () => {
     const pairs = Array.from({ length: 30 }, (_, i) => dexPair(KONG, "SUICAP", "Sui cap", `0xcap${i}`));
     vi.stubGlobal("fetch", vi.fn(async (url: string) => response(url.includes("geckoterminal") ? { data: [] } : { pairs })));
     mockSui.stateService.getCoinInfo.mockResolvedValue({ response: { metadata: { symbol: "SUICAP", name: "Sui cap", decimals: 2 } } });
@@ -199,7 +199,7 @@ describe("live ticker indexer evidence", () => {
     const second = await searchLiveTickers("SUICAP");
     expect(first).toMatchObject({ partial: true, providers: { dexscreener: "ok", geckoterminal: "ok" } });
     expect(second.partial).toBe(true);
-    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("prioritizes verified types and exact symbols before the local confirmation cap", async () => {

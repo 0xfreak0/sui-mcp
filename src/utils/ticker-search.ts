@@ -262,7 +262,12 @@ export async function searchLiveTickers(query: string): Promise<LiveTickerSearch
   const pending = inFlight.get(key);
   if (pending) return pending;
   const request = search(q).then((value) => {
-    if (value.unavailable_providers.length === 0 && value.unconfirmed === 0 && !value.partial) {
+    // A provider's result cap is deterministic: asking again returns the same
+    // capped page, so a cap-only `partial` answer is cached like a clean one.
+    // Not caching it would re-query GeckoTerminal (~10 calls/min, shared with
+    // pricing) on every lookup of a popular ticker. Outages and failed
+    // confirmations are transient and are retried on the next call instead.
+    if (value.unavailable_providers.length === 0 && value.unconfirmed === 0) {
       cache.set(key, { value, fetchedAt: Date.now() });
     }
     return value;

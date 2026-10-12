@@ -7,8 +7,8 @@
   shipped symbol index.** `analyze_token` and `search_token` search DexScreener
   with both the ticker and `ticker SUI` to reduce cross-chain crowding, then
   ask GeckoTerminal when Sui matches are missing, capped or unavailable.
-  They confirm candidate coin types against on-chain metadata, cache only
-  clean results for 10 minutes, and report partial provider coverage and
+  They confirm candidate coin types against on-chain metadata, cache results
+  for 10 minutes unless a provider or confirmation failed, and report partial provider coverage and
   candidates that could not be confirmed rather than calling them absent.
   Curated verified coins take precedence. The search confirms at most 25
   candidate coin types, prioritizing verified types and exact symbols before
@@ -22,8 +22,8 @@
 - **Incomplete ticker discovery cannot silently identify an asset.**
   `resolveTokenType` and `resolveTokenBySymbol` accept only curated symbols;
   unverified leads require an explicit coin type. Provider outages, every
-  provider cap and the 25-candidate local cap remain partial and uncached,
-  even after a successful fallback. Read failures return `could_not_confirm`.
+  provider cap and the 25-candidate local cap remain partial, even after a
+  successful fallback; outages are retried rather than cached. Read failures return `could_not_confirm`.
   `impostor_of` ignores case and surrounding whitespace, lists every verified
   type sharing the symbol when there are several (an array rather than a
   single string), and never labels a verified type as an impostor. This field

@@ -182,7 +182,7 @@ prove nothing; a scammer can copy both.
   if DexScreener fails, is rate-limited, hits its cap, or has no Sui hits. Candidate coin
   types are confirmed against on-chain metadata. Multiple matches return
   `candidates`, not a selected coin; curated verified types take precedence.
-  Only clean searches are cached for 10 minutes. At most 25 candidate coin
+  Results are cached for 10 minutes unless a provider or confirmation failed. At most 25 candidate coin
   types are checked, verified types and exact symbols before pool liquidity.
   Provider/local caps and outages remain `partial`, even with a successful
   fallback. Neither one candidate nor no candidates proves how many coins

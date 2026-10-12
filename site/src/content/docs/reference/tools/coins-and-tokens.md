@@ -63,7 +63,7 @@ Get USD prices for Sui coins by full coin type, current by default or at a past 
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Find a Sui coin type by name or symbol. Verified types rank first. Mainnet searches DexScreener for the ticker and ticker + SUI; GeckoTerminal is used when results are missing, capped or unavailable. Up to 25 pool-backed candidates are confirmed by exact coin type on chain and clean searches are cached for 10 minutes. Symbols are not unique; partial result caps, provider outages and failed on-chain confirmations are reported separately. Without confirmed live matches or off mainnet, a bounded CoinMetadata scan is used; pass a full coin type to inspect a coin without a pool.
+Find a Sui coin type by name or symbol. Verified types rank first. Mainnet searches DexScreener for the ticker and ticker + SUI; GeckoTerminal is used when results are missing, capped or unavailable. Up to 25 pool-backed candidates are confirmed by exact coin type on chain and searches are cached for 10 minutes unless a provider or confirmation failed. Symbols are not unique; partial result caps, provider outages and failed on-chain confirmations are reported separately. Without confirmed live matches or off mainnet, a bounded CoinMetadata scan is used; pass a full coin type to inspect a coin without a pool.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

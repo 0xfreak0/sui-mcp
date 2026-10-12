@@ -1669,8 +1669,10 @@ candidates, or returns a capped page, including an all-Sui page. GeckoTerminal
 has its own 20-pool cap. Any provider/local cap or outage remains `partial`,
 even with a successful fallback; one indexer cannot fill another's omissions. Indexers report
 liquidity/volume, not legitimacy; confirm each candidate's exact coin type
-against on-chain metadata. Only clean results are cached for 10 minutes;
-failed confirmations report `unconfirmed`, not an absent coin. Confirm
+against on-chain metadata. Results are cached for 10 minutes, including
+cap-only `partial` ones (a cap returns the same page again); a provider outage
+or a failed confirmation is not cached and is retried on the next call.
+Failed confirmations report `unconfirmed`, not an absent coin. Confirm
 at most 25 coin types ranked by verified type, exact symbol, then pool liquidity.
 Do not describe one candidate as the only coin using a symbol:
 indexers omit coins without covered pools, and a bound cannot establish

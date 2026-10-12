@@ -278,6 +278,15 @@ export function vouchFor(coinType: string): CoinVouch {
   return null;
 }
 
+/** Symbol lookalikes, not an attribution of intent or a choice among issuers. */
+export function impostorOf(coinType: string, symbol: string): string | string[] | undefined {
+  if (vouchFor(coinType) !== null) return undefined;
+  const key = symbol.trim().toUpperCase();
+  const matches = [...(bySymbol.get(key) ?? []), ...(liveOnlyBySymbol.get(key) ?? [])];
+  const types = [...new Set(matches.map((coin) => coin.coin_type))];
+  return types.length === 1 ? types[0] : types.length > 1 ? types : undefined;
+}
+
 /**
  * Symbol resolution including the live layer.
  *

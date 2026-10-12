@@ -6,9 +6,9 @@
  * Every sync stamps the run into its output: retrieval dates, the epoch and
  * checkpoint it read at, the upstream commit, a validator operation cap's
  * latest version. A weekly job that released whenever a file's bytes changed
- * would publish every Monday with nothing new in it. VOLATILE lists those
- * fields; they are ignored at any depth before comparing. They still ship, in
- * the next release that carries a real change.
+ * would publish every Monday with nothing new in it. Only known metadata
+ * locations are ignored; similarly named fields in actual data remain material.
+ * Ignored metadata still ships with the next real change.
  *
  * `stale` markers are ignored for the release decision too, so a source that
  * timed out once does not cut a release on its own, and reported separately so
@@ -24,23 +24,32 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 
-export const VOLATILE = new Set([
+const RUN_STAMPS = new Set([
   "generated_at", "retrieved_at", "synced_at", "data_as_of", "fetched_at",
   "checkpoint", "checkpoint_time", "epoch", "commit",
-  // A monthly proof-of-reserves file has a new URL even when its addresses are unchanged.
-  "snapshot", "source_url", "page_url", "document_url",
-  // Bumped whenever a validator uses its operation cap, e.g. to set its gas price.
-  "operation_cap_object_version", "operation_cap_source_tx", "operation_cap_source_tx_url",
   "stale", "stale_since", "stale_reason",
 ]);
-
+const LABEL_STAMPS = new Set(["retrieved_at", "stale", "stale_since", "stale_reason"]);
+const CAP_STAMPS = new Set([
+  "epoch", "checkpoint", "stale",
+  "operation_cap_object_version", "operation_cap_source_tx", "operation_cap_source_tx_url",
+]);
+const RESERVE_STAMPS = new Set(["snapshot", "source_url", "document_url"]);
 const EXAMPLES = 5;
 
-/** Drop volatile keys at any depth. */
-export function stable(value) {
-  if (Array.isArray(value)) return value.map(stable);
+/** Ignore run metadata only where the generated schemas define it. */
+export function stable(value, path = []) {
+  if (Array.isArray(value)) return value.map((v) => stable(v, [...path, "*"]));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).filter(([k]) => !VOLATILE.has(k)).map(([k, v]) => [k, stable(v)]));
+    const source = path.length === 2 && path[0] === "sources";
+    const label = path.length === 2 && path[0] === "labels";
+    const cap = path.length === 3 && path[0] === "labels" && path[2] === "chain_state";
+    const ignored = path.length === 0 || source ? RUN_STAMPS : label ? LABEL_STAMPS : cap ? CAP_STAMPS : new Set();
+    return Object.fromEntries(Object.entries(value)
+      .filter(([k]) => !ignored.has(k) &&
+        !((source || label) && value.evidence === "proof-of-reserves-listed" && RESERVE_STAMPS.has(k)))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => [k, stable(v, [...path, k])]));
   }
   return value;
 }
@@ -61,7 +70,8 @@ export function diffData(before, after) {
     // A collection missing on one side (a new file, a new section) diffs against an empty one.
     const empty = (v) => (Array.isArray(v) ? [] : v && typeof v === "object" ? {} : v);
     // Lists of records with an id (`sources`) diff by id, so an edited source reads as changed.
-    const keyed = (v) => (Array.isArray(v) && v.length > 0 && v.every((e) => typeof e?.id === "string") ? Object.fromEntries(v.map((e) => [e.id, e])) : v);
+    const records = [a[key], b[key]].some((v) => Array.isArray(v) && v.length > 0 && v.every((e) => typeof e?.id === "string"));
+    const keyed = (v) => (records && Array.isArray(v) && v.every((e) => typeof e?.id === "string") ? Object.fromEntries(v.map((e) => [e.id, e])) : v);
     const ka = keyed(a[key]);
     const kb = keyed(b[key]);
     const x = ka === undefined ? empty(kb) : ka;
@@ -70,11 +80,13 @@ export function diffData(before, after) {
       const added = Object.keys(y).filter((k) => !(k in x));
       const removed = Object.keys(x).filter((k) => !(k in y));
       const changed = Object.keys(y).filter((k) => k in x && !same(x[k], y[k]));
-      changes.push({ key, added, removed, changed });
+      if (added.length || removed.length || changed.length) changes.push({ key, added, removed, changed });
     } else if (Array.isArray(x) && Array.isArray(y)) {
       const xs = new Set(x.map((v) => JSON.stringify(v)));
       const ys = new Set(y.map((v) => JSON.stringify(v)));
-      changes.push({ key, added: [...ys].filter((v) => !xs.has(v)), removed: [...xs].filter((v) => !ys.has(v)), changed: [] });
+      const added = [...ys].filter((v) => !xs.has(v));
+      const removed = [...xs].filter((v) => !ys.has(v));
+      if (added.length || removed.length) changes.push({ key, added, removed, changed: [] });
     } else {
       changes.push({ key, from: x, to: y });
     }

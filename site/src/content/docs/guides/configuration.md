@@ -193,10 +193,12 @@ current chain epoch before treating membership or cap custody as current.
 
 Shipped labels update only through npm releases, so they carry the same
 provenance attestation as the code. A weekly job reruns these syncs and opens a
-pull request; merging it publishes a patch release. The server never fetches
-label data at runtime. `npx sui-analytics-mcp` resolves the newest release on
-each start; a pinned or globally installed copy keeps its labels until you
-update it.
+pull request. A maintainer must approve the bot-triggered PR CI run and wait for
+both Node-version checks before merging; merging publishes a patch release.
+The server never fetches label data at runtime. Use
+`npx sui-analytics-mcp@latest` to request the latest release; bare `npx` can use
+an already installed local copy. A pinned or globally installed copy keeps its
+labels until you update it.
 
 Lookup reports `deposit_address` alongside the effective label. Shipped
 inferred deposit roles come from that same registry lookup, so an override

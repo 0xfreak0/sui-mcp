@@ -297,7 +297,14 @@ export async function listConfiguredCoins(maxPages = 25): Promise<ConfiguredCoin
   const map = new Map<string, string>();
   let cursor: string | null = null;
   for (let i = 0; i < maxPages; i++) {
-    const conn = await page(DENY_LIST_ID, cursor);
+    let conn;
+    try {
+      conn = await page(DENY_LIST_ID, cursor);
+    } catch {
+      // Preserve the already enumerated scope so callers can still report
+      // known freezes, but never cache or present it as a complete scan.
+      return { map, complete: false };
+    }
     if (!conn) return { map, complete: false };
     for (const n of conn.nodes) {
       const key = (n.name?.json as { per_type_key?: string } | undefined)?.per_type_key;

@@ -44,10 +44,16 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$(node -p "require('./package.json').version")"
-          # A re-run after the tag was pushed must not fail on it; it still
-          # dispatches, and publish.yml skips an already-published npm version.
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists."
+          # Retry only the same release: an existing tag for another commit
+          # must never silently publish old code in place of this merged PR.
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$tag")"
+          if [ -n "$remote_tag" ]; then
+            git fetch --no-tags origin "refs/tags/$tag"
+            if [ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::$tag already points to a different commit."
+              exit 1
+            fi
+            echo "$tag already points to this release."
           else
             git tag "$tag"
             git push origin "refs/tags/$tag"

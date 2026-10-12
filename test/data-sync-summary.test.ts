@@ -17,14 +17,14 @@ const base = {
 };
 
 describe("weekly data-sync release decision", () => {
-  it("opens no release when only run stamps moved: dates, epochs, checkpoints, cap versions, document URLs", () => {
+  it("opens no release when only run stamps moved: dates, epochs, checkpoints and cap versions", () => {
     const next = structuredClone(base);
     next.generated_at = "2026-10-12";
     next.epoch = 1277;
     next.checkpoint = 332600000;
     Object.assign(next.labels["sui:mainnet:0xa"], { retrieved_at: "2026-10-12" });
     Object.assign(next.labels["sui:mainnet:0xa"].chain_state, { epoch: 1277, checkpoint: 332600000, operation_cap_object_version: 9, operation_cap_source_tx: "def" });
-    Object.assign(next.sources[0], { retrieved_at: "2026-10-12", source_url: "https://a.example/v2" });
+    Object.assign(next.sources[0], { retrieved_at: "2026-10-12" });
     expect(diffData(base, next)).toEqual([]);
   });
 
@@ -52,6 +52,37 @@ describe("weekly data-sync release decision", () => {
       { key: "labels", added: ["sui:mainnet:0xa"], removed: [], changed: [] },
       { key: "sources", added: ["validators"], removed: [], changed: [] },
     ]);
+  });
+
+  it("ignores monthly reserve documents but releases corrections to other provenance URLs", () => {
+    const reserves = { sources: [{ id: "exchange", evidence: "proof-of-reserves-listed", source_url: "https://exchange.example/september.zip", snapshot: "sep" }] };
+    const next = structuredClone(reserves);
+    Object.assign(next.sources[0], { source_url: "https://exchange.example/october.zip", snapshot: "oct" });
+    expect(diffData(reserves, next)).toEqual([]);
+    const corrected = structuredClone(base);
+    corrected.sources[0].source_url = "https://correct.example/validators";
+    expect(diffData(base, corrected)).toEqual([{ key: "sources", added: [], removed: [], changed: ["validators"] }]);
+    const a = { labels: { address: { evidence: "official-docs", source_url: "https://old.example" } } };
+    const b = { labels: { address: { evidence: "official-docs", source_url: "https://new.example" } } };
+    expect(diffData(a, b)).toEqual([{ key: "labels", added: [], removed: [], changed: ["address"] }]);
+  });
+
+  it.each(["checkpoint", "commit", "epoch", "source_url"])("keeps %s changes inside actual data", (key) => {
+    expect(diffData({ records: { item: { [key]: "old" } } }, { records: { item: { [key]: "new" } } }))
+      .toEqual([{ key: "records", added: [], removed: [], changed: ["item"] }]);
+  });
+
+  it("does not release collections whose only change is order", () => {
+    const a = { sources: [{ id: "a", count: 1 }, { id: "b", count: 2 }], packages: ["a", "b"], labels: { a: { label: "A", category: "cex" } } };
+    const b = { sources: [...a.sources].reverse(), packages: ["b", "a"], labels: { a: { category: "cex", label: "A" } } };
+    expect(diffData(a, b)).toEqual([]);
+  });
+
+  it("reports source additions and removals by id even across an empty inventory", () => {
+    expect(diffData({ sources: [] }, { sources: [{ id: "new" }] }))
+      .toEqual([{ key: "sources", added: ["new"], removed: [], changed: [] }]);
+    expect(diffData({ sources: [{ id: "old" }] }, { sources: [] }))
+      .toEqual([{ key: "sources", added: [], removed: ["old"], changed: [] }]);
   });
 });
 

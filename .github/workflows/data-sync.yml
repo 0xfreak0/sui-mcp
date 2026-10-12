@@ -40,8 +40,8 @@ jobs:
       # Push the data-sync/weekly branch. No id-token: this job cannot publish.
       contents: write
       pull-requests: write
-      # Dispatch ci.yml on the PR branch; see the last step.
-      actions: write
+      # Link the approval-required CI run; no workflow dispatch is needed.
+      actions: read
     env:
       BRANCH: data-sync/weekly
       GH_TOKEN: ${{ github.token }}
@@ -55,6 +55,10 @@ jobs:
     steps:
       # SHA-pinned; see publish.yml for why. Comments record the tag.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # A manual dispatch may select another ref; release candidates must
+          # still start from main, never an old tag or the previous bot branch.
+          ref: main
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "24"
@@ -67,9 +71,9 @@ jobs:
       # --ignore-scripts: unattended job with write access to the repo.
       - run: npm ci --ignore-scripts
 
-      # Each sync keeps the previous entries of a source it cannot read and
-      # marks them stale, so one failure must not stop the others. Failures are
-      # listed in the PR; a sync that writes nothing leaves its file unchanged.
+      # A failed sync must not stop the others. Label syncs retain stale rows;
+      # other syncs leave their prior file intact. Report failures in the run
+      # summary as well, since a failed-only run may open no PR.
       - name: Run the syncs
         id: sync
         env:
@@ -97,6 +101,10 @@ jobs:
           fi
           echo "files=$files" >> "$GITHUB_OUTPUT"
           echo "failed=${failed[*]:-}" >> "$GITHUB_OUTPUT"
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf '### Syncs that failed\n' >> "$GITHUB_STEP_SUMMARY"
+            printf -- '- %s\n' "${failed[@]}" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Summarize the change
         id: summary
@@ -149,6 +157,10 @@ jobs:
           {
             echo "Weekly data refresh. Merging publishes **$VERSION** through publish.yml (npm with provenance, MCP Registry, GitHub release)."
             echo
+            echo "### Required CI"
+            echo "A maintainer must approve the bot-triggered CI run using **Approve workflows to run** in this PR. Wait for both \`check (22)\` and \`check (24)\` before merging."
+            echo "CI runs: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/ci.yml?query=branch%3Adata-sync%2Fweekly"
+            echo
             cat /tmp/summary.md
             if [ -n "$FAILED" ]; then
               echo
@@ -169,10 +181,22 @@ jobs:
             gh pr create --base main --head "$BRANCH" --title "Data refresh $VERSION" --body-file /tmp/pr-body.md
           fi
 
-      # GitHub starts no workflow for events caused by GITHUB_TOKEN, so the PR
-      # above gets no pull_request CI run and branch protection would wait on
-      # its required checks forever. A workflow_dispatch is the exception to
-      # that rule; the run reports the same checks on the branch's head commit.
-      - name: Run CI on the pull request branch
+      # workflow_dispatch job checks do not satisfy required PR checks.
+      # GITHUB_TOKEN-created PRs instead produce approval-required PR runs:
+      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+      - name: Explain required CI approval
         if: steps.summary.outputs.material == 'true'
-        run: gh workflow run ci.yml --ref "$BRANCH"
+        run: |
+          ci_run="$(gh run list --workflow ci.yml --event pull_request --branch "$BRANCH" \
+            --commit "$(git rev-parse HEAD)" --json url --jq '.[0].url // empty')"
+          # Event delivery may still be pending. Keep the workflow listing
+          # link in that case; never link last week's head commit instead.
+          if [ -n "$ci_run" ]; then
+            printf '\nCI run awaiting approval: %s\n' "$ci_run" >> /tmp/pr-body.md
+            gh pr edit "$BRANCH" --body-file /tmp/pr-body.md
+          fi
+          {
+            echo "A maintainer must approve the genuine pull_request CI run in the data refresh PR."
+            echo "Wait for check (22) and check (24) before merging."
+            echo "CI: ${ci_run:-$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/ci.yml?query=branch%3Adata-sync%2Fweekly}"
+          } >> "$GITHUB_STEP_SUMMARY"

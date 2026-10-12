@@ -46,4 +46,15 @@ describe("configured coin scan completeness", () => {
     expect((await cachedConfiguredCoins()).complete).toBe(true);
     expect(query).toHaveBeenCalledTimes(2);
   });
+
+  it("retains enumerated configs after a later page fails and retries on the next request", async () => {
+    query.mockResolvedValueOnce(response(true, "next"))
+      .mockRejectedValueOnce(new Error("GraphQL timeout"))
+      .mockResolvedValueOnce(response(false, null));
+    const partial = await cachedConfiguredCoins();
+    expect(partial.complete).toBe(false);
+    expect([...partial.map.values()]).toEqual(["0xcafe"]);
+    expect((await cachedConfiguredCoins()).complete).toBe(true);
+    expect(query).toHaveBeenCalledTimes(3);
+  });
 });

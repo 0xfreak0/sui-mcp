@@ -17,8 +17,8 @@ funders with those of other claimants.
 - Case file: [`walrus-wal-claim-farm-2025-03.json`](https://github.com/0xfreak0/sui-mcp/blob/main/cases/incidents/walrus-wal-claim-farm-2025-03.json),
   which lists all 24 wallets
 
-No published sybil list names these wallets. Every step reads the chain, and
-common control is the inference being tested.
+The case file documents the claim and transfer transactions for these wallets.
+Common control is the inference being tested.
 
 | Subject | Value |
 |---|---|
@@ -180,6 +180,9 @@ from the same claim event in the same half hour, excluding the 24:
 
 ```text wrap
 "addresses": [ … ],
+"events_scanned": 5000,
+"population_truncated": true,
+"population_size": 4990,
 "requested": 24,
 "seed": 20250327,
 "undersampled": false,
@@ -187,8 +190,10 @@ from the same claim event in the same half hour, excluding the 24:
 ```
 
 The seeded sample selects other addresses that emitted the same event
-in the specified window. Record and pass its `addresses` to the next
-call; the seed makes the draw reproducible.
+in the specified window, among the 5,000 events scanned. The population
+scan was truncated, so this draw cannot establish coverage of every claimant
+in the window. Record and pass its `addresses` to the next call; the seed
+makes the draw reproducible from that scanned population.
 
 ### 5. Run the same funding test on the control
 
@@ -249,8 +254,9 @@ candidate addresses and exchange wallets. An incomplete read prevents
   wallets within 12 minutes, while the recorded control sample has no funding
   burst and its shared funders are an exchange reserve wallet and a
   distributor.
-- A single control sample is one draw. A different seed gives a different
-  sample; run more than one before relying on the rate.
+- The control draw comes from a truncated event scan, so some claimants may
+  fall outside its population. A different seed gives a different sample
+  from that scan; run more than one before relying on the rate.
 - The deposit-address verdict is a heuristic. It says who runs the
   destination wallet, not who the account holder is. Only the exchange can
   name the account.

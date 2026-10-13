@@ -158,32 +158,39 @@ as an exchange wallet.
 ```
 
 ```text wrap
+"origin": {
+  "address": "0xf8b7b95d01ae79756fc3d1bc58675e59a17f07cdafe3d31ea57425adbec2d43f",
+  "label": "MEXC reserve wallet", "category": "cex",
+  "label_provenance": { "entity": "MEXC", "evidence": "proof-of-reserves-listed",
+    "source_url": "https://por.mocortech.com/MEXC_PoR_Audit_20260910.pdf", … }
+},
 "chain": [
   { …, "funded_by": "0xf8b7b95d01ae79756fc3d1bc58675e59a17f07cdafe3d31ea57425adbec2d43f",
     "funding_tx": "DGbdmrFNNmMT29KzUmzug3wr2sXBSbh7SRywMvVawcma",
     "timestamp": "2024-09-26T01:45:04.246Z", "amount": "710 SUI", … }
 ],
-"origin_popularity": { "popular": true, … }
 ```
 
 The first funding transaction sent the deployer 710 SUI from
 `0xf8b7b95d…` about four hours before publication. The same address
-received the later transfer in step 5. `origin_popularity.popular` is true:
-it paid more than 50 addresses.
+received the later transfer in step 5. A MEXC proof-of-reserves listing
+identifies it as a reserve wallet.
 
 ## Evidence and limits
 
 - A clean capability audit does not make a token safe. KONG could not be
   minted or upgraded, and holders still lost their money through ordinary
   sales into the pool.
-- The sale, the 35 transfers into one wallet and the exit are chain facts.
+- The sale, the 35 inflow sources and the exit are chain facts.
   That the 35 wallets are one operator is an inference from the convergence
   and from the funding links in the case file.
-- `0xf8b7b95d` has the shape of an exchange hot wallet, but no label source
-  names the exchange. `classify_deposit_address` on `0x97ab09d1` reads its
-  recent sweeps, not the October 2024 ones, so its verdict can differ from the
+- The proof-of-reserves listing attributes `0xf8b7b95d…` to MEXC, but
+  this transfer does not identify whose exchange account received it.
+  `classify_deposit_address` on `0x97ab09d1…` reads its recent sweeps,
+  not the October 2024 ones, so its verdict can differ from the
   shape seen here.
-- A funder that pays many addresses is not a link to its other recipients.
+- A funder's other recipients cannot be attributed to the deployer merely
+  because the funder paid them.
 
 ## Related
 

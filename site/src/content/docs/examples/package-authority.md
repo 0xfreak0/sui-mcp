@@ -75,10 +75,11 @@ with `as_of` set to the exploit:
 
 ```text wrap
 "as_of": {
+  …,
   "cap_state": "held",
   "holder": {
     "kind": "address",
-    "address": "0xb9a09efd…",
+    "address": "0xb9a09efd534d29cc9f990db26b2dab00289f32de0cdcefa68c6808de208bc9cb",
     "scheme": "multisig threshold 3 of 8 weight"
   },
   "policy": "compatible",

@@ -1,6 +1,7 @@
 # Contributing
 
-Thanks for your interest in contributing to sui-mcp.
+Contributions should preserve read-only chain access and distinguish observed
+facts from attribution.
 
 ## Getting started
 
@@ -13,23 +14,21 @@ npm test
 npm run hooks:install
 ```
 
-`hooks:install` points `core.hooksPath` at `.githooks/`. Git does not clone
-hooks, so this is per-checkout and opt-in. A fresh clone has no protection
-until you run it.
+Git does not copy hook settings with a clone. `hooks:install` sets
+`core.hooksPath` to `.githooks/` for this checkout; run it to enable the
+local checks.
 
 ## Never publish
 
 Keep these out of the public repository:
 
-- **`claude.ai/code/session_...` URLs.** The repo is public; the transcript is
-  not. Coding agents offer a `Claude-Session:` commit trailer. Do not accept
-  it, and keep `Co-Authored-By:`.
+- **Private session links.** Do not include `claude.ai/code/session_...` URLs
+  or `Claude-Session:` trailers in commits or PRs. Keep `Co-Authored-By:`.
 - **A maintainer's own wallet addresses or SuiNS names**, in code, tests,
   fixtures, docs or commit messages. Use neutral placeholders (`0xw1`).
 
-`.githooks/commit-msg` and `.githooks/pre-commit` enforce both. The message
-hook matters most: every leak this repo has had was in a commit message,
-where a pre-commit hook never looks.
+`.githooks/pre-commit` scans staged content and `.githooks/commit-msg` scans
+commit messages. Both read the tracked patterns and any local patterns.
 
 Patterns live in two files:
 
@@ -38,15 +37,13 @@ Patterns live in two files:
 | `.githooks/patterns` | yes | patterns that are safe to publish |
 | `.githooks/patterns.local` | **no** | patterns that are themselves the secret |
 
-A hook that blocks your wallet address has to name it, and naming it in a
-tracked file publishes what the hook exists to protect, so private patterns
-live in the untracked file. Copy `patterns.local.example`
-and fill it in; the hook reports only that a private pattern matched, never
-which.
+Keep private patterns in the ignored `.githooks/patterns.local`, not in the
+tracked pattern file. Copy `.githooks/patterns.local.example` and add the
+patterns there. The hook reports a match without printing a private pattern.
 
-CI re-runs the tracked patterns on every pull request, so `--no-verify` does
-not get a session URL merged. It cannot check the private list, since those
-patterns are deliberately not in the repo, so that half rests on the local hook.
+CI runs the tracked patterns over commit messages and tracked files on pull
+requests and pushes to `main`. It cannot check local patterns, so install the
+hooks for those checks.
 
 ## Development
 
@@ -62,42 +59,42 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
 4. Use Zod schemas for input validation. For numbers and booleans use `numArg()`
    and `boolArg()` from `src/tools/args.ts`, not bare `z.number()` / `z.boolean()`.
    These helpers accept quoted numbers and booleans from model-generated JSON.
-   For a Sui address, object ID or
-   package ID use `addressArg()` / `addressListArg()`, which return the
-   canonical form and accept SuiNS names; comparing a raw argument against chain
-   data fails silently on upper-case or short input. A coin or struct type is
-   `coinTypeArg()`, a time or checkpoint given as text is `timePointArg()` (or
-   `.superRefine(refinePoint)` on a string-or-number field), and a `u64` carried
+   For a Sui address, object ID or package ID use `addressArg()` /
+   `addressListArg()`. They canonicalize hex addresses and resolve SuiNS names
+   on the selected network before the handler runs. Compare canonical
+   addresses against chain data. A coin or struct type is `coinTypeArg()`;
+   a time or checkpoint given as text is `timePointArg()` (or
+   `.superRefine(refinePoint)` on a string-or-number field); a `u64` carried
    as text (an epoch, a version, a raw amount) is `u64StringArg()`. Every tool
-   refuses unknown argument names and blank strings; that happens in
-   `toolArgsSchema`, so a new tool gets it without doing anything.
-5. Add the tool to a profile in `src/tools/profiles.ts`. A tool in no profile
-   still exists but nobody loads it by default.
+   refuses unknown argument names and blank strings through `toolArgsSchema`.
+5. Add the tool to a profile in `src/tools/profiles.ts`. An unassigned tool
+   remains enabled regardless of profile selection, and
+   `test/profiles.test.ts` rejects unassigned registrations.
 6. Regenerate the tool reference and the profile list: run `npm run build`,
    then `cd site && npm run gen:tools`, and commit the regenerated files under
-   `site/src/content/docs/reference/`. Put the tool in a group in `GROUPS` in
-   `site/scripts/tool-reference.mjs` first; the generator names any tool
-   without one. `test/site-tool-reference.test.ts` fails when the committed
-   reference is stale. No page states a tool count, so there is nothing else
-   to update by hand.
+   `site/src/content/docs/reference/` and `site/src/content/docs/project/`.
+   Put the tool in a group in `GROUPS` in
+   `site/scripts/tool-reference.mjs` first; the generator rejects ungrouped
+   tools. `test/site-tool-reference.test.ts` fails when the committed pages
+   are stale.
 7. If the tool writes a record to the store, or never reads the chain, add it
    to `OVERRIDES` in `src/tools/tool-meta.ts`. Every other tool registers as a
    read-only chain read with a `network` argument and a title derived from its
    name. `test/tool-annotations.test.ts` fails when a tool that writes is
    marked read-only.
 8. Add tests in `test/` for any non-trivial logic.
-9. Give the tool a live check: a call in one of the `scripts/probe/` scripts
-   that compares its answer with a raw chain read, or a check in a case in
-   `cases/incidents/`. `test/live-coverage.test.ts` fails, naming the tool,
-   until one exists. `adversarial.mjs` does not count toward it, since it
-   tests input handling and not answers.
+9. Give the tool a live check: a probe call in `scripts/probe/` that checks
+   its answer, or a case check in `cases/incidents/`.
+   `test/live-coverage.test.ts` fails and names a tool without either.
+   `adversarial.mjs` checks input handling and does not count as answer coverage.
 
 ## Guidelines
 
 - Keep tools read-only where possible. Transaction building tools should return unsigned bytes, never sign or execute.
 - Use the existing clients in `src/clients/` rather than creating new HTTP connections.
 - Add entries to `src/data/*.json` registries for new tokens, protocols, or collections.
-- Run `npm test` and `npx tsc --noEmit` before submitting a PR.
+- Run `npx tsc --noEmit`, `npm run build` and `npm test` before submitting a
+  PR; packaging tests inspect built output.
 - Run `npm run verify:live` after bumping `@mysten/sui`, after a Sui GraphQL
   schema change, or before a release. The offline tests pin mainnet fixtures and
   cannot notice that the chain or the SDK moved underneath them. While working
@@ -105,9 +102,8 @@ patterns are deliberately not in the repo, so that half rests on the local hook.
   checks the change can reach, and `SUI_REPLAY_DIR=<dir>` lets case-pass and
   detector-pass replay the chain reads that cannot change
   (`scripts/probe/README.md`).
-- Measuring something new? Write a throwaway script and delete it. Record the
-  number in a commit message or `CLAUDE.md`. A script kept to rediscover a
-  number you already wrote down just rots against live mainnet.
+- For a new measurement, use a temporary script and delete it after recording
+  the result. Retain scripts that serve a repeatable check or workflow.
 
 For context-size comparisons, build the server and save a case-pass summary:
 
@@ -124,30 +120,32 @@ and estimated tokens. The script is a manual comparison tool, not a
 
 ## Running a blind investigation
 
-A blind investigation tests the tools the way a user meets them: a real
-incident, worked with the MCP tools alone, every answer graded against a
-published post-mortem. Each one leaves a case file in `cases/incidents/` that
-`npm run verify:live` replays from then on. `scripts/probe/blind-investigation.md`
-is the brief to hand a person or an agent, with the full rules.
+Use `scripts/probe/blind-investigation.md` for the investigation rules. Each
+investigation uses the MCP tools to check a published incident against its
+post-mortem and chain data. Add verified checks to a case file under
+`cases/incidents/`; `npm run verify:live` replays them.
 
 1. **Pick an incident** with a published post-mortem that names Sui addresses,
-   digests or coin types: the victim's own report, a security firm's analysis,
-   or an official or exchange statement. Prefer one old enough that its facts
-   cannot drift.
-2. **Investigate with the MCP tools only.** Do not read `src/`, `test/` or
-   `scripts/`. Raw GraphQL or an explorer may verify an answer after a tool
-   gave it, and may not be used to find it first.
+   digests or coin types: the affected project's own report, a security firm's
+   analysis, or an official or exchange statement. Prefer an incident old
+   enough that its facts cannot drift.
+2. **Investigate with the MCP tools only.** During the blind phase, do not
+   read `src/`, `test/` or `scripts/`. Running the MCP client snippet in
+   `scripts/probe/blind-investigation.md` is allowed, and the brief lists the
+   other files you may read. Raw GraphQL or an explorer may verify an answer
+   after a tool gave it, and may not be used to find it first.
 3. **Grade every answer** against the post-mortem and the chain: `CORRECT`,
    `WRONG`, `MISSING`, `MISLEADING`, `UNUSABLE`, or `GAP` when no tool answers
    the question. Keep the exact call and an excerpt of the output.
-4. **Write the case file** in the format `cases/README.md` defines, with 8 to
-   20 checks. Each pins a fact from the post-mortem or the chain. A check on
-   an answer the tool gets wrong keeps the correct expected value and gets a
-   `known_defect` line. Run it, then copy it into `cases/incidents/`:
+4. **Write the case file** in the format `cases/README.md` defines. The blind
+   investigation brief asks for 8 to 20 checks; each pins a fact from the
+   post-mortem or chain. A check on a wrong answer keeps the correct expected
+   value and gets a `known_defect` line. Build the server, then run the case
+   from the external directory before copying it into `cases/incidents/`:
 
    ```bash
    npm run build
-   SUI_CASES_DIR=<dir> node scripts/probe/case-pass.mjs --case <slug>
+   SUI_CASES_DIR="/path/to/case-files" node scripts/probe/case-pass.mjs --case "case-slug"
    ```
 
 5. **Turn each wrong answer into a fix, a regression test and a check.** Fix
@@ -157,20 +155,18 @@ is the brief to hand a person or an agent, with the full rules.
    `case-pass` reports it as `FIXED` and fails the run. A `GAP` becomes an
    issue or a new tool, and a new tool needs its own check.
 
-6. **Label its attack transactions.** Add the exploit, drain or drainer
-   transactions to `cases/detectors.json` as positives, under the incident
-   and case they belong to, with `"split": "holdout"` when no rule was
-   written or tuned while looking at the incident. `detector-pass.mjs` then
-   scores every detector on them; a holdout incident is the only evidence
-   that a rule generalises.
+6. **Label attack transactions.** Add the exploit, drain or drainer
+   transactions to `cases/detectors.json` as positives under their incident
+   and case. Set `"split": "holdout"` only if no rule was written or tuned
+   using that incident. `detector-pass.mjs` scores the detectors against
+   those labels.
 
 ## Changing an anomaly detector
 
-A rule written from one incident catches that incident by construction, so its
-own case passing proves little. The same holds for negatives: a rule whose
-exclusions were added to clear a set of ordinary transactions passes that set
-by construction. `cases/detectors.json` therefore splits its negatives into
-`tuning`, which rule authors look at, and `holdout`, which they do not.
+A rule passes the incidents and negatives it was written or tuned from, so
+its own figures on them show only that it fits them. `cases/detectors.json`
+keeps those transactions in the `tuning` split and holds back a `holdout`
+split that rule authors have not examined.
 
 ```bash
 npm run build
@@ -214,11 +210,12 @@ Prefer invariants and data-flow rules over names, protocols and thresholds.
 `src/data/protocols.json` maps package IDs to protocols. New protocols need
 entries, and upgrades produce new package IDs.
 
-Upgrades are handled by lineage rather than by hand. `src/data/protocol-roots.json`
-maps each curated package back to the root of its upgrade lineage (its version-1
-package ID), which is the same for every version a protocol will ever publish,
-so an upgrade nobody has curated still identifies, with its real category, not
-just a name. Regenerate it whenever you add entries:
+`src/data/protocol-roots.json` records the upgrade-lineage root (the first
+version's package ID) and curated name and category for each lineage
+represented in `src/data/protocols.json`, and under `custody` every address
+that signed a publish or upgrade of that lineage. Runtime lineage lookup
+identifies later versions by the same root. Regenerate it after adding
+curated entries:
 
 ```bash
 npm run sync:protocol-roots                # rewrites src/data/protocol-roots.json
@@ -266,10 +263,12 @@ functions. It also fails when a parameter naming a capability does not
 resolve to the capability's defining module, so a `use` form the parser
 misreads cannot hide a function.
 
-Move the pinned framework to a new release and run the test:
+To refresh the pinned framework at its recorded commit, run
+`npm run sync:framework`. To move it to an upstream ref, pass that ref with
+`npm run sync:framework -- REF`. Both commands rewrite
+`test/fixtures/sui-framework`; then check its claims:
 
 ```bash
-npm run sync:framework -- mainnet-v1.80.1   # rewrites test/fixtures/sui-framework
 npx vitest run test/sui-framework.test.ts
 ```
 
@@ -288,8 +287,8 @@ produce:
 ```ts
 gqlPage(nodes)                    // always has pageInfo; throws above 50 nodes
 gqlPages(all)                     // splits into linked, in-cap pages
-notFoundError()                   // gRPC NOT_FOUND — absence, which is an answer
-grpcError("UNAVAILABLE")          // a failure, which is not
+notFoundError()                   // gRPC NOT_FOUND: an absent object
+grpcError("UNAVAILABLE")          // transport failure: no answer
 httpOk(body) / httpError(401)     // fetch-shaped responses
 ```
 
@@ -304,9 +303,9 @@ the fixture rather than bypassing the builder.
 Bridges live in `src/utils/bridge/detect.ts`. Verify both detection and
 direction before adding an entry.
 
-**Verify on mainnet before adding anything.** Find the package, list its
-modules and structs, then sample real events to confirm the field names and see
-what a live payload contains. Keep a captured transaction as a test fixture.
+Find the package, list its modules and structs, and sample mainnet events to
+confirm field names and payloads before adding a bridge. Keep a captured
+transaction as a test fixture.
 `test/sui-native-bridge.test.ts` and `test/cctp.test.ts` use transactions named
 in their comments. `test/fixtures/bridge-transactions.json` holds
 `resolve_bridge_transfer`'s GraphQL response for each bridge it covers, keyed
@@ -318,8 +317,8 @@ Check direction and marker specificity:
 - **Direction.** Check which events mean leaving Sui. An inbound claim must
   not be detected as an exit.
 - **Marker specificity.** Prefer a distinctive module or event name over a
-  generic one. Mayan's `mctp` markers distinguish it from DEX `init_order`
-  calls. Add a test asserting that the lookalike does not match.
+  generic one. Add a test that a similarly named non-bridge call or event
+  does not match.
   When the only exit event has a generic name
   (`events::TokensSentEvent`), pin it to its package with a
   `0xpkg::module::Name` marker; events keep the defining package's id across
@@ -336,8 +335,9 @@ pinned to the emitting package, and add it to `readBridgeEvents` in
 Volume sampling can miss bridges among DEX and oracle activity. Probe
 candidate event types by name.
 
-Set `resolution` honestly. `identifier` means `resolve_bridge_transfer` reads
-the destination or an id quoted on both chains, so the hop can be followed;
+Set `resolution` to what the resolver can follow. `identifier` means
+`resolve_bridge_transfer` reads the destination or an id quoted on both
+chains, so the hop can be followed;
 `detect-only` means the exit is recognised and no more (Meson, whose recipient
 is not in Sui data). Use `resolvableHit()` to avoid suggesting a resolver that
 cannot follow the exit.
@@ -348,19 +348,18 @@ npm run find-unknown-packages -- --checkpoints 100 --network testnet
 ```
 
 The script samples recent checkpoints, filters out packages already in the
-registry, and ranks what's left by how often it was actually called, so the
-top of the list is what users are most likely to hit. It prints
-ready-to-edit `protocols.json` stubs but never writes to the registry:
-identifying the protocol behind an address and choosing its category are
-judgement calls.
+registry, ranks the remaining packages by call count and prints
+`protocols.json` stubs. It does not write registry entries. Verify each
+package's identity and category before adding it.
 
 Before adding an entry, get evidence. Never assert a package ID from memory:
 
 - **Move Registry**: `https://mainnet.mvr.mystenlabs.com/v1/resolution/@org/app`
-  returns the authoritative `package_id`. This is the best source when it works.
+  resolves a registered name to its package ID. Verify the package against
+  on-chain data before curating it; registered names alone do not establish
+  protocol identity.
 - **On-chain module list**: query `package(address:){ modules { nodes { name } } }`
-  over GraphQL. Module names are usually self-identifying (`alphafi_*`,
-  `batch_price_attestation`, `guardian_set`).
+  over GraphQL and inspect the modules.
 
 MVR does not cover every protocol. The registry is hand-maintained and MVR is
 only a fallback:
@@ -377,28 +376,37 @@ in both `registry.ts` and that test's list.
 ## Releasing
 
 The npm package is `sui-analytics-mcp`; the MCP Registry entry is
-`io.github.0xfreak0/sui-mcp`. The names differ on purpose, because `sui-mcp` was
-already taken on npm by an unrelated package.
+`io.github.0xfreak0/sui-mcp`. Use the npm name for installation and the
+registry name for MCP discovery.
 
 Releases are cut by pushing a version tag. `.github/workflows/publish.yml` runs
-the tests, publishes to npm, publishes to the MCP Registry, and then installs the
-result from npm to confirm it starts.
+the tests, publishes to npm, publishes to the MCP Registry, installs the
+result from npm to confirm it starts, and creates the GitHub release from the
+version's `CHANGELOG.md` section.
+
+Add the release's notes to `CHANGELOG.md` under a `## X.Y.Z (YYYY-MM-DD)`
+heading, then set the version and regenerate the site:
 
 ```bash
-npm run set-version -- 1.1.0      # package.json + server.json + lockfile
-npm run build && (cd site && npm run gen:tools)   # docs changelog page and current release
+VERSION=X.Y.Z                     # the version being released
+npm run set-version -- "$VERSION" # package.json, server.json, package-lock.json
+npm run build
+(cd site && npm run gen:tools)
 npm test
-git commit -am "Release 1.1.0"
-git tag -a v1.1.0 -m "v1.1.0"
-git push && git push --tags       # CI does the rest
+git add package.json package-lock.json server.json CHANGELOG.md site/src/content/docs/
+git commit -m "Release $VERSION"
+git tag -a "v$VERSION" -m "v$VERSION"
+git push origin HEAD
+git push origin "v$VERSION"
 ```
 
-Both publish steps authenticate over OIDC, so there are no secrets in the repo.
+Both publish steps use OIDC authentication; no publishing token is stored in
+the repo.
 npm side requires trusted publishing to be configured once for the package
 (npmjs.com -> the package -> Settings -> Trusted publisher -> this repo +
 `publish.yml`); registry side uses `mcp-publisher login github-oidc`.
 
-Things that are easy to get wrong here:
+Check these release requirements:
 
 - **Three version strings have to agree**: `package.json` `version`, and
   `server.json`'s `version` and `packages[0].version`. The registry rejects a
@@ -406,19 +414,16 @@ Things that are easy to get wrong here:
   `npm run set-version` writes all of them; `test/packaging.test.ts` fails if
   they ever drift apart, and CI additionally refuses to publish when the git tag
   disagrees with `package.json`.
-- **The post-publish check runs against the exact version, not `@latest`.**
-  The dist-tag propagates separately, so `@latest` can resolve to a previous
-  release while the new version is already installable.
+- **Verify the published version.** The dist-tag can propagate later than
+  the package version, so the workflow installs the exact version.
 - **Capture a failed command's output when inspecting it.**
   `stdio: "inherit"` leaves `err.stdout` and `err.stderr` null.
-- **npm versions are permanent.** A version can be deprecated but not replaced,
-  so the tag check runs before `npm publish`, not after.
-- **`npm publish` may skip `prepublishOnly` when run locally.** The
-  `prepublishOnly` script runs build + tests as a guard against publishing a
-  stale `dist/`, but npm skips all lifecycle scripts when `ignore-scripts=true`
-  is set in `.npmrc` (a reasonable supply-chain precaution that some
-  contributors set globally). Check with `npm config get ignore-scripts`. This is
-  a large part of why releases go through CI, which has clean settings.
+- **An existing npm version cannot be overwritten.** The tag check runs
+  before `npm publish`.
+- **Local npm lifecycle scripts depend on npm settings.** The `prepublishOnly`
+  script runs build and tests unless `ignore-scripts=true` disables it. Check
+  with `npm config get ignore-scripts`; use the CI release workflow rather
+  than relying on a local publish.
 - **`dist/` is git-ignored.** npm falls back to `.gitignore` when there's no
   `.npmignore`, so the `files` allowlist in `package.json` is what actually gets
   the build output into the tarball. Don't remove it.
@@ -427,13 +432,12 @@ Things that are easy to get wrong here:
 - **npm publishes asynchronously.** The release workflow waits until the
   version is readable before submitting to the MCP Registry, which validates
   against npm and rejects a version it cannot see.
-- **The publish step skips a version already on npm.** Re-running the job is the
-  only recovery GitHub offers and it restarts from the top, so without that a
-  re-run dies on "cannot publish over" before reaching the step that failed.
-- **`npm run verify:published`** installs the published package from npm into a
-  temp directory and completes an MCP handshake against it. The packaging tests
-  only see the working tree; this is what catches a tarball that installs but
-  won't start.
+- **A rerun skips an npm version already published.** The workflow checks npm
+  for the exact version before trying to publish it again.
+- **`npm run verify:published -- X.Y.Z`** installs that published version
+  (`@latest` when no version is given) in a temporary directory and completes
+  an MCP handshake. The packaging tests check the working tree; this check
+  inspects the installed package.
 - **The decompiler binary is never published.** `bin/move-decompiler` is a
   platform-specific Rust build. `decompile_module` requires a separately built
   binary configured through `SUI_DECOMPILER_PATH` or `PATH`; it works with
@@ -441,6 +445,6 @@ Things that are easy to get wrong here:
 
 ### What needs a new release
 
-Only changes to published code. Editing the README, CI, or docs doesn't require
-one, but note that `description` in `package.json` and `server.json` is what
-directory pages display, and updating it does mean a release.
+Release changes to published package contents, including the `description` in
+`package.json` and `server.json` displayed by package directories. Changes
+only to the README, CI or documentation do not require a package release.

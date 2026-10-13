@@ -1,6 +1,9 @@
 # sui-mcp docs site
 
-The documentation site for sui-mcp, built with [Astro Starlight](https://starlight.astro.build). It has its own `package.json` and lockfile. The root npm package publishes only `dist/`, so nothing in `site/` ships with the server.
+The documentation site uses [Astro Starlight](https://starlight.astro.build).
+It has its own `package.json` and lockfile. The root npm package ships what
+the root `package.json` `files` field lists (`dist/` among them) and nothing
+under `site/`.
 
 ## Local development
 
@@ -10,7 +13,8 @@ npm install
 npm run dev
 ```
 
-The dev server runs at http://localhost:4321. `npm run build` writes the static site to `site/dist/` and `npm run preview` serves it.
+The dev server defaults to http://localhost:4321. From `site/`,
+`npm run build` writes to `site/dist/` and `npm run preview` serves the build.
 
 The build fails on a broken internal link or heading anchor ([starlight-links-validator](https://github.com/HiDeoo/starlight-links-validator)). Search is Starlight's built-in Pagefind index, built with the site.
 
@@ -36,7 +40,9 @@ The build fails on a broken internal link or heading anchor ([starlight-links-va
 
 The sidebar groups are generated from the directories, in the order `astro.config.mjs` lists them; prev/next links follow that order. Every page needs `title` and `description` in its frontmatter; `sidebar.order` sets its position within the directory. The sidebar shows the page title; only an index page whose title is its section's name sets `sidebar.label: Overview`.
 
-No hand-written page states a count or size that changes with the product (tools, profiles, prompts, coins, labels, tool-list size). Where a count or list is needed, generate it with `gen:tools`.
+Do not put product counts or sizes in hand-written pages (tools, profiles,
+prompts, coins, labels or tool-list size). Generate lists that the tool
+reference owns with `gen:tools`.
 
 `npm run lint:prose` at the repo root checks every page under `src/content/docs/` except the generated reference and changelog.
 
@@ -56,13 +62,28 @@ Run it after changing a tool's name, description or parameters, a prompt, or a p
 
 A new tool has to be added to a group in `GROUPS` in `scripts/tool-reference.mjs`. Until it is, the generator and the test fail and name the tool.
 
-`gen:tools` then runs `scripts/gen-release-pages.mjs`, which reads `../CHANGELOG.md` and the version in `../package.json` and rewrites `src/content/docs/project/changelog.md` and `src/content/docs/project/_current-release.md`. Each release gets its summary paragraph, or the lead of its first bullet when it has none, and links to its entry in `CHANGELOG.md` and its GitHub release. It stops with an error when the package version has no `## X.Y.Z (date)` heading in `CHANGELOG.md`, so run it after the release's changelog heading is written and the version is set. The same root test fails while these files are stale.
+`gen:tools` then runs `scripts/gen-release-pages.mjs`. It reads
+`../CHANGELOG.md` and the version in `../package.json`, and rewrites
+`src/content/docs/project/changelog.md` and
+`src/content/docs/project/_current-release.md`. Each release gets its
+summary paragraph or, if absent, the bold lead or first sentence of its
+first bullet. Releases from 1.0.0 onward also link to a GitHub release;
+all entries link to `CHANGELOG.md`. The generator requires a
+`## X.Y.Z (date)` heading matching the package version. Regenerate after
+writing the heading and setting the version. The root test detects stale
+generated pages.
 
 ## Vercel
 
-`vercel.json` sets the framework to Astro and an `ignoreCommand`. The command skips a deployment when nothing under `site/` changed since the last successful deployment on the branch (`VERCEL_GIT_PREVIOUS_SHA`). When that commit is unknown or missing from the clone, the deployment builds.
+`vercel.json` sets the Astro framework and an `ignoreCommand` that skips a
+deployment when nothing under the Vercel project root (`site/`) changed since
+`VERCEL_GIT_PREVIOUS_SHA`. A missing or unavailable previous commit allows the
+deployment to build.
 
-The site needs no environment variables and no files outside `site/`.
+The deployed site builds from files under `site/` and needs no environment
+variables. Reference generation requires the root server build, root
+dependencies, `CHANGELOG.md` and the root `package.json` before committing
+the generated pages.
 
 One-time setup, done by the repository owner:
 
@@ -74,4 +95,5 @@ One-time setup, done by the repository owner:
 6. Enable Deployment Protection (Vercel Authentication) for preview deployments.
 7. Turn on two-factor authentication for the Vercel account.
 
-`astro.config.mjs` does not set `site` yet. Set it to the production URL once the domain is decided; Starlight then adds canonical URLs and a sitemap.
+`astro.config.mjs` sets the production site URL to
+`https://sui-mcp.vercel.app`.

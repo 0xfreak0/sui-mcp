@@ -6,13 +6,13 @@ sidebar:
 ---
 
 `get_address_fanout` reports `sponsor_shape` for an address that pays other
-people's gas. This is invisible to value fan-out, since sponsoring moves none
-of the sponsor's own money.
+people's gas. The gas expense is separate from coin payments to those wallets,
+so recipient counts alone do not describe sponsorship.
 
 A sponsor that also sent a coin to at least half the addresses it sponsors
-(`sponsored_and_paid_count`) is an `operator` running those wallets, the
-relationship `build_wallet_edges` links. A public relayer pays gas for
-strangers it never funded.
+(`sponsored_and_paid_count`) is classified `operator`. `build_wallet_edges`
+uses that sponsorship-and-payment relationship. A `relayer` sponsors more than
+20 addresses and sent a coin to fewer than half of them.
 
 An operator that funds from one address and sponsors from another also reads
 `relayer` here; `build_wallet_edges` tests for that split by the first funders

@@ -19,12 +19,9 @@ of bytecode.
 
 ## Build the binary
 
-The binary is Revela's `move-decompiler`, built from Rust. It is not bundled in
-the npm package because a published tarball could only carry one platform's
-build, so you compile it once yourself and point the server at it with
-`SUI_DECOMPILER_PATH`. This works the same whether you installed via npx or
-from source. You need a Rust toolchain ([rustup.rs](https://rustup.rs/)); the
-build takes a few minutes.
+Revela's `move-decompiler` is a Rust binary. It is not bundled with the npm
+package. Build it and set `SUI_DECOMPILER_PATH` to its absolute path. You need
+a Rust toolchain ([rustup.rs](https://rustup.rs/)).
 
 ```bash
 git clone --depth 1 https://github.com/verichains/revela_sui.git

@@ -36,7 +36,7 @@ const INTERVAL_SECONDS: Record<(typeof INTERVALS)[number], number> = {
 export function registerDeepBookTools(server: McpServer) {
   server.tool(
     "deepbook_orderbook",
-    "(DeepBook) Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. DeepBook is a central limit order book, so this, not pool reserves, is its real liquidity picture. Omit pool_name to list available pools.",
+    "(DeepBook) Read live bids, asks, spread, mid price and resting-liquidity imbalance for a DeepBook v3 pool. DeepBook is a central limit order book, so its liquidity is the resting orders listed here. Omit pool_name to list available pools.",
     {
       pool_name: z
         .string()
@@ -163,7 +163,7 @@ export function registerDeepBookTools(server: McpServer) {
 
   server.tool(
     "compare_oracle_price",
-    "(Incident investigation) Compare the Pyth oracle price against the price DeepBook actually traded at, over a time window. Lending protocols liquidate on oracle prices, so divergence between the oracle and the book is the signature of a stale feed, a manipulation window, or liquidations priced at levels the market never printed.",
+    "(Incident investigation) Compare the Pyth oracle price of a DeepBook v3 pool's base asset with the pool's candle close prices over a time window, flagging candles past threshold_pct. Use it to look for a stale feed, a manipulation window or liquidations priced where the book never traded; a deviation alone does not establish its cause. Needs PYTH_API_KEY: without it only the DeepBook side is returned and flagged_count is null.",
     {
       pool_name: z.string().describe("DeepBook pool such as 'SUI_USDC'. Its base asset is priced."),
       interval: z.enum(INTERVALS).optional().describe("Candle interval (default '1h')."),

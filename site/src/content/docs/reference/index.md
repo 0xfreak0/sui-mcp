@@ -18,5 +18,5 @@ The tool and prompt pages, and the profile list, are generated from the
 built server started with `SUI_TOOLS=all`: its `tools/list` and
 `prompts/list` responses and its profile definitions.
 
-For a first look at an address or a coin, start with the
+For an address or coin lookup, see the
 [recommended starting points](/reference/tools/starting-points/).

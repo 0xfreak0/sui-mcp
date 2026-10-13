@@ -1,13 +1,13 @@
 ---
 title: "Package authority: Typus oracle"
-description: Finding which oracle version an exploit called, who held its upgrade authority, why any caller could set prices, and what the fix upgrade changed.
+description: Typus oracle call arguments, upgrade authority, bytecode and the subsequent package diff.
 sidebar:
   order: 5
 ---
 
-Question: on 15 October 2025 an attacker set its own prices in the Typus
-oracle. Which package version did it call, who controlled that package, and
-what let an outside address write a price?
+The first exploit transaction on 15 October 2025 called a Typus oracle
+package. The calls below identify the version, its UpgradeCap holder and
+the function's sender check.
 
 ## Sources
 
@@ -48,22 +48,21 @@ transaction:
     ], … },
   { "index": 2, "type": "MoveCall", "target": "0x4658a0fb…::oracle::update_v2",
     "arguments": [
-      { "object_id": "0x6e7ca39c4ad0a1ad83937e98b220824566d858814aa8fd01294400b45c2bbc21", … },
+      { "object_type": "oracle::Oracle", … },
       …
       { "value": "1", … },
       { "value": "1", … },
       …
     ], … },
-  { "index": 3, "type": "MoveCall",
-    "target": "0x9eda9afa0b42bf908766c42d02a549c271d7d0ae02c8c58c5075858f8f4d3b69::lp_pool::swap", … },
+  { "index": 3, "type": "MoveCall", "target": "…::lp_pool::swap", … },
   …
 ]
 ```
 
-The attacker's own transaction called `update_v2` twice, writing a price of
-651548270 into one oracle and 1 into another, then swapped against the pool
-that reads those oracles. It passed the protocol's `UpdateAuthority` object
-by reference.
+The excerpt shows the first two `update_v2` calls, with price inputs
+651548270 and 1, followed by a pool `swap`. The transaction calls
+`update_v2` twelve times in total. Both shown calls pass an
+`UpdateAuthority` object by reference.
 
 ### 2. Find the version and who held the upgrade authority
 
@@ -79,7 +78,7 @@ with `as_of` set to the exploit:
   "cap_state": "held",
   "holder": {
     "kind": "address",
-    "address": "0xb9a09efd534d29cc9f990db26b2dab00289f32de0cdcefa68c6808de208bc9cb",
+    "address": "0xb9a09efd…",
     "scheme": "multisig threshold 3 of 8 weight"
   },
   "policy": "compatible",
@@ -98,10 +97,10 @@ with `as_of` set to the exploit:
 ]
 ```
 
-Version 9 was the newest at the exploit and is the version the transaction
-called. A 3-of-8 multisig held the UpgradeCap, and the same multisig
-published version 10 the next day. Control of the upgrade key was not the
-issue.
+Version 9 was the newest package at the exploit checkpoint and the version
+called. A 3-of-8 multisig held its UpgradeCap and published version 10 the
+next day. The upgrade holder and the function's caller authority are separate
+checks.
 
 ### 3. Check who can call the function
 
@@ -125,10 +124,9 @@ issue.
 ]
 ```
 
-Any address can call a public entry function. `update_v2` takes the
-`UpdateAuthority` by reference, not as an owned capability, and the object is
-shared, so any transaction can pass it. Passing it proves nothing about the
-caller; whatever check exists has to be in the body.
+`update_v2` is a public entry function. It accepts a shared
+`UpdateAuthority` by reference, so a caller need not own the object.
+Authorization depends on the function body.
 
 ### 4. Read the function body
 
@@ -157,9 +155,9 @@ entry public update_v2(Arg0: &mut Oracle, Arg1: &UpdateAuthority, Arg2: u64, Arg
 }
 ```
 
-The function checks whether the sender is in the authority list, then
-discards the answer with `Pop` and writes the price regardless. This is the
-missing assert Typus, SlowMist and the forum post describe.
+`vector::contains` compares the sender with the authority list. `Pop`
+discards its result before `update_` writes the price. Typus, SlowMist
+and the forum post describe the missing assertion.
 
 ### 5. Let the package scan find it
 
@@ -182,9 +180,8 @@ version, capability audit off:
 ]
 ```
 
-The scan reaches the same instruction without being told where to look. It
-grades the lead strong because the discarded result was computed from the
-sender.
+The scan reports `oracle::update_v2` as a strong `discarded-check` lead.
+The disassembly in step 4 shows the discarded check and subsequent write.
 
 ### 6. See what the fix changed
 
@@ -209,12 +206,13 @@ from version 9 to 10:
 }
 ```
 
-Version 10 replaced the `UpdateAuthority` list with an `UpdateCap` issued by
-the manager, added a way to burn the old authority object, and removed
-`entry` from `update_v2`. Reading `update_v2` in version 10 with step 4's call
-shows a body of `LdU64(0)` then `Abort`: it no longer writes anything.
+Version 10 added `create_update_cap`, which issues an `UpdateCap` from the
+`ManagerCap`, `update_with_update_cap` and `burn_update_authority`, removed the
+functions that create and extend an `UpdateAuthority`, and removed `entry` from
+`update_v2`. Reading version 10's `update_v2` with `disassemble_module` shows
+`LdU64(0)` followed by `Abort`, so it no longer writes a price.
 
-## What this shows and what it does not
+## Evidence and limits
 
 - The bytecode, the version dates and the multisig holder are chain facts.
   The finding in step 5 is a lead that step 4 confirms by reading the code.

@@ -28,12 +28,18 @@ the owner's balance changes in that coin in every transaction after the
 requested checkpoint up to the anchor. Balance changes include address-balance
 deposits and withdrawals, so the result is exact when `complete` is true.
 
+```json
+{"owner":"0x01229b3cc8469779d42d59cfc18141e4b13566b581787bf16eb5d61058c1c724","at":"2025-09-07T16:00:00Z"}
 ```
-get_balance(owner: 0x01229b3c…c724, at: 2025-09-07T16:00:00Z)
-  → method: reconstructed, at_checkpoint: 187414630, complete: true,
-    balance: 78.654856875 SUI, transactions_scanned: 30,
-    anchor: { checkpoint: 326856716, balance: 93.696806819 SUI, … }
+
+```text
+"method": "reconstructed", "at_checkpoint": 187414630, …, "complete": true,
+"balance": "78654856875", "balance_formatted": "78.654856875 SUI",
+"transactions_scanned": …, "anchor": { "checkpoint": …, … }
 ```
+
+The anchor and `transactions_scanned` depend on when the call runs; the
+balance at the requested checkpoint does not.
 
 The scan reads at most `max_transactions` transactions; its default and range
 are in the [tool reference](/reference/tools/coins-and-tokens/#get_balance).

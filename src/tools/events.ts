@@ -76,7 +76,7 @@ export function registerEventTools(server: McpServer) {
       event_type: z
         .string()
         .optional()
-        .describe("Filter by event type (e.g. 0x2::coin::CoinBalanceChange)"),
+        .describe("Filter by event type: 0x..., 0x...::module or 0x...::module::Name."),
       sender: addressArg().optional().describe("Filter by transaction sender"),
       module: z
         .string()

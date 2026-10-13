@@ -4,14 +4,13 @@
 
 [![CI](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xfreak0/sui-mcp/actions/workflows/ci.yml)
 
-Read-only MCP server for investigating activity on Sui. Trace where funds went,
-attribute wallets to their funding sources, rank addresses by protocol flow,
-work out who can actually sign for a multisig treasury, and tell a coordinated
-cluster from a crowd, then reconstruct it all on a timeline.
+Read-only MCP server for investigating activity on Sui. Trace fund movements,
+find funding sources, inspect protocol flows and multisig authorization, and
+compare evidence linking wallets.
 
-It also covers the ordinary things: wallet overviews, DeFi positions, NFTs,
-prices and Move package analysis.
-USD totals are provider-based estimates; see [How USD values are calculated](https://sui-mcp.vercel.app/concepts/pricing/).
+The server also reads wallet balances, DeFi positions, NFTs, prices and Move
+packages. USD totals are provider-based estimates; see
+[How USD values are calculated](https://sui-mcp.vercel.app/concepts/pricing/).
 
 ## Install
 
@@ -36,9 +35,9 @@ For investigative work, start with the forensics tools loaded:
 "env": { "SUI_TOOLS": "core,forensics" }
 ```
 
-## What an investigation looks like
+## Example investigation
 
-The first two steps on the 22 May 2025 Cetus CLMM exploit, starting from the
+The first two calls for the 22 May 2025 Cetus CLMM exploit, starting from the
 attacker wallet:
 
 ```
@@ -52,10 +51,9 @@ analyze_attack_tx(DVMG3B2kocLEnVMDuQzTYRgjwuuFSfciawPvXXheB3x)
     anomalies: outsized-mint (high), shared-state-jump (high), …
 ```
 
-Every value can be checked on chain. The
-[full example](https://sui-mcp.vercel.app/examples/protocol-exploit/) goes on to
-total the whole run, find where the proceeds left Sui, and check who funded the
-wallet.
+The [full example](https://sui-mcp.vercel.app/examples/protocol-exploit/)
+calculates the total, follows proceeds leaving Sui and examines the wallet's
+funding.
 
 ## Documentation
 

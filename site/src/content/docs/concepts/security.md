@@ -22,8 +22,7 @@ The server has no wallet credentials and no ability to move funds:
 
 ## What the process does
 
-Supply-chain scanners report which capabilities a package uses but not why.
-The full list for this one:
+The server uses these runtime capabilities:
 
 | Capability | Where it's used |
 |---|---|
@@ -34,12 +33,12 @@ The full list for this one:
 
 There is no `eval`, no dynamic `require`, no minified or obfuscated code, and
 no telemetry. Inputs that come from the chain are treated as untrusted:
-`decompile_module` validates module names before they reach a filesystem path,
-and bounds how many modules one call will process.
+`decompile_module` validates module names before they reach a filesystem path
+and bounds the modules processed in one call.
 
-Most of the dependency tree is the MCP SDK. This server speaks stdio only and
-imports just `server/mcp.js` and `server/stdio.js`, so the SDK's
-HTTP-transport dependencies are installed but never loaded.
+The server speaks stdio only. From the MCP SDK it imports `server/mcp.js`,
+`server/stdio.js` and `types.js`, so the SDK's HTTP-transport dependencies are
+installed but never loaded.
 
 ## Verifying a release
 

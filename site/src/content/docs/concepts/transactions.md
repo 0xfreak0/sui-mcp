@@ -15,12 +15,13 @@ adds exploit profit, shared-object state deltas, reconciliation and anomaly
 leads. Use `get_transactions` for a batch rather than one detailed transaction.
 
 Protocol identification uses events as well as Move calls.
-`protocols_from_events_only` marks an event-identified protocol behind an
-obfuscated wrapper. A package lacking a curated or Move Registry name is
-named for the curated protocol whose key published it; `protocols_unchecked`
-lists packages whose publisher was unread. A balance-change address that
-signed a curated protocol's packages carries `publisher_key_of`, for example
-to identify a fee paid to the team's key.
+`protocols_from_events_only` identifies protocols found through event types
+but not through the listed Move calls. A package lacking a curated or Move
+Registry name can be named through a publishing-key match with a curated
+lineage; `protocols_unchecked` lists packages whose attribution was not
+checked, including bounded or failed publisher reads.
+A balance-change address that signed a curated protocol's packages carries
+`publisher_key_of`, for example to identify a fee paid to the team's key.
 
 Event fields in the top half of the u256 range also get their two's-complement
 reading in `signed_readings`, for signed fees or PnL stored unsigned.

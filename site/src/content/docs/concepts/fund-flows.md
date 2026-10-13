@@ -151,8 +151,9 @@ find_flow_path(from: <Cetus attacker>, to: "eip155:1:0x89012a55…",
     Wormhole, Sui Bridge
 ```
 
-Each side expands one address node at a time, heaviest branch first, so
-`max_nodes` goes to the branches carrying the most value. `min_share` skips
+Each side expands one address node at a time, shallowest first while the
+remaining node limit covers the queued nodes, then heaviest branch first.
+`min_share` skips
 smaller branches, except a branch to an address that renders like one
 already reached. When nothing is found, `explored.node_limited` names, per
 side, the nodes the node limit left unexpanded and the share of that side's
@@ -270,8 +271,9 @@ rows; `detail: "full"` lists every node and edge.
 ## Summarizing one address's window
 
 `summarize_address_flows` gives each coin's inflow, outflow and net in raw
-and human units, with `coin_verified` and USD valued per transaction day.
-It lists every funder with amounts and digests, the top recipients by value
+and human units, with `coin_verified` and USD valued from samples at each
+coin's median movement time per UTC hour (or day when the sample budget binds).
+It lists funders with amounts and digests, recipients ranked by value
 with identity and labels, and both the address's gas sponsors and the parties
 whose gas it paid.
 

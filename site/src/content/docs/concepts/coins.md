@@ -7,8 +7,8 @@ sidebar:
 
 ## Verified coins
 
-A symbol is not an identifier on Sui. Most coins on mainnet share their symbol
-with another coin, and imitators are named to be mistaken.
+A symbol is not an identifier on Sui. Different coin types can declare the
+same symbol.
 `analyze_token` reports `verified`, and every balance change in a trace
 carries `coin_verified`:
 
@@ -17,13 +17,12 @@ carries `coin_verified`:
 +202.361728 USDC                           coin_verified=true
 ```
 
-`unverified` refers to which coin it is.
-`assumed scale` refers to whether the amount is right: decimals for an unknown
-coin are a guess, and some imitators declare a different scale from the coin
-they imitate. Every tool that formats or values an amount reads the
-coin's own `CoinMetadata` first, so an amount at the coin's real decimals
-carries only `unverified`, and `assumed scale` means the coin has no
-`CoinMetadata` to read or the read failed.
+`unverified` means the exact coin type is not on the curated list.
+`assumed scale` refers to the decimals. Tools that format or value an amount
+use the curated decimals first, then the coin's own `CoinMetadata`, and a USD
+value may also use the decimals its price provider states. `assumed scale`
+means none of these answered: the coin has no `CoinMetadata` or the read
+failed, and the fallback may differ from the coin's declared decimals.
 
 ## Where the decimals came from
 
@@ -61,12 +60,12 @@ results are missing, capped or unavailable; its public results also have a
 20-pool cap. Candidate coin types are confirmed against on-chain metadata;
 a DEX listing is a lead, not verification of the asset's identity.
 `analyze_token` returns multiple matches as candidates rather than choosing
-one. The search confirms at most 25 candidate coin types, prioritizing verified
-types and exact symbols before pool liquidity. Only searches without caps,
-provider failures or metadata failures are cached for 10 minutes.
-Coins without an indexed pool cannot appear in live results. If no candidate
-can be confirmed, a bounded CoinMetadata scan is the fallback, not a complete
-inventory.
+one. The search confirms at most 25 candidate coin types, verified types and
+exact symbols first, then by pool liquidity. Results are cached for 10
+minutes, capped ones included; a provider outage or a failed confirmation is
+not cached and is retried on the next call. If no candidate can be confirmed,
+a bounded CoinMetadata scan is the fallback. That scan can find coins without
+an indexed pool, but it is not a complete inventory.
 
 `search_token` accepts a name or symbol, such as `USDC`, `deep`, `cetus` or
 `WAL`, or a full type such as `0x…::mod::TOKEN`. It returns full coin types,
@@ -80,8 +79,9 @@ because their own on-chain metadata could not be read. A successful fallback
 does not clear another provider's cap. Neither a capped result nor a failed
 metadata check establishes that a symbol is absent or unique. Candidate
 liquidity, pool counts and 24-hour volume are indexer-reported; they do not
-establish legitimacy or ownership. The indexers cover pools, not every coin,
-and the top-25 confirmation limit and bounded scan leave some coins unread.
+establish legitimacy or ownership. The indexers cover pools rather than every
+coin, and the 25-candidate confirmation limit and the bounded scan leave some
+coins unread.
 On testnet and devnet, discovery uses the bounded CoinMetadata scan instead
 of mainnet DEX indexers. `discovery_scan_truncated` marks an unfinished scan;
 `discovery_scan_failed` names a read error that stopped it.

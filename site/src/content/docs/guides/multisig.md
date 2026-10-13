@@ -5,10 +5,10 @@ sidebar:
   order: 5
 ---
 
-A Sui address is the hash of whatever authenticates it. For a multisig, the
-threshold, every member key and every weight are part of that hash, so the
-committee can be read off the address and checked by deriving it and
-confirming it reproduces the address.
+A multisig address hashes its threshold, member keys and weights. The tools
+read the committee from a wallet transaction's signature and verify it by
+deriving the address again. A wallet with no sent transaction has no signature
+from which to read its authentication.
 
 ## Identify a wallet and its committee
 
@@ -36,10 +36,9 @@ analyze_multisig(0x045dadba…, max_transactions: 200)
     active_signers_meet_threshold: true
 ```
 
-`dormant_members` are keys that hold weight and have never used it.
-`always_present` are keys the wallet currently cannot move without. Both are
-reported against `transactions_examined`, since the claim is only as good as
-the window.
+`dormant_members` are keys absent from the examined transactions.
+`always_present` are keys present in every examined signature. Both fields
+refer to `transactions_examined`, and earlier activity may differ.
 
 It answers questions such as whether a 4-of-7 treasury is in practice run by
 two people, and whether the set of keys that sign has changed. A key that
@@ -101,11 +100,11 @@ The set replaces the signer rather than extending it, so `owner_can_authorize`
 decides who controls the wallet. When it is false the wallet's own key can no
 longer sign for it and only `delegated_to` can move the funds.
 
-An alias is control read from chain state, so you may write that the address
-can authorize for the wallet. It is not evidence of shared ownership, since a
-custodian holds authority for a client. A key acting for many wallets is a
-service. The set is mutable, so it is true as of the read, and most wallets
-have never enabled the feature.
+An alias can authorize transactions for the wallet according to the alias set
+read from chain state. That authority alone does not establish shared
+ownership: a custodian holds authority for its clients, so one key acting for
+many wallets does not link them. The set is mutable, so the result describes
+its state at the time of the read.
 
 The reverse answer, which wallets name a given key (`alias_delegate_for` on
 `identify_address`, `signed_as_alias` on `get_transaction_history`), comes from
@@ -130,9 +129,8 @@ committee size: four addresses give 192 candidate committees, five give 1,560,
 and six are refused. It covers equal-weight committees only, so a nil result
 is not a negative finding.
 
-A wallet that has never sent a transaction cannot be classified at all,
-because it has produced no signature. It comes back as unknown rather than as
-an ordinary wallet.
+A wallet that has never sent a transaction has no signature from which to
+classify its authentication. The result reports it as unknown.
 
 ## zkLogin and passkey wallets
 

@@ -64,10 +64,12 @@ many kiosks, which is enough to invent a top holder out of a platform address.
 buyer's kiosk in one record, so any kiosk seen trading has a chain-derived
 owner:
 
+```json
+{"hours":24}
 ```
-get_nft_sales({ hours: 24 })
-{ "sales": 237, "volume_sui": "5982.3007", "kiosk_owners_learned": 249, "requests": 13 }
-```
+
+The result reports `sales`, `volume_sui`, `kiosk_owners_learned` and `requests`
+for the requested window.
 
 Those mappings are stored, and `get_top_holders` uses them. `holder_kind`
 names how each holder was arrived at, weakest evidence first:

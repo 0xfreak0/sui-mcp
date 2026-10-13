@@ -433,7 +433,7 @@ export function registerFlowGraphTools(server: McpServer) {
       from: timePointArg().optional().describe("Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search."),
       to: timePointArg().optional().describe("Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search."),
       max_depth: numArg().int().min(1).max(8).optional().describe("Hops to follow from the start (default 4, max 8)."),
-      max_nodes: numArg().int().min(1).max(150).optional().describe("Address nodes to expand (default 40, max 150). The branch carrying the most value is expanded next, at any depth."),
+      max_nodes: numArg().int().min(1).max(150).optional().describe("Address nodes to expand (default 40, max 150). Expands by depth while all queued nodes fit; otherwise prioritizes the largest share."),
       min_share: numArg().min(0).max(1).optional().describe("Prune below this fraction of traced value (default 0.01 = 1%); never prune lookalikes. coverage.pruned counts them."),
       min_usd: numArg().min(0).optional().describe("Prune below this USD value at transaction time, except lookalikes. Unpriced branches use min_share."),
       format: FORMAT_ARG,
@@ -546,7 +546,7 @@ export function registerFlowGraphTools(server: McpServer) {
 
   server.tool(
     "find_flow_path",
-    "(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` on trace_flow_graph's engine, heaviest branch first, and returns each path with every hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.",
+    "(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` using trace_flow_graph's engine, expanding by depth while queued nodes fit the limit and prioritizing larger shares once they do not. Returns paths with each hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.",
     {
       from: addressArg().describe("Address the value starts at."),
       to: z.string().describe("Target: a Sui address, an EVM (0x + 40 hex) or Solana (base58) address a bridge exit pays, or a CAIP-10 account."),
@@ -554,7 +554,7 @@ export function registerFlowGraphTools(server: McpServer) {
       coin_type: coinTypeArg().optional().describe("Start by following only this coin. Swaps are still followed."),
       window_start: timePointArg().optional().describe("Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history."),
       window_end: timePointArg().optional().describe("Only transactions before this: ISO date or checkpoint."),
-      max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100), the branches carrying the most value first."),
+      max_nodes: numArg().int().min(1).max(100).optional().describe("Address nodes to expand on each side (default 30, max 100); larger shares take priority when the queued nodes exceed the remaining limit."),
       min_share: numArg().min(0).max(1).optional().describe("Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address."),
       format: FORMAT_ARG,
     },

@@ -5,9 +5,8 @@ sidebar:
   order: 3
 ---
 
-The server gives Claude chain access, but not method: which tool answers which
-question, what a control group is for, and which conclusions to refuse. That
-lives in a skill shipped alongside it.
+The shipped skill gives Claude an investigation method: tool selection, control
+groups and limits on conclusions.
 
 ## Install the skill
 
@@ -22,10 +21,9 @@ It loads automatically once present; there is nothing to configure.
 
 ## What it covers
 
-It covers the evidence tiers and what each one lets you claim, the order to
-work in, the base-rate check that keeps shared ancestry from reading as
-collusion, and the conclusions to refuse. "No edge found, so they are
-unrelated" is the most common of those.
+It covers evidence tiers, investigation order, base-rate checks for shared
+ancestry and limits on conclusions. A missing wallet edge does not establish
+that two wallets are unrelated.
 
 ## Investigation prompts
 

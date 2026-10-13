@@ -15,9 +15,9 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Resolve a SuiNS name (.sui domain) to an address, or reverse-lookup an address to its SuiNS name. At least one of 'name' or 'address' must be provided. A name that is not registered, has expired, or points at no address resolves to null with `name_note` saying which; a malformed name is an error.
+Resolve a SuiNS name (.sui domain) to an address, or reverse-lookup an address to its SuiNS name. Provide 'name' or 'address'. An unregistered, expired or unset name returns a null address with `name_note`; a malformed name is an error.
 
-IDENTITY WARNING: a SuiNS name is a self-chosen handle that anyone can buy. It is not identity and it is not verified. Names matching an exchange, a project or a person can be, and are, registered by unrelated parties, including by someone who wants an investigator to draw a particular conclusion. Treat a name as a label the holder picked, never as evidence of who they are, and do not carry it to other platforms as a matching key without independent corroboration.
+IDENTITY WARNING: Anyone can buy a SuiNS name. A name matching an exchange, project or person may belong to an unrelated party, including one that wants to mislead an investigator. Treat it as a holder-chosen label, not verified identity; corroborate independently before matching it to identities on other platforms.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

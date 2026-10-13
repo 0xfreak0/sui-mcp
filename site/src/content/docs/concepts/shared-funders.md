@@ -5,9 +5,9 @@ sidebar:
   order: 5
 ---
 
-Several wallets tracing back to one funder looks like one operator. It is
-evidence only when the funder is narrow. An exchange hot wallet or a payout
-service funds unrelated wallets all day, so ancestry through it links nothing.
+Wallets sharing a first funder have a common funding source. Measure that
+funder before treating the relationship as evidence of shared control:
+exchange wallets and payout services also fund unrelated wallets.
 `find_funding_source` and `find_funding_sources` stop at a funder that pays
 many distinct addresses, and `find_funding_sources` reports each shared funder
 with its fan-out and flow shape.
@@ -95,10 +95,11 @@ different addresses.
 the committee's address hash. `clusters` are inferences with their own
 `evidence_tier`, never proof of ownership.
 
-Supply all suspected wallets as seeds, up to 25; links among them are exactly
-verified. `expand` defaults to true, admitting unknown siblings only after
-checking their own first funder. The expansion budget defaults to 25 candidates,
-and unverified candidates are reported rather than hidden.
+Supply suspected wallets as seeds, up to 25; the tool tests signals among
+them. `expand` defaults to true, admitting additional candidates only after
+checking their own first funder. The expansion budget defaults to 25
+candidates, and candidates the budget left unchecked are reported as
+unverified, neither confirmed nor ruled out.
 
 `popularity_limit` defaults to 50 distinct counterparties. Funders' recipients
 count only if paid at least 0.01 SUI or $0.10. Raise this limit only with cause:

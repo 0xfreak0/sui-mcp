@@ -7,8 +7,8 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`compare_oracle_price`](#compare_oracle_price) | Compare the Pyth oracle price against the price DeepBook actually traded at, over a time window. |
-| [`deepbook_orderbook`](#deepbook_orderbook) | Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. |
+| [`compare_oracle_price`](#compare_oracle_price) | Compare the Pyth oracle price of a DeepBook v3 pool's base asset with the pool's candle close prices over a time window, flagging candles past threshold_pct. |
+| [`deepbook_orderbook`](#deepbook_orderbook) | Read live bids, asks, spread, mid price and resting-liquidity imbalance for a DeepBook v3 pool. |
 | [`deepbook_trades`](#deepbook_trades) | Recent fills for a DeepBook v3 pool, with the maker and taker balance manager IDs behind each trade. |
 
 DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread and traded price come from the [DeepBook indexer](https://docs.sui.io/standards/deepbookv3-indexer) rather than from a pool object. Mainnet and testnet only.
@@ -19,7 +19,7 @@ DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread 
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Compare the Pyth oracle price against the price DeepBook actually traded at, over a time window. Lending protocols liquidate on oracle prices, so divergence between the oracle and the book is the signature of a stale feed, a manipulation window, or liquidations priced at levels the market never printed.
+(Incident investigation) Compare the Pyth oracle price of a DeepBook v3 pool's base asset with the pool's candle close prices over a time window, flagging candles past threshold_pct. Use it to look for a stale feed, a manipulation window or liquidations priced where the book never traded; a deviation alone does not establish its cause. Needs PYTH_API_KEY: without it only the DeepBook side is returned and flagged_count is null.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -36,7 +36,7 @@ DeepBook v3 is a central limit order book, so it has no reserves. Depth, spread 
 - Profile: `market`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(DeepBook) Live order book depth for a DeepBook v3 pool: bids, asks, spread, mid price and resting-liquidity imbalance. DeepBook is a central limit order book, so this, not pool reserves, is its real liquidity picture. Omit pool_name to list available pools.
+(DeepBook) Read live bids, asks, spread, mid price and resting-liquidity imbalance for a DeepBook v3 pool. DeepBook is a central limit order book, so its liquidity is the resting orders listed here. Omit pool_name to list available pools.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

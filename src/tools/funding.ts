@@ -484,7 +484,7 @@ function fanoutView(f: FanoutResult, pop: FunderPopularity | undefined) {
 export function registerFundingTools(server: McpServer) {
   server.tool(
     "get_address_fanout",
-    "(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape. The shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.",
+    "(Incident investigation) Measure how many distinct addresses an address pays and is paid by over its newest transactions. Use it on a shared funder before reading common funding as a link: an exchange hot wallet or another service funds unrelated wallets, so common ancestry through it links nobody. Returns recipient_count, sender_count, counterparty_count, a classification (hub, distributor or narrow), out_in_ratio and flow_shape (disperser, collector or balanced). flow_shape separates funders with similar counts: an exchange runs balanced, while a sybil funder pays many and is paid by few. A narrow or distributor reading from a truncated scan is provisional.",
     {
       address: addressArg().describe("Address to measure (0x...)"),
       max_transactions: numArg()
@@ -493,7 +493,7 @@ export function registerFundingTools(server: McpServer) {
         .max(3000)
         .optional()
         .describe(
-          "Transactions to scan, newest first (default 1000). More is slower but tighter; check `truncated`.",
+          "Transactions to scan, newest first (default 1000). Check `truncated` for an incomplete window.",
         ),
     },
     async ({ address, max_transactions }) => {
@@ -1006,7 +1006,7 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_source",
-    "(Incident investigation) Follow a wallet's first funding transaction and sender, then each funder's own funding. Stops at labels (see manage_labels), cycles, dead ends, funders paying over 50 addresses at least 0.01 SUI or $0.10 each, or a funder whose payment came after its own first 12 transactions. Service ancestry and an established wallet's earlier funding do not attribute the payment being traced; dust-only recipients do not count toward the service threshold. Each hop reports funder popularity. dust_skipped lists ignored inflows; sponsored_by lists gas payers even when no funding was found. A wallet can pay gas from an address balance without SUI inflows, and a lookalike operator may appear only as its sponsor.",
+    "(Incident investigation) Follow a wallet's first funding transaction and sender, then each funder's funding. Stops at labels (see manage_labels), cycles, dead ends, funders paying over 50 addresses at least 0.01 SUI or $0.10 each, or a funder whose payment came after its own first 12 transactions. Service ancestry and an established funder's earlier funding cannot attribute this payment; dust-only recipients do not count toward the service threshold. Each hop reports funder popularity. dust_skipped lists ignored inflows; sponsored_by lists gas payers even if no funding qualifies; a wallet can pay gas from an address balance without SUI inflows, so its operator may appear only as sponsor.",
     {
       address: addressArg().describe("Address to attribute (0x...)"),
       max_hops: numArg().int().positive().max(12).optional().describe("Max funding hops to walk back (default 5, max 12)"),

@@ -11,6 +11,15 @@
 - **yolo.casa's orders contracts and Blast.fun's presale suite are named.** yolo.casa's limit, stop, DCA and OTC order lineage, published by `yolo.sui`, is curated as yolo.casa, type `dex`. Blast.fun's presale, access-control, partners and Aftermath DAO adapter packages, from both its October deployments, join its existing `launchpad` entries; their deployer shares a first funder with the earlier Blast.fun deployer.
 
 ### Changed
+- **Docs and tool descriptions were checked against the code.** Corrected:
+  `query_events` `event_type` accepts a package, module or struct;
+  `save_finding` validates digest format, not existence on chain;
+  `export_case` also renders Mermaid, graph JSON and CSV;
+  `compare_oracle_price` needs `PYTH_API_KEY`; `find_flow_path` and
+  `trace_flow_graph` expand by depth while queued nodes fit the limit; the
+  prompts' `find_pools` step names DeepBook v2/v3 and BlueMove v1. Site pages
+  and examples were rewritten to state behaviour and results without
+  narrative.
 - **Uncurated mainnet coin lookup now uses live DEX search instead of a
   shipped symbol index.** `analyze_token` and `search_token` search DexScreener
   with both the ticker and `ticker SUI` to reduce cross-chain crowding, then

@@ -1,12 +1,12 @@
 ---
 title: "Wallet drainer: claim::swapS kit"
-description: Reading a drainer package from the drainer's side, how its shared switch hid the drain from a dry run, and who collected the stolen stake.
+description: Drainer bytecode, shared-object versions and collector transfers in a staked SUI transaction.
 sidebar:
   order: 3
 ---
 
-Question: how did package `0xa032d8b8` take a wallet's staked SUI on 28
-November 2024 when a dry run at signing showed no loss, and who collected it?
+Package `0xa032d8b8…` withdrew a signer's staked SUI on 28 November 2024.
+These calls compare the shared state before execution with the resulting transfers.
 
 ## Sources
 
@@ -22,8 +22,8 @@ November 2024 when a dry run at signing showed no loss, and who collected it?
 | 75% collector | `0x55abfb40f533b549e43cdd2711746b208052512ee72874f7a5851ce186489e0f` |
 | 25% collector | `0x532517d0f3d0d56566ab3580ca4d3b373a9303cb513c26dbdcf852582ba4e096` |
 
-The steps below read the drainer's package, objects and wallets. They do not
-need the signer's address, and the excerpts leave it out.
+The calls use the package, shared object and collector addresses; the
+signer's address is omitted.
 
 ## Steps
 
@@ -47,8 +47,8 @@ the package id:
 "modules": [ "claim" ]
 ```
 
-The package was published 36 minutes before the drain, by `0xf09d967b`. A
-third-party scam blocklist lists it.
+The package publisher is `0xf09d967b…`; publication preceded this drain
+by about 36 minutes. `flagged_by` reports a third-party blocklist entry.
 
 ### 2. Read what the code does with a stake
 
@@ -96,10 +96,11 @@ entry public set_claimable(Arg0: &mut ClaimParams, Arg1: bool, Arg2: &mut TxCont
 }
 ```
 
-`swapS` branches on `ClaimParams.initialized`. When it is false (offset 64 on)
-the stake goes back to the sender. When it is true, the stake is withdrawn and
-the SUI is split by `profit_split` between `wallet` and `dev_wallet`. Only the
-object's `owner` can call `set_claimable` to flip it.
+`swapS` reads `ClaimParams.initialized`. When false, its other branch
+transfers the stake back to the sender. When true, it withdraws the stake
+and splits SUI between `wallet` and `dev_wallet` according to
+`profit_split`. Only the object's `owner` can call `set_claimable`, which
+writes `initialized`.
 
 ### 3. Put the object's changes on a timeline
 
@@ -119,8 +120,8 @@ on the shared `ClaimParams`:
 ]
 ```
 
-The object was created 32 seconds before the drain and written twice in the
-last five seconds before it.
+The object was created 32 seconds before the drain. The listed versions
+include two writes in the final five seconds.
 
 ### 4. Read the object as it was created
 
@@ -142,8 +143,9 @@ last five seconds before it.
 }
 ```
 
-With `initialized: false` and zero amounts, a dry run against this version
-returns every object to the signer. The owner is the package publisher.
+At creation, `initialized` was false, both recorded amounts were zero,
+and the package publisher was the object's owner. A simulation using
+that state takes the return-stake branch.
 
 ### 5. Break down the drain
 
@@ -174,12 +176,11 @@ on the drain:
 "anomalies": [ { "severity": "high", "code": "switched-before-execution", … }, … ]
 ```
 
-The publisher filled in the signer's coin amounts 4.666 s before the drain and
-set `initialized` to true 0.935 s before it. The drain then paid 520.06 SUI to
-the 75% collector and 173.35 SUI to the 25% collector, 693.41 SUI in all.
-`switched-before-execution` is the flag for this pattern: a shared object
-another address rewrote just before the transaction ran, changing where value
-goes.
+`recent_foreign_writes` records an amount update 4.666 seconds before
+execution and a false-to-true `initialized` change 0.935 seconds before it.
+The two collectors received 520.06 and 173.35 SUI respectively.
+`switched-before-execution` flags the foreign write to the shared object
+shortly before value moved to those addresses.
 
 ### 6. Link the two collectors
 
@@ -200,16 +201,15 @@ the 75% collector:
 }
 ```
 
-The 75% collector's first inflow was 1,570 SUI from the 25% collector, twenty
-days before the drain.
+`first_seen` records 1,570 SUI sent by the 25% collector to the 75%
+collector twenty days earlier.
 
-`first_seen.received` is read across all balance-change pages of the first
-transaction, not just its first page. A system-created genesis allocation has
-`checkpoint: "0"`, `sender: null` and `first_inflow: true`; it does not identify
-a funding wallet. If no gain was found and a continuation could not be read,
-`first_inflow` is null.
+`first_seen.received` reads all balance-change pages of the first
+transaction. A genesis allocation has `checkpoint: "0"`, `sender: null`
+and `first_inflow: true`; it does not identify a funding wallet. If
+continuation fails before a gain can be established, `first_inflow` is null.
 
-## What this shows and what it does not
+## Evidence and limits
 
 - A dry run at signing reads shared objects as they are at that moment. A
   package whose behaviour depends on a shared object its author can rewrite

@@ -1,19 +1,14 @@
 ---
 title: How an investigation runs
-description: A question, the tool calls that answer it, and the marks each answer carries, shown on the first two steps of the Cetus exploit.
+description: Two tool calls on the Cetus exploit and the coverage fields in their responses.
 sidebar:
   order: 3
 ---
 
-An investigation starts from one question. The assistant calls the tools that
-answer it, reads each answer, and uses what it finds to choose the next call.
-Every answer also states what it covers and how sure it is, and a conclusion
-rests on those statements.
+The following calls inspect the wallet and transaction from the 22 May 2025
+Cetus CLMM exploit.
 
-## The first two steps on a real incident
-
-Question: what did the wallet behind the 22 May 2025 Cetus CLMM exploit take?
-Every value below can be checked on chain.
+## Wallet history and transaction
 
 [`get_transaction_history`](/reference/tools/starting-points/#get_transaction_history)
 on the attacker wallet, oldest transactions first:
@@ -31,8 +26,8 @@ on the attacker wallet, oldest transactions first:
 …
 ```
 
-The wallet was funded once, failed one transaction, and first succeeded at
-10:30:50 UTC. Cetus's incident report dates the exploit from that time.
+The history lists a funding transaction, a failed transaction and a successful
+transaction at 10:30:50 UTC.
 
 [`analyze_attack_tx`](/reference/tools/incident-investigation/#analyze_attack_tx)
 on that transaction:
@@ -49,14 +44,13 @@ on that transaction:
 "anomalies": [ { "code": "outsized-mint", "severity": "high", … }, … ]
 ```
 
-The transaction moved the haSUI/SUI pool's price by -99.9999% and left the
-attacker 10,024,321.28 haSUI and 5,765,124.46 SUI. `outsized-mint` flags a
-position credited more liquidity than its amounts can buy, which points at the
-pool's liquidity math.
+The transaction reports a -99.9999% price change in the haSUI/SUI pool and
+gains of 10,024,321.28 haSUI and 5,765,124.46 SUI for the attacker.
+`outsized-mint` flags liquidity minted beyond what the transaction's deposit
+amounts could buy.
 
-The [Cetus exploit example](/examples/protocol-exploit/) continues from here:
-it totals the whole run, finds where the proceeds left Sui, and checks who
-funded the wallet.
+The [Cetus exploit example](/examples/protocol-exploit/) totals the run,
+follows proceeds leaving Sui and examines the wallet's funding.
 
 ## Reading the marks on an answer
 
@@ -71,8 +65,8 @@ funded the wallet.
   `unpriced_remainder` lists unpriced coins in incident totals.
   USD values are estimates from provider quotes; see
   [How USD values are calculated](/concepts/pricing/).
-- `coin_verified` and `verified`: whether a coin is the one its symbol
-  suggests or an imitator. See [Coin identity and scale](/concepts/coins/).
+- `coin_verified` and `verified`: whether the exact coin type is on the
+  curated list. See [Coin identity and scale](/concepts/coins/).
 - Leads and facts: amounts, digests, signers and timestamps are read from the
   chain. Anomaly flags, clusters and deposit-address verdicts are leads that
   say where to look next. A check that did not match clears nothing. A saved

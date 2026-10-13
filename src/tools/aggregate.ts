@@ -56,8 +56,8 @@ const PNL_DIGESTS = 5;
 export function registerAggregateTools(server: McpServer) {
   server.tool(
     "aggregate_events",
-    "(Incident investigation) Rank senders or event types by event count, or by a summed event field, across a window in one call instead of paging query_events. " +
-      "Call it first without value_field: it returns counts plus each event type's sample and numeric fields, then re-run naming one. " +
+    "(Incident investigation) Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. " +
+      "Call it first without value_field: it returns counts, a sample and the numeric fields per event type; then re-run naming one of them. " +
       "group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
       "Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. " +
       "Each continuation ranks a disjoint slice, and a resumed ranking stays truncated even at exhaustion. Per-key counts and value_sum add across slices only when `scan.groups_complete`, subject to rounding; rankings, distinct_keys, distribution and P&L do not add.",
@@ -66,7 +66,7 @@ export function registerAggregateTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Event struct type, matched by the package that DEFINES it, often not the one called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it.",
+          "Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it.",
         ),
       module: z
         .string()

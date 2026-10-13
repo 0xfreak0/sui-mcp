@@ -102,7 +102,7 @@ export function registerRestrictionTools(server: McpServer) {
                 incomplete_note: freeze.scan_note,
               }),
           caveat:
-            "A freeze is the issuer's own decision recorded on chain, reversible by whoever holds the DenyCap. Note that a frozen address usually holds NONE of the coin that froze it — being denied and holding are anti-correlated — so the absence of a balance says nothing either way.",
+            "A freeze is the issuer's decision recorded on chain and can be reversed by the DenyCap holder. A frozen address may have no balance of that coin; balance alone cannot establish whether an address is frozen.",
           validator_freeze_note: VALIDATOR_FREEZE_NOTE,
         });
       }

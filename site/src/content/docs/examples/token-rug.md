@@ -1,12 +1,12 @@
 ---
 title: "Token rug pull: KONG SUI"
-description: Checking whether a token's deployer could still mint or upgrade, confirming its sale into the pool, and following the proceeds to where they converged.
+description: KONG SUI mint and upgrade authority, deployer sale and subsequent SUI transfers.
 sidebar:
   order: 2
 ---
 
-Question: after KONG SUI collapsed on 14 October 2024, could its deployer
-still mint or change the coin, did it sell, and where did the sellers' SUI go?
+The following calls inspect KONG SUI's mint and upgrade authority, a
+deployer swap and transfers after the October 2024 sale.
 
 ## Sources
 
@@ -39,17 +39,15 @@ package. The capability audit runs by default:
   "published_at": "2024-09-26T05:54:55.924Z", …
 },
 "capabilities": { "checked": true, "capabilities": [
-  { "kind": "upgrade", "object_id": "0x45ae77b4fc370db5992c3d7a3eacc8fd259ed0d1dcc527c6e29be7b5f849e3bb",
-    "owner": "burned", "risk": "info", … },
-  { "kind": "treasury", "object_id": "0xa22a68e6e606b2c41e99e4be8a67993bd832cde17af02acf75aaf89173e344bd",
-    "owner": "address",
+  { "kind": "upgrade", "owner": "burned", "risk": "info", … },
+  { "kind": "treasury", "owner": "address",
     "owner_address": "0x0000000000000000000000000000000000000000000000000000000000000000", "risk": "info", … }
 ] }
 ```
 
-The UpgradeCap was destroyed, so the package can never change. The
-TreasuryCap sits at `0x0`, which no key controls, so supply is fixed. Neither
-capability played a part in the rug.
+The UpgradeCap is destroyed, and the TreasuryCap's recorded owner is the
+unspendable `0x0` address. The audited capabilities cannot authorize
+further upgrades or minting.
 
 ### 2. Confirm the deployer sold
 
@@ -74,9 +72,8 @@ on the deployer's swap on the day of the collapse:
 ]
 ```
 
-The deployer swapped 449,900,000 KONG for 431.39 SUI in the Turbos KONG/SUI
-pool at 08:54 UTC on 14 October. BitPinas dates the developer's sale to around
-that day.
+The deployer's transaction exchanged 449,900,000 KONG for about
+431.39 SUI in the Turbos KONG/SUI pool at 08:54 UTC on 14 October.
 
 ### 3. Find where the sellers' SUI converged
 
@@ -102,10 +99,10 @@ on the consolidation wallet over two hours on 24 October:
 ]
 ```
 
-35 wallets sent 7,650.19 SUI to one address between 06:39 and 07:01 UTC. The
-deployer is one of them. The largest sender, `0x6730b566`, is a relay: the
-case file shows it received 4,910.75 SUI from the wallet the deployer gave
-1,000,000,000 KONG at launch.
+The scan found 35 inflow sources sending 7,650.19 SUI between 06:39
+and 07:01 UTC. The deployer is among them. The case file traces a
+4,910.75 SUI payment into the largest sender, `0x6730b566…`, from
+an address that received 1,000,000,000 KONG from the deployer.
 
 ### 4. Follow the consolidated SUI
 
@@ -126,9 +123,9 @@ forward from the consolidation wallet, SUI only:
 ]
 ```
 
-On 29 October the wallet sent 7,649 SUI to `0x97ab09d1`. The trace stops there
-because that address pools money from many senders, so its later moves are not
-a continuation of these funds.
+The graph shows 7,649 SUI sent to `0x97ab09d1…` on 29 October. It stops at
+that address because it pools SUI from many senders, so its later transfers
+are not traced as a continuation of these funds and need a separate read.
 
 ### 5. See where that address forwarded it
 
@@ -148,8 +145,9 @@ on the next transfer out of `0x97ab09d1`:
 ]
 ```
 
-Eight minutes later the full 7,649 SUI went on to `0xf8b7b95d`, the shape of a
-deposit address sweeping into an exchange hot wallet.
+Eight minutes later, `0x97ab09d1…` sent nearly 7,649 SUI to
+`0xf8b7b95d…`. This transfer alone does not identify the recipient
+as an exchange wallet.
 
 ### 6. Check who funded the deployer
 
@@ -168,11 +166,12 @@ deposit address sweeping into an exchange hot wallet.
 "origin_popularity": { "popular": true, … }
 ```
 
-The same hot wallet funded the deployer four hours before the coin was
-published. The proceeds went back to the wallet the deployer's first SUI came
-from.
+The first funding transaction sent the deployer 710 SUI from
+`0xf8b7b95d…` about four hours before publication. The same address
+received the later transfer in step 5. `origin_popularity.popular` is true:
+it paid more than 50 addresses.
 
-## What this shows and what it does not
+## Evidence and limits
 
 - A clean capability audit does not make a token safe. KONG could not be
   minted or upgraded, and holders still lost their money through ordinary

@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`aggregate_events`](#aggregate_events) | Rank senders or event types by event count, or by a summed event field, across a window in one call instead of paging query_events. |
+| [`aggregate_events`](#aggregate_events) | Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. |
 | [`analyze_attack_tx`](#analyze_attack_tx) | Investigate one exploit transaction. |
 | [`analyze_multisig`](#analyze_multisig) | Read which of a multisig wallet's committee keys sign and which never have, across its recent sent transactions rather than one. |
 | [`build_timeline`](#build_timeline) | Reconstruct an incident across up to 10 wallets or objects as one decoded timeline, deduplicated and ordered by checkpoint. |
@@ -15,19 +15,19 @@ sidebar:
 | [`check_coin_restrictions`](#check_coin_restrictions) | Read issuer freezes and whole-coin pauses from regulated coins' on-chain deny lists. |
 | [`classify_deposit_address`](#classify_deposit_address) | Classify exchange deposit behaviour over a chosen window. |
 | [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
-| [`export_case`](#export_case) | Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. |
+| [`export_case`](#export_case) | Render a case's findings as a Markdown report, Mermaid diagram, graph JSON or CSV. |
 | [`find_flow_path`](#find_flow_path) | Find value paths from one address to another. |
-| [`find_funding_source`](#find_funding_source) | Follow a wallet's first funding transaction and sender, then each funder's own funding. |
+| [`find_funding_source`](#find_funding_source) | Follow a wallet's first funding transaction and sender, then each funder's funding. |
 | [`find_funding_sources`](#find_funding_sources) | Trace funding for many addresses together, cheaper than repeated find_funding_source calls. |
 | [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. |
-| [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. |
+| [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address pays and is paid by over its newest transactions. |
 | [`get_upgrade_history`](#get_upgrade_history) | Read upgrade governance across a package lineage: each version's ID, transaction, time, publisher, signing scheme and UpgradeCap holder then. |
 | [`list_findings`](#list_findings) | List recorded findings, or every case with its finding count. |
 | [`manage_labels`](#manage_labels) | Manage chain-qualified address labels for investigation and trace sinks. |
 | [`resolve_bridge_transfer`](#resolve_bridge_transfer) | Resolve bridge transfers from a Sui digest using cross-chain message identities rather than guesses from amounts and timing. |
 | [`resolve_protocol_packages`](#resolve_protocol_packages) | Find which package IDs of a protocol are actually emitting events right now, so a query targets something live. |
-| [`sample_control_addresses`](#sample_control_addresses) | Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. |
-| [`save_finding`](#save_finding) | Record a conclusion against a named case, so an investigation survives the session it happened in. |
+| [`sample_control_addresses`](#sample_control_addresses) | Sample addresses that used the same protocol over the same window as a cohort, to measure how often a signal such as shared funding, common ancestry or timing overlap occurs by chance. |
+| [`save_finding`](#save_finding) | Save a conclusion under a named case with evidence tier, addresses, digests and supporting evidence; findings persist across sessions. |
 | [`screen_address`](#screen_address) | Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. |
 | [`summarize_address_flows`](#summarize_address_flows) | Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. |
@@ -41,11 +41,11 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Rank senders or event types by event count, or by a summed event field, across a window in one call instead of paging query_events. Call it first without value_field: it returns counts plus each event type's sample and numeric fields, then re-run naming one. group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. Each continuation ranks a disjoint slice, and a resumed ranking stays truncated even at exhaustion. Per-key counts and value_sum add across slices only when `scan.groups_complete`, subject to rounding; rankings, distinct_keys, distribution and P&L do not add.
+(Incident investigation) Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. Call it first without value_field: it returns counts, a sample and the numeric fields per event type; then re-run naming one of them. group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. Each continuation ranks a disjoint slice, and a resumed ranking stays truncated even at exhaustion. Per-key counts and value_sum add across slices only when `scan.groups_complete`, subject to rounding; rankings, distinct_keys, distribution and P&L do not add.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `event_type` | string | no | Event struct type, matched by the package that DEFINES it, often not the one called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it. |
+| `event_type` | string | no | Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it. |
 | `module` | string | no | Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
 | `sender` | string | no | Only events sent by this address. |
 | `from` | string | no | Window start: ISO 8601 timestamp (2026-08-07T00:00:00Z) or a checkpoint number. |
@@ -122,12 +122,12 @@ sidebar:
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `addresses` | array of string (1 to 25 items) | yes | 1–25 seed addresses suspected of shared control. Links among supplied seeds are exactly verified. |
+| `addresses` | array of string (1 to 25 items) | yes | 1–25 seed addresses suspected of shared control. Chain-derived and heuristic links are distinguished in the result. |
 | `expand` | boolean | no | Find unknown siblings too (default true); each candidate's first funder is verified before admission. |
 | `expand_budget` | integer (0 to 200) | no | Sibling candidates to verify while expanding (default 25). Unverified candidates are reported, never silently dropped. |
 | `popularity_limit` | integer (5 to 500) | no | Discard funders/sponsors above this counterparty count (default 50). Funder recipients count at >=0.01 SUI or $0.10. Raise only with cause; service ancestry does not link users. |
 | `min_signal_types` | integer (1 to 4) | no | Signal types needed to merge a pair (default 1). Set 2 for higher precision, but ordinary alt-wallets may share only one. |
-| `max_cluster_size` | integer (2 to 1000) | no | Refuse merges beyond this size (default 100). A runaway cluster is worse than no answer. |
+| `max_cluster_size` | integer (2 to 1000) | no | Refuse merges beyond this size (default 100). |
 | `reciprocal_budget` | integer (0 to 100) | no | Reciprocal counterparties to check for service popularity before trusting the signal (default 15). |
 | `query_budget` | integer (10 to 600) | no | Hard ceiling on GraphQL requests (default 150). Check `truncated` in the response. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Default json. mermaid draws clusters and signal-labelled edges; graph_json gives nodes/edges; csv gives one row per edge. |
@@ -184,7 +184,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: false`, `readOnlyHint: true`
 
-(Incident investigation) Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.
+(Incident investigation) Render a case's findings as a Markdown report, Mermaid diagram, graph JSON or CSV. Markdown groups findings by evidence tier (chain-derived, indexer-attested, heuristic), highest confidence first within each, with an optional appendix of full addresses. Requires SUI_STORE_PATH.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -198,7 +198,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` on trace_flow_graph's engine, heaviest branch first, and returns each path with every hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.
+(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` using trace_flow_graph's engine, expanding by depth while queued nodes fit the limit and prioritizing larger shares once they do not. Returns paths with each hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -208,7 +208,7 @@ sidebar:
 | `coin_type` | string | no | Start by following only this coin. Swaps are still followed. |
 | `window_start` | string | no | Only transactions after this: ISO date or checkpoint. Set it to the incident time to skip the source's older history. |
 | `window_end` | string | no | Only transactions before this: ISO date or checkpoint. |
-| `max_nodes` | integer (1 to 100) | no | Address nodes to expand on each side (default 30, max 100), the branches carrying the most value first. |
+| `max_nodes` | integer (1 to 100) | no | Address nodes to expand on each side (default 30, max 100); larger shares take priority when the queued nodes exceed the remaining limit. |
 | `min_share` | number (0 to 1) | no | Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
@@ -219,7 +219,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Follow a wallet's first funding transaction and sender, then each funder's own funding. Stops at labels (see manage_labels), cycles, dead ends, funders paying over 50 addresses at least 0.01 SUI or $0.10 each, or a funder whose payment came after its own first 12 transactions. Service ancestry and an established wallet's earlier funding do not attribute the payment being traced; dust-only recipients do not count toward the service threshold. Each hop reports funder popularity. dust_skipped lists ignored inflows; sponsored_by lists gas payers even when no funding was found. A wallet can pay gas from an address balance without SUI inflows, and a lookalike operator may appear only as its sponsor.
+(Incident investigation) Follow a wallet's first funding transaction and sender, then each funder's funding. Stops at labels (see manage_labels), cycles, dead ends, funders paying over 50 addresses at least 0.01 SUI or $0.10 each, or a funder whose payment came after its own first 12 transactions. Service ancestry and an established funder's earlier funding cannot attribute this payment; dust-only recipients do not count toward the service threshold. Each hop reports funder popularity. dust_skipped lists ignored inflows; sponsored_by lists gas payers even if no funding qualifies; a wallet can pay gas from an address balance without SUI inflows, so its operator may appear only as sponsor.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -265,12 +265,12 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Measure how many distinct addresses an address transacts with, in BOTH directions, over its most recent activity. Use this before concluding anything from shared funding: several wallets tracing back to one funder is only meaningful if that funder is narrow. An exchange hot wallet pays tens of thousands of addresses, so common ancestry through it means nothing. Returns recipient_count, sender_count and counterparty_count, plus out_in_ratio and flow_shape. The shape separates cases size cannot, since a custodial exchange and a sybil funder can have near-identical counterparty counts while one runs balanced and the other pays many and is paid by few.
+(Incident investigation) Measure how many distinct addresses an address pays and is paid by over its newest transactions. Use it on a shared funder before reading common funding as a link: an exchange hot wallet or another service funds unrelated wallets, so common ancestry through it links nobody. Returns recipient_count, sender_count, counterparty_count, a classification (hub, distributor or narrow), out_in_ratio and flow_shape (disperser, collector or balanced). flow_shape separates funders with similar counts: an exchange runs balanced, while a sybil funder pays many and is paid by few. A narrow or distributor reading from a truncated scan is provisional.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Address to measure (0x...) |
-| `max_transactions` | integer (50 to 3000) | no | Transactions to scan, newest first (default 1000). More is slower but tighter; check `truncated`. |
+| `max_transactions` | integer (50 to 3000) | no | Transactions to scan, newest first (default 1000). Check `truncated` for an incomplete window. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_upgrade_history
@@ -359,17 +359,17 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Draw a random control group from the same population as a cohort you are testing: other addresses that used the same protocol over the same window. Shared funding, common ancestry and timing overlap all look damning until you measure how often they occur by chance; this is what you compare against. Excludes the cohort automatically, samples randomly rather than by size (top-N would compare against whales, which collide more than ordinary wallets), and accepts a seed so the draw can be reproduced by whoever checks the report.
+(Incident investigation) Sample addresses that used the same protocol over the same window as a cohort, to measure how often a signal such as shared funding, common ancestry or timing overlap occurs by chance. Select the population by module or event_type, exclude the cohort, and pass a seed for a reproducible draw. Sampling is random rather than ranked by activity.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `module` | string | no | Population: addresses that called this package or module, 0x... or 0x...::module. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
 | `event_type` | string | no | Population: addresses that emitted this event struct type. Any version's ID of the defining package works. |
-| `size` | integer (1 to 100) | no | Control group size (default 25). Match it to the cohort; an unequal comparison is hard to read. |
-| `exclude` | array of string | no | The cohort under test. Excluded from the draw; leaving them in contaminates the comparison. |
+| `size` | integer (1 to 100) | no | Control group size (default 25). Choose a size comparable to the cohort. |
+| `exclude` | array of string | no | Cohort addresses to exclude from the draw. |
 | `from` | string | no | Window start: ISO 8601 timestamp or a checkpoint number. |
 | `to` | string | no | Window end: ISO 8601 timestamp, 'now', or a checkpoint. |
-| `seed` | integer | no | Integer seed. Makes the draw reproducible. Record it alongside the result; without it nobody can redraw your control. |
+| `seed` | integer | no | Integer seed for a reproducible draw. Record it with the result. |
 | `max_events` | integer (50 to 50000) | no | Events to scan when building the population (default 5000). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -379,7 +379,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Profile: `forensics`
 - Annotations: `destructiveHint: false`, `idempotentHint: false`, `openWorldHint: false`, `readOnlyHint: false`
 
-(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them: what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it. Then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.
+(Incident investigation) Save a conclusion under a named case with evidence tier, addresses, digests and supporting evidence; findings persist across sessions. Save each finding when it is established. Use export_case to render the recorded findings as a report. Requires SUI_STORE_PATH.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -389,7 +389,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `confidence` | `high` \| `medium` \| `low` | no | How firmly this is established. Reports sort high confidence first. |
 | `evidence_tier` | `chain-derived` \| `indexer-attested` \| `heuristic` | no | How it is known: 'chain-derived' (read from Sui), 'indexer-attested' (asserted by a third party) or 'heuristic' (inferred from patterns; the default, and the weakest). export_case groups findings by it. |
 | `addresses` | array of string | no | Addresses it concerns. A bare address is recorded on this call's network; use a CAIP-10 id ('eip155:1:0x…') for another chain. |
-| `digests` | array of string | no | Sui transaction digests the finding rests on. Each is checked to be a real digest before saving. |
+| `digests` | array of string | no | Sui transaction digests supporting the finding. Each must decode from Base58 to 32 bytes; existence on chain is not checked. |
 | `evidence` | array of string | no | What establishes it, so it can be checked: tool calls, counts, digests, sample sizes. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
@@ -473,7 +473,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | `from` | string | no | Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search. |
 | `to` | string | no | Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search. |
 | `max_depth` | integer (1 to 8) | no | Hops to follow from the start (default 4, max 8). |
-| `max_nodes` | integer (1 to 150) | no | Address nodes to expand (default 40, max 150). The branch carrying the most value is expanded next, at any depth. |
+| `max_nodes` | integer (1 to 150) | no | Address nodes to expand (default 40, max 150). Expands by depth while all queued nodes fit; otherwise prioritizes the largest share. |
 | `min_share` | number (0 to 1) | no | Prune below this fraction of traced value (default 0.01 = 1%); never prune lookalikes. coverage.pruned counts them. |
 | `min_usd` | number (at least 0) | no | Prune below this USD value at transaction time, except lookalikes. Unpriced branches use min_share. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |

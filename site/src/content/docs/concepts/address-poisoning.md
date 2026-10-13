@@ -29,7 +29,7 @@ in the victim's own history, which is where `get_transaction_history` compares
 it. In a trace, the lookalike is usually several hops from the address it
 imitates. `trace_flow_graph` and `find_flow_path` never prune a branch to an
 address that renders like one already reached, whatever `min_share` or
-`min_usd` say: the small amount is the finding.
+`min_usd` say, so a lookalike stays in the graph however small its amount.
 
 ## When a pair is reported
 

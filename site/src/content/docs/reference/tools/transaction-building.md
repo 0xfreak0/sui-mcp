@@ -9,7 +9,7 @@ sidebar:
 |---|---|
 | [`build_staking`](#build_staking) | Build an unsigned transaction to stake or unstake SUI. |
 | [`build_transfer`](#build_transfer) | Build an unsigned transaction to transfer a coin (SUI or any coin type) from one address to another. |
-| [`simulate_transaction`](#simulate_transaction) | Dry-run a Sui transaction without signing, sending, or spending anything. |
+| [`simulate_transaction`](#simulate_transaction) | Simulate a Sui transaction without signing or submitting it. |
 
 ## build_staking
 
@@ -50,7 +50,7 @@ Build an unsigned transaction to transfer a coin (SUI or any coin type) from one
 - Profile: `developer`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Dry-run a Sui transaction without signing, sending, or spending anything. Takes Base64 BCS transaction bytes (build_transfer and build_staking produce them) and returns the effects it WOULD have: status, gas cost, emitted events, balance and object changes. Use it to check whether a transaction succeeds and what it costs before committing, or to see what an unfamiliar payload actually does. This server holds no keys and cannot execute anything.
+Simulate a Sui transaction without signing or submitting it. Takes Base64 BCS transaction bytes (build_transfer and build_staking produce them) and returns simulated status, gas cost, events, balance changes and object changes. Use it to check whether a transaction succeeds, what it costs and what an unfamiliar payload does before signing. The server holds no signing keys and cannot submit a transaction.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

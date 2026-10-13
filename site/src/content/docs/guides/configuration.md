@@ -9,9 +9,9 @@ sidebar:
 
 All environment variables are optional. See
 [`.env.example`](https://github.com/0xfreak0/sui-mcp/blob/main/.env.example)
-for the full list; the common ones are `SUI_NETWORK` (default network),
-`SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (custom RPC endpoints), and
-`SUI_LABELS_FILE` (address attribution labels for fund tracing).
+for the full list; common settings include `SUI_NETWORK` (default network),
+`SUI_FULLNODE_URL` / `SUI_GRAPHQL_URL` (endpoints for that default network only),
+and `SUI_LABELS_FILE` (address attribution labels for fund tracing).
 
 Set them in the `env` block of your client config:
 
@@ -108,8 +108,8 @@ must match the requested Move module and struct names case-sensitively; a
 successful URL lookup alone does not establish identity. Pyth feeds are
 matched by symbol, so Pyth is only ever asked about coins on the verified list.
 
-Pyth is opt-in and engages only when its key is set, so nobody is billed by
-accident and nothing degrades without it:
+Pyth is opt-in and engages only when its key is set. Without it, current and
+historical market prices still use the keyless providers:
 
 | Variable | Enables |
 |---|---|
@@ -191,14 +191,13 @@ An operation cap owned by another object does not identify its controller. A
 failed refresh marks the retained snapshot `stale`; compare its epoch to the
 current chain epoch before treating membership or cap custody as current.
 
-Shipped labels update only through npm releases, so they carry the same
-provenance attestation as the code. A weekly job reruns these syncs and opens a
-pull request. A maintainer must approve the bot-triggered PR CI run and wait for
-both Node-version checks before merging; merging publishes a patch release.
-The server never fetches label data at runtime. Use
-`npx sui-analytics-mcp@latest` to request the latest release; bare `npx` can use
-an already installed local copy. A pinned or globally installed copy keeps its
-labels until you update it.
+Shipped labels change only with npm releases, so they carry the same
+provenance attestation as the code. A weekly job reruns the data syncs and
+opens a pull request when data changes. The automated release workflow
+publishes a patch release when that pull request is merged. The server does
+not fetch label data at runtime. Use `npx sui-analytics-mcp@latest` to request
+the latest release; bare `npx` can use an already installed local copy, and a
+pinned or globally installed copy keeps its labels until you update it.
 
 Lookup reports `deposit_address` alongside the effective label. Shipped
 inferred deposit roles come from that same registry lookup, so an override

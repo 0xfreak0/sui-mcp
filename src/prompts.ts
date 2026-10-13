@@ -69,7 +69,7 @@ const PLAIN_WORDS =
   "Count them before you send. Use everyday words: no key-scheme names (ed25519, secp256k1), no tool, field or check names, and no term such as proof-of-reserves without saying what it means; say one key, or a group of N keys of which M must sign. When How sure is high, state the finding directly, without hedging it.";
 
 const COMMON_RULES = [
-  "- A flag (a label, a blocklist entry, a lookalike pair, a risk note, a bytecode lead) is a lead, not a verdict. Say so when you report one.",
+  "- A flag (a label, a blocklist entry, a lookalike pair, a risk note, a bytecode lead) is a lead requiring investigation. Do not report it as a verdict.",
   "- An empty result clears nothing. No flag found means none was found in what was read, never that the subject is safe.",
   "- Never name or guess the real-world identity of a private person. Name only an organisation that a label names with its source, such as an exchange, a protocol or a bridge.",
   "- Keep tokens low: keep each tool's default detail level, never ask for detail: 'full', and skip a step marked optional unless the answer depends on it.",
@@ -126,7 +126,7 @@ export const PROMPTS: Record<string, PromptSpec> = {
       [
         `Investigate the Sui address ${address}. ${networkLine(network)}`,
         "",
-        "1. identify_address: is it a wallet, a package, an object or a multisig? A package or shared object is not a party.",
+        "1. identify_address: classify it as a wallet, package, object or multisig. Do not treat a package or shared object as a party.",
         "2. get_wallet_overview with include_prices: what it holds, what the total leaves out (`coverage`), and `leads`: a shared vault whose fields name it (a bot trading through one moves no balance of its own) or a position near its borrow limit.",
         "3. screen_address: exposure to exploiters, exchanges, bridges and sanctioned accounts, with hop distance.",
         "4. find_funding_source, then get_address_fanout on the funder before reading anything into it.",
@@ -250,8 +250,8 @@ export const PROMPTS: Record<string, PromptSpec> = {
         "4. Freezes (forensics, only when `deny_list` says the coin is regulated): `check_coin_restrictions(coin_type)` lists the frozen addresses and whether the coin is paused.",
         "5. Holders (forensics, optional when step 1's sample already answers it): `get_top_holders(type, limit: 10)`. Quote a share of supply only when `complete_ranking` is true. A holder with `owner_kind` object is a contract object, such as a pool or a vault, not a person. The deployer or its funder holding most of the supply is a lead to report.",
         (network || "mainnet") === "mainnet"
-          ? `6. Liquidity: \`find_pools(token_a, token_b: 'SUI')\` and \`find_pools(token_a, token_b: '${MAINNET_USDC}')\` (native USDC) search Cetus, DeepBook and Turbos for pools against SUI and against USDC. No pool there leaves every other venue and pair unchecked.`
-          : "6. Liquidity: `find_pools(token_a, token_b: 'SUI')` searches Cetus, DeepBook and Turbos for pools against SUI. Say pools against USDC and every other venue were not searched.",
+          ? `6. Liquidity: \`find_pools(token_a, token_b: 'SUI')\` and \`find_pools(token_a, token_b: '${MAINNET_USDC}')\` (native USDC) search Cetus, DeepBook v2/v3, Turbos and BlueMove v1 for pools against SUI and USDC. When none is found, say other venues and pairs were not searched.`
+          : "6. Liquidity: `find_pools(token_a, token_b: 'SUI')` searches Cetus, DeepBook v2/v3, Turbos and BlueMove v1 for pools against SUI. Say pools against USDC and other venues were not searched.",
         "7. Deployer: `identify_address(address)` on `root_publisher` for its age (`first_seen`) and any label. Optional: `get_transaction_history(address, limit: 10)` on it, to see whether it recently sold or moved the coin.",
         "",
         "In the plain answer, the first sentence says who can mint more, freeze holders or change the code (one key, a committee of N with threshold M, anyone, the rules of the contract that holds the cap, nobody, or unknown); then how concentrated the holdings are and which pools were found.",
@@ -303,7 +303,7 @@ export const PROMPTS: Record<string, PromptSpec> = {
         "   - `package_activity.packages`: package versions in publish/upgrade transactions sent from this address. An alias may have signed for it, and the sender need not hold the UpgradeCap now. On a bounded-read timeout, follow `package_activity_next_call` using `get_wallet_packages(address)`. Otherwise, if `scan.complete` is false, follow `scan.next_call` using `get_wallet_packages(address, cursor)` while it exists. `incomplete_transactions` names unread digests on this page; `prior_incomplete_transactions` counts unread digests from earlier pages. A partial empty list is not evidence it published none.",
         "2. `get_transaction_history(address, limit: 20)`: decoded activity (protocols, actions, recency) and `address_poisoning`. Follow `next_cursor` into older pages when the question needs a longer period; describe the sampled window, not the wallet's full history.",
         "3. `get_wallet_overview(address)`: balances and up to 50 most recent transactions. `recent_transactions_truncated` means earlier transactions exist; the next call pages older decoded activity. Its `package_activity` is the same bounded publication scan as step 1.",
-        "4. Funding (forensics): `find_funding_source(address)` walks back to who first funded it and stops at a labelled exchange or a service. Funding from an exchange means the owner used that exchange; it names nobody.",
+        "4. Funding (forensics): `find_funding_source(address)` follows its first qualifying funder, then each funder's own, and stops at a labelled exchange, a service-scale funder or an established wallet. Funding from an exchange shows an account at that exchange paid it and names nobody; the exchange holds that account's records.",
         "5. Exchange deposit behaviour (forensics, when the history shows it sending its whole balance to one address): `classify_deposit_address(address)` checks whether it behaves like an exchange's deposit address, with the exchange's label and source. Its verdict is a heuristic lead, not a ruling: read `checks` and `reasons` with it. When every outflow you saw goes to one wallet that a disclosed exchange label names (the exchange's own wallet, not an inferred deposit address, which classify_deposit_address never counts as an exchange), say so and say the address probably belongs to a customer of that exchange, whatever the verdict; a `no` then names in `reasons` a check that failed, and does not make it a private wallet.",
         "6. Optional (forensics): `screen_address(address)` for exposure to labelled scam, sanctioned, exchange and bridge accounts within two hops; `summarize_address_flows(address)` for its main counterparties with their labels; `analyze_multisig(address)` for which keys of a multisig actually sign.",
         "",

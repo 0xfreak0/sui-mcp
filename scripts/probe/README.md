@@ -1,7 +1,7 @@
 # Live checks
 
-Thirteen scripts, run together by `npm run verify:live` from the repo root. Build
-first — they drive the built tools, not the source.
+Run `npm run verify:live` from the repo root after building. The scripts call
+the built server.
 
 ```bash
 npm run build && npm run verify:live && npm test
@@ -10,18 +10,18 @@ npm run build && npm run verify:live && npm test
 | Script | What it does |
 |---|---|
 | `dump-fixtures.mjs` | Regenerates `test/fixtures/signatures.json` from live mainnet. |
-| `adversarial.mjs` | Reads `tools/list` and generates malformed input for every field of every tool: missing, wrong type, null, blank, out of range, hostile strings chosen by what the field holds, unknown and misspelt argument names. A call passes when it answers within 60s, leaves the server up, fails with one readable line, and never answers a malformed input as valid. Ends with a per-tool table; about 3,200 calls in under 5 minutes. `VERBOSE=1` prints every case. |
+| `adversarial.mjs` | Generates malformed input for every tool field and checks rejection, response time and server survival. `VERBOSE=1` prints every case. |
 | `investigation.mjs` | Chained end-to-end run: a failed transaction, why it failed, who published the package, who they are, their fan-out and deny-list exposure. |
-| `full-case.mjs` | Cross-tool consistency — two tools must not disagree about one fact. Committees, publishers, coin verification, deny-list directions. |
-| `gap-pass.mjs` | Paths the other sweeps do not reach: a coin that really is regulated, a capped history. |
-| `consistency-pass2.mjs` | Each feature since 1.13.0 against an INDEPENDENT source of the same fact — registry decimals vs on-chain metadata, gRPC vs GraphQL abort detail, our sponsor count vs a direct scan. |
+| `full-case.mjs` | Checks cross-tool consistency for committees, publishers, coin verification and deny-list directions. |
+| `gap-pass.mjs` | Checks a regulated coin and capped history. |
+| `consistency-pass2.mjs` | Compares registry decimals, abort details and sponsor counts with independent reads. |
 | `incident-pass.mjs` | The incident tools replayed on the Cetus and Nemo exploits through the built server over stdio, each answer against a raw chain read taken in the same run: attack and incident-loss nets against the raw balance changes, trace and flow-graph hops against the payer and next debit on chain, every bridge's beneficiary against its event or payload bytes, flow totals against per-transaction sums, upgrade history and cap custody against package versions and object changes, signatures and bytecode against each exact version, diffs against a line diff of both versions, a deny list against its Config's fields, and prices against DefiLlama read directly. Records every call's latency and size. |
 | `attribution-pass.mjs` | The attribution and history tools (funding, fan-out, deposit, screening, wallet edges, control groups, multisig, timelines, events, transactions, balances, holders, NFT sales, identity) against a raw GraphQL read of the same fact in the same run, plus one malformed input per tool. Prints each tool's slowest call and largest result, and fails on a call over 60s or a result over the tool's declared size. |
 | `surface-pass.mjs` | The stateful tools (labels, findings, watches, `enable_tools`), the prompts and the `sui://case` resource, and the core, market and developer tools, each against a raw read of the same fact taken in the same run: staking principal vs raw StakedSui objects, pools vs a raw walk of every pool type, a decoded PTB vs the raw transaction, a simulated transfer vs its amount, MVR names vs the PackageInfo on chain. Every tool also gets one malformed call that must be refused, and each call's latency and size are checked. |
 | `case-pass.mjs` | Replays every case in `cases/incidents/` (and in `$SUI_CASES_DIR` when set): each check's tool call through the built server, its answer against the value the incident's post-mortem or the chain gives. Validates each file against the format in `cases/README.md` first. A check marked `known_defect` that fails is reported as known; one that passes fails the run until the marker is removed. Prints each call's latency, size and estimated tokens, a total per case, and the tools/list size for the default profile and `SUI_TOOLS=all`; a call over its tool's budget in `lib/size-budget.mjs` fails. `--smoke` runs one check per tool plus the `critical` ones, and `--affected <git-range>` the checks a change can reach (see "Tiers" below). `--jobs <n>` runs n cases at once through one server, sharing its request budget; a check that fails there runs again alone before it counts. `--case <slug>` and `--check <id>` narrow any tier to one; `--summary <file>` writes the tallies, sizes, budgets and wall time as JSON, which `verify:live` turns into the size report in its closing summary. |
-| `invariant-pass.mjs` | A seeded random sample of mainnet: transactions from checkpoints spread over the whole chain, plus the kinds random checkpoints rarely hold (system, failed, sponsored, multisig, zkLogin, address-balance, 100+ command PTBs, packages, shared objects, kiosks, bridge exits). Each is run through the tools and checked against rules that hold for any input, every value against a raw GraphQL read: balance changes against the effects, coin conservation, batch against single reads, balances against coin objects plus the address balance and against a forward sum at a past checkpoint, history and timeline pages against the raw query, flow totals, fan-out recounts, trace and attack nets, identity types, holder balances and bridge beneficiaries against the event bytes. Prints the seed; `--seed S --n N --tip T` redraws the same sample. Default n is 12, four to seven minutes; n 30 takes about ten. |
-| `oracle-pass.mjs` | Tool answers on subjects drawn at random each run, each against the same fact read from the chain by another path, never through the helper the tool uses. Transactions come from three eras (effects version 1, before checkpoint 23,897,141; later; the newest million checkpoints), with Aftermath router transactions and coins from the on-chain coin registry. Six oracles: `get_transaction` swap labels against each pool's own swap event and the pool's type arguments, compared by coin type; liveness and the end of an object no longer at top level in `trace_object_history` and `get_upgrade_history` against gRPC `getObject` and `idDeleted` in the transaction that ended it; `get_transaction` object changes against GraphQL `objectChanges`, and under effects version 1 against the effects' own BCS lists; `analyze_package` mint authority against gRPC `getCoinInfo`, the registry's `treasury_cap_id` and a `TreasuryCap<T>` type query; `token_flow` and `balance_changes` against GraphQL `balanceChanges`; capability owners against each object's live owner read over gRPC. Where a truth read is a query the tool also runs (the `affectedObject` index for an end transaction the sample did not supply, the registry and type queries for a cap), the report says so beside it, and swap labels no event matched are listed and counted. Prints the seed and tip (`--seed S --tip T` redraws the same subjects), then per oracle the samples checked, the agreements, each disagreement with our answer, the truth and how it was read, and each skip with its reason. A disagreement fails the run unless `KNOWN_DEFECTS` in the script lists it. `--subjects` pins subjects instead of drawing them and `--dist` runs another build, so a fixed bug's subjects can be run against the build before the fix. The default bounds finish in under a minute; `--scan`, `--txs`, `--ends`, `--router` and `--coins` raise them. |
-| `detector-pass.mjs` | Scores the anomaly detectors on the labelled set in `cases/detectors.json`: exploit and attack transactions from `cases/incidents/` as positives, and ordinary mainnet transactions as negatives, each in two splits, `tuning` (seen by rule authors) and `holdout` (incidents labelled after every current rule was written, and negatives drawn at random afterwards, never shown to them). Runs `analyze_attack_tx`, `decode_ptb` by digest and `decode_ptb` on the transaction's own BCS (the pre-sign mode) on each, and prints per tool and anomaly code the true positives, the false positives and their rate on each split, and a leave-one-out table: which detectors fire on each incident, and which of those were neither designed from it nor tuned while it was labelled, then every medium or high flag with its evidence on each holdout positive. Fails when a tuning negative gets a medium or high flag not listed in `accepted_fps`, when an accepted false positive stops firing, when a positive loses a `detected_by` detection, or, on a run of the whole holdout split, when any kind's medium-or-high count there differs from `holdout_ceilings`. `--write-ceilings` records the measured counts; `--json` prints the report as JSON; `--split`, `--only`, `--incident` and `--digest` run a subset. Reads through `SUI_REPLAY_DIR` when it is set, as case-pass does. |
+| `invariant-pass.mjs` | Checks a seeded sample across chain eras and uncommon transaction shapes against raw reads: effects, conservation, batch and single reads, balances, history and timeline pages, flows, fan-out, identity, holders and bridge beneficiaries. Prints the seed; `--seed S --n N --tip T` reproduces the sample. |
+| `oracle-pass.mjs` | Draws subjects across chain eras and checks tool answers against the same fact read by another path: swap labels against pool events, object ends and changes, mint authority, balance changes and capability owners. Truth is read through raw GraphQL, gRPC or the effects' own BCS, never through the helper the tool uses; where a truth read is the same query the tool makes, the report says so. The report also lists disagreements, unmatched swap labels and skips. `--seed S --tip T` reproduces a draw; `--subjects` pins subjects and `--dist` runs another build. `--scan`, `--txs`, `--ends`, `--router` and `--coins` set sample bounds. A disagreement fails the run unless `KNOWN_DEFECTS` in the script lists it, and so does a drawn oracle that checked nothing. |
+| `detector-pass.mjs` | Scores the anomaly detectors on `cases/detectors.json`: exploit and attack transactions as positives, ordinary mainnet transactions as negatives, each in the `tuning` split (seen by rule authors) or `holdout` (labelled or drawn afterwards, never shown to them). Runs `analyze_attack_tx`, `decode_ptb` by digest and `decode_ptb` on the transaction's BCS. Reports per tool and anomaly code the true and false positives and their rate on each split, a leave-one-out table of which detectors fire on each incident without having been designed from or tuned with it, and every medium or high flag on each holdout positive. `--write-ceilings` records holdout counts; `--json` emits JSON; `--split`, `--only`, `--incident` and `--digest` select a subset. Reads through `SUI_REPLAY_DIR` when set. See `cases/README.md`. |
 
 Run an individual script from the repo root after building, for example:
 
@@ -42,20 +42,17 @@ which reports missing values, from a complete nonempty window, which refuses
 a numeric field that no event carries. A partial scan must also supply its
 continuation.
 
-The incident pass compares raw amounts exactly against the chain. Its
-largest-pool comparison allows 0.1% USD difference between the incident's
-per-coin hourly median leg times and the single transaction's pricing time.
-For that historical pool, the different SUI quotes account for a 0.052%
-valuation difference; the haSUI quote is the same.
+The incident pass compares raw amounts exactly against chain data. Its
+largest-pool comparison allows a 0.1% USD difference between hourly-median
+incident prices and the transaction's pricing time.
 
-`sample-negatives.mjs` is not a check: it draws fresh holdout negatives for
-`cases/detectors.json` from random checkpoints (or by function with
-`--function`), skipping every labelled sender, when the holdout split has to
-be rotated.
+Use `sample-negatives.mjs` to draw fresh holdout negatives for
+`cases/detectors.json` from random checkpoints, or by function with
+`--function`, when the holdout split is rotated. It skips every labelled
+sender. `verify:live` does not run it.
 
-`token-baseline.mjs` is not a check either: it measures what the server costs
-a model's context, so a change meant to shrink it can be compared before and
-after. It reports tools/list in characters and estimated tokens (chars / 4)
+Use `token-baseline.mjs` to compare server context costs across builds.
+It reports tools/list in characters and estimated tokens (chars / 4)
 for `core`, `core` plus each other profile, and `all`; each tool's
 definition (description, input schema, whole entry), largest first; each
 tool's median and largest answer over case-pass calls; and the ten largest
@@ -78,7 +75,7 @@ handling, not answers. A new tool needs a live check here or a case.
 
 ## Tiers
 
-`npm run verify:live` runs every script. Two cheaper tiers pick a subset:
+`npm run verify:live` runs all checks. Two cheaper tiers pick a subset:
 
 ```bash
 npm run verify:live -- --tier affected                  # what this branch changed, uncommitted work included
@@ -112,10 +109,8 @@ deleted after the closing size report.
   a known defect) plus the `critical` checks, and the fewest probe scripts
   that call every tool no case check names.
 
-The `critical` checks are a handful across cases that exercise the engines
-most tools share, so a change whose reach the file map misses still meets
-them; `cases/README.md` lists them. The full tier stays the one to run at the
-three moments below.
+The `critical` checks in `cases/README.md` run in every tier. Run the full
+tier at the points listed below.
 
 ## Replaying fixed reads
 
@@ -136,48 +131,33 @@ encoding records afresh. `verify:live` passes the variable to those three
 scripts only; oracle-pass sends its own raw reads of fixed data through the
 same recording. The rules are in `src/clients/replay.ts`.
 
-Replay cannot see a change on Mysten's side, such as a renamed GraphQL field,
-so the full tier before a release runs without it.
+Replay does not detect server-side API changes. Run the full tier before a
+release without `SUI_REPLAY_DIR`.
 
 ## When to run them
 
-The unit tests are offline by design — they pin real mainnet signatures and
-shapes as fixtures so they stay fast and deterministic. That is exactly why
-these exist: **a fixture cannot notice that the world moved underneath it.** It
-keeps passing against a stale copy.
+Offline unit tests use fixed signatures and response fixtures. Run the full
+live tier:
 
-The full tier, at three moments:
+- After an `@mysten/sui` upgrade. Signature parsing, protobuf field shapes and
+  BCS key encoding live in the SDK, and a changed key encoding returns `null`,
+  which reads the same as "not found".
+- After a GraphQL schema change. A renamed field returns `null` rather than an
+  error, so a tool reports less without failing.
+- Before a release.
 
-- **After an `@mysten/sui` bump.** Signature parsing, protobuf field shapes and
-  BCS key encoding all live in the SDK and all fail silently — a changed key
-  encoding returns `null`, which is indistinguishable from "not found".
-- **After Mysten changes the GraphQL schema.** A renamed field makes a query
-  return `null` rather than an error, so a tool quietly starts reporting less
-  than it did.
-- **Before cutting a release.**
+Run `npm test` after the live pass. `dump-fixtures.mjs` updates the signature
+fixtures; the offline tests check that parsed signatures derive to their
+recorded addresses.
 
-Run `npm test` immediately afterwards. `dump-fixtures` rewrites the fixtures, so
-a drifted parse shows up there as a signature that no longer derives to its own
-address — the loudest signal available.
+## Scheduled drift check
 
-## Not in CI
+`.github/workflows/drift.yml` runs the full live pass and offline tests
+weekly and supports manual dispatch. It opens or updates a `drift` issue on
+failure. The live pass is not a required pull-request check.
 
-They need the network and mainnet's current state, so they would be flaky on a
-schedule nobody chose. A flaky required check teaches people to ignore failures,
-which costs more than the check is worth.
+## One-off measurements
 
-## Why there are only thirteen
-
-There were seventy. The rest were one-off measurements — symbol-collision
-counts, deny-list base rates, upgrade-cap destinations — and each produced a
-number that now lives in `CLAUDE.md` or a commit message, which is where a
-finding belongs. Nobody re-runs a script to rediscover a number they already
-wrote down.
-
-Keeping them had a real cost beyond clutter: they hit live mainnet with
-hardcoded addresses and digests, so they rot. A script that fails for reasons
-unrelated to the code, in a directory nobody has a reason to run, is worse than
-no script at all.
-
-If you need to measure something new, write a throwaway and delete it. Record
-the number, not the scaffolding.
+Keep one-off measurements as facts in a commit message or the relevant
+project guidance. Remove temporary scripts after recording the result to
+avoid leaving live-chain probes with stale assumptions.

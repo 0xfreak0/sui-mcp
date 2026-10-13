@@ -1198,9 +1198,10 @@ None of the three new rules fires on a holdout negative. The one
 tuning flag, an AlphaLend oracle refresh on 27 September, reads the same
 AVAX-priced COIN slot and is accepted as true.
 
-Not in CI. It needs the network and mainnet's current state, so it would be
-flaky on a schedule nobody chose, and a flaky required check teaches people to
-ignore failures.
+It is not a required pull-request check: it needs the network and mainnet's
+current state, and a flaky required check teaches people to ignore failures.
+`.github/workflows/drift.yml` runs it weekly and on demand, then `npm test`,
+and opens or comments on a `drift` issue when either fails.
 
 Measuring something new is a throwaway script you then delete. Record the
 number in a commit message or here; a script kept only to rediscover a number

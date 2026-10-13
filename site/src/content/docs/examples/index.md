@@ -1,31 +1,28 @@
 ---
 title: Examples
-description: Worked investigations of public Sui incidents, each as the tool calls in order with the part of each answer that matters.
+description: Tool calls and selected results for investigations based on public Sui cases.
 sidebar:
   label: Overview
   order: 0
 ---
 
-Each example takes one public incident from the repository's
-[`cases/incidents/`](https://github.com/0xfreak0/sui-mcp/tree/main/cases/incidents)
-directory and answers one question about it. The steps are the tool calls in
-the order an investigator would make them, with their arguments and a trimmed
-excerpt of each answer. The case file for each incident holds the addresses,
-the digests and the published sources the steps rely on.
+These examples use public incidents from
+[`cases/incidents/`](https://github.com/0xfreak0/sui-mcp/tree/main/cases/incidents).
+Each case file records its subjects, checks and sources. Results below show
+selected fields; consult the full tool response before drawing a conclusion.
 
-| Example | Question it answers |
+| Example | Reads |
 |---|---|
-| [Cetus CLMM exploit](/examples/protocol-exploit/) | What did an exploit wallet take, from which pools, and where did it send the proceeds off Sui? |
-| [KONG SUI rug pull](/examples/token-rug/) | Could the deployer still mint or upgrade, who sold into the pool, and where did the sale proceeds go? |
-| [claim::swapS drainer kit](/examples/wallet-drainer/) | How did a drainer package take staked SUI while a dry run showed no loss, and who collected it? |
-| [WAL claim farm](/examples/sybil-farm/) | Do the wallets that claimed and swept an airdrop to one address share a funder, and does a control group? |
-| [Typus oracle authority check](/examples/package-authority/) | Which package version was live at an exploit, who could call the price update, and what did the fix change? |
+| [Cetus CLMM exploit](/examples/protocol-exploit/) | Exploit gains, pool state and bridge exits |
+| [KONG SUI rug pull](/examples/token-rug/) | Mint authority, deployer swap and SUI transfers |
+| [claim::swapS drainer kit](/examples/wallet-drainer/) | Shared-state changes and collector payments |
+| [WAL claim farm](/examples/sybil-farm/) | Shared first funding and a control sample |
+| [Typus oracle authority check](/examples/package-authority/) | Called version, UpgradeCap holder and missing authorization check |
 
 ## Reading the excerpts
 
-- An excerpt keeps only the fields that answer the step's question. `…` marks
-  what was cut. Full answers carry more fields, and USD values, which come from
-  a price provider, are left out.
+- Excerpts show selected response fields. `…` marks omitted fields or rows.
+  USD values rely on external price providers and are omitted here.
 - Tool names link to the [tool reference](/reference/tools/). Several of these
   tools are outside the default `core` profile; see
   [Tool profiles](/guides/tool-profiles/) to load them.

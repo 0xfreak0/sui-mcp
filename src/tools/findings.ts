@@ -100,7 +100,7 @@ async function caseFlowGraph(findings: Finding[]) {
 export function registerFindingsTools(server: McpServer) {
   server.tool(
     "save_finding",
-    "(Incident investigation) Record a conclusion against a named case, so an investigation survives the session it happened in. Save findings as you establish them: what you concluded, how it is known (evidence_tier), which addresses and transactions it concerns, and the evidence that supports it. Then use export_case to render the whole case as a report. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Save a conclusion under a named case with evidence tier, addresses, digests and supporting evidence; findings persist across sessions. Save each finding when it is established. Use export_case to render the recorded findings as a report. Requires SUI_STORE_PATH.",
     {
       case_name: z
         .string()
@@ -128,7 +128,7 @@ export function registerFindingsTools(server: McpServer) {
       digests: z
         .array(z.string())
         .optional()
-        .describe("Sui transaction digests the finding rests on. Each is checked to be a real digest before saving."),
+        .describe("Sui transaction digests supporting the finding. Each must decode from Base58 to 32 bytes; existence on chain is not checked."),
       evidence: z
         .array(z.string())
         .optional()
@@ -227,7 +227,7 @@ export function registerFindingsTools(server: McpServer) {
 
   server.tool(
     "export_case",
-    "(Incident investigation) Render a case's findings as a Markdown report, ready to paste into a ticket, post-mortem or writeup. Findings are grouped by evidence tier (chain-derived, then indexer-attested, then heuristic) and highest confidence first within each, with an appendix of full addresses. Requires SUI_STORE_PATH.",
+    "(Incident investigation) Render a case's findings as a Markdown report, Mermaid diagram, graph JSON or CSV. Markdown groups findings by evidence tier (chain-derived, indexer-attested, heuristic), highest confidence first within each, with an optional appendix of full addresses. Requires SUI_STORE_PATH.",
     {
       case_name: z.string().describe("Case to render."),
       include_appendix: boolArg()

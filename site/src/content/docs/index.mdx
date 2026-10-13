@@ -36,7 +36,7 @@ More tasks are listed on [Start here](/start/).
 
 <CardGrid>
 	<Card title="Tracing funds">
-		`trace_funds` follows funds forward or backward across hops and swaps, and `trace_flow_graph` follows every branch. `resolve_bridge_transfer` follows funds across a bridge. `find_funding_sources` walks many addresses back to their funding sources in one call, and `build_wallet_edges` finds addresses that may share an operator.
+		`trace_funds` follows funds forward or backward across hops and swaps, and `trace_flow_graph` follows every branch. `resolve_bridge_transfer` reports cross-chain transfer identifiers and destinations where available. `find_funding_sources` walks many addresses back to their funding sources in one call, and `build_wallet_edges` finds addresses that may share an operator.
 
 		[Incident investigation tools](/reference/tools/incident-investigation/)
 	</Card>
@@ -51,7 +51,7 @@ More tasks are listed on [Start here](/start/).
 		[Package tools](/reference/tools/packages/)
 	</Card>
 	<Card title="Wallet and token profiles">
-		`identify_address` says whether an address is a wallet, package, validator or object. `get_wallet_overview` lists every coin balance, the SuiNS name and recent transactions. `analyze_token` returns a token's metadata, price, 24h change, supply and top holders.
+		`identify_address` classifies an address as a wallet, package, validator or object. `get_wallet_overview` lists coin balances, a SuiNS name and recent transactions. `analyze_token` returns token metadata, price, 24h change, supply and a complete holder ranking only when its scans finish; otherwise it reports sampled holders.
 
 		[Recommended starting points](/reference/tools/starting-points/)
 	</Card>

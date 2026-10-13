@@ -708,7 +708,7 @@ export async function scanTokenTopHolders(
 export function registerHolderTools(server: McpServer) {
   server.tool(
     "get_top_holders",
-    "Scan objects of a given type and return top holders. The scan is slow and paginated. Works for NFT collections (ranked by count) or tokens (ranked by balance, counting both Coin<T> objects and address balances, with the split and the holder's kind per holder). Kiosk-stored NFTs are attributed using the kiosk's self-declared owner field, which is marked as such because it does not follow the KioskOwnerCap. Accepts a Move type, coin type, or collection name. A scan stops after 35s and returns what it saw as a sample marked `time_budget_reached`. Results cached 24h.",
+    "Scan objects of a Move type and report holders. NFT collections are ranked by count; tokens by balance across Coin<T> objects and address balances. A truncated scan returns sampled_holders, unranked and with no supply share; a token ranking is complete only when both walks, coin objects and address balances, reach the end. Kiosk-held NFTs use sale-derived owner snapshots that get_nft_sales records, where available; remaining kiosk owner fields are self-declared and marked. Accepts a Move type, coin type or mainnet collection name. A scan stops at its time budget and reports time_budget_reached. Results not stopped by time are cached for 24 hours.",
     {
       type: coinTypeArg()
         .optional()

@@ -7,20 +7,16 @@ sidebar:
 
 import { Content as ProfileList } from '../reference/tools/_profiles.md';
 
-The server starts with the `core` profile and keeps every other tool one call
-away. MCP sends the whole tool list with every request, so each loaded tool
-costs context before any work starts, and a long list of similar tools makes
-a model more likely to pick the wrong one.
+The server starts with the `core` profile. Other tools can be loaded during
+the session with `enable_tools`. Loaded tool definitions consume client
+context.
 
 ## Switching at runtime
 
-When you ask for something outside the current set, such as "trace where these
-funds went", the model calls `enable_tools` and the tracing tools appear
-immediately, with no restart. You never have to pick a profile.
-`enable_tools` names every tool that is still off, and the server's
-`instructions` name the profiles and the main investigation tools, so a client
-that shows them to the model knows what to ask for. Profile names are
-case-insensitive.
+Call `enable_tools` to load tools outside the current profile without
+restarting the server. Its description lists the tools still off, and the
+server instructions describe the profiles and the main investigation tools.
+Profile names are case-insensitive.
 
 ## Setting profiles at startup
 
@@ -45,8 +41,3 @@ Runtime switching relies on `notifications/tools/list_changed`, sent once per
 `enable_tools` call. Claude Code and Claude Desktop honour it; some clients
 cache the tool list and will only see the change after a restart. `SUI_TOOLS`
 always works, so set it explicitly if your client doesn't refresh.
-
-## Upgrading from 1.1.x
-
-Version 1.1.x loaded every tool at startup. Set `SUI_TOOLS=all` to keep that
-behaviour.

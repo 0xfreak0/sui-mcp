@@ -84,7 +84,7 @@ async function currentCheckpoint(): Promise<number | null> {
 export function registerNftSalesTools(server: McpServer) {
   server.tool(
     "get_nft_sales",
-    "NFT marketplace sales over a recent window, with volume and per-marketplace totals. Reads TradePort, BlueMove and OriginByte sale events. Also records which wallet holds which kiosk, which is what makes get_top_holders able to name a real owner for a kiosk-held NFT.",
+    "Read TradePort, BlueMove and OriginByte NFT sale events over a recent window, with volume and per-marketplace totals. Records sale-derived kiosk ownership for get_top_holders.",
     {
       hours: numArg()
         .min(1)

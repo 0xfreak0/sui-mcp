@@ -55,7 +55,7 @@ Query events by type, sender, emitting module or time/checkpoint range. Event fi
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `event_type` | string | no | Filter by event type (e.g. 0x2::coin::CoinBalanceChange) |
+| `event_type` | string | no | Filter by event type: 0x..., 0x...::module or 0x...::module::Name. |
 | `sender` | string | no | Filter by transaction sender |
 | `module` | string | no | Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
 | `after_checkpoint` | string \| number | no | Events after this checkpoint number (exclusive), or at/after this ISO 8601 time (inclusive). |

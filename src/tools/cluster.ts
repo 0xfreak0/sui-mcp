@@ -49,7 +49,7 @@ export function registerClusterTools(server: McpServer) {
       addresses: addressListArg()
         .min(1)
         .max(25)
-        .describe("1–25 seed addresses suspected of shared control. Links among supplied seeds are exactly verified."),
+        .describe("1–25 seed addresses suspected of shared control. Chain-derived and heuristic links are distinguished in the result."),
       expand: boolArg()
         .optional()
         .describe(
@@ -82,7 +82,7 @@ export function registerClusterTools(server: McpServer) {
         .min(2)
         .max(1000)
         .optional()
-        .describe("Refuse merges beyond this size (default 100). A runaway cluster is worse than no answer."),
+        .describe("Refuse merges beyond this size (default 100)."),
       reciprocal_budget: numArg()
         .int()
         .min(0)

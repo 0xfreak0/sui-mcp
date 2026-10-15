@@ -728,6 +728,37 @@
       "tier": "heuristic",
       "timeout_s": 300,
       "basis": "chain: dust_tx_a (3M3sRbc7) gave claimer_a 1 unverified OCEAN; funding_tx_a (Hc5KdsNT) gave it 0.3 SUI from the funder 3 hours later; find_funding_sources lists the OCEAN transfer under dust_skipped. ocean_hub is never even a funder candidate here, so excluded_intermediaries (which only lists addresses that WERE candidates) is empty and omitted from the response; used_intermediaries is the field guaranteed present, since the real funder is narrow at this raised limit."
+    },
+    {
+      "id": "edges-collector-consolidation",
+      "question": "Does build_wallet_edges link the collector to the claimers that swept WAL into it, as leads that do not merge on their own?",
+      "tool": "build_wallet_edges",
+      "args": {
+        "addresses": [
+          "{collector}"
+        ],
+        "query_budget": 300
+      },
+      "expect": [
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "3doBwS5jmXZhtQynPaF1jy2XrcgM2HFyHC2CfNHoTzLk"
+        },
+        {
+          "path": "edges[*].signals[*].digests[*]",
+          "op": "includes",
+          "value": "2rMtgaX7Vp7uiayMcDYPxyRwNrz9edYymYs772fkTAq4"
+        },
+        {
+          "path": "clusters[*].members[*].address",
+          "op": "excludes",
+          "value": "{claimer_a}"
+        }
+      ],
+      "tier": "heuristic",
+      "timeout_s": 300,
+      "basis": "chain: 24 claimers sent WAL to the collector within 19 minutes on 27 March 2025; claimer_a's sweep is 3doBwS5j and claimer_b's is 2rMtgaX7. A consolidation edge weighs 0.8 (0.6 when only the amounts match), below the 1.0 merge floor, because customers and drainer victims sweep into a collector the same way. claimer_a has no other link to the collector, so it stays out of every cluster; claimer_b also shares a funding_edge with the collector and may merge."
     }
   ]
 }

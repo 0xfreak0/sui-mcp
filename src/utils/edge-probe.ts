@@ -198,8 +198,10 @@ export class Budget {
     return true;
   }
   /**
-   * Record requests already made that could not ask first: the follow-up
-   * reads that complete a transaction's balance changes.
+  * Record requests already made that could not ask first: the supply,
+  * publisher and send-shape reads `assessFunding` makes. Balance-change
+  * continuations ask `take` before each request instead, so they stop at the
+  * ceiling rather than pass it.
    */
   charge(n: number): void {
     this.used += n;
@@ -576,8 +578,8 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
     // a batch payout; complete the lists before picking the funding.
     const completed = await completeTxConnections(
       data.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+   () => budget.take(),
     );
-    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     // Missing rows can hide an earlier inflow or change the apparent payer.
     // This is an unread lookup, not a negative result or a cacheable pick.
     if (completed.some((c) => c.balanceChangesTruncated)) return null;
@@ -704,6 +706,8 @@ export async function probeRecipients(
   let pages = 0;
   let reachedEnd = false;
   let readFailed = false;
+ // A list the budget refused to complete leaves the scan short, not failed.
+ let budgetStopped = false;
   // Worst case one new recipient per transaction, so limit+1 recipients need
   // at most that many transactions; the page cap keeps a contract-call-heavy
   // address (many transactions, no recipients) from burning the whole budget.
@@ -721,11 +725,14 @@ export async function probeRecipients(
     pages++;
     const completed = await completeTxConnections(
       page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+   () => budget.take(),
     );
-    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     // A short recipient list is not a count. The scan goes on, since a
     // popular verdict proven by what was read still stands.
-    if (completed.some((c) => c.balanceChangesTruncated)) readFailed = true;
+  if (completed.some((c) => c.balanceChangesTruncated)) {
+   if (budget.truncated) budgetStopped = true;
+   else readFailed = true;
+  }
     const payments: Array<{ owner: string; digest: string; coin: string; amount: bigint }> = [];
     for (const [i, n] of page.transactions.nodes.entries()) {
       const sender = n.sender?.address;
@@ -776,7 +783,7 @@ export async function probeRecipients(
     popular: false,
     observed: members.size,
     belowFloor: dustOnly(belowFloor, members),
-    complete: reachedEnd,
+  complete: reachedEnd && !budgetStopped,
     ...unmeasured(pages, readFailed),
   repeatedPayouts: Math.max(0, ...[...recipientSends.values()].map((s) => s.size)),
   };
@@ -893,8 +900,7 @@ async function countTxRecipients(digest: string, budget: Budget): Promise<number
     const first = r.transactionEffects?.balanceChanges;
     if (!first) return null;
     // The denominator is every recipient, not the first page of 50.
-    const all = await readAllBalanceChanges(digest, first);
-    budget.charge(all.reads);
+  const all = await readAllBalanceChanges(digest, first, () => budget.take());
     // A partial list would understate the batch and overstate the pair's weight.
     if (all.truncated) return null;
     return countPaidAddresses(all.nodes, r.transactionEffects?.transaction);
@@ -1020,8 +1026,8 @@ async function profileSeed(
     }
     const completed = await completeTxConnections(
       page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+   () => budget.take(),
     );
-    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     for (const [i, n] of page.transactions.nodes.entries()) {
       scanned++;
       const sender = n.sender?.address;
@@ -1118,8 +1124,7 @@ async function balanceBeforeSweep(payment: ConsolidationPayment, checkpoint: num
    return null;
   }
   if (!page) return null;
-  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })));
-  budget.charge(completed.reduce((sum, tx) => sum + tx.reads, 0));
+  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })), () => budget.take());
   if (completed.some((tx) => tx.balanceChangesTruncated)) return null;
   for (const [index, tx] of page.nodes.entries()) {
    if (tx.effects?.checkpoint?.sequenceNumber === checkpoint && tx.digest !== payment.digest) return null;
@@ -1161,8 +1166,7 @@ async function readConsolidation(
    break;
   }
   if (!page) { unread = true; break; }
-  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })));
-  budget.charge(completed.reduce((sum, tx) => sum + tx.reads, 0));
+  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })), () => budget.take());
   if (completed.some((tx) => tx.balanceChangesTruncated)) unread = true;
   for (const [index, tx] of page.nodes.entries()) {
    if (completed[index].balanceChangesTruncated) continue;
@@ -1642,7 +1646,8 @@ export async function buildWalletEdges(
      `${cohort.length} distinct payers sent ${payment.coin} to this non-service collector within 30 minutes; ` +
      (swept ?
       "this payment took at least 90% of the payer's pre-transfer balance." :
-      "at least six payers sent amounts within 5% of this amount, and this payer's balance before it was not shown to be swept, so the edge is a lead below the merge floor."),
+      "at least six payers sent amounts within 5% of this amount, and this payer's balance before it was not shown to be swept.") +
+     " Customers and drainer victims sweep into a collector the same way, so this edge is a lead below the merge floor.",
      [payment.digest],
      collector,
      swept ? SIGNAL_WEIGHTS.consolidation : EQUAL_AMOUNT_CONSOLIDATION_WEIGHT,

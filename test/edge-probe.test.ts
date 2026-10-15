@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient } from "./helpers/mock-grpc.js";
-import { clusterEdges, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT } from "../src/utils/wallet-edges.js";
+import { clusterEdges, EdgeSet, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT, SIGNAL_WEIGHTS } from "../src/utils/wallet-edges.js";
 
 const { mockGqlQuery, mockSaveFirstFunder, mockPrices, cohortFixture } = vi.hoisted(() => ({
   mockGqlQuery: vi.fn(),
@@ -303,6 +303,27 @@ describe("probeRecipients reads whole balance-change lists", () => {
     expect(r.members.size).toBe(60);
     expect(b.used).toBe(2);
   });
+
+ it("stops a follow-up read at the budget's ceiling and calls the scan incomplete, not failed", async () => {
+  const changes = [
+   { owner: { address: "0xF" }, amount: `-${60n * BigInt(ONE_SUI)}`, coinType: { repr: SUI } },
+   ...Array.from({ length: 60 }, (_, i) => ({
+    owner: { address: `0x${(i + 1).toString(16).padStart(64, "0")}` },
+    amount: ONE_SUI,
+    coinType: { repr: SUI },
+   })),
+  ];
+  const conn = pagedTxConnection("batch", changes, "balanceChanges");
+  mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+   conn.respond(q, v) ?? page([{ digest: "batch", effects: { balanceChanges: conn.first } }]),
+  );
+  const b = new Budget(1);
+  const r = await probeRecipients("0xF", 100, b);
+  expect(b.used).toBe(1);
+  expect(b.truncated).toBe(true);
+  expect(r.complete).toBe(false);
+  expect(r.unmeasured).toBeUndefined();
+ });
 });
 
 describe("probeSponsored", () => {
@@ -1701,14 +1722,26 @@ describe("consolidation probe", () => {
   });
  }
 
- it("links a collector to six sweepers with their own transaction digests", async () => {
+ it("links a collector to six sweepers with their own transaction digests, as leads below the merge floor", async () => {
   route("narrow");
   const result = await buildWalletEdges([COLLECTOR], { expand: true });
   const swept = result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
   expect(swept).toHaveLength(6);
   expect(swept.map((edge) => edge.signals.find((s) => s.type === "consolidation")?.digests[0]).sort())
    .toEqual(sweeps.map((tx) => tx.digest).sort());
+  expect(swept.map((edge) => edge.weight)).toEqual(Array(6).fill(SIGNAL_WEIGHTS.consolidation));
+  expect(SIGNAL_WEIGHTS.consolidation).toBeLessThan(1);
+  expect(clusterEdges(swept).clusters).toEqual([]);
   expect(result.examined).toEqual([COLLECTOR, ...payers].sort());
+ });
+
+ it("merges a sweeper with its collector when another signal corroborates it", async () => {
+  route("narrow");
+  const result = await buildWalletEdges([COLLECTOR], { expand: true });
+  const edges = new EdgeSet();
+  for (const edge of result.edges) for (const s of edge.signals) edges.add(s.type, edge.wallet_a, edge.wallet_b, s.detail, s.digests, s.via, s.weight);
+  edges.add("cofunded", COLLECTOR, payers[0], "shared narrow funder", [], "0xfunder");
+  expect(clusterEdges(edges.edges()).clusters.map((c) => c.members)).toEqual([[COLLECTOR, payers[0]].sort()]);
  });
 
  it("accepts a sender's small storage rebate without counting an unrelated payment", async () => {
@@ -1722,7 +1755,7 @@ describe("consolidation probe", () => {
    const result = await buildWalletEdges([COLLECTOR], { expand: true });
    const swept = result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
    expect(swept).toHaveLength(6);
-   expect(swept.map((edge) => edge.weight)).toEqual(Array(6).fill(1));
+   expect(swept.map((edge) => edge.weight)).toEqual(Array(6).fill(SIGNAL_WEIGHTS.consolidation));
   } finally {
    debit.amount = original.amount;
    funded = original.funded;

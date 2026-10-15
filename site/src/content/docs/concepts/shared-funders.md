@@ -87,9 +87,10 @@ an analytics warehouse, from these sources:
   A payment counts when the collector received at least 90% of what the payer
   lost in that coin, so a fee taken from a swap or purchase does not. A payer
   whose payment took at least 90% of its balance just before it is linked at
-  weight 1.0. A payer that is only one of six payments within 5% of one amount
-  is linked at 0.6, a lead that needs another signal to cluster, because a
-  fixed price produces the same amounts. Popular collectors, labelled services
+  weight 0.8, and a payer that is only one of six payments within 5% of one
+  amount at 0.6. Both are leads below the 1.0 merge floor and cluster only
+  with another signal: exchange customers, presale buyers and a drainer's
+  victims sweep into a collector the same way. Popular collectors, labelled services
   and addresses repeatedly paying one recipient are excluded. A failed service
   scan does not establish a narrow collector, and an incomplete payer history
   leaves the balance unknown. Read `excluded_intermediaries` and `truncated`

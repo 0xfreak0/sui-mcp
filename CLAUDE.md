@@ -170,7 +170,11 @@ was missing from history, traces, funding and fan-out alike.
   `incomplete`) or refuse the conclusion, as `countTxRecipients` does by
   returning null rather than an understated recipient count.
 - **Metered callers charge the follow-ups.** `CompletedTx.reads` counts them;
-  `edge-probe.ts` charges them to its `Budget`, `watch-probe.ts` to `requests`.
+  `watch-probe.ts` charges them to `requests`. `edge-probe.ts` passes its
+  `Budget`'s `take` to `completeTxConnections` / `readAllBalanceChanges`,
+  which ask it before each continuation, so a probe cannot pass
+  `query_budget`; a list the budget cut is `truncated` and its scan is
+  incomplete, not failed.
 - `objectChanges` defaults to 1,024 per page; `tx-connections.ts` pages it
   for `trace-read.ts` and `get_transactions`, while `watch-probe.ts` flags
   `object_changes_truncated`. Events of one transaction are paged by
@@ -1911,7 +1915,7 @@ floor too, since dust back is what a poisoner sends.
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
 | `funding_edge` | 1.0 | One address first-funded the other, and is a seed or passed the popularity check |
 | `reciprocal` | 1.0 | Value moved BOTH ways, counterparty passed the popularity check |
-| `consolidation` | 1.0 (0.6 near-equal amount only) | At least six distinct payers send one coin to a measured collector within 30 minutes; 1.0 needs the payer's own full-balance sweep |
+| `consolidation` | 0.8 (0.6 near-equal amount only) | At least six distinct payers send one coin to a measured collector within 30 minutes; 0.8 needs the payer's own full-balance sweep. Below the merge floor: needs corroboration |
 | `sponsor` | 0.7 (1.0 if also first-funded the address it sponsors) | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
 
@@ -1940,7 +1944,7 @@ Four rules that are easy to get wrong:
   (a smaller share is a fee taken from a swap or purchase, and a DEX fee
   address collects one from every seller), the collector did not sponsor the
   payer's gas (`isSponsorGasChange`), and a priced coin clears the dust floor.
-  The edge carries 1.0 only when the payment took at least 90% of the payer's
+  The edge carries 0.8 only when the payment took at least 90% of the payer's
   balance just before it: the sum of the payer's changes in every earlier
   transaction, walked to its first transaction (at most six pages); a stopped
   or failed walk leaves it unknown. Leave the sweep's own change out of that
@@ -1953,20 +1957,23 @@ Four rules that are easy to get wrong:
   sweep may be absent from the payer's last 100 transactions.
   The collector must have a complete outgoing popularity scan; a popular
   collector, a labelled cex, bridge or protocol, or one repeatedly paying the
-  same recipient is excluded, and a missing verdict is never narrow. These
-  checks carry the false-positive defence, not the payment shape. Measured
-  2026-10 on 38 random collector-like mainnet addresses (six or more payers
-  of one coin in 30 minutes, 2023 to 2026) and 9 drainer and poisoning
-  addresses from the case set, ignoring the collector checks: 27 of the 47
-  had a near-equal cohort and 19 had six or more full-balance sweepers in one
-  window, among them exchange wallets, a 24 SUI presale and a drainer
-  collector whose six payers were victims. Through `build_wallet_edges`, the
-  38 random ones gave 14 popular, 7 repeat-payee, 9 incomplete outgoing
-  scans, 1 unmeasured, 6 without a cohort or labelled, and 1 link: 19 payers
-  that swept their whole balance, 14 of them also sharing a narrow first
-  funder. The drainer collectors linked nobody: two were repeat-payee, the
-  rest had no cohort. On the two public case cohorts, 24 WAL payers arrived
-  within 19 minutes and 35 SUI payers within 22 minutes.
+  same recipient is excluded, and a missing verdict is never narrow. Neither
+  these checks nor the payment shape separate an operator's wallets from
+  customers or victims, so a consolidation edge stays below the 1.0 merge
+  floor and clusters only with another signal. Measured 2026-10 on 38 random
+  collector-like mainnet addresses (six or more payers of one coin in 30
+  minutes, 2023 to 2026) and 9 drainer and poisoning addresses from the case
+  set, ignoring the collector checks: 27 of the 47 had a near-equal cohort
+  and 19 had six or more full-balance sweepers in one window, among them
+  exchange wallets, a 24 SUI presale and a drainer collector whose six payers
+  were victims. Through `build_wallet_edges`, the 38 random ones gave 14
+  popular, 7 repeat-payee, 9 incomplete outgoing scans, 1 unmeasured, 6
+  without a cohort or labelled, and 1 cohort: 19 payers that swept their
+  whole balance, 14 of them also sharing a narrow first funder. The drainer
+  collector with a victim cohort was excluded only as repeat-payee; seeded
+  before it cashed out, it would have linked its victims. On the two public case
+  cohorts, 24 WAL payers arrived within 19 minutes and 35 SUI payers within
+  22 minutes.
 - **The return leg is asked of the counterparty, not scanned for.** A seed's
   bounded window usually shows one direction only, because the return can sit
   hundreds of transactions back. `probeRecipients` already returns who a

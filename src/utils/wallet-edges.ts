@@ -81,7 +81,11 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
   // guarded the same way, by refusing the pair when either side is popular
   // enough to be a service.
   reciprocal: 1.0,
- consolidation: 1.0,
+ // Below the merge floor: a full-balance sweep into a collector is also what
+ // an exchange customer, a presale buyer and a drainer's victim do. On 47
+ // collector-like mainnet addresses, 19 had six or more full-balance
+ // sweepers in one 30-minute window, so a consolidation needs corroboration.
+ consolidation: 0.8,
   sponsor: 0.7,
   co_tx: 0.5,
 };

@@ -65,6 +65,12 @@
   identifies symbol lookalikes, not malicious intent; decimals remain the
   candidate's own.
 
+### Fixed
+- **Swap-context routes label their executed pool hops.** `get_transaction`
+  follows the coin through consecutive calls sharing a router context and
+  labels each swap in command order. Creating the context does not count as a
+  swap; its declared input and output describe the whole route.
+
 ## 1.27.0 (2026-10-06)
 
 Wallet profiles report packages they published or upgraded, and batched

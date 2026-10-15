@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { addressFlow, decodeTransaction } from "../src/protocols/decoder.js";
-import type { GrpcTypes } from "@mysten/sui/grpc";
+import { GrpcTypes } from "@mysten/sui/grpc";
 
 function makeCommand(
   pkg: string,
@@ -551,6 +551,50 @@ describe("router integrations that pass a bookkeeping type", () => {
     expect(
       hops([makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [SUI, TOK]), ...twoTurbos, makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [SUI, TOK])]),
     ).toEqual(["Swap SUI → SUDENG", "Swap SUDENG → TOK"]);
+  });
+
+  it("labels every pool hop in a swap-context route before a second router path", () => {
+    // EpAytfUk…: Aftermath FUD → SUI → MSEND → USDC, then Bluefin
+    // USDC → stSUI → SUI → FUD. The first pool's SwapEventV2 has
+    // types_in=[FUD], types_out=[SUI]; the next two FlowX Swapped events
+    // and three Bluefin AssetSwap events give the remaining directions.
+    const FUD = "0x76cb819b01abed502bee8a702b4c2d547532c12f25001c9dea795a5e631c26f1::fud::FUD";
+    const MSEND = "0x7607d60723bc41caac04d02e38001ed18d4ba65acce6d8abd9aa3eb25d9a0f6b::msend_series_3::MSEND_SERIES_3";
+    const STSUI = "0xd1b72982e40348d069bb1ff701e634c117bb5f741f44dff91e472d3b01461e55::stsui::STSUI";
+    const LP = "0xe29b9e9569b11a177b45622947a84ccb6e3074099450f46f61e69352eb89ba6a::af_lp::AF_LP";
+    const contextCall = (pkg: string, mod: string, types: string[]) => {
+      const cmd = makeCommand(pkg, mod, "swap", types);
+      if (cmd.command.oneofKind === "moveCall")
+        cmd.command.moveCall.arguments = [{ kind: GrpcTypes.Argument_ArgumentKind.RESULT, result: 1 } as GrpcTypes.Argument];
+      return cmd;
+    };
+    const confirm = makeCommand("0xde5d696a79714ca5cb910b9aed99d41f67353abb00715ceaeb0663d57ee39640", "router", "confirm_swap", [USDC]);
+    if (confirm.command.oneofKind === "moveCall")
+      confirm.command.moveCall.arguments = [{ kind: GrpcTypes.Argument_ArgumentKind.RESULT, result: 1 } as GrpcTypes.Argument];
+    const commands = [
+      makeCommand("0xde5c09ad171544aa3724dc67216668c80e754860f419136a68d78504eb2e2805", "flash_loan", "borrow_flash_loan", [FUD]),
+      makeCommand("0xde5d696a79714ca5cb910b9aed99d41f67353abb00715ceaeb0663d57ee39640", "router", "new_swap_context", [FUD, USDC]),
+      contextCall("0xb20fbe0c6ccefa73c2e5573cd6fa95436abd03289464a03aa88620a950f19ba1", "aftermath", [SUI, FUD, LP]),
+      contextCall("0x66d7bfb7ca9002c4e0a2a8bfb763ca224011be912f24025a52a4e19be0cb0ac0", "flowx_amm", [SUI, MSEND]),
+      contextCall("0x66d7bfb7ca9002c4e0a2a8bfb763ca224011be912f24025a52a4e19be0cb0ac0", "flowx_amm", [MSEND, USDC]),
+      confirm,
+      makeCommand(ROUTER, "router", "begin_router_tx_r1_w1_varied_in", [USDC, FUD]),
+      makeCommand(ROUTER, "router", "initiate_path_by_percent_w1", [RD, USDC]),
+      makeCommand("0x8cd0b2cbaf9d39f457f2d6a6fca0c96500a4d5654b99e1ba86d74a518c68017a", "router", "swap_b_to_a_w1", [RD, USDC, STSUI, USDC]),
+      makeCommand("0x8cd0b2cbaf9d39f457f2d6a6fca0c96500a4d5654b99e1ba86d74a518c68017a", "router", "swap_a_to_b_w1", [RD, USDC, STSUI, SUI]),
+      makeCommand("0x8cd0b2cbaf9d39f457f2d6a6fca0c96500a4d5654b99e1ba86d74a518c68017a", "router", "swap_b_to_a_w1", [RD, USDC, FUD, SUI]),
+      makeCommand(ROUTER, "router", "end_router_tx_r1_w1", [USDC, FUD]),
+    ];
+    const decoded = decodeTransaction(commands, [makeBalanceChange(SENDER, FUD, "1316963333"), makeBalanceChange(SENDER, SUI, "-5096792")], SENDER);
+    expect(decoded.actions.filter((a) => a.startsWith("Swap")).map((a) => a.replace(/ on .*$/, ""))).toEqual([
+      "Swap FUD → SUI",
+      "Swap SUI → MSEND_SERIES_3",
+      "Swap MSEND_SERIES_3 → USDC",
+      "Swap USDC → stSUI",
+      "Swap stSUI → SUI",
+      "Swap SUI → FUD",
+    ]);
+    expect(decoded.route_hops.map((h) => h.command)).toEqual([8, 9, 10]);
   });
 
   it("leaves ordinary swaps of a coin nothing vouches for to the positional rules", () => {

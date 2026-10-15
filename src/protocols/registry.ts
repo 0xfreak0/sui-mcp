@@ -121,7 +121,8 @@ const OPERATION_PATTERNS: OperationPattern[] = [
   { module: "pool", fnPrefix: "flash_swap", operation: { action: "flash_swap" } },
   { module: "router", fnPrefix: "swap", operation: { action: "swap" } },
   { module: "cetus", fnPrefix: "swap", operation: { action: "swap" } },
-  { module: "router", fnPrefix: "new_swap_context", operation: { action: "swap" } },
+  // This builds the route context; the actual swaps are the calls that use it.
+  { module: "router", fnPrefix: "new_swap_context", operation: { action: "swap", skip: true } },
   { module: "router", fnPrefix: "confirm_swap", operation: { action: "swap", skip: true } },
 
   // DEX: liquidity

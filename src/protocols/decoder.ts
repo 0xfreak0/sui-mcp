@@ -2,7 +2,7 @@ import { GrpcTypes } from "@mysten/sui/grpc";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { coinScale, displayCoin, type CoinScale } from "../utils/valuation.js";
-import { lookupProtocolDisplay, lookupOperation } from "./registry.js";
+import { lookupProtocolDisplay, lookupOperation, type OperationInfo } from "./registry.js";
 import { isVerifiedCoin } from "../utils/coin-registry.js";
 
 export interface DecodedTransaction {
@@ -247,6 +247,7 @@ function senderNetByCoin(
 
 /** Action kinds whose own balance changes can overlap a swap's coins, so a whole-PTB net can no longer be trusted to isolate one swap's flow. */
 const NET_POLLUTING_ACTIONS = new Set(["deposit", "withdraw", "borrow", "repay", "add_liquidity", "remove_liquidity"]);
+const CONTEXT_SWAP: OperationInfo = { action: "swap" };
 
 /**
  * The direction a swap function name states outright, when it does:
@@ -374,6 +375,53 @@ function routeHop(
 }
 
 /**
+ * Some routers pass the same context result to each pool call, then confirm
+ * the output coin. The context's type arguments describe the whole route, not
+ * one swap. Pair the actual calls by their shared result and adjacent coin
+ * types; a third type (such as an LP type) is not the output unless the next
+ * call takes it. Only commit labels when the complete path reaches the
+ * context's declared output.
+ */
+function swapContextHops(commands: GrpcTypes.Command[]): Map<number, [string, string]> {
+  const hops = new Map<number, [string, string]>();
+  for (const [start, command] of commands.entries()) {
+    const context = command.command;
+    if (context.oneofKind !== "moveCall" || context.moveCall.module !== "router" || context.moveCall.function !== "new_swap_context") continue;
+    const route = context.moveCall.typeArguments;
+    if (route?.length !== 2) continue;
+    const calls: { index: number; types: string[] }[] = [];
+    let confirmed = false;
+    for (let index = start + 1; index < commands.length; index++) {
+      const c = commands[index].command;
+      if (c.oneofKind !== "moveCall" || !c.moveCall.arguments?.some((a) => a.kind === GrpcTypes.Argument_ArgumentKind.RESULT && a.result === start)) continue;
+      if (c.moveCall.module === "router" && c.moveCall.function === "confirm_swap") {
+        confirmed = c.moveCall.typeArguments?.[0] === route[1];
+        break;
+      }
+      const fn = c.moveCall.function ?? "";
+      if (fn.startsWith("swap") && !lookupOperation(c.moveCall.module ?? "", fn)?.skip)
+        calls.push({ index, types: c.moveCall.typeArguments ?? [] });
+    }
+    if (!confirmed || !calls.length) continue;
+    const path: [number, [string, string]][] = [];
+    let coin = route[0];
+    for (const [index, call] of calls.entries()) {
+      if (!call.types.includes(coin)) break;
+      const outputs = [...new Set(call.types.filter((t) => t !== coin))];
+      const next = calls[index + 1];
+      const matching = outputs.filter((t) => next ? next.types.includes(t) : t === route[1]);
+      const output = matching.length === 1 ? matching[0] : outputs.length === 1 ? outputs[0] : null;
+      if (!output) break;
+      path.push([call.index, [coin, output]]);
+      coin = output;
+    }
+    if (path.length === calls.length && coin === route[1])
+      for (const [index, pair] of path) hops.set(index, pair);
+  }
+  return hops;
+}
+
+/**
  * `custodyFor` holds the normalized IDs of packages whose publisher this call
  * read (`prefetchProtocolCustody`). Only those may be named through the
  * publisher tier, so a package this call did not read is never named from a
@@ -397,9 +445,11 @@ export function decodeTransaction(
   // Whole type tokens are compared, so a coin nested in a leg's generic
   // (`Pool<USDC>`) still counts.
   const pollutingLegs: Set<string>[] = [];
+  let hasSwapContext = false;
   for (const cmd of commands) {
     const c = cmd.command;
     if (c.oneofKind !== "moveCall") continue;
+    if (c.moveCall.module === "router" && c.moveCall.function === "new_swap_context") hasSwapContext = true;
     const op = lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "");
     if (op && NET_POLLUTING_ACTIONS.has(op.action)) {
       pollutingLegs.push(new Set((c.moveCall.typeArguments ?? []).flatMap((t) => t.split(/[<>,\s]+/).filter(Boolean))));
@@ -418,6 +468,7 @@ export function decodeTransaction(
   }
   const hasCoinEvidence = (t: string) => coinTypes.has(t) || isVerifiedCoin(t);
   const markers = routeMarkers(commands, hasCoinEvidence);
+  const contextHops = hasSwapContext ? swapContextHops(commands) : null;
   // For each routed call, the own types of the next routed call in its path;
   // a path's last call has none. And per package, its last call passing
   // exactly two types with no marker: a router's closing call names the coin
@@ -472,7 +523,8 @@ export function decodeTransaction(
         // truncated 0x address, and nothing downstream of the decoder makes a
         // trust decision on it.
         const proto = lookupProtocolDisplay(pkg, { custody: opts.custodyFor?.has(normalizeSuiAddress(pkg)) ?? false });
-        const op = lookupOperation(mod, fn);
+        const contextHop = contextHops?.get(index);
+        const op = lookupOperation(mod, fn) ?? (contextHop ? CONTEXT_SWAP : null);
 
         if (proto) {
           protocols.add(proto.name);
@@ -513,8 +565,10 @@ export function decodeTransaction(
         }
 
         if (op) {
-          let args = typeArgs;
-          if (op.action === "swap" && routed) {
+          let args: string[] = typeArgs;
+          if (contextHop) {
+            args = contextHop;
+          } else if (op.action === "swap" && routed) {
             const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut, poolParams });
             args = hop ?? typeArgs.slice(1);
             if (hop) {

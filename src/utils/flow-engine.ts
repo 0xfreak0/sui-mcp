@@ -30,6 +30,7 @@ import type { SuiEventNode } from "./bridge/wormhole.js";
 import { fetchEventJson } from "./event-json.js";
 import { readAttackTransactions } from "./attack-read.js";
 import { measureFanout, type FanoutResult } from "./fanout.js";
+import { readMovedObjects, valueMovedObjects, valueTransactionObjects, type MovedObjectValue } from "./moved-value.js";
 import { getLabel, inferredLabelNote, isSink } from "./labels.js";
 import { assignSignerRoles } from "./multisig.js";
 import { prefetchCoinScale, priceUsdAtTime, pricingScale, usdValue, type PricePoint } from "./valuation.js";
@@ -45,6 +46,7 @@ import {
   noInflowReason,
   noSpendReason,
   scanForwardSpends,
+ scanObjectTouches,
   scanPriorInflows,
   stopsAsHub,
   type FetchedTx,
@@ -54,6 +56,8 @@ import {
   allocateFifo,
   coinsMoved,
   movedOnChain,
+ objectNodeId,
+ objectOriginWeights,
   nodeId,
   shortestPath,
   ratio,
@@ -119,6 +123,11 @@ export interface GraphNode {
   kind: NodeKind;
   address: string | null;
   coin_type: string | null;
+ /** Set on an object lineage instead of a coin lineage. */
+ object_id?: string;
+ object_type?: string;
+ object_tier?: MovedObjectValue["tier"];
+ object_estimate?: boolean;
   depth: number;
   /** Fraction of the traced value that reached this node. */
   share: number;
@@ -152,6 +161,11 @@ export interface GraphEdge {
   id: string;
   from: string;
   to: string;
+ /** One transferred object, rather than an amount of a coin. */
+ object_id?: string;
+ object_type?: string;
+ object_tier?: MovedObjectValue["tier"];
+ object_estimate?: boolean;
   coin_type: string;
   /** What moved on chain, summed over `digests`. */
   amount: bigint;
@@ -168,6 +182,7 @@ export interface GraphEdge {
 interface Job {
   node: string;
   share: number;
+ object_id?: string;
   /** Traced amount to account for; null means every move counts (an address start). */
   need: bigint | null;
   arrival: { digest?: string; checkpoint?: number };
@@ -222,6 +237,8 @@ export class FlowEngine {
   private frontier = new Map<string, Job>();
   private readonly txCache = new Map<string, Promise<FetchedTx | null>>();
   private readonly decoded = new Map<string, string[]>();
+ private readonly objects = new Map<string, Promise<{ rows: MovedObjectValue[]; unread: Array<{ what: string; reason: string }> }>>();
+ readonly unvaluedObjects: Array<{ digest: string; object_id: string; type: string | null; reason: string }> = [];
   /** Every address any branch has named, bucketed for the lookalike check. */
   private readonly seenAddresses = new LookalikeIndex();
   private readonly allocated = new Map<string, Map<string, RemainingEntry>>();
@@ -262,28 +279,59 @@ export class FlowEngine {
     const split = forward
       ? splitOrigin({ changes: tx.balanceChanges, trackedCoin: this.opts.coin, gas, valueUsd })
       : splitOriginBackward({ changes: tx.balanceChanges, trackedCoin: this.opts.coin, gas, valueUsd });
+  const objectRead = this.opts.coin === null ? await this.objectValues(digest, tx) : { rows: [], unread: [] };
+  if (objectRead.unread.some((u) => u.what === digest)) {
+   this.truncated = true;
+   this.partial.push(`The object changes in ${digest} could not be read.`);
+  }
+  const objects = objectRead.rows.filter((r) =>
+   !r.changed_in_place && !r.custody && r.from !== r.to && r.usd !== null && r.usd > 0 &&
+   (forward ? r.from !== null && r.to !== null : r.from !== null),
+  );
+  const weights = objectOriginWeights(
+   split.branches.map((b) => ({ amount: b.amount, coin_type: b.coin_type })),
+   objects,
+   valueUsd,
+  );
 
-    for (const b of split.branches) {
+  for (let i = 0; i < split.branches.length; i++) {
+   const b = split.branches[i];
       const job: Job = {
         node: nodeId(b.address, b.coin_type),
-        share: b.weight,
+    share: weights.coins[i],
         need: b.amount,
         arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
         depth: 0,
         from: tx.sender,
         via: origin.id,
       };
+   if (job.share <= 0) continue;
       const usd = valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type });
       this.connect(job, b.address, b.coin_type, forward ? origin.id : job.node, forward ? job.node : origin.id, {
-        amount: b.amount,
-        traced: b.amount,
-        usd,
-        basis: b.basis,
-        digest,
-        tx,
+    amount: b.amount, traced: b.amount, usd, basis: b.basis, digest, tx,
       });
     }
-    if (split.branches.length === 0) {
+  for (let i = 0; i < objects.length; i++) {
+   const row = objects[i];
+   const holder = forward ? row.to! : row.from!;
+   this.connectObject({
+    node: objectNodeId(holder, row.object_id),
+    object_id: row.object_id,
+    share: weights.objects[i],
+    need: 1n,
+    arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
+    depth: 0,
+    from: tx.sender,
+    via: origin.id,
+   }, holder, forward ? origin.id : objectNodeId(holder, row.object_id),
+    forward ? objectNodeId(holder, row.object_id) : origin.id, row, digest, tx);
+  }
+  if (split.branches.length === 0 && objects.length === 0 && this.unvaluedObjects.some((u) => u.digest === digest)) {
+   this.truncated = true;
+   this.partial.push(`No priced coin or object transfer could be followed from ${digest}; see unvalued_objects for the movements not valued.`);
+   return;
+  }
+  if (split.branches.length === 0 && objects.length === 0) {
       // Credited nobody (forward) or paid by nobody (backward): the start is
       // itself a bridge exit, a deposit or burn, a mint or a withdrawal.
       // Decoding prefetches the packages' protocol names, which the
@@ -345,7 +393,8 @@ export class FlowEngine {
     this.frontier.delete(job.node);
     this.depthReached = Math.max(this.depthReached, job.depth);
     try {
-      if (this.opts.direction === "forward") await this.expandForward(job);
+   if (job.object_id) await this.expandObject(job);
+   else if (this.opts.direction === "forward") await this.expandForward(job);
       else await this.expandBackward(job);
     } catch (err) {
       this.ledger.add("read_failed", {
@@ -426,7 +475,7 @@ export class FlowEngine {
     // new party; neither is the address the caller started from. Forward, an
     // address paid by few senders passes on what they sent and is expanded;
     // see stopsAsHub.
-    if (job.from !== null && job.from !== address) {
+  if (!job.object_id && job.from !== null && job.from !== address) {
       let fanout = this.hubChecked.get(address);
       if (fanout === undefined) {
         fanout = await measureFanout(address, HUB_SCAN_TRANSACTIONS).catch((err: unknown) =>
@@ -464,9 +513,178 @@ export class FlowEngine {
     return true;
   }
 
+ /** Follow an object by identity through its subsequent transactions. */
+ private async expandObject(job: Job): Promise<void> {
+  const n = this.nodes.get(job.node)!;
+  if (await this.stopJob(job, n)) return;
+  const holder = n.address!;
+  const objectId = job.object_id!;
+  const forward = this.opts.direction === "forward";
+  const scan = await scanObjectTouches(objectId, job.arrival.checkpoint, job.arrival.digest, this.opts.direction, this.opts.window);
+  this.markExpanded(n);
+  for (const digest of scan.digests) {
+   if (this.txReads >= this.opts.maxTxReads) break;
+   const tx = await this.read(digest);
+   if (!tx) {
+    this.truncated = true;
+    this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `Could not read object transaction ${digest}.` });
+    return;
+   }
+   const values = await this.objectValues(digest, tx);
+   const row = values.rows.find((r) => r.object_id === objectId && !r.changed_in_place);
+   if (!row) {
+    const moved = tx.objectMovements?.some((m) => m.object_id === objectId &&
+     (m.from?.address !== m.to?.address || m.kind === "deleted" || m.kind === "wrapped"));
+    if (moved || values.unread.some((u) => u.what === objectId || u.what === digest) || tx.objectChangesTruncated) {
+     this.truncated = true;
+     this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `The custody or value of ${objectId} in ${digest} could not be read completely.` });
+     return;
+    }
+    continue;
+   }
+   const nextHolder = forward ? row.to : row.from;
+   if ((forward ? row.from : row.to) !== holder) continue;
+   if (row.custody) {
+    this.truncated = true;
+    this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `${objectId} changed custody through an object container in ${digest}; the controlling address is not established.` });
+    return;
+   }
+   if (row.usd === null) {
+    this.truncated = true;
+    this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `The value of ${objectId} at ${digest} is unavailable; see unvalued_objects.` });
+    return;
+   }
+   if (nextHolder && nextHolder !== holder) {
+    const target = objectNodeId(nextHolder, objectId);
+    this.connectObject({
+     node: target, object_id: objectId, share: job.share,
+     need: 1n, arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
+     depth: job.depth + 1, from: holder, via: n.id,
+    }, nextHolder, forward ? n.id : target, forward ? target : n.id,
+     row, digest, tx);
+    return;
+   }
+   await this.convertObject(job, n, row, digest, tx);
+   return;
+  }
+  const stopped = !scan.exhausted || this.txReads >= this.opts.maxTxReads;
+  if (stopped) this.truncated = true;
+  if (!stopped && forward) n.unspent = (n.unspent ?? 0n) + 1n;
+  this.ledger.add(stopped ? "budget" : forward ? "unspent" : "source", {
+   node: n.id, share: job.share, usd: n.usd,
+   detail: stopped ? `The search for ${objectId} stopped before reaching the end of its history.`
+    : forward ? `No later transaction in the window moved ${objectId}.` : `No earlier transfer of ${objectId} was found in the window.`,
+  });
+ }
+
+ /** Assign a redeemed object's share to its priced coin proceeds. */
+ private async convertObject(job: Job, n: GraphNode, row: MovedObjectValue, digest: string, tx: FetchedTx): Promise<void> {
+  const forward = this.opts.direction === "forward";
+  const valueUsd = await this.valuer(tx);
+  const split = forward
+   ? splitOrigin({ changes: tx.balanceChanges, trackedCoin: null, gas: gasOf(tx), valueUsd })
+   : splitOriginBackward({ changes: tx.balanceChanges, trackedCoin: null, gas: gasOf(tx), valueUsd });
+  const unpriced = split.branches.some((b) => valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type }) === null);
+  const priced = split.branches.filter((b) => {
+   const usd = valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type });
+   return usd !== null && usd > 0;
+  });
+  const otherObjects = (await this.objectValues(digest, tx)).rows.filter((r) =>
+   !r.changed_in_place && !r.custody && r.usd !== null && r.usd > 0 &&
+   (forward ? r.from !== null && r.to === null : r.to !== null && r.from === null),
+  );
+  const objectTotal = otherObjects.reduce((sum, r) => sum + r.usd!, 0);
+  const fraction = objectTotal > 0 && row.usd !== null ? Math.min(1, row.usd / objectTotal) : 1;
+  const usdTotal = priced.reduce((sum, b) => sum + (valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type }) ?? 0), 0);
+  const covered = n.usd && n.usd > 0 ? Math.min(1, usdTotal * fraction / n.usd) : 0;
+  for (const b of priced) {
+   const usd = valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type })!;
+   const traced = scaleAmount(b.amount, Math.min(fraction, (row.usd ?? n.usd ?? 0) / usdTotal));
+   const share = job.share * covered * usd / usdTotal;
+   const target = nodeId(b.address, b.coin_type);
+   this.connect({
+    node: target, share, need: traced, arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
+    depth: job.depth + 1, from: n.address, via: n.id,
+   }, b.address, b.coin_type, forward ? n.id : target, forward ? target : n.id,
+    { amount: b.amount, traced, usd, basis: "conversion", digest, tx });
+  }
+  if (covered < 1) {
+   if (unpriced) this.truncated = true;
+   this.ledger.add(unpriced ? "read_failed" : forward ? "consumed" : "source", {
+    node: n.id, share: job.share * (1 - covered), usd: n.usd === null ? null : n.usd * (1 - covered),
+    detail: unpriced
+     ? `${row.object_id} changed form in ${digest}; some coin proceeds lack a price, so their share cannot be allocated.`
+     : `${row.object_id} changed form in ${digest}; priced coin movements do not cover its whole value at this checkpoint.`,
+   });
+  }
+ }
+
   /* ------------------------------------------------------------------ *
    * Forward
    * ------------------------------------------------------------------ */
+
+ /** Read bounded object transfers for an address start, including transactions with no coin change. */
+ private async addressObjects(address: string): Promise<Array<MovedObjectValue & { digest: string }>> {
+  const scan = await scanObjectTouches(address, undefined, undefined, this.opts.direction, this.opts.window, MOVES_PER_START_ADDRESS, "affectedAddress");
+  const read = await readMovedObjects(scan.digests);
+  const relevant = read.txs.filter((tx) => tx.moved.some((m) =>
+   this.opts.direction === "forward" ? (m.from === address || m.from === null) && m.to !== null && m.to !== address
+    : m.to === address && m.from !== address,
+  ));
+  const values = await valueTransactionObjects(relevant, { maxTxs: MOVES_PER_START_ADDRESS, maxObjects: MOVES_PER_START_ADDRESS });
+  const valuedIds = new Set(values.rows.map((r) => `${r.digest}:${r.object_id}`));
+  const unreadIds = new Set(values.unread.map((r) => `${r.digest}:${r.what}`));
+  for (const tx of read.txs) for (const m of tx.movements ?? []) {
+   if (!m.type || m.category === "coin" || (!m.from?.address && !m.to?.address) || m.from?.address === m.to?.address) continue;
+   if (m.from?.address !== address && m.to?.address !== address) continue;
+   if (!valuedIds.has(`${tx.digest}:${m.object_id}`) && !unreadIds.has(`${tx.digest}:${m.object_id}`)) {
+    this.unvaluedObjects.push({ digest: tx.digest, object_id: m.object_id, type: m.type, reason: "No position reader returned a value for this object." });
+   }
+  }
+  for (const u of values.unread) this.unvaluedObjects.push({ digest: u.digest, object_id: u.what, type: null, reason: u.reason });
+  for (const r of values.rows) if (r.usd === null) this.unvaluedObjects.push({
+   digest: r.digest, object_id: r.object_id, type: r.type, reason: r.unpriced_reason ?? "The object's asset legs have no price.",
+  });
+  for (const digest of [...read.unread, ...values.skipped]) {
+   this.truncated = true;
+   this.partial.push(`The object changes of ${digest} could not be read in the address history.`);
+  }
+  if (!scan.exhausted) {
+   this.truncated = true;
+   this.partial.push(`The object history of ${address} stopped after ${scan.digests.length} transactions; later object transfers may be missing.`);
+  }
+  return values.rows.filter((r) => !r.custody && !r.changed_in_place && r.usd !== null && r.usd > 0 &&
+   (this.opts.direction === "forward" ? r.from === address && r.to !== null && r.to !== address
+    : r.to === address && r.from !== null && r.from !== address));
+ }
+
+ /** Distribute the address-root share between its independent coin and object movements. */
+ private async connectAddressObjects(
+  job: Job, n: GraphNode, rows: Array<MovedObjectValue & { digest: string }>,
+  coins: Array<{ amount: bigint; coin_type: string; usd: number | null }>, keep?: number[],
+ ): Promise<number> {
+  if (rows.length === 0) return 1;
+  const weights = objectOriginWeights(coins.map((c, i) => ({ ...c, usd: c.usd === null ? null : c.usd * (keep?.[i] ?? 1) })), rows, () => null);
+  for (let i = 0; i < rows.length; i++) {
+   const row = rows[i];
+   if (weights.objects[i] <= 0) continue;
+   const tx = await this.read(row.digest);
+   if (!tx) {
+    this.truncated = true;
+    this.ledger.add("read_failed", { node: n.id, share: job.share * weights.objects[i], usd: row.usd, detail: `Could not read object transaction ${row.digest}.` });
+    continue;
+   }
+   const holder = this.opts.direction === "forward" ? row.to! : row.from!;
+   const target = objectNodeId(holder, row.object_id);
+   this.connectObject({
+    node: target, object_id: row.object_id, share: job.share * weights.objects[i],
+    need: 1n, arrival: { digest: row.digest, checkpoint: tx.checkpoint ?? undefined },
+    depth: job.depth + 1, from: n.address, via: n.id,
+   }, holder, this.opts.direction === "forward" ? n.id : target,
+    this.opts.direction === "forward" ? target : n.id, row, row.digest, tx);
+  }
+  return weights.coins.reduce((sum, share) => sum + share, 0);
+ }
 
   private async expandForward(job: Job): Promise<void> {
     const n = this.nodes.get(job.node)!;
@@ -493,7 +711,21 @@ export class FlowEngine {
     this.markExpanded(n);
     if (job.from === null && coin === null) this.startReadAll = scan.exhausted;
     if (job.from === null) this.startCapped = !scan.exhausted;
+  const addressRoot = job.need === null && coin === null && job.from === null;
+  let objectRows: Array<MovedObjectValue & { digest: string }> = [];
+  if (addressRoot) {
+   try {
+    objectRows = await this.addressObjects(address);
+   } catch (err) {
+    this.truncated = true;
+    this.partial.push(`The object history of ${address} could not be read: ${err instanceof Error ? err.message : String(err)}.`);
+   }
+  }
 
+  if (scan.spends.length === 0 && objectRows.length > 0) {
+   await this.connectAddressObjects(job, n, objectRows, []);
+   return;
+  }
     if (scan.spends.length === 0) {
       // A candidate this same (address, coin) node already drained to zero
       // is a non-hit (see allSpends): the funds this arrival brought were
@@ -549,6 +781,7 @@ export class FlowEngine {
     const moves = movesOf(legs);
     const alloc = allocateFifo(moves, job.need);
     const plan = pools ? rootPlan(legs, pools, alloc.fractions) : null;
+  const coinScale = addressRoot ? await this.connectAddressObjects(job, n, objectRows, moves, plan?.keep) : 1;
 
     for (let l = 0; l < legs.length; l++) {
       const { spend, split } = legs[l];
@@ -562,7 +795,7 @@ export class FlowEngine {
         avail: moves[l].amount - alloc.allocated[l],
         byRoot: coin === null,
       });
-      const share = job.share * (plan ? plan.fractions[l] : alloc.fractions[l]);
+   const share = job.share * coinScale * (plan ? plan.fractions[l] : alloc.fractions[l]);
       const tx = txs[spend];
       // Checked before the share: an unreadable leg leaves the graph partial whatever it weighed.
       if (!tx || !legs[l].read) {
@@ -621,7 +854,7 @@ export class FlowEngine {
       if (left !== null && code === "unspent") n.unspent = (n.unspent ?? 0n) + left;
       this.ledger.add(code, {
         node: n.id,
-        share: job.share * alloc.remaining,
+    share: job.share * coinScale * alloc.remaining,
         usd: this.usdAt(left, n),
         detail:
           code === "unspent"
@@ -841,7 +1074,21 @@ export class FlowEngine {
     this.markExpanded(n);
     if (job.from === null && coin === null) this.startReadAll = scan.exhausted;
     if (job.from === null) this.startCapped = !scan.exhausted;
+  const addressRoot = job.need === null && coin === null && job.from === null;
+  let objectRows: Array<MovedObjectValue & { digest: string }> = [];
+  if (addressRoot) {
+   try {
+    objectRows = await this.addressObjects(address);
+   } catch (err) {
+    this.truncated = true;
+    this.partial.push(`The object history of ${address} could not be read: ${err instanceof Error ? err.message : String(err)}.`);
+   }
+  }
 
+  if (scan.found.length === 0 && objectRows.length > 0) {
+   await this.connectAddressObjects(job, n, objectRows, []);
+   return;
+  }
     if (scan.found.length === 0) {
       // See the forward comment: a same-node drain is not a cycle, and a
       // page-limited scan is reported as budget-limited first regardless.
@@ -890,6 +1137,7 @@ export class FlowEngine {
     const moves = movesOf(legs);
     const alloc = allocateFifo(moves, job.need);
     const plan = pools ? rootPlan(legs, pools, alloc.fractions) : null;
+  const coinScale = addressRoot ? await this.connectAddressObjects(job, n, objectRows, moves, plan?.keep) : 1;
 
     for (let l = 0; l < legs.length; l++) {
       const { spend, split } = legs[l];
@@ -900,7 +1148,7 @@ export class FlowEngine {
         avail: moves[l].amount - alloc.allocated[l],
         byRoot: coin === null,
       });
-      const share = job.share * (plan ? plan.fractions[l] : alloc.fractions[l]);
+   const share = job.share * coinScale * (plan ? plan.fractions[l] : alloc.fractions[l]);
       const tx = txs[spend];
       // See the forward comment: checked before the share.
       if (!tx || !legs[l].read) {
@@ -952,7 +1200,7 @@ export class FlowEngine {
       if (code === "budget") this.truncated = true;
       this.ledger.add(code, {
         node: n.id,
-        share: job.share * alloc.remaining,
+    share: job.share * coinScale * alloc.remaining,
         usd: this.usdAt(job.need === null ? null : scaleAmount(job.need, alloc.remaining), n),
         detail:
           code === "source"
@@ -1009,13 +1257,25 @@ export class FlowEngine {
    * where it passed through. With `hold`, the node ends there with that stop
    * instead of being queued.
    */
+ /** An object is one indivisible unit; each id has its own edge and node. */
+ private connectObject(job: Job, holder: string, from: string, to: string, row: MovedObjectValue, digest: string, tx: FetchedTx): void {
+  if (job.share <= 0 || row.usd === null || row.usd <= 0) return;
+  this.connect(job, holder, "", from, to, {
+   amount: 1n, traced: 1n, usd: row.usd, basis: "object", digest, tx,
+   object_id: row.object_id, object_type: row.type, object_tier: row.tier, object_estimate: row.estimate,
+  });
+ }
+
   private connect(
     job: Job,
     address: string,
     coin: string,
     from: string,
     to: string,
-    e: { amount: bigint; traced: bigint; usd: number | null; basis: FlowBasis; digest: string; tx: FetchedTx },
+  e: {
+   amount: bigint; traced: bigint; usd: number | null; basis: FlowBasis; digest: string; tx: FetchedTx;
+   object_id?: string; object_type?: string; object_tier?: MovedObjectValue["tier"]; object_estimate?: boolean
+  },
     hold?: { code: StopCode; detail: string },
   ): void {
     const tracedUsd = e.usd === null || e.amount === 0n ? null : e.usd * (Number((e.traced * 1_000_000n) / e.amount) / 1e6);
@@ -1034,6 +1294,12 @@ export class FlowEngine {
       return;
     }
     const n = this.node(job.node, "address", address, coin, job.depth);
+  if (e.object_id) {
+   n.object_id = e.object_id;
+   n.object_type = e.object_type;
+   n.object_tier = e.object_tier;
+   n.object_estimate = e.object_estimate;
+  }
     n.share += job.share;
     n.traced += e.traced;
     if (tracedUsd !== null) n.usd = (n.usd ?? 0) + tracedUsd;
@@ -1073,9 +1339,12 @@ export class FlowEngine {
   private edge(
     from: string,
     to: string,
-    e: { amount: bigint; traced: bigint; usd: number | null; basis: FlowBasis; digest: string; tx: FetchedTx; coin: string; share: number },
+  e: {
+   amount: bigint; traced: bigint; usd: number | null; basis: FlowBasis; digest: string; tx: FetchedTx; coin: string; share: number;
+   object_id?: string; object_type?: string; object_tier?: MovedObjectValue["tier"]; object_estimate?: boolean
+  },
   ): void {
-    const id = `${from}>${to}>${coinKey(e.coin || "none")}`;
+  const id = `${from}>${to}>${e.object_id ? `object:${e.object_id}:${e.digest}` : coinKey(e.coin || "none")}`;
     let edge = this.edges.get(id);
     if (!edge) {
       edge = {
@@ -1083,6 +1352,7 @@ export class FlowEngine {
         from,
         to,
         coin_type: e.coin,
+    ...(e.object_id ? { object_id: e.object_id, object_type: e.object_type, object_tier: e.object_tier, object_estimate: e.object_estimate } : {}),
         amount: 0n,
         traced: 0n,
         share: 0,
@@ -1149,6 +1419,46 @@ export class FlowEngine {
   /* ------------------------------------------------------------------ *
    * Reads
    * ------------------------------------------------------------------ */
+
+ /** Full effects supply object versions, which the graph's ordinary transaction read does not need. */
+ private objectValues(digest: string, tx: FetchedTx): Promise<{ rows: MovedObjectValue[]; unread: Array<{ what: string; reason: string }> }> {
+  let p = this.objects.get(digest);
+  if (!p) {
+   p = (async () => {
+    if (!tx.objectMovements?.some((m) => m.type && m.category !== "coin" && (m.from?.kind === "address" || m.to?.kind === "address"))) {
+     return { rows: [], unread: [] };
+    }
+    const read = await readMovedObjects([digest]);
+    if (!read.txs[0]) {
+     for (const m of tx.objectMovements ?? []) if (m.type && m.category !== "coin" && (m.from?.address || m.to?.address)) {
+      this.unvaluedObjects.push({ digest, object_id: m.object_id, type: m.type, reason: "The object's changed versions could not be read." });
+     }
+     return { rows: [], unread: [{ what: digest, reason: "the object's changed versions could not be read" }] };
+    }
+    const valued = await valueMovedObjects(read.txs[0].moved, read.txs[0].checkpoint);
+    const valuedIds = new Set(valued.rows.map((r) => r.object_id));
+    const unreadIds = new Set(valued.unread.map((r) => r.what));
+    for (const m of tx.objectMovements ?? []) {
+     if (!m.type || m.category === "coin" || (m.from?.address && m.from.address === m.to?.address)) continue;
+     if (!m.from?.address && !m.to?.address) continue;
+     if (!valuedIds.has(m.object_id) && !unreadIds.has(m.object_id)) {
+      this.unvaluedObjects.push({ digest, object_id: m.object_id, type: m.type, reason: "No position reader returned a value for this object." });
+     }
+    }
+    for (const u of valued.unread) this.unvaluedObjects.push({ digest, object_id: u.what, type: null, reason: u.reason });
+    for (const r of valued.rows) if (r.usd === null) {
+     this.unvaluedObjects.push({ digest, object_id: r.object_id, type: r.type, reason: r.unpriced_reason ?? "The object's asset legs have no price." });
+    }
+    return valued;
+   })().catch((err: unknown) => {
+    const reason = err instanceof Error ? err.message : String(err);
+    this.unvaluedObjects.push({ digest, object_id: digest, type: null, reason });
+    return { rows: [], unread: [{ what: digest, reason }] };
+   });
+   this.objects.set(digest, p);
+  }
+  return p;
+ }
 
   private read(digest: string): Promise<FetchedTx | null> {
     let p = this.txCache.get(digest);

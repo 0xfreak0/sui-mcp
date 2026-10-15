@@ -20,6 +20,12 @@
   `observed_but_below_threshold` lists each pair once with its signal types
   and weight; its evidence stays in `edges`.
 - **Human-readable chain and provider fields are marked as untrusted data.** Tool results add one `untrusted_text` note and show control, bidirectional, zero-width and Unicode tag characters as visible escapes in every field. Readable fields and decoded chain data also escape markup and are capped at 2,048 characters with an explicit count of the characters cut. Addresses, digests, amounts, Move type tags, hex byte arguments, URLs and code listings retain their original spelling.
+- **Fund-flow graphs follow valued object handovers.** `trace_flow_graph`
+  and `find_flow_path` trace StakedSui, priced positions and NFT estimates
+  across direct owner changes and onward coin redemptions. Each object edge
+  carries its ID, type, checkpoint USD value and valuation tier. Unvalued
+  objects are listed apart and do not receive a share; incomplete histories
+  report their bounds.
 - **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
 - **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.

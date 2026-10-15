@@ -369,8 +369,7 @@ export async function valueMovedObjects(
           .filter(([, v]) => v !== 0n)
           .map(([coin_type, v]) => ({ coin_type, amount: v.toString() })),
         method: m.before_version
-          ? `Amounts after the transaction minus amounts before (protocol state as of the previous checkpoint), both sides at ${priceNote}. ${
-              sameReading(after.method, before!.method) ? `Both sides read as follows. ${after.method}` : `After: ${after.method} Before: ${before!.method}`
+     ? `Amounts after the transaction minus amounts before (protocol state as of the previous checkpoint), both sides at ${priceNote}. ${sameReading(after.method, before!.method) ? `Both sides read as follows. ${after.method}` : `After: ${after.method} Before: ${before!.method}`
             }`
           : after.method,
         ...(usd === null && (after.unpriced_reason || before?.unpriced_reason)
@@ -396,6 +395,8 @@ export interface TransactionObjects {
   digest: string;
   checkpoint: string | null;
   moved: MovedObject[];
+ /** Raw object changes, including types no valuer handles. */
+ movements?: ObjectMovement[];
 }
 
 /**
@@ -508,11 +509,13 @@ export async function readMovedObjects(digests: string[], specificOnly = false):
     const t = found.get(digest);
     if (!t) continue;
     const changed = t.effects?.changedObjects ?? [];
+  const movements = readGrpcObjectChanges(changed);
     txs.push({
       digest,
       checkpoint: t.checkpoint !== undefined ? t.checkpoint.toString() : null,
+   movements,
       moved: movedObjectsOf({
-        movements: readGrpcObjectChanges(changed),
+    movements,
         objects: changed.map((o) => ({
           objectId: o.objectId ?? "",
           objectType: o.objectType ?? null,

@@ -481,6 +481,11 @@ Opened or frozen capabilities can instead have a `shared` or `immutable`
 destination. `created_for` includes only creations for a party, not shared or
 immutable objects. GraphQL misses are retried through the archive.
 
+Each listed event names its `emitting_package`, in both views. Protocol attribution
+considers both that package and the package defining the event's type. A
+package can emit a framework `DisplayCreated<T>` event whose outer type
+belongs to `0x2`.
+
 ```json
 {"digests":["<digest-1>","<digest-2>"]}
 ```

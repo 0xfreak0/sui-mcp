@@ -95,6 +95,25 @@ different addresses.
 the committee's address hash. `clusters` are inferences with their own
 `evidence_tier`, never proof of ownership.
 
+`first_funders` maps each seed whose qualifying first inflow was read to its
+funder, and with `expand` each sibling whose first funder was confirmed as the
+shared one. A funder filtered out as a popular intermediary remains in this map:
+the first transfer and the clustering decision answer different questions.
+Check `truncated` before interpreting an absent key. An unmeasured seed has
+no reliable negative finding.
+
+For example, with `0xw1` and `0xw2` standing for the full seed addresses:
+
+```json
+{"tool":"build_wallet_edges","args":{"addresses":["0xw1","0xw2"],"expand":false}}
+```
+
+The relevant response fields are:
+
+```json
+{"first_funders":{"0xw1":"0xw2"},"truncated":false}
+```
+
 Supply suspected wallets as seeds, up to 25; the tool tests signals among
 them. `expand` defaults to true, admitting additional candidates only after
 checking their own first funder. The expansion budget defaults to 25

@@ -66,6 +66,18 @@
   candidate's own.
 
 ### Fixed
+- **Swap labels read the pools' own swap events.** `get_transaction` takes
+  each swap's coins in and out from the event of the pool that ran it,
+  placed on the call that takes that pool, instead of from the call's type
+  arguments or the sender's net change. This corrects reversed labels on
+  Astros, 7k and FlowX routes, labels Momentum flash swaps and Bluefin flash
+  swaps that a PTB repays as swaps, and reads swap-context routes whose type
+  arguments fit more than one path. Calls with no swap event keep the
+  previous reading, and the history, timeline and trace tools, which decode
+  without events, are unchanged. FlowX `swap_exact_x_to_y` and
+  `swap_exact_y_to_x` name their direction, and a one-coin liquid-staking
+  leg between two such swaps of one route path is labelled with the coins
+  around it.
 - **Swap-context routes label their executed pool hops.** `get_transaction`
   labels each pool call of a router swap context (`new_swap_context` and
   `new_swap_context_v3`) in command order, including routes split into

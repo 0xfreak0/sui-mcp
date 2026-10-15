@@ -436,6 +436,55 @@ pool of gas coins.
   `7pTrudZb…` created its WBTC and XAUm for 0xd763…, not for the sender, and
   used to read as "no object changed custody".
 
+### Swap labels come from the pools' own events
+
+`get_transaction` passes the transaction's events, its inputs' object ids
+and its changed objects' types to `decodeTransaction` (`swapEvidence`), and
+`src/utils/pool-swap-events.ts` reads each pool swap from its event: the
+coins an event names (`types_in`/`types_out`, a router's `from`/`target`,
+`readSwap`'s coin-named shapes), else its direction flag (`atob`, `a2b`,
+`a_to_b`, `x_for_y`, or the side an amount went in on) against the pool
+object's first two type arguments. A call's type-argument order and the
+sender's net change are only the fallback. Calls into routers name their
+coins in whatever order the integration chose, and a sender's net nets every
+leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
+
+- **An event goes to the call that ran it.** A swap is placed on the call
+  that takes its pool as an argument and whose package and module could have
+  emitted it (`eventCommands`), and never on a call whose function starts
+  with `repay`, since a flash swap's repay takes the same pool. With no call
+  taking the pool, it goes to the one call that could have emitted it.
+  Several swaps of one pool that each fit several calls pair with those
+  calls in order only when there are as many calls as swaps; any other swap
+  labels nothing rather than a guessed call.
+- **A router's echo is the same swap.** An event of another type right after
+  a pool's event, naming the same pool and direction (Cetus aggregator's
+  `router::SwapEvent`, FlowX's `BluefinSwapEvent`), is one swap. Two events
+  of one type are two swaps. Oracle a applies the same rule.
+- **A call with events gets one label per swap, whatever its name**, unless
+  the registry names it as an operation other than a swap (a deposit, a
+  liquidity add): an unnamed wrapper (`bluefin::swap_b2a` of an arbitrage
+  bot, Momentum's `trade::flash_swap`) is labelled from its pool.
+- **A flash swap that the PTB repays is a swap.** The pool took one coin in
+  and paid the other out; the repay pays the input coin. A registry
+  `flash_swap` (`pool::flash_swap`) becomes `Swap` when the event states the
+  direction and a later call into the same package and module starts with
+  `repay`. Bluefin's `FlashSwap` events are read as swaps for the same
+  reason (`readSwap` with `flash`).
+- **A one-coin leg is read from its neighbours.** A swap call naming one
+  coin (`swap_exact_x_to_y<STSUI>`, its SUI side implicit) with no event of
+  its own, between two event-read swaps that take one of the same results,
+  takes in what the swap before it gave out and gives out what the swap
+  after it takes in, when the coin it names is one of the two
+  (`oneCoinSwaps`). Otherwise it keeps the coinless `Swap on X` label.
+- **Swap contexts read events first.** A context call with events reads as
+  those swaps, which also settles a context whose type arguments read two
+  ways; the remaining calls use the holding rule. A context whose calls are
+  all read hides its own route-wide label.
+- **Only `get_transaction` has the evidence.** `get_transaction_history`,
+  `build_timeline`, `trace_funds` and the flow graphs decode without events
+  and keep the fallback, so their swap direction is a lead, not a reading.
+
 ## Completeness beats payload size
 
 Every tool result stays in the model's context for the rest of the

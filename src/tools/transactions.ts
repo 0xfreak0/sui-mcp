@@ -40,6 +40,7 @@ import {
 import { commandInputIndices, eventCommands, objectMatcher } from "../utils/command-attribution.js";
 import { gasSource, readAddressBalanceOps, readFundsWithdrawals } from "../utils/address-balance.js";
 import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { protoValueToJson } from "../utils/proto.js";
 import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { COMMANDS_SELECTION, completeTxConnections, type GqlConnection } from "../utils/tx-connections.js";
 import type { GqlCommandNode } from "../utils/gql-adapters.js";
@@ -376,7 +377,17 @@ export function registerTransactionTools(server: McpServer) {
         await prefetchProtocolNames([...calledPackages, ...eventPackages]);
         publishers = await readProtocolCustody([...calledPackages, ...eventPackages]);
         await prefetchCoinScale((tx?.balanceChanges ?? []).map((bc) => bc.coinType).filter((t): t is string => !!t));
-        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender, { custodyFor: publishers.custodyFor });
+        // The pools a swap event names, by the effects' own types, so each
+        // swap is labelled with the coins its pool took in and paid out.
+        const objectTypes = new Map<string, string | null>();
+        for (const o of effects?.changedObjects ?? [])
+          if (o.objectId && o.objectType && !/^0x0*2::(coin::Coin|dynamic_field::Field)</.test(o.objectType)) objectTypes.set(normalizeSuiAddress(o.objectId), o.objectType);
+        const swapEvidence = {
+          events: (tx?.events?.events ?? []).map((e: GrpcTypes.Event) => ({ packageId: e.packageId, module: e.module, type: e.eventType ?? "", json: protoValueToJson(e.json) })),
+          inputObjectIds: (ptb.inputs ?? []).map((i) => i.objectId ?? null),
+          objectTypes,
+        };
+        decoded = decodeTransaction(ptb.commands, tx?.balanceChanges, sender, { custodyFor: publishers.custodyFor, swapEvidence });
       } else if (kind?.data.oneofKind) {
         decoded = {
           protocols: [] as string[],

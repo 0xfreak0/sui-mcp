@@ -1,9 +1,10 @@
 import { GrpcTypes } from "@mysten/sui/grpc";
-import { normalizeSuiAddress } from "@mysten/sui/utils";
+import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { formatCoinAmount } from "../utils/coin-amount.js";
 import { coinScale, displayCoin, type CoinScale } from "../utils/valuation.js";
 import { lookupProtocolDisplay, lookupOperation, type OperationInfo } from "./registry.js";
 import { isVerifiedCoin } from "../utils/coin-registry.js";
+import { poolSwapsByCommand, type SwapEvidence } from "../utils/pool-swap-events.js";
 
 export interface DecodedTransaction {
   protocols: string[];
@@ -251,10 +252,11 @@ const CONTEXT_SWAP: OperationInfo = { action: "swap" };
 
 /**
  * The direction a swap function name states outright, when it does:
- * `swap_a2b`/`swapAtoB`/`swap_a_to_b`, Turbos `swap_a_b` and DeepBook
- * `swap_exact_base_for_quote` swap the first type argument in, the second out
- * (the given order already matches); `swap_b2a`/`swapBtoA`/`swap_b_to_a`, Turbos
- * `swap_b_a` and DeepBook `swap_exact_quote_for_base` swap the second in, the
+ * `swap_a2b`/`swapAtoB`/`swap_a_to_b`, Turbos `swap_a_b`, DeepBook
+ * `swap_exact_base_for_quote` and FlowX `swap_exact_x_to_y` swap the first
+ * type argument in, the second out (the given order already matches);
+ * `swap_b2a`/`swapBtoA`/`swap_b_to_a`, Turbos `swap_b_a`, DeepBook
+ * `swap_exact_quote_for_base` and FlowX `swap_exact_y_to_x` swap the second in, the
  * first out (the given order is reversed). Turbos's multi-hop
  * `swap_b_a_b_c`-style functions are left out: their first type argument is
  * already the input coin and the second a fee type. Checked before the
@@ -263,8 +265,8 @@ const CONTEXT_SWAP: OperationInfo = { action: "swap" };
  */
 function directionFromFunctionName(fn: string): "a2b" | "b2a" | null {
   const lower = fn.toLowerCase();
-  if (/a2b|atob|a_to_b|^swap_a_b(?:_with_|$)|base_for_quote/.test(lower)) return "a2b";
-  if (/b2a|btoa|b_to_a|^swap_b_a(?:_with_|$)|quote_for_base/.test(lower)) return "b2a";
+  if (/a2b|atob|a_to_b|x_to_y|^swap_a_b(?:_with_|$)|base_for_quote/.test(lower)) return "a2b";
+  if (/b2a|btoa|b_to_a|y_to_x|^swap_b_a(?:_with_|$)|quote_for_base/.test(lower)) return "b2a";
   return null;
 }
 
@@ -374,6 +376,44 @@ function routeHop(
   return output ? [known, output] : null;
 }
 
+/** A type in canonical form, as event and effects types are, or the input when it does not parse. */
+function canonicalType(t: string): string {
+  try {
+    return normalizeStructTag(t);
+  } catch {
+    return t;
+  }
+}
+
+/**
+ * A swap call that names one coin (a liquid-staking leg such as
+ * `swap_exact_x_to_y<STSUI>`, whose other coin is implicit) and has no swap
+ * event of its own, between two event-read swaps that take one of the same
+ * results (a router's path object): it takes in what the swap before it
+ * gave out and gives out what the swap after it takes in, and the coin it
+ * names must be one of the two. Added to `eventHops`.
+ */
+function oneCoinSwaps(commands: GrpcTypes.Command[], eventHops: Map<number, [string, string][]>): void {
+  const results = (i: number) => {
+    const c = commands[i].command;
+    return c.oneofKind === "moveCall" ? (c.moveCall.arguments ?? []).flatMap((a) => (a.kind === GrpcTypes.Argument_ArgumentKind.RESULT && a.result !== undefined ? [a.result] : [])) : [];
+  };
+  for (const [index, cmd] of commands.entries()) {
+    const c = cmd.command;
+    if (c.oneofKind !== "moveCall" || c.moveCall.typeArguments?.length !== 1 || eventHops.has(index)) continue;
+    if (lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "")?.action !== "swap") continue;
+    const own = new Set(results(index));
+    const shares = (i: number) => eventHops.has(i) && results(i).some((r) => own.has(r));
+    const before = [...eventHops.keys()].filter((i) => i < index && shares(i)).sort((a, b) => b - a)[0];
+    const after = [...eventHops.keys()].filter((i) => i > index && shares(i)).sort((a, b) => a - b)[0];
+    if (before === undefined || after === undefined) continue;
+    const coinIn = eventHops.get(before)!.at(-1)![1];
+    const coinOut = eventHops.get(after)![0][0];
+    const named = canonicalType(c.moveCall.typeArguments[0]);
+    if (coinIn !== coinOut && (named === coinIn || named === coinOut)) eventHops.set(index, [[coinIn, coinOut]]);
+  }
+}
+
 /**
  * Some routers pass the same context result to each pool call, then confirm
  * the output coin. The context's type arguments describe the whole route, not
@@ -384,19 +424,23 @@ function routeHop(
  * output coin or back into its input coin, unless it is a loop that starts and
  * ends in one coin. A type that every call naming it passes last, after at
  * least two others, is a pool parameter (a fee tier, an LP type) and neither.
- * A call with exactly one reading of its input and output gets that reading;
- * a context with any other call, or a call the context cannot read, labels
- * nothing and keeps its route label.
+ * A call whose pool swaps the transaction's events state (`eventHops`) reads
+ * as those swaps, whatever its name. Any other call with exactly one reading
+ * of its input and output gets that reading; a context with any other call,
+ * or a call the context cannot read, labels nothing and keeps its route label.
  */
-function swapContextHops(commands: GrpcTypes.Command[]): { hops: Map<number, [string, string]>; contexts: Set<number> } {
-  const hops = new Map<number, [string, string]>();
+function swapContextHops(
+  commands: GrpcTypes.Command[],
+  eventHops: ReadonlyMap<number, [string, string][]>,
+): { hops: Map<number, [string, string][]>; contexts: Set<number> } {
+  const hops = new Map<number, [string, string][]>();
   const contexts = new Set<number>();
   for (const [start, command] of commands.entries()) {
     const context = command.command;
     if (context.oneofKind !== "moveCall" || context.moveCall.module !== "router" || !context.moveCall.function?.startsWith("new_swap_context")) continue;
     const route = context.moveCall.typeArguments;
     if (route?.length !== 2) continue;
-    const [routeIn, routeOut] = route;
+    const [routeIn, routeOut] = route.map(canonicalType);
     const loop = routeIn === routeOut;
     const calls: { index: number; types: string[] }[] = [];
     let confirmed = false;
@@ -406,19 +450,26 @@ function swapContextHops(commands: GrpcTypes.Command[]): { hops: Map<number, [st
       if (c.oneofKind !== "moveCall" || !c.moveCall.arguments?.some((a) => a.kind === GrpcTypes.Argument_ArgumentKind.RESULT && a.result === start)) continue;
       const fn = c.moveCall.function ?? "";
       if (c.moveCall.module === "router" && fn.startsWith("confirm_swap")) {
-        confirmed = c.moveCall.typeArguments?.[0] === routeOut;
+        confirmed = canonicalType(c.moveCall.typeArguments?.[0] ?? "") === routeOut;
         break;
       }
-      if (!fn.startsWith("swap") || lookupOperation(c.moveCall.module ?? "", fn)?.skip) unread = true;
-      else calls.push({ index, types: c.moveCall.typeArguments ?? [] });
+      if (eventHops.has(index) || (fn.startsWith("swap") && !lookupOperation(c.moveCall.module ?? "", fn)?.skip))
+        calls.push({ index, types: (c.moveCall.typeArguments ?? []).map(canonicalType) });
+      else unread = true;
     }
     if (!confirmed || unread || !calls.length) continue;
     const params = new Set(calls.flatMap((c) => (c.types.length > 2 ? [c.types[c.types.length - 1]] : [])));
     for (const t of [routeIn, routeOut, ...calls.flatMap((c) => (c.types.length > 2 ? c.types.slice(0, -1) : c.types))]) params.delete(t);
     for (const call of calls) call.types = [...new Set(call.types.filter((t) => !params.has(t)))];
     const held = new Set([routeIn]);
-    const pairs: [number, [string, string]][] = [];
+    const pairs: [number, [string, string][]][] = [];
     for (const [at, call] of calls.entries()) {
+      const stated = eventHops.get(call.index);
+      if (stated) {
+        pairs.push([call.index, stated]);
+        for (const [, out] of stated) held.add(out);
+        continue;
+      }
       const readings = call.types
         .filter((t) => held.has(t) && (loop || t !== routeOut))
         .flatMap((coinIn) => {
@@ -428,7 +479,7 @@ function swapContextHops(commands: GrpcTypes.Command[]): { hops: Map<number, [st
           return out.length === 1 ? [[coinIn, out[0]] as [string, string]] : [];
         });
       if (readings.length !== 1) break;
-      pairs.push([call.index, readings[0]]);
+      pairs.push([call.index, [readings[0]]]);
       held.add(readings[0][1]);
     }
     if (pairs.length !== calls.length || !held.has(routeOut)) continue;
@@ -448,7 +499,7 @@ export function decodeTransaction(
   commands: GrpcTypes.Command[],
   balanceChanges: GrpcTypes.BalanceChange[] | undefined,
   sender: string | undefined,
-  opts: { custodyFor?: ReadonlySet<string> } = {},
+  opts: { custodyFor?: ReadonlySet<string>; swapEvidence?: SwapEvidence } = {},
 ): DecodedTransaction {
   const protocols = new Set<string>();
   const actions: string[] = [];
@@ -485,7 +536,11 @@ export function decodeTransaction(
   }
   const hasCoinEvidence = (t: string) => coinTypes.has(t) || isVerifiedCoin(t);
   const markers = routeMarkers(commands, hasCoinEvidence);
-  const swapContexts = hasSwapContext ? swapContextHops(commands) : null;
+  // The pool swaps each call ran, by the transaction's own events, when the
+  // caller has them; a call without one falls back to the readings below.
+  const eventHops = opts.swapEvidence ? poolSwapsByCommand(commands, opts.swapEvidence) : new Map<number, [string, string][]>();
+  oneCoinSwaps(commands, eventHops);
+  const swapContexts = hasSwapContext ? swapContextHops(commands, eventHops) : null;
   // For each routed call, the own types of the next routed call in its path;
   // a path's last call has none. And per package, its last call passing
   // exactly two types with no marker: a router's closing call names the coin
@@ -540,8 +595,20 @@ export function decodeTransaction(
         // truncated 0x address, and nothing downstream of the decoder makes a
         // trust decision on it.
         const proto = lookupProtocolDisplay(pkg, { custody: opts.custodyFor?.has(normalizeSuiAddress(pkg)) ?? false });
-        const contextHop = swapContexts?.hops.get(index);
-        const op = contextHop ? CONTEXT_SWAP : lookupOperation(mod, fn);
+        const named = lookupOperation(mod, fn);
+        // A flash swap whose pool states the swap and whose repay the PTB
+        // carries took one coin in and paid the other out: it is a swap.
+        const stated =
+          !named ||
+          named.action === "swap" ||
+          (named.action === "flash_swap" &&
+            commands
+              .slice(index + 1)
+              .some((r) => r.command.oneofKind === "moveCall" && r.command.moveCall.package === pkg && r.command.moveCall.module === mod && (r.command.moveCall.function ?? "").startsWith("repay")))
+            ? eventHops.get(index)
+            : undefined;
+        const swaps = stated ?? swapContexts?.hops.get(index);
+        const op = swaps ? CONTEXT_SWAP : named;
 
         if (proto) {
           protocols.add(proto.name);
@@ -582,11 +649,18 @@ export function decodeTransaction(
           else if (own.length === 1) pathCoin = own[0] === pathCoin ? null : own[0];
         }
 
-        if (op) {
+        if (swaps) {
+          for (const [coinIn, coinOut] of swaps) {
+            if (routed) routeHops.push({ action: actions.length, command: index, path, coin_in: coinIn, coin_out: coinOut, route_coins: routeCoins });
+            actions.push(formatAction("swap", proto?.name ?? null, [coinIn, coinOut]));
+          }
+          if (routed) {
+            const out = swaps[swaps.length - 1][1];
+            pathCoin = typeArgs.find((t) => canonicalType(t) === out) ?? out;
+          }
+        } else if (op) {
           let args: string[] = typeArgs;
-          if (contextHop) {
-            args = contextHop;
-          } else if (op.action === "swap" && routed) {
+          if (op.action === "swap" && routed) {
             const hop = routeHop(typeArgs, pathCoin, hasCoinEvidence, { own: nextInPath.get(index), routeOut, poolParams });
             args = hop ?? typeArgs.slice(1);
             if (hop) {

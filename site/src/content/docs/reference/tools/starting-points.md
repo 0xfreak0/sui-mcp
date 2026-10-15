@@ -26,7 +26,7 @@ sidebar:
 | `query` | string | yes | Symbol ('deep') or full coin type ('0x2::sui::SUI'). A symbol matches exactly, in any case; use search_token for partial names. |
 | `include_holders` | boolean | no | Include top 5 holders (default: true). Set false for faster response. |
 | `include_liquidity` | boolean | no | Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls. |
-| `liquidity_pool_offset` | integer (0 to 1000) | no | Start at this discovered pool after ranking by current reserve (default 0). |
+| `liquidity_pool_offset` | integer (at least 0) | no | Start at this discovered pool after ranking by current reserve (default 0). |
 | `liquidity_holder_pool` | string | no | For a holder continuation, restrict the page to this discovered pool ID. |
 | `liquidity_offset` | integer (0 to 1000) | no | Start at this holder index within liquidity_holder_pool (default 0). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

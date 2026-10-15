@@ -7,6 +7,7 @@ import type { PoolCandidate } from "../tools/pools.js";
 interface Owner { address?: { address: string } }
 interface CreatedObject {
   address: string;
+  idCreated?: boolean | null;
   outputState?: {
     owner?: Owner | null;
     asMoveObject?: { contents?: { type?: { repr?: string }; json?: Record<string, unknown> } };
@@ -47,6 +48,53 @@ export function removalScanIncomplete(transactions: RemovalRead["transactions"])
     || (transactions?.nodes ?? []).some((tx) => !!tx.effects?.events?.pageInfo.hasNextPage || !!tx.effects?.balanceChanges?.pageInfo.hasNextPage);
 }
 
+/**
+ * Liquidity-removal events of each searched venue, by `module::Name`, with the field holding
+ * the amount removed ("" when the event states only coin amounts). Each was read off a mainnet
+ * event. An event counts only when it names this pool; FlowX v2's names its two coins instead.
+ */
+const REMOVAL_EVENTS: Record<string, string> = {
+  "pool::RemoveLiquidityEvent": "liquidity", // Cetus, Magma
+  "pool::RemoveLiquidityV2Event": "liquidity", // Cetus
+  "pool::BurnEvent": "liquidity_delta", // Turbos
+  "position_manager::DecreaseLiquidityEvent": "liquidity", // Turbos
+  "events::LiquidityRemoved": "liquidity", // Bluefin
+  "liquidity::RemoveLiquidityEvent": "liquidity", // Momentum
+  "position_manager::DecreaseLiquidity": "liquidity", // FlowX CLMM
+  "swap::Remove_Liqidity_Pool": "", // BlueMove
+  "stable_swap::Remove_Liqidity_Stable_Pool_Event": "", // BlueMove
+  "events::WithdrawEvent": "lp_coins_burned", // Aftermath
+  "pair::LiquidityRemoved": "liquidity", // FlowX v2
+  "spot_dex::LiquidityRemovedEvent": "lsp_burned", // Kriya v2
+};
+
+type RemovalEvent = { contents?: { type?: { repr?: string }; json?: Record<string, unknown> } };
+
+/** The events in one transaction that remove liquidity from `pool`; a removal of zero is a fee collection, not a withdrawal. */
+export function removalEvidence(events: RemovalEvent[], pool: Pick<PoolCandidate, "pool_id" | "token_a" | "token_b">) {
+  return events.flatMap((event) => {
+    const type = event.contents?.type?.repr ?? "";
+    const json = event.contents?.json ?? {};
+    const name = type.split("<")[0]!.split("::").slice(1).join("::");
+    const field = REMOVAL_EVENTS[name];
+    if (field === undefined) return [];
+    const named = json.pool ?? json.pool_id;
+    if (typeof named === "string") {
+      if (normalizeSuiAddress(named) !== normalizeSuiAddress(pool.pool_id)) return [];
+    } else {
+      const coins = [json.coin_x, json.coin_y].map((v) => {
+        if (typeof v !== "string") return null;
+        try { return normalizeStructTag(v.startsWith("0x") ? v : `0x${v}`); } catch { return null; }
+      });
+      if (name !== "pair::LiquidityRemoved" || !pool.token_a || !pool.token_b
+        || !coins.includes(pool.token_a) || !coins.includes(pool.token_b)) return [];
+    }
+    const removed = field ? json[field] : undefined;
+    if (typeof removed === "string" && /^0+$/.test(removed)) return [];
+    return [{ type, ...(field ? { liquidity_removed: removed ?? null } : {}), ...(json.after_liquidity !== undefined ? { after_liquidity: json.after_liquidity } : {}) }];
+  });
+}
+
 /** Recent removals are leads, not evidence that this was every removal. */
 async function recentRemovals(pool: PoolCandidate, lpType: string | null) {
   const data = await gqlQuery<RemovalRead>(`query($pool: SuiAddress!) {
@@ -60,18 +108,14 @@ async function recentRemovals(pool: PoolCandidate, lpType: string | null) {
     }
   }`, { pool: pool.pool_id });
   const matches = (data.transactions?.nodes ?? []).flatMap((tx) => {
-    const evidence = (tx.effects?.events?.nodes ?? []).filter((event) => {
-      if (!/Remove[_]?Li(?:quidity|qidity)/i.test(event.contents?.type?.repr ?? "")) return false;
-      const named = event.contents?.json?.pool ?? event.contents?.json?.pool_id;
-      return typeof named !== "string" || normalizeSuiAddress(named) === normalizeSuiAddress(pool.pool_id);
-    });
+    const evidence = removalEvidence(tx.effects?.events?.nodes ?? [], pool);
     const burnedLp = (tx.effects?.balanceChanges?.nodes ?? []).filter((change) =>
       lpType && change.coinType?.repr && normalizeStructTag(change.coinType.repr) === normalizeStructTag(lpType) && BigInt(change.amount) < 0n
     ).map((change) => ({ owner: change.owner?.address ?? null, amount: change.amount }));
     if (evidence.length === 0 && burnedLp.length === 0) return [];
     return [{
       digest: tx.digest, sender: tx.sender?.address ?? null,
-      events: evidence.map((e) => ({ type: e.contents?.type?.repr ?? null, after_liquidity: e.contents?.json?.after_liquidity ?? null })),
+      events: evidence,
       lp_spent: burnedLp,
       incomplete: !!tx.effects?.events?.pageInfo.hasNextPage || !!tx.effects?.balanceChanges?.pageInfo.hasNextPage
     }];
@@ -94,10 +138,12 @@ export async function readLiquidityOrigin(pool: PoolCandidate, lpType: string | 
   const initialLp: Array<{ address: string; amount: string }> = [];
   let cursor: string | null = null;
   let incomplete = false;
+  let poolCreated = false;
+  let changesRead = false;
   for (let i = 0; i < MAX_CREATION_PAGES; i++) {
     const created: CreationTx = await gqlQuery<CreationTx>(`query($digest: String!, $after: String) {
       transaction(digest: $digest) { effects {
-        objectChanges(first: 50, after: $after) { nodes { address outputState {
+        objectChanges(first: 50, after: $after) { nodes { address idCreated outputState {
           owner { ... on AddressOwner { address { address } } ... on ConsensusAddressOwner { address { address } } ... on ObjectOwner { address { address } } }
           asMoveObject { contents { type { repr } json } }
         } } pageInfo { hasNextPage endCursor } }
@@ -115,44 +161,59 @@ export async function readLiquidityOrigin(pool: PoolCandidate, lpType: string | 
       if (effects.balanceChanges?.pageInfo.hasNextPage) incomplete = true;
     }
     for (const node of effects.objectChanges.nodes) {
+      if (node.idCreated && normalizeSuiAddress(node.address) === normalizeSuiAddress(pool.pool_id)) poolCreated = true;
       const type = node.outputState?.asMoveObject?.contents?.type?.repr;
       const json = node.outputState?.asMoveObject?.contents?.json;
       if (!type || !json || !ORIGIN_POSITION_TYPES.has(normalizeStructTag(type).split("<")[0])) continue;
       const poolId = typeof json.pool === "string" ? json.pool : typeof json.pool_id === "string" ? json.pool_id : null;
       if (!poolId || normalizeSuiAddress(poolId) !== normalizeSuiAddress(pool.pool_id)) continue;
       const initialOwner = node.outputState?.owner?.address?.address ?? null;
-      // A position can be deleted or wrapped. objectVersions still lists its
-      // latest write; a null current object is never mistaken for burned.
+      // A position can be deleted or wrapped. Its last affecting transaction is
+      // the one that did so; a null current object is never mistaken for burned.
       const latest = await gqlQuery<{
         current?: { owner?: Owner; asMoveObject?: { contents?: { json?: Record<string, unknown> } } } | null;
-        versions?: { nodes: Array<{ previousTransaction?: { digest?: string } }> } | null;
+        touches?: { nodes: Array<{ digest?: string }> } | null;
       }>(`query($id: SuiAddress!) {
         current: object(address: $id) {
           owner { ... on AddressOwner { address { address } } ... on ConsensusAddressOwner { address { address } } ... on ObjectOwner { address { address } } }
           asMoveObject { contents { json } }
         }
-        versions: objectVersions(address: $id, last: 1) { nodes { previousTransaction { digest } } }
+        touches: transactions(filter: { affectedObject: $id }, last: 1) { nodes { digest } }
       }`, { id: node.address });
-      const currentJson = latest.current?.asMoveObject?.contents?.json;
+      let currentJson = latest.current?.asMoveObject?.contents?.json;
+      // A Turbos NFT holds no liquidity itself; the position object it names does.
+      if (currentJson && typeof currentJson.position_id === "string" && currentJson.liquidity === undefined) {
+        const inner = await gqlQuery<{ object?: { asMoveObject?: { contents?: { json?: Record<string, unknown> } } } | null }>(
+          `query($id: SuiAddress!) { object(address: $id) { asMoveObject { contents { json } } } }`, { id: currentJson.position_id });
+        const innerJson = inner.object?.asMoveObject?.contents?.json;
+        currentJson = innerJson ? { ...innerJson, pool_id: pool.pool_id } : undefined;
+      }
       const currentLiquidity = currentJson ? parsePositionFields(currentJson)?.liquidity.toString() ?? null : null;
       positions.push({
         position_id: node.address, minted_to: initialOwner,
         current_owner: latest.current?.owner?.address?.address ?? null,
-        last_touch: latest.versions?.nodes[0]?.previousTransaction?.digest ?? null,
+        last_touch: latest.touches?.nodes[0]?.digest ?? null,
         current_liquidity: currentLiquidity
       });
     }
-    if (!effects.objectChanges.pageInfo.hasNextPage) break;
+    if (!effects.objectChanges.pageInfo.hasNextPage) { changesRead = true; break; }
     cursor = effects.objectChanges.pageInfo.endCursor ?? null;
     if (!cursor || i === MAX_CREATION_PAGES - 1) { incomplete = true; break; }
   }
   const removals = await recentRemovals(pool, lpType).catch((err: unknown) => ({
     unavailable: err instanceof Error ? err.message : String(err),
   }));
+  // objectVersions starts at the earliest version the service retains, which is the creation only when it created the pool.
+  const unverified = changesRead && !poolCreated;
+  const burned = positions.filter((p) => p.current_owner && isUnspendableAddress(p.current_owner));
   return {
-    creation_tx: digest, incomplete, positions,
+    creation_tx: digest, incomplete: incomplete || unverified, positions,
+    ...(unverified ? { reason: "The earliest retained pool version's transaction did not create the pool, so it is not the creation; its recipients are not the initial ones." } : {}),
     initial_lp_recipients: initialLp, recent_removals: removals,
-    burned_positions: positions.filter((p) => p.current_owner && isUnspendableAddress(p.current_owner)).length,
+    // An emptied position sent to 0x0 locks nothing, so a burn counts only with liquidity still in it.
+    burned_positions: burned.filter((p) => p.current_liquidity !== null && BigInt(p.current_liquidity) > 0n).length,
+    ...(burned.some((p) => p.current_liquidity === "0") ? { burned_empty_positions: burned.filter((p) => p.current_liquidity === "0").length } : {}),
+    ...(burned.some((p) => p.current_liquidity === null) ? { burned_positions_liquidity_unread: burned.filter((p) => p.current_liquidity === null).length } : {}),
     note: "Creation recipients, current owners and removal-event senders are chain-derived. Only the ten newest pool transactions were inspected for removals. A last-touch transaction alone does not prove a withdrawal; a null current owner includes deleted or wrapped positions."
   };
 }

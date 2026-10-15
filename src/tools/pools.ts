@@ -1,10 +1,12 @@
 import { z } from "zod";
-import { addressArg, coinTypeArg } from "./args.js";
+import { addressArg, coinTypeArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { gqlQuery } from "../clients/graphql.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { lookupProtocol, prefetchProtocolNames } from "../protocols/registry.js";
 import { describeError, errorResult } from "../utils/errors.js";
+import { capPayload } from "../utils/output-cap.js";
+import type { ListCap, NextCall } from "../utils/output-cap.js";
 import { getNetwork } from "../config.js";
 import { resolveTokenType } from "../discovery.js";
 import { normalizeStructTag } from "@mysten/sui/utils";
@@ -249,8 +251,9 @@ export function registerPoolTools(server: McpServer) {
    token_a: z.string().describe("First token: verified symbol (e.g. 'SUI') or full coin type"),
    token_b: z.string().describe("Second token: verified symbol (e.g. 'USDC') or full coin type"),
    protocol: z.string().optional().describe(`Filter by venue: ${POOL_PROTOCOLS.join(", ")}. Searches all if omitted.`),
+   offset: numArg().int().min(0).optional().describe("Start the pool list at this index (default 0). A response that leaves pools out gives the next offset in omitted.next_call."),
     },
-    async ({ token_a, token_b, protocol: protocolFilter }) => {
+    async ({ token_a, token_b, protocol: protocolFilter, offset }) => {
    const [resolvedA, resolvedB] = await Promise.all([resolveTokenType(token_a), resolveTokenType(token_b)]);
    if (!resolvedA) return errorResult(`Could not resolve token: ${token_a}. Only curated verified symbols resolve by name; provide the full coin type or use search_token.`);
    if (!resolvedB) return errorResult(`Could not resolve token: ${token_b}. Only curated verified symbols resolve by name; provide the full coin type or use search_token.`);
@@ -262,14 +265,37 @@ export function registerPoolTools(server: McpServer) {
         return errorResult(`Unsupported protocol: ${protocolFilter}. Supported: ${POOL_PROTOCOLS.join(", ")}.`);
       }
    const result = await searchPoolPairs([[typeA, typeB]], wanted ? [wanted as PoolProtocol] : [...POOL_PROTOCOLS]);
+   // A common pair has over a thousand pools on one venue; the list pages, the counts cover every pool.
+   const start = offset ?? 0;
+   const callArgs = { token_a, token_b, ...(protocolFilter ? { protocol: protocolFilter } : {}) };
+   const nextCall = (from: number): NextCall => ({ tool: "find_pools", args: { ...callArgs, offset: from } });
+   const page = result.pools.slice(start);
+   const indices = new Map(page.map((row, index) => [row, start + index]));
+   const { payload } = capPayload("find_pools", { ...callArgs, offset: start }, { pools: page }, {
+    pools: {
+     budget: FIND_POOLS_LIST_BUDGET, keepOrder: true,
+     covers: (row: PoolCandidate) => [indices.get(row)!],
+     next_call: nextCall(start + 1),
+    } satisfies ListCap<PoolCandidate>,
+   }, { full: false, stored: { pools: result.pools }, next_call: nextCall(start + 1) });
+   const omitted = payload.omitted as { next_call: NextCall; lists: { pools: { from: number; next_call?: NextCall } } } | undefined;
+   if (omitted) {
+    const next = nextCall(start + (payload.pools as PoolCandidate[]).length);
+    omitted.next_call = next;
+    omitted.lists.pools.next_call = next;
+    omitted.lists.pools.from += start;
+   }
           return {
     isError: result.pools.length === 0 && result.venues.every((venue) => venue.status === "failed" || venue.status === "unsupported"),
     content: [{
             type: "text" as const,
             text: JSON.stringify({
       query: { token_a: typeA, token_b: typeB, protocol: wanted ?? "all" },
-      ...result,
+      venues: result.venues,
+      pairs_searched: result.pairs_searched,
       total: result.pools.length,
+      ...(start ? { offset: start } : {}),
+      ...payload,
       ...(result.venues.some((venue) => venue.status !== "complete")
                 ? {
                     incomplete: true,
@@ -279,7 +305,7 @@ export function registerPoolTools(server: McpServer) {
                 : {}),
       hint: result.pools.length > 0
        ? "Pool IDs and coin types come from verified Move pool objects or the FlowX v2 factory. get_pool_stats does not decode every venue's reserve layout."
-       : "No pools were found in the completed venue searches; inspect venue statuses before concluding that none exist.",
+       : "No pools were found in the completed venue searches; inspect venue statuses before concluding that none exist. Venues not listed in venues were not searched.",
             }),
     }],
       };
@@ -368,6 +394,8 @@ async function poolBases(protocol: PoolProtocol): Promise<string[]> {
 }
 
 const MAX_POOL_PAGES = 20;
+/** Characters of pool rows per find_pools response. */
+const FIND_POOLS_LIST_BUDGET = 30_000;
 interface PoolNode {
   address: string;
  asMoveObject?: { contents?: { type?: { repr?: string }; json?: Record<string, unknown> } };

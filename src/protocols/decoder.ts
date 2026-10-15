@@ -377,48 +377,65 @@ function routeHop(
 /**
  * Some routers pass the same context result to each pool call, then confirm
  * the output coin. The context's type arguments describe the whole route, not
- * one swap. Pair the actual calls by their shared result and adjacent coin
- * types; a third type (such as an LP type) is not the output unless the next
- * call takes it. Only commit labels when the complete path reaches the
- * context's declared output.
+ * one swap, and its calls may run several paths side by side, ordered by path
+ * or by step. The context starts holding the route's input coin, and a call
+ * can only take in a coin the context already holds; it gives out a type the
+ * route's output or a later call names. A route does not swap out of its
+ * output coin or back into its input coin, unless it is a loop that starts and
+ * ends in one coin. A type that every call naming it passes last, after at
+ * least two others, is a pool parameter (a fee tier, an LP type) and neither.
+ * A call with exactly one reading of its input and output gets that reading;
+ * a context with any other call, or a call the context cannot read, labels
+ * nothing and keeps its route label.
  */
-function swapContextHops(commands: GrpcTypes.Command[]): Map<number, [string, string]> {
+function swapContextHops(commands: GrpcTypes.Command[]): { hops: Map<number, [string, string]>; contexts: Set<number> } {
   const hops = new Map<number, [string, string]>();
+  const contexts = new Set<number>();
   for (const [start, command] of commands.entries()) {
     const context = command.command;
-    if (context.oneofKind !== "moveCall" || context.moveCall.module !== "router" || context.moveCall.function !== "new_swap_context") continue;
+    if (context.oneofKind !== "moveCall" || context.moveCall.module !== "router" || !context.moveCall.function?.startsWith("new_swap_context")) continue;
     const route = context.moveCall.typeArguments;
     if (route?.length !== 2) continue;
+    const [routeIn, routeOut] = route;
+    const loop = routeIn === routeOut;
     const calls: { index: number; types: string[] }[] = [];
     let confirmed = false;
+    let unread = false;
     for (let index = start + 1; index < commands.length; index++) {
       const c = commands[index].command;
       if (c.oneofKind !== "moveCall" || !c.moveCall.arguments?.some((a) => a.kind === GrpcTypes.Argument_ArgumentKind.RESULT && a.result === start)) continue;
-      if (c.moveCall.module === "router" && c.moveCall.function === "confirm_swap") {
-        confirmed = c.moveCall.typeArguments?.[0] === route[1];
+      const fn = c.moveCall.function ?? "";
+      if (c.moveCall.module === "router" && fn.startsWith("confirm_swap")) {
+        confirmed = c.moveCall.typeArguments?.[0] === routeOut;
         break;
       }
-      const fn = c.moveCall.function ?? "";
-      if (fn.startsWith("swap") && !lookupOperation(c.moveCall.module ?? "", fn)?.skip)
-        calls.push({ index, types: c.moveCall.typeArguments ?? [] });
+      if (!fn.startsWith("swap") || lookupOperation(c.moveCall.module ?? "", fn)?.skip) unread = true;
+      else calls.push({ index, types: c.moveCall.typeArguments ?? [] });
     }
-    if (!confirmed || !calls.length) continue;
-    const path: [number, [string, string]][] = [];
-    let coin = route[0];
-    for (const [index, call] of calls.entries()) {
-      if (!call.types.includes(coin)) break;
-      const outputs = [...new Set(call.types.filter((t) => t !== coin))];
-      const next = calls[index + 1];
-      const matching = outputs.filter((t) => next ? next.types.includes(t) : t === route[1]);
-      const output = matching.length === 1 ? matching[0] : outputs.length === 1 ? outputs[0] : null;
-      if (!output) break;
-      path.push([call.index, [coin, output]]);
-      coin = output;
+    if (!confirmed || unread || !calls.length) continue;
+    const params = new Set(calls.flatMap((c) => (c.types.length > 2 ? [c.types[c.types.length - 1]] : [])));
+    for (const t of [routeIn, routeOut, ...calls.flatMap((c) => (c.types.length > 2 ? c.types.slice(0, -1) : c.types))]) params.delete(t);
+    for (const call of calls) call.types = [...new Set(call.types.filter((t) => !params.has(t)))];
+    const held = new Set([routeIn]);
+    const pairs: [number, [string, string]][] = [];
+    for (const [at, call] of calls.entries()) {
+      const readings = call.types
+        .filter((t) => held.has(t) && (loop || t !== routeOut))
+        .flatMap((coinIn) => {
+          const out = call.types.filter(
+            (t) => t !== coinIn && (loop || t !== routeIn) && (t === routeOut || calls.slice(at + 1).some((later) => later.types.includes(t))),
+          );
+          return out.length === 1 ? [[coinIn, out[0]] as [string, string]] : [];
+        });
+      if (readings.length !== 1) break;
+      pairs.push([call.index, readings[0]]);
+      held.add(readings[0][1]);
     }
-    if (path.length === calls.length && coin === route[1])
-      for (const [index, pair] of path) hops.set(index, pair);
+    if (pairs.length !== calls.length || !held.has(routeOut)) continue;
+    contexts.add(start);
+    for (const [index, pair] of pairs) hops.set(index, pair);
   }
-  return hops;
+  return { hops, contexts };
 }
 
 /**
@@ -449,7 +466,7 @@ export function decodeTransaction(
   for (const cmd of commands) {
     const c = cmd.command;
     if (c.oneofKind !== "moveCall") continue;
-    if (c.moveCall.module === "router" && c.moveCall.function === "new_swap_context") hasSwapContext = true;
+    if (c.moveCall.module === "router" && c.moveCall.function?.startsWith("new_swap_context")) hasSwapContext = true;
     const op = lookupOperation(c.moveCall.module ?? "", c.moveCall.function ?? "");
     if (op && NET_POLLUTING_ACTIONS.has(op.action)) {
       pollutingLegs.push(new Set((c.moveCall.typeArguments ?? []).flatMap((t) => t.split(/[<>,\s]+/).filter(Boolean))));
@@ -468,7 +485,7 @@ export function decodeTransaction(
   }
   const hasCoinEvidence = (t: string) => coinTypes.has(t) || isVerifiedCoin(t);
   const markers = routeMarkers(commands, hasCoinEvidence);
-  const contextHops = hasSwapContext ? swapContextHops(commands) : null;
+  const swapContexts = hasSwapContext ? swapContextHops(commands) : null;
   // For each routed call, the own types of the next routed call in its path;
   // a path's last call has none. And per package, its last call passing
   // exactly two types with no marker: a router's closing call names the coin
@@ -523,14 +540,15 @@ export function decodeTransaction(
         // truncated 0x address, and nothing downstream of the decoder makes a
         // trust decision on it.
         const proto = lookupProtocolDisplay(pkg, { custody: opts.custodyFor?.has(normalizeSuiAddress(pkg)) ?? false });
-        const contextHop = contextHops?.get(index);
-        const op = lookupOperation(mod, fn) ?? (contextHop ? CONTEXT_SWAP : null);
+        const contextHop = swapContexts?.hops.get(index);
+        const op = contextHop ? CONTEXT_SWAP : lookupOperation(mod, fn);
 
         if (proto) {
           protocols.add(proto.name);
         }
 
-        if (op?.skip) {
+        // A context whose swaps are labelled one by one is not a swap itself.
+        if (op?.skip || swapContexts?.contexts.has(index)) {
           break;
         }
 

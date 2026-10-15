@@ -67,9 +67,13 @@
 
 ### Fixed
 - **Swap-context routes label their executed pool hops.** `get_transaction`
-  follows the coin through consecutive calls sharing a router context and
-  labels each swap in command order. Creating the context does not count as a
-  swap; its declared input and output describe the whole route.
+  labels each pool call of a router swap context (`new_swap_context` and
+  `new_swap_context_v3`) in command order, including routes split into
+  paths that run side by side. A call takes in a coin the context already
+  holds and gives out one the route's output or a later call names; fee-tier
+  and LP types are passed over. A context with a call that can be read more
+  than one way, or that names only one coin, keeps its single route-wide
+  label.
 
 ## 1.27.0 (2026-10-06)
 

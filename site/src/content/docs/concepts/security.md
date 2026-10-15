@@ -49,9 +49,12 @@ as visible `\u` escapes. It escapes angle brackets and Markdown links in
 human-readable fields and cuts each field after 2,048 characters with the
 number removed. Addresses, digests, amounts and Move type tags retain their
 exact spelling. Code listings retain their lines and type tags, so their
-contents must still be read as untrusted data. Plain-text reports and diagrams
-retain their formatting. An MCP client remains responsible for rendering
-tool text as data rather than active HTML.
+contents must still be read as untrusted data. No tool is exempt from the JSON
+guard. The Markdown, Mermaid and CSV outputs of `export_case` and the Mermaid
+and CSV outputs of `trace_flow_graph` and `find_flow_path` retain their report
+and diagram formatting; these plain-text formats carry no JSON
+`untrusted_text` field. Clients must render tool text as data rather than
+active HTML.
 
 Stored-result resource pages apply the same guard to omitted rows.
 

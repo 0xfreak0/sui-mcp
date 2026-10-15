@@ -61,24 +61,34 @@
  *    read over gRPC, and an UpgradeCap the publish destroyed against that
  *    publish.
  *
- * g. First funding: complete earliest transaction balance changes, the
- *    0.01 SUI or $0.10 coin floor, and direct current quotes and metadata.
- *    An unpriced inflow whose supply or send shape could qualify is skipped.
- * h. Complete coin holder rankings: independently enumerate Coin<T> objects
- *    and accumulator address-balance fields for coins with at most 250 entries.
- * i. Staked SUI reward at a checkpoint: historical holdings immediately
- *    before a withdrawal, compared with its UnstakingRequestEvent payout
- *    in the same epoch (a capped reward is a skip).
- * j. Native bridge recipient: decode twenty raw target bytes from a
- *    TokenDepositedEvent and compare the reported EVM recipient.
- * k. Past SUI balance: a fixed checkpoint balance less every change in
- *    (target, anchor], for a target outside the consistent read range.
- * l. get_checkpoint, which has no case check: compare its gRPC answer with
- *    the GraphQL checkpoint record at random heights in all three eras.
+ * g. First funding. find_funding_source's first hop against the first of
+ *    the address's earliest twelve transactions with an inflow that clears
+ *    the 0.01 SUI or $0.10 floor, read from complete balance changes and
+ *    priced by a direct Aftermath request with decimals over gRPC. An
+ *    unpriced inflow counts at 1% of supply (GraphQL coinMetadata) and is
+ *    spam under 0.01%; a share between them, which the publisher and send
+ *    shape decide, is a skip.
+ * h. Complete coin holder rankings, for coins with at most 250 Coin<T>
+ *    objects and address balances. The two walks are the queries the tool
+ *    makes; the summing, ranking and counts are recomputed, and each listed
+ *    holder's total is checked against a gRPC balance read.
+ * i. Staked SUI reward at a checkpoint: get_staking_summary at the
+ *    checkpoint before a withdrawal, for the StakedSui it deleted, against
+ *    its UnstakingRequestEvent in the same epoch. A lower payout is a skip
+ *    only when it equals the pool's whole rewards_pool before the
+ *    withdrawal, the cap withdraw_rewards applies.
+ * j. Native bridge recipient, sender, amount and transfer id, decoded from
+ *    the TokenDepositedEvent's own BCS over gRPC (fullnode, then archive).
+ * k. Past SUI balance: a balance read at an anchor checkpoint near the top
+ *    of the consistent range, less every change in (target, anchor], for a
+ *    target below that range.
+ * l. get_checkpoint by number (digest, previous digest, time, epoch,
+ *    transaction count) and by time (the checkpoint and its edges) against
+ *    GraphQL's checkpoint records, at a random height in each era.
  *
  * Sampling. `--seed` (default random) and `--tip` (default the latest
- * checkpoint) are printed first; `--seed S --tip T` redraws the fixed-range
- * subjects. Transactions come from three eras: effects version 1 (every
+ * checkpoint) are printed first; `--seed S --tip T` redraws the subjects of
+ * a to f. Transactions come from three eras: effects version 1 (every
  * checkpoint before 23,897,141), later, and the newest million checkpoints.
  * `--scan` random checkpoints per era (default 8) are read, and from them
  * `--txs` transactions per era (default 4) go to c and e, one that wraps an
@@ -91,20 +101,26 @@
  * go to a, c and e, and `--coins` registry coins (default 6, alternately
  * registered through `finalize_registration` and migrated through
  * `migrate_legacy_metadata`) to d and f, with their package's UpgradeCap to
- * b. Drawn senders and SUI recipients go to g, small registry
- * coins to h, recent stake withdrawals to i, native bridge sends to j,
- * addresses active around the balance service's consistent-range boundary
- * to k, and one random checkpoint in each era to l. `--jobs` subjects run
- * at once through one server (default 2).
+ * b. Drawn senders and SUI recipients go to g, three registry coins small
+ * enough to walk to h, successful stake withdrawals inside the consistent
+ * range to i, native bridge sends to j, addresses active between a target
+ * below the balance range and an anchor at its top to k, and one random
+ * checkpoint per era to l. `--jobs` subjects run at once through one server
+ * (default 2).
  * `VERBOSE=1` prints both sides of every agreement too.
  *
  * `--subjects` pins the subjects instead, as JSON or a file holding it:
- * `{"g":["0x..."],"h":["0xpkg::coin::T"],"i":["digest"],
- * "j":["digest"],"k":["0xaddress@targetCheckpoint@anchorCheckpoint"],
- * "l":["checkpointNumber"]}`. Oracles a-f accept digests, object/package
- * IDs and coin types as stated above. Only named oracles run; `--dist`
- * runs another build. The consistent-range boundary for k moves with the
- * service: pin k's printed triples to reproduce that draw.
+ * `{"a":[digest],"b":[object or package id],"c":[digest],"d":[coin type],
+ * "e":[digest],"f":[package id],"g":[address],"h":[coin type],
+ * "i":[digest],"j":[digest],"k":["address@target@anchor"],
+ * "l":[checkpoint]}`. Only the oracles it names run; a package given to b
+ * stands for its UpgradeCap. `--dist` runs another build's `dist/index.js`.
+ *
+ * The draws for g to l also read live state: prices, holder sets, and the
+ * consistent range that places i's window and k's checkpoints. `--seed` and
+ * `--tip` alone do not redraw them; pin the printed subjects instead. A k
+ * triple stays checkable while its anchor is inside the consistent range,
+ * about an hour.
  *
  * With `SUI_REPLAY_DIR` set, the server and the fixed raw reads (a
  * transaction by digest, a checkpoint, an object at a version, a closed
@@ -123,11 +139,18 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bcs } from "@mysten/sui/bcs";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { GrpcTransport } from "@protobuf-ts/grpc-transport";
+import { ChannelCredentials } from "@grpc/grpc-js";
 import { startServer, gql as gqlOnce, ROOT } from "./lib/mcp-client.mjs";
 import { extraOracles } from "./lib/oracle-extra.mjs";
 
 /** The fullnode over gRPC: the second transport truth is read through where the tool uses GraphQL. */
 const grpc = new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io" });
+/** The archive, native gRPC, for transactions the fullnode has pruned. */
+const archive = new SuiGrpcClient({
+  network: "mainnet",
+  transport: new GrpcTransport({ host: "archive.mainnet.sui.io:443", channelCredentials: ChannelCredentials.createSsl() }),
+});
 
 /**
  * Disagreements already tracked. An entry names its oracles, a note saying
@@ -161,12 +184,24 @@ const ORACLES = {
     title: "cap owners",
     how: "gRPC getObject owner of each capability, walked to the object holding an object-owned one; for one no longer live, idDeleted in the transaction that ended it; for an UpgradeCap destroyed at publish, the publish's transactionJson",
   },
-  g: { title: "first funding", how: "oldest affected-address transactions and each transaction's complete balance changes; direct live coin prices and metadata for the 0.01 SUI or $0.10 non-SUI floor" },
-  h: { title: "complete holder ranking", how: "independent exhaustive Coin<T> and accumulator address-balance field walks, summed by owner before ranking" },
-  i: { title: "staked SUI reward at checkpoint", how: "unstaking request event's executed principal and reward, matched to a unique stake held at the preceding checkpoint in the same epoch" },
-  j: { title: "native bridge beneficiary", how: "TokenDepositedEvent target_address decoded directly from base64 event bytes for an EVM destination" },
-  k: { title: "historical SUI balance", how: "balance at a fixed consistent-range checkpoint minus every owner's SUI change through that checkpoint, against get_balance reconstruction" },
-  l: { title: "checkpoint without case check", how: "GraphQL checkpoint epoch and timestamp against get_checkpoint's gRPC response" },
+  g: {
+    title: "first funding",
+    how: "the oldest twelve affectedAddress transactions (the index the tool also reads), each one's complete GraphQL balanceChanges, an Aftermath price request, decimals over gRPC getCoinInfo and supply from GraphQL coinMetadata",
+  },
+  h: {
+    title: "complete holder ranking",
+    how: "the Coin<T> and address-balance field walks the tool also runs, summed, ranked and counted here, and each listed holder's total against gRPC getBalance",
+  },
+  i: {
+    title: "staked SUI reward at checkpoint",
+    how: "the UnstakingRequestEvent's principal and reward for the StakedSui the withdrawal deleted; a lower payout is the cap only when it equals the pool's rewards_pool in the system state the transaction read",
+  },
+  j: { title: "native bridge beneficiary", how: "TokenDepositedEvent BCS over gRPC (fullnode, then archive), decoded field by field" },
+  k: {
+    title: "historical SUI balance",
+    how: "address balance at an anchor near the top of the consistent range, less the SUI change in every affectedAddress transaction in (target, anchor] (the index the tool also reads, with another anchor)",
+  },
+  l: { title: "checkpoint by number and time", how: "GraphQL checkpoint records of the checkpoint and the one before it, against get_checkpoint's gRPC read" },
 };
 for (const o of Object.values(ORACLES)) o.rows = [];
 
@@ -664,7 +699,7 @@ async function truthOf(oracle, key, subject, read) {
     return skip(oracle, key, subject, `truth unreadable: ${String(err?.message ?? err).slice(0, 300)}`), null;
   }
 }
-const extra = extraOracles({ gql, grpc, rawTx, callTool, answerOf, truthOf, record, skip });
+const extra = extraOracles({ gql, grpc, archive, rawTx, callTool, answerOf, truthOf, record, skip });
 
 // ---- a. swap labels ---------------------------------------------------------
 const DIRECTION = ["atob", "a_to_b", "a2b", "x_for_y"];
@@ -1207,59 +1242,77 @@ async function drawCoins() {
 }
 
 async function drawExtra(txs, coins, eras) {
- const funding = [];
- for (const t of shuffled(txs)) {
-  const tx = await rawTx(t.digest).catch(() => null);
-  if (!tx) continue;
-  for (const c of tx.balances) if (c.amount > 0n && c.coin === `${ADDR2}::sui::SUI` && c.owner !== tx.sender && !funding.includes(c.owner)) funding.push(c.owner);
-  // A sampled sender had to acquire gas before transacting; its first
-  // funding need not be inside the sampled transaction.
-  if (tx.sender && !funding.includes(tx.sender)) funding.push(tx.sender);
- }
- const small = [];
- const candidates = [...coins.map((c) => c.type)];
- for (let n = 0; n < 3; n++) {
-  const drawn = await drawCoins();
-  for (const c of drawn) if (!candidates.includes(c.type)) candidates.push(c.type);
- }
- for (const type of shuffled(candidates)) {
-  if (small.length >= 3) break;
-  try {
-   const probe = await gql(`query($coin:String!,$balance:String!){
-    c:objects(filter:{type:$coin},first:50){pageInfo{hasNextPage} nodes{address}}
-    b:objects(filter:{type:$balance},first:50){pageInfo{hasNextPage} nodes{address}}
-   }`, { coin: `0x2::coin::Coin<${type}>`, balance: `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${type}>>,0x2::accumulator::U128>` });
-   if (!probe.c.pageInfo.hasNextPage && !probe.b.pageInfo.hasNextPage && probe.c.nodes.length + probe.b.nodes.length > 0) small.push(type);
-  } catch (err) { console.log(`  small-coin candidate ${type} unreadable: ${String(err).slice(0, 120)}`); }
- }
- const ranges = await gql(`{ serviceConfig{
-  stakes:availableRange(type:"Address",field:"objects"){first{sequenceNumber}last{sequenceNumber}}
-  balances:availableRange(type:"Address",field:"balance"){first{sequenceNumber}last{sequenceNumber}}
- } }`);
- const liveStart = Number(ranges.serviceConfig.stakes.first.sequenceNumber);
- const rangeTop = Math.min(TIP - SETTLE, Number(ranges.serviceConfig.stakes.last.sequenceNumber) - 10);
- const withdrawals = rangeTop > liveStart
-  ? await gql(`query($a:UInt53!,$b:UInt53!){transactions(filter:{function:"0x3::sui_system::request_withdraw_stake",afterCheckpoint:$a,beforeCheckpoint:$b},last:30){nodes{digest}}}`, { a: Math.max(liveStart + 10, rangeTop - 2000), b: rangeTop + 1 })
-  : { transactions: { nodes: [] } };
- const stake = shuffled(withdrawals.transactions.nodes.map((n) => n.digest)).slice(0, 3);
- const bridge = [];
- for (let i = 0; i < 4 && bridge.length < 3; i++) {
-  const nodes = await callsInWindow("0xb::bridge::send_token", 400_000, "effects{status}");
-  for (const n of shuffled(nodes.filter((x) => x.effects?.status === "SUCCESS"))) if (!bridge.includes(n.digest)) bridge.push(n.digest);
- }
- const at = Number(ranges.serviceConfig.balances.first.sequenceNumber) - 50;
- const anchor = Math.min(Number(ranges.serviceConfig.balances.first.sequenceNumber) + 1000, Number(ranges.serviceConfig.balances.last.sequenceNumber) - 100);
- const c = await gql(`query($s:UInt53!){checkpoint(sequenceNumber:$s){transactions(first:50){nodes{sender{address}}}}}`, { s: at + 1 }, true);
- const balances = [];
- const addresses = shuffled([...new Set((c.checkpoint?.transactions?.nodes ?? []).map((n) => n.sender?.address).filter(Boolean))]);
- for (const address of addresses.slice(0, 20)) {
-  if (balances.length >= 3) break;
-  const history = await gql(`query($a:SuiAddress!,$lo:UInt53!,$hi:UInt53!){transactions(filter:{affectedAddress:$a,afterCheckpoint:$lo,beforeCheckpoint:$hi},first:50){nodes{digest}pageInfo{hasNextPage}}}`, { a: address, lo: at, hi: anchor + 1 }, true);
-  if (history.transactions.nodes.length && !history.transactions.pageInfo.hasNextPage)
-   balances.push({ address, target: at, anchor });
- }
- const checkpoints = eras.map((era) => randInt(era.lo, era.hi));
- return { funding: shuffled(funding).slice(0, 8), small, stake, bridge: bridge.slice(0, 3), balances, checkpoints };
+  const funding = [];
+  for (const t of shuffled(txs)) {
+    const tx = await rawTx(t.digest).catch(() => null);
+    if (!tx) continue;
+    for (const c of tx.balances) if (c.amount > 0n && c.coin === `${ADDR2}::sui::SUI` && c.owner !== tx.sender && !funding.includes(c.owner)) funding.push(c.owner);
+    // A sampled sender had to acquire gas before transacting; its first
+    // funding need not be inside the sampled transaction.
+    if (tx.sender && !funding.includes(tx.sender)) funding.push(tx.sender);
+  }
+  const small = [];
+  const candidates = [...coins.map((c) => c.type)];
+  for (let n = 0; n < 3; n++) {
+    const drawn = await drawCoins();
+    for (const c of drawn) if (!candidates.includes(c.type)) candidates.push(c.type);
+  }
+  for (const type of shuffled(candidates)) {
+    if (small.length >= 3) break;
+    try {
+      const probe = await gql(`query($coin:String!,$balance:String!){
+        c:objects(filter:{type:$coin},first:50){pageInfo{hasNextPage} nodes{address}}
+        b:objects(filter:{type:$balance},first:50){pageInfo{hasNextPage} nodes{address}}
+      }`, { coin: `0x2::coin::Coin<${type}>`, balance: `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${type}>>,0x2::accumulator::U128>` });
+      if (!probe.c.pageInfo.hasNextPage && !probe.b.pageInfo.hasNextPage && probe.c.nodes.length + probe.b.nodes.length > 0) small.push(type);
+    } catch (err) { console.log(`  small-coin candidate ${type} unreadable: ${String(err).slice(0, 120)}`); }
+  }
+  const ranges = await gql(`{ serviceConfig{
+    stakes:availableRange(type:"Address",field:"objects"){first{sequenceNumber}last{sequenceNumber}}
+    balances:availableRange(type:"Address",field:"balance"){first{sequenceNumber}last{sequenceNumber}}
+  } }`);
+  // Historical staking reads owned objects inside the consistent range, so
+  // withdrawals are drawn from all of it, paging back while the service
+  // says more rows remain (one read can come back short).
+  const liveStart = Number(ranges.serviceConfig.stakes.first.sequenceNumber);
+  const rangeTop = Math.min(TIP - SETTLE, Number(ranges.serviceConfig.stakes.last.sequenceNumber) - 10);
+  const withdrawals = [];
+  for (let page = 0, before = null; page < 6 && rangeTop > liveStart + 10; page++) {
+    const d = await gql(`query($a:UInt53!,$b:UInt53!,$c:String){transactions(filter:{function:"0x3::sui_system::request_withdraw_stake",afterCheckpoint:$a,beforeCheckpoint:$b},last:50,before:$c){nodes{digest effects{status}} pageInfo{hasPreviousPage startCursor}}}`, { a: liveStart + 10, b: rangeTop + 1, c: before });
+    for (const n of d.transactions.nodes) if (n.effects?.status === "SUCCESS") withdrawals.push(n.digest);
+    if (!d.transactions.pageInfo.hasPreviousPage || withdrawals.length >= 50) break;
+    before = d.transactions.pageInfo.startCursor;
+    if (!before) break;
+  }
+  const stake = shuffled(withdrawals).slice(0, 3);
+  const bridge = [];
+  for (let i = 0; i < 4 && bridge.length < 3; i++) {
+    const nodes = await callsInWindow("0xb::bridge::send_token", 400_000, "effects{status}");
+    for (const n of shuffled(nodes.filter((x) => x.effects?.status === "SUCCESS"))) if (!bridge.includes(n.digest)) bridge.push(n.digest);
+  }
+  // The target sits below the balance range, so the tool must reconstruct
+  // it; the anchor sits near the range's top so it stays readable for about
+  // as long as the range spans. Candidates are the senders and balance-change
+  // owners of random checkpoints in between, kept when the interval holds at
+  // most 50 of their transactions.
+  const at = Number(ranges.serviceConfig.balances.first.sequenceNumber) - 50;
+  const anchor = Number(ranges.serviceConfig.balances.last.sequenceNumber) - 200;
+  const owners = [];
+  for (let i = 0; i < 6 && anchor > at; i++) {
+    const c = await gql(`query($s:UInt53!){checkpoint(sequenceNumber:$s){transactions(first:20){nodes{sender{address} effects{balanceChanges(first:10){nodes{owner{address}}}}}}}}`, { s: randInt(at + 1, anchor) }, true);
+    for (const n of c.checkpoint?.transactions?.nodes ?? [])
+      for (const a of [n.sender?.address, ...(n.effects?.balanceChanges?.nodes ?? []).map((b) => b.owner?.address)])
+        if (a && !owners.includes(normAddr(a))) owners.push(normAddr(a));
+  }
+  const balances = [];
+  for (const address of shuffled(owners).slice(0, 30)) {
+    if (balances.length >= 3) break;
+    const history = await gql(`query($a:SuiAddress!,$lo:UInt53!,$hi:UInt53!){transactions(filter:{affectedAddress:$a,afterCheckpoint:$lo,beforeCheckpoint:$hi},first:50){nodes{digest}pageInfo{hasNextPage}}}`, { a: address, lo: at, hi: anchor + 1 }, true);
+    if (history.transactions.nodes.length && !history.transactions.pageInfo.hasNextPage)
+      balances.push({ address, target: at, anchor });
+  }
+  const checkpoints = eras.map((era) => randInt(era.lo, era.hi));
+  return { funding: shuffled(funding).slice(0, 8), small, stake, bridge: bridge.slice(0, 3), balances, checkpoints };
 }
 
 // ---- plan and run --------------------------------------------------------------
@@ -1277,19 +1330,19 @@ if (PINNED) {
   for (const t of PINNED.d ?? []) task((k) => checkMintAuthority(k, t));
   for (const d of PINNED.e ?? []) task((k) => checkFlows(k, d));
   for (const p of PINNED.f ?? []) task((k) => checkCapOwners(k, p));
- for (const a of PINNED.g ?? []) task((k) => extra.funding(k, a));
- for (const t of PINNED.h ?? []) task((k) => extra.holders(k, t));
- for (const d of PINNED.i ?? []) task((k) => extra.stakeValue(k, d));
- for (const d of PINNED.j ?? []) task((k) => extra.bridge(k, d));
- for (const item of PINNED.k ?? []) {
-  const [address, target, anchor] = item.split("@");
-  if (!address || !/^\d+$/.test(target) || !/^\d+$/.test(anchor)) usage(`--subjects k: use address@target@anchor, got ${item}`);
-  task((key) => extra.historicalBalance(key, { address, target: Number(target), anchor: Number(anchor) }));
- }
- for (const s of PINNED.l ?? []) {
-  if (!/^\d+$/.test(s)) usage(`--subjects l: use a checkpoint number, got ${s}`);
-  task((k) => extra.checkpoint(k, Number(s)));
- }
+  for (const a of PINNED.g ?? []) task((k) => extra.funding(k, a));
+  for (const t of PINNED.h ?? []) task((k) => extra.holders(k, t));
+  for (const d of PINNED.i ?? []) task((k) => extra.stakeValue(k, d));
+  for (const d of PINNED.j ?? []) task((k) => extra.bridge(k, d));
+  for (const item of PINNED.k ?? []) {
+    const [address, target, anchor] = item.split("@");
+    if (!address || !/^\d+$/.test(target) || !/^\d+$/.test(anchor)) usage(`--subjects k: use address@target@anchor, got ${item}`);
+    task((key) => extra.historicalBalance(key, { address, target: Number(target), anchor: Number(anchor) }));
+  }
+  for (const s of PINNED.l ?? []) {
+    if (!/^\d+$/.test(s)) usage(`--subjects l: use a checkpoint number, got ${s}`);
+    task((k) => extra.checkpoint(k, Number(s)));
+  }
 } else {
   console.log(`seed ${SEED}  tip ${TIP}`);
   console.log(
@@ -1368,16 +1421,16 @@ if (PINNED) {
       await checkObjectEnd(k, { pkg: c.type.split("::")[0], label: `UpgradeCap of ${c.type.split("::")[0]}`, why: `package of ${c.how} coin` });
     });
   }
- const more = await drawExtra(txs, coins, eras);
- console.log(`  funding: ${more.funding.join(", ")}; small coins: ${more.small.join(", ")}`);
- console.log(`  withdrawals: ${more.stake.join(", ")}; native bridge: ${more.bridge.join(", ")}`);
- console.log(`  balance: ${more.balances.map((b) => `${b.address}@${b.target}@${b.anchor}`).join(", ")}; checkpoints: ${more.checkpoints.join(", ")}`);
- for (const address of more.funding) task((k) => extra.funding(k, address));
- for (const type of more.small) task((k) => extra.holders(k, type));
- for (const digest of more.stake) task((k) => extra.stakeValue(k, digest));
- for (const digest of more.bridge) task((k) => extra.bridge(k, digest));
- for (const pair of more.balances) task((k) => extra.historicalBalance(k, pair));
- for (const sequence of more.checkpoints) task((k) => extra.checkpoint(k, sequence));
+  const more = await drawExtra(txs, coins, eras);
+  console.log(`  funding: ${more.funding.join(", ")}; small coins: ${more.small.join(", ")}`);
+  console.log(`  withdrawals: ${more.stake.join(", ")}; native bridge: ${more.bridge.join(", ")}`);
+  console.log(`  balance: ${more.balances.map((b) => `${b.address}@${b.target}@${b.anchor}`).join(", ")}; checkpoints: ${more.checkpoints.join(", ")}`);
+  for (const address of more.funding) task((k) => extra.funding(k, address));
+  for (const type of more.small) task((k) => extra.holders(k, type));
+  for (const digest of more.stake) task((k) => extra.stakeValue(k, digest));
+  for (const digest of more.bridge) task((k) => extra.bridge(k, digest));
+  for (const pair of more.balances) task((k) => extra.historicalBalance(k, pair));
+  for (const sequence of more.checkpoints) task((k) => extra.checkpoint(k, sequence));
 }
 
 let next = 0;
@@ -1406,10 +1459,10 @@ for (const [id, o] of Object.entries(ORACLES)) {
   const rows = [...o.rows].sort((a, b) => a.key - b.key);
   const n = (s) => rows.filter((r) => r.status === s).length;
   // A drawn oracle whose bounds allow subjects must check something.
- const drawn = {
-  a: ROUTER_N, b: ENDS + COINS, c: TXS + ROUTER_N, d: COINS, e: TXS + ROUTER_N, f: COINS,
-  g: TXS * 3, h: 3, i: 3, j: 3, k: 3, l: 3
- };
+  const drawn = {
+    a: ROUTER_N, b: ENDS + COINS, c: TXS + ROUTER_N, d: COINS, e: TXS + ROUTER_N, f: COINS,
+    g: TXS * 3, h: 3, i: 3, j: 3, k: 3, l: 3
+  };
   const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
   if (!rows.length && !requested) continue;
   const checked = n("agree") + n("disagree") + n("known");

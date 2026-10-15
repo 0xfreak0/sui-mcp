@@ -188,12 +188,20 @@ export function affectedBy(range, root, { registered = [] } = {}) {
   return mapChanges(changedFiles(range, root), buildGraph(readSources(root)), { registered });
 }
 
-/** Probe scripts under `dir` and their text, keyed by file name. */
+/**
+ * Probe scripts under `dir` and their text, keyed by file name. A script's
+ * text includes the `./lib/` modules it imports, so a tool called from a
+ * module that holds part of one script's checks counts for that script.
+ */
 export function probeSources(dir) {
   return new Map(
     readdirSync(dir)
       .filter((f) => f.endsWith(".mjs"))
-      .map((f) => [f, readFileSync(join(dir, f), "utf8")]),
+      .map((f) => {
+        const src = readFileSync(join(dir, f), "utf8");
+        const libs = [...src.matchAll(/\bfrom\s+["']\.\/(lib\/[\w.-]+\.mjs)["']/g)].map((m) => readFileSync(join(dir, m[1]), "utf8"));
+        return [f, [src, ...libs].join("\n")];
+      }),
   );
 }
 

@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildGraph, callsTool, mapChanges, ORACLE_PROBES, pickAffected, pickSmoke, probePlan } from "../scripts/probe/lib/tiers.mjs";
+import { buildGraph, callsTool, mapChanges, ORACLE_PROBES, pickAffected, pickSmoke, probePlan, probeSources } from "../scripts/probe/lib/tiers.mjs";
 import { registeredTools } from "./helpers/tool-names.js";
 
 /** A small synthetic server source tree. */
@@ -156,10 +155,9 @@ describe("probe scripts per tier", () => {
 describe("oracle probes", () => {
   it("list exactly the tools their scripts call", () => {
     const names = registeredTools().map((t) => t.name);
-    const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "probe");
+    const sources = probeSources(join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "probe"));
     for (const [file, listed] of Object.entries(ORACLE_PROBES)) {
-      const src = readFileSync(join(dir, file), "utf8") +
-        (file === "oracle-pass.mjs" ? readFileSync(join(dir, "lib", "oracle-extra.mjs"), "utf8") : "");
+      const src = sources.get(file) ?? "";
       expect([...listed].sort(), file).toEqual(names.filter((t) => callsTool(src, t)).sort());
     }
   });

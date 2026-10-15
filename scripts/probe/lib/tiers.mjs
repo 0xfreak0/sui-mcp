@@ -252,7 +252,7 @@ export const NOT_COVERAGE = new Set(["adversarial.mjs"]);
  * `test/tiers.test.ts` holds each list equal to the tools its script calls.
  */
 export const ORACLE_PROBES = {
-  "oracle-pass.mjs": ["analyze_package", "get_transaction", "get_upgrade_history", "trace_object_history"],
+  "oracle-pass.mjs": ["analyze_package", "find_funding_source", "get_balance", "get_checkpoint", "get_staking_summary", "get_top_holders", "get_transaction", "get_upgrade_history", "resolve_bridge_transfer", "trace_object_history"],
 };
 
 /**

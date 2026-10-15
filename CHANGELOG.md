@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Live oracle pass checks funding, holders, staking, bridges and past balances.** Seeded draws compare first qualifying funding from transaction balance changes and independently read prices, small-coin holder rankings, historical staked SUI rewards, native bridge recipients and reconstructed balances with separate chain reads. A random checkpoint check covers `get_checkpoint`, which has no incident case.
 - **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
 - **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.

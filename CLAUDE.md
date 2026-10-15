@@ -1016,17 +1016,30 @@ check that fails there runs again alone on a fresh server before it counts,
 since a tool with a wall-clock budget (`SCAN_TIME_BUDGET_MS` in
 `get_top_holders`) reads less while it waits on a shared window.
 
-`oracle-pass.mjs` checks answers on subjects drawn at random each run, from
-the effects version 1 era, later and the newest checkpoints, router
-transactions and registry coins, against the same fact read from the chain
-by another path: swap labels against pool events, object ends and object
-changes against GraphQL `objectChanges` (effects version 1 against its own
-BCS), mint authority against the registry and a `TreasuryCap<T>` type query,
-flows against `balanceChanges`, cap owners against live owners. An oracle
-never reads truth through the helper the tool uses, and a tool change that
-reaches `ORACLE_PROBES` in `lib/tiers.mjs` runs it in the affected tier. A
-disagreement fails it unless its `KNOWN_DEFECTS` lists it; `--subjects`
-pins subjects and `--dist` runs another build.
+`oracle-pass.mjs` draws subjects across the effects version 1 era, later
+checkpoints and recent chain state. It compares swap labels against pool
+events, object ends and changes against GraphQL `objectChanges` (effects
+version 1 against its own BCS), mint authority against the registry and a
+`TreasuryCap<T>` type query, flows against `balanceChanges`, and capability
+owners against live owners. It also checks first funding from complete earliest
+transaction balance changes, pricing non-SUI inflows with an independent
+provider request and coin metadata read. An unpriced coin can qualify by supply
+or send shape, so that case remains a skip. It checks complete small-coin
+holder rankings with independent `Coin<T>` and address-balance walks, staked
+SUI rewards at the preceding checkpoint against executed withdrawal events,
+native bridge recipients against raw event bytes, and older SUI balances by
+subtracting transaction changes from a balance pinned at a consistent-range
+checkpoint. `get_checkpoint` has no case check, so this pass checks random
+checkpoint heights against GraphQL's epoch and timestamp. A holder walk cut
+short, a stake payout limited by its pool or an incomplete balance range is a
+skip, never an agreement.
+
+Oracle truth never passes through the helper that produced the tool answer.
+`ORACLE_PROBES` in `lib/tiers.mjs` runs this pass when a checked tool changes.
+Unknown disagreements fail unless `KNOWN_DEFECTS` lists them. `--subjects`
+pins subjects, including an `address@target@anchor` triple for a historical
+balance; `--dist` runs another build. The consistent-range boundary moves,
+so `--seed` and `--tip` alone do not reproduce its balance triples.
 
 `detector-pass.mjs` scores the anomaly detectors of `analyze_attack_tx` and
 `decode_ptb` (by digest, and on the transaction's own BCS as the pre-sign

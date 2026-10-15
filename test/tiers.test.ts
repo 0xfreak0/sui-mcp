@@ -158,7 +158,8 @@ describe("oracle probes", () => {
     const names = registeredTools().map((t) => t.name);
     const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "probe");
     for (const [file, listed] of Object.entries(ORACLE_PROBES)) {
-      const src = readFileSync(join(dir, file), "utf8");
+      const src = readFileSync(join(dir, file), "utf8") +
+        (file === "oracle-pass.mjs" ? readFileSync(join(dir, "lib", "oracle-extra.mjs"), "utf8") : "");
       expect([...listed].sort(), file).toEqual(names.filter((t) => callsTool(src, t)).sort());
     }
   });

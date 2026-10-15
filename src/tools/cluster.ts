@@ -316,9 +316,15 @@ export function registerClusterTools(server: McpServer) {
                   : {}),
                 ...(clustered.untrusted_edges.length
                   ? {
-                      observed_but_below_threshold: clustered.untrusted_edges,
+                      // The pair's signals and digests are already in `edges`.
+                      observed_but_below_threshold: clustered.untrusted_edges.map(({ wallet_a, wallet_b, signal_types, weight }) => ({
+                        wallet_a,
+                        wallet_b,
+                        signal_types,
+                        weight,
+                      })),
                       below_threshold_note:
-                        "These pairs share a signal but not enough to merge under the current rule. Reported rather than dropped — they are leads, and lowering min_signal_types or reading the evidence yourself may change the picture.",
+                        "These pairs share a signal but not enough to merge under the current rule; their evidence is in `edges`. Reported rather than dropped — they are leads, and lowering min_signal_types or reading the evidence yourself may change the picture.",
                     }
                   : {}),
               

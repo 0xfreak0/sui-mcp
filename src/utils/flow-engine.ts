@@ -197,6 +197,9 @@ interface Job {
 export interface PrunedBranch {
   address: string;
   coin_type: string;
+ /** Set when the pruned branch is an object rather than a coin. */
+ object_id?: string;
+ object_type?: string;
   share: number;
   usd: number | null;
   digest: string;
@@ -562,7 +565,7 @@ export class FlowEngine {
      if (delta > 0) {
       const whole = forward ? delta + Math.max(0, kept.usd_after) : Math.max(kept.usd_after, delta);
       const part = Math.min(1, delta / whole);
-      await this.convertObject(n, kept, digest, tx, share * part, delta, values);
+      await this.convertObject(n, job.from, kept, digest, tx, share * part, delta, values);
       share *= 1 - part;
       if (share <= 0) return;
      }
@@ -594,7 +597,7 @@ export class FlowEngine {
      row, digest, tx);
     return;
    }
-   await this.convertObject(n, row, digest, tx, share, row.usd, values);
+   await this.convertObject(n, job.from, row, digest, tx, share, row.usd, values);
    return;
   }
   const stopped = !scan.exhausted || this.txReads >= this.opts.maxTxReads;
@@ -611,9 +614,12 @@ export class FlowEngine {
   * Pass `share` of a redeemed object, or of the part drawn from it in place,
   * worth `value`, to the transaction's priced coin proceeds (forward) or to
   * its priced payers (backward). Several objects converted in one
-  * transaction divide the coins by value.
+  * transaction divide the coins by value. The holder's own coins arrive from
+  * `prev`, the party the object came through: the object kept its identity
+  * at the holder, but coins mix with the holder's own, so a holder that
+  * pools others' funds is a hub for them.
   */
- private async convertObject(n: GraphNode, row: MovedObjectValue, digest: string, tx: FetchedTx, share: number, value: number, values: ObjectRead): Promise<void> {
+ private async convertObject(n: GraphNode, prev: string | null, row: MovedObjectValue, digest: string, tx: FetchedTx, share: number, value: number, values: ObjectRead): Promise<void> {
   const forward = this.opts.direction === "forward";
   const valueUsd = await this.valuer(tx);
   const split = forward
@@ -654,7 +660,7 @@ export class FlowEngine {
    const target = nodeId(b.address, b.coin_type);
    this.connect({
     node: target, share: share * covered * usd / usdTotal, need: traced, arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
-    depth: n.depth + 1, from: n.address, via: n.id,
+    depth: n.depth + 1, from: b.address === n.address ? (prev ?? n.address) : n.address, via: n.id,
    }, b.address, b.coin_type, forward ? n.id : target, forward ? target : n.id,
     { amount: b.amount, traced, usd, basis: "conversion", digest, tx });
   }
@@ -679,8 +685,10 @@ export class FlowEngine {
   // An address-owned object leaves only in a transaction its owner sends.
   const scan = await scanObjectTouches(address, undefined, undefined, this.opts.direction, this.opts.window, MOVES_PER_START_ADDRESS, forward ? "sentAddress" : "affectedAddress");
   const read = await readMovedObjects(scan.digests);
+  // Forward, an object leaving the address, or one a transaction it sent
+  // created for another address (a stake or a position opened for someone).
   const candidate = (from: string | null, to: string | null) =>
-   forward ? from === address && to !== null && to !== address : to === address && from !== null && from !== address;
+   forward ? (from === address || from === null) && to !== null && to !== address : to === address && from !== null && from !== address;
   // A previous holder old effects did not record is read during valuation.
   const relevant = read.txs.filter((tx) => tx.moved.some((m) =>
    candidate(m.from, m.to) || (m.prior_version !== undefined && m.from === null && (forward ? m.to !== null && m.to !== address : m.to === address)),
@@ -741,11 +749,14 @@ export class FlowEngine {
 
  /**
   * Value an address-start root's coin legs put into an object the root hands
-  * over: forward, an object created for the address in the leg's
-  * transaction; backward, an object the root received and gave up in the
-  * leg's transaction (an unstake, a redemption). The leg's unpaid part and
-  * the handover are the same value. `carve` is the part of each leg's unpaid
-  * value the objects take; `carved` the USD each object takes from legs.
+  * over: forward, an object created for the address or written in place
+  * while it held it in the leg's transaction (a deposit into a position),
+  * or created in the leg's own transaction for another address; backward,
+  * an object the root received and then gave up or drew from in place in the
+  * leg's transaction (an unstake, a redemption, a withdrawal). The leg's
+  * unpaid part and the handover are the same value, up to the object's value
+  * at the handover. `carve` is the part of each leg's unpaid value the
+  * objects take; `carved` the USD each object takes from legs.
   */
  private rootObjectLinks(address: string, legs: Leg[], txs: Array<FetchedTx | null>, digests: string[], rows: Array<MovedObjectValue & { digest: string }>): { carve: number[]; carved: number[] } {
   const forward = this.opts.direction === "forward";
@@ -758,17 +769,25 @@ export class FlowEngine {
   for (const [spend, idx] of bySpend) {
    const tx = txs[spend];
    if (!tx) continue;
-   const ids = new Set((tx.objectMovements ?? [])
+   const held = (tx.written?.held ?? []).filter((h) => h.owner === address).map((h) => h.object_id);
+   const ids = new Set([...held, ...(tx.objectMovements ?? [])
     .filter((m) => forward ? m.kind === "created" && holderOf(m.to) === address : holderOf(m.from) === address && holderOf(m.to) !== address)
-    .map((m) => normalizeSuiAddress(m.object_id)));
-   const linked = [...new Set([...ids].map((id) => rows.findIndex((r) => r.object_id === id && r.digest !== digests[spend])).filter((r) => r >= 0))];
-   if (linked.length === 0) continue;
+    .map((m) => normalizeSuiAddress(m.object_id))]);
+   const linked = [...new Set([
+    ...[...ids].map((id) => rows.findIndex((r) => r.object_id === id && r.digest !== digests[spend])),
+    ...(forward ? rows.map((r, i) => (r.digest === digests[spend] && r.from === null ? i : -1)) : []),
+   ].filter((r) => r >= 0))];
+   const room = (r: number) => Math.max(0, rows[r].usd! - carved[r]);
+   const objectUsd = linked.reduce((sum, r) => sum + room(r), 0);
+   if (objectUsd <= 0) continue;
    const unpaidUsd = idx.reduce((sum, i) => sum + (legs[i].value === null ? 0 : legs[i].value! * unpaid(i)), 0);
    if (unpaidUsd <= 0) continue;
-   const objectUsd = linked.reduce((sum, r) => sum + rows[r].usd!, 0);
+   // Several legs can feed one object (opened, then added to); together
+   // they never take more than it was worth when handed over.
    const taken = Math.min(unpaidUsd, objectUsd);
    for (const i of idx) if (legs[i].value !== null && unpaid(i) > 0) carve[i] = taken / unpaidUsd;
-   for (const r of linked) carved[r] += (taken * rows[r].usd!) / objectUsd;
+   const rooms = linked.map(room);
+   linked.forEach((r, k) => { carved[r] += (taken * rooms[k]) / objectUsd; });
   }
   return { carve, carved };
  }
@@ -1383,7 +1402,10 @@ export class FlowEngine {
       !returned &&
       (this.opts.minUsd !== null && tracedUsd !== null ? tracedUsd < this.opts.minUsd : job.share < this.opts.minShare);
     if (below) {
-      this.pruned.push({ address, coin_type: coin, share: job.share, usd: tracedUsd, digest: e.digest, traced: e.traced });
+   this.pruned.push({
+    address, coin_type: coin, share: job.share, usd: tracedUsd, digest: e.digest, traced: e.traced,
+    ...(e.object_id ? { object_id: e.object_id, object_type: e.object_type } : {}),
+   });
       this.ledger.add("below_threshold", { node: job.node, share: job.share, usd: tracedUsd });
       return;
     }

@@ -346,7 +346,7 @@ describe("chain-supplied text at the tool boundary", () => {
       coin_type: type, digest, checkpoint: 41, amount: "1000",
       symbol: token, name: token, description: "x".repeat(3_000), icon_url: "https://evil.invalid/<script>",
       nfts: [{ object_id: "0x2", name: token, display: { description: token, image_url: token }, content: { type, id: digest, teaser: token } }],
-      events: [{ type, parsed: { arbitrary: token, nested: [{ prompt: token, id: digest, amount: "1000" }] } }],
+      events: [{ type, parsed: { arbitrary: token, invisible: "\u200b".repeat(3_000), nested: [{ prompt: token, id: digest, amount: "1000" }] } }],
       sui_name: token,
       omitted: { next_call: { tool: "get_object", args: { object_id: "0x2" } } },
     };
@@ -360,7 +360,12 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.symbol).toContain("\\u202e\\u200b\\u001b");
     expect(data.symbol).toContain("\\u003cscript\\u003e");
     expect(data.symbol).toContain("\\[click](https://evil.invalid)");
-    expect(data.description).toContain("[cut 952 characters; text limit 2048]");
+    expect(data.description).toMatch(/^x+ \[cut \d+ characters; output limit 2048\]$/);
+    expect(data.description.length).toBeLessThanOrEqual(2_048);
+    const count = Number(/\[cut (\d+) characters/.exec(data.description)![1]);
+    expect(data.description.indexOf(" [cut ") + count).toBe(3_000);
+    expect(data.events[0].parsed.invisible).toContain("\\u200b");
+    expect(data.events[0].parsed.invisible.length).toBeLessThanOrEqual(2_048);
     expect(data.nfts[0].content.teaser).toBe(data.symbol);
     expect(data.events[0].parsed.nested[0].prompt).toBe(data.symbol);
     expect(data.sui_name).toBe(data.symbol);

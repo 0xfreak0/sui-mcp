@@ -4,20 +4,34 @@ const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u
 const MARKUP = /[<>&*~`|]/g;
 const CODEPOINT = (char: string) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
 
-/** Make control characters, markup syntax and cuts visible. */
-export function neutralizeText(value: string, cap = true, code = false): string {
-  let text = value;
-  if (cap && text.length > MAX_TEXT) {
-    // Do not split a surrogate pair at the cut.
-    const end = /[\ud800-\udbff]/.test(text[MAX_TEXT - 1]!) ? MAX_TEXT - 1 : MAX_TEXT;
-    text = text.slice(0, end) + ` [cut ${value.length - end} characters; text limit ${MAX_TEXT}]`;
-  }
-  const escaped = text.replace(INVISIBLE, (char) => code && (char === "\n" || char === "\r" || char === "\t") ? char : CODEPOINT(char));
+function escapeText(value: string, code: boolean): string {
+  const escaped = value.replace(INVISIBLE, (char) => code && (char === "\n" || char === "\r" || char === "\t") ? char : CODEPOINT(char));
   if (code) return escaped;
   return escaped.replace(MARKUP, CODEPOINT)
     // Markdown links and images must remain visible text even in a Markdown-rendering client.
     .replace(/(!?)(\[[^\[\]\n]*\])(?=\([^\n]*\))/g, (_match, bang: string, label: string) => `${bang}\\${label}`)
     .replace(/(^|\n)([ \t]{0,3})(#{1,6})(?=\s)/g, (_match, line: string, spaces: string, hashes: string) => `${line}${spaces}\\${hashes}`);
+}
+
+/** Make control characters, markup syntax and cuts visible. */
+export function neutralizeText(value: string, cap = true, code = false): string {
+  if (!cap) return escapeText(value, code);
+  const initial = escapeText(value.slice(0, MAX_TEXT), code);
+  if (value.length <= MAX_TEXT && initial.length <= MAX_TEXT) return initial;
+
+  // Escapes expand a character to six visible bytes. Fit the marker too, and
+  // count how many original UTF-16 units the output left out.
+  let lower = 0;
+  let upper = Math.min(value.length, MAX_TEXT);
+  while (lower < upper) {
+    const middle = Math.ceil((lower + upper) / 2);
+    const marker = ` [cut ${value.length - middle} characters; output limit ${MAX_TEXT}]`;
+    if (escapeText(value.slice(0, middle), code).length + marker.length <= MAX_TEXT) lower = middle;
+    else upper = middle - 1;
+  }
+  // Keep a surrogate pair together at the boundary.
+  if (lower > 0 && /[\ud800-\udbff]/.test(value[lower - 1]!)) lower--;
+  return escapeText(value.slice(0, lower), code) + ` [cut ${value.length - lower} characters; output limit ${MAX_TEXT}]`;
 }
 
 // A key naming an identity or a typed number must retain its exact bytes.

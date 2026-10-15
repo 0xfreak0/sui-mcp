@@ -1084,9 +1084,11 @@ since a tool with a wall-clock budget (`SCAN_TIME_BUDGET_MS` in
 `get_top_holders`) reads less while it waits on a shared window.
 
 `oracle-pass.mjs` checks answers on subjects drawn at random each run, from
-the effects version 1 era, later and the newest checkpoints, router
-transactions and registry coins, against the same fact read from the chain
-by another path: swap labels against pool events, object ends and object
+the effects version 1 era, later and the newest checkpoints, transactions of
+each swap router in `ROUTERS` (Aftermath, Cetus aggregator v1 and v3
+contexts, 7k, FlowX, Astros; tallied per router) and registry coins, against
+the same fact read from the chain by another path: swap labels against pool
+events, object ends and object
 changes against GraphQL `objectChanges` (effects version 1 against its own
 BCS), mint authority against the registry and a `TreasuryCap<T>` type query,
 flows against `balanceChanges`, cap owners against live owners, first

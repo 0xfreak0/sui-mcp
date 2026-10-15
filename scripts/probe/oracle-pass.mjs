@@ -8,7 +8,7 @@
  * capabilities stored inside other objects.
  *
  *   node scripts/probe/oracle-pass.mjs [--seed N] [--tip CHECKPOINT] [--scan N] [--txs N]
- *     [--ends N] [--router N] [--coins N] [--jobs N] [--subjects JSON|FILE] [--dist PATH]
+ *     [--ends N] [--router N] [--routers NAMES] [--coins N] [--jobs N] [--subjects JSON|FILE] [--dist PATH]
  *
  * Truth never goes through the code under test: it is raw GraphQL, the
  * fullnode over gRPC where the tool reads GraphQL, and for effects version 1
@@ -16,7 +16,9 @@
  * query the tool makes, the report says so beside it.
  *
  * a. Swap labels. get_transaction's `Swap X → Y` actions on transactions
- *    calling Aftermath's router. Each event naming a pool and a direction is a
+ *    sent through a swap router (ROUTERS: Aftermath's router, Cetus's
+ *    aggregator v1 and v3 swap contexts, 7k, FlowX's universal router and
+ *    Astros). Each event naming a pool and a direction is a
  *    hop, its coins the pool object's first two type arguments in the order
  *    the event states (an event listing one type in and one out names them
  *    itself). The hops must appear in order among the decoded swaps, and no
@@ -97,8 +99,10 @@
  * effects version 1 is rare in a random checkpoint, so when an era-1 scan
  * finds none, an object it saw unwrapped leads back to the transaction that
  * wrapped it, and failing that a call of Wormhole's `complete_registration`
- * before the era ends is drawn. `--router` router transactions (default 6)
- * go to a, c and e, and `--coins` registry coins (default 6, alternately
+ * before the era ends is drawn. `--router` transactions of each router
+ * (default 1) named by `--routers` (comma-separated, default all) go to a,
+ * c and e, each labelled with its router, and the report tallies them per
+ * router. `--coins` registry coins (default 6, alternately
  * registered through `finalize_registration` and migrated through
  * `migrate_legacy_metadata`) to d and f, with their package's UpgradeCap to
  * b. Drawn senders and SUI recipients go to g, three registry coins small
@@ -206,9 +210,11 @@ const ORACLES = {
 for (const o of Object.values(ORACLES)) o.rows = [];
 
 const FLAGS = ["seed", "tip", "scan", "txs", "ends", "router", "coins", "jobs", "subjects", "dist"];
+// ---- arguments -------------------------------------------------------------
+const FLAGS = ["seed", "tip", "scan", "txs", "ends", "router", "routers", "coins", "jobs", "subjects", "dist"];
 function usage(message) {
   console.error(
-    `${message}\nusage: node scripts/probe/oracle-pass.mjs [--seed N] [--tip CHECKPOINT] [--scan N] [--txs N] [--ends N] [--router N] [--coins N] [--jobs N] [--subjects JSON|FILE] [--dist PATH]`,
+    `${message}\nusage: node scripts/probe/oracle-pass.mjs [--seed N] [--tip CHECKPOINT] [--scan N] [--txs N] [--ends N] [--router N] [--routers NAMES] [--coins N] [--jobs N] [--subjects JSON|FILE] [--dist PATH]`,
   );
   process.exit(2);
 }
@@ -230,7 +236,32 @@ const SEED = opts.seed !== undefined ? whole("seed", 0) >>> 0 : Math.floor(Math.
 const SCAN = whole("scan", 8, 1);
 const TXS = whole("txs", 4);
 const ENDS = whole("ends", 6);
-const ROUTER_N = whole("router", 6);
+const ROUTER_N = whole("router", 1);
+/**
+ * Swap routers whose transactions a, c and e sample, each a list of
+ * `transactions(filter: { function })` filters. A filter binds to one
+ * package version, so a router whose callers use several live versions lists
+ * each, and a draw takes one of them at random.
+ */
+const ROUTERS = {
+  aftermath: ["0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5::router"],
+  "cetus-v1": [
+    "0xde5d696a79714ca5cb910b9aed99d41f67353abb00715ceaeb0663d57ee39640::router::new_swap_context",
+    "0xffd4058af7d6f6d66c335930cced8c91e38ec943e2392232aee27e8127e684e9::router::new_swap_context",
+  ],
+  "cetus-v3": ["0xffd4058af7d6f6d66c335930cced8c91e38ec943e2392232aee27e8127e684e9::router::new_swap_context_v3"],
+  "7k": [
+    "0x17c0b1f7a6ad73f51268f16b8c06c049eecc2f28a270cdd29c06e3d2dea23302::settle",
+    "0x7ea6e27ad7af6f3b8671d59df1aaebd7c03dddab893e52a714227b2f4fe91519::settle",
+  ],
+  flowx: ["0xc263060d3cbb4155057f0010f92f63ca56d5121c298d01f7a33607342ec299b0::universal_router"],
+  astros: [
+    "0x5b7d732adeb3140a2dbf2becd1e9dbe56cee0e3687379bcfe7df4357ea664313::slippage",
+    "0xdd21f177ec772046619e401c7a44eb78c233c0d53b4b2213ad83122eef4147db::slippage",
+  ],
+};
+const ROUTER_NAMES = opts.routers === undefined ? Object.keys(ROUTERS) : opts.routers.split(",").map((n) => n.trim());
+for (const n of ROUTER_NAMES) if (!ROUTERS[n]) usage(`--routers: there is no router "${n}" (${Object.keys(ROUTERS).join(", ")})`);
 const COINS = whole("coins", 6);
 const JOBS = whole("jobs", 2, 1);
 const DIST = resolve(opts.dist ?? join(ROOT, "dist", "index.js"));
@@ -285,7 +316,6 @@ const V1_LAST = 23_897_140;
 const RECENT = 1_000_000;
 /** A sampling range ends this far below the tip, so the replay cache may record it. */
 const SETTLE = 2_000;
-const ROUTER = "0x7de5de8d75a8f4e42cdd3c018f788bc9b9ebf2d3d61dcfe9d2136f17f077afd5::router";
 const REGISTRY_FUNCTIONS = [
   ["registered", "0x2::coin_registry::finalize_registration"],
   ["migrated", "0x2::coin_registry::migrate_legacy_metadata"],
@@ -735,14 +765,15 @@ function swapHops(tx) {
   return { hops, unresolved, undirected };
 }
 
-async function checkSwapLabels(key, digest) {
-  const tx = await truthOf("a", key, digest, () => rawTx(digest));
+async function checkSwapLabels(key, digest, why) {
+  const subject = why ? `${digest} (${why})` : digest;
+  const tx = await truthOf("a", key, subject, () => rawTx(digest));
   if (!tx) return;
-  if (tx.status !== "SUCCESS") return skip("a", key, digest, "the transaction failed, so no swap ran");
+  if (tx.status !== "SUCCESS") return skip("a", key, subject, "the transaction failed, so no swap ran");
   const { hops, unresolved, undirected } = swapHops(tx);
   if (!hops.length)
-    return skip("a", key, digest, `no event names a pool and a direction${unresolved.length ? ` whose pool type could be read (${unresolved.length} could not)` : ""}`);
-  const ans = answerOf("a", key, digest, await callTool("get_transaction", { digest }));
+    return skip("a", key, subject, `no event names a pool and a direction${unresolved.length ? ` whose pool type could be read (${unresolved.length} could not)` : ""}`);
+  const ans = answerOf("a", key, subject, await callTool("get_transaction", { digest }));
   if (!ans) return;
   const labels = (ans.actions ?? []).filter((a) => a.startsWith("Swap "));
   const symbol = await labelSymbol();
@@ -761,7 +792,7 @@ async function checkSwapLabels(key, digest) {
   try {
     for (const [t, is] of await coinsOnChain([...new Set(decoded.flatMap((d) => [...d.from, ...d.to]))].filter((t) => !coin.has(t)))) coin.set(t, is);
   } catch (err) {
-    return skip("a", key, digest, `truth unreadable: whether the labels name coins (${String(err?.message ?? err).slice(0, 200)})`);
+    return skip("a", key, subject, `truth unreadable: whether the labels name coins (${String(err?.message ?? err).slice(0, 200)})`);
   }
   const problems = [];
   for (const d of decoded) {
@@ -789,7 +820,7 @@ async function checkSwapLabels(key, digest) {
   }
   const unmatched = labels.filter((_, i) => !matched.has(i));
   const ambiguous = [...new Set(decoded.flatMap((d) => [d.from, d.to]).filter((ts) => ts.length > 1).map((ts) => `${symbol(ts[0])}: ${ts.join(", ")}`))];
-  record("a", key, digest, problems.length ? "disagree" : "agree", {
+  record("a", key, subject, problems.length ? "disagree" : "agree", {
     ours: labels,
     truth: hops.map((h) => `${h.coin_in} → ${h.coin_out} (event ${h.event}, pool ${h.pool})`),
     ...(problems.length ? { problems } : {}),
@@ -1216,11 +1247,13 @@ async function drawV1Wrap() {
 
 async function drawRouter() {
   const out = [];
-  for (let i = 0; i < ROUTER_N; i++) {
-    const nodes = (await callsInWindow(ROUTER, 20_000, "effects{ status }")).filter((n) => n.effects.status === "SUCCESS" && !out.includes(n.digest));
-    const t = pick(nodes);
-    if (t) out.push(t.digest);
-  }
+  for (const router of ROUTER_NAMES)
+    for (let i = 0; i < ROUTER_N; i++) {
+      const fn = pick(ROUTERS[router]);
+      const nodes = (await callsInWindow(fn, 20_000, "effects{ status }")).filter((n) => n.effects.status === "SUCCESS" && !out.some((o) => o.digest === n.digest));
+      const t = pick(nodes);
+      if (t) out.push({ digest: t.digest, router });
+    }
   return out;
 }
 
@@ -1346,7 +1379,7 @@ if (PINNED) {
 } else {
   console.log(`seed ${SEED}  tip ${TIP}`);
   console.log(
-    `replay this draw: node scripts/probe/oracle-pass.mjs --seed ${SEED} --tip ${TIP} --scan ${SCAN} --txs ${TXS} --ends ${ENDS} --router ${ROUTER_N} --coins ${COINS}`,
+    `replay this draw: node scripts/probe/oracle-pass.mjs --seed ${SEED} --tip ${TIP} --scan ${SCAN} --txs ${TXS} --ends ${ENDS} --router ${ROUTER_N} --routers ${ROUTER_NAMES.join(",")} --coins ${COINS}`,
   );
   const eras = [
     { name: "v1", lo: 1, hi: V1_LAST, v1: true },
@@ -1393,7 +1426,7 @@ if (PINNED) {
   }
   const router = await drawRouter();
   const coins = await drawCoins();
-  console.log(`  router: ${router.join(", ") || "none drawn"}`);
+  console.log(`  router: ${router.map((r) => `${r.digest} (${r.router})`).join(", ") || "none drawn"}`);
   console.log(`  coins:  ${coins.map((c) => `${c.type} (${c.how})`).join(", ") || "none drawn"}`);
   console.log(`  ends:   ${ends.map((r) => `${r.id} (${r.deleted ? "deleted" : "wrapped"} in ${r.tx}, ${r.era})`).join(", ") || "none drawn"}`);
 
@@ -1406,11 +1439,11 @@ if (PINNED) {
         problems.push(`${t.digest} was drawn from era ${t.era.name} but carries effects version ${tx.effectsVersion}: V1_LAST is wrong`);
     });
   }
-  for (const d of router) {
+  for (const r of router) {
     task(async (k) => {
-      await checkSwapLabels(k, d);
-      await checkObjectChanges(k, d, "router");
-      await checkFlows(k, d, "router");
+      await checkSwapLabels(k, r.digest, `router ${r.router}`);
+      await checkObjectChanges(k, r.digest, `router ${r.router}`);
+      await checkFlows(k, r.digest, `router ${r.router}`);
     });
   }
   for (const r of ends) task((k) => checkObjectEnd(k, { id: r.id, endTx: r.tx, why: `${r.deleted ? "deleted" : "wrapped"} in ${r.tx}, ${r.era}` }));
@@ -1463,6 +1496,8 @@ for (const [id, o] of Object.entries(ORACLES)) {
     a: ROUTER_N, b: ENDS + COINS, c: TXS + ROUTER_N, d: COINS, e: TXS + ROUTER_N, f: COINS,
     g: TXS * 3, h: 3, i: 3, j: 3, k: 3, l: 3
   };
+  const routerTxs = ROUTER_N * ROUTER_NAMES.length;
+  const drawn = { a: routerTxs, b: ENDS + COINS, c: TXS + routerTxs, d: COINS, e: TXS + routerTxs, f: COINS };
   const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
   if (!rows.length && !requested) continue;
   const checked = n("agree") + n("disagree") + n("known");
@@ -1501,6 +1536,21 @@ for (const [id, o] of Object.entries(ORACLES)) {
 console.log(`\n${"checked".padStart(8)} ${"agree".padStart(6)} ${"disagree".padStart(9)} ${"known".padStart(6)} ${"skip".padStart(5)}  oracle`);
 for (const [id, title, checked, agree, disagree, known, skipped] of summary)
   console.log(`${String(checked).padStart(8)} ${String(agree).padStart(6)} ${String(disagree).padStart(9)} ${String(known).padStart(6)} ${String(skipped).padStart(5)}  ${id}. ${title}`);
+// Router samples per router: the subject carries `(router NAME)`.
+const perRouter = [];
+for (const [id, o] of Object.entries(ORACLES))
+  for (const r of o.rows) {
+    const name = /\(router (\S+)\)$/.exec(r.subject)?.[1];
+    if (!name) continue;
+    let row = perRouter.find((x) => x.name === name && x.id === id);
+    if (!row) perRouter.push((row = { name, id, agree: 0, disagree: 0, known: 0, skip: 0 }));
+    row[r.status === "stale" ? "agree" : r.status]++;
+  }
+if (perRouter.length) {
+  console.log(`\n${"router".padEnd(10)} ${"agree".padStart(6)} ${"disagree".padStart(9)} ${"known".padStart(6)} ${"skip".padStart(5)}  oracle`);
+  for (const r of perRouter.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)))
+    console.log(`${r.name.padEnd(10)} ${String(r.agree).padStart(6)} ${String(r.disagree).padStart(9)} ${String(r.known).padStart(6)} ${String(r.skip).padStart(5)}  ${r.id}. ${ORACLES[r.id].title}`);
+}
 for (const p of problems) console.log(`!! ${p}`);
 if (failures || problems.length) {
   console.log(`\n${failures} disagreement(s), ${problems.length} other problem(s)${PINNED ? "" : `; replay with --seed ${SEED} --tip ${TIP}`}`);

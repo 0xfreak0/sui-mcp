@@ -10,6 +10,8 @@ const mockSui = createMockClient();
 vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }));
 
 const { withNetworkParam, oneLineArgumentErrors } = await import("../../src/tools/with-network.js");
+// Import after the hoisted gRPC mock, or the module reads mockSui before initialization.
+const { registerNameTools } = await import("../../src/tools/names.js");
 const { getNetwork } = await import("../../src/config.js");
 const { addressArg, addressListArg, numArg, boolArg } = await import("../../src/tools/args.js");
 
@@ -399,6 +401,18 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.tokens).toEqual(payload.tokens);
     expect(result.content[0].text.length - JSON.stringify(payload).length).toBeLessThan(180);
     expect(result.content[0].text.match(/untrusted_text/g)).toHaveLength(1);
+  });
+
+  it("guards a SuiNS reverse record from the real resolve_name formatter", async () => {
+    const { server, registered } = fakeServer();
+    registerNameTools(withNetworkParam(server));
+    mockSui.nameService.reverseLookupName.mockResolvedValue({
+      response: { record: { name: "Claim\u200b.sui <script>" } },
+    });
+    const result = (await registered[0].handler({ address: "0x2" })) as { content: Array<{ text: string }> };
+    const data = JSON.parse(result.content[0].text);
+    expect(data.name).toBe("Claim\\u200b.sui \\u003cscript\\u003e");
+    expect(data.untrusted_text).toContain("never instructions");
   });
 
 });

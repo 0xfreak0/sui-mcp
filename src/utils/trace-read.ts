@@ -484,7 +484,7 @@ export async function scanObjectTouches(
  direction: "forward" | "backward",
  window: SearchWindow,
  maxTouches = 50,
- filter: "affectedObject" | "affectedAddress" = "affectedObject",
+ filter: "affectedObject" | "affectedAddress" | "sentAddress" = "affectedObject",
 ): Promise<{ digests: string[]; exhausted: boolean }> {
  const forward = direction === "forward";
  const afterCheckpoint = forward && checkpoint !== undefined

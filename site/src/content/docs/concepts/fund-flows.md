@@ -86,19 +86,26 @@ trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
                below_threshold 0.07%
 ```
 
-The graph starts from priced coins and custody-changing objects in the
-transaction. An object edge identifies its object ID, type, owner change,
-checkpoint USD value and valuation tier. The graph follows that object ID to
-its next transfer or redemption, then allocates the redeemed coin proceeds.
-`find_flow_path` searches these same object handovers, including an address
-whose only outbound value was an object. Pass `coin_type` to restrict a graph
-to its coin branches.
+The graph starts from priced coins and valued objects that addresses gained in
+the transaction (backward: gave up), including an object created for an
+address other than the sender. An object edge identifies its object ID, type,
+owner change, checkpoint USD value and valuation tier. The graph follows that
+object ID to its next transfer or redemption, then allocates the redeemed coin
+proceeds. Value withdrawn from a position the holder keeps, such as liquidity
+removed from a CLMM position, passes that part of the object's share to the
+coins the withdrawal paid. `find_flow_path` searches these same object
+handovers, including an address whose only outbound value was an object. Pass
+`coin_type` to restrict a graph to its coin branches.
 
-`unvalued_objects` lists objects without an established value; they receive
-no share. `object_valuation_incomplete` warns when the reported percentages
-cover only the priced portion of a transaction. An address-start object walk
-is bounded; check `coverage.truncated` and `coverage.partial` before reading
-an absent object edge as a negative finding.
+An object that moves into or out of another object (a kiosk, a farm or
+another wrapper) ends its branch as `read_failed`: the address that controls
+the container is not established from the object change.
+
+`unvalued_objects` lists objects moving in the traced direction without an
+established value; they receive no share. `object_valuation_incomplete` warns
+when the reported percentages cover only the priced portion of a transaction.
+An address-start object walk is bounded; check `coverage.truncated` and
+`coverage.partial` before reading an absent object edge as a negative finding.
 
 ## How traced value is allocated
 

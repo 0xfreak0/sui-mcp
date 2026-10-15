@@ -7,7 +7,8 @@ const CODEPOINT = (char: string) => `\\u${char.charCodeAt(0).toString(16).padSta
 function escapeText(value: string, code: boolean): string {
   if (code) return value.replace(INVISIBLE, (char) => char === "\n" || char === "\r" || char === "\t" ? char : CODEPOINT(char));
   // Escape original markup first, leaving the visible escapes for controls intact.
-  const escaped = value.replace(MARKUP, CODEPOINT).replace(INVISIBLE, CODEPOINT);
+  const escaped = value.replace(MARKUP, CODEPOINT).replace(INVISIBLE, CODEPOINT)
+    .replace(/(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])/g, CODEPOINT);
   return escaped
     // A chain-supplied sentence must not become a Markdown heading or list.
     .replace(/(^|\n)([ \t]{0,3})(#{1,6}|[-+]|\d+\.)(?=\s)/g, (_match, line: string, spaces: string, marker: string) =>

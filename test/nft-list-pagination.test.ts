@@ -171,7 +171,7 @@ describe("list_nfts display safety", () => {
   const result = await registered.get("list_nfts")!({ address: OWNER, value: false, limit: 1, detail: "full" });
   const page = JSON.parse(result.content[0].text);
   expect(page.nfts[0].name).toContain("\\u202e");
-  expect(page.nfts[0].description).toContain("\\u003cscript\\u003e\\[claim]");
+  expect(page.nfts[0].description).toContain("\\u003cscript\\u003e\\u005bclaim\\u005d");
   expect(page.nfts[0].image_url).toContain("\\u003cimg\\u003e");
   expect(page.nfts[0].content.teaser).toContain("\\u200b");
   expect(page.nfts[0].object_id).toBe("direct-0");

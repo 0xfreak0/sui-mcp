@@ -347,7 +347,7 @@ describe("chain-supplied text at the tool boundary", () => {
     const payload = {
       coin_type: type, digest, checkpoint: 41, amount: "1000",
       symbol: token, name: token, description: "x".repeat(3_000), icon_url: "https://evil.invalid/<script>",
-      nfts: [{ object_id: "0x2", name: token, display: { description: token, image_url: token }, content: { type, id: digest, teaser: token } }],
+      nfts: [{ object_id: "0x2", name: token, display: { description: token, image_url: token, markdown: "\\[click](https://evil.invalid) [outer [inner]](https://evil.invalid) \u034f", heading: "# Claim" }, content: { type, id: digest, teaser: token } }],
       events: [{ type, parsed: { arbitrary: token, invisible: "\u200b".repeat(3_000), nested: [{ prompt: token, id: digest, amount: "1000" }] } }],
       sui_name: token,
       imported_labels: [{ entity: token, evidence: token, notes: token }],
@@ -362,7 +362,7 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.symbol).toContain(instruction);
     expect(data.symbol).toContain("\\u202e\\u200b\\u001b");
     expect(data.symbol).toContain("\\u003cscript\\u003e");
-    expect(data.symbol).toContain("\\[click](https://evil.invalid)");
+    expect(data.symbol).toContain("\\u005bclick\\u005d(https://evil.invalid)");
     expect(data.description).toMatch(/^x+ \[cut \d+ characters; output limit 2048\]$/);
     expect(data.description.length).toBeLessThanOrEqual(2_048);
     const count = Number(/\[cut (\d+) characters/.exec(data.description)![1]);
@@ -371,6 +371,10 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.events[0].parsed.invisible.length).toBeLessThanOrEqual(2_048);
     expect(data.nfts[0].content.teaser).toBe(data.symbol);
     expect(data.events[0].parsed.nested[0].prompt).toBe(data.symbol);
+    expect(data.nfts[0].display.markdown).toContain("\\u005c\\u005bclick\\u005d(https://evil.invalid)");
+    expect(data.nfts[0].display.markdown).toContain("\\u005bouter \\u005binner\\u005d\\u005d");
+    expect(data.nfts[0].display.markdown).toContain("\\u034f");
+    expect(data.nfts[0].display.heading).toBe("\\u0023 Claim");
     expect(data.sui_name).toBe(data.symbol);
     expect(data.imported_labels[0]).toEqual({ entity: data.symbol, evidence: data.symbol, notes: data.symbol });
     expect(data.coin_type).toBe(type);

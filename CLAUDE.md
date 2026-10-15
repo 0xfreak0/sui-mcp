@@ -2495,6 +2495,46 @@ Only bridge chain ids observed on mainnet (0 = Sui, 10 = Ethereum) map to
 CAIP-2. Testnet/custom variants are reported by number, same non-guessing rule
 as Wormhole.
 
+### Liquidity custody is current unless read at an incident checkpoint
+
+`find_pools` searches exact pool types for a token pair and reports per-venue
+coverage. `analyze_token` searches only SUI and mainnet-USDC pairs and inspects
+at most three pools per page, ordered by the token's current reserve. A
+venue's failed or bounded read never establishes absence. A pool's creator
+and an LP recipient at creation are historical facts; the current holder
+scan is not a historical snapshot. A deleted position or an LP coin burned
+on withdrawal is no longer in the current holders. Keep the creation
+transaction and the position's last touch as leads; check the position
+history or holder balance at the incident checkpoint before asserting who
+could withdraw then.
+
+An LP coin resides in coin objects and address balances, so a holder scan
+must read both. CLMM positions are NFTs: do not treat the pool's current
+active liquidity as the sum of all its position liquidity. A partial scan
+has no pool-wide position denominator and gives no concentration or
+absence verdict. A kiosk's declared owner is not the cap's holder. An
+object holding a position or LP coin is not automatically a locker; a
+known locker needs its package's withdrawal authority verified before
+claiming the liquidity is locked. Reserved unspendable addresses such as
+0x0 count as burned only when they currently own the LP or position.
+
+Cetus exposes a linked active-position table in the pool state; enumerate
+that table and read each NFT owner to get complete current shares when the
+walk finishes. A CLMM position's raw liquidity L cannot be used as its
+fraction of the pool's reserves when tick ranges differ. Use the position's
+tick bounds, current tick and sqrt price to derive its withdrawable A and B
+amounts, grouping the positions by owner before dividing each coin's amounts
+by the whole scanned pool's position amounts. Fees and rewards are separate.
+A type-wide NFT scan on the other CLMMs usually hits its
+object-ID bound before the pool's positions. Missing owners there are not
+zero holdings. For fungible LP coins, reconcile the scanned holders' balances
+to the pool's supply before calling their shares complete; coins inside other
+objects may not appear in the coin-object or address-balance walks.
+
+A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
+offset within that pool. Applying one pool's displayed count as a global
+offset to several pools repeats or skips another pool's holders.
+
 ### Holder scans rank a sample, not the chain
 
 `scanTokenTopHolders` walks `objects(filter: Coin<T>)` in **object-id order**,

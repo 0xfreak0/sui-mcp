@@ -26,6 +26,8 @@ const CALL_PATHS = [
   "positions.omitted.next_call",
   "nfts.omitted.next_call",
   "nfts_not_valued.next_call",
+ "liquidity_custody.next_call",
+ "liquidity_custody.pools.*.omitted.next_call",
 ].map((path) => path.split("."));
 
 /** Bind a known server-generated call, or a stored result's original args. */

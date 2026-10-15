@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`analyze_token`](#analyze_token) | Analyze a Sui coin type or symbol: metadata, current price, 24h change, total supply and top holders. |
+| [`analyze_token`](#analyze_token) | Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. |
 | [`get_transaction_history`](#get_transaction_history) | Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. |
 | [`get_wallet_overview`](#get_wallet_overview) | Overview of a Sui wallet. |
 | [`get_wallet_packages`](#get_wallet_packages) | List package versions created by publish or upgrade transactions sent from this wallet address. |
@@ -19,12 +19,16 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, total supply and top holders. Verified symbols resolve from the curated list; other mainnet symbols use two DexScreener searches (ticker and ticker + SUI), with GeckoTerminal fallback for missing, capped or unavailable results. Up to 25 pool-backed coin types are confirmed on chain; results are cached for 10 minutes unless a provider or confirmation failed. Multiple exact symbols return ambiguous_symbol. Provider caps and failed confirmations are reported, not mistaken for absent coins; a bounded on-chain scan is the fallback when no live match is confirmed.
+(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. Pool search covers SUI and native-USDC pairs with per-venue failure reporting. Liquidity custody scans up to three pools; a stopped holder scan never establishes ownership concentration. Set include_liquidity false to skip pool reads.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Symbol ('deep') or full coin type ('0x2::sui::SUI'). A symbol matches exactly, in any case; use search_token for partial names. |
 | `include_holders` | boolean | no | Include top 5 holders (default: true). Set false for faster response. |
+| `include_liquidity` | boolean | no | Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls. |
+| `liquidity_pool_offset` | integer (0 to 1000) | no | Start at this discovered pool after ranking by current reserve (default 0). |
+| `liquidity_holder_pool` | string | no | For a holder continuation, restrict the page to this discovered pool ID. |
+| `liquidity_offset` | integer (0 to 1000) | no | Start at this holder index within liquidity_holder_pool (default 0). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_transaction_history

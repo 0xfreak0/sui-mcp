@@ -7,7 +7,7 @@ sidebar:
 ---
 | Tool | Summary |
 |---|---|
-| [`find_pools`](#find_pools) | Find liquidity pools for a token pair across Cetus, DeepBook v2/v3, Turbos and BlueMove v1. |
+| [`find_pools`](#find_pools) | Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2. |
 | [`get_defi_positions`](#get_defi_positions) | Find and value a wallet's staked SUI with rewards, issuer-rate liquid-staking coins, CLMM/AMM liquidity, lending and balances inside owned objects. |
 | [`get_pool_stats`](#get_pool_stats) | Get stats for a DeFi liquidity pool on Sui given its object ID. |
 
@@ -17,13 +17,13 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-Find liquidity pools for a token pair across Cetus, DeepBook v2/v3, Turbos and BlueMove v1. Searches both token orders and every Turbos fee tier. Each result reports the pool's own token order. Use get_pool_stats for reserves, fees and prices.
+Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2. Both token orders are searched. Venue statuses distinguish complete searches from failed or capped reads. The response includes pool IDs and coin types.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `token_a` | string | yes | First token: symbol (e.g. 'SUI') or full coin type |
-| `token_b` | string | yes | Second token: symbol (e.g. 'USDC') or full coin type |
-| `protocol` | string | no | Filter by protocol: 'cetus', 'deepbook', 'turbos', or 'bluemove'. Searches all if omitted. |
+| `token_a` | string | yes | First token: verified symbol (e.g. 'SUI') or full coin type |
+| `token_b` | string | yes | Second token: verified symbol (e.g. 'USDC') or full coin type |
+| `protocol` | string | no | Filter by venue: cetus, deepbook, turbos, bluemove, bluefin, momentum, flowx_clmm, flowx_v2, magma, aftermath, kriya_v2. Searches all if omitted. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_defi_positions

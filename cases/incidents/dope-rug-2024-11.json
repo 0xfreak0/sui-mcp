@@ -118,14 +118,23 @@
       },
       "expect": [
         {
-          "path": "_text",
-          "op": "contains",
+          "path": "liquidity_custody.pools[*].pool_id",
+          "op": "includes",
           "value": "{pool}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].creation.positions[*].minted_to",
+          "op": "includes",
+          "value": "{deployer}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].creation.recent_removals.matches[*].digest",
+          "op": "includes",
+          "value": "{pull_tx}"
         }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: all of DOPE's liquidity was one Cetus position the deployer held in its own wallet for its whole life.",
-      "known_defect": "Analysis-scope limit: analyze_token reads metadata, prices, supply, holders and mint authority, not pool discovery or LP custody. Its result cannot establish locked liquidity. Use find_pools for the pair and trace_object_history for the position; see concepts/coins, Liquidity pools."
+      "basis": "Chain: the Cetus position was minted to the deployer, who later removed its liquidity."
     },
     {
       "id": "find-pool",

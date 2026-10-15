@@ -4,7 +4,7 @@ import {
   findCoinConfig,
   readCoinRestrictions,
 } from "../utils/deny-list-probe.js";
-import { boolArg } from "./args.js";
+import { addressArg, boolArg, numArg } from "./args.js";
 import { sui } from "../clients/grpc.js";
 import { fetchAftermathPrices } from "./prices.js";
 import { sampledHolders, scanTokenTopHolders, stoppedWalks } from "./holders.js";
@@ -17,6 +17,8 @@ import { resolveSymbolDetailed, type SymbolDetail } from "../discovery.js";
 import type { TickerCandidate } from "../utils/ticker-search.js";
 import { vouchFor, impostorOf } from "../utils/coin-registry.js";
 import { guardiansFlagsForCoin } from "../utils/guardians.js";
+import { analyzeLiquidityCustody } from "../utils/liquidity-custody.js";
+import { discoverCoinPools } from "./pools.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /** Where a coin's decimals came from, strongest evidence first. */
@@ -125,7 +127,7 @@ function symbolResolution(detailed: Extract<SymbolDetail, { status: "unverified"
 export function registerAnalyzeTokenTools(server: McpServer) {
   server.tool(
     "analyze_token",
-    "(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, total supply and top holders. Verified symbols resolve from the curated list; other mainnet symbols use two DexScreener searches (ticker and ticker + SUI), with GeckoTerminal fallback for missing, capped or unavailable results. Up to 25 pool-backed coin types are confirmed on chain; results are cached for 10 minutes unless a provider or confirmation failed. Multiple exact symbols return ambiguous_symbol. Provider caps and failed confirmations are reported, not mistaken for absent coins; a bounded on-chain scan is the fallback when no live match is confirmed.",
+  "(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. Pool search covers SUI and native-USDC pairs with per-venue failure reporting. Liquidity custody scans up to three pools; a stopped holder scan never establishes ownership concentration. Set include_liquidity false to skip pool reads.",
     {
       query: z
         .string()
@@ -133,8 +135,15 @@ export function registerAnalyzeTokenTools(server: McpServer) {
       include_holders: boolArg()
         .optional()
         .describe("Include top 5 holders (default: true). Set false for faster response."),
+   include_liquidity: boolArg()
+    .optional()
+    .describe("Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls."),
+   liquidity_pool_offset: numArg().int().min(0).max(1000).optional().describe("Start at this discovered pool after ranking by current reserve (default 0)."),
+   liquidity_holder_pool: addressArg().optional().describe("For a holder continuation, restrict the page to this discovered pool ID."),
+   liquidity_offset: numArg().int().min(0).max(1000).optional().describe("Start at this holder index within liquidity_holder_pool (default 0)."),
     },
-    async ({ query, include_holders }) => {
+  async ({ query, include_holders, include_liquidity, liquidity_pool_offset, liquidity_holder_pool, liquidity_offset }) => {
+   if (liquidity_offset && !liquidity_holder_pool) return errorResult("liquidity_offset requires liquidity_holder_pool to identify which pool's holders to page.");
       const wantHolders = include_holders !== false;
       // Whether a curated list vouches for this coin, or the symbol merely
       // matched something on chain.
@@ -404,6 +413,15 @@ export function registerAnalyzeTokenTools(server: McpServer) {
           result.top_holders = holderResult.holders;
         }
       }
+   if (include_liquidity !== false) {
+    try {
+     const discovery = await discoverCoinPools(coinType);
+     result.pool_discovery = { venues: discovery.venues, pairs_searched: discovery.pairs_searched, pools_found: discovery.pools.length };
+     result.liquidity_custody = await analyzeLiquidityCustody(coinType, discovery.pools, liquidity_offset ?? 0, liquidity_pool_offset ?? 0, liquidity_holder_pool);
+    } catch (err) {
+     result.liquidity_custody_unavailable = describeError(err, getNetwork());
+    }
+   }
 
       return {
         content: [{

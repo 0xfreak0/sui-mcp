@@ -120,14 +120,38 @@
       },
       "expect": [
         {
-          "path": "_text",
-          "op": "contains",
+          "path": "liquidity_custody.pools[*].pool_id",
+          "op": "includes",
           "value": "{cetus_pool}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].pool_id",
+          "op": "includes",
+          "value": "{bluemove_pool}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].creation.positions[*].minted_to",
+          "op": "includes",
+          "value": "{deployer}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].creation.initial_lp_recipients[*].address",
+          "op": "includes",
+          "value": "{deployer}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].creation.recent_removals.matches[*].digest",
+          "op": "includes",
+          "value": "{cetus_pull_tx}"
+        },
+        {
+          "path": "liquidity_custody.pools[*].creation.recent_removals.matches[*].digest",
+          "op": "includes",
+          "value": "{bluemove_pull_tx}"
         }
       ],
       "tier": "chain-derived",
-      "basis": "Chain: GOBBLE's only liquidity was the Cetus pool (and the BlueMove pool), both funded by positions the deployer held in its own wallet. The rug risk sat there, not in a mint authority.",
-      "known_defect": "Analysis-scope limit: analyze_token does not discover pools or audit LP custody. find_pools can list both Cetus and BlueMove v1, but the token overview cannot establish who could withdraw liquidity at the incident time. See concepts/coins, Liquidity pools."
+      "basis": "Chain: Cetus minted its position to the deployer; BlueMove minted LP coins to the same wallet, which removed both pools' liquidity."
     },
     {
       "id": "find-pools-cetus",

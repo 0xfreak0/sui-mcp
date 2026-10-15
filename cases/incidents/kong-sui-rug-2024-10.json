@@ -262,6 +262,39 @@
       "basis": "Chain: the full-range Turbos position (75,000,000 KONG raw 74999999070 and 700 SUI) was minted in {pool_create_tx} and sent to 0x0 in {lp_burn_tx} 25 minutes later. The BitPinas account of a developer sell-off fits: the dump went through the pool, liquidity was never withdrawn."
     },
     {
+      "id": "token-liquidity-position-burned",
+      "question": "Does token liquidity custody identify the burned Turbos position?",
+      "tool": "analyze_token",
+      "args": {
+        "query": "{coin}",
+        "include_holders": false
+      },
+      "expect": [
+        {
+          "path": "liquidity_custody.pools[0].pool_id",
+          "op": "iequals",
+          "value": "{turbos_pool}"
+        },
+        {
+          "path": "liquidity_custody.pools[0].creation.positions[*].position_id",
+          "op": "includes",
+          "value": "{lp_position}"
+        },
+        {
+          "path": "liquidity_custody.pools[0].creation.positions[*].current_owner",
+          "op": "includes",
+          "value": "{zero}"
+        },
+        {
+          "path": "liquidity_custody.pools[0].creation.burned_positions",
+          "op": "gte",
+          "value": 1
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: the original Turbos position is held by the unspendable zero address; later selling used the pool without a liquidity withdrawal."
+    },
+    {
       "id": "holders-complete",
       "question": "Who holds KONG, and is the ranking complete?",
       "tool": "get_top_holders",

@@ -55,7 +55,9 @@ describe("find_pools", () => {
 
     expect(data.pools.map((p: { pool_id: string }) => p.pool_id).sort()).toEqual(["0xb1", "0xc1", "0xc2", "0xc3", "0xt1"]);
     expect(data.pools.every((p: { token_a: string; token_b: string }) => p.token_a === USDC && p.token_b === SUI)).toBe(true);
-    expect(data.incomplete).toBeUndefined();
+    expect(data.incomplete).toBe(true);
+    expect(data.venues.find((venue: { venue: string }) => venue.venue === "flowx_v2").status).toBe("failed");
+    expect(data.venues.find((venue: { venue: string }) => venue.venue === "cetus").status).toBe("complete");
   });
 
   it("says when a search failed instead of reporting no pools", async () => {
@@ -67,5 +69,34 @@ describe("find_pools", () => {
     const result = await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "turbos" });
 
     expect(result.isError).toBe(true);
+  });
+
+  it("keeps verified pools when one of a venue's ordered searches fails", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string }) => {
+      if (vars.type === `${bluefin}<${SUI}, ${USDC}>`) throw new Error("GraphQL temporarily unavailable");
+      return page([node("0xb1", `${bluefin}<${USDC}, ${SUI}>`)]);
+    });
+
+    const result = await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" });
+    const data = JSON.parse(result.content[0].text);
+    expect(result.isError).toBe(false);
+    expect(data.pools.map((pool: { pool_id: string }) => pool.pool_id)).toEqual(["0xb1"]);
+    expect(data.venues).toEqual([expect.objectContaining({ venue: "bluefin", status: "failed", searched: 2 })]);
+    expect(data.failed_searches[0].error).toContain("temporarily unavailable");
+  });
+
+  it("marks a null continuation cursor incomplete without losing matched pools", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string }) =>
+      vars.type === `${bluefin}<${USDC}, ${SUI}>`
+        ? { objects: { nodes: [node("0xb2", vars.type)], pageInfo: { hasNextPage: true, endCursor: null } } }
+        : page([]));
+
+    const result = await tools.get("find_pools")!({ token_a: SUI, token_b: USDC, protocol: "bluefin" });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.pools.map((pool: { pool_id: string }) => pool.pool_id)).toEqual(["0xb2"]);
+    expect(data.venues[0]).toMatchObject({ status: "incomplete", searched: 2 });
+    expect(data.incomplete).toBe(true);
   });
 });

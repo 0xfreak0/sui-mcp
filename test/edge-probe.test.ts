@@ -1,12 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient } from "./helpers/mock-grpc.js";
 
-const { mockGqlQuery, mockSaveFirstFunder, mockPrices } = vi.hoisted(() => ({
+const { mockGqlQuery, mockSaveFirstFunder, mockPrices, cohortFixture } = vi.hoisted(() => ({
   mockGqlQuery: vi.fn(),
   mockSaveFirstFunder: vi.fn(() => true),
   mockPrices: vi.fn(),
+ cohortFixture: { enabled: false },
 }));
-vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
+vi.mock("../src/clients/graphql.js", () => ({
+ gqlQuery: (query: string, vars: { oldest?: boolean }) => {
+  if (!cohortFixture.enabled && query.includes("$oldest: Boolean!")) {
+   return Promise.resolve({
+    [vars.oldest ? "old" : "recent"]:
+     { nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }
+   });
+  }
+  return mockGqlQuery(query, vars);
+ },
+}));
 // The store is off by default, but mocking it keeps the test independent of
 // whether the developer running it happens to have SUI_STORE_PATH set.
 vi.mock("../src/utils/store.js", () => ({
@@ -82,6 +93,7 @@ function payment(digest: string, from: string, to: string, sponsor?: string) {
 
 beforeEach(() => {
   mockGqlQuery.mockReset();
+ cohortFixture.enabled = false;
   mockSaveFirstFunder.mockClear();
   mockPrices.mockReset().mockImplementation(aftermathUp());
   resetLiveCoinScale();
@@ -423,8 +435,14 @@ describe("buildWalletEdges", () => {
     // paid twenty: an unrelated wallet lands in a batch by being on a list.
     const F = "0xf00d";
     const SHARED = "0x54a4ed";
-    const wide = { transactionEffects: { balanceChanges: { nodes:
-      Array.from({ length: 20 }, (_, i) => ({ owner: { address: `0xr${i}` }, amount: ONE_SUI })) } } };
+  const wide = {
+   transactionEffects: {
+    balanceChanges: {
+     nodes:
+      Array.from({ length: 20 }, (_, i) => ({ owner: { address: `0xr${i}` }, amount: ONE_SUI }))
+    }
+   }
+  };
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) =>
@@ -445,8 +463,14 @@ describe("buildWalletEdges", () => {
   it("scores a bespoke two-way payout ABOVE a plain shared funder", async () => {
     const F = "0xf00d";
     const SHARED = "0x54a4ed";
-    const narrow = { transactionEffects: { balanceChanges: { nodes: [
-      { owner: { address: A }, amount: ONE_SUI }, { owner: { address: B }, amount: ONE_SUI }] } } };
+  const narrow = {
+   transactionEffects: {
+    balanceChanges: {
+     nodes: [
+      { owner: { address: A }, amount: ONE_SUI }, { owner: { address: B }, amount: ONE_SUI }]
+    }
+   }
+  };
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) =>
@@ -1619,4 +1643,117 @@ describe("a sponsor and a funder serving the same wallets from two addresses", (
     const excluded = r.excluded_intermediaries.find((e) => e.address === SPONSOR);
     expect(excluded?.role_split).toMatchObject({ funder: FUNDER, wallets_checked: 6, first_funded_by_funder: 1, linked: false });
   });
+});
+
+describe("consolidation probe", () => {
+ const COLLECTOR = "0xc011";
+ const payers = Array.from({ length: 6 }, (_, i) => `0xa${i}`);
+ const sweeps = payers.map((payer, i) => ({
+  ...payment(`sweep-${i}`, payer, COLLECTOR),
+  effects: {
+   ...payment(`sweep-${i}`, payer, COLLECTOR).effects,
+   timestamp: `2025-03-27T10:${String(i).padStart(2, "0")}:00.000Z`,
+   checkpoint: { sequenceNumber: i + 10 },
+   balanceChanges: {
+    nodes: [
+     { owner: { address: payer }, amount: `-${(i + 1) * 1_000_000_000}`, coinType: { repr: SUI } },
+     { owner: { address: COLLECTOR }, amount: `${(i + 1) * 1_000_000_000}`, coinType: { repr: SUI } },
+    ],
+   },
+  },
+ }));
+
+ function route(service: "narrow" | "popular" | "deposit" | "failed") {
+  cohortFixture.enabled = true;
+  mockGqlQuery.mockImplementation(async (query: string, vars: { addr?: string; oldest?: boolean }) => {
+   if (query.includes("old: transactions")) {
+    return vars.oldest ? { old: { nodes: sweeps, pageInfo: { hasNextPage: false } } } :
+     { recent: { nodes: sweeps, pageInfo: { hasPreviousPage: false } } };
+   }
+   if (query.includes("beforeCheckpoint: $through")) {
+    const i = payers.indexOf(vars.addr!);
+    return page([{
+     ...payment(`fund-${i}`, "0xf", payers[i]),
+     effects: {
+      ...payment(`fund-${i}`, "0xf", payers[i]).effects,
+      checkpoint: { sequenceNumber: 1 },
+      balanceChanges: {
+       nodes: [
+        { owner: { address: payers[i] }, amount: `${(i + 1) * 1_000_000_000}`, coinType: { repr: SUI } },
+       ]
+      },
+     },
+    }, sweeps[i]]);
+   }
+   if (query.includes("sentAddress")) {
+    if (service === "failed") throw new Error("unavailable");
+    return page(service === "popular" ?
+     Array.from({ length: 51 }, (_, i) => payment(`paid-${i}`, COLLECTOR, `0x${i.toString(16).padStart(3, "0")}`)) :
+     service === "deposit" ? [payment("out-1", COLLECTOR, "0xreserve"), payment("out-2", COLLECTOR, "0xreserve")] : []);
+   }
+   if (query.includes("first: $first")) return { transactions: { nodes: [] } };
+   if (query.includes("affectedAddress") && vars.addr === COLLECTOR) return page(sweeps);
+   return page([]);
+  });
+ }
+
+ it("links a collector to six sweepers with their own transaction digests", async () => {
+  route("narrow");
+  const result = await buildWalletEdges([COLLECTOR], { expand: true });
+  const swept = result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
+  expect(swept).toHaveLength(6);
+  expect(swept.map((edge) => edge.signals.find((s) => s.type === "consolidation")?.digests[0]).sort())
+   .toEqual(sweeps.map((tx) => tx.digest).sort());
+  expect(result.examined).toEqual([COLLECTOR, ...payers].sort());
+ });
+
+ it("accepts a sender's small storage rebate without counting an unrelated payment", async () => {
+  const debit = sweeps[0].effects.balanceChanges.nodes[0];
+  const original = debit.amount;
+  debit.amount = "-999781760";
+  try {
+   route("narrow");
+   const result = await buildWalletEdges([COLLECTOR], { expand: true });
+   expect(result.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toHaveLength(6);
+  } finally {
+   debit.amount = original;
+  }
+ });
+
+ it("keeps repeat-payee deposit collectors out of a merge", async () => {
+  route("deposit");
+  const result = await buildWalletEdges([COLLECTOR]);
+  expect(result.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(result.excluded_intermediaries.find((entry) => entry.address === COLLECTOR)?.reason).toMatch(/deposit address/);
+ });
+
+ it("excludes a popular collector and an unread collector rather than treating either as narrow", async () => {
+  route("popular");
+  const popular = await buildWalletEdges([COLLECTOR]);
+  expect(popular.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(popular.excluded_intermediaries).toEqual(expect.arrayContaining([expect.objectContaining({ address: COLLECTOR, role: "collector" })]));
+  route("failed");
+  const failed = await buildWalletEdges([COLLECTOR]);
+  expect(failed.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(failed.used_intermediaries.some((entry) => entry.address === COLLECTOR)).toBe(false);
+  expect(failed.truncated).toBe(true);
+ });
+
+ it("does not promote a collector when the shared budget ran out", async () => {
+  route("narrow");
+  const result = await buildWalletEdges([COLLECTOR], { queryBudget: 3 });
+  expect(result.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(result.used_intermediaries.some((entry) => entry.address === COLLECTOR)).toBe(false);
+  expect(result.truncated).toBe(true);
+ });
+
+ it("does not make the budget-starved result depend on seed order", async () => {
+  route("narrow");
+  const first = await buildWalletEdges([COLLECTOR, payers[0]], { expand: false, queryBudget: 3 });
+  route("narrow");
+  const reversed = await buildWalletEdges([payers[0], COLLECTOR], { expand: false, queryBudget: 3 });
+  expect(first.edges).toEqual(reversed.edges);
+  expect(first.excluded_intermediaries).toEqual(reversed.excluded_intermediaries);
+  expect(first.truncated).toBe(true);
+ });
 });

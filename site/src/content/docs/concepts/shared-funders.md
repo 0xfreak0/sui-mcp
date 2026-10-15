@@ -82,6 +82,15 @@ an analytics warehouse, from these sources:
 - A shared first funder.
 - One address first-funding another.
 - Value moving both ways between two non-service addresses.
+- Several wallets sweeping one coin to a collector within 30 minutes. Each
+  payment spends at least 90% of the payer's reconstructed balance, or six
+  payers send amounts within 5% of one another. Include the collector as a
+  seed; the result cites each sweep transaction. Popular collectors, labelled
+  services and addresses repeatedly paying one recipient are excluded from
+  this signal. A failed service scan does not establish a narrow collector;
+  an incomplete payer history cannot establish a near-full-balance payment.
+  Read `excluded_intermediaries` and `truncated` before interpreting a missing
+  edge.
 - A shared gas sponsor.
 - Co-appearance in one transaction.
 

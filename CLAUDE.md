@@ -1911,6 +1911,7 @@ floor too, since dust back is what a poisoner sends.
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
 | `funding_edge` | 1.0 | One address first-funded the other, and is a seed or passed the popularity check |
 | `reciprocal` | 1.0 | Value moved BOTH ways, counterparty passed the popularity check |
+| `consolidation` | 1.0 | At least six distinct payers send one coin to a measured collector within 30 minutes, each near-full-balance or in a six-payer near-equal-amount cohort |
 | `sponsor` | 0.7 (1.0 if also first-funded the address it sponsors) | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
 
@@ -1933,6 +1934,27 @@ Four rules that are easy to get wrong:
   2.1% base rate, against 4 of 6 pairs among four addresses known to share an
   owner. Roughly 32x enrichment, which is why `reciprocal` is weighted level
   with a shared narrow funder.
+- **A consolidation needs a cohort and a balance basis.** Require six distinct
+  payers in a 30-minute window for one coin, and for each linked payer either a
+  transfer of at least 90% of its pre-transfer balance or six payments within
+  5% of its amount. Historical balance reconstruction walks the payer's
+  complete history through the payment (at most six pages); a stopped or failed
+  walk leaves the balance unknown. A SUI sender's net debit may fall below the
+  collector's credit by up to 0.01 SUI from storage rebates. Read both the
+  oldest and newest collector pages, since a past sweep may be absent from the
+  payer's last 100 transactions.
+  The collector must have a complete outgoing popularity scan; a popular
+  collector, a labelled service or one repeatedly paying the same recipient
+  is excluded, since an exchange deposit may collect many full-wallet sweeps.
+  A missing popularity verdict is never narrow. On the two public case
+  cohorts, 24 WAL payers arrived within 19 minutes and 35 SUI payers within
+  22 minutes. In a control of 25 recipient addresses sampled from unrelated
+  checkpoint ranges, 8 had at least six distinct payers of one coin inside
+  30 minutes among their last 50 transactions. None had six identical
+  payments; balance history was incomplete for 24 sampled payments to four
+  of those busy recipients, so payer count alone cannot pass the rule. Three
+  of the busy recipients, read through `build_wallet_edges`, produced zero
+  `consolidation` edges at the merge weight.
 - **The return leg is asked of the counterparty, not scanned for.** A seed's
   bounded window usually shows one direction only, because the return can sit
   hundreds of transactions back. `probeRecipients` already returns who a

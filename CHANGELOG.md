@@ -5,6 +5,11 @@
 ### Added
 - **Live oracle pass checks funding, holders, staking, bridges, past balances and checkpoints.** Random draws compare `find_funding_source`'s first hop with the earliest transactions' balance changes, direct prices and supply shares, small coins' holder rankings with both walks and gRPC balances, historical staked SUI rewards with withdrawal events (a lower payout is skipped only when it emptied the rewards pool), native bridge deposits with the event's BCS over gRPC, balances below the consistent range with an anchored read, and `get_checkpoint` by number and by time with GraphQL's checkpoint records. Probe scripts now count the tool calls of the `lib/` modules they import toward live coverage.
 - **Live cross-tool consistency checks.** `consistency-pass.mjs` compares transaction, funding, balance, flow and identity answers on seeded recent and public-case subjects. It reports bounded reads separately and runs in the affected tier for tools it checks. `build_wallet_edges` now reports the measured `first_funders` for its seeds, independently of whether a funder qualified as an edge intermediary.
+- **Wallet clustering detects many-to-one consolidation.** `build_wallet_edges`
+  links a measured collector to wallets whose full-balance or near-equal coin
+  sweeps form a six-payer, 30-minute cohort. Each edge cites its sweep digest.
+  Popular collectors, labelled services and repeat-payee deposit shapes are
+  excluded; incomplete history cannot establish a balance or service verdict.
 - **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
 - **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.

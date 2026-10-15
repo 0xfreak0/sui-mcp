@@ -50,7 +50,7 @@ import {
 import { coinPublisher, coinTotalSupply } from "./coin-origin.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
-import { EdgeSet, type WalletEdge } from "./wallet-edges.js";
+import { EdgeSet, consolidationCohorts, CONSOLIDATION_MIN_PAYERS, type ConsolidationPayment, type WalletEdge } from "./wallet-edges.js";
 import { assessCoFunding } from "./co-funding.js";
 import { pricesForRanking } from "./price-providers.js";
 import { prefetchCoinScale, pricingScale, usdValue } from "./valuation.js";
@@ -114,7 +114,7 @@ export interface EdgeBuildOptions {
 /** An intermediary that was measured and thrown away, with the reason. */
 export interface ExcludedIntermediary {
   address: string;
-  role: "funder" | "sponsor";
+ role: "funder" | "sponsor" | "collector";
   /** Distinct counterparties seen before the scan stopped. A lower bound. */
   observed_counterparties: number;
   /** A funder's recipients paid only below the dust floors, not counted in `observed_counterparties`. */
@@ -148,7 +148,7 @@ export interface RoleSplit {
 /** An intermediary that survived the filter, and how well it was measured. */
 export interface UsedIntermediary {
   address: string;
-  role: "funder" | "sponsor";
+ role: "funder" | "sponsor" | "collector";
   observed_counterparties: number;
   /** A funder's recipients paid only below the dust floors, not counted in `observed_counterparties`. */
   below_floor_recipients?: number;
@@ -250,6 +250,26 @@ const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
       gasInput { gasSponsor { address } }
       effects { ${BALANCE_CHANGES_SELECTION} }
     }
+    pageInfo { hasPreviousPage startCursor }
+  }
+}`;
+
+/** Oldest and newest collector pages expose both old and recent sweeps. */
+const CONSOLIDATION_QUERY = `query ($addr: SuiAddress!, $oldest: Boolean!) {
+  old: transactions(filter: { affectedAddress: $addr }, first: 50) @include(if: $oldest) {
+    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+    pageInfo { hasNextPage endCursor }
+  }
+  recent: transactions(filter: { affectedAddress: $addr }, last: 50) @skip(if: $oldest) {
+    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+    pageInfo { hasPreviousPage startCursor }
+  }
+}`;
+
+/** Historical balance reconstruction needs the complete history through the sweep. */
+const CONSOLIDATION_PAYER_QUERY = `query ($addr: SuiAddress!, $through: UInt53!, $before: String) {
+  transactions(filter: { affectedAddress: $addr, beforeCheckpoint: $through }, last: 50, before: $before) {
+    nodes { digest effects { checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
     pageInfo { hasPreviousPage startCursor }
   }
 }`;
@@ -612,6 +632,8 @@ export interface Popularity {
    * anyone make a funder read as a service and end a walk there.
    */
   belowFloor?: number;
+ /** Repeated qualifying payments to one recipient, even without an exchange label. */
+ repeatedPayouts?: number;
   /**
    * Popular only: the counterparties seen before the scan stopped. A sample
    * for a measurement of who the address served (see {@link ROLE_SPLIT_SAMPLE}),
@@ -673,6 +695,7 @@ export async function probeRecipients(
   const members = new Map<string, string>();
   const belowFloor = new Set<string>();
   const valuedTypes = new Set<string>();
+ const recipientSends = new Map<string, Set<string>>();
   let valuer: FundingValuer | null = null;
   let cursor: string | undefined;
   let pages = 0;
@@ -724,13 +747,19 @@ export async function probeRecipients(
     for (const p of payments) {
       if (clearsDustFloor(p.coin, p.amount, valuer?.valueUsd) === true) {
         if (!members.has(p.owner)) members.set(p.owner, p.digest);
+    let recipientDigests = recipientSends.get(p.owner);
+    if (!recipientDigests) recipientSends.set(p.owner, (recipientDigests = new Set()));
+    recipientDigests.add(p.digest);
       } else {
         belowFloor.add(p.owner);
       }
     }
     if (members.size > limit) {
       // Proven by what was seen; further pages cannot change the verdict.
-      return { members: new Map(), popular: true, observed: members.size, belowFloor: dustOnly(belowFloor, members), complete: true };
+   return {
+    members: new Map(), popular: true, observed: members.size, belowFloor: dustOnly(belowFloor, members), complete: true,
+    repeatedPayouts: Math.max(0, ...[...recipientSends.values()].map((s) => s.size)),
+   };
     }
     if (!page.transactions.pageInfo.hasPreviousPage) {
       reachedEnd = true;
@@ -746,6 +775,7 @@ export async function probeRecipients(
     belowFloor: dustOnly(belowFloor, members),
     complete: reachedEnd,
     ...unmeasured(pages, readFailed),
+  repeatedPayouts: Math.max(0, ...[...recipientSends.values()].map((s) => s.size)),
   };
 }
 
@@ -1047,6 +1077,116 @@ async function profileSeed(
   return { sponsors, coParties, paidTo, paidBy, unreadTransactions, readFailed };
 }
 
+interface ConsolidationNode {
+ digest: string;
+ sender?: { address: string } | null;
+ effects?: {
+  timestamp?: string | null;
+  checkpoint?: { sequenceNumber: number } | null;
+  balanceChanges: GqlConnection<GqlBalanceChangeNode>;
+ } | null;
+}
+
+interface ConsolidationPage {
+ nodes: ConsolidationNode[];
+ pageInfo: { hasNextPage?: boolean; hasPreviousPage?: boolean; startCursor?: string | null };
+}
+
+/** A historical balance is known only when the walk reaches the wallet's first transaction. */
+async function balanceBeforeSweep(payment: ConsolidationPayment, checkpoint: number, budget: Budget): Promise<bigint | null> {
+ let cursor: string | undefined;
+ let balance = 0n;
+ let found = false;
+ for (let pageNumber = 0; pageNumber < 6; pageNumber++) {
+  if (!budget.take()) return null;
+  let page: ConsolidationPage;
+  try {
+   page = (await gqlQuery<{ transactions: ConsolidationPage }>(CONSOLIDATION_PAYER_QUERY, {
+    addr: payment.payer, through: checkpoint + 1, before: cursor,
+   })).transactions;
+  } catch {
+   return null;
+  }
+  if (!page) return null;
+  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })));
+  budget.charge(completed.reduce((sum, tx) => sum + tx.reads, 0));
+  if (completed.some((tx) => tx.balanceChangesTruncated)) return null;
+  for (const [index, tx] of page.nodes.entries()) {
+   if (tx.effects?.checkpoint?.sequenceNumber === checkpoint && tx.digest !== payment.digest) return null;
+   if (tx.digest === payment.digest) found = true;
+   for (const change of completed[index].balanceChanges) {
+    if (change.owner?.address === payment.payer && change.coinType?.repr === payment.coin) {
+     balance += BigInt(change.amount ?? "0");
+    }
+   }
+  }
+  if (!page.pageInfo.hasPreviousPage) return found ? balance + payment.amount : null;
+  cursor = page.pageInfo.startCursor ?? undefined;
+  if (!cursor) return null;
+ }
+ return null;
+}
+
+/**
+ * A collector is checked independently of the payer's recent window: a sweep
+ * years ago can be absent from every payer's latest 100 transactions.
+ */
+async function readConsolidation(
+ collector: string,
+ seeds: Set<string>,
+ budget: Budget,
+): Promise<{ entries: Array<{ payment: ConsolidationPayment; checkpoint: number }>; unread: boolean }> {
+ const found = new Map<string, { payment: ConsolidationPayment; checkpoint: number }>();
+ let unread = false;
+ for (const oldest of [true, false]) {
+  if (!budget.take()) { unread = true; break; }
+  let page: ConsolidationPage;
+  try {
+   const result = await gqlQuery<{ old?: ConsolidationPage; recent?: ConsolidationPage }>(CONSOLIDATION_QUERY, {
+    addr: collector, oldest,
+   });
+   page = (oldest ? result.old : result.recent)!;
+  } catch {
+   unread = true;
+   break;
+  }
+  if (!page) { unread = true; break; }
+  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })));
+  budget.charge(completed.reduce((sum, tx) => sum + tx.reads, 0));
+  if (completed.some((tx) => tx.balanceChangesTruncated)) unread = true;
+  for (const [index, tx] of page.nodes.entries()) {
+   if (completed[index].balanceChangesTruncated) continue;
+   const payer = tx.sender?.address;
+   const checkpoint = tx.effects?.checkpoint?.sequenceNumber;
+   const timestamp = Date.parse(tx.effects?.timestamp ?? "");
+   if (!payer || payer === collector || checkpoint === undefined || !Number.isFinite(timestamp)) continue;
+   const changes = completed[index].balanceChanges;
+   for (const credit of changes) {
+    if (credit.owner?.address !== collector || !credit.coinType?.repr) continue;
+    const amount = BigInt(credit.amount ?? "0");
+    if (amount <= 0n) continue;
+    // Another party's credit inside a PTB is not a sweep by its sender.
+    const debit = changes.filter((c) => c.owner?.address === payer && c.coinType?.repr === credit.coinType?.repr)
+     .reduce((sum, c) => sum + BigInt(c.amount ?? "0"), 0n);
+    // A storage rebate can make the sender's net SUI debit slightly smaller
+    // than what the collector received; do not admit an unrelated third-party payment.
+    const suiCoin = isSuiCoinType(credit.coinType.repr);
+    if (debit >= 0n || amount > -debit + (suiCoin ? 10_000_000n : 0n) ||
+     (suiCoin && amount < 10_000_000n)) continue;
+    const payment: ConsolidationPayment = {
+     payer, collector, coin: credit.coinType.repr, amount, balanceBefore: null, timestamp, digest: tx.digest,
+    };
+    found.set(`${tx.digest}|${credit.coinType.repr}`, { payment, checkpoint });
+   }
+  }
+  if (oldest && !page.pageInfo.hasNextPage) break;
+ }
+ const entries = [...found.values()].sort((a, b) =>
+  Number(seeds.has(b.payment.payer)) - Number(seeds.has(a.payment.payer)) ||
+  a.payment.payer.localeCompare(b.payment.payer) || a.payment.digest.localeCompare(b.payment.digest));
+ return { entries, unread };
+}
+
 /* ------------------------------------------------------------------ *
  * Build
  * ------------------------------------------------------------------ */
@@ -1076,7 +1216,7 @@ export async function buildWalletEdges(
   const expandBudget = opts.expandBudget ?? 25;
   const budget = new Budget(opts.queryBudget ?? 150);
 
-  const uniqueSeeds = [...new Set(seeds)];
+ const uniqueSeeds = [...new Set(seeds)].sort();
   const reciprocalBudget = opts.reciprocalBudget ?? 15;
   const reciprocalCandidates: Array<{ seed: string; other: string; digests: string[]; alreadyBoth: boolean }> = [];
   let unprobedReciprocal = 0;
@@ -1422,9 +1562,83 @@ export async function buildWalletEdges(
     }
   }
 
+ // Many-to-one sweeps are read at both ends of each collector's history.
+ // A bounded recent seed profile cannot prove an older consolidation and
+ // cannot rule one out when the endpoint returns a short recent page.
+ const consolidationMembers = new Set<string>();
+ let unreadConsolidation = 0;
+ const seedSet = new Set(uniqueSeeds);
+ for (const collector of uniqueSeeds) {
+  const label = getLabel(collector);
+  if (label && ["cex", "bridge", "protocol"].includes(label.category)) continue;
+  const reading = await readConsolidation(collector, seedSet, budget);
+  if (reading.unread) unreadConsolidation++;
+  const entries = reading.entries;
+  if (!entries.some((entry) =>
+   new Set(entries.filter((other) => other.payment.coin === entry.payment.coin &&
+    Math.abs(other.payment.timestamp - entry.payment.timestamp) <= 30 * 60_000).map((other) => other.payment.payer)).size >= CONSOLIDATION_MIN_PAYERS)) continue;
+  const verdict = await probeRecipients(collector, popularityLimit, budget);
+  if (verdict.unmeasured || !verdict.complete) {
+   excluded.push({
+    address: collector, role: "collector", observed_counterparties: verdict.observed,
+    reason: verdict.unmeasured ? unmeasuredExclusion(verdict.unmeasured, verdict.observed) :
+     "The collector's outbound popularity scan stopped before its history ended; no consolidation link is inferred.",
+   });
+   if (verdict.unmeasured === "read_failed") unreadConsolidation++;
+   continue;
+  }
+  if (verdict.popular || (verdict.repeatedPayouts ?? 0) >= 2) {
+   excluded.push({
+    address: collector, role: "collector", observed_counterparties: verdict.observed,
+    reason: verdict.popular ? "The collector pays more than the popularity limit; a service's customers are not a cluster." :
+     "The collector repeatedly pays the same recipient; it may be an exchange deposit address, so consolidation does not merge its depositors.",
+   });
+   continue;
+  }
+  // The service verdict precedes balance reconstruction; a budget stop cannot
+  // promote an unread collector. Equal-amount payers need no balance estimate.
+  const equalAmountDigests = new Set(consolidationCohorts(entries.map((entry) => entry.payment))
+   .flatMap((cohort) => cohort.map((payment) => payment.digest)));
+  for (const entry of entries) {
+   if (budget.truncated) { unreadConsolidation++; break; }
+   const payment = entry.payment;
+   const siblings = entries.filter((other) => other.payment.coin === payment.coin &&
+    Math.abs(other.payment.timestamp - payment.timestamp) <= 30 * 60_000);
+   if (new Set(siblings.map((other) => other.payment.payer)).size < CONSOLIDATION_MIN_PAYERS ||
+    equalAmountDigests.has(payment.digest)) continue;
+   payment.balanceBefore = await balanceBeforeSweep(payment, entry.checkpoint, budget);
+   if (payment.balanceBefore === null) unreadConsolidation++;
+  }
+  const cohorts = consolidationCohorts(entries.map((entry) => entry.payment));
+  if (!cohorts.length) continue;
+  used.push({
+   address: collector, role: "collector", observed_counterparties: verdict.observed, scan_complete: true,
+  });
+  for (const cohort of cohorts) {
+   for (const payment of cohort) {
+    if (!expand && !seedSet.has(payment.payer)) continue;
+    edges.add(
+     "consolidation", collector, payment.payer,
+     `${cohort.length} distinct payers sent ${payment.coin} to this non-service collector within 30 minutes; ` +
+     (payment.balanceBefore !== null && payment.amount <= payment.balanceBefore &&
+      payment.amount * 10n >= payment.balanceBefore * 9n ?
+      "this payment took at least 90% of the payer's pre-transfer balance." :
+      "at least six payers sent amounts within 5% of this amount."),
+     [payment.digest],
+     collector,
+    );
+    consolidationMembers.add(payment.payer);
+   }
+  }
+ }
+ if (unreadConsolidation) {
+  notes.push(`${unreadConsolidation} consolidation read(s) were incomplete; no historical balance or collector service verdict was inferred from unread pages.`);
+ }
+
   const examined = new Set(uniqueSeeds);
   for (const o of operators) examined.add(o);
   for (const f of splitFunders) examined.add(f);
+ for (const payer of consolidationMembers) examined.add(payer);
 
   // --- phase 3: expansion ----------------------------------------------
   if (expand) {
@@ -1656,7 +1870,7 @@ export async function buildWalletEdges(
     used_intermediaries: used,
     first_funders: Object.fromEntries(firstFunders),
     queries_used: budget.used,
-    truncated: budget.truncated || unreadFundingLookups > 0 || unreadSeedScans > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0,
+  truncated: budget.truncated || unreadFundingLookups > 0 || unreadSeedScans > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0 || unreadConsolidation > 0,
     notes,
   };
 }

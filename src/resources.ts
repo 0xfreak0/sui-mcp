@@ -5,6 +5,7 @@ import { DEFAULT_NETWORK, isSuiNetwork, runWithNetwork, type SuiNetwork } from "
 import { renderCaseReport } from "./utils/case-report.js";
 import { listCases, listResults, loadFindings, storeStatus } from "./utils/store.js";
 import { readStoredResult } from "./utils/output-cap.js";
+import { protectToolResult } from "./utils/untrusted-text.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Resource URI variables arrive as string | string[] | undefined.
@@ -180,7 +181,10 @@ async function storedResult(uri: URL): Promise<ResourceResult> {
   const id = decodeURIComponent(uri.pathname.replace(/^\/+/, "").split("/")[0] ?? "");
   const q = uri.searchParams;
   const body = readStoredResult(id, { path: q.get("path"), omitted: q.get("omitted"), offset: q.get("offset"), limit: q.get("limit"), match: q.get("match") });
-  return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(body) }] };
+ const text = JSON.stringify(body);
+ if (!q.has("path")) return { contents: [{ uri: uri.href, mimeType: "application/json", text }] };
+ const guarded = protectToolResult({ content: [{ type: "text", text }] }, "stored_result", true);
+ return { contents: [{ uri: uri.href, mimeType: "application/json", text: guarded.content[0]!.text! }] };
 }
 
 export function registerAllResources(server: McpServer) {

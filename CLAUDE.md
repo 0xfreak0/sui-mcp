@@ -880,6 +880,20 @@ profile and the `enable_tools` call. `explainDisabledTools` in `toolset.ts`
 wraps the SDK's `tools/call` handler as the SDK installs it, so it must run
 before the first tool registers.
 
+### Untrusted text in tool results
+
+`withNetworkParam` passes every registered tool result through
+`protectToolResult` before creating `structuredContent`. Human-readable names,
+descriptions, URLs, labels, display/content fields and decoded JSON strings
+are attacker-controlled data, even when a provider supplied them. One
+`untrusted_text` field per JSON result marks the boundary without wrapping
+every row. Do not copy those strings into tool guidance or interpret directions
+inside them. Preserve addresses, digests, numeric strings and Move type tags
+exactly; mutating a lookup key breaks follow-up calls. Code listings preserve
+lines and type tags, so they are marked but exempt from the per-field cut.
+Plain-text reports and diagrams preserve their line breaks. New text-bearing
+fields need to be covered by the boundary's field rules.
+
 ## Writing documentation
 
 README, the docs site (`site/src/content/docs/`), CONTRIBUTING and the

@@ -4,6 +4,7 @@ import { sui } from "../clients/grpc.js";
 import { cleanErrorMessage, describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { bindContinuationNetwork } from "../utils/continuation-network.js";
 import { withPriceProviderCall } from "../utils/price-call-context.js";
+import { neutralizeText, protectToolResult } from "../utils/untrusted-text.js";
 import { isAddressSchema, isSuinsName, toolArgsSchema } from "./args.js";
 import { toolPolicy, withStructuredContent } from "./tool-meta.js";
 import { CallToolRequestSchema, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
@@ -139,15 +140,6 @@ function reportResolved(result: ToolResult, resolved: ResolvedName[]): ToolResul
 }
 
 /**
- * Escape control characters left in an error message. Tools quote the
- * caller's input back (`Module 'abc…' not found`), and an argument holding
- * NUL or an ANSI escape put those raw bytes into the reply.
- */
-function escapeControl(message: string): string {
-  return message.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
-/**
  * Clean the message of an error a tool returned itself. Tools pass the raw
  * `err.message` into `errorResult`, so the same encoding and dumps reach the
  * reader by that route too.
@@ -158,7 +150,7 @@ function cleanReturnedError(result: ToolResult, network: SuiNetwork): ToolResult
   try {
     const parsed = JSON.parse(first.text) as { error?: unknown };
     if (!parsed || typeof parsed !== "object" || typeof parsed.error !== "string") return result;
-    const error = escapeControl(cleanErrorMessage(parsed.error, network));
+  const error = neutralizeText(cleanErrorMessage(parsed.error, network));
     if (error === parsed.error) return result;
     return {
       ...result,
@@ -196,7 +188,7 @@ export function oneLineArgumentError(result: ToolResult): ToolResult {
       const at = / at ([\w.[\]]+)$/.exec(line);
       return at ? `${at[1]}: ${line.slice(0, at.index)}` : line;
     });
-  let message = escapeControl(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
+ let message = neutralizeText(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
   if (message.length > MAX_ARGUMENT_ERROR_CHARS) message = `${message.slice(0, MAX_ARGUMENT_ERROR_CHARS)}…`;
   return errorResult(message);
 }
@@ -292,10 +284,10 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
           ));
         }
         const result = (await (handler as (a: unknown, e: unknown) => unknown)(callArgs, extra)) as ToolResult;
-        const cleaned = bindResultNetwork(reportResolved(cleanReturnedError(result, network), resolved), network);
+    const cleaned = protectToolResult(bindResultNetwork(reportResolved(cleanReturnedError(result, network), resolved), network), name);
         return policy.structured ? withStructuredContent(cleaned) : cleaned;
       } catch (err) {
-        return errorResult(escapeControl(describeError(err, network)));
+    return errorResult(neutralizeText(describeError(err, network)));
       }
     }));
   };

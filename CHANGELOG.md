@@ -19,6 +19,7 @@
   a probe of an address with large batch payouts stops at `query_budget`.
   `observed_but_below_threshold` lists each pair once with its signal types
   and weight; its evidence stays in `edges`.
+- **Human-readable chain and provider fields are marked as untrusted data.** Tool results add one `untrusted_text` note, escape control and bidirectional formatting characters and markup, and cap each readable field with an explicit cut count. Addresses, digests, amounts, Move type tags and code listings retain their original spelling.
 - **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
 - **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.

@@ -24,7 +24,8 @@ import { LookalikeIndex } from "./address-lookalike.js";
 import { readBridgeEvents, sameForeignAddress } from "./bridge/exits.js";
 import { crossChainLeads, type CrossChainLead } from "./bridge/cross-chain.js";
 import { isPlumbingPackage } from "./system-packages.js";
-import type { SharedWrite } from "./object-flow.js";
+import type { ObjectMovement, OwnerRef, SharedWrite } from "./object-flow.js";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import type { Beneficiary } from "./bridge/beneficiary.js";
 import type { SuiEventNode } from "./bridge/wormhole.js";
 import { fetchEventJson } from "./event-json.js";
@@ -237,8 +238,9 @@ export class FlowEngine {
   private frontier = new Map<string, Job>();
   private readonly txCache = new Map<string, Promise<FetchedTx | null>>();
   private readonly decoded = new Map<string, string[]>();
- private readonly objects = new Map<string, Promise<{ rows: MovedObjectValue[]; unread: Array<{ what: string; reason: string }> }>>();
+ private readonly objects = new Map<string, Promise<ObjectRead>>();
  readonly unvaluedObjects: Array<{ digest: string; object_id: string; type: string | null; reason: string }> = [];
+ private readonly unvaluedSeen = new Set<string>();
   /** Every address any branch has named, bucketed for the lookalike check. */
   private readonly seenAddresses = new LookalikeIndex();
   private readonly allocated = new Map<string, Map<string, RemainingEntry>>();
@@ -279,15 +281,21 @@ export class FlowEngine {
     const split = forward
       ? splitOrigin({ changes: tx.balanceChanges, trackedCoin: this.opts.coin, gas, valueUsd })
       : splitOriginBackward({ changes: tx.balanceChanges, trackedCoin: this.opts.coin, gas, valueUsd });
-  const objectRead = this.opts.coin === null ? await this.objectValues(digest, tx) : { rows: [], unread: [] };
+  const objectRead = this.opts.coin === null ? await this.objectValues(digest, tx, true) : NO_OBJECTS;
   if (objectRead.unread.some((u) => u.what === digest)) {
    this.truncated = true;
    this.partial.push(`The object changes in ${digest} could not be read.`);
   }
+  const sender = tx.sender ? normalizeSuiAddress(tx.sender) : null;
+  // Forward, what an address gained: an object transferred to it, or created
+  // for an address other than the sender. Backward, what an address gave up.
+  const candidate = (from: string | null, to: string | null) =>
+   from !== to && (forward ? to !== null && (from !== null || to !== sender) : from !== null);
   const objects = objectRead.rows.filter((r) =>
-   !r.changed_in_place && !r.custody && r.from !== r.to && r.usd !== null && r.usd > 0 &&
-   (forward ? r.from !== null && r.to !== null : r.from !== null),
+   !r.changed_in_place && !r.custody && r.usd !== null && r.usd > 0 && candidate(r.from, r.to),
   );
+  const unvalued = objectRead.unvalued.filter((u) => !u.custody && candidate(u.from, u.to));
+  this.noteUnvalued(unvalued);
   const weights = objectOriginWeights(
    split.branches.map((b) => ({ amount: b.amount, coin_type: b.coin_type })),
    objects,
@@ -326,9 +334,12 @@ export class FlowEngine {
    }, holder, forward ? origin.id : objectNodeId(holder, row.object_id),
     forward ? objectNodeId(holder, row.object_id) : origin.id, row, digest, tx);
   }
-  if (split.branches.length === 0 && objects.length === 0 && this.unvaluedObjects.some((u) => u.digest === digest)) {
+  if (split.branches.length === 0 && objects.length === 0 && unvalued.length > 0) {
    this.truncated = true;
-   this.partial.push(`No priced coin or object transfer could be followed from ${digest}; see unvalued_objects for the movements not valued.`);
+   this.ledger.add("read_failed", {
+    node: origin.id, share: 1, usd: null,
+    detail: `No priced coin or valued object moved in ${digest}; ${unvalued.length} object movement(s) have no established value (see unvalued_objects).`,
+   });
    return;
   }
   if (split.branches.length === 0 && objects.length === 0) {
@@ -522,63 +533,87 @@ export class FlowEngine {
   const forward = this.opts.direction === "forward";
   const scan = await scanObjectTouches(objectId, job.arrival.checkpoint, job.arrival.digest, this.opts.direction, this.opts.window);
   this.markExpanded(n);
+  // The part of the share the object still carries: value drawn from it in
+  // place (forward) or added to it in place (backward) passes to that
+  // transaction's coins.
+  let share = job.share;
+  const usd = () => {
+   const whole = this.usdAt(1n, n);
+   return whole === null ? null : whole * (share / job.share);
+  };
+  const stop = (detail: string) => {
+   this.truncated = true;
+   this.ledger.add("read_failed", { node: n.id, share, usd: usd(), detail });
+  };
   for (const digest of scan.digests) {
    if (this.txReads >= this.opts.maxTxReads) break;
    const tx = await this.read(digest);
-   if (!tx) {
-    this.truncated = true;
-    this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `Could not read object transaction ${digest}.` });
-    return;
-   }
-   const values = await this.objectValues(digest, tx);
+   if (!tx) return stop(`Could not read object transaction ${digest}.`);
+   const values = await this.objectValues(digest, tx, false, holder);
    const row = values.rows.find((r) => r.object_id === objectId && !r.changed_in_place);
    if (!row) {
+    if (values.unread.some((u) => u.what === objectId || u.what === digest)) {
+     return stop(`The custody or value of ${objectId} in ${digest} could not be read completely.`);
+    }
+    const kept = values.rows.find((r) => r.object_id === objectId && r.changed_in_place && (forward ? r.from : r.to) === holder);
+    if (kept) {
+     const delta = kept.usd === null ? null : forward ? -kept.usd : kept.usd;
+     if (delta === null || kept.usd_after == null) return stop(`The change in value of ${objectId} in ${digest} is unavailable: ${kept.unpriced_reason ?? "an asset leg has no price"}.`);
+     if (delta > 0) {
+      const whole = forward ? delta + Math.max(0, kept.usd_after) : Math.max(kept.usd_after, delta);
+      const part = Math.min(1, delta / whole);
+      await this.convertObject(n, kept, digest, tx, share * part, delta, values);
+      share *= 1 - part;
+      if (share <= 0) return;
+     }
+     continue;
+    }
     const moved = tx.objectMovements?.some((m) => m.object_id === objectId &&
      (m.from?.address !== m.to?.address || m.kind === "deleted" || m.kind === "wrapped"));
-    if (moved || values.unread.some((u) => u.what === objectId || u.what === digest) || tx.objectChangesTruncated) {
-     this.truncated = true;
-     this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `The custody or value of ${objectId} in ${digest} could not be read completely.` });
-     return;
-    }
+    if (moved || tx.objectChangesTruncated) return stop(`The custody or value of ${objectId} in ${digest} could not be read completely.`);
     continue;
    }
    const nextHolder = forward ? row.to : row.from;
    if ((forward ? row.from : row.to) !== holder) continue;
-   if (row.custody) {
-    this.truncated = true;
-    this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `${objectId} changed custody through an object container in ${digest}; the controlling address is not established.` });
-    return;
+   // Into or out of another object (a wrapper, a kiosk), shared or frozen:
+   // the object still exists, and no address is established as holding it.
+   const movement = values.movements.find((m) => normalizeSuiAddress(m.object_id) === objectId);
+   const other = forward ? movement?.to : movement?.from;
+   if (row.custody || (!nextHolder && other && other.kind !== "address")) {
+    const where = other?.kind === "object" && other.address ? `object ${other.address}` : other ? `a ${other.kind} owner` : "another object";
+    return stop(`${objectId} moved ${forward ? "into" : "out of"} ${where} in ${digest}; the controlling address is not established.`);
    }
-   if (row.usd === null) {
-    this.truncated = true;
-    this.ledger.add("read_failed", { node: n.id, share: job.share, usd: n.usd, detail: `The value of ${objectId} at ${digest} is unavailable; see unvalued_objects.` });
-    return;
-   }
+   if (row.usd === null) return stop(`The value of ${objectId} at ${digest} is unavailable: ${row.unpriced_reason ?? "an asset leg has no price"}.`);
    if (nextHolder && nextHolder !== holder) {
     const target = objectNodeId(nextHolder, objectId);
     this.connectObject({
-     node: target, object_id: objectId, share: job.share,
+     node: target, object_id: objectId, share,
      need: 1n, arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
      depth: job.depth + 1, from: holder, via: n.id,
     }, nextHolder, forward ? n.id : target, forward ? target : n.id,
      row, digest, tx);
     return;
    }
-   await this.convertObject(job, n, row, digest, tx);
+   await this.convertObject(n, row, digest, tx, share, row.usd, values);
    return;
   }
   const stopped = !scan.exhausted || this.txReads >= this.opts.maxTxReads;
   if (stopped) this.truncated = true;
   if (!stopped && forward) n.unspent = (n.unspent ?? 0n) + 1n;
   this.ledger.add(stopped ? "budget" : forward ? "unspent" : "source", {
-   node: n.id, share: job.share, usd: n.usd,
+   node: n.id, share, usd: usd(),
    detail: stopped ? `The search for ${objectId} stopped before reaching the end of its history.`
-    : forward ? `No later transaction in the window moved ${objectId}.` : `No earlier transfer of ${objectId} was found in the window.`,
+    : forward ? `No later transaction in the window moved ${objectId} or drew value from it.` : `No earlier transfer of ${objectId} was found in the window.`,
   });
  }
 
- /** Assign a redeemed object's share to its priced coin proceeds. */
- private async convertObject(job: Job, n: GraphNode, row: MovedObjectValue, digest: string, tx: FetchedTx): Promise<void> {
+ /**
+  * Pass `share` of a redeemed object, or of the part drawn from it in place,
+  * worth `value`, to the transaction's priced coin proceeds (forward) or to
+  * its priced payers (backward). Several objects converted in one
+  * transaction divide the coins by value.
+  */
+ private async convertObject(n: GraphNode, row: MovedObjectValue, digest: string, tx: FetchedTx, share: number, value: number, values: ObjectRead): Promise<void> {
   const forward = this.opts.direction === "forward";
   const valueUsd = await this.valuer(tx);
   const split = forward
@@ -589,32 +624,47 @@ export class FlowEngine {
    const usd = valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type });
    return usd !== null && usd > 0;
   });
-  const otherObjects = (await this.objectValues(digest, tx)).rows.filter((r) =>
-   !r.changed_in_place && !r.custody && r.usd !== null && r.usd > 0 &&
-   (forward ? r.from !== null && r.to === null : r.to !== null && r.from === null),
-  );
-  const objectTotal = otherObjects.reduce((sum, r) => sum + r.usd!, 0);
-  const fraction = objectTotal > 0 && row.usd !== null ? Math.min(1, row.usd / objectTotal) : 1;
+  const contained = new Set(values.movements.filter((m) => {
+   const other = forward ? m.to : m.from;
+   return other !== null && other.kind !== "address";
+  }).map((m) => normalizeSuiAddress(m.object_id)));
+  // An object holding coins is valued here at the prices its proceeds are
+  // valued at: a valuer's own quote for the same SUI differs slightly, and
+  // would leave a redemption that paid out in full partly unexplained.
+  const atTx = (r: MovedObjectValue): MovedObjectValue => {
+   if (!r.coin_amounts?.length || r.usd === null) return r;
+   let usd = 0;
+   for (const c of r.coin_amounts) {
+    const raw = BigInt(c.amount);
+    const u = valueUsd({ amount: (raw < 0n ? -raw : raw).toString(), coin_type: c.coin_type });
+    if (u === null) return r;
+    usd += raw < 0n ? -u : u;
+   }
+   return { ...r, usd };
+  };
+  const own = atTx(row);
+  if (own !== row) value = Math.max(0, own.changed_in_place ? (forward ? -own.usd! : own.usd!) : own.usd!);
+  const converted = values.rows.reduce((sum, r) => sum + (contained.has(r.object_id) ? 0 : conversionValue(atTx(r), forward)), 0);
+  const fraction = converted > 0 ? Math.min(1, value / converted) : 1;
   const usdTotal = priced.reduce((sum, b) => sum + (valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type }) ?? 0), 0);
-  const covered = n.usd && n.usd > 0 ? Math.min(1, usdTotal * fraction / n.usd) : 0;
+  const covered = value > 0 && usdTotal > 0 ? Math.min(1, (usdTotal * fraction) / value) : 0;
   for (const b of priced) {
    const usd = valueUsd({ amount: b.amount.toString(), coin_type: b.coin_type })!;
-   const traced = scaleAmount(b.amount, Math.min(fraction, (row.usd ?? n.usd ?? 0) / usdTotal));
-   const share = job.share * covered * usd / usdTotal;
+   const traced = scaleAmount(b.amount, Math.min(fraction, value / usdTotal));
    const target = nodeId(b.address, b.coin_type);
    this.connect({
-    node: target, share, need: traced, arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
-    depth: job.depth + 1, from: n.address, via: n.id,
+    node: target, share: share * covered * usd / usdTotal, need: traced, arrival: { digest, checkpoint: tx.checkpoint ?? undefined },
+    depth: n.depth + 1, from: n.address, via: n.id,
    }, b.address, b.coin_type, forward ? n.id : target, forward ? target : n.id,
     { amount: b.amount, traced, usd, basis: "conversion", digest, tx });
   }
   if (covered < 1) {
    if (unpriced) this.truncated = true;
    this.ledger.add(unpriced ? "read_failed" : forward ? "consumed" : "source", {
-    node: n.id, share: job.share * (1 - covered), usd: n.usd === null ? null : n.usd * (1 - covered),
+    node: n.id, share: share * (1 - covered), usd: value * (1 - covered),
     detail: unpriced
-     ? `${row.object_id} changed form in ${digest}; some coin proceeds lack a price, so their share cannot be allocated.`
-     : `${row.object_id} changed form in ${digest}; priced coin movements do not cover its whole value at this checkpoint.`,
+     ? `${row.object_id} was converted in ${digest}; some coin ${forward ? "proceeds" : "payments"} lack a price, so their share cannot be allocated.`
+     : `${row.object_id} was converted in ${digest}; priced coin ${forward ? "proceeds" : "payments"} cover ${Math.round(covered * 100)}% of the $${value.toFixed(2)} converted.`,
    });
   }
  }
@@ -625,27 +675,25 @@ export class FlowEngine {
 
  /** Read bounded object transfers for an address start, including transactions with no coin change. */
  private async addressObjects(address: string): Promise<Array<MovedObjectValue & { digest: string }>> {
-  const scan = await scanObjectTouches(address, undefined, undefined, this.opts.direction, this.opts.window, MOVES_PER_START_ADDRESS, "affectedAddress");
+  const forward = this.opts.direction === "forward";
+  // An address-owned object leaves only in a transaction its owner sends.
+  const scan = await scanObjectTouches(address, undefined, undefined, this.opts.direction, this.opts.window, MOVES_PER_START_ADDRESS, forward ? "sentAddress" : "affectedAddress");
   const read = await readMovedObjects(scan.digests);
+  const candidate = (from: string | null, to: string | null) =>
+   forward ? from === address && to !== null && to !== address : to === address && from !== null && from !== address;
+  // A previous holder old effects did not record is read during valuation.
   const relevant = read.txs.filter((tx) => tx.moved.some((m) =>
-   this.opts.direction === "forward" ? (m.from === address || m.from === null) && m.to !== null && m.to !== address
-    : m.to === address && m.from !== address,
+   candidate(m.from, m.to) || (m.prior_version !== undefined && m.from === null && (forward ? m.to !== null && m.to !== address : m.to === address)),
   ));
   const values = await valueTransactionObjects(relevant, { maxTxs: MOVES_PER_START_ADDRESS, maxObjects: MOVES_PER_START_ADDRESS });
-  const valuedIds = new Set(values.rows.map((r) => `${r.digest}:${r.object_id}`));
-  const unreadIds = new Set(values.unread.map((r) => `${r.digest}:${r.what}`));
-  for (const tx of read.txs) for (const m of tx.movements ?? []) {
-   if (!m.type || m.category === "coin" || (!m.from?.address && !m.to?.address) || m.from?.address === m.to?.address) continue;
-   if (m.from?.address !== address && m.to?.address !== address) continue;
-   if (!valuedIds.has(`${tx.digest}:${m.object_id}`) && !unreadIds.has(`${tx.digest}:${m.object_id}`)) {
-    this.unvaluedObjects.push({ digest: tx.digest, object_id: m.object_id, type: m.type, reason: "No position reader returned a value for this object." });
+  const skipped = new Set([...read.unread, ...values.skipped]);
+  for (const tx of read.txs) {
+   if (skipped.has(tx.digest)) continue;
+   const rows = values.rows.filter((r) => r.digest === tx.digest);
+   const unread = new Map(values.unread.filter((u) => u.digest === tx.digest).map((u) => [u.what, u.reason]));
+   this.noteUnvalued(unvaluedOf(tx.digest, tx.movements ?? [], rows, unread).filter((u) => !u.custody && candidate(u.from, u.to)));
    }
-  }
-  for (const u of values.unread) this.unvaluedObjects.push({ digest: u.digest, object_id: u.what, type: null, reason: u.reason });
-  for (const r of values.rows) if (r.usd === null) this.unvaluedObjects.push({
-   digest: r.digest, object_id: r.object_id, type: r.type, reason: r.unpriced_reason ?? "The object's asset legs have no price.",
-  });
-  for (const digest of [...read.unread, ...values.skipped]) {
+  for (const digest of skipped) {
    this.truncated = true;
    this.partial.push(`The object changes of ${digest} could not be read in the address history.`);
   }
@@ -653,37 +701,76 @@ export class FlowEngine {
    this.truncated = true;
    this.partial.push(`The object history of ${address} stopped after ${scan.digests.length} transactions; later object transfers may be missing.`);
   }
-  return values.rows.filter((r) => !r.custody && !r.changed_in_place && r.usd !== null && r.usd > 0 &&
-   (this.opts.direction === "forward" ? r.from === address && r.to !== null && r.to !== address
-    : r.to === address && r.from !== null && r.from !== address));
+  return values.rows.filter((r) => !r.custody && !r.changed_in_place && r.usd !== null && r.usd > 0 && candidate(r.from, r.to));
  }
 
- /** Distribute the address-root share between its independent coin and object movements. */
+ /**
+  * Divide the address-root share between its coin legs, each worth `coins`
+  * (USD, null when unpriced), and its object handovers. `carved` is the part
+  * of each object's value a coin leg already carries: an object the root
+  * created from its own coins and then handed over is counted once, on the
+  * object. Returns the part of the share left to the coin legs.
+  */
  private async connectAddressObjects(
-  job: Job, n: GraphNode, rows: Array<MovedObjectValue & { digest: string }>,
-  coins: Array<{ amount: bigint; coin_type: string; usd: number | null }>, keep?: number[],
+  job: Job, n: GraphNode, rows: Array<MovedObjectValue & { digest: string }>, coins: Array<number | null>, carved: number[] = [],
  ): Promise<number> {
   if (rows.length === 0) return 1;
-  const weights = objectOriginWeights(coins.map((c, i) => ({ ...c, usd: c.usd === null ? null : c.usd * (keep?.[i] ?? 1) })), rows, () => null);
+  const coinTotal = coins.reduce<number>((sum, v) => sum + (v ?? 0), 0);
+  const total = coinTotal + rows.reduce((sum, r, i) => sum + Math.max(0, r.usd! - (carved[i] ?? 0)), 0);
+  if (total <= 0) return 1;
   for (let i = 0; i < rows.length; i++) {
    const row = rows[i];
-   if (weights.objects[i] <= 0) continue;
+   const share = (job.share * row.usd!) / total;
    const tx = await this.read(row.digest);
    if (!tx) {
     this.truncated = true;
-    this.ledger.add("read_failed", { node: n.id, share: job.share * weights.objects[i], usd: row.usd, detail: `Could not read object transaction ${row.digest}.` });
+    this.ledger.add("read_failed", { node: n.id, share, usd: row.usd, detail: `Could not read object transaction ${row.digest}.` });
     continue;
    }
    const holder = this.opts.direction === "forward" ? row.to! : row.from!;
    const target = objectNodeId(holder, row.object_id);
    this.connectObject({
-    node: target, object_id: row.object_id, share: job.share * weights.objects[i],
+    node: target, object_id: row.object_id, share,
     need: 1n, arrival: { digest: row.digest, checkpoint: tx.checkpoint ?? undefined },
     depth: job.depth + 1, from: n.address, via: n.id,
    }, holder, this.opts.direction === "forward" ? n.id : target,
     this.opts.direction === "forward" ? target : n.id, row, row.digest, tx);
   }
-  return weights.coins.reduce((sum, share) => sum + share, 0);
+  return coinTotal / total;
+ }
+
+ /**
+  * Value an address-start root's coin legs put into an object the root hands
+  * over: forward, an object created for the address in the leg's
+  * transaction; backward, an object the root received and gave up in the
+  * leg's transaction (an unstake, a redemption). The leg's unpaid part and
+  * the handover are the same value. `carve` is the part of each leg's unpaid
+  * value the objects take; `carved` the USD each object takes from legs.
+  */
+ private rootObjectLinks(address: string, legs: Leg[], txs: Array<FetchedTx | null>, digests: string[], rows: Array<MovedObjectValue & { digest: string }>): { carve: number[]; carved: number[] } {
+  const forward = this.opts.direction === "forward";
+  const carve = legs.map(() => 0);
+  const carved = rows.map(() => 0);
+  if (rows.length === 0) return { carve, carved };
+  const bySpend = new Map<number, number[]>();
+  legs.forEach((l, i) => bySpend.set(l.spend, [...(bySpend.get(l.spend) ?? []), i]));
+  const unpaid = (i: number) => (forward ? legs[i].split.unallocated - legs[i].split.retained : legs[i].split.unallocated);
+  for (const [spend, idx] of bySpend) {
+   const tx = txs[spend];
+   if (!tx) continue;
+   const ids = new Set((tx.objectMovements ?? [])
+    .filter((m) => forward ? m.kind === "created" && holderOf(m.to) === address : holderOf(m.from) === address && holderOf(m.to) !== address)
+    .map((m) => normalizeSuiAddress(m.object_id)));
+   const linked = [...new Set([...ids].map((id) => rows.findIndex((r) => r.object_id === id && r.digest !== digests[spend])).filter((r) => r >= 0))];
+   if (linked.length === 0) continue;
+   const unpaidUsd = idx.reduce((sum, i) => sum + (legs[i].value === null ? 0 : legs[i].value! * unpaid(i)), 0);
+   if (unpaidUsd <= 0) continue;
+   const objectUsd = linked.reduce((sum, r) => sum + rows[r].usd!, 0);
+   const taken = Math.min(unpaidUsd, objectUsd);
+   for (const i of idx) if (legs[i].value !== null && unpaid(i) > 0) carve[i] = taken / unpaidUsd;
+   for (const r of linked) carved[r] += (taken * rows[r].usd!) / objectUsd;
+  }
+  return { carve, carved };
  }
 
   private async expandForward(job: Job): Promise<void> {
@@ -781,7 +868,10 @@ export class FlowEngine {
     const moves = movesOf(legs);
     const alloc = allocateFifo(moves, job.need);
     const plan = pools ? rootPlan(legs, pools, alloc.fractions) : null;
-  const coinScale = addressRoot ? await this.connectAddressObjects(job, n, objectRows, moves, plan?.keep) : 1;
+  const links = addressRoot ? this.rootObjectLinks(address, legs, txs, scan.spends.map((s) => s.tx.digest), objectRows) : null;
+  const coinScale = addressRoot
+   ? await this.connectAddressObjects(job, n, objectRows, legs.map((l, i) => (l.value === null ? null : l.value * (plan ? plan.keep[i] : 1))), links!.carved)
+   : 1;
 
     for (let l = 0; l < legs.length; l++) {
       const { spend, split } = legs[l];
@@ -838,7 +928,7 @@ export class FlowEngine {
         const usd = valueUsd({ amount: amount.toString(), coin_type: split.coin_type ?? "" });
         await this.retainedOut(n.id, address, tx, digest, (share * split.retained) / keep, amount, scaleAmount(amount, txFrac), split.coin_type ?? "", usd);
       }
-      const rest = split.unallocated - split.retained;
+   const rest = (split.unallocated - split.retained) * (1 - (links?.carve[l] ?? 0));
       if (rest > 0) {
         const hits = detectBridges(tx.callSites, tx.eventTypes ?? []);
         const amount = scaleAmount(split.total, rest);
@@ -1137,7 +1227,10 @@ export class FlowEngine {
     const moves = movesOf(legs);
     const alloc = allocateFifo(moves, job.need);
     const plan = pools ? rootPlan(legs, pools, alloc.fractions) : null;
-  const coinScale = addressRoot ? await this.connectAddressObjects(job, n, objectRows, moves, plan?.keep) : 1;
+  const links = addressRoot ? this.rootObjectLinks(address, legs, txs, scan.found.map((f) => f.tx.digest), objectRows) : null;
+  const coinScale = addressRoot
+   ? await this.connectAddressObjects(job, n, objectRows, legs.map((l, i) => (l.value === null ? null : l.value * (plan ? plan.keep[i] : 1))), links!.carved)
+   : 1;
 
     for (let l = 0; l < legs.length; l++) {
       const { spend, split } = legs[l];
@@ -1175,7 +1268,8 @@ export class FlowEngine {
           kept.held ? this.heldAtStart(address, scan.exhausted, scan.found.length, kept.held === "unknown") : undefined,
         );
       }
-      if (split.unallocated > 0) {
+   const unpaid = split.unallocated * (1 - (links?.carve[l] ?? 0));
+   if (unpaid > 0) {
         const hits = detectBridges(tx.callSites, tx.eventTypes ?? []);
         const code: StopCode = hits.length ? "bridge_entry" : "source";
         const from = hits.length
@@ -1184,9 +1278,9 @@ export class FlowEngine {
         const src = this.node(from, "source", null, null, 0);
         if (hits.length) src.protocols = [...new Set(hits.map((h) => h.protocol))].sort();
         src.detail = backwardDeadEnd(tx, address, split.coin_type);
-        const amount = scaleAmount(split.total, split.unallocated);
+    const amount = scaleAmount(split.total, unpaid);
         const usd = valueUsd({ amount: amount.toString(), coin_type: split.coin_type ?? "" });
-        const srcShare = (share * split.unallocated) / keep;
+    const srcShare = (share * unpaid) / keep;
         const srcUsd = usd === null ? null : usd * txFrac;
         this.edge(from, n.id, { amount, traced: scaleAmount(amount, txFrac), usd, basis: "consumed", digest, tx, coin: split.coin_type ?? "", share: srcShare });
         src.share += srcShare;
@@ -1259,9 +1353,9 @@ export class FlowEngine {
    */
  /** An object is one indivisible unit; each id has its own edge and node. */
  private connectObject(job: Job, holder: string, from: string, to: string, row: MovedObjectValue, digest: string, tx: FetchedTx): void {
-  if (job.share <= 0 || row.usd === null || row.usd <= 0) return;
+  if (job.share <= 0 || row.usd === null) return;
   this.connect(job, holder, "", from, to, {
-   amount: 1n, traced: 1n, usd: row.usd, basis: "object", digest, tx,
+   amount: 1n, traced: 1n, usd: Math.max(0, row.usd), basis: "object", digest, tx,
    object_id: row.object_id, object_type: row.type, object_tier: row.tier, object_estimate: row.estimate,
   });
  }
@@ -1420,42 +1514,51 @@ export class FlowEngine {
    * Reads
    * ------------------------------------------------------------------ */
 
- /** Full effects supply object versions, which the graph's ordinary transaction read does not need. */
- private objectValues(digest: string, tx: FetchedTx): Promise<{ rows: MovedObjectValue[]; unread: Array<{ what: string; reason: string }> }> {
-  let p = this.objects.get(digest);
+ /** Record unvalued object movements once per transaction and object. */
+ private noteUnvalued(entries: UnvaluedEntry[]): void {
+  for (const e of entries) {
+   const key = `${e.digest}:${e.object_id}`;
+   if (this.unvaluedSeen.has(key)) continue;
+   this.unvaluedSeen.add(key);
+   this.unvaluedObjects.push({ digest: e.digest, object_id: e.object_id, type: e.type, reason: e.reason });
+  }
+ }
+
+ /**
+  * Full effects supply object versions, which the graph's ordinary
+  * transaction read does not need. With `ifMoved`, a transaction whose
+  * object changes moved nothing into or out of an address is not read. With
+  * `holder`, only objects that address held before or after are valued: a
+  * followed object's later transactions can move many other parties' objects.
+  */
+ private objectValues(digest: string, tx: FetchedTx, ifMoved = false, holder?: string): Promise<ObjectRead> {
+  if (ifMoved && !tx.objectMovements?.some((m) => m.type && m.category !== "coin" && (m.from?.kind === "address" || m.to?.kind === "address"))) {
+   return Promise.resolve(NO_OBJECTS);
+  }
+  const key = holder ? `${digest}|${holder}` : digest;
+  let p = this.objects.get(key);
   if (!p) {
-   p = (async () => {
-    if (!tx.objectMovements?.some((m) => m.type && m.category !== "coin" && (m.from?.kind === "address" || m.to?.kind === "address"))) {
-     return { rows: [], unread: [] };
-    }
+   p = (async (): Promise<ObjectRead> => {
     const read = await readMovedObjects([digest]);
-    if (!read.txs[0]) {
-     for (const m of tx.objectMovements ?? []) if (m.type && m.category !== "coin" && (m.from?.address || m.to?.address)) {
-      this.unvaluedObjects.push({ digest, object_id: m.object_id, type: m.type, reason: "The object's changed versions could not be read." });
+    const t = read.txs[0];
+    if (!t) {
+     const reason = "The object's changed versions could not be read.";
+     return {
+      rows: [], movements: tx.objectMovements ?? [], unread: [{ what: digest, reason }],
+      unvalued: unvaluedOf(digest, tx.objectMovements ?? [], [], new Map(), reason),
+     };
      }
-     return { rows: [], unread: [{ what: digest, reason: "the object's changed versions could not be read" }] };
-    }
-    const valued = await valueMovedObjects(read.txs[0].moved, read.txs[0].checkpoint);
-    const valuedIds = new Set(valued.rows.map((r) => r.object_id));
-    const unreadIds = new Set(valued.unread.map((r) => r.what));
-    for (const m of tx.objectMovements ?? []) {
-     if (!m.type || m.category === "coin" || (m.from?.address && m.from.address === m.to?.address)) continue;
-     if (!m.from?.address && !m.to?.address) continue;
-     if (!valuedIds.has(m.object_id) && !unreadIds.has(m.object_id)) {
-      this.unvaluedObjects.push({ digest, object_id: m.object_id, type: m.type, reason: "No position reader returned a value for this object." });
-     }
-    }
-    for (const u of valued.unread) this.unvaluedObjects.push({ digest, object_id: u.what, type: null, reason: u.reason });
-    for (const r of valued.rows) if (r.usd === null) {
-     this.unvaluedObjects.push({ digest, object_id: r.object_id, type: r.type, reason: r.unpriced_reason ?? "The object's asset legs have no price." });
-    }
-    return valued;
+    // An object whose previous holder old effects did not record is resolved during valuation.
+    const scoped = holder ? t.moved.filter((m) => m.from === holder || m.to === holder || (m.from === null && m.prior_version !== undefined)) : t.moved;
+    const valued = await valueMovedObjects(scoped, t.checkpoint);
+    const movements = t.movements ?? [];
+    const unread = new Map(valued.unread.map((u) => [u.what, u.reason]));
+    return { ...valued, movements, unvalued: unvaluedOf(digest, movements, valued.rows, unread) };
    })().catch((err: unknown) => {
     const reason = err instanceof Error ? err.message : String(err);
-    this.unvaluedObjects.push({ digest, object_id: digest, type: null, reason });
-    return { rows: [], unread: [{ what: digest, reason }] };
+    return { rows: [], movements: tx.objectMovements ?? [], unread: [{ what: digest, reason }], unvalued: unvaluedOf(digest, tx.objectMovements ?? [], [], new Map(), reason) };
    });
-   this.objects.set(digest, p);
+   this.objects.set(key, p);
   }
   return p;
  }
@@ -1592,6 +1695,70 @@ export class FlowEngine {
     // The node's own USD per traced unit, from its arrivals.
     return n.usd * (Number((amount * 1_000_000n) / n.traced) / 1e6);
   }
+}
+
+/** Object values one transaction's effects give, with the raw movements. */
+interface ObjectRead {
+ rows: MovedObjectValue[];
+ movements: ObjectMovement[];
+ unread: Array<{ what: string; reason: string }>;
+ unvalued: UnvaluedEntry[];
+}
+
+const NO_OBJECTS: ObjectRead = { rows: [], movements: [], unread: [], unvalued: [] };
+
+/** An object movement into or out of an address that has no established value. */
+interface UnvaluedEntry {
+ digest: string;
+ object_id: string;
+ type: string | null;
+ reason: string;
+ from: string | null;
+ to: string | null;
+ /** Wrapped into or unwrapped from another object. */
+ custody: boolean;
+}
+
+/** The address that holds an object directly, or null. */
+function holderOf(ref: OwnerRef | null | undefined): string | null {
+ return ref?.kind === "address" && ref.address ? normalizeSuiAddress(ref.address) : null;
+}
+
+/** Movements into or out of an address whose object has no priced value among `rows`, and every unpriced row. */
+function unvaluedOf(
+ digest: string, movements: ObjectMovement[], rows: MovedObjectValue[], unread: Map<string, string>,
+ fallback = "No position reader returned a value for this object.",
+): UnvaluedEntry[] {
+ const byId = new Map(rows.filter((r) => !r.changed_in_place).map((r) => [r.object_id, r]));
+ const out: UnvaluedEntry[] = [];
+ for (const m of movements) {
+  if (!m.type || m.category === "coin") continue;
+  const from = holderOf(m.from);
+  const to = holderOf(m.to);
+  if ((!from && !to) || from === to) continue;
+  const id = normalizeSuiAddress(m.object_id);
+  const row = byId.get(id);
+  if (row && row.usd !== null) continue;
+  out.push({
+   digest, object_id: id, type: m.type, from, to, custody: m.kind === "wrapped" || m.kind === "unwrapped",
+   reason: unread.get(id) ?? (row ? (row.unpriced_reason ?? "The object's asset legs have no price.") : fallback),
+  });
+ }
+ for (const r of byId.values()) {
+  if (r.usd !== null || out.some((u) => u.object_id === r.object_id)) continue;
+  out.push({
+   digest, object_id: r.object_id, type: r.type, from: r.from, to: r.to, custody: r.custody === "wrapped" || r.custody === "unwrapped",
+   reason: r.unpriced_reason ?? "The object's asset legs have no price.",
+  });
+ }
+ return out;
+}
+
+/** USD an object gave up in a conversion (forward) or took in (backward); 0 when it did neither. */
+function conversionValue(r: MovedObjectValue, forward: boolean): number {
+ if (r.usd === null || r.custody) return 0;
+ if (r.changed_in_place) return Math.max(0, forward ? -r.usd : r.usd);
+ return (forward ? r.from !== null && r.to === null : r.to !== null && r.from === null) ? Math.max(0, r.usd) : 0;
 }
 
 /** One coin's part of one transaction a node drew on. */

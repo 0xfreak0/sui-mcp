@@ -42,6 +42,11 @@ interface RemovalRead {
   };
 }
 
+export function removalScanIncomplete(transactions: RemovalRead["transactions"]): boolean {
+  return (transactions?.pageInfo.hasPreviousPage ?? true)
+    || (transactions?.nodes ?? []).some((tx) => !!tx.effects?.events?.pageInfo.hasNextPage || !!tx.effects?.balanceChanges?.pageInfo.hasNextPage);
+}
+
 /** Recent removals are leads, not evidence that this was every removal. */
 async function recentRemovals(pool: PoolCandidate, lpType: string | null) {
   const data = await gqlQuery<RemovalRead>(`query($pool: SuiAddress!) {
@@ -71,7 +76,11 @@ async function recentRemovals(pool: PoolCandidate, lpType: string | null) {
       incomplete: !!tx.effects?.events?.pageInfo.hasNextPage || !!tx.effects?.balanceChanges?.pageInfo.hasNextPage
     }];
   });
-  return { scan_limit: 10, incomplete: data.transactions?.pageInfo.hasPreviousPage ?? true, matches };
+  return {
+    scan_limit: 10,
+    incomplete: removalScanIncomplete(data.transactions),
+    matches
+  };
 }
 
 /** Position minted alongside a pool and the recipient of its initial LP coin. */

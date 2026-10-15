@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { aggregateCustodyRows, capLiquidityHolders, fractionOfLiquidity, liquidityHolderKind } from "../src/utils/liquidity-custody.js";
+import { removalScanIncomplete } from "../src/utils/liquidity-origin.js";
 import type { NextCall } from "../src/utils/output-cap.js";
 
 function nextOffset(page: { omitted?: { next_call: NextCall } }): number {
@@ -25,6 +26,19 @@ describe("liquidity custody", () => {
     expect(liquidityHolderKind("0x123456", deployer, "0x2::kiosk::Kiosk", "object")).toBe("kiosk");
     expect(liquidityHolderKind("0x123456", deployer, "0xabc::kiosk::Kiosk", "object")).toBe("protocol_object");
     expect(liquidityHolderKind("0x123456", deployer, "0xabc::locker::Lock", "object")).toBe("protocol_object");
+  });
+
+  it("marks a recent removal window incomplete when any transaction's events or balances have another page", () => {
+    expect(removalScanIncomplete(undefined)).toBe(true);
+    expect(removalScanIncomplete({
+      nodes: [{ digest: "tx", effects: { events: { nodes: [], pageInfo: { hasNextPage: true } } } }],
+      pageInfo: { hasPreviousPage: false },
+    })).toBe(true);
+    expect(removalScanIncomplete({
+      nodes: [{ digest: "tx", effects: { balanceChanges: { nodes: [], pageInfo: { hasNextPage: true } } } }],
+      pageInfo: { hasPreviousPage: false },
+    })).toBe(true);
+    expect(removalScanIncomplete({ nodes: [], pageInfo: { hasPreviousPage: false } })).toBe(false);
   });
 
   it("computes fractional shares with bigint arithmetic without overflow", () => {

@@ -188,7 +188,9 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
         pageInfo { hasNextPage endCursor }
       }
     }`, { type: KRIYA_LP_TOKEN_TYPE, after: cursor });
-    for (const node of page.objects.nodes) {
+    const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
+    for (let index = 0; index < page.objects.nodes.length && index < remaining; index++) {
+      const node = page.objects.nodes[index]!;
       scanned++;
       const json = node.asMoveObject?.contents?.json;
       const id = json?.pool_id;
@@ -198,6 +200,7 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
       if (amount !== null && amount > 0n && owner) rows.push({ address: owner, amount, position_id: node.address });
       else incomplete = true;
     }
+    if (page.objects.nodes.length > remaining) { incomplete = true; break; }
     if (!page.objects.pageInfo.hasNextPage) break;
     cursor = page.objects.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
@@ -239,7 +242,9 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
     }`, { id: table, after: cursor });
     const page: NonNullable<NonNullable<CetusPositionPage["address"]>["dynamicFields"]> | null | undefined = data.address?.dynamicFields;
     if (!page) { incomplete = true; break; }
-    for (const node of page.nodes) {
+    const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
+    for (let index = 0; index < page.nodes.length && index < remaining; index++) {
+      const node = page.nodes[index]!;
       scanned++;
       const id = node.name?.json;
       const value = node.value?.json?.value;
@@ -257,6 +262,7 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
         } catch { incomplete = true; }
       }
     }
+    if (page.nodes.length > remaining) { incomplete = true; break; }
     if (!page.pageInfo.hasNextPage) break;
     cursor = page.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
@@ -313,7 +319,9 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
         pageInfo { hasNextPage endCursor }
       }
     }`, { type: positionType, after: cursor });
-    for (const node of page.objects.nodes) {
+    const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
+    for (let index = 0; index < page.objects.nodes.length && index < remaining; index++) {
+      const node = page.objects.nodes[index]!;
       scanned++;
       const json = node.asMoveObject?.contents?.json;
       if (!json) { incomplete = true; continue; }
@@ -335,6 +343,7 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
         } catch { incomplete = true; }
       } else incomplete = true;
     }
+    if (page.objects.nodes.length > remaining) { incomplete = true; break; }
     if (!page.objects.pageInfo.hasNextPage) break;
     cursor = page.objects.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }

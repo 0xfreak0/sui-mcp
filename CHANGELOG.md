@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Live oracle pass checks funding, holders, staking, bridges, past balances and checkpoints.** Random draws compare `find_funding_source`'s first hop with the earliest transactions' balance changes, direct prices and supply shares, small coins' holder rankings with both walks and gRPC balances, historical staked SUI rewards with withdrawal events (a lower payout is skipped only when it emptied the rewards pool), native bridge deposits with the event's BCS over gRPC, balances below the consistent range with an anchored read, and `get_checkpoint` by number and by time with GraphQL's checkpoint records. Probe scripts now count the tool calls of the `lib/` modules they import toward live coverage.
 - **Mainnet address attribution includes more public disclosures.** MEXC’s SUI-network reserve wallets, Allbridge Core, LayerZero and Axelar deployments, and Suilend, Scallop and Bucket components carry their source document and retrieval date. Labels only claim the roles those documents name.
 - **Unreachable public sources retain explicit staleness.** A disclosure refresh that fails preserves its former labels with `stale` and `stale_since` in address results and trace descriptions rather than presenting them as newly checked.
 - **Active validators have checkpointed chain-state labels.** Each records its on-chain name, project URL, staking pool and verified operation-cap owner when the cap is directly address-owned. Refresh failures retain the prior snapshot marked stale; validator-supplied names are not independently verified legal identities.
@@ -54,6 +55,7 @@ transaction reads show non-coin object custody. Historical pricing distinguishes
 provider failures from missing quotes. Perpsplexity's current contracts are named.
 
 ### Fixed
+- **`get_top_holders` ranks party-owned coins under their owner.** A `Coin<T>` with a `ConsensusAddressOwner` counts toward that address's holding instead of `unresolved_owners`.
 - **A brief price-provider outage no longer blanks USD.** Historical price
   reads from DefiLlama, CoinGecko and GeckoTerminal are retried a bounded
   number of times. If a provider keeps failing, the rest of that tool call

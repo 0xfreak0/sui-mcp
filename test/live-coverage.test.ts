@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registeredTools } from "./helpers/tool-names.js";
 import { validateCase } from "../scripts/probe/lib/case-eval.mjs";
-import { callsTool, NOT_COVERAGE } from "../scripts/probe/lib/tiers.mjs";
+import { callsTool, NOT_COVERAGE, probeSources as readProbes } from "../scripts/probe/lib/tiers.mjs";
 
 /**
  * Every tool must be exercised live against a known answer: called by a
@@ -25,9 +25,7 @@ const EXEMPT: Record<string, string> = {};
 
 const tools = registeredTools().map((t) => t.name);
 
-const probeSources = readdirSync(PROBE_DIR)
-  .filter((f) => f.endsWith(".mjs") && !NOT_COVERAGE.has(f))
-  .map((f) => readFileSync(join(PROBE_DIR, f), "utf8"));
+const probeSources = [...readProbes(PROBE_DIR)].filter(([f]) => !NOT_COVERAGE.has(f)).map(([, src]) => src);
 
 const caseFiles = readdirSync(CASE_DIR)
   .filter((f) => f.endsWith(".json"))

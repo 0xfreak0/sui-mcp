@@ -150,7 +150,7 @@ function cleanReturnedError(result: ToolResult, network: SuiNetwork): ToolResult
   try {
     const parsed = JSON.parse(first.text) as { error?: unknown };
     if (!parsed || typeof parsed !== "object" || typeof parsed.error !== "string") return result;
-  const error = neutralizeText(cleanErrorMessage(parsed.error, network));
+    const error = neutralizeText(cleanErrorMessage(parsed.error, network));
     if (error === parsed.error) return result;
     return {
       ...result,
@@ -188,7 +188,7 @@ export function oneLineArgumentError(result: ToolResult): ToolResult {
       const at = / at ([\w.[\]]+)$/.exec(line);
       return at ? `${at[1]}: ${line.slice(0, at.index)}` : line;
     });
- let message = neutralizeText(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
+  let message = neutralizeText(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
   if (message.length > MAX_ARGUMENT_ERROR_CHARS) message = `${message.slice(0, MAX_ARGUMENT_ERROR_CHARS)}…`;
   return errorResult(message);
 }
@@ -284,10 +284,10 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
           ));
         }
         const result = (await (handler as (a: unknown, e: unknown) => unknown)(callArgs, extra)) as ToolResult;
-    const cleaned = protectToolResult(bindResultNetwork(reportResolved(cleanReturnedError(result, network), resolved), network), name);
+        const cleaned = protectToolResult(bindResultNetwork(reportResolved(cleanReturnedError(result, network), resolved), network), name);
         return policy.structured ? withStructuredContent(cleaned) : cleaned;
       } catch (err) {
-    return errorResult(neutralizeText(describeError(err, network)));
+        return errorResult(neutralizeText(describeError(err, network)));
       }
     }));
   };

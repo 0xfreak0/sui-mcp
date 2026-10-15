@@ -2638,6 +2638,9 @@ known locker needs its package's withdrawal authority verified before
 claiming the liquidity is locked. Reserved unspendable addresses such as
 0x0 count as burned only when they currently own the LP or position.
 
+A failed owner-kind read must not become `wallet`: `fetchKinds` omits that
+address, while `describeAddresses` defaults its kind to wallet.
+
 Cetus exposes a linked active-position table in the pool state; enumerate
 that table and read each NFT owner to get complete current shares when the
 walk finishes. A CLMM position's raw liquidity L cannot be used as its

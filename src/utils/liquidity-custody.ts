@@ -3,7 +3,7 @@ import { normalizeStructTag, normalizeSuiAddress, parseStructTag } from "@mysten
 import { gqlQuery } from "../clients/graphql.js";
 import { sui } from "../clients/grpc.js";
 import { scanTokenTopHolders, sampledHolders } from "../tools/holders.js";
-import { describeAddresses } from "./identity.js";
+import { fetchKinds } from "./identity.js";
 import { isUnspendableAddress } from "./upgrade-cap.js";
 import { resolvePublisher } from "./publisher.js";
 import { capPayload } from "./output-cap.js";
@@ -77,7 +77,7 @@ export function capLiquidityHolders<T extends LiquidityDisplayRow>(
   return { holders: shown, ...(omitted ? { truncated: true, omitted } : {}) };
 }
 
-interface CustodyHolding { address: string; amount: bigint; counterpart?: bigint; position_id?: string; position_ids?: string[]; object_type?: string; owner_kind?: string }
+interface CustodyHolding { address: string; amount: bigint; counterpart?: bigint; position_id?: string; position_ids?: string[]; object_type?: string }
 interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string }
 
 /** All positions of one owner contribute to that owner's pool share. */
@@ -150,7 +150,7 @@ async function readLp(pool: PoolCandidate, state: { type: string; json: Record<s
   const holders = scan.truncated ? await sampledHolders(scan.holders, lpType) : scan.holders;
   const unread = holders.some((h) => h.balance === null);
   const rows = holders.filter((h) => h.balance !== null && BigInt(h.balance) > 0n)
-    .map((h) => ({ address: h.address, amount: BigInt(h.balance!), object_type: h.object_type, owner_kind: h.owner_kind }));
+    .map((h) => ({ address: h.address, amount: BigInt(h.balance!), object_type: h.object_type }));
   const accounted = rows.reduce((n, row) => n + row.amount, 0n);
   const incomplete = scan.truncated || !!scan.unresolved_owners || scan.unique_holders > scan.holders.length
     || unread || supply === null || accounted !== supply;
@@ -387,7 +387,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
   const allAddresses = [...new Set(reads.flatMap((r) => r.status === "fulfilled"
     ? r.value.scan.rows.map((h) => h.address)
     : []))];
-  const identities = await describeAddresses(allAddresses);
+  const kinds = await fetchKinds(allAddresses);
   const entries = reads.map((read, i) => {
     const candidate = chosen[i]!;
     const origin = origins[i]!;
@@ -399,13 +399,15 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
     };
     const { pool, scan } = read.value;
     const holders = scan.rows.map((h) => {
-      const id = identities.get(h.address);
-      const kind = liquidityHolderKind(h.address, publisher.publisher, h.object_type ?? id?.object_type, id?.kind ?? h.owner_kind);
+      const identity = kinds.get(h.address);
+      const objectType = identity?.type ?? h.object_type;
+      const kind = liquidityHolderKind(h.address, publisher.publisher, objectType, identity?.kind ?? (h.object_type ? "object" : undefined));
       return {
         address: h.address, kind, amount_raw: h.amount.toString(), share: scan.incomplete ? null : fractionOfLiquidity(h.amount, scan.total ?? 0n),
         ...(h.counterpart !== undefined ? { counterpart_raw: h.counterpart.toString(), counterpart_share: scan.incomplete ? null : fractionOfLiquidity(h.counterpart, scan.counterpart_total ?? 0n) } : {}),
         ...(h.position_ids?.length ? { position_count: h.position_ids.length, position_ids: h.position_ids } : {}),
-        ...(id?.object_type ? { object_type: id.object_type } : {}),
+        ...(objectType ? { object_type: objectType } : {}),
+        ...(kind === "unknown" && !identity ? { classification_unavailable: "Owner-kind lookup unavailable." } : {}),
         ...(kind === "publisher" && publisher.publish_tx ? { publisher_tx: publisher.publish_tx } : {})
       };
     }).sort((a, b) => {

@@ -347,7 +347,7 @@ describe("chain-supplied text at the tool boundary", () => {
     const payload = {
       coin_type: type, digest, checkpoint: 41, amount: "1000",
       symbol: token, name: token, description: "x".repeat(3_000), icon_url: "https://evil.invalid/<script>",
-      nfts: [{ object_id: "0x2", name: token, display: { description: token, image_url: token, markdown: "\\[click](https://evil.invalid) [outer [inner]](https://evil.invalid) _claim_ \u034f", heading: "# Claim" }, content: { type, id: digest, teaser: token } }],
+      nfts: [{ object_id: "0x2", name: token, display: { description: token, image_url: token, markdown: "\\[click](https://evil.invalid) [outer [inner]](https://evil.invalid) _claim_ \u034f", heading: "# Claim" }, content: { type, type_tag: `0x2::coin::Coin<${type}>`, id: digest, teaser: token } }],
       events: [{ type, parsed: { arbitrary: token, invisible: "\u200b".repeat(3_000), nested: [{ prompt: token, id: digest, amount: "1000" }] } }],
       sui_name: token,
       imported_labels: [{ entity: token, evidence: token, notes: token }],
@@ -379,6 +379,7 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.sui_name).toBe(data.symbol);
     expect(data.imported_labels[0]).toEqual({ entity: data.symbol, evidence: data.symbol, notes: data.symbol });
     expect(data.coin_type).toBe(type);
+    expect(data.nfts[0].content.type_tag).toBe(`0x2::coin::Coin<${type}>`);
     expect(data.events[0].type).toBe(type);
     expect(data.nfts[0].content.id).toBe(digest);
     expect(data.amount).toBe("1000");

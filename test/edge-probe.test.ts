@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient } from "./helpers/mock-grpc.js";
+import { clusterEdges, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT } from "../src/utils/wallet-edges.js";
 
 const { mockGqlQuery, mockSaveFirstFunder, mockPrices, cohortFixture } = vi.hoisted(() => ({
   mockGqlQuery: vi.fn(),
@@ -1663,6 +1664,9 @@ describe("consolidation probe", () => {
   },
  }));
 
+ /** What each payer held before its sweep (a test seam): its one funding transaction. */
+ let funded = (i: number) => BigInt((i + 1) * 1_000_000_000);
+
  function route(service: "narrow" | "popular" | "deposit" | "failed") {
   cohortFixture.enabled = true;
   mockGqlQuery.mockImplementation(async (query: string, vars: { addr?: string; oldest?: boolean }) => {
@@ -1679,7 +1683,7 @@ describe("consolidation probe", () => {
       checkpoint: { sequenceNumber: 1 },
       balanceChanges: {
        nodes: [
-        { owner: { address: payers[i] }, amount: `${(i + 1) * 1_000_000_000}`, coinType: { repr: SUI } },
+        { owner: { address: payers[i] }, amount: `${funded(i)}`, coinType: { repr: SUI } },
        ]
       },
      },
@@ -1708,15 +1712,39 @@ describe("consolidation probe", () => {
  });
 
  it("accepts a sender's small storage rebate without counting an unrelated payment", async () => {
+  // The payer's whole balance is 0.99978 SUI; with the rebate the collector receives 1 SUI.
   const debit = sweeps[0].effects.balanceChanges.nodes[0];
-  const original = debit.amount;
+  const original = { amount: debit.amount, funded };
   debit.amount = "-999781760";
+  funded = (i) => (i === 0 ? 999_781_760n : original.funded(i));
   try {
    route("narrow");
    const result = await buildWalletEdges([COLLECTOR], { expand: true });
-   expect(result.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toHaveLength(6);
+   const swept = result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
+   expect(swept).toHaveLength(6);
+   expect(swept.map((edge) => edge.weight)).toEqual(Array(6).fill(1));
   } finally {
-   debit.amount = original;
+   debit.amount = original.amount;
+   funded = original.funded;
+  }
+ });
+
+ it("leaves near-equal payments without a full-balance sweep below the merge floor", async () => {
+  // Each payer holds 10 SUI and pays 1 SUI: six equal payments, none a sweep.
+  const original = funded;
+  funded = () => 10_000_000_000n;
+  try {
+   const edges = await consolidationEdgesWith((_, payer) => ({
+    nodes: [
+     { owner: { address: payer }, amount: "-1000000000", coinType: { repr: SUI } },
+     { owner: { address: COLLECTOR }, amount: "1000000000", coinType: { repr: SUI } },
+    ],
+   }));
+   expect(edges).toHaveLength(6);
+   expect(edges.map((edge) => edge.weight)).toEqual(Array(6).fill(EQUAL_AMOUNT_CONSOLIDATION_WEIGHT));
+   expect(clusterEdges(edges).clusters).toEqual([]);
+  } finally {
+   funded = original;
   }
  });
 
@@ -1755,5 +1783,85 @@ describe("consolidation probe", () => {
   expect(first.edges).toEqual(reversed.edges);
   expect(first.excluded_intermediaries).toEqual(reversed.excluded_intermediaries);
   expect(first.truncated).toBe(true);
+ });
+
+ /** Rewrite every sweep's balance changes and gas sponsor for one test. */
+ async function consolidationEdgesWith(
+  rewrite: (i: number, payer: string) => { nodes: Array<{ owner: { address: string }; amount: string; coinType: { repr: string } }>; sponsor?: string },
+ ) {
+  const saved = sweeps.map((tx) => ({ nodes: tx.effects.balanceChanges.nodes, gasInput: tx.gasInput }));
+  try {
+   sweeps.forEach((tx, i) => {
+    const { nodes, sponsor } = rewrite(i, payers[i]);
+    tx.effects.balanceChanges.nodes = nodes;
+    if (sponsor) tx.gasInput = { gasSponsor: { address: sponsor } };
+   });
+   route("narrow");
+   const result = await buildWalletEdges([COLLECTOR], { expand: true });
+   return result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
+  } finally {
+   sweeps.forEach((tx, i) => {
+    tx.effects.balanceChanges.nodes = saved[i].nodes;
+    tx.gasInput = saved[i].gasInput;
+   });
+  }
+ }
+
+ it("does not read a fee taken from equal-sized trades as a sweep", async () => {
+  // Six traders each spend 100 SUI into a pool; the collector takes a 0.06 SUI fee from each.
+  const edges = await consolidationEdgesWith((_, payer) => ({
+   nodes: [
+    { owner: { address: payer }, amount: "-100060000000", coinType: { repr: SUI } },
+    { owner: { address: COLLECTOR }, amount: "60000000", coinType: { repr: SUI } },
+   ],
+  }));
+  expect(edges).toEqual([]);
+ });
+
+ it("measures the sweep against the balance before it, including what it paid others", async () => {
+  // Each payer held 1.05x and sent 0.9x to the collector and 0.1x elsewhere: 86% of its balance.
+  const original = funded;
+  funded = (i) => (BigInt((i + 1) * 1_000_000_000) * 105n) / 100n;
+  try {
+   const edges = await consolidationEdgesWith((i, payer) => {
+    const spent = BigInt((i + 1) * 1_000_000_000);
+    return {
+     nodes: [
+      { owner: { address: payer }, amount: `-${spent}`, coinType: { repr: SUI } },
+      { owner: { address: COLLECTOR }, amount: `${(spent * 9n) / 10n}`, coinType: { repr: SUI } },
+      { owner: { address: "0xe1sewhere" }, amount: `${spent / 10n}`, coinType: { repr: SUI } },
+     ],
+    };
+   });
+   expect(edges).toEqual([]);
+  } finally {
+   funded = original;
+  }
+ });
+
+ it("does not count the collector's storage rebate as sponsor of the payers' transactions", async () => {
+  const edges = await consolidationEdgesWith((_, payer) => ({
+   nodes: [
+    { owner: { address: payer }, amount: "-20100000", coinType: { repr: SUI } },
+    { owner: { address: COLLECTOR }, amount: "20000000", coinType: { repr: SUI } },
+   ],
+   sponsor: COLLECTOR,
+  }));
+  expect(edges).toEqual([]);
+ });
+
+ it("does not link senders of equal dust in a priced coin", async () => {
+  const usdc = `0x${"d".repeat(64)}::usdc::USDC`;
+  coinDecimals[usdc] = 6;
+  mockPrices.mockImplementation(aftermathUp({ [usdc]: 1 }));
+  const sweepsOf = (amount: string) => consolidationEdgesWith((_, payer) => ({
+   nodes: [
+    { owner: { address: payer }, amount: `-${amount}`, coinType: { repr: usdc } },
+    { owner: { address: COLLECTOR }, amount, coinType: { repr: usdc } },
+   ],
+  }));
+  expect(await sweepsOf("10000000")).toHaveLength(6);
+  const edges = await sweepsOf("10000");
+  expect(edges).toEqual([]);
  });
 });

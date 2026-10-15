@@ -120,6 +120,28 @@ export const CONSOLIDATION_WINDOW_MS = 30 * 60_000;
 export const CONSOLIDATION_MIN_PAYERS = 6;
 
 /**
+ * Weight of a consolidation edge whose payer is in a near-equal-amount cohort
+ * without a full-balance sweep: a lead below the 1.0 merge floor.
+ *
+ * Six payers within 5% of one amount in 30 minutes is what a fixed price
+ * looks like: on 47 collector-like mainnet addresses, 27 had such a cohort
+ * among their oldest and newest 50 transactions (mints, presales, claims,
+ * deposits of round amounts). Only the collector checks separated those from
+ * a sweep, so the amounts alone must find corroboration elsewhere.
+ */
+export const EQUAL_AMOUNT_CONSOLIDATION_WEIGHT = 0.6;
+
+/**
+ * The payment took at least 90% of the payer's balance just before it. The
+ * reader caps a payment at the payer's own debit (plus a SUI storage-rebate
+ * tolerance), so a payment above `balanceBefore` is a whole-balance sweep
+ * whose rebate went to the collector.
+ */
+export function sweptBalance(p: ConsolidationPayment): boolean {
+ return p.balanceBefore !== null && p.balanceBefore > 0n && p.amount * 10n >= p.balanceBefore * 9n;
+}
+
+/**
  * Group confirmed sweeps by collector and coin. A payer qualifies when the
  * payment consumes at least 90% of its pre-transfer balance, or six payers
  * transfer amounts within 5% of one another. One payment per payer is used;
@@ -149,11 +171,13 @@ export function consolidationCohorts(payments: ConsolidationPayment[]): Consolid
      for (const payment of close) similarAmounts.add(payment);
     }
    }
-   const qualified = within.filter((p) =>
-    (p.balanceBefore !== null && p.balanceBefore > 0n && p.amount <= p.balanceBefore &&
-     p.amount * 10n >= p.balanceBefore * 9n) || similarAmounts.has(p));
+   const qualified = within.filter((p) => sweptBalance(p) || similarAmounts.has(p));
+   // One payment per payer, a full-balance sweep ahead of an equal-amount one.
    const unique = new Map<string, ConsolidationPayment>();
-   for (const p of qualified) if (!unique.has(p.payer)) unique.set(p.payer, p);
+   for (const p of qualified) {
+    const kept = unique.get(p.payer);
+    if (!kept || (!sweptBalance(kept) && sweptBalance(p))) unique.set(p.payer, p);
+   }
    if (unique.size > best.length) best = [...unique.values()];
   }
   if (best.length >= CONSOLIDATION_MIN_PAYERS) cohorts.push(best);

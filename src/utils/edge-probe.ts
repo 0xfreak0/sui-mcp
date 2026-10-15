@@ -50,7 +50,10 @@ import {
 import { coinPublisher, coinTotalSupply } from "./coin-origin.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
-import { EdgeSet, consolidationCohorts, CONSOLIDATION_MIN_PAYERS, type ConsolidationPayment, type WalletEdge } from "./wallet-edges.js";
+import {
+ EdgeSet, consolidationCohorts, sweptBalance, CONSOLIDATION_MIN_PAYERS, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT, SIGNAL_WEIGHTS,
+ type ConsolidationPayment, type WalletEdge,
+} from "./wallet-edges.js";
 import { assessCoFunding } from "./co-funding.js";
 import { pricesForRanking } from "./price-providers.js";
 import { prefetchCoinScale, pricingScale, usdValue } from "./valuation.js";
@@ -257,11 +260,11 @@ const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
 /** Oldest and newest collector pages expose both old and recent sweeps. */
 const CONSOLIDATION_QUERY = `query ($addr: SuiAddress!, $oldest: Boolean!) {
   old: transactions(filter: { affectedAddress: $addr }, first: 50) @include(if: $oldest) {
-    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+    nodes { digest sender { address } gasInput { gasSponsor { address } } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
     pageInfo { hasNextPage endCursor }
   }
   recent: transactions(filter: { affectedAddress: $addr }, last: 50) @skip(if: $oldest) {
-    nodes { digest sender { address } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+    nodes { digest sender { address } gasInput { gasSponsor { address } } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
     pageInfo { hasPreviousPage startCursor }
   }
 }`;
@@ -1080,6 +1083,7 @@ async function profileSeed(
 interface ConsolidationNode {
  digest: string;
  sender?: { address: string } | null;
+ gasInput?: { gasSponsor?: { address: string } | null } | null;
  effects?: {
   timestamp?: string | null;
   checkpoint?: { sequenceNumber: number } | null;
@@ -1092,7 +1096,13 @@ interface ConsolidationPage {
  pageInfo: { hasNextPage?: boolean; hasPreviousPage?: boolean; startCursor?: string | null };
 }
 
-/** A historical balance is known only when the walk reaches the wallet's first transaction. */
+/**
+ * The payer's balance of the coin just before the sweep: the sum of its
+ * changes in every earlier transaction. Known only when the walk reaches the
+ * wallet's first transaction. The sweep's own change is left out, so a payer
+ * that split its balance among several recipients is not read as having sent
+ * all of it to this one.
+ */
 async function balanceBeforeSweep(payment: ConsolidationPayment, checkpoint: number, budget: Budget): Promise<bigint | null> {
  let cursor: string | undefined;
  let balance = 0n;
@@ -1113,14 +1123,14 @@ async function balanceBeforeSweep(payment: ConsolidationPayment, checkpoint: num
   if (completed.some((tx) => tx.balanceChangesTruncated)) return null;
   for (const [index, tx] of page.nodes.entries()) {
    if (tx.effects?.checkpoint?.sequenceNumber === checkpoint && tx.digest !== payment.digest) return null;
-   if (tx.digest === payment.digest) found = true;
+   if (tx.digest === payment.digest) { found = true; continue; }
    for (const change of completed[index].balanceChanges) {
     if (change.owner?.address === payment.payer && change.coinType?.repr === payment.coin) {
      balance += BigInt(change.amount ?? "0");
     }
    }
   }
-  if (!page.pageInfo.hasPreviousPage) return found ? balance + payment.amount : null;
+  if (!page.pageInfo.hasPreviousPage) return found ? balance : null;
   cursor = page.pageInfo.startCursor ?? undefined;
   if (!cursor) return null;
  }
@@ -1160,9 +1170,12 @@ async function readConsolidation(
    const checkpoint = tx.effects?.checkpoint?.sequenceNumber;
    const timestamp = Date.parse(tx.effects?.timestamp ?? "");
    if (!payer || payer === collector || checkpoint === undefined || !Number.isFinite(timestamp)) continue;
+   const sponsor = tx.gasInput?.gasSponsor?.address;
    const changes = completed[index].balanceChanges;
    for (const credit of changes) {
     if (credit.owner?.address !== collector || !credit.coinType?.repr) continue;
+    // A sponsor's storage rebate is not a payment (`isSponsorGasChange`).
+    if (isSponsorGasChange(collector, credit.coinType.repr, payer, sponsor)) continue;
     const amount = BigInt(credit.amount ?? "0");
     if (amount <= 0n) continue;
     // Another party's credit inside a PTB is not a sweep by its sender.
@@ -1170,8 +1183,10 @@ async function readConsolidation(
      .reduce((sum, c) => sum + BigInt(c.amount ?? "0"), 0n);
     // A storage rebate can make the sender's net SUI debit slightly smaller
     // than what the collector received; do not admit an unrelated third-party payment.
+    // A sweep sends the collector at least 90% of what the payer lost in the
+    // coin; a smaller share is a fee taken from a swap or a purchase.
     const suiCoin = isSuiCoinType(credit.coinType.repr);
-    if (debit >= 0n || amount > -debit + (suiCoin ? 10_000_000n : 0n) ||
+    if (debit >= 0n || amount > -debit + (suiCoin ? 10_000_000n : 0n) || amount * 10n < -debit * 9n ||
      (suiCoin && amount < 10_000_000n)) continue;
     const payment: ConsolidationPayment = {
      payer, collector, coin: credit.coinType.repr, amount, balanceBefore: null, timestamp, digest: tx.digest,
@@ -1181,7 +1196,13 @@ async function readConsolidation(
   }
   if (oldest && !page.pageInfo.hasNextPage) break;
  }
- const entries = [...found.values()].sort((a, b) =>
+ // A payment under the dust floor of a priced coin is what a poisoner sends,
+ // not a sweep. An unpriced coin is not judged here: a full-balance sweep of
+ // a coin with no market is still a sweep.
+ const valuer = await floorValuer([...found.values()].map((e) => e.payment.coin).filter((c) => !isSuiCoinType(c)));
+ const entries = [...found.values()]
+  .filter((e) => clearsDustFloor(e.payment.coin, e.payment.amount, valuer.valueUsd) !== false)
+  .sort((a, b) =>
   Number(seeds.has(b.payment.payer)) - Number(seeds.has(a.payment.payer)) ||
   a.payment.payer.localeCompare(b.payment.payer) || a.payment.digest.localeCompare(b.payment.digest));
  return { entries, unread };
@@ -1596,16 +1617,14 @@ export async function buildWalletEdges(
    continue;
   }
   // The service verdict precedes balance reconstruction; a budget stop cannot
-  // promote an unread collector. Equal-amount payers need no balance estimate.
-  const equalAmountDigests = new Set(consolidationCohorts(entries.map((entry) => entry.payment))
-   .flatMap((cohort) => cohort.map((payment) => payment.digest)));
+  // promote an unread collector. An equal-amount payer is read too: only a
+  // full-balance sweep carries the merge weight.
   for (const entry of entries) {
    if (budget.truncated) { unreadConsolidation++; break; }
    const payment = entry.payment;
    const siblings = entries.filter((other) => other.payment.coin === payment.coin &&
     Math.abs(other.payment.timestamp - payment.timestamp) <= 30 * 60_000);
-   if (new Set(siblings.map((other) => other.payment.payer)).size < CONSOLIDATION_MIN_PAYERS ||
-    equalAmountDigests.has(payment.digest)) continue;
+   if (new Set(siblings.map((other) => other.payment.payer)).size < CONSOLIDATION_MIN_PAYERS) continue;
    payment.balanceBefore = await balanceBeforeSweep(payment, entry.checkpoint, budget);
    if (payment.balanceBefore === null) unreadConsolidation++;
   }
@@ -1617,15 +1636,16 @@ export async function buildWalletEdges(
   for (const cohort of cohorts) {
    for (const payment of cohort) {
     if (!expand && !seedSet.has(payment.payer)) continue;
+    const swept = sweptBalance(payment);
     edges.add(
      "consolidation", collector, payment.payer,
      `${cohort.length} distinct payers sent ${payment.coin} to this non-service collector within 30 minutes; ` +
-     (payment.balanceBefore !== null && payment.amount <= payment.balanceBefore &&
-      payment.amount * 10n >= payment.balanceBefore * 9n ?
+     (swept ?
       "this payment took at least 90% of the payer's pre-transfer balance." :
-      "at least six payers sent amounts within 5% of this amount."),
+      "at least six payers sent amounts within 5% of this amount, and this payer's balance before it was not shown to be swept, so the edge is a lead below the merge floor."),
      [payment.digest],
      collector,
+     swept ? SIGNAL_WEIGHTS.consolidation : EQUAL_AMOUNT_CONSOLIDATION_WEIGHT,
     );
     consolidationMembers.add(payment.payer);
    }

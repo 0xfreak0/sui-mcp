@@ -1911,7 +1911,7 @@ floor too, since dust back is what a poisoner sends.
 | `cofunded` (same tx, ≥10 paid) | 0.8 | Batch payout — list membership, needs corroboration |
 | `funding_edge` | 1.0 | One address first-funded the other, and is a seed or passed the popularity check |
 | `reciprocal` | 1.0 | Value moved BOTH ways, counterparty passed the popularity check |
-| `consolidation` | 1.0 | At least six distinct payers send one coin to a measured collector within 30 minutes, each near-full-balance or in a six-payer near-equal-amount cohort |
+| `consolidation` | 1.0 (0.6 near-equal amount only) | At least six distinct payers send one coin to a measured collector within 30 minutes; 1.0 needs the payer's own full-balance sweep |
 | `sponsor` | 0.7 (1.0 if also first-funded the address it sponsors) | Same gas payer |
 | `co_tx` | 0.5 | A third party moved both balances in one transaction |
 
@@ -1934,27 +1934,39 @@ Four rules that are easy to get wrong:
   2.1% base rate, against 4 of 6 pairs among four addresses known to share an
   owner. Roughly 32x enrichment, which is why `reciprocal` is weighted level
   with a shared narrow funder.
-- **A consolidation needs a cohort and a balance basis.** Require six distinct
-  payers in a 30-minute window for one coin, and for each linked payer either a
-  transfer of at least 90% of its pre-transfer balance or six payments within
-  5% of its amount. Historical balance reconstruction walks the payer's
-  complete history through the payment (at most six pages); a stopped or failed
-  walk leaves the balance unknown. A SUI sender's net debit may fall below the
-  collector's credit by up to 0.01 SUI from storage rebates. Read both the
-  oldest and newest collector pages, since a past sweep may be absent from the
-  payer's last 100 transactions.
+- **A consolidation needs a cohort and a balance basis.** Six distinct payers
+  send one coin to a collector seed within 30 minutes. A payment counts only
+  when the collector received at least 90% of what the payer lost in that coin
+  (a smaller share is a fee taken from a swap or purchase, and a DEX fee
+  address collects one from every seller), the collector did not sponsor the
+  payer's gas (`isSponsorGasChange`), and a priced coin clears the dust floor.
+  The edge carries 1.0 only when the payment took at least 90% of the payer's
+  balance just before it: the sum of the payer's changes in every earlier
+  transaction, walked to its first transaction (at most six pages); a stopped
+  or failed walk leaves it unknown. Leave the sweep's own change out of that
+  sum, or a payer that split its balance among several recipients reads as
+  sweeping all of it to each. A whole-balance SUI sweep can credit the
+  collector up to 0.01 SUI more than the balance through the storage rebate.
+  A payer in six payments within 5% of one amount without that basis gets
+  `EQUAL_AMOUNT_CONSOLIDATION_WEIGHT` (0.6), a lead: a fixed price produces the
+  same amounts. Read both the oldest and newest collector pages, since a past
+  sweep may be absent from the payer's last 100 transactions.
   The collector must have a complete outgoing popularity scan; a popular
-  collector, a labelled service or one repeatedly paying the same recipient
-  is excluded, since an exchange deposit may collect many full-wallet sweeps.
-  A missing popularity verdict is never narrow. On the two public case
-  cohorts, 24 WAL payers arrived within 19 minutes and 35 SUI payers within
-  22 minutes. In a control of 25 recipient addresses sampled from unrelated
-  checkpoint ranges, 8 had at least six distinct payers of one coin inside
-  30 minutes among their last 50 transactions. None had six identical
-  payments; balance history was incomplete for 24 sampled payments to four
-  of those busy recipients, so payer count alone cannot pass the rule. Three
-  of the busy recipients, read through `build_wallet_edges`, produced zero
-  `consolidation` edges at the merge weight.
+  collector, a labelled cex, bridge or protocol, or one repeatedly paying the
+  same recipient is excluded, and a missing verdict is never narrow. These
+  checks carry the false-positive defence, not the payment shape. Measured
+  2026-10 on 38 random collector-like mainnet addresses (six or more payers
+  of one coin in 30 minutes, 2023 to 2026) and 9 drainer and poisoning
+  addresses from the case set, ignoring the collector checks: 27 of the 47
+  had a near-equal cohort and 19 had six or more full-balance sweepers in one
+  window, among them exchange wallets, a 24 SUI presale and a drainer
+  collector whose six payers were victims. Through `build_wallet_edges`, the
+  38 random ones gave 14 popular, 7 repeat-payee, 9 incomplete outgoing
+  scans, 1 unmeasured, 6 without a cohort or labelled, and 1 link: 19 payers
+  that swept their whole balance, 14 of them also sharing a narrow first
+  funder. The drainer collectors linked nobody: two were repeat-payee, the
+  rest had no cohort. On the two public case cohorts, 24 WAL payers arrived
+  within 19 minutes and 35 SUI payers within 22 minutes.
 - **The return leg is asked of the counterparty, not scanned for.** A seed's
   bounded window usually shows one direction only, because the return can sit
   hundreds of transactions back. `probeRecipients` already returns who a

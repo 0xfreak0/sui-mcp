@@ -126,7 +126,7 @@ const MULTI_TX_QUERY = `query ($keys: [String!]!, $events: Int!) {
       ${BALANCE_CHANGES_SELECTION}
       events(first: $events) {
         pageInfo { hasNextPage }
-        nodes { contents { type { repr } json } }
+        nodes { contents { type { repr } json } transactionModule { fullyQualifiedName } }
       }
     }
   }
@@ -148,7 +148,7 @@ interface RawTx {
     balanceChanges?: GqlConnection<GqlBalanceChangeNode>;
     events?: {
       pageInfo?: { hasNextPage?: boolean };
-      nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown } }>;
+      nodes: Array<{ contents?: { type?: { repr?: string }; json?: unknown }; transactionModule?: { fullyQualifiedName?: string | null } | null }>;
     };
   } | null;
 }
@@ -224,7 +224,7 @@ export interface BatchedTx {
   /** The object read failed, ran out of cursor, or reached its five-page bound. */
   object_changes_truncated?: boolean;
   event_count: number;
-  events: Array<{ type: string | null; parsed: unknown }>;
+  events: Array<{ type: string | null; parsed: unknown; emitting_package: string | null }>;
   /** True for a system transaction — consensus, randomness, checkpoint plumbing. */
   is_system?: boolean;
   /** True when this came from the archive rather than the fullnode. */
@@ -271,7 +271,9 @@ function fromGrpc(res: GrpcTypes.GetTransactionResponse, digest: string): Batche
       }
     }
   }
-  const events = (tx.events?.events ?? []).map((ev) => ({ type: ev.eventType ?? null, parsed: null }));
+  const events = (tx.events?.events ?? []).map((ev) => ({
+    type: ev.eventType ?? null, parsed: null, emitting_package: ev.packageId ?? null,
+  }));
   return {
     digest: tx.digest ?? digest,
     sender: tx.transaction?.sender ?? null,
@@ -413,7 +415,9 @@ export async function fetchTransactions(
       const type = n.contents?.type?.repr ?? null;
       const pkg = packageOfEventType(type);
       if (pkg) packages.add(pkg);
-      return { type, parsed: n.contents?.json ?? null };
+      const emitter = n.transactionModule?.fullyQualifiedName?.split("::")[0] ?? null;
+      if (emitter) packages.add(emitter);
+      return { type, parsed: n.contents?.json ?? null, emitting_package: emitter };
     });
     const truncated = Boolean(e?.events?.pageInfo?.hasNextPage);
 
@@ -462,6 +466,7 @@ export async function fetchTransactions(
       for (const ev of tx.events) {
         const pkg = packageOfEventType(ev.type);
         if (pkg) packages.add(pkg);
+        if (ev.emitting_package) packages.add(ev.emitting_package);
       }
     }
     notFound.length = 0;

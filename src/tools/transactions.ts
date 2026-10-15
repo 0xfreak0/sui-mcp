@@ -970,9 +970,15 @@ export function registerTransactionTools(server: McpServer) {
             if (n) names.add(n);
           }
           for (const ev of tx.events) {
-            const pkg = packageOfEventType(ev.type);
-            const n = pkg ? nameOf(pkg) : undefined;
-            if (n) names.add(n);
+            // The struct's defining package and the module that emitted it
+            // can belong to different lineages (for example Display<T>).
+            const defining = packageOfEventType(ev.type);
+            const typed = defining ? nameOf(defining) : undefined;
+            if (typed) names.add(typed);
+            if (ev.emitting_package && ev.emitting_package !== defining) {
+              const emitted = nameOf(ev.emitting_package);
+              if (emitted) names.add(emitted);
+            }
           }
           return [...names];
         };

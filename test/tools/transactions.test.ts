@@ -880,6 +880,36 @@ describe("get_transactions object custody", () => {
     expect(mockGqlQuery).toHaveBeenCalledTimes(2);
   });
 
+ it("names the protocol whose package emitted a framework-typed event", async () => {
+  // Shape of mainnet 8eHgw5…: a publish runs no Move call, and its init
+  // emits 0x2::display::DisplayCreated<T> from the published module.
+  const cetus = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
+  mockGqlQuery.mockImplementation(async (query: string) => query.includes("objectChanges")
+   ? { multiGetTransactions: [{ effects: { objectChanges: { nodes: [], pageInfo: { hasNextPage: false } } } }] }
+   : query.includes("multiGetTransactions")
+    ? {
+     multiGetTransactions: [{
+      digest: TEST_DIGEST, sender: { address: "0xsender" },
+      kind: { __typename: "ProgrammableTransaction", commands: { nodes: [] } },
+      effects: {
+       status: "SUCCESS", balanceChanges: { nodes: [] },
+       events: {
+        pageInfo: { hasNextPage: false },
+        nodes: [{
+         contents: { type: { repr: `0x2::display::DisplayCreated<${cetus}::pool::Pool>` }, json: {} },
+         transactionModule: { fullyQualifiedName: `${cetus}::pool` },
+        }],
+       },
+      },
+     }],
+    }
+    : {});
+  const result = await tools.get("get_transactions")!({ digests: [TEST_DIGEST], detail: "full" });
+  const row = JSON.parse(result.content[0].text).transactions[0];
+  expect(row.events[0].emitting_package).toBe(cetus);
+  expect(row.protocols).toContain("Cetus");
+ });
+
   it("renders complete archive effects as object custody when GraphQL misses", async () => {
     mockGqlQuery.mockResolvedValue({ multiGetTransactions: [null] });
     mockSui.ledgerService.getTransaction.mockRejectedValue(new Error("NOT_FOUND"));

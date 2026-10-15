@@ -126,10 +126,10 @@ describe("probe scripts per tier", () => {
     expect(smoke!.uncovered).toEqual(["tool_w"]);
   });
 
-  it("affected runs changed scripts, every script calling a reached probe-only tool, and detector-pass for its tools", () => {
+  it("affected runs reached probe scripts, consistency, and detector checks", () => {
     const r = { full: null, tools: new Set(["tool_y", "alpha_one", "analyze_attack_tx"]), cases: new Set(), scripts: new Set<string>(), detectorLabels: false };
     const plan = probePlan("affected", { tools, caseTools, probes, reach: r, detectorTools: ["analyze_attack_tx", "decode_ptb"] });
-    expect([...plan!.plan.keys()].sort()).toEqual(["detector-pass.mjs", "gap-pass.mjs", "surface-pass.mjs"]);
+    expect([...plan!.plan.keys()].sort()).toEqual(["consistency-pass.mjs", "detector-pass.mjs", "gap-pass.mjs", "surface-pass.mjs"]);
   });
 
   it("affected leaves out scripts whose tools a case check already covers", () => {

@@ -15,6 +15,7 @@ npm run build && npm run verify:live && npm test
 | `full-case.mjs` | Checks cross-tool consistency for committees, publishers, coin verification and deny-list directions. |
 | `gap-pass.mjs` | Checks a regulated coin and capped history. |
 | `consistency-pass2.mjs` | Compares registry decimals, abort details and sponsor counts with independent reads. |
+| `consistency-pass.mjs` | Compares overlapping tool answers on a seeded recent transaction and public-case subjects: single/batch transactions, PTB counts and Move call targets, object custody, first funding, liquid and historical balances, history source amounts and flow nets, graph root outflows, bridge exits, object classification and single-transaction profit. Each comparison uses the same subject and complete scope. Bounded or incomparable reads are reported as skips; unexpected disagreements fail. `--seed S --tip T` reproduces the recent draw. |
 | `incident-pass.mjs` | The incident tools replayed on the Cetus and Nemo exploits through the built server over stdio, each answer against a raw chain read taken in the same run: attack and incident-loss nets against the raw balance changes, trace and flow-graph hops against the payer and next debit on chain, every bridge's beneficiary against its event or payload bytes, flow totals against per-transaction sums, upgrade history and cap custody against package versions and object changes, signatures and bytecode against each exact version, diffs against a line diff of both versions, a deny list against its Config's fields, and prices against DefiLlama read directly. Records every call's latency and size. |
 | `attribution-pass.mjs` | The attribution and history tools (funding, fan-out, deposit, screening, wallet edges, control groups, multisig, timelines, events, transactions, balances, holders, NFT sales, identity) against a raw GraphQL read of the same fact in the same run, plus one malformed input per tool. Prints each tool's slowest call and largest result, and fails on a call over 60s or a result over the tool's declared size. |
 | `surface-pass.mjs` | The stateful tools (labels, findings, watches, `enable_tools`), the prompts and the `sui://case` resource, and the core, market and developer tools, each against a raw read of the same fact taken in the same run: staking principal vs raw StakedSui objects, pools vs a raw walk of every pool type, a decoded PTB vs the raw transaction, a simulated transfer vs its amount, MVR names vs the PackageInfo on chain. Every tool also gets one malformed call that must be refused, and each call's latency and size are checked. |
@@ -29,6 +30,7 @@ Run an individual script from the repo root after building, for example:
 node scripts/probe/adversarial.mjs
 node scripts/probe/incident-pass.mjs
 node scripts/probe/surface-pass.mjs
+node scripts/probe/consistency-pass.mjs --seed 17 --tip 334000000
 ```
 
 Run the full tier with its default `--jobs 1`. Concurrent cases share the Sui
@@ -98,10 +100,10 @@ deleted after the closing size report.
   runs `case-pass --affected` (the checks calling a reached tool, every check
   of a changed case file, and the `critical` checks), each probe script that
   changed or that calls a reached tool no case check names (by the rule
-  `test/live-coverage.test.ts` credits a probe with), `oracle-pass` when a
-  tool it checks was reached (`ORACLE_PROBES` in `lib/tiers.mjs`, since its
-  random samples reach states no case does), and `detector-pass` when
-  a tool it scores was reached or `cases/detectors.json` changed. A change it
+  `test/live-coverage.test.ts` credits a probe with), `oracle-pass` and
+  `consistency-pass` when a tool either checks was reached (`ORACLE_PROBES`
+  in `lib/tiers.mjs`), and `detector-pass` when a tool it scores was reached
+  or `cases/detectors.json` changed. A change it
   cannot place (a source file nothing imports, `package.json`, the lock file,
   `tsconfig.json`, `case-pass.mjs`, anything in `lib/` or `verify-live.mjs`)
   runs the full tier.

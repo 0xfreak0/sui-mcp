@@ -99,6 +99,7 @@ const CHECKS = [
   ["probe/full-case", "cross-tool consistency: two tools must not disagree about one fact"],
   ["probe/gap-pass", "paths the other sweeps do not reach"],
   ["probe/consistency-pass2", "each 1.13.0+ feature against an independent source of the same fact"],
+ ["probe/consistency-pass", "seeded cross-tool agreement on transactions, funding, balances, identity and flows"],
   ["probe/incident-pass", "the incident tools on the Cetus and Nemo exploits, against raw chain reads"],
   ["probe/attribution-pass", "funding, clustering, multisig, event, history and holder tools, each against a raw chain read"],
   ["probe/surface-pass", "stateful, prompt, core, market and developer tools against raw chain reads, plus malformed input"],

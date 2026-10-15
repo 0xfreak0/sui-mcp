@@ -55,6 +55,7 @@ transaction reads show non-coin object custody. Historical pricing distinguishes
 provider failures from missing quotes. Perpsplexity's current contracts are named.
 
 ### Fixed
+- **`get_top_holders` ranks party-owned coins under their owner.** A `Coin<T>` with a `ConsensusAddressOwner` counts toward that address's holding instead of `unresolved_owners`.
 - **A brief price-provider outage no longer blanks USD.** Historical price
   reads from DefiLlama, CoinGecko and GeckoTerminal are retried a bounded
   number of times. If a provider keeps failing, the rest of that tool call

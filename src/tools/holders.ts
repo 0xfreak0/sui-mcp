@@ -348,6 +348,9 @@ const COIN_OBJECTS_QUERY = `
           ... on AddressOwner {
             address { address }
           }
+          ... on ConsensusAddressOwner {
+            address { address }
+          }
         }
         asMoveObject {
           contents { json }

@@ -93,9 +93,18 @@ owner change, checkpoint USD value and valuation tier. The graph follows that
 object ID to its next transfer or redemption, then allocates the redeemed coin
 proceeds. Value withdrawn from a position the holder keeps, such as liquidity
 removed from a CLMM position, passes that part of the object's share to the
-coins the withdrawal paid. `find_flow_path` searches these same object
-handovers, including an address whose only outbound value was an object. Pass
-`coin_type` to restrict a graph to its coin branches.
+coins the withdrawal paid. An object's branch skips the hub check while the
+object moves, and its holder is checked once the object turns into coins
+there, since those coins mix with the holder's own. `find_flow_path` searches
+these same object handovers, including an address whose only outbound value
+was an object. Pass `coin_type` to restrict a graph to its coin branches.
+
+An address start counts value once when its coins went into an object it
+later handed over: a position opened and added to and then transferred, or a
+stake created for another address in the same transaction, is one handover
+of the object's value, not a coin deposit plus a handover. The coins feeding
+an object take at most its value when it was handed over; the rest stays a
+deposit.
 
 An object that moves into or out of another object (a kiosk, a farm or
 another wrapper) ends its branch as `read_failed`: the address that controls

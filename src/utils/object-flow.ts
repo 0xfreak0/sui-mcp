@@ -48,6 +48,7 @@
  *   changed hands.
  */
 
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import { isUnspendableAddress } from "./upgrade-cap.js";
 import { isDeletion } from "./object-end.js";
 import { citeFunctions, type FrameworkClaim } from "./framework-claims.js";
@@ -701,6 +702,13 @@ export interface WrittenObjects {
    * transferred to them or wrote in place: a receipt, a share, a position.
    */
   owners: string[];
+ /**
+  * The non-coin objects behind `owners`, each with the address that owns it
+  * after the transaction. An object written in place is not an object
+  * movement, so this is the only record that the transaction changed it.
+  * Undefined for a row cached before it was recorded.
+  */
+ held?: Array<{ object_id: string; owner: string }>;
   /**
    * A dynamic field was written. A protocol that keeps accounts in a table
    * keyed by address stores a depositor's claim this way, and the key is not
@@ -720,13 +728,17 @@ const isLedgerField = (type: string | null | undefined) =>
 export function writtenObjects(changes: { gql?: GqlObjectChange[]; grpc?: GrpcChangedObject[] }): WrittenObjects {
   const shared: SharedWrite[] = [];
   const owners = new Set<string>();
+ const held: Array<{ object_id: string; owner: string }> = [];
   let ledger = false;
   const note = (id: string | undefined, type: string | null, owner: OwnerRef | null) => {
     if (!id) return;
     if (owner?.kind === "shared") shared.push({ object_id: id, type });
     if (isLedgerField(type)) ledger = true;
     const base = type?.split("<")[0];
-    if (owner?.kind === "address" && owner.address && base !== COIN_TYPE && !isLedgerField(type)) owners.add(owner.address);
+  if (owner?.kind === "address" && owner.address && base !== COIN_TYPE && !isLedgerField(type)) {
+   owners.add(owner.address);
+   held.push({ object_id: normalizeSuiAddress(id), owner: normalizeSuiAddress(owner.address) });
+  }
   };
   for (const c of changes.gql ?? []) {
     if (c.idDeleted || !c.outputState) continue;
@@ -736,7 +748,7 @@ export function writtenObjects(changes: { gql?: GqlObjectChange[]; grpc?: GrpcCh
     if (c.outputState === OUTPUT_ACCUMULATOR_WRITE || c.outputState === OUTPUT_DOES_NOT_EXIST || isDeletion(c)) continue;
     note(c.objectId, c.objectType ?? null, readGrpcOwner(c.outputOwner));
   }
-  return { shared, owners: [...owners], ledger };
+ return { shared, owners: [...owners], held, ledger };
 }
 
 /** `sui.rpc.v2.ChangedObject.InputObjectState` */

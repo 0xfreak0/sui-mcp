@@ -84,8 +84,7 @@ function render(engines: FlowEngine[], ids: Map<string, AddressIdentity>): Rende
     for (const p of [...engine.pruned].sort((a, b) => b.share - a.share).slice(0, 10)) {
       pruned.push({
         address: p.address,
-        coin: displayCoin(p.coin_type).symbol,
-        coin_type: p.coin_type,
+    ...(p.object_id ? { object_id: p.object_id, object_type: p.object_type } : { coin: displayCoin(p.coin_type).symbol, coin_type: p.coin_type }),
         share: round4(p.share),
         usd: p.usd === null ? null : Number(p.usd.toFixed(2)),
         digest: p.digest,

@@ -25,7 +25,10 @@
   across direct owner changes, onward coin redemptions and value withdrawn
   from a position its holder keeps. Each object edge carries its ID, type,
   checkpoint USD value and valuation tier. An address start counts a coin it
-  converted into an object and then handed over once. Unvalued objects moving
+  converted into an object and then handed over once, including deposits
+  added in place and objects it created for another address, and never
+  carves more than the object's value at the handover. A holder's redemption
+  proceeds are hub-checked before they are followed. Unvalued objects moving
   in the traced direction are listed apart and do not receive a share; moves
   into or out of a kiosk or wrapper and incomplete histories report their
   bounds.

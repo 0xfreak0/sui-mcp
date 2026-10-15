@@ -662,7 +662,7 @@ export const STOP_MEANING: Record<StopCode, string> = {
   bridge_entry: "Backward: it arrived on Sui through a bridge.",
   cycle: "Value converged with an address's own activity already expanded elsewhere in the graph: on its own upstream path, or a different coin-lineage of the same address counted under another node.",
   signer_not_sender: "The transaction was signed by another address acting for the sender (an alias or a protocol substitution), so its moves are not attributed to the sender.",
-  read_failed: "A transaction or search could not be read. This is incomplete, not finished.",
+ read_failed: "A transaction or search could not be read, or an object's value or controlling address could not be established. This is incomplete, not finished.",
   budget: "Not expanded: the depth, node or search limit was reached. The funds may have moved further.",
   below_threshold: "Branches below min_share (or min_usd) were not expanded.",
   target: "Reached the address being searched for.",

@@ -1064,12 +1064,15 @@ Rules for its oracles:
 
 `consistency-pass.mjs` compares built tools on the same seeded recent
 transaction and a public case. It checks raw balance changes and object
-custody, PTB command counts, first funding hops, historical and current SUI
-balances, complete history against source amounts and flow nets, direct
-graph-root coin outflows, bridge exit counts, identity, and a single-transaction
-profit against incident losses at one historical price time. `--seed S --tip T`
-reproduces a recent draw. An incomplete read or a mismatched scan window is a
-reported skip, not agreement. A disagreement fails unless a subject-specific
+custody, PTB command counts and Move call targets, first funding hops,
+historical and current SUI balances, complete history against source amounts
+and flow nets, direct graph-root coin outflows, bridge exit counts, identity,
+and a single-transaction profit against incident losses at one historical
+price time. The seed draws the transaction, its sender's funding, current
+balance and one history row; the flow, past-balance, graph, bridge, identity
+and profit checks read fixed case subjects. `--seed S --tip T`
+reproduces a recent draw. An incomplete read, a mismatched scan window or two
+unpriced answers is a reported skip, not agreement. A disagreement fails unless a subject-specific
 `KNOWN_DEFECTS` entry states the reason, and an entry that stops failing is
 stale. `ORACLE_PROBES` in
 `lib/tiers.mjs` runs this pass when any tool it compares changes. The

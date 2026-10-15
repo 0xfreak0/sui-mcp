@@ -37,6 +37,22 @@ export const rawNet = (rows) => {
  return Object.fromEntries([...net].map(([coin, amount]) => [coin, String(amount)]).sort());
 };
 
+/**
+ * A SUI figure printed as a JS number (`summarize_address_flows` gas) back to
+ * signed MIST. Net gas is negative when rebates exceed costs, and a figure
+ * under 1e-6 prints in exponent form, so string splitting is not exact.
+ */
+export function suiToMist(sui) {
+ const n = Number(sui);
+ if (!Number.isFinite(n) || Math.abs(n) * 1e9 > Number.MAX_SAFE_INTEGER) throw Error(`not an exact SUI figure: ${sui}`);
+ return BigInt(Math.round(n * 1e9));
+}
+
+/** `package::module::function` of each MoveCall in a fully listed decode_ptb page, in order. */
+export function moveCallTargets(commands) {
+ return commands.filter((c) => c.type === "MoveCall").map((c) => norm(c.target));
+}
+
 /** An external credit needs no gas adjustment when the subject did not pay gas. */
 export function externalCredits(rows, subject) {
  const credits = new Map();

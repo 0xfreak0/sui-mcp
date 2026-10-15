@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { startServer, gql, ROOT, SUI } from "./lib/mcp-client.mjs";
-import { attributedCredits, custodyRows, directRootOut, equal, externalCredits, firstHop, fundingAgreement, norm, rawNet, transactionAgreement } from "./lib/consistency.mjs";
+import { attributedCredits, custodyRows, directRootOut, equal, externalCredits, firstHop, fundingAgreement, moveCallTargets, norm, rawNet, suiToMist, transactionAgreement } from "./lib/consistency.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (key) => { const i = argv.indexOf(`--${key}`); return i < 0 ? undefined : argv[i + 1]; };
@@ -63,8 +63,7 @@ try {
   const batch = many.transactions?.find((t) => t.digest === digest);
   if (!batch) throw Error("Batch omitted requested digest");
   const shared = transactionAgreement(one, batch);
-  const incomplete = many.incomplete_transactions?.some((item) => item === digest || item.digest === digest);
-  if (!batch.balance_changes_truncated && !incomplete)
+  if (!batch.balance_changes_truncated)
    record("transaction identity and balance changes", digest, shared.single, shared.batch);
   else skip("transaction identity and balance changes", "the batch could not complete all nested balance changes");
   record("PTB command count", digest, one.command_count, ptb.command_count);
@@ -74,9 +73,11 @@ try {
    common.map((command) => shown.get(command.index)), common);
   else skip("resolved PTB commands", "the two independently capped command pages have no shared indices");
   record("PTB sender", digest, norm(one.sender), norm(ptb.sender));
-  if (!batch.commands_truncated && !incomplete)
-   record("Move call count", digest, batch.move_call_count, batch.move_calls?.length);
-  else skip("Move call count", "the batch could not complete all nested commands");
+  // The batch's move_calls come from GraphQL commands; decode_ptb resolves the
+  // transaction's own BCS. Compared only when both list every call.
+  if (!batch.move_calls_truncated && ptb.commands?.length === ptb.command_count)
+   record("Move call targets", digest, batch.move_calls.map(norm), moveCallTargets(ptb.commands));
+  else skip("Move call targets", "the batch command read or the decode_ptb command page is incomplete");
   if (!batch.object_changes_truncated &&
    (one.object_transfer_count == null || one.object_transfer_count === (one.object_transfers?.length ?? 0)) &&
    batch.object_transfer_count === (batch.object_transfers?.length ?? 0) &&
@@ -90,7 +91,7 @@ try {
   }
   // Event fields are absent on the batch archive path, but event types and
   // emitting packages still identify protocols there.
-  if (!batch.events_truncated && !many.protocols_unchecked && !one.protocols_unchecked?.length)
+  if (!batch.events_truncated && !many.protocols_unchecked && !one.protocols_unchecked)
    record("transaction protocols", digest, [...one.protocols].sort(), [...batch.protocols].sort());
   else skip("transaction protocols", "bounded events or unread protocol publishers");
  });
@@ -121,7 +122,7 @@ try {
   const history = await call("get_transaction_history", { address, limit: 50, detail: "full" });
   for (const row of history.transactions ?? []) {
    if (history.incomplete_transactions?.some((x) => x.digest === row.digest)) continue;
-   const batch = await call("get_transactions", { digests: [row.digest] });
+   const batch = await call("get_transactions", { digests: [row.digest], detail: "full" });
    const tx = batch.transactions?.[0];
    if (!tx || tx.balance_changes_truncated) continue;
    const want = row.subject_flow.map((x) => `${norm(x.raw_type)}|${BigInt(x.amount)}`).sort();
@@ -148,16 +149,15 @@ try {
   });
   if (address === publicWallet) await run("flow totals and history", async () => {
    const flows = await call("summarize_address_flows", { address, max_transactions: 50, detail: "full" });
-   if (flows.coverage?.complete && !flows.coverage?.incomplete_transactions?.length && !history.has_next_page && !history.incomplete_transactions?.length) {
-    const historical = rawNet(history.transactions);
+   if (flows.coverage?.complete && !flows.coverage?.incomplete_transactions?.length && !flows.gas?.transactions_gas_unread &&
+    !history.has_next_page && !history.incomplete_transactions?.length) {
     // The history includes gas in the payer's signed SUI change; flows remove
-    // that gas before summing. Nine decimals are the chain's SUI scale.
-    const mist = String(flows.gas.paid_sui);
-    const [whole, fraction = ""] = mist.split(".");
-    const gas = BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
-    const scan = Object.fromEntries(flows.coins.map((c) => [norm(c.coin_type),
-    String(BigInt(c.raw.net) - (norm(c.coin_type) === norm(SUI) ? gas : 0n))]).sort());
-    record("history vs flow coin net", address, historical, scan);
+    // that gas before summing, so SUI can be absent from flows.coins while the
+    // history nets to the gas alone. Zero nets carry no amount on either side.
+    const scanNet = new Map(flows.coins.map((c) => [norm(c.coin_type), BigInt(c.raw.net)]));
+    scanNet.set(norm(SUI), (scanNet.get(norm(SUI)) ?? 0n) - suiToMist(flows.gas.paid_sui));
+    const nonzero = (entries) => Object.fromEntries(entries.filter(([, n]) => BigInt(n) !== 0n).map(([c, n]) => [c, String(n)]).sort());
+    record("history vs flow coin net", address, nonzero(Object.entries(rawNet(history.transactions))), nonzero([...scanNet]));
     const listed = new Set(history.transactions.map((r) => r.digest));
     for (const source of flows.inflow_sources.filter((r) => !r.more_digests && r.coins?.length))
      record("inflow source digests in history", `${address} ${source.address}`,
@@ -228,9 +228,12 @@ try {
   // transfers_out exclusion cannot change its USD net.
   if (losses.transfers_out?.length)
    return skip("single-transaction profit", "incident excludes the named party's onward transfers");
-  record("single-transaction profit", digest,
-   { net: attack.profit?.usd_net, gained: attack.profit?.usd_gained },
-   { net: losses.totals?.usd_net, gained: losses.totals?.usd_gained });
+  const single = { net: attack.profit?.usd_net ?? null, gained: attack.profit?.usd_gained ?? null };
+  const incident = { net: losses.totals?.usd_net ?? null, gained: losses.totals?.usd_gained ?? null };
+  // Two unpriced answers agree on nothing.
+  if (single.net === null && incident.net === null)
+   return skip("single-transaction profit", "no historical price on either side");
+  record("single-transaction profit", digest, single, incident);
  });
 } finally { server.stop(); }
 for (const [name, count] of counts) console.log(`${name}: ${count.agree} agree, ${count.disagree} disagree, ${count.skip} skipped`);

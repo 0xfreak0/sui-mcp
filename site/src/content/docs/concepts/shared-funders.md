@@ -96,7 +96,8 @@ the committee's address hash. `clusters` are inferences with their own
 `evidence_tier`, never proof of ownership.
 
 `first_funders` maps each seed whose qualifying first inflow was read to its
-funder. A funder filtered out as a popular intermediary remains in this map:
+funder, and with `expand` each sibling whose first funder was confirmed as the
+shared one. A funder filtered out as a popular intermediary remains in this map:
 the first transfer and the clustering decision answer different questions.
 Check `truncated` before interpreting an absent key. An unmeasured seed has
 no reliable negative finding.

@@ -6,6 +6,9 @@ import {
   PARTIAL_CO_SIGNER_WEIGHT,
   addCoSignerEdges,
   DEFAULT_CO_SIGNER_LIMIT,
+ consolidationCohorts,
+ sweptBalance,
+ CONSOLIDATION_WINDOW_MS,
   type WalletEdge,
 } from "../src/utils/wallet-edges.js";
 
@@ -13,6 +16,43 @@ const A = "0xaa";
 const B = "0xbb";
 const C = "0xcc";
 const D = "0xdd";
+
+describe("consolidation cohorts", () => {
+ const payment = (payer: string, minute: number, amount: bigint, balanceBefore: bigint | null = amount) => ({
+  payer, collector: C, coin: "0x2::sui::SUI", amount, balanceBefore,
+  timestamp: minute * 60_000, digest: `d${payer}-${minute}`,
+ });
+
+ it("requires six distinct full-balance payers in one thirty-minute window", () => {
+  const five = Array.from({ length: 5 }, (_, i) => payment(`p${i}`, i, BigInt(i + 1) * 1_000_000_000n));
+  expect(consolidationCohorts([...five, five[0]])).toEqual([]);
+  expect(consolidationCohorts([...five, payment("p5", 30, 8_000_000_000n)])[0]).toHaveLength(6);
+  expect(consolidationCohorts([...five, payment("p5", 35, 8_000_000_000n)])).toEqual([]);
+  expect(CONSOLIDATION_WINDOW_MS).toBe(30 * 60_000);
+ });
+
+ it("rejects ordinary partial payments and accepts an equal-amount sweep cohort", () => {
+  const ordinary = Array.from({ length: 10 }, (_, i) => payment(`p${i}`, i, BigInt(i + 1) * 100n, 10_000n));
+  expect(consolidationCohorts(ordinary)).toEqual([]);
+  const equal = ordinary.slice(0, 6).map((p) => ({ ...p, amount: 1_000n, balanceBefore: null }));
+  expect(consolidationCohorts(equal)[0]).toHaveLength(6);
+  expect(consolidationCohorts(ordinary.slice(0, 5).map((p) => ({ ...p, amount: 1_000n, balanceBefore: null })))).toEqual([]);
+  const close = ordinary.slice(0, 6).map((p, i) => ({ ...p, amount: BigInt(1_000 + i * 7), balanceBefore: null }));
+  expect(consolidationCohorts(close)[0]).toHaveLength(6);
+  expect(consolidationCohorts([...close.slice(0, 5), { ...close[5], payer: close[0].payer }])).toEqual([]);
+ });
+
+ it("counts a whole-balance sweep whose storage rebate reached the collector, and prefers it per payer", () => {
+  expect(sweptBalance(payment("p0", 0, 1_000_000_000n, 999_781_760n))).toBe(true);
+  expect(sweptBalance(payment("p0", 0, 899_999_999n, 1_000_000_000n))).toBe(false);
+  expect(sweptBalance(payment("p0", 0, 1_000n, null))).toBe(false);
+  // p0 first pays an equal amount, then sweeps: the sweep is the payment the cohort keeps.
+  const equal = Array.from({ length: 6 }, (_, i) => payment(`p${i}`, i, 1_000n, null));
+  const sweep = payment("p0", 10, 5_000n, 5_000n);
+  const cohort = consolidationCohorts([...equal, sweep])[0];
+  expect(cohort.find((p) => p.payer === "p0")).toBe(sweep);
+ });
+});
 
 describe("EdgeSet", () => {
   it("canonicalizes a pair, so both orderings are one edge", () => {

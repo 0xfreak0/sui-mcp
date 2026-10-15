@@ -42,6 +42,7 @@ export type SignalType =
   | "cofunded"
   | "funding_edge"
   | "reciprocal"
+ | "consolidation"
   | "sponsor"
   | "co_tx";
 
@@ -80,6 +81,11 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
   // guarded the same way, by refusing the pair when either side is popular
   // enough to be a service.
   reciprocal: 1.0,
+ // Below the merge floor: a full-balance sweep into a collector is also what
+ // an exchange customer, a presale buyer and a drainer's victim do. On 47
+ // collector-like mainnet addresses, 19 had six or more full-balance
+ // sweepers in one 30-minute window, so a consolidation needs corroboration.
+ consolidation: 0.8,
   sponsor: 0.7,
   co_tx: 0.5,
 };
@@ -102,6 +108,86 @@ export const SIGNAL_WEIGHTS: Record<SignalType, number> = {
  * often suggests the opposite.
  */
 export const PARTIAL_CO_SIGNER_WEIGHT = 0.6;
+
+/** A coin transfer into a collector, with the payer's pre-transfer balance when known. */
+export interface ConsolidationPayment {
+ payer: string;
+ collector: string;
+ coin: string;
+ amount: bigint;
+ balanceBefore: bigint | null;
+ timestamp: number;
+ digest: string;
+}
+
+export const CONSOLIDATION_WINDOW_MS = 30 * 60_000;
+export const CONSOLIDATION_MIN_PAYERS = 6;
+
+/**
+ * Weight of a consolidation edge whose payer is in a near-equal-amount cohort
+ * without a full-balance sweep: a lead below the 1.0 merge floor.
+ *
+ * Six payers within 5% of one amount in 30 minutes is what a fixed price
+ * looks like: on 47 collector-like mainnet addresses, 27 had such a cohort
+ * among their oldest and newest 50 transactions (mints, presales, claims,
+ * deposits of round amounts). Only the collector checks separated those from
+ * a sweep, so the amounts alone must find corroboration elsewhere.
+ */
+export const EQUAL_AMOUNT_CONSOLIDATION_WEIGHT = 0.6;
+
+/**
+ * The payment took at least 90% of the payer's balance just before it. The
+ * reader caps a payment at the payer's own debit (plus a SUI storage-rebate
+ * tolerance), so a payment above `balanceBefore` is a whole-balance sweep
+ * whose rebate went to the collector.
+ */
+export function sweptBalance(p: ConsolidationPayment): boolean {
+ return p.balanceBefore !== null && p.balanceBefore > 0n && p.amount * 10n >= p.balanceBefore * 9n;
+}
+
+/**
+ * Group confirmed sweeps by collector and coin. A payer qualifies when the
+ * payment consumes at least 90% of its pre-transfer balance, or six payers
+ * transfer amounts within 5% of one another. One payment per payer is used;
+ * repeating the same payment cannot manufacture a cohort.
+ */
+export function consolidationCohorts(payments: ConsolidationPayment[]): ConsolidationPayment[][] {
+ const groups = new Map<string, ConsolidationPayment[]>();
+ for (const payment of payments) {
+  if (!Number.isFinite(payment.timestamp) || payment.amount <= 0n || payment.payer === payment.collector) continue;
+  const key = `${payment.collector}|${payment.coin}`;
+  let group = groups.get(key);
+  if (!group) groups.set(key, (group = []));
+  group.push(payment);
+ }
+ const cohorts: ConsolidationPayment[][] = [];
+ for (const group of groups.values()) {
+  const sorted = [...group].sort((a, b) => a.timestamp - b.timestamp || a.digest.localeCompare(b.digest));
+  let best: ConsolidationPayment[] = [];
+  for (let start = 0; start < sorted.length; start++) {
+   const within = sorted.filter((p) => p.timestamp >= sorted[start].timestamp &&
+    p.timestamp - sorted[start].timestamp <= CONSOLIDATION_WINDOW_MS);
+   const similarAmounts = new Set<ConsolidationPayment>();
+   for (const anchor of within) {
+    const close = within.filter((p) =>
+     (p.amount >= anchor.amount ? p.amount - anchor.amount : anchor.amount - p.amount) * 20n <= anchor.amount);
+    if (new Set(close.map((p) => p.payer)).size >= CONSOLIDATION_MIN_PAYERS) {
+     for (const payment of close) similarAmounts.add(payment);
+    }
+   }
+   const qualified = within.filter((p) => sweptBalance(p) || similarAmounts.has(p));
+   // One payment per payer, a full-balance sweep ahead of an equal-amount one.
+   const unique = new Map<string, ConsolidationPayment>();
+   for (const p of qualified) {
+    const kept = unique.get(p.payer);
+    if (!kept || (!sweptBalance(kept) && sweptBalance(p))) unique.set(p.payer, p);
+   }
+   if (unique.size > best.length) best = [...unique.values()];
+  }
+  if (best.length >= CONSOLIDATION_MIN_PAYERS) cohorts.push(best);
+ }
+ return cohorts;
+}
 
 /** One reason two addresses are linked, with the chain data to check it. */
 export interface EdgeEvidence {

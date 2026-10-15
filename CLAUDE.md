@@ -1022,11 +1022,38 @@ transactions and registry coins, against the same fact read from the chain
 by another path: swap labels against pool events, object ends and object
 changes against GraphQL `objectChanges` (effects version 1 against its own
 BCS), mint authority against the registry and a `TreasuryCap<T>` type query,
-flows against `balanceChanges`, cap owners against live owners. An oracle
-never reads truth through the helper the tool uses, and a tool change that
-reaches `ORACLE_PROBES` in `lib/tiers.mjs` runs it in the affected tier. A
-disagreement fails it unless its `KNOWN_DEFECTS` lists it; `--subjects`
-pins subjects and `--dist` runs another build.
+flows against `balanceChanges`, cap owners against live owners, first
+funding against the earliest transactions' balance changes and a direct
+price request, small coins' holder rankings against both walks summed here
+and gRPC balances, staked SUI rewards against `UnstakingRequestEvent`,
+native bridge deposits against the event's BCS over gRPC, balances below
+the consistent range against an anchored read less every change after the
+target, and `get_checkpoint` by number and by time against GraphQL's
+checkpoint records. An oracle never reads truth through the helper the tool
+uses, and the report names a truth read that is the tool's own query. A
+tool change that reaches `ORACLE_PROBES` in `lib/tiers.mjs` runs it in the
+affected tier. A disagreement fails it unless its `KNOWN_DEFECTS` lists it,
+and so does a drawn oracle that checked nothing; `--subjects` pins subjects
+and `--dist` runs another build.
+
+Rules for its oracles:
+
+- **A skip must not be where a defect would land.** A stake payout below the
+  tool's reward is the rewards-pool cap only when it equals the pool's
+  `rewards_pool` before the withdrawal; any other shortfall is a
+  disagreement. An unpriced funding inflow is decided by its share of
+  supply (under 0.01% never funds, 1% or more always does), and only the
+  band between, which the publisher and send shape decide, is skipped. A
+  window with no qualifying inflow is checked as "no first funding".
+- **Draw where the tool can answer.** Historical staking and balance reads
+  depend on GraphQL's consistent range, about an hour. Withdrawals are
+  drawn from the whole range, paging on `hasPreviousPage`; a 2,000-checkpoint
+  window held none in a three-seed run, which failed it. A balance target
+  sits below the range and its anchor near the top, which stays readable
+  for about an hour; an anchor near the bottom left the range within
+  minutes.
+- **These draws read live state**, so `--seed` and `--tip` redraw only the
+  first six oracles. Pin the printed subjects to repeat the rest.
 
 `detector-pass.mjs` scores the anomaly detectors of `analyze_attack_tx` and
 `decode_ptb` (by digest, and on the transaction's own BCS as the pre-sign

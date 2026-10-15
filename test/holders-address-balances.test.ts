@@ -223,3 +223,31 @@ describe("a holder is not assumed to be a wallet", () => {
     expect(r.top_holders[1].object_type).toBeUndefined();
   });
 });
+
+describe("a party-owned coin belongs to its address", () => {
+  /**
+   * A `ConsensusAddressOwner` coin as the service renders it: the owner union
+   * carries the address only when the query selects that variant, and an
+   * unselected variant comes back as an empty object.
+   */
+  const partyCoin = (owner: string, balance: string, query: string) => ({
+    owner: /\.\.\.\s*on\s+ConsensusAddressOwner\s*\{\s*address\s*\{\s*address\s*\}/.test(query) ? { address: { address: owner } } : {},
+    asMoveObject: { contents: { json: { id: `0x${"e".repeat(64)}`, balance } } },
+  });
+
+  it("ranks a ConsensusAddressOwner coin under its owner, not as unresolved", async () => {
+    chain({});
+    const routed = mockGqlQuery.getMockImplementation()!;
+    mockGqlQuery.mockImplementation((query: string, vars: { type?: string }) =>
+      vars.type?.startsWith("0x2::coin::Coin<")
+        ? Promise.resolve(page([coin(A, "10"), partyCoin(B, "40", query)]))
+        : routed(query, vars),
+    );
+    const r = await run({ type: "0x2::sui::SUI", limit: 5, max_scan: 1003 });
+
+    expect(r.complete_ranking).toBe(true);
+    expect(r.unresolved_owners).toBeUndefined();
+    expect(r.unique_holders).toBe(2);
+    expect(r.top_holders[0]).toMatchObject({ address: B, balance: "40", coin_balance: "40", count: 1 });
+  });
+});

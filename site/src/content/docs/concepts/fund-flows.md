@@ -86,13 +86,19 @@ trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
                below_threshold 0.07%
 ```
 
-The graph's starting branches and percentages cover coin balance changes.
-Transferring a `StakedSui`, NFT or position without a coin credit does not seed
-an object branch, even if another coin moved in the same transaction. A
-reported 100% unspent share therefore says nothing about those transferred
-objects. Use `get_transaction` for object transfers, `trace_funds` for an
-object branch and `trace_object_history` for custody; start a coin graph at
-the transaction that releases the object's coins.
+The graph starts from priced coins and custody-changing objects in the
+transaction. An object edge identifies its object ID, type, owner change,
+checkpoint USD value and valuation tier. The graph follows that object ID to
+its next transfer or redemption, then allocates the redeemed coin proceeds.
+`find_flow_path` searches these same object handovers, including an address
+whose only outbound value was an object. Pass `coin_type` to restrict a graph
+to its coin branches.
+
+`unvalued_objects` lists objects without an established value; they receive
+no share. `object_valuation_incomplete` warns when the reported percentages
+cover only the priced portion of a transaction. An address-start object walk
+is bounded; check `coverage.truncated` and `coverage.partial` before reading
+an absent object edge as a negative finding.
 
 ## How traced value is allocated
 

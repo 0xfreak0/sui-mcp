@@ -27,7 +27,9 @@ export type FlowBasis =
   /** Value that went into a bridge, a protocol object or a burn. */
   | "consumed"
   /** Value a conversion's counterparty kept: proceeds worth under a tenth of it, and no claim. */
-  | "retained";
+ | "retained"
+ /** A non-coin object changed hands, with its value measured at the transaction checkpoint. */
+ | "object";
 
 export interface Branch {
   address: string;
@@ -106,6 +108,28 @@ export function valueWeights(
   }
   if (usdTotal > 0) return { weights: usd.map((u) => (u ?? 0) / usdTotal), weighting: "usd" };
   return { weights: items.map(() => 1 / items.length), weighting: "equal" };
+}
+
+/** Shares of the starting transaction across priced coin and object receipts.
+ * Unpriced objects do not acquire a zero-valued share. */
+export function objectOriginWeights(
+ coins: Array<{ amount: bigint; coin_type: string; usd?: number | null }>,
+ objects: Array<{ usd: number | null }>,
+ valueUsd: ValueUsd,
+): { coins: number[]; objects: number[] } {
+ const priced = objects.map((o) => o.usd !== null && Number.isFinite(o.usd) && o.usd > 0 ? o.usd : 0);
+ const coinUsd = coins.map((c) => c.usd !== undefined ? c.usd : valueUsd({ amount: c.amount.toString(), coin_type: c.coin_type }));
+ const total = priced.reduce((a, b) => a + b, 0) + coinUsd.reduce<number>((a, b) => a + (b ?? 0), 0);
+ if (total === 0) return { coins: valueWeights(coins, valueUsd).weights, objects: priced.map(() => 0) };
+ return {
+  coins: coinUsd.map((u) => (u ?? 0) / total),
+  objects: priced.map((u) => u / total),
+ };
+}
+
+/** An object is a distinct asset even if several objects of the same type move in one transaction. */
+export function objectNodeId(address: string, objectId: string): string {
+ return `${address}|object:${objectId}`;
 }
 
 /** `a / b` as a float, exact enough for amounts past 2^53. */

@@ -3446,6 +3446,18 @@ Pure split and accounting rules in `src/utils/flow-graph.ts`, the BFS in
 `src/utils/flow-engine.ts`, renderers in `src/utils/flow-export.ts`. Rules a
 change is likely to break:
 
+- **A valued object changing custody is a separate asset branch.**
+  `readMovedObjects` supplies exact input/output versions and
+  `valueMovedObjects` values each handover at its checkpoint. The object ID
+  stays with the branch until its next `affectedObject` custody change; a
+  redemption passes its share to priced coin proceeds, bounded by the
+  object's value. An address start scans `affectedAddress` for object-only
+  transactions alongside the coin walk. Price an object and a coin together
+  before dividing the root share, so an unpriced coin cannot take the
+  stake's share. A coin filter deliberately omits objects. List unvalued
+  objects separately and disclose that their value is outside the
+  denominator; a failed version read makes the graph incomplete. An object
+  held by another object cannot be attributed to a wallet by address alone.
 - **The trunk reads as many moves as the start.** A node carrying more than
   half the traced value is the start's continuation and gets
   `MOVES_PER_START_ADDRESS` instead of `MOVES_PER_NODE`, both directions. At

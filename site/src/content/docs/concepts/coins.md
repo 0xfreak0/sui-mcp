@@ -135,10 +135,10 @@ amount of the queried coin at the current price, with a separate
 `counterpart_share` for the paired coin; fees and rewards are excluded. A
 fungible LP `share` is its share of LP supply. Shares are null when the
 position or LP scan is incomplete. Each row states its owner kind and the
-scan bound. `burned` identifies an unspendable address. No locker package is
-verified for this check. An object holding an LP or position is not proof of a
-liquidity lock; inspect its code and authority before saying it cannot
-withdraw.
+scan bound. An owner-kind read that fails stays `unknown`, not `wallet`.
+`burned` identifies an unspendable address. No locker package is verified for
+this check. An object holding an LP or position is not proof of a liquidity
+lock; inspect its code and authority before saying it cannot withdraw.
 
 ```
 analyze_token({ query: "0x…::coin::COIN", include_holders: false })

@@ -5,7 +5,6 @@
 ### Added
 - **Live oracle pass checks funding, holders, staking, bridges, past balances and checkpoints.** Random draws compare `find_funding_source`'s first hop with the earliest transactions' balance changes, direct prices and supply shares, small coins' holder rankings with both walks and gRPC balances, historical staked SUI rewards with withdrawal events (a lower payout is skipped only when it emptied the rewards pool), native bridge deposits with the event's BCS over gRPC, balances below the consistent range with an anchored read, and `get_checkpoint` by number and by time with GraphQL's checkpoint records. Probe scripts now count the tool calls of the `lib/` modules they import toward live coverage.
 - **Live cross-tool consistency checks.** `consistency-pass.mjs` compares transaction, funding, balance, flow and identity answers on seeded recent and public-case subjects. It reports bounded reads separately and runs in the affected tier for tools it checks. `build_wallet_edges` now reports the measured `first_funders` for its seeds, independently of whether a funder qualified as an edge intermediary.
-- **Wallet clustering detects many-to-one consolidation.** `build_wallet_edges`
 - **Wallet clustering reports many-to-one consolidation.** `build_wallet_edges`
   links a measured collector to wallets in a six-payer, 30-minute cohort of
   one coin. A payer whose payment took at least 90% of its balance just before

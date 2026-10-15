@@ -892,7 +892,35 @@ inside them. Preserve addresses, digests, numeric strings and Move type tags
 exactly; mutating a lookup key breaks follow-up calls. Code listings preserve
 lines and type tags, so they are marked but exempt from the per-field cut.
 Plain-text reports and diagrams preserve their line breaks. New text-bearing
-fields need to be covered by the boundary's field rules.
+fields need to be covered by the boundary's field rules
+(`src/utils/untrusted-text.ts`). Rules a change is likely to break:
+
+- **Hidden characters are shown in every string and key**, whatever the key.
+  No identity contains one, so this costs nothing, and a server sentence that
+  quotes a label (`summary`, `stop_reason`) is covered by it. The set includes
+  the tag block (U+E0000 to U+E007F), which spells ASCII a reader does not
+  see, and the variation selectors; a ZWJ or ZWNJ inside an emoji sequence or
+  a non-Latin word, one selector after an emoji and a subdivision flag's tags
+  are kept.
+- **Inside decoded chain data, keys are the author's.** Under `parsed`,
+  `json`, `data` (query_events), `content`, `display` and the other raw keys
+  a string keeps its spelling only when it is a Move type tag, and a key
+  that is not a Move identifier or a type tag is escaped. Exempting by key
+  name there let an event field named `token_type`, `amount` or `code` pass
+  markup and bidi overrides.
+- **A Move type tag keeps its spelling under any key**, and so does a whole
+  URL: valid URL characters form no markup, and escaping `&` or `_` broke
+  links a caller follows. `&` is escaped only as the start of an entity.
+- **A `{ tool, args }` call keeps its arguments under any key**
+  (`see`, `sample_next_call`, `*_next_call`), so it stays callable.
+- **A decoded PTB argument is text.** `decode_ptb` shows a pure `String`
+  under `value`, which is a readable field.
+- **Error messages show hidden characters only** (`escapeHidden`), so a type
+  tag quoted back keeps its `<` and `>`.
+- **The cap counts code points** and never ends between a character and its
+  joiner, selector or combining mark.
+- **A stored-result page guards each row under its list's field name**
+  (`guardAtPath`), the rules the tool's own response used.
 
 ## Writing documentation
 

@@ -4,7 +4,7 @@ import { sui } from "../clients/grpc.js";
 import { cleanErrorMessage, describeError, errorResult, isNotFound } from "../utils/errors.js";
 import { bindContinuationNetwork } from "../utils/continuation-network.js";
 import { withPriceProviderCall } from "../utils/price-call-context.js";
-import { neutralizeText, protectToolResult } from "../utils/untrusted-text.js";
+import { escapeHidden, protectToolResult } from "../utils/untrusted-text.js";
 import { isAddressSchema, isSuinsName, toolArgsSchema } from "./args.js";
 import { toolPolicy, withStructuredContent } from "./tool-meta.js";
 import { CallToolRequestSchema, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
@@ -150,7 +150,7 @@ function cleanReturnedError(result: ToolResult, network: SuiNetwork): ToolResult
   try {
     const parsed = JSON.parse(first.text) as { error?: unknown };
     if (!parsed || typeof parsed !== "object" || typeof parsed.error !== "string") return result;
-    const error = neutralizeText(cleanErrorMessage(parsed.error, network));
+    const error = escapeHidden(cleanErrorMessage(parsed.error, network));
     if (error === parsed.error) return result;
     return {
       ...result,
@@ -188,7 +188,7 @@ export function oneLineArgumentError(result: ToolResult): ToolResult {
       const at = / at ([\w.[\]]+)$/.exec(line);
       return at ? `${at[1]}: ${line.slice(0, at.index)}` : line;
     });
-  let message = neutralizeText(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
+  let message = escapeHidden(`Invalid arguments for ${match[1]}: ${issues.join("; ")}`);
   if (message.length > MAX_ARGUMENT_ERROR_CHARS) message = `${message.slice(0, MAX_ARGUMENT_ERROR_CHARS)}…`;
   return errorResult(message);
 }
@@ -287,7 +287,7 @@ function registerToolWithNetwork(server: McpServer, args: unknown[]): unknown {
         const cleaned = protectToolResult(bindResultNetwork(reportResolved(cleanReturnedError(result, network), resolved), network), name);
         return policy.structured ? withStructuredContent(cleaned) : cleaned;
       } catch (err) {
-        return errorResult(neutralizeText(describeError(err, network)));
+        return errorResult(escapeHidden(describeError(err, network)));
       }
     }));
   };

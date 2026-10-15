@@ -73,6 +73,22 @@ describe("fetchTransactions", () => {
     expect(r.packages).toContain(PKG);
   });
 
+  it("prefetches the emitter when a framework event uses a protocol's type argument", async () => {
+    // Mainnet 8eHgw5…: DisplayCreated<T> is defined by 0x2, but the
+    // publishing package emits it from its own module.
+    const emitter = "0xcdcdf56710f0bca1d9e1e9b775ed9885d9e1beeb3b08ab792948b348fe69cb20";
+    const row = tx(D1);
+    row.effects.events.nodes[0] = {
+      contents: { type: { repr: `0x2::display::DisplayCreated<${emitter}::message_from_cetus::MessageFromCetus>` }, json: {} },
+      transactionModule: { fullyQualifiedName: `${emitter}::message_from_cetus` },
+    };
+    mockGqlQuery.mockResolvedValue({ multiGetTransactions: [row] });
+    const result = await fetchTransactions([D1], 0);
+    expect(result.found[0].events[0].emitting_package).toBe(emitter);
+    expect(result.packages).toContain(emitter);
+    expect(result.packages).toContain("0x2");
+  });
+
   it("maps a null entry to the digest it was asked about", async () => {
     // Positional. Getting this wrong would report the wrong digest as missing.
     mockGqlQuery.mockResolvedValue({ multiGetTransactions: [null, tx(D2)] });

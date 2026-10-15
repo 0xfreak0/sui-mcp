@@ -261,6 +261,7 @@ export const NOT_COVERAGE = new Set(["adversarial.mjs"]);
  */
 export const ORACLE_PROBES = {
   "oracle-pass.mjs": ["analyze_package", "find_funding_source", "get_balance", "get_checkpoint", "get_staking_summary", "get_top_holders", "get_transaction", "get_upgrade_history", "resolve_bridge_transfer", "trace_object_history"],
+ "consistency-pass.mjs": ["analyze_attack_tx", "build_wallet_edges", "decode_ptb", "find_funding_source", "find_funding_sources", "get_balance", "get_object", "get_transaction", "get_transaction_history", "get_transactions", "get_wallet_overview", "identify_address", "screen_address", "summarize_address_flows", "summarize_incident_losses", "trace_flow_graph"],
 };
 
 /**
@@ -313,7 +314,7 @@ export function probePlan(tier, { tools, caseTools, probes, reach = null, detect
   }
   for (const [file, checked] of Object.entries(oracles)) {
     const hit = checked.filter((t) => reach.tools.has(t));
-    if (hit.length && !plan.has(file)) plan.set(file, `checks reached tool(s) against chain truth: ${hit.join(", ")}`);
+  if (hit.length && !plan.has(file)) plan.set(file, `checks agreement for reached tool(s): ${hit.join(", ")}`);
   }
   const scored = detectorTools.filter((t) => reach.tools.has(t));
   if (!plan.has("detector-pass.mjs") && (reach.detectorLabels || scored.length))

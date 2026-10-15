@@ -264,6 +264,9 @@ export function registerClusterTools(server: McpServer) {
                 seeds: addresses,
                 examined_count: built.examined.length,
                 queries_used: built.queries_used,
+                // Expose the measured first funder even when popularity
+                // filtering excludes it as an edge intermediary.
+                first_funders: built.first_funders,
                 truncated: built.truncated,
               
                 // --- facts ---

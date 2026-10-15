@@ -120,7 +120,7 @@ One query carries sender, status, timing, balance changes, Move call targets and
 events with decoded fields, so protocols are identified from both calls and
 events without a second request.
 
-Three rules:
+Four rules:
 
 - **Digests are decoded before the request.** The server rejects the WHOLE batch
   over one malformed key, so a single typo among fifty returned nothing at all.
@@ -132,6 +132,13 @@ Three rules:
   to the end. Breadth here, depth there, and the boundary is stated rather than
   silently applied. Balance changes and commands are NOT a page here: they are
   completed (below), because protocols and flows are concluded from them.
+- **Name an event's emitter as well as its defining package.** GraphQL's
+  `transactionModule.fullyQualifiedName` gives the module that emitted the
+  event, and gRPC gives `Event.packageId`. An event such as
+  `0x2::display::DisplayCreated<T>` has a framework type but can be emitted
+  from `T`'s publisher. Prefetch both packages and use both for protocol
+  attribution; otherwise `get_transactions` loses a protocol
+  `get_transaction` names on the same digest (8eHgw5…).
 - **Object changes are batched separately and bounded.** Up to ten digests
   share each object-change request, so ordinary batches do not spend a request
   per transaction. A transaction with more than five pages of 50 changes,
@@ -1054,6 +1061,21 @@ Rules for its oracles:
   minutes.
 - **These draws read live state**, so `--seed` and `--tip` redraw only the
   first six oracles. Pin the printed subjects to repeat the rest.
+
+`consistency-pass.mjs` compares built tools on the same seeded recent
+transaction and a public case. It checks raw balance changes and object
+custody, PTB command counts, first funding hops, historical and current SUI
+balances, complete history against source amounts and flow nets, direct
+graph-root coin outflows, bridge exit counts, identity, and a single-transaction
+profit against incident losses at one historical price time. `--seed S --tip T`
+reproduces a recent draw. An incomplete read or a mismatched scan window is a
+reported skip, not agreement. A disagreement fails unless a subject-specific
+`KNOWN_DEFECTS` entry states the reason, and an entry that stops failing is
+stale. `ORACLE_PROBES` in
+`lib/tiers.mjs` runs this pass when any tool it compares changes. The
+cluster's `first_funders` is a lookup result for each seed with a qualifying
+inflow, even when the popularity filter excludes the funder from edges;
+absence under `truncated: true` is not evidence of no first funder.
 
 `detector-pass.mjs` scores the anomaly detectors of `analyze_attack_tx` and
 `decode_ptb` (by digest, and on the transaction's own BCS as the pre-sign

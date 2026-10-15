@@ -4,7 +4,6 @@ const norm = (a) => `0x${String(a).replace(/^0x/i, "").toLowerCase().padStart(64
 const STAKE_UNSTAKE = `${norm("0x3")}::validator::UnstakingRequestEvent`;
 const BRIDGE_DEPOSIT = `${norm("0xb")}::bridge::TokenDepositedEvent`;
 const coinType = (t) => String(t).replace(/(^|[<,\s])(?:0x)?([0-9a-fA-F]{1,64})(?=::)/g, (_, p, h) => `${p}0x${h.toLowerCase().padStart(64, "0")}`).replace(/,\s*/g, ", ");
-const errText = (e) => String(e?.message ?? e).slice(0, 300);
 const balanceField = (t) => `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${t}>>,0x2::accumulator::U128>`;
 
 export function extraOracles({ gql, grpc, rawTx, callTool, answerOf, truthOf, record, skip }) {

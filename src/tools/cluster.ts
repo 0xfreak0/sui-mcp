@@ -44,7 +44,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerClusterTools(server: McpServer) {
   server.tool(
     "build_wallet_edges",
-    "(Incident investigation) Find possible shared operators when a fund trace reaches fresh wallets. Six live signals are multisig co-signature, shared first funder, one wallet first-funding another, reciprocal value between non-services, shared gas sponsor and co-appearance in a transaction. Co-signature proves a key can spend the wallet through its committee's address hash; the other signals are behavioral. Intermediaries are measured before linking: services are discarded unless most wallets a sponsor serves share the seeds' narrow, unlabelled funder (role_split). Edges cite transaction digests, or the address hash for co_signer. Clusters are separately tiered inferences, never proof of ownership.",
+  "(Incident investigation) Find possible shared operators when a fund trace reaches fresh wallets. Seven live signals are multisig co-signature, shared first funder, one wallet first-funding another, reciprocal value between non-services, many-to-one consolidation sweeps, shared gas sponsor and co-appearance in a transaction. A consolidation needs six distinct payers of one coin to a collector seed within 30 minutes; a payer whose payment took at least 90% of its reconstructed balance gets a 0.8 edge, one in six near-equal payments a 0.6 edge, both below the merge floor because customers and victims sweep the same way. Popular collectors, labelled services and collectors repeatedly paying one recipient are excluded. Co-signature proves a key can spend the wallet through its committee's address hash; the other signals are behavioral. Intermediaries are measured before linking: services are discarded unless most wallets a sponsor serves share the seeds' narrow, unlabelled funder (role_split). Edges cite transaction digests, or the address hash for co_signer. Clusters are separately tiered inferences, never proof of ownership.",
     {
       addresses: addressListArg()
         .min(1)
@@ -316,9 +316,15 @@ export function registerClusterTools(server: McpServer) {
                   : {}),
                 ...(clustered.untrusted_edges.length
                   ? {
-                      observed_but_below_threshold: clustered.untrusted_edges,
+                      // The pair's signals and digests are already in `edges`.
+                      observed_but_below_threshold: clustered.untrusted_edges.map(({ wallet_a, wallet_b, signal_types, weight }) => ({
+                        wallet_a,
+                        wallet_b,
+                        signal_types,
+                        weight,
+                      })),
                       below_threshold_note:
-                        "These pairs share a signal but not enough to merge under the current rule. Reported rather than dropped — they are leads, and lowering min_signal_types or reading the evidence yourself may change the picture.",
+                        "These pairs share a signal but not enough to merge under the current rule; their evidence is in `edges`. Reported rather than dropped — they are leads, and lowering min_signal_types or reading the evidence yourself may change the picture.",
                     }
                   : {}),
               

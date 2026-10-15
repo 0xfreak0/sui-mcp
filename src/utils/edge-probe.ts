@@ -50,7 +50,10 @@ import {
 import { coinPublisher, coinTotalSupply } from "./coin-origin.js";
 import { getCachedFirstFunder, saveFirstFunder } from "./store.js";
 import { currentSuiAccount, parseAccountId, currentSuiChain } from "./chain-id.js";
-import { EdgeSet, type WalletEdge } from "./wallet-edges.js";
+import {
+ EdgeSet, consolidationCohorts, sweptBalance, CONSOLIDATION_MIN_PAYERS, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT, SIGNAL_WEIGHTS,
+ type ConsolidationPayment, type WalletEdge,
+} from "./wallet-edges.js";
 import { assessCoFunding } from "./co-funding.js";
 import { pricesForRanking } from "./price-providers.js";
 import { prefetchCoinScale, pricingScale, usdValue } from "./valuation.js";
@@ -114,7 +117,7 @@ export interface EdgeBuildOptions {
 /** An intermediary that was measured and thrown away, with the reason. */
 export interface ExcludedIntermediary {
   address: string;
-  role: "funder" | "sponsor";
+ role: "funder" | "sponsor" | "collector";
   /** Distinct counterparties seen before the scan stopped. A lower bound. */
   observed_counterparties: number;
   /** A funder's recipients paid only below the dust floors, not counted in `observed_counterparties`. */
@@ -148,7 +151,7 @@ export interface RoleSplit {
 /** An intermediary that survived the filter, and how well it was measured. */
 export interface UsedIntermediary {
   address: string;
-  role: "funder" | "sponsor";
+ role: "funder" | "sponsor" | "collector";
   observed_counterparties: number;
   /** A funder's recipients paid only below the dust floors, not counted in `observed_counterparties`. */
   below_floor_recipients?: number;
@@ -195,8 +198,10 @@ export class Budget {
     return true;
   }
   /**
-   * Record requests already made that could not ask first: the follow-up
-   * reads that complete a transaction's balance changes.
+  * Record requests already made that could not ask first: the supply,
+  * publisher and send-shape reads `assessFunding` makes. Balance-change
+  * continuations ask `take` before each request instead, so they stop at the
+  * ceiling rather than pass it.
    */
   charge(n: number): void {
     this.used += n;
@@ -250,6 +255,26 @@ const SENT_QUERY = `query ($addr: SuiAddress!, $last: Int!, $before: String) {
       gasInput { gasSponsor { address } }
       effects { ${BALANCE_CHANGES_SELECTION} }
     }
+    pageInfo { hasPreviousPage startCursor }
+  }
+}`;
+
+/** Oldest and newest collector pages expose both old and recent sweeps. */
+const CONSOLIDATION_QUERY = `query ($addr: SuiAddress!, $oldest: Boolean!) {
+  old: transactions(filter: { affectedAddress: $addr }, first: 50) @include(if: $oldest) {
+    nodes { digest sender { address } gasInput { gasSponsor { address } } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+    pageInfo { hasNextPage endCursor }
+  }
+  recent: transactions(filter: { affectedAddress: $addr }, last: 50) @skip(if: $oldest) {
+    nodes { digest sender { address } gasInput { gasSponsor { address } } effects { timestamp checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
+    pageInfo { hasPreviousPage startCursor }
+  }
+}`;
+
+/** Historical balance reconstruction needs the complete history through the sweep. */
+const CONSOLIDATION_PAYER_QUERY = `query ($addr: SuiAddress!, $through: UInt53!, $before: String) {
+  transactions(filter: { affectedAddress: $addr, beforeCheckpoint: $through }, last: 50, before: $before) {
+    nodes { digest effects { checkpoint { sequenceNumber } ${BALANCE_CHANGES_SELECTION} } }
     pageInfo { hasPreviousPage startCursor }
   }
 }`;
@@ -553,8 +578,8 @@ export async function firstFunderOf(address: string, budget: Budget): Promise<Fi
     // a batch payout; complete the lists before picking the funding.
     const completed = await completeTxConnections(
       data.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+   () => budget.take(),
     );
-    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     // Missing rows can hide an earlier inflow or change the apparent payer.
     // This is an unread lookup, not a negative result or a cacheable pick.
     if (completed.some((c) => c.balanceChangesTruncated)) return null;
@@ -612,6 +637,8 @@ export interface Popularity {
    * anyone make a funder read as a service and end a walk there.
    */
   belowFloor?: number;
+ /** Repeated qualifying payments to one recipient, even without an exchange label. */
+ repeatedPayouts?: number;
   /**
    * Popular only: the counterparties seen before the scan stopped. A sample
    * for a measurement of who the address served (see {@link ROLE_SPLIT_SAMPLE}),
@@ -673,11 +700,14 @@ export async function probeRecipients(
   const members = new Map<string, string>();
   const belowFloor = new Set<string>();
   const valuedTypes = new Set<string>();
+ const recipientSends = new Map<string, Set<string>>();
   let valuer: FundingValuer | null = null;
   let cursor: string | undefined;
   let pages = 0;
   let reachedEnd = false;
   let readFailed = false;
+ // A list the budget refused to complete leaves the scan short, not failed.
+ let budgetStopped = false;
   // Worst case one new recipient per transaction, so limit+1 recipients need
   // at most that many transactions; the page cap keeps a contract-call-heavy
   // address (many transactions, no recipients) from burning the whole budget.
@@ -695,11 +725,14 @@ export async function probeRecipients(
     pages++;
     const completed = await completeTxConnections(
       page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+   () => budget.take(),
     );
-    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     // A short recipient list is not a count. The scan goes on, since a
     // popular verdict proven by what was read still stands.
-    if (completed.some((c) => c.balanceChangesTruncated)) readFailed = true;
+  if (completed.some((c) => c.balanceChangesTruncated)) {
+   if (budget.truncated) budgetStopped = true;
+   else readFailed = true;
+  }
     const payments: Array<{ owner: string; digest: string; coin: string; amount: bigint }> = [];
     for (const [i, n] of page.transactions.nodes.entries()) {
       const sender = n.sender?.address;
@@ -724,13 +757,19 @@ export async function probeRecipients(
     for (const p of payments) {
       if (clearsDustFloor(p.coin, p.amount, valuer?.valueUsd) === true) {
         if (!members.has(p.owner)) members.set(p.owner, p.digest);
+    let recipientDigests = recipientSends.get(p.owner);
+    if (!recipientDigests) recipientSends.set(p.owner, (recipientDigests = new Set()));
+    recipientDigests.add(p.digest);
       } else {
         belowFloor.add(p.owner);
       }
     }
     if (members.size > limit) {
       // Proven by what was seen; further pages cannot change the verdict.
-      return { members: new Map(), popular: true, observed: members.size, belowFloor: dustOnly(belowFloor, members), complete: true };
+   return {
+    members: new Map(), popular: true, observed: members.size, belowFloor: dustOnly(belowFloor, members), complete: true,
+    repeatedPayouts: Math.max(0, ...[...recipientSends.values()].map((s) => s.size)),
+   };
     }
     if (!page.transactions.pageInfo.hasPreviousPage) {
       reachedEnd = true;
@@ -744,8 +783,9 @@ export async function probeRecipients(
     popular: false,
     observed: members.size,
     belowFloor: dustOnly(belowFloor, members),
-    complete: reachedEnd,
+  complete: reachedEnd && !budgetStopped,
     ...unmeasured(pages, readFailed),
+  repeatedPayouts: Math.max(0, ...[...recipientSends.values()].map((s) => s.size)),
   };
 }
 
@@ -860,8 +900,7 @@ async function countTxRecipients(digest: string, budget: Budget): Promise<number
     const first = r.transactionEffects?.balanceChanges;
     if (!first) return null;
     // The denominator is every recipient, not the first page of 50.
-    const all = await readAllBalanceChanges(digest, first);
-    budget.charge(all.reads);
+  const all = await readAllBalanceChanges(digest, first, () => budget.take());
     // A partial list would understate the batch and overstate the pair's weight.
     if (all.truncated) return null;
     return countPaidAddresses(all.nodes, r.transactionEffects?.transaction);
@@ -987,8 +1026,8 @@ async function profileSeed(
     }
     const completed = await completeTxConnections(
       page.transactions.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })),
+   () => budget.take(),
     );
-    budget.charge(completed.reduce((sum, c) => sum + c.reads, 0));
     for (const [i, n] of page.transactions.nodes.entries()) {
       scanned++;
       const sender = n.sender?.address;
@@ -1047,6 +1086,132 @@ async function profileSeed(
   return { sponsors, coParties, paidTo, paidBy, unreadTransactions, readFailed };
 }
 
+interface ConsolidationNode {
+ digest: string;
+ sender?: { address: string } | null;
+ gasInput?: { gasSponsor?: { address: string } | null } | null;
+ effects?: {
+  timestamp?: string | null;
+  checkpoint?: { sequenceNumber: number } | null;
+  balanceChanges: GqlConnection<GqlBalanceChangeNode>;
+ } | null;
+}
+
+interface ConsolidationPage {
+ nodes: ConsolidationNode[];
+ pageInfo: { hasNextPage?: boolean; hasPreviousPage?: boolean; startCursor?: string | null };
+}
+
+/**
+ * The payer's balance of the coin just before the sweep: the sum of its
+ * changes in every earlier transaction. Known only when the walk reaches the
+ * wallet's first transaction. The sweep's own change is left out, so a payer
+ * that split its balance among several recipients is not read as having sent
+ * all of it to this one.
+ */
+async function balanceBeforeSweep(payment: ConsolidationPayment, checkpoint: number, budget: Budget): Promise<bigint | null> {
+ let cursor: string | undefined;
+ let balance = 0n;
+ let found = false;
+ for (let pageNumber = 0; pageNumber < 6; pageNumber++) {
+  if (!budget.take()) return null;
+  let page: ConsolidationPage;
+  try {
+   page = (await gqlQuery<{ transactions: ConsolidationPage }>(CONSOLIDATION_PAYER_QUERY, {
+    addr: payment.payer, through: checkpoint + 1, before: cursor,
+   })).transactions;
+  } catch {
+   return null;
+  }
+  if (!page) return null;
+  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })), () => budget.take());
+  if (completed.some((tx) => tx.balanceChangesTruncated)) return null;
+  for (const [index, tx] of page.nodes.entries()) {
+   if (tx.effects?.checkpoint?.sequenceNumber === checkpoint && tx.digest !== payment.digest) return null;
+   if (tx.digest === payment.digest) { found = true; continue; }
+   for (const change of completed[index].balanceChanges) {
+    if (change.owner?.address === payment.payer && change.coinType?.repr === payment.coin) {
+     balance += BigInt(change.amount ?? "0");
+    }
+   }
+  }
+  if (!page.pageInfo.hasPreviousPage) return found ? balance : null;
+  cursor = page.pageInfo.startCursor ?? undefined;
+  if (!cursor) return null;
+ }
+ return null;
+}
+
+/**
+ * A collector is checked independently of the payer's recent window: a sweep
+ * years ago can be absent from every payer's latest 100 transactions.
+ */
+async function readConsolidation(
+ collector: string,
+ seeds: Set<string>,
+ budget: Budget,
+): Promise<{ entries: Array<{ payment: ConsolidationPayment; checkpoint: number }>; unread: boolean }> {
+ const found = new Map<string, { payment: ConsolidationPayment; checkpoint: number }>();
+ let unread = false;
+ for (const oldest of [true, false]) {
+  if (!budget.take()) { unread = true; break; }
+  let page: ConsolidationPage;
+  try {
+   const result = await gqlQuery<{ old?: ConsolidationPage; recent?: ConsolidationPage }>(CONSOLIDATION_QUERY, {
+    addr: collector, oldest,
+   });
+   page = (oldest ? result.old : result.recent)!;
+  } catch {
+   unread = true;
+   break;
+  }
+  if (!page) { unread = true; break; }
+  const completed = await completeTxConnections(page.nodes.map((n) => ({ digest: n.digest, balanceChanges: n.effects?.balanceChanges })), () => budget.take());
+  if (completed.some((tx) => tx.balanceChangesTruncated)) unread = true;
+  for (const [index, tx] of page.nodes.entries()) {
+   if (completed[index].balanceChangesTruncated) continue;
+   const payer = tx.sender?.address;
+   const checkpoint = tx.effects?.checkpoint?.sequenceNumber;
+   const timestamp = Date.parse(tx.effects?.timestamp ?? "");
+   if (!payer || payer === collector || checkpoint === undefined || !Number.isFinite(timestamp)) continue;
+   const sponsor = tx.gasInput?.gasSponsor?.address;
+   const changes = completed[index].balanceChanges;
+   for (const credit of changes) {
+    if (credit.owner?.address !== collector || !credit.coinType?.repr) continue;
+    // A sponsor's storage rebate is not a payment (`isSponsorGasChange`).
+    if (isSponsorGasChange(collector, credit.coinType.repr, payer, sponsor)) continue;
+    const amount = BigInt(credit.amount ?? "0");
+    if (amount <= 0n) continue;
+    // Another party's credit inside a PTB is not a sweep by its sender.
+    const debit = changes.filter((c) => c.owner?.address === payer && c.coinType?.repr === credit.coinType?.repr)
+     .reduce((sum, c) => sum + BigInt(c.amount ?? "0"), 0n);
+    // A storage rebate can make the sender's net SUI debit slightly smaller
+    // than what the collector received; do not admit an unrelated third-party payment.
+    // A sweep sends the collector at least 90% of what the payer lost in the
+    // coin; a smaller share is a fee taken from a swap or a purchase.
+    const suiCoin = isSuiCoinType(credit.coinType.repr);
+    if (debit >= 0n || amount > -debit + (suiCoin ? 10_000_000n : 0n) || amount * 10n < -debit * 9n ||
+     (suiCoin && amount < 10_000_000n)) continue;
+    const payment: ConsolidationPayment = {
+     payer, collector, coin: credit.coinType.repr, amount, balanceBefore: null, timestamp, digest: tx.digest,
+    };
+    found.set(`${tx.digest}|${credit.coinType.repr}`, { payment, checkpoint });
+   }
+  }
+  if (oldest && !page.pageInfo.hasNextPage) break;
+ }
+ // A payment under the dust floor of a priced coin is what a poisoner sends,
+ // not a sweep. An unpriced coin is not judged here: a full-balance sweep of
+ // a coin with no market is still a sweep.
+ const valuer = await floorValuer([...found.values()].map((e) => e.payment.coin).filter((c) => !isSuiCoinType(c)));
+ const entries = [...found.values()]
+  .filter((e) => clearsDustFloor(e.payment.coin, e.payment.amount, valuer.valueUsd) !== false)
+  .sort((a, b) =>
+  Number(seeds.has(b.payment.payer)) - Number(seeds.has(a.payment.payer)) ||
+  a.payment.payer.localeCompare(b.payment.payer) || a.payment.digest.localeCompare(b.payment.digest));
+ return { entries, unread };
+}
+
 /* ------------------------------------------------------------------ *
  * Build
  * ------------------------------------------------------------------ */
@@ -1076,7 +1241,7 @@ export async function buildWalletEdges(
   const expandBudget = opts.expandBudget ?? 25;
   const budget = new Budget(opts.queryBudget ?? 150);
 
-  const uniqueSeeds = [...new Set(seeds)];
+ const uniqueSeeds = [...new Set(seeds)].sort();
   const reciprocalBudget = opts.reciprocalBudget ?? 15;
   const reciprocalCandidates: Array<{ seed: string; other: string; digests: string[]; alreadyBoth: boolean }> = [];
   let unprobedReciprocal = 0;
@@ -1422,9 +1587,83 @@ export async function buildWalletEdges(
     }
   }
 
+ // Many-to-one sweeps are read at both ends of each collector's history.
+ // A bounded recent seed profile cannot prove an older consolidation and
+ // cannot rule one out when the endpoint returns a short recent page.
+ const consolidationMembers = new Set<string>();
+ let unreadConsolidation = 0;
+ const seedSet = new Set(uniqueSeeds);
+ for (const collector of uniqueSeeds) {
+  const label = getLabel(collector);
+  if (label && ["cex", "bridge", "protocol"].includes(label.category)) continue;
+  const reading = await readConsolidation(collector, seedSet, budget);
+  if (reading.unread) unreadConsolidation++;
+  const entries = reading.entries;
+  if (!entries.some((entry) =>
+   new Set(entries.filter((other) => other.payment.coin === entry.payment.coin &&
+    Math.abs(other.payment.timestamp - entry.payment.timestamp) <= 30 * 60_000).map((other) => other.payment.payer)).size >= CONSOLIDATION_MIN_PAYERS)) continue;
+  const verdict = await probeRecipients(collector, popularityLimit, budget);
+  if (verdict.unmeasured || !verdict.complete) {
+   excluded.push({
+    address: collector, role: "collector", observed_counterparties: verdict.observed,
+    reason: verdict.unmeasured ? unmeasuredExclusion(verdict.unmeasured, verdict.observed) :
+     "The collector's outbound popularity scan stopped before its history ended; no consolidation link is inferred.",
+   });
+   if (verdict.unmeasured === "read_failed") unreadConsolidation++;
+   continue;
+  }
+  if (verdict.popular || (verdict.repeatedPayouts ?? 0) >= 2) {
+   excluded.push({
+    address: collector, role: "collector", observed_counterparties: verdict.observed,
+    reason: verdict.popular ? "The collector pays more than the popularity limit; a service's customers are not a cluster." :
+     "The collector repeatedly pays the same recipient; it may be an exchange deposit address, so consolidation does not merge its depositors.",
+   });
+   continue;
+  }
+  // The service verdict precedes balance reconstruction; a budget stop cannot
+  // promote an unread collector. An equal-amount payer is read too: only a
+  // full-balance sweep carries the merge weight.
+  for (const entry of entries) {
+   if (budget.truncated) { unreadConsolidation++; break; }
+   const payment = entry.payment;
+   const siblings = entries.filter((other) => other.payment.coin === payment.coin &&
+    Math.abs(other.payment.timestamp - payment.timestamp) <= 30 * 60_000);
+   if (new Set(siblings.map((other) => other.payment.payer)).size < CONSOLIDATION_MIN_PAYERS) continue;
+   payment.balanceBefore = await balanceBeforeSweep(payment, entry.checkpoint, budget);
+   if (payment.balanceBefore === null) unreadConsolidation++;
+  }
+  const cohorts = consolidationCohorts(entries.map((entry) => entry.payment));
+  if (!cohorts.length) continue;
+  used.push({
+   address: collector, role: "collector", observed_counterparties: verdict.observed, scan_complete: true,
+  });
+  for (const cohort of cohorts) {
+   for (const payment of cohort) {
+    if (!expand && !seedSet.has(payment.payer)) continue;
+    const swept = sweptBalance(payment);
+    edges.add(
+     "consolidation", collector, payment.payer,
+     `${cohort.length} distinct payers sent ${payment.coin} to this non-service collector within 30 minutes; ` +
+     (swept ?
+      "this payment took at least 90% of the payer's pre-transfer balance." :
+      "at least six payers sent amounts within 5% of this amount, and this payer's balance before it was not shown to be swept.") +
+     " Customers and drainer victims sweep into a collector the same way, so this edge is a lead below the merge floor.",
+     [payment.digest],
+     collector,
+     swept ? SIGNAL_WEIGHTS.consolidation : EQUAL_AMOUNT_CONSOLIDATION_WEIGHT,
+    );
+    consolidationMembers.add(payment.payer);
+   }
+  }
+ }
+ if (unreadConsolidation) {
+  notes.push(`${unreadConsolidation} consolidation read(s) were incomplete; no historical balance or collector service verdict was inferred from unread pages.`);
+ }
+
   const examined = new Set(uniqueSeeds);
   for (const o of operators) examined.add(o);
   for (const f of splitFunders) examined.add(f);
+ for (const payer of consolidationMembers) examined.add(payer);
 
   // --- phase 3: expansion ----------------------------------------------
   if (expand) {
@@ -1656,7 +1895,7 @@ export async function buildWalletEdges(
     used_intermediaries: used,
     first_funders: Object.fromEntries(firstFunders),
     queries_used: budget.used,
-    truncated: budget.truncated || unreadFundingLookups > 0 || unreadSeedScans > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0,
+  truncated: budget.truncated || unreadFundingLookups > 0 || unreadSeedScans > 0 || unreadIntermediaries > 0 || originUnreadLookups > 0 || unreadConsolidation > 0,
     notes,
   };
 }

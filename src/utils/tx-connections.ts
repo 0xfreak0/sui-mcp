@@ -99,12 +99,20 @@ interface MoreObjectChanges {
   transaction: { effects: { objectChanges?: GqlConnection<GqlObjectChange> | null } | null } | null;
 }
 
+/**
+ * Asked before each continuation request; false stops the walk with the list
+ * marked truncated. A metered caller passes its budget's `take`, so follow-ups
+ * can never carry it past its ceiling.
+ */
+export type ReadGate = () => boolean;
+
 async function drain<T, R>(
   digest: string,
   first: GqlConnection<T> | null | undefined,
   query: string,
   pick: (r: R) => GqlConnection<T> | null | undefined,
   maxPages = MAX_PAGES,
+ take?: ReadGate,
 ): Promise<CompletedConnection<T>> {
   const nodes = [...(first?.nodes ?? [])];
   // `more` and `cursor` are tracked apart: a connection can claim another page
@@ -114,6 +122,7 @@ async function drain<T, R>(
   let pages = 1;
   let reads = 0;
   while (more && cursor && pages < maxPages) {
+  if (take && !take()) break;
     reads++;
     const next = await gqlQuery<R>(query, { digest, after: cursor }).catch(() => null);
     const conn = next ? pick(next) : null;
@@ -131,16 +140,18 @@ async function drain<T, R>(
 export function readAllBalanceChanges(
   digest: string,
   first: GqlConnection<GqlBalanceChangeNode> | null | undefined,
+ take?: ReadGate,
 ): Promise<CompletedConnection<GqlBalanceChangeNode>> {
-  return drain(digest, first, MORE_BALANCE_CHANGES, (r: MoreBalanceChanges) => r.transactionEffects?.balanceChanges);
+ return drain(digest, first, MORE_BALANCE_CHANGES, (r: MoreBalanceChanges) => r.transactionEffects?.balanceChanges, MAX_PAGES, take);
 }
 
 /** Every command of one transaction, starting from the page already read. */
 export function readAllCommands(
   digest: string,
   first: GqlConnection<GqlCommandNode> | null | undefined,
+ take?: ReadGate,
 ): Promise<CompletedConnection<GqlCommandNode>> {
-  return drain(digest, first, MORE_COMMANDS, (r: MoreCommands) => r.transaction?.kind?.commands);
+ return drain(digest, first, MORE_COMMANDS, (r: MoreCommands) => r.transaction?.kind?.commands, MAX_PAGES, take);
 }
 
 /**
@@ -178,9 +189,10 @@ export interface CompletedTx {
 /**
  * Complete the balance changes and commands of a page of transactions, in
  * input order. Only transactions whose first page claimed more cost a request,
- * and at most `CONCURRENCY` of those run at once.
+ * and at most `CONCURRENCY` of those run at once. With `take`, each request
+ * asks it first; a refused one leaves that list truncated.
  */
-export async function completeTxConnections(txs: TxConnections[]): Promise<CompletedTx[]> {
+export async function completeTxConnections(txs: TxConnections[], take?: ReadGate): Promise<CompletedTx[]> {
   const out: CompletedTx[] = txs.map((t) => ({
     balanceChanges: t.balanceChanges?.nodes ?? [],
     commands: t.commands?.nodes ?? [],
@@ -198,8 +210,8 @@ export async function completeTxConnections(txs: TxConnections[]): Promise<Compl
     while (next < pending.length) {
       const { t, i } = pending[next++];
       const [bc, cmd] = await Promise.all([
-        readAllBalanceChanges(t.digest, t.balanceChanges),
-        readAllCommands(t.digest, t.commands),
+    readAllBalanceChanges(t.digest, t.balanceChanges, take),
+    readAllCommands(t.digest, t.commands, take),
       ]);
       out[i] = {
         balanceChanges: bc.nodes,

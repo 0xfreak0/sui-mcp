@@ -82,6 +82,19 @@ an analytics warehouse, from these sources:
 - A shared first funder.
 - One address first-funding another.
 - Value moving both ways between two non-service addresses.
+- Six or more wallets sweeping one coin to a collector within 30 minutes.
+  Include the collector as a seed; the result cites each sweep transaction.
+  A payment counts when the collector received at least 90% of what the payer
+  lost in that coin, so a fee taken from a swap or purchase does not. A payer
+  whose payment took at least 90% of its balance just before it is linked at
+  weight 0.8, and a payer that is only one of six payments within 5% of one
+  amount at 0.6. Both are leads below the 1.0 merge floor and cluster only
+  with another signal: exchange customers, presale buyers and a drainer's
+  victims sweep into a collector the same way. Popular collectors, labelled services
+  and addresses repeatedly paying one recipient are excluded. A failed service
+  scan does not establish a narrow collector, and an incomplete payer history
+  leaves the balance unknown. Read `excluded_intermediaries` and `truncated`
+  before interpreting a missing edge.
 - A shared gas sponsor.
 - Co-appearance in one transaction.
 

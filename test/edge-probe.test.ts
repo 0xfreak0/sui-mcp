@@ -1,12 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockClient } from "./helpers/mock-grpc.js";
+import { clusterEdges, EdgeSet, EQUAL_AMOUNT_CONSOLIDATION_WEIGHT, SIGNAL_WEIGHTS } from "../src/utils/wallet-edges.js";
 
-const { mockGqlQuery, mockSaveFirstFunder, mockPrices } = vi.hoisted(() => ({
+const { mockGqlQuery, mockSaveFirstFunder, mockPrices, cohortFixture } = vi.hoisted(() => ({
   mockGqlQuery: vi.fn(),
   mockSaveFirstFunder: vi.fn(() => true),
   mockPrices: vi.fn(),
+ cohortFixture: { enabled: false },
 }));
-vi.mock("../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
+vi.mock("../src/clients/graphql.js", () => ({
+ gqlQuery: (query: string, vars: { oldest?: boolean }) => {
+  if (!cohortFixture.enabled && query.includes("$oldest: Boolean!")) {
+   return Promise.resolve({
+    [vars.oldest ? "old" : "recent"]:
+     { nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }
+   });
+  }
+  return mockGqlQuery(query, vars);
+ },
+}));
 // The store is off by default, but mocking it keeps the test independent of
 // whether the developer running it happens to have SUI_STORE_PATH set.
 vi.mock("../src/utils/store.js", () => ({
@@ -82,6 +94,7 @@ function payment(digest: string, from: string, to: string, sponsor?: string) {
 
 beforeEach(() => {
   mockGqlQuery.mockReset();
+ cohortFixture.enabled = false;
   mockSaveFirstFunder.mockClear();
   mockPrices.mockReset().mockImplementation(aftermathUp());
   resetLiveCoinScale();
@@ -290,6 +303,27 @@ describe("probeRecipients reads whole balance-change lists", () => {
     expect(r.members.size).toBe(60);
     expect(b.used).toBe(2);
   });
+
+ it("stops a follow-up read at the budget's ceiling and calls the scan incomplete, not failed", async () => {
+  const changes = [
+   { owner: { address: "0xF" }, amount: `-${60n * BigInt(ONE_SUI)}`, coinType: { repr: SUI } },
+   ...Array.from({ length: 60 }, (_, i) => ({
+    owner: { address: `0x${(i + 1).toString(16).padStart(64, "0")}` },
+    amount: ONE_SUI,
+    coinType: { repr: SUI },
+   })),
+  ];
+  const conn = pagedTxConnection("batch", changes, "balanceChanges");
+  mockGqlQuery.mockImplementation(async (q: string, v: Record<string, unknown>) =>
+   conn.respond(q, v) ?? page([{ digest: "batch", effects: { balanceChanges: conn.first } }]),
+  );
+  const b = new Budget(1);
+  const r = await probeRecipients("0xF", 100, b);
+  expect(b.used).toBe(1);
+  expect(b.truncated).toBe(true);
+  expect(r.complete).toBe(false);
+  expect(r.unmeasured).toBeUndefined();
+ });
 });
 
 describe("probeSponsored", () => {
@@ -423,8 +457,14 @@ describe("buildWalletEdges", () => {
     // paid twenty: an unrelated wallet lands in a batch by being on a list.
     const F = "0xf00d";
     const SHARED = "0x54a4ed";
-    const wide = { transactionEffects: { balanceChanges: { nodes:
-      Array.from({ length: 20 }, (_, i) => ({ owner: { address: `0xr${i}` }, amount: ONE_SUI })) } } };
+  const wide = {
+   transactionEffects: {
+    balanceChanges: {
+     nodes:
+      Array.from({ length: 20 }, (_, i) => ({ owner: { address: `0xr${i}` }, amount: ONE_SUI }))
+    }
+   }
+  };
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) =>
@@ -445,8 +485,14 @@ describe("buildWalletEdges", () => {
   it("scores a bespoke two-way payout ABOVE a plain shared funder", async () => {
     const F = "0xf00d";
     const SHARED = "0x54a4ed";
-    const narrow = { transactionEffects: { balanceChanges: { nodes: [
-      { owner: { address: A }, amount: ONE_SUI }, { owner: { address: B }, amount: ONE_SUI }] } } };
+  const narrow = {
+   transactionEffects: {
+    balanceChanges: {
+     nodes: [
+      { owner: { address: A }, amount: ONE_SUI }, { owner: { address: B }, amount: ONE_SUI }]
+    }
+   }
+  };
     mockGqlQuery.mockImplementation(
       router({
         earliest: (addr) =>
@@ -1619,4 +1665,236 @@ describe("a sponsor and a funder serving the same wallets from two addresses", (
     const excluded = r.excluded_intermediaries.find((e) => e.address === SPONSOR);
     expect(excluded?.role_split).toMatchObject({ funder: FUNDER, wallets_checked: 6, first_funded_by_funder: 1, linked: false });
   });
+});
+
+describe("consolidation probe", () => {
+ const COLLECTOR = "0xc011";
+ const payers = Array.from({ length: 6 }, (_, i) => `0xa${i}`);
+ const sweeps = payers.map((payer, i) => ({
+  ...payment(`sweep-${i}`, payer, COLLECTOR),
+  effects: {
+   ...payment(`sweep-${i}`, payer, COLLECTOR).effects,
+   timestamp: `2025-03-27T10:${String(i).padStart(2, "0")}:00.000Z`,
+   checkpoint: { sequenceNumber: i + 10 },
+   balanceChanges: {
+    nodes: [
+     { owner: { address: payer }, amount: `-${(i + 1) * 1_000_000_000}`, coinType: { repr: SUI } },
+     { owner: { address: COLLECTOR }, amount: `${(i + 1) * 1_000_000_000}`, coinType: { repr: SUI } },
+    ],
+   },
+  },
+ }));
+
+ /** What each payer held before its sweep (a test seam): its one funding transaction. */
+ let funded = (i: number) => BigInt((i + 1) * 1_000_000_000);
+
+ function route(service: "narrow" | "popular" | "deposit" | "failed") {
+  cohortFixture.enabled = true;
+  mockGqlQuery.mockImplementation(async (query: string, vars: { addr?: string; oldest?: boolean }) => {
+   if (query.includes("old: transactions")) {
+    return vars.oldest ? { old: { nodes: sweeps, pageInfo: { hasNextPage: false } } } :
+     { recent: { nodes: sweeps, pageInfo: { hasPreviousPage: false } } };
+   }
+   if (query.includes("beforeCheckpoint: $through")) {
+    const i = payers.indexOf(vars.addr!);
+    return page([{
+     ...payment(`fund-${i}`, "0xf", payers[i]),
+     effects: {
+      ...payment(`fund-${i}`, "0xf", payers[i]).effects,
+      checkpoint: { sequenceNumber: 1 },
+      balanceChanges: {
+       nodes: [
+        { owner: { address: payers[i] }, amount: `${funded(i)}`, coinType: { repr: SUI } },
+       ]
+      },
+     },
+    }, sweeps[i]]);
+   }
+   if (query.includes("sentAddress")) {
+    if (service === "failed") throw new Error("unavailable");
+    return page(service === "popular" ?
+     Array.from({ length: 51 }, (_, i) => payment(`paid-${i}`, COLLECTOR, `0x${i.toString(16).padStart(3, "0")}`)) :
+     service === "deposit" ? [payment("out-1", COLLECTOR, "0xreserve"), payment("out-2", COLLECTOR, "0xreserve")] : []);
+   }
+   if (query.includes("first: $first")) return { transactions: { nodes: [] } };
+   if (query.includes("affectedAddress") && vars.addr === COLLECTOR) return page(sweeps);
+   return page([]);
+  });
+ }
+
+ it("links a collector to six sweepers with their own transaction digests, as leads below the merge floor", async () => {
+  route("narrow");
+  const result = await buildWalletEdges([COLLECTOR], { expand: true });
+  const swept = result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
+  expect(swept).toHaveLength(6);
+  expect(swept.map((edge) => edge.signals.find((s) => s.type === "consolidation")?.digests[0]).sort())
+   .toEqual(sweeps.map((tx) => tx.digest).sort());
+  expect(swept.map((edge) => edge.weight)).toEqual(Array(6).fill(SIGNAL_WEIGHTS.consolidation));
+  expect(SIGNAL_WEIGHTS.consolidation).toBeLessThan(1);
+  expect(clusterEdges(swept).clusters).toEqual([]);
+  expect(result.examined).toEqual([COLLECTOR, ...payers].sort());
+ });
+
+ it("merges a sweeper with its collector when another signal corroborates it", async () => {
+  route("narrow");
+  const result = await buildWalletEdges([COLLECTOR], { expand: true });
+  const edges = new EdgeSet();
+  for (const edge of result.edges) for (const s of edge.signals) edges.add(s.type, edge.wallet_a, edge.wallet_b, s.detail, s.digests, s.via, s.weight);
+  edges.add("cofunded", COLLECTOR, payers[0], "shared narrow funder", [], "0xfunder");
+  expect(clusterEdges(edges.edges()).clusters.map((c) => c.members)).toEqual([[COLLECTOR, payers[0]].sort()]);
+ });
+
+ it("accepts a sender's small storage rebate without counting an unrelated payment", async () => {
+  // The payer's whole balance is 0.99978 SUI; with the rebate the collector receives 1 SUI.
+  const debit = sweeps[0].effects.balanceChanges.nodes[0];
+  const original = { amount: debit.amount, funded };
+  debit.amount = "-999781760";
+  funded = (i) => (i === 0 ? 999_781_760n : original.funded(i));
+  try {
+   route("narrow");
+   const result = await buildWalletEdges([COLLECTOR], { expand: true });
+   const swept = result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
+   expect(swept).toHaveLength(6);
+   expect(swept.map((edge) => edge.weight)).toEqual(Array(6).fill(SIGNAL_WEIGHTS.consolidation));
+  } finally {
+   debit.amount = original.amount;
+   funded = original.funded;
+  }
+ });
+
+ it("leaves near-equal payments without a full-balance sweep below the merge floor", async () => {
+  // Each payer holds 10 SUI and pays 1 SUI: six equal payments, none a sweep.
+  const original = funded;
+  funded = () => 10_000_000_000n;
+  try {
+   const edges = await consolidationEdgesWith((_, payer) => ({
+    nodes: [
+     { owner: { address: payer }, amount: "-1000000000", coinType: { repr: SUI } },
+     { owner: { address: COLLECTOR }, amount: "1000000000", coinType: { repr: SUI } },
+    ],
+   }));
+   expect(edges).toHaveLength(6);
+   expect(edges.map((edge) => edge.weight)).toEqual(Array(6).fill(EQUAL_AMOUNT_CONSOLIDATION_WEIGHT));
+   expect(clusterEdges(edges).clusters).toEqual([]);
+  } finally {
+   funded = original;
+  }
+ });
+
+ it("keeps repeat-payee deposit collectors out of a merge", async () => {
+  route("deposit");
+  const result = await buildWalletEdges([COLLECTOR]);
+  expect(result.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(result.excluded_intermediaries.find((entry) => entry.address === COLLECTOR)?.reason).toMatch(/deposit address/);
+ });
+
+ it("excludes a popular collector and an unread collector rather than treating either as narrow", async () => {
+  route("popular");
+  const popular = await buildWalletEdges([COLLECTOR]);
+  expect(popular.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(popular.excluded_intermediaries).toEqual(expect.arrayContaining([expect.objectContaining({ address: COLLECTOR, role: "collector" })]));
+  route("failed");
+  const failed = await buildWalletEdges([COLLECTOR]);
+  expect(failed.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(failed.used_intermediaries.some((entry) => entry.address === COLLECTOR)).toBe(false);
+  expect(failed.truncated).toBe(true);
+ });
+
+ it("does not promote a collector when the shared budget ran out", async () => {
+  route("narrow");
+  const result = await buildWalletEdges([COLLECTOR], { queryBudget: 3 });
+  expect(result.edges.filter((edge) => edge.signal_types.includes("consolidation"))).toEqual([]);
+  expect(result.used_intermediaries.some((entry) => entry.address === COLLECTOR)).toBe(false);
+  expect(result.truncated).toBe(true);
+ });
+
+ it("does not make the budget-starved result depend on seed order", async () => {
+  route("narrow");
+  const first = await buildWalletEdges([COLLECTOR, payers[0]], { expand: false, queryBudget: 3 });
+  route("narrow");
+  const reversed = await buildWalletEdges([payers[0], COLLECTOR], { expand: false, queryBudget: 3 });
+  expect(first.edges).toEqual(reversed.edges);
+  expect(first.excluded_intermediaries).toEqual(reversed.excluded_intermediaries);
+  expect(first.truncated).toBe(true);
+ });
+
+ /** Rewrite every sweep's balance changes and gas sponsor for one test. */
+ async function consolidationEdgesWith(
+  rewrite: (i: number, payer: string) => { nodes: Array<{ owner: { address: string }; amount: string; coinType: { repr: string } }>; sponsor?: string },
+ ) {
+  const saved = sweeps.map((tx) => ({ nodes: tx.effects.balanceChanges.nodes, gasInput: tx.gasInput }));
+  try {
+   sweeps.forEach((tx, i) => {
+    const { nodes, sponsor } = rewrite(i, payers[i]);
+    tx.effects.balanceChanges.nodes = nodes;
+    if (sponsor) tx.gasInput = { gasSponsor: { address: sponsor } };
+   });
+   route("narrow");
+   const result = await buildWalletEdges([COLLECTOR], { expand: true });
+   return result.edges.filter((edge) => edge.signal_types.includes("consolidation"));
+  } finally {
+   sweeps.forEach((tx, i) => {
+    tx.effects.balanceChanges.nodes = saved[i].nodes;
+    tx.gasInput = saved[i].gasInput;
+   });
+  }
+ }
+
+ it("does not read a fee taken from equal-sized trades as a sweep", async () => {
+  // Six traders each spend 100 SUI into a pool; the collector takes a 0.06 SUI fee from each.
+  const edges = await consolidationEdgesWith((_, payer) => ({
+   nodes: [
+    { owner: { address: payer }, amount: "-100060000000", coinType: { repr: SUI } },
+    { owner: { address: COLLECTOR }, amount: "60000000", coinType: { repr: SUI } },
+   ],
+  }));
+  expect(edges).toEqual([]);
+ });
+
+ it("measures the sweep against the balance before it, including what it paid others", async () => {
+  // Each payer held 1.05x and sent 0.9x to the collector and 0.1x elsewhere: 86% of its balance.
+  const original = funded;
+  funded = (i) => (BigInt((i + 1) * 1_000_000_000) * 105n) / 100n;
+  try {
+   const edges = await consolidationEdgesWith((i, payer) => {
+    const spent = BigInt((i + 1) * 1_000_000_000);
+    return {
+     nodes: [
+      { owner: { address: payer }, amount: `-${spent}`, coinType: { repr: SUI } },
+      { owner: { address: COLLECTOR }, amount: `${(spent * 9n) / 10n}`, coinType: { repr: SUI } },
+      { owner: { address: "0xe1sewhere" }, amount: `${spent / 10n}`, coinType: { repr: SUI } },
+     ],
+    };
+   });
+   expect(edges).toEqual([]);
+  } finally {
+   funded = original;
+  }
+ });
+
+ it("does not count the collector's storage rebate as sponsor of the payers' transactions", async () => {
+  const edges = await consolidationEdgesWith((_, payer) => ({
+   nodes: [
+    { owner: { address: payer }, amount: "-20100000", coinType: { repr: SUI } },
+    { owner: { address: COLLECTOR }, amount: "20000000", coinType: { repr: SUI } },
+   ],
+   sponsor: COLLECTOR,
+  }));
+  expect(edges).toEqual([]);
+ });
+
+ it("does not link senders of equal dust in a priced coin", async () => {
+  const usdc = `0x${"d".repeat(64)}::usdc::USDC`;
+  coinDecimals[usdc] = 6;
+  mockPrices.mockImplementation(aftermathUp({ [usdc]: 1 }));
+  const sweepsOf = (amount: string) => consolidationEdgesWith((_, payer) => ({
+   nodes: [
+    { owner: { address: payer }, amount: `-${amount}`, coinType: { repr: usdc } },
+    { owner: { address: COLLECTOR }, amount, coinType: { repr: usdc } },
+   ],
+  }));
+  expect(await sweepsOf("10000000")).toHaveLength(6);
+  const edges = await sweepsOf("10000");
+  expect(edges).toEqual([]);
+ });
 });

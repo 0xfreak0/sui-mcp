@@ -24,6 +24,7 @@ Find pools for an exact token pair across Cetus, DeepBook v2/v3, Turbos, BlueMov
 | `token_a` | string | yes | First token: verified symbol (e.g. 'SUI') or full coin type |
 | `token_b` | string | yes | Second token: verified symbol (e.g. 'USDC') or full coin type |
 | `protocol` | string | no | Filter by venue: cetus, deepbook, turbos, bluemove, bluefin, momentum, flowx_clmm, flowx_v2, magma, aftermath, kriya_v2. Searches all if omitted. |
+| `offset` | integer (at least 0) | no | Start the pool list at this index (default 0). A response that leaves pools out gives the next offset in omitted.next_call. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## get_defi_positions

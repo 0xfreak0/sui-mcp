@@ -2519,20 +2519,63 @@ claiming the liquidity is locked. Reserved unspendable addresses such as
 0x0 count as burned only when they currently own the LP or position.
 
 A failed owner-kind read must not become `wallet`: `fetchKinds` omits that
-address, while `describeAddresses` defaults its kind to wallet.
+address, while `describeAddresses` defaults its kind to wallet. An object
+holder is `object` and a package address `package`, never a protocol: the
+holder kind must not suggest the liquidity is locked. A position kept as a
+dynamic object field is owned by its `dynamic_field::Field`, so the row is
+re-keyed to the object owning that Field (a kiosk, a vault); otherwise
+`kiosk` could never be reported for a position.
 
-Cetus exposes a linked active-position table in the pool state; enumerate
+Cetus and Magma expose a linked active-position table in the pool state; enumerate
 that table and read each NFT owner to get complete current shares when the
-walk finishes. A CLMM position's raw liquidity L cannot be used as its
-fraction of the pool's reserves when tick ranges differ. Use the position's
-tick bounds, current tick and sqrt price to derive its withdrawable A and B
-amounts, grouping the positions by owner before dividing each coin's amounts
-by the whole scanned pool's position amounts. Fees and rewards are separate.
-A type-wide NFT scan on the other CLMMs usually hits its
-object-ID bound before the pool's positions. Missing owners there are not
-zero holdings. For fungible LP coins, reconcile the scanned holders' balances
-to the pool's supply before calling their shares complete; coins inside other
-objects may not appear in the coin-object or address-balance walks.
+walk finishes. A position in the table that is not a top-level object
+(wrapped in a farm or a burn certificate) goes to `owner_unread` with its
+amounts and share; it does not make the scan incomplete, the same rule as
+`unresolved_owners` in the holder scan. Counting it as incompleteness
+nulled every share of every pool holding one wrapped position. A table read
+short of its end has no pool total: `total_liquidity_raw` is null, never
+the sum of the positions read. A CLMM position's raw liquidity L cannot be
+used as its fraction of the pool's reserves when tick ranges differ. Use the
+position's tick bounds, current tick and sqrt price to derive its
+withdrawable A and B amounts, grouping the positions by owner before
+dividing each coin's amounts by the whole scanned pool's position amounts.
+Fees and rewards are separate. A type-wide NFT scan on the other CLMMs
+usually hits its object-ID bound before the pool's positions. Missing owners
+there are not zero holdings, and a scan that reaches the end still omits
+wrapped positions: it counts as complete only when its in-range positions'
+liquidity equals the pool's active `liquidity`.
+
+For fungible LP coins, reconcile the scanned holders' balances to the pool's
+minted supply before calling their shares complete; coins inside other
+objects may not appear in the coin-object or address-balance walks. LP the
+pool keeps for itself counts on the pool's side of the reconciliation:
+BlueMove's `minimum_liq` balance and Aftermath's `illiquid_lp_supply`. FlowX
+v2's pending protocol fee mint is not minted yet and is not in the supply.
+BlueMove's reserves are `reserve_x`/`reserve_y`; its `token_x`/`token_y`
+balances read zero.
+
+On an incomplete scan `publisher_liquidity_raw` and `burned_liquidity_raw`
+are null unless such a holder was observed: a zero there read as "the
+publisher holds none". CLMM sums carry the paired coin too, since an
+out-of-range position can hold none of the queried coin. `burned_positions`
+counts initial positions an unspendable address holds with liquidity still
+in them; an emptied position sent to 0x0 locks nothing. A Turbos NFT holds
+no liquidity, so its position object is read for it.
+
+Removals are matched by each venue's own event (`REMOVAL_EVENTS` in
+`liquidity-origin.ts`, every type read off a mainnet event) and must name
+the pool. A `Remove*Liquidity` name pattern missed Turbos, Bluefin, FlowX,
+Aftermath and Kriya, and on a dead pool whose ten newest transactions were
+all read, an empty list then read as "no withdrawal". An event removing
+zero liquidity is a fee collection. The creation transaction is the
+earliest retained version's only when it created the pool (`idCreated`);
+a position's last touch is its last affecting transaction, which includes
+the one that deleted or wrapped it.
+
+A coin can have more than a thousand pools of one pair on one venue (DEEP
+has over a thousand Bluefin DEEP/SUI pools). Pool states are read in
+batches of 50, never one request each, and `find_pools` pages its list
+with `offset` while `total` counts every pool.
 
 A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
 offset within that pool. Applying one pool's displayed count as a global

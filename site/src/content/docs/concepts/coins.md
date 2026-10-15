@@ -121,39 +121,66 @@ defaults to 200, at most 1000.
 `find_pools(token_a, token_b)` searches exact pool types in both token orders.
 It reports the result of each venue separately. A failed or bounded venue read
 leaves pool discovery incomplete; an empty result describes only the searched
-pair and venues. DeepBook is an order book, so its vault balances are not
-tradable depth. Use `deepbook_orderbook` to read resting orders.
+pair and venues. `total` counts every pool found; the list pages at about 30k
+characters, and `omitted.next_call` repeats the call with the next `offset`.
+DeepBook is an order book, so its vault balances are not tradable depth. Use
+`deepbook_orderbook` to read resting orders.
 
 `analyze_token(query)` discovers pools paired with SUI and native USDC on
 mainnet and inspects current LP ownership for up to three pools ranked by the
-coin's current reserve. For fungible LPs it reads LP coin and address-balance
-holders and checks their balances against the pool's LP supply. For Cetus it
-reads the pool's active-position table and each position NFT owner; other CLMM
-venues use a bounded type-wide NFT scan. Positions held by one address are
-grouped. `share` is its fraction of the scanned positions' withdrawable
-amount of the queried coin at the current price, with a separate
-`counterpart_share` for the paired coin; fees and rewards are excluded. A
-fungible LP `share` is its share of LP supply. Shares are null when the
-position or LP scan is incomplete. Each row states its owner kind and the
-scan bound. An owner-kind read that fails stays `unknown`, not `wallet`.
-`burned` identifies an unspendable address. No locker package is verified for
-this check. An object holding an LP or position is not proof of a liquidity
-lock; inspect its code and authority before saying it cannot withdraw.
+coin's current reserve. `pool_discovery.scope` states what was not searched:
+other pairs and other venues. Each pool gives `reserve_coin_raw` and
+`counterpart_reserve`; a drained pool can hold a large reserve of the queried
+coin and almost none of the other.
+
+- **Fungible LP coins** (BlueMove, FlowX v2, Aftermath, Kriya's LP token): the
+  scan reads LP coin and address-balance holders, up to 1,000 objects and 100
+  holders, and checks their balances against the pool's minted LP supply. LP
+  the pool keeps is part of that check: `lp_locked_in_pool_raw` (minimum
+  liquidity no one can withdraw) and BlueMove's `lp_protocol_fee_in_pool_raw`.
+  `share` is a holder's share of the supply.
+- **Cetus and Magma positions**: the scan reads the pool's own position
+  table, up to 1,000 positions, then each position NFT's owner. A position
+  that is not a top-level object, such as one wrapped in a farm or a burn
+  certificate, is counted under `owner_unread` with its amounts and share;
+  its holder is not known.
+- **Other CLMM venues**: the scan reads the first 1,000 position NFTs of the
+  venue's position type, which rarely reaches every position of one pool. A
+  scan that reaches the end is checked against the pool's active liquidity,
+  since a wrapped position is not listed.
+
+Positions held by one address are grouped. A CLMM `share` is the holder's
+fraction of the pool's withdrawable amount of the queried coin at the current
+price, with a separate `counterpart_share` for the paired coin; fees and
+rewards are excluded. Shares are null when the scan is incomplete, and so are
+`publisher_liquidity_raw` and `burned_liquidity_raw` when no such holder was
+observed. Each row's `kind` is `publisher`, `burned` (an unspendable address),
+`wallet`, `kiosk`, `package`, `object` or `unknown`; an owner-kind read that
+fails stays `unknown`. A position kept as a dynamic object field is listed
+under the object holding the field, such as a kiosk, with
+`held_as_dynamic_object_field`. A kiosk is controlled by its
+`KioskOwnerCap` holder, which `get_object` on the kiosk names. No locker package is verified for this check. An object
+holding an LP or position is not proof of a liquidity lock; inspect its code
+and authority before saying it cannot withdraw.
 
 ```
 analyze_token({ query: "0x…::coin::COIN", include_holders: false })
-  → pool_discovery: { pairs_searched: […], venues: […] }
+  → pool_discovery: { pairs_searched: […], venues: […], scope: "…" }
     liquidity_custody: { pool_limit: 3, pools: [
-      { pool_id: "0x…", scan: { incomplete: false },
+      { pool_id: "0x…", scan: { scanned: 12, incomplete: false },
         holders: [{ address: "0x…", kind: "publisher", share: 0.75 }] }
     ] }
 ```
 
-`creation` names the pool's initial position recipients or LP recipients,
-the current owner and last touch of each initial position, and removal events
-among the ten newest pool transactions. A removed position or burned LP may
-no longer appear among live holders. Use `trace_object_history` on the position
-or `get_balance(at_checkpoint)` on the LP coin holder to check the incident
-time. `liquidity_custody.next_call` pages further pools. Each pool's
+`creation` names the pool's creation transaction, its initial position or LP
+recipients, and the current owner, current liquidity and last affecting
+transaction of each initial position. `burned_positions` counts initial
+positions an unspendable address holds with liquidity still in them; an
+emptied position sent there is counted under `burned_empty_positions`.
+`recent_removals` lists the venue's own liquidity-removal events and LP coins
+spent among the ten newest pool transactions. A removed position or burned
+LP may no longer appear among live holders. Use `trace_object_history` on the
+position or `get_balance(at_checkpoint)` on the LP coin holder to check the
+incident time. `liquidity_custody.next_call` pages further pools. Each pool's
 `omitted.next_call` binds `liquidity_holder_pool` to that pool and advances
 its `liquidity_offset`, so pagination never skips another pool's holders.

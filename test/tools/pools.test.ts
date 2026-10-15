@@ -99,4 +99,30 @@ describe("find_pools", () => {
     expect(data.venues[0]).toMatchObject({ status: "incomplete", searched: 2 });
     expect(data.incomplete).toBe(true);
   });
+
+  it("pages a venue's many pools with a structured continuation, counting every pool", async () => {
+    const bluefin = "0x3492c874c1e3b3e2984e8c41b589e642d4d0a5d6459e5a9cfc2d52fd7c89c267::pool::Pool";
+    const type = `${bluefin}<${SUI}, ${USDC}>`;
+    const ids = Array.from({ length: 900 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}`);
+    mockGqlQuery.mockImplementation(async (_query: string, vars: { type: string; after?: string | null }) => {
+      if (vars.type !== type) return page([]);
+      const from = vars.after ? Number(vars.after) : 0;
+      const end = Math.min(from + 50, ids.length);
+      return page(ids.slice(from, end).map((id) => node(id, type)), end < ids.length ? String(end) : null);
+    });
+
+    const seen: string[] = [];
+    let args: Record<string, unknown> = { token_a: SUI, token_b: USDC, protocol: "bluefin" };
+    for (let call = 0; call < 20; call++) {
+      const data = JSON.parse((await tools.get("find_pools")!(args)).content[0].text);
+      expect(data.total).toBe(900);
+      expect(JSON.stringify(data).length).toBeLessThan(50_000);
+      seen.push(...data.pools.map((pool: { pool_id: string }) => pool.pool_id));
+      if (!data.omitted) break;
+      expect(data.omitted.lists.pools.from).toBe(seen.length);
+      expect(data.omitted.next_call.tool).toBe("find_pools");
+      args = data.omitted.next_call.args;
+    }
+    expect(seen).toEqual(ids);
+  });
 });

@@ -8,7 +8,7 @@ import { isUnspendableAddress } from "./upgrade-cap.js";
 import { resolvePublisher } from "./publisher.js";
 import { capPayload } from "./output-cap.js";
 import type { ListCap, NextCall } from "./output-cap.js";
-import { aftermathReserves, flowxReserves, kriyaReserves, FLOWX_V2_CONTAINER, KRIYA_LP_TOKEN_TYPE } from "./valuers/amm-lp.js";
+import { aftermathReserves, flowxReserves, kriyaReserves, KRIYA_LP_TOKEN_TYPE } from "./valuers/amm-lp.js";
 import { amountsForLiquidity, i32FromBits, parsePoolFields, parsePositionFields, VERIFIED_POSITION_TYPES } from "./valuers/clmm.js";
 import type { ClmmPoolFields } from "./valuers/clmm.js";
 import { bigField } from "./valuers/common.js";
@@ -20,14 +20,18 @@ export const LIQUIDITY_POOL_LIMIT = 3;
 export const LIQUIDITY_POSITION_SCAN_LIMIT = 1000;
 export const LIQUIDITY_LP_SCAN_LIMIT = 1000;
 export const LIQUIDITY_HOLDER_DISPLAY_LIMIT = 100;
+/** Characters of holder rows per pool: three pools' rows and the rest of analyze_token fit its 50k budget. */
+export const LIQUIDITY_HOLDER_BUDGET = 9_000;
 
-export type LiquidityHolderKind = "publisher" | "burned" | "wallet" | "protocol_object" | "kiosk" | "unknown";
+/** `object` names an object holder, never a protocol or a lock; `package` is a package address, which no key signs for. */
+export type LiquidityHolderKind = "publisher" | "burned" | "wallet" | "object" | "package" | "kiosk" | "unknown";
 
 export function liquidityHolderKind(address: string, publisher: string | null, objectType?: string, identity?: string): LiquidityHolderKind {
   if (isUnspendableAddress(address)) return "burned";
   if (publisher && normalizeSuiAddress(address) === normalizeSuiAddress(publisher)) return "publisher";
   if (objectType && normalizeStructTag(objectType).split("<")[0] === `${normalizeSuiAddress("0x2")}::kiosk::Kiosk`) return "kiosk";
-  if (identity === "object" || identity === "package" || identity === "wrapped_or_deleted_object") return "protocol_object";
+  if (identity === "package") return "package";
+  if (identity === "object") return "object";
   return identity === "wallet" ? "wallet" : "unknown";
 }
 
@@ -39,7 +43,7 @@ interface LiquidityDisplayRow { address: string; kind: LiquidityHolderKind; amou
 
 /** Budgeted list cap with a complete per-pool store copy and an advancing page. */
 export function capLiquidityHolders<T extends LiquidityDisplayRow>(
-  holders: T[], offset: number, coinType: string, poolOffset: number, poolId: string, budget = 20_000
+  holders: T[], offset: number, coinType: string, poolOffset: number, poolId: string, budget = LIQUIDITY_HOLDER_BUDGET
 ) {
   const page = holders.slice(offset);
   const indices = new Map(page.map((row, index) => [row, offset + index]));
@@ -77,8 +81,11 @@ export function capLiquidityHolders<T extends LiquidityDisplayRow>(
   return { holders: shown, ...(omitted ? { truncated: true, omitted } : {}) };
 }
 
-interface CustodyHolding { address: string; amount: bigint; counterpart?: bigint; position_id?: string; position_ids?: string[]; object_type?: string }
-interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string }
+interface CustodyHolding { address: string; amount: bigint; counterpart?: bigint; position_id?: string; position_ids?: string[]; object_type?: string; via_field?: boolean }
+/** Positions whose liquidity counts toward the total while their holder could not be read. */
+interface OwnerUnread { positions: number; amount: bigint; counterpart: bigint; position_ids: string[] }
+const OWNER_UNREAD_IDS = 10;
+interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string; owner_unread?: OwnerUnread; locked_in_pool?: bigint; fee_in_pool?: bigint }
 
 /** All positions of one owner contribute to that owner's pool share. */
 export function aggregateCustodyRows(rows: CustodyHolding[]): CustodyHolding[] {
@@ -86,12 +93,14 @@ export function aggregateCustodyRows(rows: CustodyHolding[]): CustodyHolding[] {
   for (const row of rows) {
     const address = normalizeSuiAddress(row.address);
     const existing = byOwner.get(address);
+    // Rows already grouped carry position_ids; a raw row carries one position_id.
+    const ids = row.position_ids ?? (row.position_id ? [row.position_id] : []);
     if (!existing) {
-      byOwner.set(address, { ...row, address, position_id: undefined, position_ids: row.position_id ? [row.position_id] : [] });
+      byOwner.set(address, { ...row, address, position_id: undefined, position_ids: [...ids] });
     } else {
       existing.amount += row.amount;
       if (row.counterpart !== undefined) existing.counterpart = (existing.counterpart ?? 0n) + row.counterpart;
-      if (row.position_id) existing.position_ids!.push(row.position_id);
+      existing.position_ids!.push(...ids);
     }
   }
   return [...byOwner.values()];
@@ -99,7 +108,6 @@ export function aggregateCustodyRows(rows: CustodyHolding[]): CustodyHolding[] {
 
 const StateJson = z.record(z.string(), z.unknown());
 const LpSupply = z.object({ value: z.string() });
-const FlowxTreasury = z.object({ treasurer: z.string() });
 const KriyaLpBalance = z.object({ balance: z.string() });
 const CetusPositionManager = z.object({ positions: z.object({ id: z.string(), size: z.string() }) });
 
@@ -124,42 +132,63 @@ function lpCoinOf(pool: PoolCandidate): string | null {
   return null;
 }
 
-async function readState(id: string): Promise<{ type: string; json: Record<string, unknown> } | null> {
-  const result = await sui.getObject({ objectId: id, include: { json: true } });
-  const object = result.object;
-  const parsed = StateJson.safeParse(object?.json);
-  return object?.type && parsed.success ? { type: object.type, json: parsed.data } : null;
+/** Objects per batched read: a coin can have over a thousand pools, and one read each takes minutes under a rate limit. */
+const STATE_BATCH = 50;
+
+/** Pool states in request order; a failed read is an Error, an absent or unparsable object null. */
+async function readStates(ids: string[]): Promise<Array<{ type: string; json: Record<string, unknown> } | null | Error>> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += STATE_BATCH) chunks.push(ids.slice(i, i + STATE_BATCH));
+  const results = await Promise.all(chunks.map(async (chunk) => {
+    try {
+      const { objects } = await sui.getObjects({ objectIds: chunk, include: { json: true } });
+      return chunk.map((_, i) => {
+        const object = objects[i];
+        if (object instanceof Error) return object;
+        const parsed = StateJson.safeParse(object?.json);
+        return object?.type && parsed.success ? { type: object.type, json: parsed.data } : null;
+      });
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      return chunk.map(() => error);
+    }
+  }));
+  return results.flat();
 }
 
 async function readLp(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }): Promise<ScanResult> {
   const lpType = lpCoinOf(pool);
   if (!lpType) return { rows: [], total: null, scanned: 0, incomplete: true, unit: "LP", reason: "The pool's fungible LP coin type is not known." };
+  // Minted supply; FlowX v2's pending protocol fee mint is not held by anyone until the next burn mints it.
   let supply = bigField(LpSupply.safeParse(state.json.lsp_supply).data?.value);
   if (pool.protocol === "aftermath") supply = aftermathReserves(state.json)?.supply ?? null;
   if (pool.protocol === "kriya_v2") supply = kriyaReserves(state.type, state.json)?.supply ?? null;
   if (pool.protocol === "flowx_v2") {
-    // FlowX's indexed pair is a dynamic field in the factory bag, not a standalone pool.
-    const container = await readState(FLOWX_V2_CONTAINER);
-    const treasurer = FlowxTreasury.safeParse(container?.json.treasury).data?.treasurer;
-    const feeOn = typeof treasurer === "string" && !isUnspendableAddress(treasurer);
     const [a, b] = coinParams(lpType);
-    const parsed = a && b && typeof treasurer === "string" ? flowxReserves(state.json, a, b, feeOn) : null;
-    supply = parsed ? parsed.supply + parsed.feeMint : null;
+    supply = a && b ? flowxReserves(state.json, a, b, false)?.supply ?? null : null;
   }
+  // LP the pool keeps for itself and no holder can withdraw: BlueMove's minimum_liq balance, Aftermath's illiquid_lp_supply.
+  const locked = pool.protocol === "bluemove" ? bigField(state.json.minimum_liq)
+    : pool.protocol === "aftermath" ? bigField(state.json.illiquid_lp_supply) : 0n;
+  // BlueMove's protocol-fee LP, a Balance<LSP> inside the pool that its fee mechanism, not a coin holder, controls.
+  const poolFee = pool.protocol === "bluemove" ? bigField(state.json.fee_amount) : 0n;
   const scan = await scanTokenTopHolders(lpType, 100, LIQUIDITY_LP_SCAN_LIMIT);
   const holders = scan.truncated ? await sampledHolders(scan.holders, lpType) : scan.holders;
   const unread = holders.some((h) => h.balance === null);
   const rows = holders.filter((h) => h.balance !== null && BigInt(h.balance) > 0n)
     .map((h) => ({ address: h.address, amount: BigInt(h.balance!), object_type: h.object_type }));
   const accounted = rows.reduce((n, row) => n + row.amount, 0n);
-  const incomplete = scan.truncated || !!scan.unresolved_owners || scan.unique_holders > scan.holders.length
-    || unread || supply === null || accounted !== supply;
+  const walkStopped = scan.truncated || !!scan.unresolved_owners || scan.unique_holders > scan.holders.length || unread;
+  const unreconciled = supply !== null && locked !== null && poolFee !== null && accounted + locked + poolFee !== supply;
+  const incomplete = supply === null || locked === null || poolFee === null || walkStopped || unreconciled;
   return {
     rows, total: supply, scanned: scan.total_scanned, incomplete, unit: lpType,
+    ...(locked ? { locked_in_pool: locked } : {}),
+    ...(poolFee ? { fee_in_pool: poolFee } : {}),
     ...(incomplete ? {
-      reason: supply === null ? "Pool LP supply could not be read; holder shares are unknown."
-        : accounted !== supply ? "Observed live LP balances do not reconcile with pool LP supply; holdings may be embedded in other objects."
-          : "Coin objects or address balances were sampled, capped or unread; other LP holders may be larger."
+      reason: supply === null || locked === null || poolFee === null ? "Pool LP supply could not be read; holder shares are unknown."
+        : walkStopped ? `The LP holder walk stopped at its bound (${LIQUIDITY_LP_SCAN_LIMIT} objects, 100 holders) or left holders unread; other LP holders may be larger.`
+          : `Live LP balances sum to ${accounted}${locked || poolFee ? ` plus ${locked! + poolFee!} the pool keeps` : ""} against a minted supply of ${supply}; the rest may be held inside other objects.`
     } : {}),
   };
 }
@@ -205,9 +234,11 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
     cursor = page.objects.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
   }
-  if (supply !== null && rows.reduce((total, row) => total + row.amount, 0n) !== supply) incomplete = true;
+  // Kriya keeps the minimum liquidity as an lsp_locked balance inside the pool.
+  const locked = bigField(state.json.lsp_locked);
+  if (supply === null || locked === null || rows.reduce((total, row) => total + row.amount, 0n) + locked !== supply) incomplete = true;
   return {
-    rows, total: supply, scanned, incomplete, unit: KRIYA_LP_TOKEN_TYPE,
+    rows, total: supply, scanned, incomplete, unit: KRIYA_LP_TOKEN_TYPE, ...(locked ? { locked_in_pool: locked } : {}),
     ...(incomplete ? { reason: "Kriya LP-token scan or pool supply is incomplete; other holders or their shares may be unknown." } : {})
   };
 }
@@ -268,6 +299,7 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
   }
   const rows: CustodyHolding[] = [];
+  const unowned: OwnerUnread = { positions: 0, amount: 0n, counterpart: 0n, position_ids: [] };
   for (let i = 0; i < entries.length; i += 40) {
     const batch = entries.slice(i, i + 40);
     const data = await gqlQuery<{
@@ -286,7 +318,11 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
       const type = position?.asMoveObject?.contents?.type?.repr;
       const owner = position?.owner?.address?.address;
       if (!owner || !type || normalizeStructTag(type).split("<")[0] !== normalizeStructTag(positionType).split("<")[0]) {
-        incomplete = true;
+        // Counted apart, as get_top_holders counts unresolved owners: the table was read to its end.
+        unowned.positions++;
+        unowned.amount += batch[j]!.amount;
+        unowned.counterpart += batch[j]!.counterpart;
+        if (unowned.position_ids.length < OWNER_UNREAD_IDS) unowned.position_ids.push(batch[j]!.id);
         continue;
       }
       rows.push({ address: owner, amount: batch[j]!.amount, counterpart: batch[j]!.counterpart, position_id: batch[j]!.id });
@@ -294,11 +330,19 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
   }
   const total = entries.reduce((n, entry) => n + entry.amount, 0n);
   const counterpartTotal = entries.reduce((n, entry) => n + entry.counterpart, 0n);
-  if (BigInt(scanned) !== expected) incomplete = true;
+  const tableIncomplete = BigInt(scanned) !== expected;
+  if (tableIncomplete) incomplete = true;
+  // A table read short of its end sums only the positions read; that is no pool total.
   return {
-    rows, total, counterpart_total: counterpartTotal, counterpart_type: poolFields.coinA === coinType ? poolFields.coinB : poolFields.coinA,
+    rows, total: tableIncomplete ? null : total, counterpart_total: tableIncomplete ? undefined : counterpartTotal,
+    counterpart_type: poolFields.coinA === coinType ? poolFields.coinB : poolFields.coinA,
     scanned, incomplete, unit: coinType,
-    ...(incomplete ? { reason: "Cetus position table, NFT owner reads or the 1000-position bound left custody incomplete." } : {})
+    ...(unowned.positions ? { owner_unread: unowned } : {}),
+    ...(incomplete ? {
+      reason: tableIncomplete
+        ? `The pool's position table lists ${expected} positions and ${scanned} were read (bound ${LIQUIDITY_POSITION_SCAN_LIMIT}).`
+        : "A position record in the pool's table could not be read."
+    } : {})
   };
 }
 
@@ -307,11 +351,13 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
   if (!positionType) return { rows: [], total: null, scanned: 0, incomplete: true, unit: coinType, reason: "No verified position type for this pool." };
   const poolFields = parsePoolFields(state.type, state.json);
   if (!poolFields || (poolFields.coinA !== coinType && poolFields.coinB !== coinType)) return { rows: [], total: null, scanned: 0, incomplete: true, unit: coinType, reason: "Pool tick, price or coin type could not be read." };
-  if (pool.protocol === "cetus") return readCetusPositions(state, positionType, poolFields, coinType);
+  // Magma is a Cetus fork with the same linked position table (PositionInfo nodes keyed by position id).
+  if (pool.protocol === "cetus" || pool.protocol === "magma") return readCetusPositions(state, positionType, poolFields, coinType);
   const rows: CustodyHolding[] = [];
   let cursor: string | null = null;
   let scanned = 0;
   let incomplete = false;
+  let inRange = 0n;
   for (; ;) {
     const page: PositionPage = await gqlQuery(`query($type: String!, $after: String) {
       objects(filter: { type: $type }, first: 50, after: $after) {
@@ -320,18 +366,28 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
       }
     }`, { type: positionType, after: cursor });
     const remaining = LIQUIDITY_POSITION_SCAN_LIMIT - scanned;
-    for (let index = 0; index < page.objects.nodes.length && index < remaining; index++) {
-      const node = page.objects.nodes[index]!;
-      scanned++;
+    const nodes = page.objects.nodes.slice(0, remaining);
+    scanned += nodes.length;
+    // A Turbos NFT names its pool and the object holding the liquidity; read those objects in one batch.
+    const turbosIds = pool.protocol === "turbos" ? nodes.map((node) => {
+      const json = node.asMoveObject?.contents?.json;
+      return typeof json?.pool_id === "string" && normalizeSuiAddress(json.pool_id) === normalizeSuiAddress(pool.pool_id) && typeof json.position_id === "string" ? json.position_id : null;
+    }) : [];
+    const wanted = turbosIds.filter((id): id is string => id !== null);
+    const innerStates = new Map((wanted.length ? await readStates(wanted) : []).map((state, i) => [wanted[i]!, state]));
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index]!;
       const json = node.asMoveObject?.contents?.json;
       if (!json) { incomplete = true; continue; }
       let parsed = parsePositionFields(json);
-      if (pool.protocol === "turbos" && typeof json.pool_id === "string" && normalizeSuiAddress(json.pool_id) === normalizeSuiAddress(pool.pool_id) && typeof json.position_id === "string") {
-        const inner = await readState(json.position_id);
-        parsed = inner && parsePositionFields(inner.json, json.pool_id);
-        if (!inner) incomplete = true;
+      const innerId = turbosIds[index];
+      if (innerId) {
+        const inner = innerStates.get(innerId);
+        parsed = inner && !(inner instanceof Error) ? parsePositionFields(inner.json, pool.pool_id) : null;
+        if (!parsed) incomplete = true;
       }
       if (parsed?.pool !== normalizeSuiAddress(pool.pool_id) || parsed.liquidity <= 0n) continue;
+      if (parsed.tickLower <= poolFields.currentTick && poolFields.currentTick < parsed.tickUpper) inRange += parsed.liquidity;
       const address = node.owner?.address?.address;
       if (address) {
         try {
@@ -348,14 +404,17 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
     cursor = page.objects.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
   }
-  // Pool active liquidity is only the liquidity IN RANGE, not the sum of all positions.
-  // Shares use each position's removable coin amounts at the current tick.
+  // A type-wide list holds top-level positions only; one wrapped in another object is missing from it.
+  // The in-range positions' liquidity sums to the pool's active liquidity exactly when none is missing.
+  const active = bigField(state.json.liquidity);
+  const unreconciled = !incomplete && (active === null || inRange !== active);
   return {
-    rows, total: incomplete ? null : rows.reduce((n, row) => n + row.amount, 0n),
-    counterpart_total: rows.reduce((n, row) => n + (row.counterpart ?? 0n), 0n),
+    rows, total: incomplete || unreconciled ? null : rows.reduce((n, row) => n + row.amount, 0n),
+    counterpart_total: incomplete || unreconciled ? undefined : rows.reduce((n, row) => n + (row.counterpart ?? 0n), 0n),
     counterpart_type: poolFields.coinA === coinType ? poolFields.coinB : poolFields.coinA,
-    scanned, incomplete, unit: coinType,
-    ...(incomplete ? { reason: "Position scan stopped before reaching every position; pool-wide withdrawable coin shares are unknown." } : {})
+    scanned, incomplete: incomplete || unreconciled, unit: coinType,
+    ...(incomplete ? { reason: "Position scan stopped before reaching every position; pool-wide withdrawable coin shares are unknown." }
+      : unreconciled ? { reason: `The listed in-range positions hold ${inRange} liquidity and the pool's active liquidity is ${active ?? "unread"}; positions wrapped in other objects are not listed, so shares are unknown.` } : {})
   };
 }
 
@@ -367,6 +426,68 @@ async function readPool(pool: PoolCandidate, state: { type: string; json: Record
   return { pool, reserve, scan };
 }
 
+/**
+ * The publisher's or burned holders' summed liquidity, with the paired coin for CLMM positions:
+ * an out-of-range position can hold none of the queried coin and all of the other.
+ * On an incomplete scan a zero sum is null, since an unobserved holder is not a zero holding.
+ */
+function kindSums(holders: Array<{ kind: LiquidityHolderKind; amount_raw: string; counterpart_raw?: string }>, kind: "publisher" | "burned", incomplete: boolean, paired: boolean) {
+  const rows = holders.filter((h) => h.kind === kind);
+  const unseen = incomplete && rows.length === 0;
+  const amount = rows.reduce((n, h) => n + BigInt(h.amount_raw), 0n);
+  const counterpart = rows.reduce((n, h) => n + BigInt(h.counterpart_raw ?? "0"), 0n);
+  return {
+    [`${kind}_liquidity_raw`]: unseen ? null : amount.toString(),
+    ...(paired ? { [`${kind}_counterpart_raw`]: unseen ? null : counterpart.toString() } : {}),
+  };
+}
+
+const DOF_FIELD = `${normalizeSuiAddress("0x2")}::dynamic_field::Field<${normalizeSuiAddress("0x2")}::dynamic_object_field::Wrapper<`;
+
+/** The object owning each dynamic-object-field Field. A Field whose parent cannot be read stays the holder, typed as a Field. */
+async function dynamicFieldParents(fields: string[]): Promise<Map<string, string>> {
+  const parents = new Map<string, string>();
+  for (let i = 0; i < fields.length; i += 40) {
+    const chunk = fields.slice(i, i + 40);
+    try {
+      const data = await gqlQuery<{ multiGetObjects: Array<{ owner?: { address?: { address?: string } } } | null> }>(
+        `query($keys: [ObjectKey!]!) { multiGetObjects(keys: $keys) { owner { ... on ObjectOwner { address { address } } } } }`,
+        { keys: chunk.map((address) => ({ address })) },
+      );
+      chunk.forEach((field, j) => {
+        const parent = data.multiGetObjects[j]?.owner?.address?.address;
+        if (parent) parents.set(field, normalizeSuiAddress(parent));
+      });
+    } catch {
+      // Unread parents leave those Fields as the holders.
+    }
+  }
+  return parents;
+}
+
+/** What the pool holds of `coinType`, read from its own layout; null when unread, never zero. */
+function reserveOf(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, coinType: string): bigint | null {
+  const clmm = parsePoolFields(state.type, state.json);
+  if (clmm) return clmm.coinA === coinType ? clmm.reserveA : clmm.coinB === coinType ? clmm.reserveB : null;
+  if (pool.protocol === "aftermath") {
+    const parsed = aftermathReserves(state.json);
+    const index = parsed?.coins.indexOf(coinType) ?? -1;
+    return index >= 0 ? parsed!.reserves[index]! : null;
+  }
+  if (pool.protocol === "flowx_v2" && pool.token_a && pool.token_b) {
+    const parsed = flowxReserves(state.json, pool.token_a, pool.token_b, false);
+    const index = parsed?.coins.indexOf(coinType) ?? -1;
+    return index >= 0 ? parsed!.reserves[index]! : null;
+  }
+  const params = coinParams(state.type);
+  // BlueMove keeps its reserves in reserve_x/reserve_y; its token_x/token_y balances read zero.
+  if (pool.protocol === "bluemove") {
+    return params.indexOf(coinType) === 0 ? bigField(state.json.reserve_x) : params.indexOf(coinType) === 1 ? bigField(state.json.reserve_y) : null;
+  }
+  return params.indexOf(coinType) === 0 ? bigField(state.json.coin_a ?? state.json.token_x ?? state.json.reserve_x)
+    : params.indexOf(coinType) === 1 ? bigField(state.json.coin_b ?? state.json.token_y ?? state.json.reserve_y) : null;
+}
+
 /** Chain-derived, current holdings only. Never treat missing positions as a claim about past liquidity. */
 export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandidate[], holderOffset = 0, poolOffset = 0, holderPool?: string) {
   coinType = normalizeStructTag(coinType);
@@ -374,19 +495,14 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
   const candidates = pools.filter((p) => p.protocol !== "deepbook");
   // Reserve values of this same coin are comparable across pools. An unread reserve
   // is not zero; read it after known reserves so it never changes the ranking.
-  const stateReads = await Promise.allSettled(candidates.map(async (pool) => {
-    const state = await readState(pool.pool_id);
-    if (!state) return { pool, state: null, reserve: null as bigint | null };
-    const clmm = parsePoolFields(state.type, state.json);
-    const params = coinParams(state.type);
-    const reserve = clmm ? (clmm.coinA === coinType ? clmm.reserveA : clmm.coinB === coinType ? clmm.reserveB : null)
-      : params.indexOf(coinType) === 0 ? bigField(state.json.coin_a ?? state.json.token_x ?? state.json.reserve_x)
-        : params.indexOf(coinType) === 1 ? bigField(state.json.coin_b ?? state.json.token_y ?? state.json.reserve_y) : null;
-    return { pool, state, reserve };
-  }));
-  const ranked = stateReads.map((r, i) => r.status === "fulfilled"
-    ? { ...r.value, state_unavailable: r.value.state ? undefined : "The pool object was absent from the gRPC response." }
-    : { pool: candidates[i]!, state: null, reserve: null, state_unavailable: r.reason instanceof Error ? r.reason.message : String(r.reason) });
+  const states = await readStates(candidates.map((pool) => pool.pool_id));
+  const ranked = candidates.map((pool, i) => {
+    const state = states[i];
+    if (!state || state instanceof Error) {
+      return { pool, state: null, reserve: null as bigint | null, state_unavailable: state instanceof Error ? state.message : "The pool object was absent from the gRPC response." };
+    }
+    return { pool, state, reserve: reserveOf(pool, state, coinType), state_unavailable: undefined };
+  });
   ranked.sort((a, b) => a.reserve === null ? b.reserve === null ? 0 : 1 : b.reserve === null ? -1 : a.reserve > b.reserve ? -1 : a.reserve < b.reserve ? 1 : 0);
   const poolPage = ranked.slice(poolOffset, poolOffset + LIQUIDITY_POOL_LIMIT);
   const chosen = holderPool ? poolPage.filter((row) => normalizeSuiAddress(row.pool.pool_id) === holderPool) : poolPage;
@@ -396,7 +512,19 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
   const allAddresses = [...new Set(reads.flatMap((r) => r.status === "fulfilled"
     ? r.value.scan.rows.map((h) => h.address)
     : []))];
-  const kinds = await fetchKinds(allAddresses);
+  const ownerKinds = await fetchKinds(allAddresses);
+  // A position kept as a dynamic object field is owned by its Field; the object holding the field
+  // (a kiosk, a vault) is the holder. Re-key rows by it, merging positions it holds through several fields.
+  const parents = await dynamicFieldParents(allAddresses.filter((address) => ownerKinds.get(address)?.type?.startsWith(DOF_FIELD)));
+  for (const read of reads) {
+    if (read.status !== "fulfilled" || !parents.size) continue;
+    read.value.scan.rows = aggregateCustodyRows(read.value.scan.rows.map((row) => {
+      const parent = parents.get(row.address);
+      return parent ? { ...row, address: parent, via_field: true } : row;
+    }));
+  }
+  const unclassified = [...new Set(parents.values())].filter((parent) => !ownerKinds.has(parent));
+  const kinds = new Map([...ownerKinds, ...(unclassified.length ? await fetchKinds(unclassified) : [])]);
   const entries = reads.map((read, i) => {
     const candidate = chosen[i]!;
     const origin = origins[i]!;
@@ -407,6 +535,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
       ...(origin.status === "fulfilled" ? { creation: origin.value } : { creation_unavailable: String(origin.reason) }),
     };
     const { pool, scan } = read.value;
+    const otherCoin = (pool.coin_types ?? [pool.token_a, pool.token_b]).find((type) => type && type !== coinType) ?? null;
     const holders = scan.rows.map((h) => {
       const identity = kinds.get(h.address);
       const objectType = identity?.type ?? h.object_type;
@@ -415,6 +544,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
         address: h.address, kind, amount_raw: h.amount.toString(), share: scan.incomplete ? null : fractionOfLiquidity(h.amount, scan.total ?? 0n),
         ...(h.counterpart !== undefined ? { counterpart_raw: h.counterpart.toString(), counterpart_share: scan.incomplete ? null : fractionOfLiquidity(h.counterpart, scan.counterpart_total ?? 0n) } : {}),
         ...(h.position_ids?.length ? { position_count: h.position_ids.length, position_ids: h.position_ids } : {}),
+        ...(h.via_field ? { held_as_dynamic_object_field: true } : {}),
         ...(objectType ? { object_type: objectType } : {}),
         ...(kind === "unknown" && !identity ? { classification_unavailable: "Owner-kind lookup unavailable." } : {}),
         ...(kind === "publisher" && publisher.publish_tx ? { publisher_tx: publisher.publish_tx } : {})
@@ -428,6 +558,8 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
     const display = capLiquidityHolders(holders, holderOffset, coinType, poolOffset, pool.pool_id);
     return {
       pool_id: pool.pool_id, protocol: pool.protocol, reserve_coin_raw: read.value.reserve?.toString() ?? null,
+      // The other side shows a drained pool: a pool full of the queried coin can hold almost nothing to sell it for.
+      ...(otherCoin && candidate.state ? { counterpart_reserve: { coin_type: otherCoin, raw: reserveOf(pool, candidate.state, otherCoin)?.toString() ?? null } } : {}),
       ...(candidate.state_unavailable ? { state_unavailable: candidate.state_unavailable } : {}),
       ...(CLMM_POSITION[pool.protocol] ? { position_type: CLMM_POSITION[pool.protocol], amount_basis: "withdrawable coin amounts at the current pool price, excluding fees and rewards" }
         : pool.protocol === "kriya_v2" ? { position_type: KRIYA_LP_TOKEN_TYPE, amount_basis: "LP units" }
@@ -435,9 +567,26 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
       liquidity_unit: scan.unit,
       ...(scan.counterpart_type ? { counterpart_type: scan.counterpart_type, counterpart_total_raw: scan.counterpart_total?.toString() ?? null } : {}),
       scan: { scanned: scan.scanned, incomplete: scan.incomplete, ...(scan.reason ? { reason: scan.reason } : {}) },
-      holder_count_observed: holders.length, publisher_liquidity_raw: holders.filter((h) => h.kind === "publisher").reduce((n, h) => n + BigInt(h.amount_raw), 0n).toString(),
-      burned_liquidity_raw: holders.filter((h) => h.kind === "burned").reduce((n, h) => n + BigInt(h.amount_raw), 0n).toString(),
+      ...(scan.owner_unread ? {
+        owner_unread: {
+          positions: scan.owner_unread.positions, amount_raw: scan.owner_unread.amount.toString(),
+          counterpart_raw: scan.owner_unread.counterpart.toString(), position_ids: scan.owner_unread.position_ids,
+          share: scan.incomplete ? null : fractionOfLiquidity(scan.owner_unread.amount, scan.total ?? 0n),
+          counterpart_share: scan.incomplete ? null : fractionOfLiquidity(scan.owner_unread.counterpart, scan.counterpart_total ?? 0n),
+          note: "Positions in the pool's table that are not top-level objects (wrapped inside another object, such as a farm or a burn certificate) or did not read as its position type. They count in the totals and no holder row includes them, so a holder controlling one through its wrapper holds more than its row's share. Whether they can be withdrawn depends on the wrapper's code; trace_object_history on a position id shows where it went.",
+        }
+      } : {}),
+      holder_count_observed: holders.length,
+      ...(holders.some((h) => h.kind === "kiosk") ? { kiosk_note: "A kiosk is controlled by whoever holds its KioskOwnerCap, not by its declared owner field; get_object on the kiosk id names the cap holder." } : {}),
+      ...kindSums(holders, "publisher", scan.incomplete, scan.counterpart_type !== undefined),
+      ...kindSums(holders, "burned", scan.incomplete, scan.counterpart_type !== undefined),
+      ...(scan.incomplete ? { observed_sums_note: "The scan is incomplete, so publisher and burned sums cover the observed holders only; null means none was observed, not none held." } : {}),
       total_liquidity_raw: scan.total?.toString() ?? null,
+      ...(scan.locked_in_pool ? { lp_locked_in_pool_raw: scan.locked_in_pool.toString() } : {}),
+      ...(scan.fee_in_pool ? {
+        lp_protocol_fee_in_pool_raw: scan.fee_in_pool.toString(),
+        lp_protocol_fee_share: scan.incomplete ? null : fractionOfLiquidity(scan.fee_in_pool, scan.total ?? 0n),
+      } : {}),
       ...display,
       ...(origin.status === "fulfilled" ? { creation: origin.value } : { creation_unavailable: String(origin.reason) }),
     };
@@ -453,7 +602,7 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
       }
     } : {}),
     selection: "Largest current reserve of this coin where readable, among the discovered SUI/USDC pairs; unread reserves sort last.",
-    known_lockers_checked: [], locker_note: "No liquidity-locker package is verified in this registry; an object-held LP or position is not called locked without checking its code and authority.",
+    locker_note: "No liquidity-locker package is verified in this registry; an object-held LP or position is not called locked without checking its code and authority.",
     caveat: "Current state does not show LP coins burned or positions closed during a past withdrawal. An incomplete scan cannot establish a wallet's share or the absence of a position.",
     pools: entries
   };

@@ -138,7 +138,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
    include_liquidity: boolArg()
     .optional()
     .describe("Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls."),
-   liquidity_pool_offset: numArg().int().min(0).max(1000).optional().describe("Start at this discovered pool after ranking by current reserve (default 0)."),
+   liquidity_pool_offset: numArg().int().min(0).optional().describe("Start at this discovered pool after ranking by current reserve (default 0)."),
    liquidity_holder_pool: addressArg().optional().describe("For a holder continuation, restrict the page to this discovered pool ID."),
    liquidity_offset: numArg().int().min(0).max(1000).optional().describe("Start at this holder index within liquidity_holder_pool (default 0)."),
     },
@@ -416,7 +416,10 @@ export function registerAnalyzeTokenTools(server: McpServer) {
    if (include_liquidity !== false) {
     try {
      const discovery = await discoverCoinPools(coinType);
-     result.pool_discovery = { venues: discovery.venues, pairs_searched: discovery.pairs_searched, pools_found: discovery.pools.length };
+     result.pool_discovery = {
+      venues: discovery.venues, pairs_searched: discovery.pairs_searched, pools_found: discovery.pools.length,
+      scope: "Only the pairs in pairs_searched on the venues listed were searched. Pools against other coins and on other venues are not included, and a venue whose status is not complete may hold more pools. DeepBook order books have no LP holders and are not inspected for custody.",
+     };
      result.liquidity_custody = await analyzeLiquidityCustody(coinType, discovery.pools, liquidity_offset ?? 0, liquidity_pool_offset ?? 0, liquidity_holder_pool);
     } catch (err) {
      result.liquidity_custody_unavailable = describeError(err, getNetwork());

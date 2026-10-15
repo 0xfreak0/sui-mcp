@@ -350,6 +350,7 @@ describe("chain-supplied text at the tool boundary", () => {
       nfts: [{ object_id: "0x2", name: token, display: { description: token, image_url: token }, content: { type, id: digest, teaser: token } }],
       events: [{ type, parsed: { arbitrary: token, invisible: "\u200b".repeat(3_000), nested: [{ prompt: token, id: digest, amount: "1000" }] } }],
       sui_name: token,
+      imported_labels: [{ entity: token, evidence: token, notes: token }],
       omitted: { next_call: { tool: "get_object", args: { object_id: "0x2" } } },
     };
     withNetworkParam(server).tool("example", "desc", {}, async () => ({
@@ -371,6 +372,7 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.nfts[0].content.teaser).toBe(data.symbol);
     expect(data.events[0].parsed.nested[0].prompt).toBe(data.symbol);
     expect(data.sui_name).toBe(data.symbol);
+    expect(data.imported_labels[0]).toEqual({ entity: data.symbol, evidence: data.symbol, notes: data.symbol });
     expect(data.coin_type).toBe(type);
     expect(data.events[0].type).toBe(type);
     expect(data.nfts[0].content.id).toBe(digest);

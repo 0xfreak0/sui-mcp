@@ -36,7 +36,7 @@ export function neutralizeText(value: string, cap = true, code = false): string 
 
 // A key naming an identity or a typed number must retain its exact bytes.
 const IDENTIFIER = /(^|_)(?:id|ids|address|addresses|digest|digests|type|types|package|module|function|cursor|bcs|bytes|hash|guid|nonce|signature|version|checkpoint|amount|balance|raw|uri|next_call|repeat_with|continue_with)$/i;
-const HUMAN = /(?:^|_)(?:name|names|symbol|description|image_url|icon_url|url|title|label|notes?|message|text|alias|website|link|domain|avatar|image|display|metadata|fields|error|reason|source)$/i;
+const HUMAN = /(?:^|_)(?:name|names|symbol|description|image_url|icon_url|url|title|label|notes?|message|text|alias|website|link|domain|avatar|image|display|metadata|fields|error|reason|source|entity|evidence)$/i;
 const RAW = /^(?:parsed|json|content|display|metadata|fields|parsed_json|move_fields|decoded)$/i;
 const SKIP = /^(?:next_call|previous_call|repeat_with|continue_with)$/;
 const CODE = /^(?:disassembly|code|decompiled)$/;

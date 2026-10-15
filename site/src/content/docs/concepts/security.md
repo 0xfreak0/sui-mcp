@@ -49,8 +49,9 @@ as visible `\u` escapes. It escapes angle brackets and Markdown links in
 human-readable fields and cuts each field after 2,048 characters with the
 number removed. Addresses, digests, amounts and Move type tags retain their
 exact spelling. Code listings retain their lines and type tags, so their
-contents must still be read as untrusted data. No tool is exempt from the JSON
-guard. The Markdown, Mermaid and CSV outputs of `export_case` and the Mermaid
+contents must still be read as untrusted data. Every chain-reading tool's JSON
+result uses the guard; `enable_tools` is a control tool with no chain data.
+The Markdown, Mermaid and CSV outputs of `export_case` and the Mermaid
 and CSV outputs of `trace_flow_graph` and `find_flow_path` retain their report
 and diagram formatting; these plain-text formats carry no JSON
 `untrusted_text` field. Clients must render tool text as data rather than

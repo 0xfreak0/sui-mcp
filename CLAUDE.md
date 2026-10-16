@@ -3485,8 +3485,8 @@ change is likely to break:
   `rootObjectLinks` moves that part of the leg's share onto the object, so a
   stake made and then handed over is 100% the handover, never 50% consumed
   and 50% handed over. The legs feeding one object together take at most its
-  value at the handover. Written-in-place objects come from `written.held`,
-  which is why `TX_METHOD_VERSION` is 5.
+  value at the handover. Written-in-place objects come from `written.held`, a
+  field derived at fetch time, so adding it raised `TX_METHOD_VERSION` to 5.
 - **The trunk reads as many moves as the start.** A node carrying more than
   half the traced value is the start's continuation and gets
   `MOVES_PER_START_ADDRESS` instead of `MOVES_PER_NODE`, both directions. At

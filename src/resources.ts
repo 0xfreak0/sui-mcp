@@ -5,6 +5,7 @@ import { DEFAULT_NETWORK, isSuiNetwork, runWithNetwork, type SuiNetwork } from "
 import { renderCaseReport } from "./utils/case-report.js";
 import { listCases, listResults, loadFindings, storeStatus } from "./utils/store.js";
 import { readStoredResult } from "./utils/output-cap.js";
+import { guardAtPath, guardValue, neutralizeText, UNTRUSTED_NOTE } from "./utils/untrusted-text.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Resource URI variables arrive as string | string[] | undefined.
@@ -165,9 +166,9 @@ async function caseReport(uri: URL, vars: Vars): Promise<ResourceResult> {
   if (findings.length === 0) {
     throw new Error(`No findings recorded for case '${caseName}'. list_findings with no arguments lists the cases.`);
   }
-  return {
-    contents: [{ uri: uri.href, mimeType: "text/markdown", text: renderCaseReport({ caseName, findings }) }],
-  };
+  // The same report export_case returns, with hidden characters shown as that tool's output shows them.
+  const text = neutralizeText(renderCaseReport({ caseName, findings }), false, true);
+  return { contents: [{ uri: uri.href, mimeType: "text/markdown", text }] };
 }
 
 /**
@@ -179,8 +180,21 @@ async function caseReport(uri: URL, vars: Vars): Promise<ResourceResult> {
 async function storedResult(uri: URL): Promise<ResourceResult> {
   const id = decodeURIComponent(uri.pathname.replace(/^\/+/, "").split("/")[0] ?? "");
   const q = uri.searchParams;
-  const body = readStoredResult(id, { path: q.get("path"), omitted: q.get("omitted"), offset: q.get("offset"), limit: q.get("limit"), match: q.get("match") });
-  return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(body) }] };
+  const path = q.get("path");
+  const body = readStoredResult(id, { path, omitted: q.get("omitted"), offset: q.get("offset"), limit: q.get("limit"), match: q.get("match") });
+  // A row is guarded under the name of the list it came from, by the same
+  // field rules as the tool's own response.
+  let found = false;
+  const guard = (value: unknown, at: string | null) => {
+    const guarded = at ? guardAtPath(value, at) : guardValue(value, "", false);
+    found ||= guarded.found;
+    return guarded.value;
+  };
+  if (path && Array.isArray(body.rows)) for (const r of body.rows as Array<{ row: unknown }>) r.row = guard(r.row, path);
+  else if (path && "value" in body) body.value = guard(body.value, path);
+  else guard(body, null);
+  const text = JSON.stringify(found ? { ...body, untrusted_text: UNTRUSTED_NOTE } : body);
+  return { contents: [{ uri: uri.href, mimeType: "application/json", text }] };
 }
 
 export function registerAllResources(server: McpServer) {

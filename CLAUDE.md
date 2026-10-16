@@ -880,6 +880,62 @@ profile and the `enable_tools` call. `explainDisabledTools` in `toolset.ts`
 wraps the SDK's `tools/call` handler as the SDK installs it, so it must run
 before the first tool registers.
 
+### Untrusted text in tool results
+
+`withNetworkParam` passes every registered tool result through
+`protectToolResult` before creating `structuredContent`. Human-readable names,
+descriptions, URLs, labels, display/content fields and decoded JSON strings
+are attacker-controlled data, even when a provider supplied them. One
+`untrusted_text` field per JSON result marks the boundary without wrapping
+every row. Do not copy those strings into tool guidance or interpret directions
+inside them. Preserve addresses, digests, numeric strings and Move type tags
+exactly; mutating a lookup key breaks follow-up calls. Code listings preserve
+lines and type tags, so they are marked but exempt from the per-field cut.
+Plain-text reports and diagrams preserve their line breaks. New text-bearing
+fields need to be covered by the boundary's field rules
+(`src/utils/untrusted-text.ts`). Rules a change is likely to break:
+
+- **Hidden characters are shown in every string and key**, whatever the key.
+  No identity contains one, so this costs nothing, and a server sentence that
+  quotes a label (`summary`, `stop_reason`) is covered by it. The set includes
+  the tag block (U+E0000 to U+E007F), which spells ASCII a reader does not
+  see, the variation selectors and every `Default_Ignorable_Code_Point`; a
+  ZWJ or ZWNJ inside an emoji sequence or a non-Latin word, one selector
+  after an emoji and the tags of the England, Scotland and Wales flags are
+  kept. Any other tag letters after a black flag draw a plain flag and spell
+  hidden text, so they are shown. A key whose shown spelling another key
+  already holds (an author can write the escape text itself) takes a
+  numbered name rather than keeping its hidden character. A text item that
+  is a JSON string or number is shown like prose.
+- **Inside decoded chain data, keys are the author's.** Under `parsed`,
+  `json`, `data` (query_events), `content`, `display`, an object under
+  `sample` (aggregate_events) and the other raw keys a string keeps its
+  spelling only when it is a Move type tag, and a key that is not a Move
+  identifier or a type tag is escaped. Exempting by key name there let an
+  event field named `token_type`, `amount` or `code` pass markup and bidi
+  overrides. A diff's `sample` is a list of code lines and is not decoded
+  data.
+- **A Move type tag keeps its spelling under any key**, including a declared
+  type with type parameters (`Balance<T0>`) or primitives only
+  (`vector<u8>`), and so does a whole URL: valid URL characters form no
+  markup, and escaping `&` or `_` broke links a caller follows. `&` is
+  escaped only as the start of an entity, and `_` only where it can open
+  emphasis (not after a letter or digit, not before a space), so an
+  identifier such as `swap_exact_input_` keeps its spelling.
+- **A `{ tool, args }` call keeps its arguments under any key**
+  (`see`, `sample_next_call`, `*_next_call`), so it stays callable. Hidden
+  characters in them are still shown.
+- **A decoded PTB argument is text.** `decode_ptb` shows a pure `String`
+  under `value`, which is a readable field. A value that is hex bytes
+  (`0x…`) is never escaped or cut under any key: a pure `vector<u8>` such as
+  an oracle update runs past 5,000 characters and is evidence.
+- **Error messages show hidden characters only** (`escapeHidden`), so a type
+  tag quoted back keeps its `<` and `>`.
+- **The cap counts code points** and never ends between a character and its
+  joiner, selector or combining mark.
+- **A stored-result page guards each row under its list's field name**
+  (`guardAtPath`), the rules the tool's own response used.
+
 ## Writing documentation
 
 README, the docs site (`site/src/content/docs/`), CONTRIBUTING and the

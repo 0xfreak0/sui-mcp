@@ -75,7 +75,9 @@ function escapeText(value: string, code: boolean): string {
   if (code || URL_VALUE.test(value)) return escapeInvisible(value, code);
   // Escape original markup first, leaving the visible escapes for controls intact.
   const escaped = escapeInvisible(value.replace(MARKUP, CODEPOINT), false)
-    .replace(/(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])/g, CODEPOINT);
+    // Only an underscore that can open emphasis (not after a letter or digit,
+    // not before a space) is escaped, so `swap_exact_input_` keeps its spelling.
+    .replace(/(?<![A-Za-z0-9])_(?![\s]|$)/g, CODEPOINT);
   // A chain-supplied sentence must not become a Markdown heading or list.
   return escaped.replace(/^([ \t]{0,3})(#{1,6}|[-+]|\d+\.)(?=\s)/, (_match, spaces: string, marker: string) =>
     `${spaces}${CODEPOINT(marker[0]!)}${marker.slice(1)}`);
@@ -112,17 +114,22 @@ export function neutralizeText(value: string, cap = true, code = false): string 
 const IDENTIFIER = /(^|_)(?:id|ids|address|addresses|digest|digests|type|types|type_tag|type_name|type_repr|package|module|function|cursor|bcs|bytes|hash|guid|nonce|signature|version|checkpoint|amount|balance|raw|uri|next_call|repeat_with|continue_with)$/i;
 const HUMAN = /(?:^|_)(?:name|names|symbol|description|image_url|icon_url|url|title|label|notes?|message|text|alias|website|link|domain|avatar|image|display|metadata|fields|error|reason|source|entity|evidence|summary|detail|value)$/i;
 const RAW = /^(?:parsed|json|data|content|display|metadata|fields|parsed_json|move_fields|decoded)$/i;
+/** aggregate_events shows one decoded event per type as an object under `sample`; a diff's `sample` is a list of code lines. */
+const decoded = (field: string, value: unknown) =>
+  RAW.test(field) || (field === "sample" && !!value && typeof value === "object" && !Array.isArray(value));
 const SKIP = /(?:^|_)(?:next_call|previous_call|repeat_with|continue_with)$/;
 const CODE = /^(?:disassembly|code|decompiled)$/;
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const STRUCT_PATH = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/g;
 const PRIMITIVE = /\b(?:u8|u16|u32|u64|u128|u256|bool|address|signer|vector)\b/g;
+/** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
+const TYPE_PARAM = /\bT\d*\b/g;
 
-/** A Move type tag: struct paths and primitives joined by `<`, `>`, `,` and spaces. */
+/** A Move type tag: struct paths, primitives and type parameters joined by `<`, `>`, `,` and spaces. */
 function isTypeTag(value: string): boolean {
-  if (!value.includes("::") || value.length > 8_192) return false;
-  const rest = value.replace(STRUCT_PATH, "T").replace(PRIMITIVE, "P");
-  return rest.includes("T") && /^[TP<>, ]+$/.test(rest);
+  if (!(value.includes("::") || value.includes("<")) || value.length > 8_192) return false;
+  const rest = value.replace(STRUCT_PATH, "S").replace(PRIMITIVE, "P").replace(TYPE_PARAM, "G");
+  return /^[SPG<>, ]+$/.test(rest) && (rest.includes("S") || rest.includes("<"));
 }
 
 /**
@@ -152,15 +159,46 @@ function protect(value: unknown, key: string, raw: boolean, visited: { found: bo
   // A server's `{ tool, args }` call must stay callable, under whatever key it sits.
   const call = !raw && typeof record.tool === "string" && !!record.args && typeof record.args === "object";
   for (const field of Object.keys(record)) {
-    if (!(!raw && (SKIP.test(field) || (call && field === "args")))) record[field] = protect(record[field], field, raw || RAW.test(field), visited, toolName);
-    const shown = raw && !MOVE_IDENTIFIER.test(field) && !isTypeTag(field) ? neutralizeText(field) : escapeInvisible(field, false);
-    if (shown !== field && !(shown in record)) {
-      visited.found = true;
-      record[shown] = record[field];
-      delete record[field];
-    }
+    record[field] = !raw && (SKIP.test(field) || (call && field === "args"))
+      ? showHidden(record[field], visited)
+      : protect(record[field], field, raw || decoded(field, record[field]), visited, toolName);
+    rename(record, field, raw && !MOVE_IDENTIFIER.test(field) && !isTypeTag(field) ? neutralizeText(field) : escapeInvisible(field, false), visited);
   }
   return value;
+}
+
+/** Show hidden characters in a continuation call and change nothing else, so it stays callable. */
+function showHidden(value: unknown, visited: { found: boolean }): unknown {
+  if (typeof value === "string") {
+    const shown = escapeInvisible(value, false);
+    if (shown !== value) visited.found = true;
+    return shown;
+  }
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = showHidden(value[i], visited);
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  for (const field of Object.keys(record)) {
+    record[field] = showHidden(record[field], visited);
+    rename(record, field, escapeInvisible(field, false), visited);
+  }
+  return value;
+}
+
+/**
+ * Move a key to its shown spelling. A key that already holds that spelling
+ * (an author can write the escape text itself) keeps it, and the moved key
+ * takes a numbered name, so no key keeps a hidden character.
+ */
+function rename(record: Record<string, unknown>, field: string, shown: string, visited: { found: boolean }): void {
+  if (shown === field) return;
+  visited.found = true;
+  let name = shown;
+  for (let n = 2; Object.hasOwn(record, name); n++) name = `${shown} (${n})`;
+  record[name] = record[field];
+  delete record[field];
 }
 
 export const UNTRUSTED_NOTE =
@@ -173,14 +211,14 @@ export const UNTRUSTED_NOTE =
  */
 export function guardValue(value: unknown, key: string, raw: boolean, toolName = ""): { value: unknown; found: boolean } {
   const visited = { found: false };
-  const guarded = protect(value, key, raw || RAW.test(key), visited, toolName);
+  const guarded = protect(value, key, raw || decoded(key, value), visited, toolName);
   return { value: guarded, found: visited.found };
 }
 
 /** Guard a value read from a stored payload at a dotted path, under the path's last field name. */
 export function guardAtPath(value: unknown, path: string, toolName = ""): { value: unknown; found: boolean } {
   const names = path.split(".").filter((name) => !/^\d+$/.test(name));
-  return guardValue(value, names.at(-1) ?? "", names.some((name) => RAW.test(name)), toolName);
+  return guardValue(value, names.at(-1) ?? "", names.slice(0, -1).some((name) => RAW.test(name) || name === "sample"), toolName);
 }
 
 /** Guard every registered tool result before structuredContent is derived from its text. */
@@ -190,13 +228,14 @@ export function protectToolResult<T extends { content?: Array<{ type: string; te
   const content = result.content.map((item) => {
     if (item.type !== "text" || !item.text) return item;
     let parsed: unknown;
-    try { parsed = JSON.parse(item.text); } catch {
+    try { parsed = JSON.parse(item.text); } catch { parsed = undefined; }
+    // A JSON string or number is shown like any other text item.
+    if (!parsed || typeof parsed !== "object") {
       const text = neutralizeText(item.text, false, true);
       if (text === item.text) return item;
       changed = true;
       return { ...item, text };
     }
-    if (!parsed || typeof parsed !== "object") return item;
     if (!guardValue(parsed, "", false, toolName).found) return item;
     if (!Array.isArray(parsed)) (parsed as Record<string, unknown>).untrusted_text = UNTRUSTED_NOTE;
     changed = true;

@@ -211,8 +211,6 @@ const ORACLES = {
 };
 for (const o of Object.values(ORACLES)) o.rows = [];
 
-const FLAGS = ["seed", "tip", "scan", "txs", "ends", "router", "coins", "jobs", "subjects", "dist"];
-// ---- arguments -------------------------------------------------------------
 const FLAGS = ["seed", "tip", "scan", "txs", "ends", "router", "routers", "coins", "jobs", "subjects", "dist"];
 function usage(message) {
   console.error(
@@ -1501,12 +1499,11 @@ for (const [id, o] of Object.entries(ORACLES)) {
   const rows = [...o.rows].sort((a, b) => a.key - b.key);
   const n = (s) => rows.filter((r) => r.status === s).length;
   // A drawn oracle whose bounds allow subjects must check something.
+  const routerTxs = ROUTER_N * ROUTER_NAMES.length;
   const drawn = {
-    a: ROUTER_N, b: ENDS + COINS, c: TXS + ROUTER_N, d: COINS, e: TXS + ROUTER_N, f: COINS,
+    a: routerTxs, b: ENDS + COINS, c: TXS + routerTxs, d: COINS, e: TXS + routerTxs, f: COINS,
     g: TXS * 3, h: 3, i: 3, j: 3, k: 3, l: 3
   };
-  const routerTxs = ROUTER_N * ROUTER_NAMES.length;
-  const drawn = { a: routerTxs, b: ENDS + COINS, c: TXS + routerTxs, d: COINS, e: TXS + routerTxs, f: COINS };
   const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
   if (!rows.length && !requested) continue;
   const checked = n("agree") + n("disagree") + n("known");

@@ -4,10 +4,11 @@ const MAX_TEXT = 2_048;
  * Characters that hide, reorder or overwrite text: C0/C1 controls, soft
  * hyphen, combining grapheme joiner, bidi marks and overrides, zero-width
  * characters, line and paragraph separators, invisible operators, fillers,
- * variation selectors and the tag block, which encodes hidden ASCII.
+ * variation selectors and the tag block, which encodes hidden ASCII, plus
+ * every other code point Unicode tells renderers to draw as nothing.
  */
 const INVISIBLE =
-  /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}\p{Default_Ignorable_Code_Point}]/gu;
 const MARKUP = /[<>*~`|\[\]\\]|&(?=#?[A-Za-z0-9]+;)/g;
 /**
  * The three subdivision flags emoji fonts draw (England, Scotland, Wales):

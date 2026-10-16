@@ -394,6 +394,8 @@ async function poolBases(protocol: PoolProtocol): Promise<string[]> {
 }
 
 const MAX_POOL_PAGES = 20;
+/** Wall-clock budget for `discoverCoinPools`; a venue read stopped by it is `incomplete`. */
+export const DISCOVERY_TIME_BUDGET_MS = 30_000;
 /** Characters of pool rows per find_pools response. */
 const FIND_POOLS_LIST_BUDGET = 30_000;
 interface PoolNode {
@@ -408,10 +410,13 @@ interface PoolPageRead {
 }
 
 /** A capped scan keeps its matching rows but cannot certify absence beyond its last cursor. */
-async function readPoolPages(type: string, withJson: boolean): Promise<PoolPageRead> {
+async function readPoolPages(type: string, withJson: boolean, deadline?: number): Promise<PoolPageRead> {
   const out: PoolNode[] = [];
   let after: string | null = null;
   for (let page = 0; page < MAX_POOL_PAGES; page++) {
+  if (deadline !== undefined && page > 0 && Date.now() > deadline) {
+   return { nodes: out, pages: page, complete: false, error: `Stopped at the ${DISCOVERY_TIME_BUDGET_MS / 1000} s time budget after ${page} page${page === 1 ? "" : "s"} (${out.length} objects); more pools may remain` };
+  }
   let data: { objects: { nodes: PoolNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } };
   try {
    data = await gqlQuery(
@@ -526,7 +531,7 @@ async function flowxPairs(pairs: Array<[string, string]>): Promise<{ pools: Pool
  return { pools, status };
 }
 
-async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
+async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]>, deadline?: number): Promise<{ pools: PoolCandidate[]; status: PoolVenueStatus }> {
  if (protocol === "flowx_v2") return flowxPairs(pairs);
  const status: PoolVenueStatus = { venue: protocol, status: "complete", searched: 0, pages: 0 };
  if (protocol === "turbos") status.pages = 1; // PoolConfig fee-tier read.
@@ -548,12 +553,12 @@ async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]
   });
  const unique = new Map<string, (typeof selectors)[number]>();
  for (const selector of selectors) unique.set(selector.type, selector);
- const reads = await Promise.all([...unique.values()].map(async ({ type, base }) => ({ type, base, read: await readPoolPages(type, protocol === "aftermath") })));
+ const reads = await Promise.all([...unique.values()].map(async ({ type, base }) => ({ type, base, read: await readPoolPages(type, protocol === "aftermath", deadline) })));
  status.searched = unique.size;
  for (const { type, base, read } of reads) {
   status.pages += read.pages;
   if (!read.complete) {
-   const capped = read.error?.startsWith("Stopped after") || read.error?.includes("no continuation cursor");
+   const capped = read.error?.startsWith("Stopped ") || read.error?.includes("no continuation cursor");
    if (!capped || status.status !== "failed") status.status = capped ? "incomplete" : "failed";
    status.error = [status.error, `${type}: ${read.error}`].filter(Boolean).join("; ");
   }
@@ -584,7 +589,7 @@ async function searchVenue(protocol: PoolProtocol, pairs: Array<[string, string]
  return { pools, status };
 }
 
-async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[]): Promise<PoolDiscovery> {
+async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolProtocol[], deadline?: number): Promise<PoolDiscovery> {
  const unique = new Map<string, [string, string]>();
  for (const [a, b] of pairs) unique.set(a < b ? `${a}|${b}` : `${b}|${a}`, [a, b]);
  const distinct = [...unique.values()];
@@ -596,16 +601,16 @@ async function searchPoolPairs(pairs: Array<[string, string]>, protocols: PoolPr
    error: "Verified pool packages and registry IDs are mainnet-only"
   })),
  };
- const outcomes = await Promise.all(protocols.map((protocol) => searchVenue(protocol, distinct)));
+ const outcomes = await Promise.all(protocols.map((protocol) => searchVenue(protocol, distinct, deadline)));
  const byId = new Map<string, PoolCandidate>();
  for (const outcome of outcomes) for (const pool of outcome.pools) byId.set(pool.pool_id, pool);
  return { pools: [...byId.values()], venues: outcomes.map((outcome) => outcome.status), pairs_searched };
 }
 
-/** Exact SUI/USDC counterpart discovery; other pairs are intentionally outside this call's scope. */
+/** Exact SUI/USDC counterpart discovery within `DISCOVERY_TIME_BUDGET_MS`; other pairs are intentionally outside this call's scope. */
 export async function discoverCoinPools(coinType: string): Promise<PoolDiscovery> {
  const coin = canonicalPoolCoinType(coinType);
  if (!coin) throw new Error(`Invalid coin type: ${coinType}`);
  const counterparts = [SUI_COIN, USDC_COIN].filter((type) => type !== coin);
- return searchPoolPairs(counterparts.map((other) => [coin, other]), [...POOL_PROTOCOLS]);
+ return searchPoolPairs(counterparts.map((other) => [coin, other]), [...POOL_PROTOCOLS], Date.now() + DISCOVERY_TIME_BUDGET_MS);
 }

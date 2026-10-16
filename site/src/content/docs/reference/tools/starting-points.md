@@ -19,14 +19,14 @@ sidebar:
 - Profile: `core` (default)
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. Pool search covers SUI and native-USDC pairs with per-venue failure reporting. Liquidity custody scans up to three pools; a stopped holder scan never establishes ownership concentration. Set include_liquidity false to skip pool reads.
+(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. Verified symbols resolve from the curated list; other mainnet symbols use DexScreener and GeckoTerminal searches confirmed on chain, several exact matches return ambiguous_symbol, and a provider cap or failed confirmation is reported, not read as an absent coin. Pool search covers SUI and native-USDC pairs with per-venue failure reporting. Liquidity custody scans the three pools with the largest SUI or USDC reserve; a stopped holder scan never establishes ownership concentration. Set include_liquidity false to skip pool reads.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Symbol ('deep') or full coin type ('0x2::sui::SUI'). A symbol matches exactly, in any case; use search_token for partial names. |
 | `include_holders` | boolean | no | Include top 5 holders (default: true). Set false for faster response. |
 | `include_liquidity` | boolean | no | Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls. |
-| `liquidity_pool_offset` | integer (at least 0) | no | Start at this discovered pool after ranking by current reserve (default 0). |
+| `liquidity_pool_offset` | integer (at least 0) | no | Start at this discovered pool after ranking by its current SUI or USDC reserve (default 0). |
 | `liquidity_holder_pool` | string | no | For a holder continuation, restrict the page to this discovered pool ID. |
 | `liquidity_offset` | integer (0 to 1000) | no | Start at this holder index within liquidity_holder_pool (default 0). |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |

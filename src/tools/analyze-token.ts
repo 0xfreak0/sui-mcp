@@ -127,7 +127,7 @@ function symbolResolution(detailed: Extract<SymbolDetail, { status: "unverified"
 export function registerAnalyzeTokenTools(server: McpServer) {
   server.tool(
     "analyze_token",
-  "(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. Pool search covers SUI and native-USDC pairs with per-venue failure reporting. Liquidity custody scans up to three pools; a stopped holder scan never establishes ownership concentration. Set include_liquidity false to skip pool reads.",
+  "(Recommended for token research) Analyze a Sui coin type or symbol: metadata, current price, 24h change, supply, top holders and current pool-liquidity custody. Verified symbols resolve from the curated list; other mainnet symbols use DexScreener and GeckoTerminal searches confirmed on chain, several exact matches return ambiguous_symbol, and a provider cap or failed confirmation is reported, not read as an absent coin. Pool search covers SUI and native-USDC pairs with per-venue failure reporting. Liquidity custody scans the three pools with the largest SUI or USDC reserve; a stopped holder scan never establishes ownership concentration. Set include_liquidity false to skip pool reads.",
     {
       query: z
         .string()
@@ -138,7 +138,7 @@ export function registerAnalyzeTokenTools(server: McpServer) {
    include_liquidity: boolArg()
     .optional()
     .describe("Inspect current liquidity and its LP or position holders in up to three discovered pools (default: true). Set false for metadata-only calls."),
-   liquidity_pool_offset: numArg().int().min(0).optional().describe("Start at this discovered pool after ranking by current reserve (default 0)."),
+   liquidity_pool_offset: numArg().int().min(0).optional().describe("Start at this discovered pool after ranking by its current SUI or USDC reserve (default 0)."),
    liquidity_holder_pool: addressArg().optional().describe("For a holder continuation, restrict the page to this discovered pool ID."),
    liquidity_offset: numArg().int().min(0).max(1000).optional().describe("Start at this holder index within liquidity_holder_pool (default 0)."),
     },

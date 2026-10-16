@@ -14,6 +14,8 @@ vi.mock("../src/utils/identity.js", () => ({
     [address, objectTypes.has(address) ? { kind: "object", type: objectTypes.get(address) } : { kind: "wallet" }])),
 }));
 vi.mock("../src/utils/liquidity-origin.js", () => ({ readLiquidityOrigin: async () => ({ positions: [] }) }));
+const pricesForRanking = vi.fn(async (): Promise<Map<string, { price: number }>> => new Map());
+vi.mock("../src/utils/price-providers.js", async (importOriginal) => ({ ...await importOriginal<object>(), pricesForRanking }));
 
 // Imported after the mocks above, whose factories close over this file's mocks and constants.
 const { analyzeLiquidityCustody } = await import("../src/utils/liquidity-custody.js");
@@ -29,6 +31,8 @@ beforeEach(() => {
   getObjects.mockReset();
   gqlQuery.mockReset();
   scanTokenTopHolders.mockReset();
+  pricesForRanking.mockReset();
+  pricesForRanking.mockResolvedValue(new Map());
   objectTypes.clear();
 });
 
@@ -144,5 +148,61 @@ describe("liquidity custody reads", () => {
     expect(row.holders).toEqual([expect.objectContaining({
       address: kiosk, kind: "kiosk", share: 1, position_count: 2, position_ids: [posA, posB], held_as_dynamic_object_field: true,
     })]);
+  });
+
+  it("inspects the deepest pools first, not the ones holding the most of the coin", async () => {
+    // A drained pool holds the most of the coin and almost no SUI; ranked by the coin's reserve it came first
+    // and a healthy coin's report opened on a pool that reads as rugged.
+    const drained = pad("d1");
+    const deep = pad("d2");
+    const type = `${BLUEMOVE}::swap::Pool<${SUI}, ${GOBBLE}>`;
+    const state = (id: string, sui: string, gobble: string) => ({
+      objectId: id, type,
+      json: { id, lsp_supply: { value: "1000" }, fee_amount: "0", minimum_liq: "1000", reserve_x: sui, reserve_y: gobble },
+    });
+    getObjects.mockResolvedValue({ objects: [state(drained, "2", "900000000000000"), state(deep, "5000000000000", "1000000000000")] });
+    scanTokenTopHolders.mockResolvedValue({ holders: [], truncated: false, unique_holders: 0, total_scanned: 0 });
+    const pools = [drained, deep].map((pool_id) => ({ pool_id, protocol: "bluemove" as const, object_type: type, token_a: SUI, token_b: GOBBLE }));
+    pricesForRanking.mockResolvedValue(new Map([[SUI, { price: 2 }]]));
+    const ranked = await analyzeLiquidityCustody(GOBBLE, pools);
+    expect(ranked.pools.map((p) => p.pool_id)).toEqual([deep, drained]);
+    expect(ranked.pools[0]).toMatchObject({ counterpart_reserve_usd: 10000 });
+    expect(ranked.selection).toMatch(/SUI or USDC reserve/);
+    // Without a SUI price the two sides cannot be compared, and the response says the order may lead with a drained pool.
+    pricesForRanking.mockResolvedValue(new Map());
+    const fallback = await analyzeLiquidityCustody(GOBBLE, pools);
+    expect(fallback.pools.map((p) => p.pool_id)).toEqual([drained, deep]);
+    expect(fallback.selection).toMatch(/drained pool first/);
+  });
+
+  it("stops a position scan at its time budget and says so rather than reading on", async () => {
+    const pool = pad("c4");
+    getObjects.mockResolvedValue({
+      objects: [{
+        objectId: pool, type: `${CETUS}::pool::Pool<${GOBBLE}, ${SUI}>`,
+        json: { current_sqrt_price: (1n << 64n).toString(), current_tick_index: { bits: 0 }, liquidity: "1", position_manager: { positions: { id: pad("7d"), size: "500" } } },
+      }],
+    });
+    const info = (id: string) => ({ name: { json: id }, value: { json: { value: { position_id: id, liquidity: "0", tick_lower_index: { bits: 2 ** 32 - 100 }, tick_upper_index: { bits: 100 } } } } });
+    let pages = 0;
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockImplementation(() => start + (pages > 0 ? 36_000 : 0));
+    gqlQuery.mockImplementation(async (query: string) => {
+      if (!query.includes("dynamicFields")) throw new Error(`unexpected query ${query.slice(0, 40)}`);
+      pages++;
+      return { address: { dynamicFields: { nodes: [info(pad(`e${pages}`))], pageInfo: { hasNextPage: true, endCursor: `c${pages}` } } } };
+    });
+    try {
+      const result = await analyzeLiquidityCustody(GOBBLE, [{
+        pool_id: pool, protocol: "cetus", object_type: `${CETUS}::pool::Pool<${GOBBLE}, ${SUI}>`, token_a: GOBBLE, token_b: SUI,
+      }]);
+      const row = result.pools[0] as { scan: { incomplete: boolean; time_budget_reached?: boolean; reason?: string }; total_liquidity_raw: string | null };
+      expect(pages).toBe(1);
+      expect(row.scan).toMatchObject({ incomplete: true, time_budget_reached: true });
+      expect(row.scan.reason).toMatch(/35 s time budget after reading 1 of the 500 positions/);
+      expect(row.total_liquidity_raw).toBeNull();
+    } finally {
+      now.mockRestore();
+    }
   });
 });

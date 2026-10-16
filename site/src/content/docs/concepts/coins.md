@@ -127,8 +127,9 @@ DeepBook is an order book, so its vault balances are not tradable depth. Use
 `deepbook_orderbook` to read resting orders.
 
 `analyze_token(query)` discovers pools paired with SUI and native USDC on
-mainnet and inspects current LP ownership for up to three pools ranked by the
-coin's current reserve. `pool_discovery.scope` states what was not searched:
+mainnet and inspects current LP ownership for up to three pools ranked by
+their current SUI or USDC reserve in USD (`counterpart_reserve_usd`).
+`pool_discovery.scope` states what was not searched:
 other pairs and other venues. Each pool gives `reserve_coin_raw` and
 `counterpart_reserve`; a drained pool can hold a large reserve of the queried
 coin and almost none of the other.
@@ -148,6 +149,10 @@ coin and almost none of the other.
   venue's position type, which rarely reaches every position of one pool. A
   scan that reaches the end is checked against the pool's active liquidity,
   since a wrapped position is not listed.
+- **Time budget**: discovery stops after 30 seconds and the position scans
+  of one call after 35 seconds, checked between pages. A venue stopped this
+  way is `incomplete`, and a stopped scan sets `time_budget_reached` with a
+  `reason` that counts what was read.
 
 Positions held by one address are grouped. A CLMM `share` is the holder's
 fraction of the pool's withdrawable amount of the queried coin at the current
@@ -174,7 +179,12 @@ analyze_token({ query: "0x…::coin::COIN", include_holders: false })
 
 `creation` names the pool's creation transaction, its initial position or LP
 recipients, and the current owner, current liquidity and last affecting
-transaction of each initial position. `burned_positions` counts initial
+transaction of each initial position. An initial position that no longer
+exists as an object carries `ended`: `deleted` when it was closed, which
+requires its liquidity removed first, or `wrapped` when another object holds
+it, such as a farm or a burn certificate. `ended_by` names who did it, and
+`ended_by_publisher` says whether that was the coin's publisher, as
+`sender_is_publisher` does for each removal. `burned_positions` counts initial
 positions an unspendable address holds with liquidity still in them; an
 emptied position sent there is counted under `burned_empty_positions`.
 `recent_removals` lists the venue's own liquidity-removal events and LP coins

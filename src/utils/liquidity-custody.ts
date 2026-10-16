@@ -14,12 +14,20 @@ import type { ClmmPoolFields } from "./valuers/clmm.js";
 import { bigField } from "./valuers/common.js";
 import type { PoolCandidate } from "../tools/pools.js";
 import { readLiquidityOrigin } from "./liquidity-origin.js";
+import { pricesForRanking } from "./price-providers.js";
+
+const SUI_TYPE = normalizeStructTag("0x2::sui::SUI");
+/** Native USDC, the other counterpart `discoverCoinPools` searches. */
+const USDC_TYPE = normalizeStructTag("0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC");
 
 /** Each pool is independently bounded. An incomplete walk is a sample, never a ranking. */
 export const LIQUIDITY_POOL_LIMIT = 3;
 export const LIQUIDITY_POSITION_SCAN_LIMIT = 1000;
 export const LIQUIDITY_LP_SCAN_LIMIT = 1000;
 export const LIQUIDITY_HOLDER_DISPLAY_LIMIT = 100;
+/** Wall-clock budget shared by the position scans of one call, checked between pages; a stopped scan is incomplete and says so. */
+export const LIQUIDITY_TIME_BUDGET_MS = 35_000;
+const TIME_STOP = `Stopped at the ${LIQUIDITY_TIME_BUDGET_MS / 1000} s time budget`;
 /** Characters of holder rows per pool: three pools' rows and the rest of analyze_token fit its 50k budget. */
 export const LIQUIDITY_HOLDER_BUDGET = 9_000;
 
@@ -85,7 +93,7 @@ interface CustodyHolding { address: string; amount: bigint; counterpart?: bigint
 /** Positions whose liquidity counts toward the total while their holder could not be read. */
 interface OwnerUnread { positions: number; amount: bigint; counterpart: bigint; position_ids: string[] }
 const OWNER_UNREAD_IDS = 10;
-interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string; owner_unread?: OwnerUnread; locked_in_pool?: bigint; fee_in_pool?: bigint }
+interface ScanResult { rows: CustodyHolding[]; total: bigint | null; counterpart_total?: bigint; counterpart_type?: string; scanned: number; incomplete: boolean; reason?: string; unit: string; owner_unread?: OwnerUnread; locked_in_pool?: bigint; fee_in_pool?: bigint; time_budget_reached?: boolean }
 
 /** All positions of one owner contribute to that owner's pool share. */
 export function aggregateCustodyRows(rows: CustodyHolding[]): CustodyHolding[] {
@@ -204,12 +212,13 @@ interface PositionPage {
   };
 }
 
-async function readKriya(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }): Promise<ScanResult> {
+async function readKriya(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, deadline: number): Promise<ScanResult> {
   const supply = kriyaReserves(state.type, state.json)?.supply ?? null;
   const rows: CustodyHolding[] = [];
   let cursor: string | null = null;
   let scanned = 0;
   let incomplete = supply === null;
+  let timedOut = false;
   for (; ;) {
     const page: PositionPage = await gqlQuery(`query($type: String!, $after: String) {
       objects(filter: { type: $type }, first: 50, after: $after) {
@@ -233,13 +242,15 @@ async function readKriya(pool: PoolCandidate, state: { type: string; json: Recor
     if (!page.objects.pageInfo.hasNextPage) break;
     cursor = page.objects.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
+    if (Date.now() > deadline) { incomplete = true; timedOut = true; break; }
   }
   // Kriya keeps the minimum liquidity as an lsp_locked balance inside the pool.
   const locked = bigField(state.json.lsp_locked);
   if (supply === null || locked === null || rows.reduce((total, row) => total + row.amount, 0n) + locked !== supply) incomplete = true;
   return {
     rows, total: supply, scanned, incomplete, unit: KRIYA_LP_TOKEN_TYPE, ...(locked ? { locked_in_pool: locked } : {}),
-    ...(incomplete ? { reason: "Kriya LP-token scan or pool supply is incomplete; other holders or their shares may be unknown." } : {})
+    ...(timedOut ? { time_budget_reached: true } : {}),
+    ...(incomplete ? { reason: timedOut ? `${TIME_STOP} after ${scanned} Kriya LP tokens; other holders or their shares may be unknown.` : "Kriya LP-token scan or pool supply is incomplete; other holders or their shares may be unknown." } : {})
   };
 }
 
@@ -253,7 +264,7 @@ interface CetusPositionPage {
 }
 
 /** Cetus links every active position to its pool; global NFT ID scans miss most pools. */
-async function readCetusPositions(state: { json: Record<string, unknown> }, positionType: string, poolFields: ClmmPoolFields, coinType: string): Promise<ScanResult> {
+async function readCetusPositions(state: { json: Record<string, unknown> }, positionType: string, poolFields: ClmmPoolFields, coinType: string, deadline: number): Promise<ScanResult> {
   const positions = CetusPositionManager.safeParse(state.json.position_manager).data?.positions;
   const table = positions?.id;
   const expected = bigField(positions?.size);
@@ -263,6 +274,7 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
   const entries: Array<{ id: string; amount: bigint; counterpart: bigint }> = [];
   let cursor: string | null = null;
   let incomplete = false;
+  let timedOut = false;
   let scanned = 0;
   for (; ;) {
     const data: CetusPositionPage = await gqlQuery<CetusPositionPage>(`query($id: SuiAddress!, $after: String) {
@@ -297,10 +309,14 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
     if (!page.pageInfo.hasNextPage) break;
     cursor = page.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
+    if (Date.now() > deadline) { incomplete = true; timedOut = true; break; }
   }
   const rows: CustodyHolding[] = [];
   const unowned: OwnerUnread = { positions: 0, amount: 0n, counterpart: 0n, position_ids: [] };
+  let ownersRead = entries.length;
   for (let i = 0; i < entries.length; i += 40) {
+    // Positions whose owner was not read are not owner_unread: nothing was learned about them.
+    if (i > 0 && Date.now() > deadline) { incomplete = true; timedOut = true; ownersRead = i; break; }
     const batch = entries.slice(i, i + 40);
     const data = await gqlQuery<{
       multiGetObjects: Array<{
@@ -338,25 +354,29 @@ async function readCetusPositions(state: { json: Record<string, unknown> }, posi
     counterpart_type: poolFields.coinA === coinType ? poolFields.coinB : poolFields.coinA,
     scanned, incomplete, unit: coinType,
     ...(unowned.positions ? { owner_unread: unowned } : {}),
+    ...(timedOut ? { time_budget_reached: true } : {}),
     ...(incomplete ? {
-      reason: tableIncomplete
+      reason: timedOut
+        ? `${TIME_STOP} after reading ${scanned} of the ${expected} positions in the pool's table and the owners of ${ownersRead} of ${entries.length} with liquidity.`
+        : tableIncomplete
         ? `The pool's position table lists ${expected} positions and ${scanned} were read (bound ${LIQUIDITY_POSITION_SCAN_LIMIT}).`
         : "A position record in the pool's table could not be read."
     } : {})
   };
 }
 
-async function readClmm(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, coinType: string): Promise<ScanResult> {
+async function readClmm(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }, coinType: string, deadline: number): Promise<ScanResult> {
   const positionType = CLMM_POSITION[pool.protocol];
   if (!positionType) return { rows: [], total: null, scanned: 0, incomplete: true, unit: coinType, reason: "No verified position type for this pool." };
   const poolFields = parsePoolFields(state.type, state.json);
   if (!poolFields || (poolFields.coinA !== coinType && poolFields.coinB !== coinType)) return { rows: [], total: null, scanned: 0, incomplete: true, unit: coinType, reason: "Pool tick, price or coin type could not be read." };
   // Magma is a Cetus fork with the same linked position table (PositionInfo nodes keyed by position id).
-  if (pool.protocol === "cetus" || pool.protocol === "magma") return readCetusPositions(state, positionType, poolFields, coinType);
+  if (pool.protocol === "cetus" || pool.protocol === "magma") return readCetusPositions(state, positionType, poolFields, coinType, deadline);
   const rows: CustodyHolding[] = [];
   let cursor: string | null = null;
   let scanned = 0;
   let incomplete = false;
+  let timedOut = false;
   let inRange = 0n;
   for (; ;) {
     const page: PositionPage = await gqlQuery(`query($type: String!, $after: String) {
@@ -403,6 +423,7 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
     if (!page.objects.pageInfo.hasNextPage) break;
     cursor = page.objects.pageInfo.endCursor ?? null;
     if (!cursor || scanned >= LIQUIDITY_POSITION_SCAN_LIMIT) { incomplete = true; break; }
+    if (Date.now() > deadline) { incomplete = true; timedOut = true; break; }
   }
   // A type-wide list holds top-level positions only; one wrapped in another object is missing from it.
   // The in-range positions' liquidity sums to the pool's active liquidity exactly when none is missing.
@@ -413,15 +434,17 @@ async function readClmm(pool: PoolCandidate, state: { type: string; json: Record
     counterpart_total: incomplete || unreconciled ? undefined : rows.reduce((n, row) => n + (row.counterpart ?? 0n), 0n),
     counterpart_type: poolFields.coinA === coinType ? poolFields.coinB : poolFields.coinA,
     scanned, incomplete: incomplete || unreconciled, unit: coinType,
-    ...(incomplete ? { reason: "Position scan stopped before reaching every position; pool-wide withdrawable coin shares are unknown." }
+    ...(timedOut ? { time_budget_reached: true } : {}),
+    ...(timedOut ? { reason: `${TIME_STOP} after ${scanned} position objects; pool-wide withdrawable coin shares are unknown.` }
+      : incomplete ? { reason: "Position scan stopped before reaching every position; pool-wide withdrawable coin shares are unknown." }
       : unreconciled ? { reason: `The listed in-range positions hold ${inRange} liquidity and the pool's active liquidity is ${active ?? "unread"}; positions wrapped in other objects are not listed, so shares are unknown.` } : {})
   };
 }
 
-async function readPool(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> } | null, reserve: bigint | null, coinType: string): Promise<{ pool: PoolCandidate; reserve: bigint | null; scan: ScanResult }> {
+async function readPool(pool: PoolCandidate, state: { type: string; json: Record<string, unknown> } | null, reserve: bigint | null, coinType: string, deadline: number): Promise<{ pool: PoolCandidate; reserve: bigint | null; scan: ScanResult }> {
   if (!state) return { pool, reserve: null, scan: { rows: [], total: null, scanned: 0, incomplete: true, unit: "unknown", reason: "Pool state unavailable." } };
-  const scan = CLMM_POSITION[pool.protocol] ? await readClmm(pool, state, coinType)
-    : pool.protocol === "kriya_v2" ? await readKriya(pool, state) : await readLp(pool, state);
+  const scan = CLMM_POSITION[pool.protocol] ? await readClmm(pool, state, coinType, deadline)
+    : pool.protocol === "kriya_v2" ? await readKriya(pool, state, deadline) : await readLp(pool, state);
   scan.rows = aggregateCustodyRows(scan.rows);
   return { pool, reserve, scan };
 }
@@ -491,24 +514,47 @@ function reserveOf(pool: PoolCandidate, state: { type: string; json: Record<stri
 /** Chain-derived, current holdings only. Never treat missing positions as a claim about past liquidity. */
 export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandidate[], holderOffset = 0, poolOffset = 0, holderPool?: string) {
   coinType = normalizeStructTag(coinType);
+  const deadline = Date.now() + LIQUIDITY_TIME_BUDGET_MS;
   const publisher = await resolvePublisher(coinType.split("::")[0]!);
   const candidates = pools.filter((p) => p.protocol !== "deepbook");
-  // Reserve values of this same coin are comparable across pools. An unread reserve
-  // is not zero; read it after known reserves so it never changes the ranking.
-  const states = await readStates(candidates.map((pool) => pool.pool_id));
+  // A pool's depth is what it holds of the other coin: a pool that buyers drained or holders dumped into
+  // holds the most of the queried coin and almost nothing to sell it for. Discovery pairs the coin with
+  // SUI or native USDC only, so both sides value in USD with one SUI price. An unread reserve is not
+  // zero; it sorts after every read one.
+  const [states, suiPrice] = await Promise.all([
+    readStates(candidates.map((pool) => pool.pool_id)),
+    pricesForRanking([SUI_TYPE]).then((quotes) => quotes.get(SUI_TYPE)?.price ?? null, () => null),
+  ]);
+  const depthUsd = (pool: PoolCandidate, state: { type: string; json: Record<string, unknown> }) => {
+    const other = (pool.coin_types ?? [pool.token_a, pool.token_b]).find((type) => type !== coinType && (type === SUI_TYPE || type === USDC_TYPE));
+    if (!other) return null;
+    const raw = reserveOf(pool, state, other);
+    if (raw === null) return null;
+    if (other === USDC_TYPE) return Number(raw) / 1e6;
+    return suiPrice !== null && suiPrice > 0 ? (Number(raw) / 1e9) * suiPrice : null;
+  };
   const ranked = candidates.map((pool, i) => {
     const state = states[i];
     if (!state || state instanceof Error) {
-      return { pool, state: null, reserve: null as bigint | null, state_unavailable: state instanceof Error ? state.message : "The pool object was absent from the gRPC response." };
+      return { pool, state: null, reserve: null as bigint | null, depth: null as number | null, state_unavailable: state instanceof Error ? state.message : "The pool object was absent from the gRPC response." };
     }
-    return { pool, state, reserve: reserveOf(pool, state, coinType), state_unavailable: undefined };
+    return { pool, state, reserve: reserveOf(pool, state, coinType), depth: depthUsd(pool, state), state_unavailable: undefined };
   });
-  ranked.sort((a, b) => a.reserve === null ? b.reserve === null ? 0 : 1 : b.reserve === null ? -1 : a.reserve > b.reserve ? -1 : a.reserve < b.reserve ? 1 : 0);
+  // Without a SUI price, SUI and USDC sides cannot be compared; the coin's own reserve orders them instead.
+  const byDepth = suiPrice !== null && suiPrice > 0;
+  const key = (row: (typeof ranked)[number]) => byDepth ? row.depth : row.reserve === null ? null : Number(row.reserve);
+  ranked.sort((a, b) => {
+    const x = key(a); const y = key(b);
+    return x === null ? (y === null ? 0 : 1) : y === null ? -1 : y - x;
+  });
   const poolPage = ranked.slice(poolOffset, poolOffset + LIQUIDITY_POOL_LIMIT);
   const chosen = holderPool ? poolPage.filter((row) => normalizeSuiAddress(row.pool.pool_id) === holderPool) : poolPage;
   if (holderPool && !chosen.length) throw new Error("The requested holder pool is not on this page of discovered pools.");
-  const reads = await Promise.allSettled(chosen.map((r) => readPool(r.pool, r.state, r.reserve, coinType)));
-  const origins = await Promise.allSettled(chosen.map((r) => readLiquidityOrigin(r.pool, lpCoinOf(r.pool))));
+  // Holder scans and creation reads are independent; running them together bounds the wait by the slower one.
+  const [reads, origins] = await Promise.all([
+    Promise.allSettled(chosen.map((r) => readPool(r.pool, r.state, r.reserve, coinType, deadline))),
+    Promise.allSettled(chosen.map((r) => readLiquidityOrigin(r.pool, lpCoinOf(r.pool), publisher.publisher))),
+  ]);
   const allAddresses = [...new Set(reads.flatMap((r) => r.status === "fulfilled"
     ? r.value.scan.rows.map((h) => h.address)
     : []))];
@@ -560,13 +606,15 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
       pool_id: pool.pool_id, protocol: pool.protocol, reserve_coin_raw: read.value.reserve?.toString() ?? null,
       // The other side shows a drained pool: a pool full of the queried coin can hold almost nothing to sell it for.
       ...(otherCoin && candidate.state ? { counterpart_reserve: { coin_type: otherCoin, raw: reserveOf(pool, candidate.state, otherCoin)?.toString() ?? null } } : {}),
+      // The ranking key: the SUI or USDC side valued at the current SUI price.
+      ...(byDepth ? { counterpart_reserve_usd: candidate.depth === null ? null : Math.round(candidate.depth * 100) / 100 } : {}),
       ...(candidate.state_unavailable ? { state_unavailable: candidate.state_unavailable } : {}),
       ...(CLMM_POSITION[pool.protocol] ? { position_type: CLMM_POSITION[pool.protocol], amount_basis: "withdrawable coin amounts at the current pool price, excluding fees and rewards" }
         : pool.protocol === "kriya_v2" ? { position_type: KRIYA_LP_TOKEN_TYPE, amount_basis: "LP units" }
           : { lp_type: scan.unit, amount_basis: "LP units" }),
       liquidity_unit: scan.unit,
       ...(scan.counterpart_type ? { counterpart_type: scan.counterpart_type, counterpart_total_raw: scan.counterpart_total?.toString() ?? null } : {}),
-      scan: { scanned: scan.scanned, incomplete: scan.incomplete, ...(scan.reason ? { reason: scan.reason } : {}) },
+      scan: { scanned: scan.scanned, incomplete: scan.incomplete, ...(scan.time_budget_reached ? { time_budget_reached: true } : {}), ...(scan.reason ? { reason: scan.reason } : {}) },
       ...(scan.owner_unread ? {
         owner_unread: {
           positions: scan.owner_unread.positions, amount_raw: scan.owner_unread.amount.toString(),
@@ -601,7 +649,9 @@ export async function analyzeLiquidityCustody(coinType: string, pools: PoolCandi
         }
       }
     } : {}),
-    selection: "Largest current reserve of this coin where readable, among the discovered SUI/USDC pairs; unread reserves sort last.",
+    selection: byDepth
+      ? "Largest current SUI or USDC reserve (counterpart_reserve_usd, SUI at its current price) among the discovered SUI/USDC pairs; a pool holding little of either sorts last, and unread reserves sort after every read one."
+      : "The current SUI price could not be read, so pools are ranked by their reserve of this coin, which can put a drained pool first; unread reserves sort last.",
     locker_note: "No liquidity-locker package is verified in this registry; an object-held LP or position is not called locked without checking its code and authority.",
     caveat: "Current state does not show LP coins burned or positions closed during a past withdrawal. An incomplete scan cannot establish a wallet's share or the absence of a position.",
     pools: entries

@@ -2499,7 +2499,11 @@ as Wormhole.
 
 `find_pools` searches exact pool types for a token pair and reports per-venue
 coverage. `analyze_token` searches only SUI and mainnet-USDC pairs and inspects
-at most three pools per page, ordered by the token's current reserve. A
+at most three pools per page, ordered by their current SUI or USDC reserve
+valued at the current SUI price (`counterpart_reserve_usd`). Ordered by the
+token's own reserve, a healthy coin's report opened on dead pools that buyers
+had emptied of SUI and read as drained. Without a SUI price the token's
+reserve orders them and `selection` says a drained pool may come first. A
 venue's failed or bounded read never establishes absence. A pool's creator
 and an LP recipient at creation are historical facts; the current holder
 scan is not a historical snapshot. A deleted position or an LP coin burned
@@ -2570,12 +2574,29 @@ all read, an empty list then read as "no withdrawal". An event removing
 zero liquidity is a fee collection. The creation transaction is the
 earliest retained version's only when it created the pool (`idCreated`);
 a position's last touch is its last affecting transaction, which includes
-the one that deleted or wrapped it.
+the one that deleted or wrapped it. An initial position with no current
+object carries `ended`, read from that transaction's gRPC effects with
+`objectEndKind`: `deleted` means it was closed, and a CLMM position closes
+only once its liquidity is removed; `wrapped` means another object holds
+it, which a burn certificate and a farm both do. Both read as a null object,
+and only the effects tell a closed position from one held elsewhere. `ended_by` and
+each removal's sender are compared with the coin's publisher
+(`ended_by_publisher`, `sender_is_publisher`).
 
 A coin can have more than a thousand pools of one pair on one venue (DEEP
 has over a thousand Bluefin DEEP/SUI pools). Pool states are read in
 batches of 50, never one request each, and `find_pools` pages its list
 with `offset` while `total` counts every pool.
+
+`analyze_token` has two wall-clock budgets, checked between pages:
+`DISCOVERY_TIME_BUDGET_MS` (30 s) for pool discovery and
+`LIQUIDITY_TIME_BUDGET_MS` (35 s) shared by the position and LP-token scans
+(an LP coin's holder walk keeps its own `SCAN_TIME_BUDGET_MS`). A venue the
+budget stopped is `incomplete`; a stopped scan sets `time_budget_reached`
+and its `reason` counts what was read. Without them a slow or rate-limited
+endpoint had no bound but the page counts: DEEP's 1,076 pools took 113 s at
+`SUI_RATE_LIMIT=25`. `find_pools` has no time budget; its bound is 20 pages
+per pool type.
 
 A holder continuation includes the pool ID (`liquidity_holder_pool`) and the
 offset within that pool. Applying one pool's displayed count as a global

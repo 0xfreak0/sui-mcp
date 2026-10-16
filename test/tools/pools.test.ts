@@ -9,7 +9,7 @@ vi.mock("../../src/clients/grpc.js", () => ({ sui: mockSui, archive: mockSui }))
 vi.mock("../../src/clients/graphql.js", () => ({ gqlQuery: mockGqlQuery }));
 
 // Imported after the mocks above, which the factories close over.
-const { registerPoolTools } = await import("../../src/tools/pools.js");
+const { registerPoolTools, discoverCoinPools } = await import("../../src/tools/pools.js");
 
 const tools = new Map<string, Function>();
 registerPoolTools({
@@ -124,5 +124,29 @@ describe("find_pools", () => {
       args = data.omitted.next_call.args;
     }
     expect(seen).toEqual(ids);
+  });
+
+  it("stops a coin's pool discovery at its time budget and marks the venue incomplete", async () => {
+    const coin = `0x${"c0".padStart(64, "0")}::coin::COIN`;
+    const type = `${CETUS}<${coin}, ${SUI}>`;
+    let pages = 0;
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockImplementation(() => start + (pages > 0 ? 31_000 : 0));
+    mockGqlQuery.mockImplementation(async (query: string, vars: { type?: string }) => {
+      if (query.includes("object(address")) return { object: null };
+      if (vars.type !== type) return page([]);
+      pages++;
+      return page([node(`0x${pages.toString(16).padStart(64, "0")}`, type)], `p${pages}`);
+    });
+    try {
+      const discovery = await discoverCoinPools(coin);
+      const cetus = discovery.venues.find((venue) => venue.venue === "cetus")!;
+      expect(pages).toBe(1);
+      expect(cetus.status).toBe("incomplete");
+      expect(cetus.error).toMatch(/30 s time budget after 1 page /);
+      expect(discovery.pools.map((pool) => pool.pool_id)).toHaveLength(1);
+    } finally {
+      now.mockRestore();
+    }
   });
 });

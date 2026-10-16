@@ -900,11 +900,13 @@ fields need to be covered by the boundary's field rules
   quotes a label (`summary`, `stop_reason`) is covered by it. The set includes
   the tag block (U+E0000 to U+E007F), which spells ASCII a reader does not
   see, and the variation selectors; a ZWJ or ZWNJ inside an emoji sequence or
-  a non-Latin word, one selector after an emoji and a subdivision flag's tags
-  are kept. A key whose shown spelling another key already holds (an author
-  can write the escape text itself) takes a numbered name rather than
-  keeping its hidden character. A text item that is a JSON string or number
-  is shown like prose.
+  a non-Latin word, one selector after an emoji and the tags of the England,
+  Scotland and Wales flags are kept. Any other tag letters after a black flag
+  draw a plain flag and spell hidden text, so they are shown. A key whose
+  shown spelling another key already holds (an author can write the escape
+  text itself) takes a numbered name rather than keeping its hidden
+  character. A text item that is a JSON string or number is shown like
+  prose.
 - **Inside decoded chain data, keys are the author's.** Under `parsed`,
   `json`, `data` (query_events), `content`, `display`, an object under
   `sample` (aggregate_events) and the other raw keys a string keeps its

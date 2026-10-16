@@ -503,6 +503,8 @@ describe("chain-supplied text at the tool boundary", () => {
       // An author can write a key that spells the escape of another key.
       display: { "x\u202ey": "a", "x\\u202ey": "b" },
       labels: { "k\u200b": "a", "k\\u200b": "b" },
+      // Tag letters after a black flag that spell no drawn flag hide text.
+      name: "\u{1f3f4}\u{e0069}\u{e0067}\u{e006e}\u{e006f}\u{e0072}\u{e0065}\u{e007f} \u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}",
     };
     withNetworkParam(server).tool("example", "desc", {}, async () => ({
       content: [{ type: "text", text: JSON.stringify(payload) }, { type: "text", text: JSON.stringify("scalar\u202e") }],
@@ -515,6 +517,7 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(Object.keys(data.see.args)).toEqual(["id\\u202e"]);
     expect(Object.values(data.display).sort()).toEqual(["a", "b"]);
     expect(Object.values(data.labels).sort()).toEqual(["a", "b"]);
+    expect(data.name).toBe("\u{1f3f4}\\u{e0069}\\u{e0067}\\u{e006e}\\u{e006f}\\u{e0072}\\u{e0065}\\u{e007f} \u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}");
     expect(data.untrusted_text).toBeDefined();
   });
 

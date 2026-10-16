@@ -48,7 +48,8 @@ Every string and object key in a tool result shows hidden characters as
 visible `\u` escapes: controls, bidirectional formatting, zero-width and
 invisible characters, variation selectors and Unicode tag characters, which
 can spell out text a reader never sees. Joiners and selectors that form an
-emoji, a subdivision flag or a word in a script shaped with them are kept.
+emoji or a word in a script shaped with them are kept, and so are the tags of
+the England, Scotland and Wales flags.
 
 Human-readable fields (names, symbols, descriptions, labels, notes,
 summaries, decoded transaction arguments) also escape HTML and Markdown

@@ -9,8 +9,12 @@ const MAX_TEXT = 2_048;
 const INVISIBLE =
   /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
 const MARKUP = /[<>*~`|\[\]\\]|&(?=#?[A-Za-z0-9]+;)/g;
-/** A subdivision flag (England, Scotland, Wales): black flag, tag letters, cancel tag. */
-const FLAG_TAGS = /\u{1f3f4}[\u{e0030}-\u{e0039}\u{e0061}-\u{e007a}]{2,6}\u{e007f}/gu;
+/**
+ * The three subdivision flags emoji fonts draw (England, Scotland, Wales):
+ * black flag, the tags of gbeng, gbsct or gbwls, cancel tag. Any other tag
+ * sequence after a black flag draws a plain flag and hides its letters.
+ */
+const FLAG_TAGS = /\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f}/gu;
 const PICTOGRAPH = /\p{Extended_Pictographic}/u;
 const EMOJI = /\p{Emoji}/u;
 const NON_LATIN_LETTER = /^(?![\p{Script=Latin}\p{Script=Common}])[\p{L}\p{M}]$/u;

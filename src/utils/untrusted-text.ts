@@ -127,6 +127,11 @@ const CODE = /^(?:disassembly|code|decompiled)$/;
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const STRUCT_PATH = /(?:0x)?[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*/g;
 const PRIMITIVE = /\b(?:u8|u16|u32|u64|u128|u256|bool|address|signer|vector)\b/g;
+/**
+ * Bytes shown as hex (an address, or a pure `vector<u8>` argument such as an
+ * oracle update): no markup and no readable text, so never cut.
+ */
+const HEX_BYTES = /^0x[0-9a-fA-F]*$/;
 /** A type parameter as the chain prints one in a declaration (`Balance<T0>`). */
 const TYPE_PARAM = /\bT\d*\b/g;
 
@@ -146,7 +151,7 @@ function isTypeTag(value: string): boolean {
 function protect(value: unknown, key: string, raw: boolean, visited: { found: boolean }, toolName: string): unknown {
   if (typeof value === "string") {
     const code = !raw && (CODE.test(key) || (key === "source" && toolName === "decompile_module"));
-    if (isTypeTag(value) || (!raw && (IDENTIFIER.test(key) || (!HUMAN.test(key) && !code)))) {
+    if (isTypeTag(value) || HEX_BYTES.test(value) || (!raw && (IDENTIFIER.test(key) || (!HUMAN.test(key) && !code)))) {
       const shown = escapeInvisible(value, true);
       if (shown !== value) visited.found = true;
       return shown;

@@ -926,7 +926,9 @@ fields need to be covered by the boundary's field rules
   (`see`, `sample_next_call`, `*_next_call`), so it stays callable. Hidden
   characters in them are still shown.
 - **A decoded PTB argument is text.** `decode_ptb` shows a pure `String`
-  under `value`, which is a readable field.
+  under `value`, which is a readable field. A value that is hex bytes
+  (`0x…`) is never escaped or cut under any key: a pure `vector<u8>` such as
+  an oracle update runs past 5,000 characters and is evidence.
 - **Error messages show hidden characters only** (`escapeHidden`), so a type
   tag quoted back keeps its `<` and `>`.
 - **The cap counts code points** and never ends between a character and its

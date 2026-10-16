@@ -537,6 +537,17 @@ describe("chain-supplied text at the tool boundary", () => {
     expect(data.findings[0].evidence).toEqual(["fn router::swap_exact_input_", "\\u005fclaim_ the \\u003cb\\u003ereward\\u003c/b\\u003e"]);
   });
 
+  it("never cuts a pure byte argument shown as hex", async () => {
+    const { server, registered } = fakeServer();
+    // decode_ptb shows an oracle update's vector<u8> as one hex value.
+    const bytes = `0x${"504e4155".repeat(1_200)}`;
+    const payload = { inputs: [{ value_type: "vector<u8>", value: bytes }], parsed: { blob: bytes } };
+    withNetworkParam(server).tool("decode_ptb", "desc", {}, async () => ({ content: [{ type: "text", text: JSON.stringify(payload) }] }));
+    const data = JSON.parse(((await registered[0].handler({})) as { content: Array<{ text: string }> }).content[0].text);
+    expect(data.inputs[0].value).toBe(bytes);
+    expect(data.parsed.blob).toBe(bytes);
+  });
+
   it("guards the decoded event aggregate_events samples and keeps a diff sample's code lines", async () => {
     const { server, registered } = fakeServer();
     const payload = {

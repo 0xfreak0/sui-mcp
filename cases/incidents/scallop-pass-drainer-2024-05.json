@@ -468,11 +468,21 @@
         {
           "path": "actions[0]",
           "op": "matches",
-          "value": "USDT.*SUI"
+          "value": "USDT → USDC"
+        },
+        {
+          "path": "actions[1]",
+          "op": "matches",
+          "value": "USDC → SUI"
+        },
+        {
+          "path": "token_flow[*].coin",
+          "op": "includes",
+          "value": "SUI"
         }
       ],
       "tier": "chain-derived",
-      "basis": "chain: router::swap_ab_bc<USDT, USDC, SUI> took 7,940.81 USDT and returned 7,803.38 SUI."
+      "basis": "chain: router::swap_ab_bc<USDT, USDC, SUI> took 7,940.81 USDT and returned 7,803.38 SUI; its two Cetus SwapEvents swap 7,940.81 USDT for 7,929.99 USDC, then that USDC for 7,803.38 SUI."
     }
   ]
 }

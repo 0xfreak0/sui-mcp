@@ -118,4 +118,45 @@ describe("placing a pool's swap event on a call", () => {
   it("keeps a flash swap with no repay in the PTB a flash swap", () => {
     expect(labels([call("pool", "flash_swap", [0])], [swapEvent("pool", true)])).toEqual([]);
   });
+
+  it("places a swap on the call that emitted it when another module's call takes the pool", () => {
+    // The router reaches the pool through an object of its own; the
+    // liquidity call into the pool's module takes the pool and emits nothing.
+    const commands = [call("router", "swap", [1]), call("pool", "add_liquidity", [0])];
+    const { actions } = decodeTransaction(commands, [], "0xsender", {
+      swapEvidence: { events: [swapEvent("router", false)], inputObjectIds: [POOL, "0xbb"], objectTypes: new Map([[POOL, POOL_TYPE]]) },
+    });
+    expect(swaps(actions)).toEqual(["B → A"]);
+  });
+
+  it("keeps the fallback for a call with a swap event it cannot read", () => {
+    // One call swaps on two pools; the second pool's event names no direction
+    // and no coins, so an event label would list one of its two swaps.
+    const POOL2 = "0x00000000000000000000000000000000000000000000000000000000000000cc";
+    const commands = [call("arb", "run", [0, 1])];
+    const kriyaLike: SwapEventInput = { packageId: PKG, module: "arb", type: `${PKG}::spot::SwapEvent<${A}>`, json: { pool_id: POOL2, amount_in: "4", amount_out: "3" } };
+    const evidence = (events: SwapEventInput[]) => ({
+      swapEvidence: { events, inputObjectIds: [POOL, POOL2], objectTypes: new Map([[POOL, POOL_TYPE], [POOL2, POOL_TYPE]]) },
+    });
+    expect(swaps(decodeTransaction(commands, [], "0xsender", evidence([swapEvent("arb", true)])).actions)).toEqual(["A → B"]);
+    const { actions } = decodeTransaction(commands, [], "0xsender", evidence([swapEvent("arb", true), kriyaLike]));
+    expect(swaps(actions)).toEqual([]);
+    expect(actions[0]).toMatch(/arb::run/);
+    // A router's echo right after the unread event states that swap.
+    const echo: SwapEventInput = { packageId: PKG, module: "arb", type: `${PKG}::router::KriyaSwapEvent`, json: { pool: POOL2, a2b: false, amount_in: "4", amount_out: "3" } };
+    expect(swaps(decodeTransaction(commands, [], "0xsender", evidence([swapEvent("arb", true), kriyaLike, echo])).actions)).toEqual(["A → B", "B → A"]);
+    const reversed = { ...echo, json: { ...(echo.json as object), a2b: true } };
+    expect(swaps(decodeTransaction(commands, [], "0xsender", evidence([swapEvent("arb", true), reversed, kriyaLike])).actions)).toEqual(["A → B", "A → B"]);
+  });
+
+  it("labels no swap whose side is not a coin", () => {
+    // A Nemo-shaped SwapEvent<SY> trades PT, a position unit, for SY.
+    const sy = { value: "18446744073709551616000", positive: false };
+    const ptForSy: SwapEventInput = { packageId: PKG, module: "market", type: `${PKG}::market::SwapEvent<${A}>`, json: { market_state_id: POOL, pt_amount: sy, sy_amount: sy } };
+    const { actions } = decodeTransaction([call("market", "swap_exact_pt_for_sy", [0])], [], "0xsender", {
+      swapEvidence: { events: [ptForSy], inputObjectIds: [POOL], objectTypes: new Map([[POOL, POOL_TYPE]]) },
+    });
+    expect(swaps(actions)).toEqual([]);
+    expect(actions[0]).toMatch(/market::swap_exact_pt_for_sy/);
+  });
 });

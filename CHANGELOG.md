@@ -70,22 +70,25 @@
   each swap's coins in and out from the event of the pool that ran it,
   placed on the call that takes that pool, instead of from the call's type
   arguments or the sender's net change. This corrects reversed labels on
-  Astros, 7k and FlowX routes, labels Momentum flash swaps and Bluefin flash
-  swaps that a PTB repays as swaps, and reads swap-context routes whose type
-  arguments fit more than one path. Calls with no swap event keep the
-  previous reading, and the history, timeline and trace tools, which decode
-  without events, are unchanged. FlowX `swap_exact_x_to_y` and
-  `swap_exact_y_to_x` name their direction, and a one-coin liquid-staking
-  leg between two such swaps of one route path is labelled with the coins
-  around it.
-- **Swap-context routes label their executed pool hops.** `get_transaction`
-  labels each pool call of a router swap context (`new_swap_context` and
-  `new_swap_context_v3`) in command order, including routes split into
-  paths that run side by side. A call takes in a coin the context already
-  holds and gives out one the route's output or a later call names; fee-tier
-  and LP types are passed over. A context with a call that can be read more
-  than one way, or that names only one coin, keeps its single route-wide
-  label.
+  Astros, 7k and FlowX routes and Aftermath AMM swaps that named the pool's
+  LP coin, labels flash swaps that the PTB repays (Cetus, Bluefin, Turbos,
+  Magma, Momentum) as swaps, labels both pools of a Cetus two-pool
+  `router::swap_ab_bc` call, and reads swap-context routes whose type
+  arguments fit more than one path. Calls with no swap event, or with one
+  that cannot be read or placed on a single call, keep the reading from the
+  call, and so do the history, timeline and trace tools, which decode
+  without events. A one-coin liquid-staking leg between two event-read
+  swaps of one route path is labelled with the coins around it.
+- **FlowX `swap_exact_x_to_y` and `swap_exact_y_to_x` name their
+  direction** in every tool that decodes actions.
+- **Swap-context routes label their executed pool hops.** Every tool that
+  decodes actions labels each pool call of a router swap context
+  (`new_swap_context` and `new_swap_context_v3`) in command order, including
+  routes split into paths that run side by side. A call takes in a coin the
+  context already holds and gives out one the route's output or a later
+  call names; fee-tier and LP types are passed over. A context with a call
+  that can be read more than one way, or that names only one coin, keeps
+  its single route-wide label.
 
 ## 1.27.0 (2026-10-06)
 

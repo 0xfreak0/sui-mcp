@@ -452,11 +452,21 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
 - **An event goes to the call that ran it.** A swap is placed on the call
   that takes its pool as an argument and whose package and module could have
   emitted it (`eventCommands`), and never on a call whose function starts
-  with `repay`, since a flash swap's repay takes the same pool. With no call
-  taking the pool, it goes to the one call that could have emitted it.
-  Several swaps of one pool that each fit several calls pair with those
-  calls in order only when there are as many calls as swaps; any other swap
-  labels nothing rather than a guessed call.
+  with `repay`, since a flash swap's repay takes the same pool. When no call
+  that could have emitted it takes the pool (a router reaching the pool
+  through an object of its own), it goes to the one call that could have
+  emitted it. Several swaps of one pool that each fit several calls pair with
+  those calls in order only when there are as many calls as swaps; any other
+  swap labels nothing rather than a guessed call.
+- **A call whose swaps are not all read keeps the fallback.** A call that may
+  have run a swap left unplaced, or a swap-named event about a changed
+  object that does not read as a swap (Kriya's `spot_dex::SwapEvent<T>`
+  states amounts but no direction; Nemo's `market::SwapEvent` trades PT,
+  which is not a coin), takes no label from events, so a label never lists
+  only some of a call's swaps. An unread event with a readable event of
+  another type for the same pool right beside it is that swap's echo, and
+  the readable one labels it (Cetus aggregator's `KriyaSwapEvent` beside
+  Kriya's own).
 - **A router's echo is the same swap.** An event of another type right after
   a pool's event, naming the same pool and direction (Cetus aggregator's
   `router::SwapEvent`, FlowX's `BluefinSwapEvent`), is one swap. Two events

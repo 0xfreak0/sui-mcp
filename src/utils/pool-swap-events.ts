@@ -26,9 +26,13 @@ export interface SwapEvidence {
   objectTypes: ReadonlyMap<string, string | null>;
 }
 
-/** A coin type, canonical, or null for anything that is not one. */
+/**
+ * A coin type, canonical, or null for anything that is not one: a key that
+ * does not start with a hex address (Nemo's `PT<…>` position unit, which
+ * `readSwap` names as a swap's side) labels no swap.
+ */
 function canonicalType(t: string | null | undefined): string | null {
-  if (!t || !t.includes("::")) return null;
+  if (!t || !/^(0x)?[0-9a-fA-F]+::/.test(t)) return null;
   try {
     return normalizeStructTag(t.startsWith("0x") ? t : `0x${t}`);
   } catch {
@@ -82,10 +86,14 @@ export function readPoolSwap(event: SwapEventInput, index: number, targets: Even
  * after it (an event of another type) are one swap. A swap goes to the call
  * that takes its pool as an argument and whose package and module could have
  * emitted it, never to a call that repays (a flash swap's repay takes the
- * same pool); with no call taking the pool, to the one call that could have
- * emitted it. Swaps of one pool that each fit several calls pair with those
- * calls in order when there are as many calls as swaps. A swap that cannot be
- * placed on one call this way labels nothing.
+ * same pool); when no call that could have emitted it takes the pool, to the
+ * one call that could have emitted it. Swaps of one pool that each fit
+ * several calls pair with those calls in order when there are as many calls
+ * as swaps. A swap that cannot be placed on one call this way labels nothing,
+ * and neither does any swap of a call that may have run it, or may have run a
+ * swap-named event about a changed object that does not read as a swap: such
+ * a call keeps the decoder's fallback reading rather than a label listing
+ * some of its swaps.
  */
 export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: SwapEvidence): Map<number, [string, string][]> {
   const out = new Map<number, [string, string][]>();
@@ -110,11 +118,24 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
     return new Set(ids);
   });
 
-  // Each swap once: an echo right after the swap it repeats is dropped.
+  // Each swap once: an echo right after the swap it repeats is dropped. A
+  // swap-named event about a changed object that does not read as a swap is
+  // kept apart: the call that ran it has a swap no label could state, unless
+  // an event of another type right beside it reads as a swap of the same
+  // pool (a router's echo of a pool event this reader cannot read, or the
+  // reverse).
   const swaps: { index: number; pool: string; coinIn: string; coinOut: string }[] = [];
+  const read = new Map<number, string>();
+  let unread: { index: number; pool: string }[] = [];
   evidence.events.forEach((event, index) => {
     const hop = readPoolSwap(event, index, targets);
-    if (!hop) return;
+    if (!hop) {
+      const name = event.type.split("<")[0].split("::").pop() ?? "";
+      const pool = /swap/i.test(name) && !/repay/i.test(name) ? poolOfEvent(event.json, targets) : null;
+      if (pool) unread.push({ index, pool });
+      return;
+    }
+    read.set(index, hop.pool);
     const last = swaps[swaps.length - 1];
     const echo =
       last &&
@@ -125,20 +146,25 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
       evidence.events[last.index].type.split("<")[0] !== event.type.split("<")[0];
     if (!echo) swaps.push({ index, ...hop });
   });
+  const base = (i: number) => evidence.events[i].type.split("<")[0];
+  const pairedWith = (u: { index: number; pool: string }, i: number) => read.get(i) === u.pool && base(i) !== base(u.index);
+  unread = unread.filter((u) => !pairedWith(u, u.index - 1) && !pairedWith(u, u.index + 1));
 
-  // The calls each swap can have come from: those taking its pool that its
-  // package and module could have emitted it from, or with no call taking
-  // the pool, those that could have emitted it.
+  // The calls each event can have come from: those taking its pool that its
+  // package and module could have emitted it from, or, when none of those
+  // takes the pool, those that could have emitted it.
   const callable = (i: number) => {
     const c = commands[i].command;
     return c.oneofKind === "moveCall" && !(c.moveCall.function ?? "").startsWith("repay");
   };
-  const candidates = swaps.map((s) => {
+  const candidatesOf = (s: { index: number; pool: string }) => {
     const taking = poolArgs.flatMap((ids, i) => (ids.has(s.pool) ? [i] : []));
     const emittedBy = emitters?.[s.index];
     if (!emittedBy) return taking;
-    return taking.length ? taking.filter((i) => emittedBy.includes(i)) : emittedBy.filter(callable);
-  });
+    const both = taking.filter((i) => emittedBy.includes(i));
+    return both.length ? both : emittedBy.filter(callable);
+  };
+  const candidates = swaps.map(candidatesOf);
   const placed = candidates.map((c) => (c.length === 1 ? c[0] : null));
   // Several swaps of one pool that each could be several calls: as many
   // calls as swaps between them, in order, each within the swap's own set.
@@ -148,9 +174,12 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
     if (open.length > 1 && calls.length === open.length && open.every((k, n) => candidates[k].includes(calls[n])))
       open.forEach((k, n) => (placed[k] = calls[n]));
   }
+  // A call that may have run a swap left unread or unplaced would be
+  // labelled with only some of its swaps, so it keeps the fallback reading.
+  const incomplete = new Set([...unread.flatMap(candidatesOf), ...swaps.flatMap((_, k) => (placed[k] === null ? candidates[k] : []))]);
   swaps.forEach((s, k) => {
     const command = placed[k];
-    if (command !== null) out.set(command, [...(out.get(command) ?? []), [s.coinIn, s.coinOut]]);
+    if (command !== null && !incomplete.has(command)) out.set(command, [...(out.get(command) ?? []), [s.coinIn, s.coinOut]]);
   });
   return out;
 }

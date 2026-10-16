@@ -161,8 +161,11 @@ export const FUNDING_METHOD_VERSION = 4;
  *
  * 4 reads an object change with no state on either side as an unrecorded
  * wrap. Earlier rows carry it as a transfer between two absent owners.
+ *
+ * 5 records `written.held`, the address-owned objects a transaction wrote,
+ * which a flow graph needs to link a coin leg to a position added to in place.
  */
-export const TX_METHOD_VERSION = 4;
+export const TX_METHOD_VERSION = 5;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS labels (

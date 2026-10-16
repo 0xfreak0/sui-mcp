@@ -16,7 +16,7 @@ sidebar:
 | [`classify_deposit_address`](#classify_deposit_address) | Classify exchange deposit behaviour over a chosen window. |
 | [`delete_finding`](#delete_finding) | Remove a finding by id, for retracting something that turned out to be wrong. |
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, Mermaid diagram, graph JSON or CSV. |
-| [`find_flow_path`](#find_flow_path) | Find value paths from one address to another. |
+| [`find_flow_path`](#find_flow_path) | Find value paths from one address to another through priced coins and custody-changing objects. |
 | [`find_funding_source`](#find_funding_source) | Follow a wallet's first funding transaction and sender, then each funder's funding. |
 | [`find_funding_sources`](#find_funding_sources) | Trace funding for many addresses together, cheaper than repeated find_funding_source calls. |
 | [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. |
@@ -31,7 +31,7 @@ sidebar:
 | [`screen_address`](#screen_address) | Screen direct and indirect exposure to labelled malicious, sanctioned, exchange, bridge and mixer accounts, by default two hops in both directions. |
 | [`summarize_address_flows`](#summarize_address_flows) | Summarize an address's coin and object inflows, outflows, counterparties, gas sponsorship and bridge exits over a window. |
 | [`summarize_incident_losses`](#summarize_incident_losses) | Total an attacker's take across exploit digests or a sender's window, grouped by drained pool or vault. |
-| [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. |
+| [`trace_flow_graph`](#trace_flow_graph) | Trace every branch of value forward or backward from a transaction or time-bounded address. |
 | [`trace_funds`](#trace_funds) | Follow a fund-flow path from a transaction. |
 | [`trace_object_history`](#trace_object_history) | Trace an object's versions, producing transactions, times and ownership transitions, including transfers, sharing, freezing and party transfers. |
 
@@ -198,7 +198,7 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Find value paths from one address to another. Searches forward from `from` and backward from `to` using trace_flow_graph's engine, expanding by depth while queued nodes fit the limit and prioritizing larger shares once they do not. Returns paths with each hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.
+(Incident investigation) Find value paths from one address to another through priced coins and custody-changing objects. Searches forward from `from` and backward from `to` using trace_flow_graph's engine, expanding by depth while queued nodes fit the limit and prioritizing larger shares once they do not. Object paths show each object id, type and USD value at its transaction's checkpoint. Returns paths with each hop's transaction digests and amounts in time order. `to` may be an account on another chain (EVM, Solana or CAIP-10); a path then ends at a Sui bridge exit whose chain-derived beneficiary is that account. When nothing is found, `explored` says what was searched, and `explored.node_limited` names, per side, the nodes the node limit left unexpanded and the share of value they carry. A missing path does not show that none exists: every search is bounded, and value can move off-chain or through a hub.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -211,6 +211,7 @@ sidebar:
 | `max_nodes` | integer (1 to 100) | no | Address nodes to expand on each side (default 30, max 100); larger shares take priority when the queued nodes exceed the remaining limit. |
 | `min_share` | number (0 to 1) | no | Skip branches below this fraction of each side's value (default 0.001), except those to a lookalike of a reached address. |
 | `format` | `json` \| `mermaid` \| `graph_json` \| `csv` | no | Output format (default json). mermaid: a fenced flowchart for a markdown viewer. graph_json: {nodes, edges}, plus address_poisoning in trace_flow_graph. csv: one row per edge. |
+| `detail` | `summary` \| `full` | no | summary (default) caps the unvalued-object list; full lists every unvalued object. |
 | `network` | `mainnet` \| `testnet` \| `devnet` | no | Network: 'mainnet' (default) \| 'testnet' \| 'devnet' |
 
 ## find_funding_source
@@ -462,14 +463,14 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Trace every branch of funds forward or backward from a transaction or a time-bounded address, rather than the single branch trace_funds follows. Each recipient gets a proportional share of traced value. The walk follows the coin through swaps, self-credits and value released from objects; it stops at sinks, hubs, protocols, bridge exits with decoded beneficiaries, and transactions signed by someone other than the sender. An address's swap counts once: later spending carries its proceeds forward, earlier inflows carry its input backward. The rest ends as unspent or source, or budget if the move limit stopped the search. coverage.partial marks a start-address move limit; coverage.truncated marks other limits. Terminals report where each share ended. address_poisoning covers only reached addresses: empty pairs clear nothing beyond them, lookalike branches are never pruned, and every format's summary names the pairs. Consumed or retained terminals may carry heuristic cross_chain_leads from messages no bridge reader covers. Formats include Mermaid, graph JSON and CSV. A 40-node graph typically costs 100–300 requests.
+(Incident investigation) Trace every branch of value forward or backward from a transaction or time-bounded address. Priced coin movements and objects changing custody receive proportional shares; object edges name their id, type, checkpoint USD value and valuation tier. The walk follows an object by id through later transfers or redemption into coins. Unvalued objects are listed separately and receive no share. Coins continue through swaps and self-credits. The walk stops at sinks, hubs, protocols, bridge exits with decoded beneficiaries, and transactions signed by someone other than the sender. An address's swap counts once: later spending carries its proceeds forward, earlier inflows carry its input backward. The rest ends as unspent or source, or budget if the move limit stopped the search. coverage.partial marks incomplete address histories; coverage.truncated marks other limits. Terminals report where each share ended. address_poisoning covers only reached addresses: empty pairs clear nothing beyond them, lookalike branches are never pruned, and every format's summary names the pairs. Consumed or retained terminals may carry heuristic cross_chain_leads from messages no bridge reader covers. Formats include Mermaid, graph JSON and CSV.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `digest` | string | no | Starting transaction (Base58). Give this or `address`. |
-| `address` | string | no | Start from this address's payouts after from (forward), or receipts before to (backward), instead of a digest. |
+| `address` | string | no | Start from this address's coin and object movements after from (forward), or before to (backward), instead of a digest. |
 | `direction` | `forward` \| `backward` | no | forward (default) follows where the value went; backward follows who paid it in. |
-| `coin_type` | string | no | Starting coin filter; omitted follows every coin moved. Value is still followed across swaps. |
+| `coin_type` | string | no | Starting coin filter; omitted follows priced coins and custody-changing objects. Swaps remain followed. |
 | `from` | string | no | Window start: ISO date or checkpoint. With `address` and forward, where the walk starts. Bounds every search. |
 | `to` | string | no | Window end: ISO date or checkpoint. With `address` and backward, where the walk starts. Bounds every search. |
 | `max_depth` | integer (1 to 8) | no | Hops to follow from the start (default 4, max 8). |

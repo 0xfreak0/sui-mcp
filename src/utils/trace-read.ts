@@ -469,6 +469,62 @@ export async function candidatePage(
   };
 }
 
+interface ObjectTouchPage {
+ transactions: {
+  nodes: Array<{ digest: string }>;
+  pageInfo: { hasNextPage?: boolean; endCursor?: string | null; hasPreviousPage?: boolean; startCursor?: string | null };
+ };
+}
+
+/** A filtered object or address history, ordered from the receipt toward the next custody change. */
+export async function scanObjectTouches(
+ objectId: string,
+ checkpoint: number | undefined,
+ current: string | undefined,
+ direction: "forward" | "backward",
+ window: SearchWindow,
+ maxTouches = 50,
+ filter: "affectedObject" | "affectedAddress" | "sentAddress" = "affectedObject",
+): Promise<{ digests: string[]; exhausted: boolean }> {
+ const forward = direction === "forward";
+ const afterCheckpoint = forward && checkpoint !== undefined
+  ? Math.max(window.afterCheckpoint ?? 0, Math.max(0, checkpoint - 1))
+  : window.afterCheckpoint;
+ const beforeCheckpoint = !forward && checkpoint !== undefined
+  ? Math.min(window.beforeCheckpoint ?? Number.MAX_SAFE_INTEGER, checkpoint + 1)
+  : window.beforeCheckpoint;
+ const digests: string[] = [];
+ let seekingCurrent = current !== undefined && checkpoint !== undefined &&
+  (forward ? (window.afterCheckpoint ?? -1) < checkpoint : (window.beforeCheckpoint ?? Number.MAX_SAFE_INTEGER) > checkpoint);
+ let cursor: string | null = null;
+ for (let page = 0; page < AFFECTED_PAGES && digests.length < maxTouches; page++) {
+  const data: ObjectTouchPage = await gqlQuery<ObjectTouchPage>(
+   `query($id: SuiAddress!, $afterCheckpoint: Int, $beforeCheckpoint: Int, $cursor: String, $size: Int!) {
+        transactions(filter: { ${filter}: $id, afterCheckpoint: $afterCheckpoint, beforeCheckpoint: $beforeCheckpoint },
+          ${forward ? "first: $size, after: $cursor" : "last: $size, before: $cursor"}) {
+          nodes { digest }
+          pageInfo { ${forward ? "hasNextPage endCursor" : "hasPreviousPage startCursor"} }
+        }
+      }`,
+   { id: objectId, afterCheckpoint, beforeCheckpoint, cursor, size: Math.min(50, maxTouches - digests.length) },
+  );
+  const conn = data.transactions;
+  const ordered = forward ? conn.nodes : [...conn.nodes].reverse();
+  for (const row of ordered) {
+   if (seekingCurrent) {
+    if (row.digest === current) seekingCurrent = false;
+    continue;
+   }
+   if (row.digest !== current) digests.push(row.digest);
+  }
+  const more = forward ? conn.pageInfo.hasNextPage : conn.pageInfo.hasPreviousPage;
+  cursor = (forward ? conn.pageInfo.endCursor : conn.pageInfo.startCursor) ?? null;
+  if (!more) return { digests, exhausted: !seekingCurrent };
+  if (!cursor) return { digests, exhausted: false };
+ }
+ return { digests, exhausted: false };
+}
+
 export type ForwardStep =
   | {
       digest: string;

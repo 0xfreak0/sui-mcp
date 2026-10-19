@@ -25,6 +25,13 @@ These calls compare the shared state before execution with the resulting transfe
 The calls use the package, shared object and collector addresses; the
 signer's address is omitted.
 
+To follow the SUI recipients of the drain, call `trace_funds` with the drain
+digest, `direction: "forward"` and `coin_type: "0x2::sui::SUI"`. The trace
+follows the larger collector and lists the other under `unfollowed_spends`.
+`trace_flow_graph` with the same digest and coin type shows both collectors.
+The `swapS` function name does not make the CTX minted to the signer swap
+proceeds when SUI was paid to other addresses.
+
 ## Steps
 
 ### 1. Identify the package

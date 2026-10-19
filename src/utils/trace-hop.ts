@@ -405,7 +405,14 @@ export function chooseNextHop(params: {
   );
   const holderSpent = changes.some((c) => c.address === holder && neg(c) && tracked(c));
 
-  if ((isSwapHop(actions) || isSwapShape(changes, holder, sender, trackedCoin, valueUsd)) && holder === sender) {
+ // A named swap may pay a pool and a small fee, but payments to other
+ // addresses of at least half the tracked spend take priority over its name.
+ const spentTracked = changes.reduce((sum, c) =>
+  c.address === holder && tracked(c) ? sum - BigInt(c.amount) : sum, 0n);
+ const paidTracked = positiveToOthers.reduce((sum, c) =>
+  tracked(c) && !isPassThrough(c.address) ? sum + BigInt(c.amount) : sum, 0n);
+ const namedSwap = isSwapHop(actions) && spentTracked > 0n && paidTracked * 2n < spentTracked;
+ if ((namedSwap || isSwapShape(changes, holder, sender, trackedCoin, valueUsd)) && holder === sender) {
     const received = holderGains.find((g) => !tracked(g)) ?? holderGains[0];
     return {
       nextAddress: holder,

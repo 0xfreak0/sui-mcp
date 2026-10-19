@@ -3648,11 +3648,14 @@ Rules a change is likely to break:
   beside a deposit and a payment does not read as the swap and steal the
   payee's branch. That follows the swapper through a swap that also
   pays a fee collector, which without a call named `swap` sent the trace to
-  the collector. `isSwapHop` still matches a named swap. A flash swap nets to
-  nothing and matches neither. Backward, the actor paying another coin in for
-  the tracked one is `swap-follow` by the same reading, and the flow graph
-  labels the holder's own gains in a conversion `swap-follow` whatever the
-  calls are named.
+  the collector. `isSwapHop` still matches a named swap only when the signer
+  net spent the tracked coin and non-pool addresses gained less than half of
+  that spend. A claim function named `swap` that pays collectors most of the
+  SUI and mints a bait coin to the signer follows the SUI recipients instead.
+  A flash swap nets to nothing and matches neither. Backward, the actor paying
+  another coin in for the tracked one is `swap-follow` by the same reading,
+  and the flow graph labels the holder's own gains in a conversion
+  `swap-follow` whatever the calls are named.
 - **An object cannot send.** When the recipient has sent nothing since the hop,
   the next hop is the first later transaction in which its balance of the coin
   goes down, found through `affectedAddress` and marked

@@ -171,6 +171,30 @@ describe("a swap by its values", () => {
     expect(d).toMatchObject({ nextAddress: victim, isSwap: false });
   });
 
+ it("follows collectors when a claim::swapS drain mints bait to the signer", () => {
+  // F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd, signer replaced.
+  // Most SUI here came from the three StakedSui objects, not the signer's coin balance.
+  const signer = "0xsigner";
+  const largeCollector = "0x55abfb40f533b549e43cdd2711746b208052512ee72874f7a5851ce186489e0f";
+  const smallCollector = "0x532517d0f3d0d56566ab3580ca4d3b373a9303cb513c26dbdcf852582ba4e096";
+  const changes: HopChange[] = [
+   { address: signer, amount: "-5367827991", coin_type: SUI },
+   { address: signer, amount: "8314000000000", coin_type: "0xab58b428020df50fe33cbb6d1533b0d146a3c1621210cfc867f8fee394f17ae9::ctx::CTX" },
+   { address: smallCollector, amount: "173353561916", coin_type: SUI },
+   { address: largeCollector, amount: "520060685745", coin_type: SUI },
+  ];
+  const d = chooseNextHop({
+   sender: signer,
+   changes,
+   actions: ["Call 0xa032d8b8…5083::claim::swapS", "Call 0xa032d8b8…5083::claim::swapT", "Call 0xab58b428…7ae9::ctx::mint"],
+   direction: "forward",
+   trackedCoin: SUI,
+   isPassThrough: noPools,
+  });
+  expect(d).toMatchObject({ nextAddress: largeCollector, nextCoinType: SUI, isSwap: false, basis: "direct" });
+  expect(d.unfollowed.map((c) => c.address)).toEqual([smallCollector]);
+ });
+
   it("follows the swapper, not the fee collector, when no action is named swap", () => {
     const d = chooseNextHop({
       sender: attacker,
@@ -576,9 +600,16 @@ describe("chooseNextHop — guards against following the wrong party", () => {
     expect(flash.nextAddress).toBe(victim);
     expect(flash.nextCoinType).toBe(SUI);
 
-    // A real swap still follows the swapper and switches asset.
+  // A real swap with only a small payment to someone else still follows
+  // the swapper and switches asset.
     const real = chooseNextHop({
-      sender: attacker, changes, actions: ["Swap SUI → USDC on Cetus"],
+   sender: attacker,
+   changes: [
+    { address: attacker, amount: "-1000", coin_type: SUI },
+    { address: attacker, amount: "500", coin_type: USDC },
+    { address: victim, amount: "100", coin_type: SUI },
+   ],
+   actions: ["Swap SUI → USDC on Cetus"],
       direction: "forward", trackedCoin: SUI, isPassThrough: noPools,
     });
     expect(real.isSwap).toBe(true);

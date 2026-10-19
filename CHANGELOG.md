@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **Forward fund traces follow recipients of named-swap drains.** A call named `swap` cannot redirect the trace to a coin minted to its signer when other addresses receive at least half the tracked coin the signer spent. Collector payments remain reachable in the graph and path tools.
+
 ### Added
 - **Live oracle pass checks funding, holders, staking, bridges, past balances and checkpoints.** Random draws compare `find_funding_source`'s first hop with the earliest transactions' balance changes, direct prices and supply shares, small coins' holder rankings with both walks and gRPC balances, historical staked SUI rewards with withdrawal events (a lower payout is skipped only when it emptied the rewards pool), native bridge deposits with the event's BCS over gRPC, balances below the consistent range with an anchored read, and `get_checkpoint` by number and by time with GraphQL's checkpoint records. Probe scripts now count the tool calls of the `lib/` modules they import toward live coverage.
 - **Live cross-tool consistency checks.** `consistency-pass.mjs` compares transaction, funding, balance, flow and identity answers on seeded recent and public-case subjects. It reports bounded reads separately and runs in the affected tier for tools it checks. `build_wallet_edges` now reports the measured `first_funders` for its seeds, independently of whether a funder qualified as an edge intermediary.

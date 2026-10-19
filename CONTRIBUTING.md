@@ -232,8 +232,10 @@ Use `find-unknown-packages` below to discover new lineages.
 ## Keeping curated coins current
 
 The curated verified coin registry vouches for exact coin types, not symbols.
-Keep curated entries current with `npm run sync:verified-coins`. Uncurated
-mainnet names and symbols are searched through two DexScreener queries
+Keep curated entries current with `npm run sync:verified-coins`. The sync
+reads Aftermath metadata in batches of at most 100 coin types. A failed or
+incomplete batch leaves `coins.json` unchanged. Uncurated mainnet names and
+symbols are searched through two DexScreener queries
 (ticker and `ticker SUI`), with GeckoTerminal queried when results are absent,
 capped or unavailable. Candidate coin types are checked against their exact
 on-chain metadata. Results are cached for 10 minutes, including cap-only

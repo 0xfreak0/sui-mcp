@@ -28,6 +28,7 @@
 
 ### Changed
 - **Weekly data refresh defers to pending releases.** When Unreleased has entries, its data changes stay there without a version bump or automatic publish; an empty Unreleased section still permits a data-only patch.
+- **Verified-coin sync bounds metadata requests.** Aftermath coin metadata is fetched in batches of 100 with positional response checks; any failed batch leaves the shipped registry unchanged.
 - **Batched transaction protocol names include event emitters.** `get_transactions` reads the emitting package alongside the event's defining type, so framework-typed events still identify the application that emitted them.
 - **Docs and tool descriptions were checked against the code.** Corrected:
   `query_events` `event_type` accepts a package, module or struct;

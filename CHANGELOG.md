@@ -27,6 +27,7 @@
 - **yolo.casa's orders contracts and Blast.fun's presale suite are named.** yolo.casa's limit, stop, DCA and OTC order lineage, published by `yolo.sui`, is curated as yolo.casa, type `dex`. Blast.fun's presale, access-control, partners and Aftermath DAO adapter packages, from both its October deployments, join its existing `launchpad` entries; their deployer shares a first funder with the earlier Blast.fun deployer.
 
 ### Changed
+- **Weekly data refresh defers to pending releases.** When Unreleased has entries, its data changes stay there without a version bump or automatic publish; an empty Unreleased section still permits a data-only patch.
 - **Batched transaction protocol names include event emitters.** `get_transactions` reads the emitting package alongside the event's defining type, so framework-typed events still identify the application that emitted them.
 - **Docs and tool descriptions were checked against the code.** Corrected:
   `query_events` `event_type` accepts a package, module or struct;

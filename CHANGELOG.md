@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.27.1 (2026-10-19)
+
+### Data
+- **Data refresh.** `disclosed-labels.json` labels +30 −19 ~99, sources ~1; `validator-labels.json` labels −2, sources ~1; `sanctions.json` by_currency ~1, total_digital_currency_addresses updated; `guardians-blocklist.json` coins +9, counts ~3, object_type_packages +1.
 
 ### Added
 - **Live oracle pass checks funding, holders, staking, bridges, past balances and checkpoints.** Random draws compare `find_funding_source`'s first hop with the earliest transactions' balance changes, direct prices and supply shares, small coins' holder rankings with both walks and gRPC balances, historical staked SUI rewards with withdrawal events (a lower payout is skipped only when it emptied the rewards pool), native bridge deposits with the event's BCS over gRPC, balances below the consistent range with an anchored read, and `get_checkpoint` by number and by time with GraphQL's checkpoint records. Probe scripts now count the tool calls of the `lib/` modules they import toward live coverage.

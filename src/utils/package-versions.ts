@@ -84,6 +84,8 @@ export interface EventTypeResolution {
   resolution?: {
     requested: string;
     queried: string;
+    /** Type origins could not be read, so a zero-match query cannot establish absence. */
+    unverified?: boolean;
     note: string;
     /** Other packages defining event types under the same package or module. */
     other_defining_packages?: string[];
@@ -98,8 +100,9 @@ export interface EventTypeResolution {
  * filter can span several when structs were added by upgrades; the filter then
  * keeps the requested package if it defines any of them, else takes the one
  * defining the most, and the others are listed so the caller can query them.
- * A package that cannot be read is passed through unchanged: the filter may
- * still be right, and the query will say so.
+ * A package whose type origins cannot be read is passed through with an
+ * unverified note. A named struct absent from a readable lineage is rejected:
+ * querying it would otherwise return an apparently conclusive empty page.
  */
 export async function resolveEventTypeFilter(eventType: string): Promise<EventTypeResolution> {
   const trimmed = eventType.trim();
@@ -113,12 +116,51 @@ export async function resolveEventTypeFilter(eventType: string): Promise<EventTy
   try {
     origins = await fetchTypeOrigins(pkg);
   } catch {
-    return { filter: trimmed };
+    return {
+      filter: trimmed,
+      resolution: {
+        requested: trimmed,
+        queried: trimmed,
+        unverified: true,
+        note: "Package type origins could not be read. The event type was queried unchanged; an empty result does not establish that this type has no events.",
+      },
+    };
   }
-  if (!origins?.length) return { filter: trimmed };
+  if (!origins?.length) {
+    return {
+      filter: trimmed,
+      resolution: {
+        requested: trimmed,
+        queried: trimmed,
+        unverified: true,
+        note: "No package type origins were available for this ID. The event type was queried unchanged; an empty result does not establish that this type has no events.",
+      },
+    };
+  }
 
   const requested = normalizeSuiAddress(pkg);
   const relevant = origins.filter((o) => (!mod || o.module === mod) && (!name || o.struct === name));
+  if (!relevant.length && mod && name) {
+    const inModule = origins.filter((o) => o.module === mod);
+    const candidates = inModule.length ? inModule : origins;
+    const eventLike = candidates.filter((o) => /Event$/.test(o.struct));
+    const words = (name.match(/[A-Z]?[a-z]+/g) ?? [name])
+      .filter((word) => word.length >= 5)
+      .map((word) => word.slice(0, 5).toLowerCase());
+    // Rank an action word ahead of declaration order; the error reply is
+    // capped at 500 characters, so later suggestions may not survive.
+    const suggestions = (eventLike.length ? eventLike : candidates)
+      .sort((a, b) =>
+        Number(words.some((word) => b.struct.toLowerCase().includes(word))) -
+        Number(words.some((word) => a.struct.toLowerCase().includes(word))))
+      .slice(0, 3)
+      .map((o) => `${normalizeSuiAddress(o.definingId)}::${o.module}::${o.struct}`);
+    throw new Error(
+      `Event type ${JSON.stringify(trimmed)} is not a struct in this package lineage. ` +
+      `Candidate declared structs (emission unverified): ${suggestions.join(", ") || "none"}. ` +
+      "event_type names the defining module; module names the emitting call.",
+    );
+  }
   if (!relevant.length) return { filter: trimmed };
 
   const counts = new Map<string, number>();

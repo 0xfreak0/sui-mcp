@@ -57,6 +57,7 @@ export function registerAggregateTools(server: McpServer) {
   server.tool(
     "aggregate_events",
     "(Incident investigation) Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. " +
+      "Pass ISO 8601 dates directly in from and to, e.g. from: \"2026-08-07T00:00:00Z\"; checkpoint numbers are optional. " +
       "Call it first without value_field: it returns counts, a sample and the numeric fields per event type; then re-run naming one of them. " +
       "group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. " +
       "Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. " +
@@ -66,21 +67,21 @@ export function registerAggregateTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it.",
+          "Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; unknown full structs return candidate names.",
         ),
       module: z
         .string()
         .optional()
         .describe(
-          "Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses.",
+          "Module of the emitting call, not necessarily the event struct's module; e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses.",
         ),
       sender: addressArg().optional().describe("Only events sent by this address."),
       from: timePointArg()
         .optional()
-        .describe("Window start: ISO 8601 timestamp (2026-08-07T00:00:00Z) or a checkpoint number."),
+        .describe("Window start: ISO 8601 time (2026-08-07T00:00:00Z) or a checkpoint number; no checkpoint lookup is needed."),
       to: timePointArg()
         .optional()
-        .describe("Window end: ISO 8601 timestamp, 'now', or a checkpoint number."),
+        .describe("Window end: ISO 8601 time (2026-08-08T00:00:00Z), 'now', or a checkpoint number."),
       group_by: z
         .enum(["sender", "event_type"])
         .optional()
@@ -322,10 +323,14 @@ export function registerAggregateTools(server: McpServer) {
           ...(events.length === 0
             ? {
                 no_results_hint: [
-                  truncated ? "No matching events were found in this scan slice; the full window has not been ranked." : "No events matched.",
+                  truncated
+                    ? "No matching events were found in this scan slice; the full window has not been ranked."
+                    : typeFilter?.resolution?.unverified
+                      ? "The package's type origins could not be verified; this empty query cannot establish absence. Check the full struct type and retry."
+                      : "No events matched the queried filters in this window.",
                   ...(event_type
                     ? [
-                        "`event_type` filters on the struct's DEFINING package, which for many protocols differs from the package you call, so try `module` with the same address instead.",
+                        "`event_type` names the struct's defining module. A `module` filter names the emitting call and can refer to a different package or module.",
                       ]
                     : []),
                   ...(moduleFilter?.resolution?.other_version_ids
@@ -333,7 +338,7 @@ export function registerAggregateTools(server: McpServer) {
                         "From the relocate_event_module cutover on, a `module` filter matches calls through one package version only; query the ids in module_scope.other_version_ids for the rest.",
                       ]
                     : []),
-                  "Also check the window: bounds are checkpoints, and GraphQL retains only recent history.",
+                  "The bounds also accept ISO 8601 times; an empty page is not evidence about events outside the queried window.",
                 ].join(" "),
               }
             : {}),

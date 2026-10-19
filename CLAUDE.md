@@ -228,6 +228,13 @@ active since 2023 returned nothing, and its `activity_hours` described 2023.
   within a minute, which is fine for a point and wrong for an edge: a minute
   is a third of a three-minute incident window. Both edges are inclusive in
   time; they resolve concurrently against one latest-checkpoint anchor.
+- **The list tools take ISO dates directly.** `query_events` and
+  `query_transactions` call `resolveWindow` on their existing
+  `after_checkpoint` / `before_checkpoint` arguments. The names also accept
+  checkpoint numbers; descriptions must lead with dates so a caller does not
+  binary-search checkpoint numbers first. `aggregate_events` uses `from` /
+  `to`. Keep one pair of window arguments per tool so cursor continuations
+  cannot disagree about the window.
 - **Parse before probing.** An unparseable bound is an error before any
   request, never a silently unbounded read.
 - **A budget that stops a walk says where.** `build_timeline` reports per
@@ -271,6 +278,16 @@ TRANSACTION:
   `typeOrigins` and rewrites an `event_type` filter; a module- or
   package-level type spanning several defining IDs keeps one and lists the
   rest as `event_type_resolution`.
+  A readable lineage whose requested full struct name is absent is an input
+  error, with candidate structs from `typeOrigins`; do not query that name and
+  present an empty page as chain evidence. A failed or unavailable origins
+  read is `event_type_resolution.unverified`, and a zero-match result cannot
+  establish absence. `typeOrigins` lists all structs, not only emitted
+  events, so suggestions must not claim each candidate emitted. The
+  event's `transactionModule` is the call that emitted it, not necessarily
+  the module defining its struct: DeepBook margin's
+  `margin_manager::LiquidationEvent` was emitted by
+  `liquidation_vault` through a separately published package.
 - **An event's emitting module carries whichever id the checkpoint's era
   used**, not a fixed rewrite. `relocate_event_module` turned on at a
   different checkpoint on each network, read from each epoch's protocol

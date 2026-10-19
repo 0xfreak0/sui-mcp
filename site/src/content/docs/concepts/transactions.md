@@ -370,15 +370,32 @@ other protocols' activity. For events from one known transaction, use
 
 Newest-first is the default. Each page reports its order, oldest and newest
 timestamps, and resolved window. Preserve order and filters when passing
-`next_cursor` as `cursor`. The tool fills short service pages up to `limit`;
-if its read budget stops first, `scan` names the continuation. Checkpoint
-bounds are exclusive; ISO 8601 bounds include events at the stated time.
-For example, `after_checkpoint: "2026-08-07T00:00:00Z"` includes that instant.
+`next_cursor` as `cursor`. Both `query_events` and `query_transactions` accept
+ISO 8601 dates directly in `after_checkpoint` and `before_checkpoint`; no
+checkpoint search is needed. For example:
 
-An event type carries the package ID that defined its struct.
-`event_type: "0x2::coin::CoinBalanceChange"` is a full type filter. If an
-upgraded package ID is supplied, the tool resolves it to the defining version
-and reports `event_type_resolution`.
+```json
+{ "event_type": "0x…::module::ActionEvent", "after_checkpoint": "2026-08-07T00:00:00Z", "before_checkpoint": "2026-08-08T00:00:00Z" }
+```
+
+When events match, the reply includes `events` with decoded `data`, the
+`window`'s resolved checkpoints and `next_cursor` if older matches remain.
+
+The tool fills short service pages up to `limit`; if its read budget stops
+first, `scan` names the continuation. Checkpoint-number bounds are exclusive;
+ISO 8601 bounds include events at the stated time.
+
+An event type carries the package ID that defined its struct. The `event_type`
+filter accepts a package, module or full struct type; an upgraded package ID is
+resolved to the defining version and reported in `event_type_resolution`. A
+full struct name absent from a readable package lineage returns an error
+listing candidate structs, rather than a zero-match page. An unread lineage
+is marked `unverified`; an empty page cannot establish absence in that case.
+The `module` filter names the call that emitted the event. That call can
+belong to a different package and module from the event struct.
+GraphQL rejects a request combining `event_type` and `module`; query the
+struct type alone or the emitting module alone. An event's `emitting_module`
+in a type-filtered result identifies which module to query.
 
 An emitting-module filter, such as `0x2::coin` or package-only `0x2`, follows
 the network's `relocate_event_module` cutover:

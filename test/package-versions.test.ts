@@ -47,11 +47,27 @@ describe("resolveEventTypeFilter", () => {
     expect(r.filter).toBe(`${V1}::pool`);
     expect(r.resolution?.other_defining_packages).toEqual([V3]);
   });
+  it("rejects a struct name absent from a known module and names its event-like structs", async () => {
+    await expect(resolveEventTypeFilter(`${V5}::pool::AccountLiquidated`)).rejects.toThrow(
+      `${V1}::pool::SwapEvent`,
+    );
+    await expect(resolveEventTypeFilter(`${V5}::pool::AccountLiquidated`)).rejects.toThrow(
+      `${V3}::pool::FlashLoanEvent`,
+    );
+  });
 
-  it("passes a filter through when the package cannot be read", async () => {
+  it("distinguishes an unread type origin from a verified missing type", async () => {
+    mockGqlQuery.mockRejectedValue(new Error("rate limited"));
+    const r = await resolveEventTypeFilter("0x8888::pool::LoanBorrowedEvent");
+    expect(r.resolution?.unverified).toBe(true);
+    expect(r.filter).toBe("0x8888::pool::LoanBorrowedEvent");
+  });
+
+  it("reports unknown package type origins without claiming the filter was checked", async () => {
     mockGqlQuery.mockResolvedValue({ package: null });
     const r = await resolveEventTypeFilter("0x9999::m::E");
-    expect(r).toEqual({ filter: "0x9999::m::E" });
+    expect(r.filter).toBe("0x9999::m::E");
+    expect(r.resolution?.unverified).toBe(true);
   });
 });
 

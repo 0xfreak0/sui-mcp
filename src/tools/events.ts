@@ -71,29 +71,29 @@ export const QUERY_EVENTS_MAX_READS = 10;
 export function registerEventTools(server: McpServer) {
   server.tool(
     "query_events",
-    "Query events by type, sender, emitting module or time/checkpoint range. Event fields are decoded; no hand-written GraphQL is needed. Use a protocol's own events to measure its flow: whole-PTB balance changes can over-attribute it. For one known transaction, use get_transaction. Pages default to newest first and report order, timestamp bounds and the resolved window. Continue with next_cursor as cursor, preserving order and filters; short service pages are filled to limit, and scan names the continuation if the read budget stops first. Event types use their struct's defining package ID: upgraded IDs are rewritten and event_type_resolution reports it. Module filters follow the network's emitting-ID cutover, using the original ID before it and the called version afterward, merging both for crossing windows. module_scope reports the scope and other version IDs; after cutover, one ID covers only that version. Framework packages upgraded in place keep one ID covering the lineage.",
+    "Query events by type, sender, emitting module or time/checkpoint range. For a date range, pass ISO 8601 times directly as after_checkpoint and before_checkpoint, e.g. \"2026-08-07T00:00:00Z\"; checkpoint numbers are optional. Event fields are decoded; no hand-written GraphQL is needed. Use a protocol's own events to measure its flow: whole-PTB balance changes can over-attribute it. For one known transaction, use get_transaction. Pages default to newest first and report order, timestamp bounds and the resolved window. Continue with next_cursor as cursor, preserving order and filters; short service pages are filled to limit, and scan names the continuation if the read budget stops first. Event types use their struct's defining package ID: upgraded IDs are rewritten and event_type_resolution reports it. A full event type absent from the lineage is rejected with candidate struct names. Module filters use the module whose call emitted the event, which may differ from the struct's defining module. They follow the network's emitting-ID cutover, using the original ID before it and the called version afterward, merging both for crossing windows. module_scope reports the scope and other version IDs; after cutover, one ID covers only that version. Framework packages upgraded in place keep one ID covering the lineage.",
     {
       event_type: z
         .string()
         .optional()
-        .describe("Filter by event type: 0x..., 0x...::module or 0x...::module::Name."),
+        .describe("Filter by event type: 0x..., 0x...::module or 0x...::module::Name. An unknown full struct type returns candidate names from its package."),
       sender: addressArg().optional().describe("Filter by transaction sender"),
       module: z
         .string()
         .optional()
         .describe(
-          "Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses.",
+          "Module of the emitting call, not necessarily the event struct's module; e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses.",
         ),
       after_checkpoint: z
         .union([z.string(), z.number()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Events after this checkpoint number (exclusive), or at/after this ISO 8601 time (inclusive)."),
+        .describe("Window start: ISO 8601 time such as 2026-08-07T00:00:00Z (inclusive), or checkpoint number (exclusive). No checkpoint lookup is needed."),
       before_checkpoint: z
         .union([z.string(), z.number()])
         .superRefine(refinePoint)
         .optional()
-        .describe("Events before this checkpoint number (exclusive), or at/before this ISO 8601 time (inclusive)."),
+        .describe("Window end: ISO 8601 time such as 2026-08-08T00:00:00Z (inclusive), or checkpoint number (exclusive)."),
       order: z
         .enum(["newest", "oldest"])
         .optional()
@@ -210,6 +210,15 @@ export function registerEventTools(server: McpServer) {
                 events,
                 has_next_page: hasNextPage,
                 next_cursor: nextCursor,
+                ...(events.length === 0
+                  ? {
+                      no_results_hint: typeFilter?.resolution?.unverified
+                        ? "The package's type origins could not be verified, so an empty event query cannot establish absence. Check the full struct type and retry the lookup."
+                        : hasNextPage
+                          ? "No events found in this scan slice; continue at next_cursor before drawing a conclusion."
+                          : "No events matched the queried filters in this window. A module filter names the emitting call, which can differ from the event type's module.",
+                    }
+                  : {}),
                 ...(budgetSpent
                   ? {
                       scan: {

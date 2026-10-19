@@ -51,6 +51,33 @@ describe("aggregate_events with a value_field no event carries", () => {
   });
 });
 
+describe("aggregate_events absent versus unread event types", () => {
+  beforeEach(() => mockGqlQuery.mockReset());
+
+  it("reports type-origin failure separately from a verified empty window", async () => {
+    mockGqlQuery.mockImplementation(async (q: string) => {
+      if (String(q).includes("typeOrigins")) throw new Error("rate limited");
+      return { events: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+    });
+    const result = await tools.get("aggregate_events")!({ event_type: "0x6666::pool::BorrowEvent" });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.events_scanned).toBe(0);
+    expect(data.event_type_resolution.unverified).toBe(true);
+    expect(data.no_results_hint).toMatch(/cannot establish absence/);
+  });
+
+  it("returns candidates instead of a zero-count ranking for an unknown struct", async () => {
+    mockGqlQuery.mockResolvedValue({
+      package: { typeOrigins: [{ module: "margin_manager", struct: "LoanBorrowedEvent", definingId: "0x5555" }] },
+    });
+    const result = await tools.get("aggregate_events")!({ event_type: "0x5555::margin_manager::AssetBorrowed" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("LoanBorrowedEvent");
+    expect(mockGqlQuery.mock.calls.filter(([q]) => String(q).includes("events(filter"))).toHaveLength(0);
+  });
+});
+
+
 describe("aggregate_events module filter resolution", () => {
   beforeEach(() => mockGqlQuery.mockReset());
 

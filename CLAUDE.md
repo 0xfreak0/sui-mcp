@@ -1198,7 +1198,10 @@ An enabled oracle that checks nothing also fails; a zero source bound such as
 subjects were requested. With coins enabled the draw samples additional fresh
 registry coins until it finds short, nonempty holder walks; the historical
 balance draw samples more checkpoints until it finds sparsely active owners.
-`--subjects` pins subjects and `--dist` runs another build.
+The stake-reward draw reads candidate withdrawals until it finds ones whose
+effects delete a pre-existing StakedSui, up to 60 candidates across six
+pages. A bound hit without a candidate reports `drawn but unverifiable` and
+still fails the run. `--subjects` pins subjects and `--dist` runs another build.
 
 Rules for its oracles:
 

@@ -28,8 +28,12 @@ npm run build && npm run verify:live && npm test
 For example, `--coins 0` disables holder rankings as well as mint and cap
 checks. With coins enabled, it samples fresh registry coin types until it
 finds short, nonempty holder walks. It samples additional checkpoints for
-historical balance subjects if the first addresses are too active. An enabled
-oracle with no checked subjects still fails.
+historical balance subjects if the first addresses are too active. The
+staking-reward draw inspects withdrawal effects before choosing subjects and
+continues to older pages when a withdrawal deleted no StakedSui. If its
+candidate bound is reached without one, the report says **drawn but
+unverifiable** and the run fails. Any enabled oracle with no checked subjects
+still fails.
 
 Run an individual script from the repo root after building, for example:
 

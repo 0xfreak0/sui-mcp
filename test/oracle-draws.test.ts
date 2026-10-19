@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { oracleDrawState, oracleRequested } from "../scripts/probe/lib/oracle-draws.mjs";
+import { checkableStakeWithdrawal, oracleDrawState, oracleRequested } from "../scripts/probe/lib/oracle-draws.mjs";
 
 const defaults = { pinned: null, txs: 4, ends: 6, router: 6, coins: 6 };
 
@@ -25,5 +25,24 @@ describe("oracle draw policy", () => {
     expect(oracleDrawState("h", defaults, 1)).toBe("checked");
     expect(oracleDrawState("h", { ...defaults, pinned: { h: [] } }, 0)).toBe("not_drawn");
     expect(oracleDrawState("h", { ...defaults, coins: 0, pinned: { h: ["0x2::sui::SUI"] } }, 0)).toBe("unchecked");
+    expect(oracleDrawState("i", { ...defaults, stakeBoundReached: true }, 0)).toBe("drawn_but_unverifiable");
+    expect(oracleDrawState("i", { ...defaults, stakeBoundReached: true }, 1)).toBe("checked");
+    expect(oracleDrawState("i", defaults, 0)).toBe("unchecked");
+  });
+});
+
+describe("stake withdrawal candidates", () => {
+  const stake = "0x3::staking_pool::StakedSui";
+  const event = { type: "0x3::validator::UnstakingRequestEvent" };
+  const tx = (change: Record<string, unknown>, events: unknown[] = [event]) => ({
+    sender: "0x4", checkpoint: 30, events, changes: new Map([["stake", change]]),
+  });
+
+  it("requires a deleted pre-existing StakedSui and withdrawal event", () => {
+    expect(checkableStakeWithdrawal(tx({ deleted: true, input: { type: stake } }))).toBe(true);
+    expect(checkableStakeWithdrawal(tx({ deleted: true, input: { type: "0x3::staking_pool::FungibleStakedSui" } }))).toBe(false);
+    expect(checkableStakeWithdrawal(tx({ deleted: true, input: null }))).toBe(false);
+    expect(checkableStakeWithdrawal(tx({ deleted: true, input: { type: stake } }, []))).toBe(false);
+    expect(checkableStakeWithdrawal({ ...tx({ deleted: true, input: { type: stake } }), checkpoint: 1 })).toBe(false);
   });
 });

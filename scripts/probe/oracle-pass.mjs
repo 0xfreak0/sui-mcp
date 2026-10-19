@@ -111,11 +111,12 @@
   * b. Registry coins also seed h when `--coins` is positive: sample more
   * registered coin types until three with short, nonempty holder walks are
   * found. With `--coins 0`, h is not run. Drawn senders and SUI recipients go
-  * to g, successful stake withdrawals inside the consistent range to i,
-  * native bridge sends to j, sparsely active addresses between a target
-  * below the balance range and an anchor near its top to k, and one random
- * checkpoint per era to l. `--jobs` subjects run at once through one server
-  * (default 2). An enabled oracle with no checked subjects still fails.
+  * to g, withdrawals that delete a pre-existing StakedSui inside the
+  * consistent range go to i, native bridge sends to j, sparsely active
+  * addresses between a target below the balance range and an anchor near
+  * its top go to k, and one random checkpoint per era goes to l. `--jobs`
+  * subjects run at once through one server (default 2). An enabled oracle
+  * with no checked subjects still fails.
  * `VERBOSE=1` prints both sides of every agreement too.
  *
  * `--subjects` pins the subjects instead, as JSON or a file holding it:
@@ -152,7 +153,7 @@ import { GrpcTransport } from "@protobuf-ts/grpc-transport";
 import { ChannelCredentials } from "@grpc/grpc-js";
 import { startServer, gql as gqlOnce, ROOT } from "./lib/mcp-client.mjs";
 import { extraOracles } from "./lib/oracle-extra.mjs";
-import { oracleDrawState } from "./lib/oracle-draws.mjs";
+import { checkableStakeWithdrawal, oracleDrawState } from "./lib/oracle-draws.mjs";
 
 /** The fullnode over gRPC: the second transport truth is read through where the tool uses GraphQL. */
 const grpc = new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io" });
@@ -1307,39 +1308,49 @@ async function drawExtra(txs, coins, eras) {
       if (round) {
         const drawn = await drawCoins(4, seen, [REGISTRY_FUNCTIONS[0]]);
         for (const c of drawn) candidates.push(c.type);
-  }
+      }
       for (const type of shuffled(candidates.splice(0))) {
-    if (small.length >= 3) break;
+        if (small.length >= 3) break;
         if (seen.has(type)) continue;
         seen.add(type);
-    try {
-      const probe = await gql(`query($coin:String!,$balance:String!){
-        c:objects(filter:{type:$coin},first:50){pageInfo{hasNextPage} nodes{address}}
-        b:objects(filter:{type:$balance},first:50){pageInfo{hasNextPage} nodes{address}}
-      }`, { coin: `0x2::coin::Coin<${type}>`, balance: `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${type}>>,0x2::accumulator::U128>` });
-      if (!probe.c.pageInfo.hasNextPage && !probe.b.pageInfo.hasNextPage && probe.c.nodes.length + probe.b.nodes.length > 0) small.push(type);
-    } catch (err) { console.log(`  small-coin candidate ${type} unreadable: ${String(err).slice(0, 120)}`); }
-  }
+        try {
+          const probe = await gql(`query($coin:String!,$balance:String!){
+            c:objects(filter:{type:$coin},first:50){pageInfo{hasNextPage} nodes{address}}
+            b:objects(filter:{type:$balance},first:50){pageInfo{hasNextPage} nodes{address}}
+          }`, { coin: `0x2::coin::Coin<${type}>`, balance: `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${type}>>,0x2::accumulator::U128>` });
+          if (!probe.c.pageInfo.hasNextPage && !probe.b.pageInfo.hasNextPage && probe.c.nodes.length + probe.b.nodes.length > 0) small.push(type);
+        } catch (err) { console.log(`  small-coin candidate ${type} unreadable: ${String(err).slice(0, 120)}`); }
+      }
     }
   }
   const ranges = await gql(`{ serviceConfig{
     stakes:availableRange(type:"Address",field:"objects"){first{sequenceNumber}last{sequenceNumber}}
     balances:availableRange(type:"Address",field:"balance"){first{sequenceNumber}last{sequenceNumber}}
   } }`);
-  // Historical staking reads owned objects inside the consistent range, so
-  // withdrawals are drawn from all of it, paging back while the service
-  // says more rows remain (one read can come back short).
+  // Historical staking reads owned objects inside the consistent range.
+  // A successful request_withdraw_stake can redeem fungible stake and leave
+  // no StakedSui position for the reward oracle. Inspect candidates before
+  // scheduling it, and keep paging while there are older candidates.
   const liveStart = Number(ranges.serviceConfig.stakes.first.sequenceNumber);
   const rangeTop = Math.min(TIP - SETTLE, Number(ranges.serviceConfig.stakes.last.sequenceNumber) - 10);
-  const withdrawals = [];
-  for (let page = 0, before = null; page < 6 && rangeTop > liveStart + 10; page++) {
+  const stake = [];
+  const maxStakeReads = 60;
+  let stakeReads = 0;
+  let stakeBoundReached = false;
+  for (let page = 0, before = null; page < 6 && rangeTop > liveStart + 10 && stake.length < 3; page++) {
     const d = await gql(`query($a:UInt53!,$b:UInt53!,$c:String){transactions(filter:{function:"0x3::sui_system::request_withdraw_stake",afterCheckpoint:$a,beforeCheckpoint:$b},last:50,before:$c){nodes{digest effects{status}} pageInfo{hasPreviousPage startCursor}}}`, { a: liveStart + 10, b: rangeTop + 1, c: before });
-    for (const n of d.transactions.nodes) if (n.effects?.status === "SUCCESS") withdrawals.push(n.digest);
-    if (!d.transactions.pageInfo.hasPreviousPage || withdrawals.length >= 50) break;
+    for (const n of shuffled(d.transactions.nodes.filter((node) => node.effects?.status === "SUCCESS"))) {
+      if (stake.length >= 3 || stakeReads >= maxStakeReads) break;
+      stakeReads++;
+      const tx = await rawTx(n.digest).catch(() => null);
+      if (checkableStakeWithdrawal(tx)) stake.push(n.digest);
+    }
+    const more = d.transactions.pageInfo.hasPreviousPage;
+    if (stakeReads >= maxStakeReads || (page === 5 && more)) stakeBoundReached = true;
+    if (!more || stake.length >= 3 || stakeReads >= maxStakeReads || page === 5) break;
     before = d.transactions.pageInfo.startCursor;
-    if (!before) break;
+    if (!before) throw new Error("staking transaction range has more rows but no cursor");
   }
-  const stake = shuffled(withdrawals).slice(0, 3);
   const bridge = [];
   for (let i = 0; i < 4 && bridge.length < 3; i++) {
     const nodes = await callsInWindow("0xb::bridge::send_token", 400_000, "effects{status}");
@@ -1373,13 +1384,14 @@ async function drawExtra(txs, coins, eras) {
   }
   }
   const checkpoints = eras.map((era) => randInt(era.lo, era.hi));
-  return { funding: shuffled(funding).slice(0, 8), small, stake, bridge: bridge.slice(0, 3), balances, checkpoints };
+  return { funding: shuffled(funding).slice(0, 8), small, stake, stakeDraw: { reads: stakeReads, boundReached: stakeBoundReached }, bridge: bridge.slice(0, 3), balances, checkpoints };
 }
 
 // ---- plan and run --------------------------------------------------------------
 const t0 = Date.now();
 const problems = [];
 const tasks = [];
+let stakeDraw = null;
 const task = (run) => tasks.push({ key: tasks.length, run });
 
 console.log(`oracle-pass  build ${DIST}`);
@@ -1483,6 +1495,7 @@ if (PINNED) {
     });
   }
   const more = await drawExtra(txs, coins, eras);
+  stakeDraw = more.stakeDraw;
   console.log(`  funding: ${more.funding.join(", ")}; small coins: ${more.small.join(", ")}`);
   console.log(`  withdrawals: ${more.stake.join(", ")}; native bridge: ${more.bridge.join(", ")}`);
   console.log(`  balance: ${more.balances.map((b) => `${b.address}@${b.target}@${b.anchor}`).join(", ")}; checkpoints: ${more.checkpoints.join(", ")}`);
@@ -1528,7 +1541,7 @@ for (const [id, o] of Object.entries(ORACLES)) {
   const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
   if (!rows.length && !requested) continue;
   const checked = n("agree") + n("disagree") + n("known");
-  const state = oracleDrawState(id, { pinned: PINNED, txs: TXS, ends: ENDS, router: ROUTER_N, coins: COINS }, checked);
+  const state = oracleDrawState(id, { pinned: PINNED, txs: TXS, ends: ENDS, router: ROUTER_N, coins: COINS, stakeBoundReached: stakeDraw?.boundReached }, checked);
   if (!rows.length && state === "not_drawn") {
     console.log(`\n${id}. ${o.title}: not drawn (no subjects requested)`);
     continue;
@@ -1563,6 +1576,8 @@ for (const [id, o] of Object.entries(ORACLES)) {
   failures += n("disagree");
   if (n("stale")) problems.push(`${id}: ${n("stale")} KNOWN_DEFECTS entr(ies) now agree; remove them`);
   if (state === "unchecked") problems.push(`${id}. ${o.title}: nothing was checked`);
+  if (state === "drawn_but_unverifiable")
+    problems.push(`${id}. ${o.title}: drawn but unverifiable (${stakeDraw.reads} withdrawal candidates inspected before the draw bound)`);
 }
 
 console.log(`\n${"checked".padStart(8)} ${"agree".padStart(6)} ${"disagree".padStart(9)} ${"known".padStart(6)} ${"skip".padStart(5)}  oracle`);

@@ -108,12 +108,14 @@
  * router. `--coins` registry coins (default 6, alternately
  * registered through `finalize_registration` and migrated through
  * `migrate_legacy_metadata`) to d and f, with their package's UpgradeCap to
- * b. Drawn senders and SUI recipients go to g, three registry coins small
- * enough to walk to h, successful stake withdrawals inside the consistent
- * range to i, native bridge sends to j, addresses active between a target
- * below the balance range and an anchor at its top to k, and one random
+  * b. Registry coins also seed h when `--coins` is positive: sample more
+  * registered coin types until three with short, nonempty holder walks are
+  * found. With `--coins 0`, h is not run. Drawn senders and SUI recipients go
+  * to g, successful stake withdrawals inside the consistent range to i,
+  * native bridge sends to j, sparsely active addresses between a target
+  * below the balance range and an anchor near its top to k, and one random
  * checkpoint per era to l. `--jobs` subjects run at once through one server
- * (default 2).
+  * (default 2). An enabled oracle with no checked subjects still fails.
  * `VERBOSE=1` prints both sides of every agreement too.
  *
  * `--subjects` pins the subjects instead, as JSON or a file holding it:
@@ -150,6 +152,7 @@ import { GrpcTransport } from "@protobuf-ts/grpc-transport";
 import { ChannelCredentials } from "@grpc/grpc-js";
 import { startServer, gql as gqlOnce, ROOT } from "./lib/mcp-client.mjs";
 import { extraOracles } from "./lib/oracle-extra.mjs";
+import { oracleDrawState } from "./lib/oracle-draws.mjs";
 
 /** The fullnode over gRPC: the second transport truth is read through where the tool uses GraphQL. */
 const grpc = new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io" });
@@ -424,7 +427,7 @@ async function readTx(digest) {
   const e = t.effects;
   const pages = async (field, first, selection) => {
     const nodes = [...e[field].nodes];
-    for (let p = e[field].pageInfo; p.hasNextPage; ) {
+    for (let p = e[field].pageInfo; p.hasNextPage;) {
       if (!p.endCursor) throw new Error(`transaction ${digest} ${field} has more rows without a cursor`);
       const c = (await gql(nextPage(field, first, selection), { d: digest, a: p.endCursor }, true)).transaction.effects[field];
       nodes.push(...c.nodes);
@@ -1267,10 +1270,10 @@ async function drawRouter() {
   return out;
 }
 
-async function drawCoins() {
+async function drawCoins(count = COINS, excluded = new Set(), functions = REGISTRY_FUNCTIONS) {
   const out = [];
-  for (let i = 0; i < COINS; i++) {
-    const [how, fn] = REGISTRY_FUNCTIONS[i % REGISTRY_FUNCTIONS.length];
+  for (let i = 0; i < count; i++) {
+    const [how, fn] = functions[i % functions.length];
     const nodes = await callsInWindow(fn, 200_000, "effects{ objectChanges(first:50){ nodes{ outputState{ asMoveObject{ contents{ type{ repr } } } } } } }");
     const types = nodes.flatMap((n) =>
       n.effects.objectChanges.nodes
@@ -1278,7 +1281,7 @@ async function drawCoins() {
         .filter((t) => t.startsWith(`${ADDR2}::coin_registry::Currency<`))
         .map((t) => typeArgsOf(t)[0]),
     );
-    const t = pick([...new Set(types)].filter((x) => !out.some((o) => o.type === x)));
+    const t = pick([...new Set(types)].filter((x) => !excluded.has(x) && !out.some((o) => o.type === x)));
     if (t) out.push({ type: t, how });
   }
   return out;
@@ -1295,13 +1298,20 @@ async function drawExtra(txs, coins, eras) {
     if (tx.sender && !funding.includes(tx.sender)) funding.push(tx.sender);
   }
   const small = [];
-  const candidates = [...coins.map((c) => c.type)];
-  for (let n = 0; n < 3; n++) {
-    const drawn = await drawCoins();
-    for (const c of drawn) if (!candidates.includes(c.type)) candidates.push(c.type);
+  if (COINS) {
+    const seen = new Set();
+    const candidates = coins.map((c) => c.type);
+    // Fresh registrations are often still held by only a few wallets.
+    // Migrations of established coins tend to exceed the 50-object probe.
+    for (let round = 0; round < 16 && small.length < 3; round++) {
+      if (round) {
+        const drawn = await drawCoins(4, seen, [REGISTRY_FUNCTIONS[0]]);
+        for (const c of drawn) candidates.push(c.type);
   }
-  for (const type of shuffled(candidates)) {
+      for (const type of shuffled(candidates.splice(0))) {
     if (small.length >= 3) break;
+        if (seen.has(type)) continue;
+        seen.add(type);
     try {
       const probe = await gql(`query($coin:String!,$balance:String!){
         c:objects(filter:{type:$coin},first:50){pageInfo{hasNextPage} nodes{address}}
@@ -1309,6 +1319,8 @@ async function drawExtra(txs, coins, eras) {
       }`, { coin: `0x2::coin::Coin<${type}>`, balance: `0x2::dynamic_field::Field<0x2::accumulator::Key<0x2::balance::Balance<${type}>>,0x2::accumulator::U128>` });
       if (!probe.c.pageInfo.hasNextPage && !probe.b.pageInfo.hasNextPage && probe.c.nodes.length + probe.b.nodes.length > 0) small.push(type);
     } catch (err) { console.log(`  small-coin candidate ${type} unreadable: ${String(err).slice(0, 120)}`); }
+  }
+    }
   }
   const ranges = await gql(`{ serviceConfig{
     stakes:availableRange(type:"Address",field:"objects"){first{sequenceNumber}last{sequenceNumber}}
@@ -1340,19 +1352,25 @@ async function drawExtra(txs, coins, eras) {
   // most 50 of their transactions.
   const at = Number(ranges.serviceConfig.balances.first.sequenceNumber) - 50;
   const anchor = Number(ranges.serviceConfig.balances.last.sequenceNumber) - 200;
-  const owners = [];
-  for (let i = 0; i < 6 && anchor > at; i++) {
+  const balances = [];
+  const seenOwners = new Set();
+  // Keep drawing checkpoints until a sparse address qualifies, rather than
+  // accepting six checkpoints' mostly high-volume senders as the entire pool.
+  for (let i = 0; i < 30 && balances.length < 3 && anchor > at; i++) {
     const c = await gql(`query($s:UInt53!){checkpoint(sequenceNumber:$s){transactions(first:20){nodes{sender{address} effects{balanceChanges(first:10){nodes{owner{address}}}}}}}}`, { s: randInt(at + 1, anchor) }, true);
+    const owners = [];
     for (const n of c.checkpoint?.transactions?.nodes ?? [])
       for (const a of [n.sender?.address, ...(n.effects?.balanceChanges?.nodes ?? []).map((b) => b.owner?.address)])
-        if (a && !owners.includes(normAddr(a))) owners.push(normAddr(a));
+        if (a && !seenOwners.has(normAddr(a))) {
+          seenOwners.add(normAddr(a));
+          owners.push(normAddr(a));
   }
-  const balances = [];
-  for (const address of shuffled(owners).slice(0, 30)) {
+    for (const address of shuffled(owners).slice(0, 20)) {
     if (balances.length >= 3) break;
     const history = await gql(`query($a:SuiAddress!,$lo:UInt53!,$hi:UInt53!){transactions(filter:{affectedAddress:$a,afterCheckpoint:$lo,beforeCheckpoint:$hi},first:50){nodes{digest}pageInfo{hasNextPage}}}`, { a: address, lo: at, hi: anchor + 1 }, true);
     if (history.transactions.nodes.length && !history.transactions.pageInfo.hasNextPage)
       balances.push({ address, target: at, anchor });
+  }
   }
   const checkpoints = eras.map((era) => randInt(era.lo, era.hi));
   return { funding: shuffled(funding).slice(0, 8), small, stake, bridge: bridge.slice(0, 3), balances, checkpoints };
@@ -1510,6 +1528,11 @@ for (const [id, o] of Object.entries(ORACLES)) {
   const requested = PINNED ? !!PINNED[id]?.length : drawn[id] > 0;
   if (!rows.length && !requested) continue;
   const checked = n("agree") + n("disagree") + n("known");
+  const state = oracleDrawState(id, { pinned: PINNED, txs: TXS, ends: ENDS, router: ROUTER_N, coins: COINS }, checked);
+  if (!rows.length && state === "not_drawn") {
+    console.log(`\n${id}. ${o.title}: not drawn (no subjects requested)`);
+    continue;
+  }
   summary.push([id, o.title, checked, n("agree"), n("disagree"), n("known"), n("skip")]);
   console.log(`\n${id}. ${o.title}: checked ${checked}, agree ${n("agree")}, disagree ${n("disagree")}, known ${n("known")}, skipped ${n("skip")}`);
   console.log(`   truth: ${o.how}`);
@@ -1539,7 +1562,7 @@ for (const [id, o] of Object.entries(ORACLES)) {
   }
   failures += n("disagree");
   if (n("stale")) problems.push(`${id}: ${n("stale")} KNOWN_DEFECTS entr(ies) now agree; remove them`);
-  if (requested && !checked) problems.push(`${id}. ${o.title}: nothing was checked`);
+  if (state === "unchecked") problems.push(`${id}. ${o.title}: nothing was checked`);
 }
 
 console.log(`\n${"checked".padStart(8)} ${"agree".padStart(6)} ${"disagree".padStart(9)} ${"known".padStart(6)} ${"skip".padStart(5)}  oracle`);

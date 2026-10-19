@@ -1192,9 +1192,13 @@ target, and `get_checkpoint` by number and by time against GraphQL's
 checkpoint records. An oracle never reads truth through the helper the tool
 uses, and the report names a truth read that is the tool's own query. A
 tool change that reaches `ORACLE_PROBES` in `lib/tiers.mjs` runs it in the
-affected tier. A disagreement fails it unless its `KNOWN_DEFECTS` lists it,
-and so does a drawn oracle that checked nothing; `--subjects` pins subjects
-and `--dist` runs another build.
+affected tier. A disagreement fails it unless its `KNOWN_DEFECTS` lists it.
+An enabled oracle that checks nothing also fails; a zero source bound such as
+`--coins 0` reports the holder-ranking oracle as not drawn, since no coin
+subjects were requested. With coins enabled the draw samples additional fresh
+registry coins until it finds short, nonempty holder walks; the historical
+balance draw samples more checkpoints until it finds sparsely active owners.
+`--subjects` pins subjects and `--dist` runs another build.
 
 Rules for its oracles:
 

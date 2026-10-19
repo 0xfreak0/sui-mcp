@@ -36,8 +36,8 @@ describe("swap labels read from the pools' own events", () => {
     ["3WZbaq42Vr3dPhKx24BhCy1UCunouXyPuNHnjwvRcqhF", ["MMT → USDC"]],
     // Cetus v3 context whose types read two ways; every pool call's events state it
     ["9LbWQbZZh3d3q4ENHYHB7YXptdrUorgoSN6v2XZyw8bJ", ["USDC → USDB", "USDC → SUI", "USDC → BUCK", "USDC → SUI", "USDB → BUCK", "USDB → BUCK", "BUCK → SUI"]],
-    // Cetus v3 context whose types read two ways; every pool call's events state it
-    ["EyVUHKNH8Z5EArisdy94UhDYasQxBucb69bt6Nm4M5rV", ["USDC → WAL", "USDC → WAL", "USDC → DEEP", "USDC → stSUI", "DEEP → WAL", "DEEP → WAL", "DEEP → WAL", "stSUI → SUI", "SUI → WAL"]],
+    // Cetus v3 context whose types read two ways; every pool call's events state it. Full Sail's SwapEvent and the router's echo have a fee event between them
+    ["EyVUHKNH8Z5EArisdy94UhDYasQxBucb69bt6Nm4M5rV", ["USDC → WAL", "USDC → WAL", "USDC → DEEP", "USDC → stSUI", "DEEP → WAL", "DEEP → WAL", "stSUI → SUI", "SUI → WAL"]],
     // Astros: two calls on one Turbos pool, Bluefin a2b true on Pool<USDC, XAUM>, Momentum flash swaps
     ["GSFcNqRyHHLbXE7SfAvizQbQ6XnKaVvTUUcoywNapbs3", ["IKA → USDC", "IKA → USDC", "USDC → XAUM", "USDC → SUI", "IKA → SUI", "SUI → USDC", "USDC → XAUM", "IKA → SUI", "SUI → USDC", "USDC → XAUM", "IKA → SUI", "SUI → USDC", "USDC → XAUM", "IKA → SUI", "SUI → USDC", "USDC → XAUM", "IKA → SUI", "SUI → USDC", "USDC → XAUM"]],
     // 7k: Cetus atob on Pool<LBTC, BTC>
@@ -60,6 +60,8 @@ describe("swap labels read from the pools' own events", () => {
     ["3UhJcQKQdaVUZwr73fH1sPyACj5kqEWukyJErWZmhPhz", ["USDC → stSUI", "stSUI → SUI", "SUI → BLUE", "USDC → SUI", "SUI → BLUE"]],
     // Arbitrage bot: Bluefin FlashSwap events, a2b false on Pool<STSUI, USDC> then a2b true on Pool<STSUI, SUI>
     ["7ni1zqot4JktmUrGCJMSqoozvqHfDDVSQDohg2CDk8oN", ["SUI → USDT", "USDT → USDC", "USDC → stSUI", "stSUI → SUI"]],
+    // Cetus v1 context then Aftermath: FlowX's Swap, then its Pay, then the aggregator's echo of the Swap
+    ["BhBBTGMxpr1gP5nrphECEFU9W43aQgY8rPm15o39SbVw", ["FUD → SUI", "SUI → IKA", "IKA → USDC", "USDC → stSUI", "stSUI → SUI", "SUI → FUD"]],
   ];
   it.each(cases)("%s", (digest, expected) => {
     const f = FIXTURES[digest];

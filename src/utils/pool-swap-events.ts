@@ -82,8 +82,10 @@ export function readPoolSwap(event: SwapEventInput, index: number, targets: Even
 
 /**
  * For each Move call, the pool swaps it ran, in emission order. A pool's
- * own event and a router's event repeating the same pool and direction right
- * after it (an event of another type) are one swap. A swap goes to the call
+ * own event and a router's event of another type repeating the same pool
+ * and direction after it, with no other swap-named event between them (a
+ * pool's `Pay`, fee or flash-repay event may sit between), are one swap. A
+ * swap goes to the call
  * that takes its pool as an argument and whose package and module could have
  * emitted it, never to a call that repays (a flash swap's repay takes the
  * same pool); when no call that could have emitted it takes the pool, to the
@@ -118,7 +120,7 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
     return new Set(ids);
   });
 
-  // Each swap once: an echo right after the swap it repeats is dropped. A
+  // Each swap once: an echo of the swap before it is dropped. A
   // swap-named event about a changed object that does not read as a swap is
   // kept apart: the call that ran it has a swap no label could state, unless
   // an event of another type right beside it reads as a swap of the same
@@ -139,11 +141,11 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
     const last = swaps[swaps.length - 1];
     const echo =
       last &&
-      last.index === index - 1 &&
       last.pool === hop.pool &&
       last.coinIn === hop.coinIn &&
       last.coinOut === hop.coinOut &&
-      evidence.events[last.index].type.split("<")[0] !== event.type.split("<")[0];
+      evidence.events[last.index].type.split("<")[0] !== event.type.split("<")[0] &&
+      !evidence.events.slice(last.index + 1, index).some((e) => /swap/i.test(e.type.split("<")[0].split("::").pop() ?? "") && !/repay/i.test(e.type.split("<")[0].split("::").pop() ?? ""));
     if (!echo) swaps.push({ index, ...hop });
   });
   const base = (i: number) => evidence.events[i].type.split("<")[0];

@@ -22,8 +22,9 @@
  *    hop, its coins the pool object's first two type arguments in the order
  *    the event states (an event listing one type in and one out names them
  *    itself). An event of another type repeating the pool and direction of
- *    the event right before it is the same swap echoed by a router, and
- *    counts once. The hops must appear in order among the decoded swaps, and no
+ *    the hop before it, with no swap-named event between them, is the same
+ *    swap echoed by a router, and counts once. The hops must appear in order
+ *    among the decoded swaps, and no
  *    label may name a type that is not a coin. A label carries symbols, so it
  *    is read back into the types it can name with the tested build's own
  *    `displayCoin` over every type the transaction carries, and the comparison
@@ -762,12 +763,14 @@ function swapHops(tx) {
     const [a, b] = args;
     hops.push({ event: index, pool: normAddr(pool), [dir]: j[dir], coin_in: j[dir] ? a : b, coin_out: j[dir] ? b : a });
   });
-  // A router that repeats the pool's swap in an event of its own, right
-  // after it, reports one swap twice.
+  // A router that repeats the pool's swap in an event of its own after it
+  // (a pool's Pay or fee event may sit between) reports one swap twice.
   const base = (i) => tx.events[i].type.replace(/<.*/, "");
+  const swapNamed = (i) => /swap/i.test(base(i).split("::").pop()) && !/repay/i.test(base(i).split("::").pop());
   const once = hops.filter((h, i) => {
     const p = hops[i - 1];
-    return !(p && p.event === h.event - 1 && p.pool === h.pool && p.coin_in === h.coin_in && p.coin_out === h.coin_out && base(p.event) !== base(h.event));
+    const between = Array.from({ length: h.event - p?.event - 1 }, (_, k) => p.event + 1 + k);
+    return !(p && p.pool === h.pool && p.coin_in === h.coin_in && p.coin_out === h.coin_out && base(p.event) !== base(h.event) && !between.some(swapNamed));
   });
   return { hops: once, unresolved, undirected };
 }

@@ -467,10 +467,13 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
   another type for the same pool right beside it is that swap's echo, and
   the readable one labels it (Cetus aggregator's `KriyaSwapEvent` beside
   Kriya's own).
-- **A router's echo is the same swap.** An event of another type right after
-  a pool's event, naming the same pool and direction (Cetus aggregator's
-  `router::SwapEvent`, FlowX's `BluefinSwapEvent`), is one swap. Two events
-  of one type are two swaps. Oracle a applies the same rule.
+- **A router's echo is the same swap.** An event of another type after a
+  pool's event, naming the same pool and direction (Cetus aggregator's
+  `router::SwapEvent`, FlowX's `BluefinSwapEvent`), is one swap when no
+  swap-named event sits between them. The pool's own `Pay` or fee events
+  can come first: FlowX CLMM emits `Swap`, `Pay`, then the aggregator's
+  echo, and Full Sail emits an `UpdateFeeGrowthGlobalEvent` before it. Two
+  events of one type are two swaps. Oracle a applies the same rule.
 - **A call with events gets one label per swap, whatever its name**, unless
   the registry names it as an operation other than a swap (a deposit, a
   liquidity add): an unnamed wrapper (`bluefin::swap_b2a` of an arbitrage

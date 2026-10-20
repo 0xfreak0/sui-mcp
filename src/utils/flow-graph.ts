@@ -27,7 +27,9 @@ export type FlowBasis =
   /** Value that went into a bridge, a protocol object or a burn. */
   | "consumed"
   /** Value a conversion's counterparty kept: proceeds worth under a tenth of it, and no claim. */
-  | "retained";
+ | "retained"
+ /** A non-coin object changed hands, with its value measured at the transaction checkpoint. */
+ | "object";
 
 export interface Branch {
   address: string;
@@ -106,6 +108,28 @@ export function valueWeights(
   }
   if (usdTotal > 0) return { weights: usd.map((u) => (u ?? 0) / usdTotal), weighting: "usd" };
   return { weights: items.map(() => 1 / items.length), weighting: "equal" };
+}
+
+/** Shares of the starting transaction across priced coin and object receipts.
+ * Unpriced objects do not acquire a zero-valued share. */
+export function objectOriginWeights(
+ coins: Array<{ amount: bigint; coin_type: string; usd?: number | null }>,
+ objects: Array<{ usd: number | null }>,
+ valueUsd: ValueUsd,
+): { coins: number[]; objects: number[] } {
+ const priced = objects.map((o) => o.usd !== null && Number.isFinite(o.usd) && o.usd > 0 ? o.usd : 0);
+ const coinUsd = coins.map((c) => c.usd !== undefined ? c.usd : valueUsd({ amount: c.amount.toString(), coin_type: c.coin_type }));
+ const total = priced.reduce((a, b) => a + b, 0) + coinUsd.reduce<number>((a, b) => a + (b ?? 0), 0);
+ if (total === 0) return { coins: valueWeights(coins, valueUsd).weights, objects: priced.map(() => 0) };
+ return {
+  coins: coinUsd.map((u) => (u ?? 0) / total),
+  objects: priced.map((u) => u / total),
+ };
+}
+
+/** An object is a distinct asset even if several objects of the same type move in one transaction. */
+export function objectNodeId(address: string, objectId: string): string {
+ return `${address}|object:${objectId}`;
 }
 
 /** `a / b` as a float, exact enough for amounts past 2^53. */
@@ -638,7 +662,7 @@ export const STOP_MEANING: Record<StopCode, string> = {
   bridge_entry: "Backward: it arrived on Sui through a bridge.",
   cycle: "Value converged with an address's own activity already expanded elsewhere in the graph: on its own upstream path, or a different coin-lineage of the same address counted under another node.",
   signer_not_sender: "The transaction was signed by another address acting for the sender (an alias or a protocol substitution), so its moves are not attributed to the sender.",
-  read_failed: "A transaction or search could not be read. This is incomplete, not finished.",
+ read_failed: "A transaction or search could not be read, or an object's value or controlling address could not be established. This is incomplete, not finished.",
   budget: "Not expanded: the depth, node or search limit was reached. The funds may have moved further.",
   below_threshold: "Branches below min_share (or min_usd) were not expanded.",
   target: "Reached the address being searched for.",

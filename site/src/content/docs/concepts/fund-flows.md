@@ -86,13 +86,35 @@ trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
                below_threshold 0.07%
 ```
 
-The graph's starting branches and percentages cover coin balance changes.
-Transferring a `StakedSui`, NFT or position without a coin credit does not seed
-an object branch, even if another coin moved in the same transaction. A
-reported 100% unspent share therefore says nothing about those transferred
-objects. Use `get_transaction` for object transfers, `trace_funds` for an
-object branch and `trace_object_history` for custody; start a coin graph at
-the transaction that releases the object's coins.
+The graph starts from priced coins and valued objects that addresses gained in
+the transaction (backward: gave up), including an object created for an
+address other than the sender. An object edge identifies its object ID, type,
+owner change, checkpoint USD value and valuation tier. The graph follows that
+object ID to its next transfer or redemption, then allocates the redeemed coin
+proceeds. Value withdrawn from a position the holder keeps, such as liquidity
+removed from a CLMM position, passes that part of the object's share to the
+coins the withdrawal paid. An object's branch skips the hub check while the
+object moves, and its holder is checked once the object turns into coins
+there, since those coins mix with the holder's own. `find_flow_path` searches
+these same object handovers, including an address whose only outbound value
+was an object. Pass `coin_type` to restrict a graph to its coin branches.
+
+An address start counts value once when its coins went into an object it
+later handed over: a position opened and added to and then transferred, or a
+stake created for another address in the same transaction, is one handover
+of the object's value, not a coin deposit plus a handover. The coins feeding
+an object take at most its value when it was handed over; the rest stays a
+deposit.
+
+An object that moves into or out of another object (a kiosk, a farm or
+another wrapper) ends its branch as `read_failed`: the address that controls
+the container is not established from the object change.
+
+`unvalued_objects` lists objects moving in the traced direction without an
+established value; they receive no share. `object_valuation_incomplete` warns
+when the reported percentages cover only the priced portion of a transaction.
+An address-start object walk is bounded; check `coverage.truncated` and
+`coverage.partial` before reading an absent object edge as a negative finding.
 
 ## How traced value is allocated
 

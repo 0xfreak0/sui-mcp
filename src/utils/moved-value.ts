@@ -396,6 +396,8 @@ export interface TransactionObjects {
   digest: string;
   checkpoint: string | null;
   moved: MovedObject[];
+ /** Raw object changes, including types no valuer handles. */
+ movements?: ObjectMovement[];
 }
 
 /**
@@ -508,11 +510,13 @@ export async function readMovedObjects(digests: string[], specificOnly = false):
     const t = found.get(digest);
     if (!t) continue;
     const changed = t.effects?.changedObjects ?? [];
+  const movements = readGrpcObjectChanges(changed);
     txs.push({
       digest,
       checkpoint: t.checkpoint !== undefined ? t.checkpoint.toString() : null,
+   movements,
       moved: movedObjectsOf({
-        movements: readGrpcObjectChanges(changed),
+    movements,
         objects: changed.map((o) => ({
           objectId: o.objectId ?? "",
           objectType: o.objectType ?? null,

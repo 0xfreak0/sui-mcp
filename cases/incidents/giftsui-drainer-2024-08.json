@@ -266,11 +266,13 @@
       "tool": "trace_flow_graph",
       "args": { "digest": "{drain_tx}", "max_depth": 5 },
       "expect": [
+        { "path": "edges[*].object_id", "op": "includes", "value": "{stolen_stake}" },
+        { "path": "edges[*].object_type", "op": "includes", "value": "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakedSui" },
+        { "path": "edges[*].usd", "op": "count_gte", "value": 1 },
         { "path": "terminals[*].entries[*].node", "op": "includes", "value": "exit:Wormhole:{eth_beneficiary}" }
       ],
       "tier": "chain-derived",
       "basis": "On chain the two StakedSui went to 0x2a6f4852, which unstaked them (5vuZjVUV, 8DDEivFZ), swapped the SUI to USDC (8tXYGyQs) and bridged it to Ethereum 0x64a3db08 (AMXiX7BA).",
-      "known_defect": "Graph-model limit: origin branches and shares come from coin balance changes, not transferred StakedSui objects. The reported unspent share therefore covers the minted coin only. trace_funds follows the stake branch; trace_object_history follows custody. The object-to-coin-to-bridge expectation remains unmet; see concepts/fund-flows, Following every branch.",
       "timeout_s": 300
     },
     {

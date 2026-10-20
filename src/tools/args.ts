@@ -345,8 +345,8 @@ export function isAddressSchema(schema: z.ZodTypeAny): "one" | "list" | null {
   return null;
 }
 
-/** Edit distance between two argument names, for "did you mean". */
-function editDistance(a: string, b: string): number {
+/** Edit distance between two names, for "did you mean". */
+export function editDistance(a: string, b: string): number {
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {
     const row = [i];

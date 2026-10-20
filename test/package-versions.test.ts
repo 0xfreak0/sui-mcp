@@ -31,10 +31,39 @@ beforeEach(() => {
 
 describe("resolveEventTypeFilter", () => {
   it("rewrites a struct type to the version that defined it, keeping type arguments", async () => {
+  // Type origins are immutable and cached: serve the framework's own types
+  // when the type argument names 0x2, not the upgraded application's origins.
+  mockGqlQuery.mockImplementation(async (_q: string, vars: { a: string }) =>
+   vars.a === `0x${"0".repeat(63)}2`
+    ? {
+     package: {
+      typeOrigins: [
+       { module: "sui", struct: "SUI", definingId: vars.a },
+       { module: "display", struct: "DisplayCreated", definingId: vars.a },
+       { module: "coin_registry", struct: "SupplyState", definingId: vars.a },
+      ]
+     }
+    }
+    : origins);
     const r = await resolveEventTypeFilter(`${V5}::pool::SwapEvent<0x2::sui::SUI>`);
-    expect(r.filter).toBe(`${V1}::pool::SwapEvent<0x2::sui::SUI>`);
+  expect(r.filter).toBe(`${V1}::pool::SwapEvent<0x${"0".repeat(63)}2::sui::SUI>`);
     expect(r.resolution?.requested).toBe(`${V5}::pool::SwapEvent<0x2::sui::SUI>`);
   });
+
+ it("rewrites a type argument written with an upgraded id", async () => {
+  const r = await resolveEventTypeFilter(`${V1}::pool::SwapEvent<${V5}::vault::DepositEvent>`);
+  expect(r.filter).toBe(`${V1}::pool::SwapEvent<${V3}::vault::DepositEvent>`);
+ });
+
+ it("still rewrites the event struct when a type argument's package cannot be read", async () => {
+  const COIN = `0x${"7".repeat(64)}`;
+  mockGqlQuery.mockImplementation(async (_q: string, vars: { a: string }) => {
+   if (vars.a === COIN) throw new Error("HTTP 503");
+   return origins;
+  });
+  const r = await resolveEventTypeFilter(`${V5}::pool::SwapEvent<${COIN}::c::C>`);
+  expect(r.filter).toBe(`${V1}::pool::SwapEvent<${COIN}::c::C>`);
+ });
 
   it("leaves a type already written with its defining package alone", async () => {
     const r = await resolveEventTypeFilter(`${V3}::vault::DepositEvent`);
@@ -70,6 +99,14 @@ describe("resolveEventTypeFilter", () => {
     expect(r.resolution?.unverified).toBe(true);
   });
 
+ it("leaves an empty type-origin lineage unverified", async () => {
+  mockGqlQuery.mockResolvedValue({ package: { typeOrigins: [] } });
+  const r = await resolveEventTypeFilter("0x999a::m::E");
+  expect(r.filter).toBe("0x999a::m::E");
+  expect(r.resolution?.unverified).toBe(true);
+  expect(r.resolution?.note).toContain("empty result does not establish");
+ });
+
   it("keeps the unknown-struct error whole under the tool error cap", async () => {
     // Tool errors are cut at 500 characters. Long candidate types and a long
     // quoted input must not leave a candidate cut mid-address.
@@ -81,7 +118,7 @@ describe("resolveEventTypeFilter", () => {
         typeOrigins: ["A", "B", "C"].map((s) => ({ module: "liquidation_manager_module", struct: long(s), definingId: PKG })),
       },
     });
-    const input = `${PKG}::liquidation_manager_module::Missing<${`${PKG}::m::T,`.repeat(6)}>`;
+  const input = `${PKG}::liquidation_manager_module::Missing<${Array.from({ length: 6 }, () => `${PKG}::m::T`).join(",")}>`;
     const err: Error = await resolveEventTypeFilter(input).then(
       () => { throw new Error("expected a rejection"); },
       (e: Error) => e,

@@ -98,6 +98,7 @@ export const OVERRIDES: Record<string, Override> = {
   // An object's fields are its answer. A lending market's reserves run to
   // 280k characters, past the 100k default.
   get_object: { meta: FULL_SIZE },
+  list_objects_by_type: { meta: FULL_SIZE },
   get_transaction: { meta: FULL_SIZE },
   get_transactions: { meta: FULL_SIZE },
   // A resolved command list is paged to fit this ceiling (ptb-resolve.ts).

@@ -64,11 +64,17 @@ token (ETH, USDT, wBTC, wLBTC) that DefiLlama has no price for under its own Sui
 type is priced as the Ethereum asset it is minted against, and the price says
 so in `priced_as`. Only Pyth needs a key.
 
+`get_token_prices` with
+
 ```json
 { "coin_types": ["0x2::sui::SUI"], "at": "2025-05-22T10:30:00Z" }
 ```
 
-Call `get_token_prices` with these arguments. Each priced entry in `prices` includes `price_usd`, `source`, `price_time` and `price_offset_sec`; provider confidence appears when available.
+returns this entry in `prices`:
+
+```json
+{"coin_type":"0x2::sui::SUI","symbol":"SUI","verified":true,"price_usd":4.16,"source":"defillama","confidence":0.99,"price_time":"2025-05-22T10:30:01.000Z","price_offset_sec":1}
+```
 
 Every historical price names its source and sample time, with
 `price_offset_sec` showing its distance from the requested time. Confidence

@@ -33,9 +33,9 @@ renders like one already reached, regardless of `min_share` or `min_usd`.
 ## When a pair is reported
 
 A pair is reported when at least three characters match at each end, roughly
-one collision in seventeen million pairs by chance. The two addresses do not
-render identically at every width; they match at both ends, which is enough to
-fool a glance or a short truncation.
+one collision in seventeen million pairs by chance. A matching pair can
+differ in the middle at a wider rendering; matching ends are enough to fool a
+glance or a short truncation.
 
 ## Which side is the impostor
 

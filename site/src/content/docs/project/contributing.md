@@ -15,8 +15,10 @@ in the repository. It covers:
   addresses or SuiNS names, and the hooks that block them.
 - Adding a new tool: argument helpers, profiles, the generated tool
   reference, store overrides, tests and a live check.
-- Live checks, including the independent `oracle-pass` checks for funding,
-  holders, staking, bridge events, past balances and checkpoint lookups, and
+- Live checks, including `oracle-pass`, which compares sampled answers (swap
+  labels, object changes, mint authority, flows, cap owners, funding, holders,
+  staking, bridge events, past balances and checkpoint lookups) with the same
+  facts read from the chain by another path, and
   `consistency-pass` comparisons of transaction, funding, balance, flow and
   identity answers on the same subjects. An affected-tier run selects these
   passes when a tool they check changes; bounded reads are reported separately.

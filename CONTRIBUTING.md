@@ -103,12 +103,14 @@ hooks for those checks.
   detector-pass replay the chain reads that cannot change
   (`scripts/probe/README.md`).
 - Run `node scripts/probe/oracle-pass.mjs` to compare sampled tool answers
-  against independently read chain facts across eras: funding, holder rankings
-  for small coins, staking withdrawals, native bridge event bytes, past
-  balances and checkpoints, as well as swap and object changes. A draw that
-  reaches its bound or cannot be checked is reported separately; a selected
-  oracle that checks nothing fails. Use `--subjects` to repeat its printed
-  live-state subjects. `node scripts/probe/consistency-pass.mjs --seed 17
+  across eras against the same fact read from the chain by another path: swap
+  labels, object ends and object changes, mint authority, flows, cap owners,
+  first funding, holder rankings for small coins, staking rewards, native
+  bridge beneficiaries, past balances and checkpoint lookups. The report names
+  any truth read that is the tool's own query. A sample that cannot be checked
+  is counted as skipped; a drawn oracle that checks nothing fails. Use
+  `--subjects` to repeat its printed live-state subjects.
+  `node scripts/probe/consistency-pass.mjs --seed 17
   --tip 334000000` compares overlapping transaction, funding, balance, flow
   and identity answers on the same subjects, reporting bounded reads as skips.
   The affected tier runs either pass when a tool it checks changes

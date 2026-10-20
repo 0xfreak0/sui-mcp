@@ -238,9 +238,10 @@ the path is counted under `absent`; when no matched object has it,
 `field_note` lists the first object's fields. `where_unreadable` and
 `where_absent` count objects the `where` test could not be applied to;
 `matched_complete: false` identifies an unreadable test, so `matched` is
-only a lower bound. Unread coin layouts are counted per object type and
-reported under `layout_note`; an unavailable decimal scale leaves amounts
-raw under `scale_unavailable`.
+only a lower bound. When a struct's coin layout is not read, its amounts are
+counted per object type, and `layout_note` says how many struct definitions
+that affected; an unavailable decimal scale leaves amounts raw under
+`scale_unavailable`.
 
 The type is rewritten to the package version that defined each struct, type
 arguments included, since that is the id an object's type carries. A module,
@@ -254,7 +255,10 @@ closest names:
 The scan walks by type and object ID, not by value. It scans up to 10,000
 objects by default (`max_scan` can raise this to 50,000) and checks a
 45-second time budget between pages. `complete: false` means the sums and
-counts cover only the scanned portion. `stop_reason` names a scan limit;
+counts cover only the scanned portion. `stop_reason` says why the walk
+stopped: `max_scan`, `time_budget` or `missing_or_repeated_cursor`. A walk
+that reached the end of a module filter with other defining versions left
+reports `other_defining_packages` there.
 `next_call` resumes at the next cursor with separate, noncumulative totals
 when a cursor is available. Use `detail: "full"` to retrieve omitted rows.
 A full view too large for one response continues with `row_offset`, which

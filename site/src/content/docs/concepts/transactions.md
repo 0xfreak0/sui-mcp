@@ -25,12 +25,14 @@ checked, including bounded or failed publisher reads.
 A balance-change address that signed a curated protocol's packages carries
 `publisher_key_of`, for example to identify a fee paid to the team's key.
 
-Protocol `source` distinguishes curated package IDs or upgrade lineages from
-display-only Move Registry names and publisher-key matches. Curated entries
-can supply a verified category; a registered name is chosen by its registrant,
-and a shared publishing key does not establish what the deployed package
-does. Package-keyed curation applies on mainnet only. On testnet or devnet,
-the same package ID cannot inherit a mainnet protocol attribution.
+`get_transaction` lists protocols by name. To see how one package was named,
+call `identify_address` on it: `protocol.identified_via` is `registry` or
+`lineage` for a curated package ID or upgrade lineage, `mvr` for a Move
+Registry name and `publisher` for a publishing-key match. Only curated entries
+carry a verified category; a registered name is chosen by its registrant, and
+a shared publishing key does not establish what the deployed package does.
+Package-keyed curation applies on mainnet only. On testnet or devnet, the
+same package ID cannot inherit a mainnet protocol attribution.
 
 Event fields in the top half of the u256 range also get their two's-complement
 reading in `signed_readings`, for signed fees or PnL stored unsigned.
@@ -164,7 +166,7 @@ get_transaction(796Fr642E4W3XfvNcUWknTsDywd4RouMaCbqL5Ziptk)
 Both parties there are Kiosk objects rather than wallets. `changed` counts
 every object effect, including the coin that paid, so it is a weaker signal
 than `object_transfers`. `created_for` lists objects minted to an owner other
-than the sender, which is a delivery even though nothing held them before.
+than the sender as deliveries, although nothing held them before.
 Coins are excluded from `created_for`. When no other object moved,
 `coins_delivered_to` lists non-sender addresses that gained coins.
 

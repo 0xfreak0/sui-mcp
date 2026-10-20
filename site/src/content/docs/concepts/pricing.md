@@ -57,7 +57,7 @@ under `provider_unavailable` with its reason and affected sample count,
 separately from `not_listed` and `out_of_range`. Its missing amounts remain
 unpriced; an answered request without a historical quote is not an outage.
 
-## Which time is used?
+## Price time by tool
 
 | Tool or value | Price time |
 |---|---|

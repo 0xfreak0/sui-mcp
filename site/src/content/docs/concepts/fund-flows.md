@@ -475,15 +475,18 @@ follows the recipient's next transaction moving the tracked coin; backward
 follows the payer's most recent earlier inflow. It follows value through DEX
 swaps, exploits and withdrawals crediting only the actor, and objects that
 received funds. A call named `swap` is treated as a swap only while payments
-to addresses other than the sender and known pools are less than half of
-the sender's movement. When every paid or spent coin has a price, the
-comparison uses USD across coins; otherwise it compares each paid coin
-against the sender's net change in that coin. A fee or referrer on a
-router swap need not divert the trace, including on a first hop without
-`coin_type`. A large collector payment can veto the call-name reading;
-unless the coin changes independently establish a swap, the trace follows
-the largest eligible recipient and lists the others under
-`unfollowed_recipients`. Use `trace_flow_graph` for all branches.
+to addresses other than the sender and curated protocol or pool addresses
+are less than half of what the sender moved. When every paid or spent coin
+has a price, the comparison uses USD across coins; otherwise each paid coin
+is compared with the sender's absolute net change in that coin, so a fee on
+a swap's input or output stays below the bar, and a coin the sender neither
+spent nor kept on net while spending another (a router's fee in an
+intermediate coin) is left out. Once a coin is tracked only that coin counts;
+on a first hop without `coin_type` every coin does. When payments pass the
+bar and the coin changes do not show a swap on their own, the trace follows
+the largest recipient that is not a pool and
+lists the others under `unfollowed_recipients`. Use `trace_flow_graph` for
+all branches.
 
 The walk stops at sinks labelled through `manage_labels`: exchanges, bridges,
 mixers and burn addresses. A malicious-labelled wallet is followed instead.

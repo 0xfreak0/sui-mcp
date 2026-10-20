@@ -45,12 +45,14 @@ two people, and whether the set of keys that sign has changed. A key that
 signed only before the examined window shows as dormant, so raise
 `max_transactions` before calling a key unused.
 
-Some committee keys show a constructed pattern: a key
-with a long run of identical bytes is flagged as `unsignable`. The output
-includes `unsignable_members` and an `effective_committee` that excludes
-those keys. With one flagged member, a 2-of-4 committee reads as 2-of-3
-under that assessment. The pattern does not establish who holds any
-other member's private key.
+A committee key holding a run of more than seven identical bytes, such as a
+readable word followed by zero bytes, was written by hand. A generated key
+has such a run with probability below 1e-15, and finding the private key for
+a chosen public key is the discrete-logarithm problem, so that member can
+never sign. It is listed in `unsignable_members`, and `effective_committee`
+gives the threshold against the keys that can sign: a 2-of-4 with one such
+member is 2-of-3. The dormancy note leaves such members out of its cold or
+lost key reading.
 
 ## See who authorised one transaction
 
@@ -134,4 +136,4 @@ classify its authentication. The result reports it as unknown.
 ## zkLogin and passkey wallets
 
 zkLogin and passkey wallets go through the same path. zkLogin reports its
-OAuth issuer, which is all the chain discloses about the account.
+OAuth issuer; the chain discloses nothing else about the account.

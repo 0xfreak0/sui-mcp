@@ -63,9 +63,9 @@ it as an authority (`Cap`, `Admin`, `Operator`, `Owner`, `Manager`,
 after publish and handed to one key.
 
 A type held by a small number of addresses is listed individually, with
-each holder's `signing_scheme`. User-held types, such as
-`balance_manager::TradeCap` and `kiosk::KioskOwnerCap`, appear as counts
-under `user_held_types` instead of one entry per holder.
+each holder's `signing_scheme`. A type every user of a protocol holds, such
+as DeepBook v3's `balance_manager::TradeCap` or 0x2's `kiosk::KioskOwnerCap`,
+appears as a count under `user_held_types` instead of one entry per holder.
 
 A struct whose instance scan fails outright (a timeout, a 429 after retries),
 or whose defining package version cannot be read, is named in
@@ -123,7 +123,7 @@ get_upgrade_history { package: "0x0f286ad0…", as_of: "2025-09-07T16:03Z" }
 `disassemble_module` with `function_name` returns one function's bytecode, the
 `use` lines of the modules it calls and the constants it loads. A dependency's
 `use` line prints its original ID; the note gives the version this package's
-linkage runs, which is the ID to disassemble next. Large integers carry their
+linkage runs, and that ID is the one to disassemble next. Large integers carry their
 hex or shift form. A
 [clever error](https://move-book.com/reference/abort-and-assert/clever-errors/)
 is Move's name for an abort constant marked `#[error]`, which carries a

@@ -109,7 +109,8 @@ validators is node configuration, not chain state, and does not appear here.
 An issuer freeze is a chain-derived state that the `DenyCap` holder can
 reverse. The address result's `frozen_by_issuer` entries each give the full
 coin type, config object, DenyList object, epoch, `active: true` and
-`evidence_tier: "chain-derived"`. Pending restrictions appear separately.
+`evidence_tier: "chain-derived"`. A deny-list change written in the current
+epoch takes effect at the next one; its coin is listed under `pending`.
 `scan_complete: false` and `scan_note` identify unfinished config enumeration
 or denied coins without readable provenance; an empty active list from such
 a scan does not establish that no issuer froze the address. The tool also

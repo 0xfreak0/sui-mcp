@@ -1192,9 +1192,18 @@ target, and `get_checkpoint` by number and by time against GraphQL's
 checkpoint records. An oracle never reads truth through the helper the tool
 uses, and the report names a truth read that is the tool's own query. A
 tool change that reaches `ORACLE_PROBES` in `lib/tiers.mjs` runs it in the
-affected tier. A disagreement fails it unless its `KNOWN_DEFECTS` lists it,
-and so does a drawn oracle that checked nothing; `--subjects` pins subjects
-and `--dist` runs another build.
+affected tier. A disagreement fails it unless its `KNOWN_DEFECTS` lists it.
+An oracle whose source flags are all zero (`oracleRequested` in
+`lib/oracle-draws.mjs`) is reported as not drawn: `--coins 0` disables mint
+authority, cap owners and holder rankings, `--txs 0` first funding. Any other
+oracle that checks nothing fails the run. Each live draw is bounded and keeps
+drawing until it has three subjects: holder rankings up to 15 rounds of four
+fresh registry coins, each probed for at most 50 coin objects and 50 address
+balances; historical balances up to 30 checkpoints' owners, 20 a checkpoint,
+each with at most 50 transactions in the window; stake rewards up to 60
+withdrawals over six pages whose effects delete a pre-existing StakedSui. A
+stake draw that ran out of its bound reports `drawn but unverifiable` and
+fails. `--subjects` pins subjects and `--dist` runs another build.
 
 Rules for its oracles:
 

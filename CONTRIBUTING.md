@@ -27,8 +27,24 @@ Keep these out of the public repository:
 - **A maintainer's own wallet addresses or SuiNS names**, in code, tests,
   fixtures, docs or commit messages. Use neutral placeholders (`0xw1`).
 
-`.githooks/pre-commit` scans staged content and `.githooks/commit-msg` scans
-commit messages. Both read the tracked patterns and any local patterns.
+`.githooks/pre-commit` scans staged content and checks the author and
+committer identities. `.githooks/commit-msg` scans commit messages, checks
+both identities and validates every `Co-authored-by:` trailer. Both hooks
+check identities against the private patterns as well as the public identity
+rules. They reject the bare `noreply@users.noreply.github.com` address,
+machine-local email domains and GitHub noreply IDs that disagree with a
+known login. CI checks identities in the pushed or proposed commits and
+verifies unfamiliar GitHub logins against GitHub's user API.
+
+To use GitHub's account-specific noreply address, find your numeric account
+ID in GitHub's email settings and configure it for this checkout:
+
+```bash
+git config user.email '<ID>+<login>@users.noreply.github.com'
+```
+
+`noreply@github.com` is allowed for GitHub's web-flow committer, and
+`noreply@anthropic.com` is allowed in a Claude co-author trailer.
 
 Patterns live in two files:
 
@@ -39,11 +55,11 @@ Patterns live in two files:
 
 Keep private patterns in the ignored `.githooks/patterns.local`, not in the
 tracked pattern file. Copy `.githooks/patterns.local.example` and add the
-patterns there. The hook reports a match without printing a private pattern.
+patterns there, including any personal email address you do not want in a
+commit identity. The hook reports a match without printing a private pattern.
 
-CI runs the tracked patterns over commit messages and tracked files on pull
-requests and pushes to `main`. It cannot check local patterns, so install the
-hooks for those checks.
+CI checks tracked patterns in commit messages and files. It cannot read local
+patterns, so install the hooks for those checks.
 
 ## Development
 

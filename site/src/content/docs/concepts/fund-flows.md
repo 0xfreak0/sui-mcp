@@ -466,7 +466,10 @@ an override of that decision.
 follows the recipient's next transaction moving the tracked coin; backward
 follows the payer's most recent earlier inflow. It follows value through DEX
 swaps, exploits and withdrawals crediting only the actor, and objects that
-received funds. Use `trace_flow_graph` for all branches.
+received funds. A call named `swap` counts as a swap only while addresses
+other than the sender and pools received less than half of what the sender
+moved; otherwise the trace follows those recipients. Use `trace_flow_graph`
+for all branches.
 
 The walk stops at sinks labelled through `manage_labels`: exchanges, bridges,
 mixers and burn addresses. A malicious-labelled wallet is followed instead.

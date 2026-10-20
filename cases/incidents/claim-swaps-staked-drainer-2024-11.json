@@ -474,6 +474,30 @@
       "basis": "Chain: the third object is an AlphaFi alphapool::Receipt (pool 0x6ee8f602, xTokenBalance 39346972191), a staking receipt with a redeemable balance."
     },
     {
+      "id": "trace-drain-follows-collectors",
+      "question": "Following the value forward from the drain, which address does the trace follow first?",
+      "tool": "trace_funds",
+      "args": {
+        "digest": "{drain_tx}",
+        "direction": "forward",
+        "hops": 1
+      },
+      "expect": [
+        {
+          "path": "hops[0].basis",
+          "op": "equals",
+          "value": "direct"
+        },
+        {
+          "path": "hops[0].unfollowed_recipients[*].address",
+          "op": "includes",
+          "value": "{dev_wallet}"
+        }
+      ],
+      "tier": "chain-derived",
+      "basis": "Chain: F3TCZ6Ki paid 520.06 SUI to 0x55abfb40 and 173.35 SUI to 0x532517d0 and minted CTX to the signer; the trace follows the larger SUI recipient and lists the other."
+    },
+    {
       "id": "trace-follows-stolen-position",
       "question": "Following the value forward from the LP drain, where did the Cetus position go?",
       "tool": "trace_funds",

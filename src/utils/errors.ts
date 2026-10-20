@@ -33,7 +33,7 @@ export function isNotFound(err: unknown): boolean {
 }
 
 /** Longest error message a tool reply carries; the rest is noise from the transport. */
-const MAX_ERROR_CHARS = 500;
+export const MAX_ERROR_CHARS = 500;
 
 /**
  * Reduce a failure to one line a reader can act on.

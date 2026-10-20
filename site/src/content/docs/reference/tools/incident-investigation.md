@@ -41,15 +41,15 @@ sidebar:
 - Profile: `forensics`
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 
-(Incident investigation) Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. Call it first without value_field: it returns counts, a sample and the numeric fields per event type; then re-run naming one of them. group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. Each continuation ranks a disjoint slice, and a resumed ranking stays truncated even at exhaustion. Per-key counts and value_sum add across slices only when `scan.groups_complete`, subject to rounding; rankings, distinct_keys, distribution and P&L do not add.
+(Incident investigation) Rank senders or event types by count or by a summed event field over a window, in one call instead of paging query_events. Pass ISO 8601 dates directly in from and to, e.g. from: "2026-08-07T00:00:00Z"; checkpoint numbers are optional. Call it first without value_field: it returns counts, a sample and the numeric fields per event type; then re-run naming one of them. group_pnl also ranks the matched transactions' senders by their own balance changes, per coin and in USD, and flags PTBs where the filtered package was one leg of several. Check `truncated`: a partial scan cannot establish the full-window ranking. max_events or max_reads stops a scan, `scan.stop_reason` says which, and `scan.next_call` continues it. Each continuation ranks a disjoint slice, and a resumed ranking stays truncated even at exhaustion. Per-key counts and value_sum add across slices only when `scan.groups_complete`, subject to rounding; rankings, distinct_keys, distribution and P&L do not add.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `event_type` | string | no | Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; event_type_resolution reports it. |
-| `module` | string | no | Emitting module or package, e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
+| `event_type` | string | no | Event struct type, matched by the defining package, which may differ from the package called: 0x..., 0x...::module or 0x...::module::Name. Any version's ID is rewritten to the defining one; an unknown struct or struct-less module returns candidates. |
+| `module` | string | no | Module of the emitting call, not necessarily the event struct's module; e.g. 0x2::coin or 0x2. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
 | `sender` | string | no | Only events sent by this address. |
-| `from` | string | no | Window start: ISO 8601 timestamp (2026-08-07T00:00:00Z) or a checkpoint number. |
-| `to` | string | no | Window end: ISO 8601 timestamp, 'now', or a checkpoint number. |
+| `from` | string | no | Window start: ISO 8601 time (2026-08-07T00:00:00Z) or a checkpoint number; no checkpoint lookup is needed. |
+| `to` | string | no | Window end: ISO 8601 time (2026-08-08T00:00:00Z), 'now', or a checkpoint number. |
 | `group_by` | `sender` \| `event_type` | no | What to rank (default 'sender'). |
 | `value_field` | string | no | Dotted path into the event JSON to sum, e.g. 'deposit_value'. Omit to get counts plus field suggestions. |
 | `value_scale` | number (greater than 0) | no | Divisor for the summed value, e.g. 100 when a protocol reports USD cents. |
@@ -365,7 +365,7 @@ Manage chain-qualified address labels for investigation and trace sinks. Actions
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `module` | string | no | Population: addresses that called this package or module, 0x... or 0x...::module. The window selects original or called-version ID across the network cutover. module_scope reports scope; other_version_ids lists versions a post-cutover ID misses. |
-| `event_type` | string | no | Population: addresses that emitted this event struct type. Any version's ID of the defining package works. |
+| `event_type` | string | no | Population: addresses that emitted this event struct type. Any version's ID of the defining package works; an unknown struct or struct-less module returns candidates. |
 | `size` | integer (1 to 100) | no | Control group size (default 25). Choose a size comparable to the cohort. |
 | `exclude` | array of string | no | Cohort addresses to exclude from the draw. |
 | `from` | string | no | Window start: ISO 8601 timestamp or a checkpoint number. |

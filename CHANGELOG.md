@@ -41,6 +41,16 @@
 - **yolo.casa's orders contracts and Blast.fun's presale suite are named.** yolo.casa's limit, stop, DCA and OTC order lineage, published by `yolo.sui`, is curated as yolo.casa, type `dex`. Blast.fun's presale, access-control, partners and Aftermath DAO adapter packages, from both its October deployments, join its existing `launchpad` entries; their deployer shares a first funder with the earlier Blast.fun deployer.
 
 ### Changed
+- **Event type filters reject unknown full struct names with candidate types.**
+  `query_events`, `aggregate_events` and `sample_control_addresses` also
+  reject a module-level `event_type` whose module defines no struct, listing
+  the modules that do, and report an unread package type origin separately
+  from a verified empty result. The error lists only whole candidate types.
+  An empty `query_events` page reached through `cursor` says it covers the
+  rest of the list only. Their `module` argument names the emitting call,
+  which may differ from the event struct's module. Both list tools and
+  `query_transactions` document ISO 8601 time bounds directly in their
+  existing arguments.
 - **Batched transaction protocol names include event emitters.** `get_transactions` reads the emitting package alongside the event's defining type, so framework-typed events still identify the application that emitted them.
 - **Docs and tool descriptions were checked against the code.** Corrected:
   `query_events` `event_type` accepts a package, module or struct;

@@ -31,6 +31,20 @@ beforeEach(() => {
 
 describe("resolveEventTypeFilter", () => {
   it("rewrites a struct type to the version that defined it, keeping type arguments", async () => {
+  // Type origins are immutable and cached: serve the framework's own types
+  // when the type argument names 0x2, not the upgraded application's origins.
+  mockGqlQuery.mockImplementation(async (_q: string, vars: { a: string }) =>
+   vars.a === `0x${"0".repeat(63)}2`
+    ? {
+     package: {
+      typeOrigins: [
+       { module: "sui", struct: "SUI", definingId: vars.a },
+       { module: "display", struct: "DisplayCreated", definingId: vars.a },
+       { module: "coin_registry", struct: "SupplyState", definingId: vars.a },
+      ]
+     }
+    }
+    : origins);
     const r = await resolveEventTypeFilter(`${V5}::pool::SwapEvent<0x2::sui::SUI>`);
   expect(r.filter).toBe(`${V1}::pool::SwapEvent<0x${"0".repeat(63)}2::sui::SUI>`);
     expect(r.resolution?.requested).toBe(`${V5}::pool::SwapEvent<0x2::sui::SUI>`);
@@ -104,7 +118,7 @@ describe("resolveEventTypeFilter", () => {
         typeOrigins: ["A", "B", "C"].map((s) => ({ module: "liquidation_manager_module", struct: long(s), definingId: PKG })),
       },
     });
-    const input = `${PKG}::liquidation_manager_module::Missing<${`${PKG}::m::T,`.repeat(6)}>`;
+  const input = `${PKG}::liquidation_manager_module::Missing<${Array.from({ length: 6 }, () => `${PKG}::m::T`).join(",")}>`;
     const err: Error = await resolveEventTypeFilter(input).then(
       () => { throw new Error("expected a rejection"); },
       (e: Error) => e,

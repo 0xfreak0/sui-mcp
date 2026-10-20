@@ -62,6 +62,11 @@ describe("swap labels read from the pools' own events", () => {
     ["7ni1zqot4JktmUrGCJMSqoozvqHfDDVSQDohg2CDk8oN", ["SUI → USDT", "USDT → USDC", "USDC → stSUI", "stSUI → SUI"]],
     // Cetus v1 context then Aftermath: FlowX's Swap, then its Pay, then the aggregator's echo of the Swap
     ["BhBBTGMxpr1gP5nrphECEFU9W43aQgY8rPm15o39SbVw", ["FUD → SUI", "SUI → IKA", "IKA → USDC", "USDC → stSUI", "stSUI → SUI", "SUI → FUD"]],
+    // FlowX: stSUI redemption is first in each of two paths; the issuer's
+    // RedeemEvent names both coins without a preceding pool swap.
+    ["BvkmeokA27CSwN1c44woDukBcjzwBGSNYXGHTig9AJsZ", ["stSUI → SUI", "SUI → USDC", "USDC → BUCK", "stSUI → BUCK", "stSUI → SUI", "SUI → USDC", "USDC → BUCK"]],
+    // FlowX: the final stSUI redemption has no following pool swap.
+    ["7bDSn7wuLC8VqFooWArSTbR1dTdGT9sSZp7BedX4kG6F", ["USDC → BUCK", "BUCK → stSUI", "stSUI → SUI"]],
   ];
   it.each(cases)("%s", (digest, expected) => {
     const f = FIXTURES[digest];
@@ -71,6 +76,27 @@ describe("swap labels read from the pools' own events", () => {
   it("falls back to the call's own types without events", () => {
     const f = FIXTURES["DcA6ngs7MTEjbS2nqjNnLPLMwoXGZgaCpAfR9fjb9m1x"];
     expect(swaps(decodeTransaction(commandsOf(f), f.balanceChanges, f.sender).actions)).toEqual(["stSUI → USDC", "stSUI → SUI"]);
+  });
+
+  it("does not infer a redemption from an incomplete or differently typed event", () => {
+    const f = FIXTURES["7bDSn7wuLC8VqFooWArSTbR1dTdGT9sSZp7BedX4kG6F"];
+    const event = f.events.findIndex((e) => e.type.includes("::liquid_staking::RedeemEvent>"));
+    const decode = (replacement: SwapEventInput) => swaps(decodeTransaction(commandsOf(f), f.balanceChanges, f.sender, {
+      swapEvidence: { ...evidenceOf(f), events: f.events.map((e, i) => i === event ? replacement : e) },
+    }).actions);
+    const original = f.events[event];
+    const payload = original.json;
+    if (!payload || typeof payload !== "object" || !("event" in payload) || !payload.event || typeof payload.event !== "object") throw new Error("Fixture has no issuer event fields");
+    expect(decode({ ...original, json: { event: { ...payload.event, sui_amount_out: "0" } } })).toEqual(["USDC → BUCK", "BUCK → stSUI"]);
+    expect(decode({ ...original, type: original.type.replace("::events::Event<", "::other::Event<") })).toEqual(["USDC → BUCK", "BUCK → stSUI"]);
+  });
+
+  it("does not assign a redemption event when two calls can have emitted it", () => {
+    const f = FIXTURES["7bDSn7wuLC8VqFooWArSTbR1dTdGT9sSZp7BedX4kG6F"];
+    const commands = commandsOf(f);
+    const redeem = commands.findIndex((c) => c.command.oneofKind === "moveCall" && c.command.moveCall.typeArguments?.length === 1 && c.command.moveCall.function?.startsWith("swap"));
+    commands.splice(redeem, 0, commands[redeem]);
+    expect(swaps(decodeTransaction(commands, f.balanceChanges, f.sender, { swapEvidence: evidenceOf(f) }).actions)).toEqual(["USDC → BUCK", "BUCK → stSUI"]);
   });
 });
 

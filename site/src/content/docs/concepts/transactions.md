@@ -58,10 +58,12 @@ follow `events_page.next_call` for the next offset.
 real hop, for example USDC to USDT to USDC. It lists the loop's action indices,
 coins and round-trip cost from the pools' own swap events, or null with a reason.
 
-`get_transaction` reads each swap's coins from the swap event of the pool
-that ran it, on the call that takes that pool, so a router hop, a two-pool
-call and a flash swap the transaction repays each get a `Swap X → Y` label
-with the coins the pool took in and paid out:
+`get_transaction` reads each pool swap's coins from the pool's event on
+the call that took that pool. It also reads a liquid-staking redemption
+from its issuer's event when the issuer names both coins and the event
+belongs to one swap call, including a route's first or last hop. A router
+hop, a two-pool call and a flash swap the transaction repays get
+`Swap X → Y` labels with the coins the transaction states:
 
 ```
 get_transaction(8W2fZYFV2JaZfT2zrRgEZPuzNTtgAjj7qsxquem2F2M3)
@@ -71,10 +73,11 @@ get_transaction(8W2fZYFV2JaZfT2zrRgEZPuzNTtgAjj7qsxquem2F2M3)
     Call router::check_coin_threshold on Cetus
 ```
 
-A call with no swap event, or with a swap event that cannot be read or tied
-to one call, is labelled from its function name, its type arguments and the
-sender's balance changes. So is every call in `get_transaction_history`,
-`build_timeline` and `trace_funds`, which decode without events. There a
+A one-coin call between two event-read route hops can take its coins from
+those neighbours when they agree with the call's coin type. Without
+unambiguous event evidence, the decoder falls back to the function name,
+type arguments and sender balance changes. `get_transaction_history`,
+`build_timeline` and `trace_funds` decode without events. There a
 two-pool `router::swap_ab_bc`, `swap_ab_cb`, `swap_ba_bc` or `swap_ba_cb`
 names the first and third type arguments as input and output, and a swap's
 direction is a lead to check against `get_transaction`.

@@ -80,6 +80,24 @@ export function readPoolSwap(event: SwapEventInput, index: number, targets: Even
   return swap.a_to_b ? { pool, coinIn: a, coinOut: b } : { pool, coinIn: b, coinOut: a };
 }
 
+// The issuer's redemption event states both sides of an LST → SUI swap.
+// A generic name or framework stake event alone cannot identify the LST:
+// this event's defining type and its embedded coin type must both match.
+const LST_REDEEM_EVENT = /^0xc35ee7fee75782806890cf8ed8536b52b4ba0ace0fb46b944f1155cc5945baa3::events::Event<0xc35ee7fee75782806890cf8ed8536b52b4ba0ace0fb46b944f1155cc5945baa3::liquid_staking::RedeemEvent>$/;
+const SUI_TYPE = normalizeStructTag("0x2::sui::SUI");
+
+function issuerRedeem(event: SwapEventInput): [string, string] | null {
+  if (!LST_REDEEM_EVENT.test(event.type)) return null;
+  const wrapper = event.json;
+  if (!wrapper || typeof wrapper !== "object" || !("event" in wrapper) ||
+      !wrapper.event || typeof wrapper.event !== "object") return null;
+  const fields = wrapper.event;
+  if (!("lst_amount_in" in fields) || typeof fields.lst_amount_in !== "string" || !/^[1-9]\d*$/.test(fields.lst_amount_in) ||
+      !("sui_amount_out" in fields) || typeof fields.sui_amount_out !== "string" || !/^[1-9]\d*$/.test(fields.sui_amount_out)) return null;
+  const coin = canonicalType("typename" in fields && typeof fields.typename === "string" ? fields.typename : null);
+  return coin && coin !== SUI_TYPE ? [coin, SUI_TYPE] : null;
+}
+
 /**
  * For each Move call, the pool swaps it ran, in emission order. A pool's
  * own event and a router's event of another type repeating the same pool
@@ -183,5 +201,24 @@ export function poolSwapsByCommand(commands: GrpcTypes.Command[], evidence: Swap
     const command = placed[k];
     if (command !== null && !incomplete.has(command)) out.set(command, [...(out.get(command) ?? []), [s.coinIn, s.coinOut]]);
   });
+  // An issuer can redeem an LST without a pool swap event. The emitter and
+  // the event's order identify its call, and the issuer's own event names
+  // the LST and the SUI it paid. Do not infer a leg when several calls could
+  // have emitted the event or another pool swap of this call is unread.
+  let issuerHops: Map<number, [string, string][]> | null = null;
+  for (let i = 0; i < evidence.events.length; i++) {
+    const pair = issuerRedeem(evidence.events[i]);
+    const possible = emitters?.[i];
+    if (!pair || possible?.length !== 1) continue;
+    const at = possible[0];
+    const call = commands[at].command;
+    if (call.oneofKind !== "moveCall" || !call.moveCall.function?.startsWith("swap") ||
+        call.moveCall.typeArguments?.length !== 1 || canonicalType(call.moveCall.typeArguments[0]) !== pair[0]) continue;
+    issuerHops ??= new Map();
+    const pairs = issuerHops.get(at);
+    if (pairs) pairs.push(pair);
+    else issuerHops.set(at, [pair]);
+  }
+  if (issuerHops) for (const [at, pairs] of issuerHops) if (!out.has(at) && !incomplete.has(at)) out.set(at, pairs);
   return out;
 }

@@ -94,6 +94,11 @@
   candidate's own.
 
 ### Fixed
+- **FlowX liquid-staking legs use their issuer's redeem events.** A
+  one-coin `swap_router` call can be the first or last leg of a route, with
+  no pair of neighbouring pool swaps. `get_transaction` now labels that
+  call stSUI → SUI when the issuer's redemption event names both coins
+  and is attributable to that call; ambiguous events stay unlabelled.
 - **Swap labels read the pools' own swap events.** `get_transaction` takes
   each swap's coins in and out from the event of the pool that ran it,
   placed on the call that takes that pool, instead of from the call's type

@@ -504,12 +504,15 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
   direction and a later call into the same package and module starts with
   `repay`. Bluefin's `FlashSwap` events are read as swaps for the same
   reason (`readSwap` with `flash`).
-- **A one-coin leg is read from its neighbours.** A swap call naming one
-  coin (`swap_exact_x_to_y<STSUI>`, its SUI side implicit) with no event of
-  its own, between two event-read swaps that take one of the same results,
-  takes in what the swap before it gave out and gives out what the swap
-  after it takes in, when the coin it names is one of the two
-  (`oneCoinSwaps`). Otherwise it keeps the coinless `Swap on X` label.
+- **A one-coin LST redemption reads its issuer's event.** The issuer's
+  `events::Event<liquid_staking::RedeemEvent>` names the LST in `typename`,
+  `lst_amount_in` and `sui_amount_out`. Match the defining event type, both
+  positive amounts, the emitting call and its sole coin type before
+  labelling LST → SUI; the first or last FlowX route leg lacks a pool
+  swap event on one side. A one-coin swap with no such event still takes
+  its coins from the two event-read swaps on either side of its shared route
+  result when its sole type names one of them (`oneCoinSwaps`). Otherwise
+  it keeps the coinless `Swap on X` label.
 - **Swap contexts read events first.** A context call with events reads as
   those swaps, which also settles a context whose type arguments read two
   ways; the remaining calls use the holding rule. A context whose calls are

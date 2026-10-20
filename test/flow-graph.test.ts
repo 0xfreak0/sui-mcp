@@ -40,6 +40,22 @@ describe("splitSpend", () => {
     expect(s.unallocated).toBe(0);
   });
 
+  it("keeps collector payments ahead of a bait coin from a named swap", () => {
+    // F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd; signer anonymized.
+    const bait = "0xab58b428020df50fe33cbb6d1533b0d146a3c1621210cfc867f8fee394f17ae9::ctx::CTX";
+    const changes = [
+      { address: A, amount: "-5367827991", coin_type: SUI },
+      { address: A, amount: "8314000000000", coin_type: bait },
+      { address: B, amount: "520060685745", coin_type: SUI },
+      { address: C, amount: "173353561916", coin_type: SUI },
+    ];
+    const origin = splitOrigin({ changes, trackedCoin: SUI });
+    expect(origin.branches.map((b) => b.address)).toEqual([B, C]);
+    const spend = splitSpend({ sender: A, holder: A, changes, trackedCoin: SUI });
+    expect(spend.branches.map((b) => b.address)).toEqual([B, C]);
+    expect(spend.branches.every((b) => b.basis === "direct")).toBe(true);
+  });
+
   it("removes gas before measuring the holder's outflow", () => {
     // The payer's SUI change includes gas: without removing it, 1 SUI of the
     // 101 reads as burned rather than paid.

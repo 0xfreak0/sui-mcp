@@ -195,25 +195,31 @@ one hop.
 
 When `0xw2` first funded `0xw1`, the result includes
 `"subject_funded_subject":[{"funder":"0xw2","funded":"0xw1","funding_tx":"…"}]`.
-The related address has no funding-chain result of its own. Shared-funder
-counts include walked chains only and stop at the first funder in either set.
+The related address has no funding-chain result of its own.
 
 Like the single walk, it stops at funders that paid more than 50 distinct
 addresses. Each common funder has fan-out and flow shape to distinguish a
-narrow origin from an exchange many unrelated users withdrew from.
+narrow origin from an exchange many unrelated users withdrew from. A chain
+counts toward shared funders up to the first funder that is a walked subject.
+When a walked chain reaches a related address, the funders past it are
+counted for that related address, so a split set reports the shared funders
+one call over every address would. Two addresses walked in different calls
+are not compared for shared funders; compare their `first_funder` fields.
 
 Co-funding is measured against each transaction's total recipient count.
 Two subjects among two recipients suggests a bespoke payment; two among
 twenty can occur in an unrelated service batch. The tool reports direct
-funding and later signed payments under `subject_paid_subject`. With no
-related addresses and up to 20 walked addresses, it checks every ordered
-pair. Larger sets scan each walked address's newest sent and affected
-transactions, up to 150 per direction, and intersect the sender and net
-recipients with both sets. This covers payments in either direction between
-a walked and a related address, and between walked addresses. Payments only
-between related addresses belong in a call that walks one of them.
-`subject_payment_scope.incomplete` names histories that reached the page
-bound, lacked a cursor or failed to read; `incomplete_transactions` names
+funding and later signed payments under `subject_paid_subject`. Every ordered
+pair of up to 20 walked addresses is checked directly. Links with related
+addresses, and batches of more than 20 walked addresses, are read from each
+walked address's sent and affected transactions: the newest 150 per
+direction, plus the earliest 50 when the newest did not reach the start.
+This covers payments in either direction between a walked and a related
+address, and between walked addresses. Payments only between related
+addresses belong in a call that walks one of them.
+`subject_payment_scope.incomplete` names each history not read end to end:
+`page_limit` (the transactions between the earliest and newest pages were not
+read), `missing_cursor`, or the read error. `incomplete_transactions` names
 balance changes that could not all be read. An empty payment list with an
 incomplete scope cannot establish absence.
 Fundings within a minute form timing clusters, a lead for scripted setup

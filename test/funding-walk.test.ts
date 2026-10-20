@@ -74,8 +74,11 @@ let earliest: Record<string, unknown[]>;
 let paid: Record<string, string[]>;
 /** Transactions `payer` sent that affected `payee`, keyed `payer>payee`. */
 let pairs: Record<string, unknown[]>;
-/** Newest transaction pages in the set-based payment scan. */
+/** Newest and earliest transaction pages in the set-based payment scan, keyed `sent:<addr>` or `affected:<addr>`. */
 let recent: Record<string, Array<{ nodes: unknown[]; more?: boolean; cursor?: string | null }>>;
+let oldest: Record<string, { nodes: unknown[]; more?: boolean }>;
+/** Set-scan reads that throw, keyed like `recent`. */
+let failing: Set<string>;
 /** Raw SUI each payment in an address's outgoing transactions carried; 1 SUI unless set. */
 let paidAmount: Record<string, string>;
 
@@ -112,7 +115,9 @@ beforeEach(() => {
   };
   paid = { [DISTRIBUTOR]: Array.from({ length: 261 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}`) };
   pairs = {};
- recent = {};
+  recent = {};
+  oldest = {};
+  failing = new Set();
   paidAmount = {};
   measureFanout.mockImplementation(async (address: string) => ({
     address,
@@ -139,18 +144,24 @@ beforeEach(() => {
       }
       return out;
     }
-  if (query.includes("last: 50, before: $before")) {
-   const direction = query.includes("filter: { sentAddress:") ? "sent" : "affected";
-   const pages = recent[`${direction}:${vars.addr}`] ?? [];
-   const page = vars.before ? Number(vars.before) : 0;
-   const selected = pages[page] ?? { nodes: [] };
-   return {
-    transactions: {
-     nodes: selected.nodes,
-     pageInfo: { hasPreviousPage: selected.more ?? false, startCursor: selected.more ? (selected.cursor === undefined ? String(page + 1) : selected.cursor) : null },
-    },
-   };
-  }
+    if (query.includes("last: 50, before: $before")) {
+      const key = `${query.includes("filter: { sentAddress:") ? "sent" : "affected"}:${vars.addr}`;
+      if (failing.has(key)) throw new Error("upstream 503");
+      const page = vars.before ? Number(vars.before) : 0;
+      const selected = recent[key]?.[page] ?? { nodes: [] };
+      const cursor = selected.cursor === undefined ? String(page + 1) : selected.cursor;
+      return {
+        transactions: {
+          nodes: selected.nodes,
+          pageInfo: { hasPreviousPage: selected.more ?? false, startCursor: selected.more ? cursor : null },
+        },
+      };
+    }
+    if (query.includes("first: 50) { pageInfo { hasNextPage } nodes { digest sender")) {
+      const key = `${query.includes("filter: { sentAddress:") ? "sent" : "affected"}:${vars.addr}`;
+      const selected = oldest[key] ?? { nodes: [] };
+      return { transactions: { nodes: selected.nodes, pageInfo: { hasNextPage: selected.more ?? false } } };
+    }
     if (query.includes("sentAddress")) {
       // Popularity probe: one page, newest first, one recipient per transaction.
       const recipients = paid[vars.addr as string] ?? [];
@@ -567,108 +578,169 @@ describe("find_funding_sources reports every payment between subjects", () => {
 });
 
 describe("find_funding_sources checks related subjects across batches", () => {
- const other = Array.from({ length: 21 }, (_, i) => `0x${(0xa000 + i).toString(16).padStart(64, "0")}`);
- const later = {
-  digest: "LaterPay",
-  sender: { address: PAYER },
-  effects: {
-   timestamp: "2025-09-07T15:04:00.000Z",
-   balanceChanges: conn([bc(PAYER, "-2000000000"), bc(ATTACKER, "2000000000")]),
-  },
- };
+  const other = Array.from({ length: 21 }, (_, i) => `0x${(0xa000 + i).toString(16).padStart(64, "0")}`);
+  const payment = (digest: string, payer: string, payee: string, at: string) => ({
+    digest,
+    sender: { address: payer },
+    effects: { timestamp: at, balanceChanges: conn([bc(payer, "-2000000000"), bc(payee, "2000000000")]) },
+  });
+  const later = payment("LaterPay", PAYER, ATTACKER, "2025-09-07T15:04:00.000Z");
+  const digests = (d: { subject_paid_subject?: Array<{ digest: string }> }) => (d.subject_paid_subject ?? []).map((p) => p.digest);
 
- it("finds a related funder without walking it", async () => {
-  const d = await run("find_funding_sources", {
-   addresses: [ATTACKER],
-   related_addresses: [DISTRIBUTOR, ...other],
-   depth: "first_hop",
-   measure_fanout: false,
+  it("finds a related funder without walking it", async () => {
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [DISTRIBUTOR, ...other],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(d.address_count).toBe(1);
+    expect(d.related_address_count).toBe(22);
+    expect(d.subject_funded_subject).toMatchObject([{ funder: DISTRIBUTOR, funded: ATTACKER }]);
+    expect(d.shared_funders).toEqual([]);
+    expect(d.subject_payment_scope).toMatchObject({ walked_addresses: 1, related_addresses: 22 });
   });
-  expect(d.address_count).toBe(1);
-  expect(d.related_address_count).toBe(22);
-  expect(d.subject_funded_subject).toMatchObject([{ funder: DISTRIBUTOR, funded: ATTACKER }]);
-  expect(d.shared_funders).toEqual([]);
-  expect(d.subject_payment_scope).toMatchObject({ walked_addresses: 1, related_addresses: 22 });
- });
 
- it("stops shared-funder counts at a related subject even when its ancestors overlap another walk", async () => {
-  paid[DISTRIBUTOR] = [ATTACKER];
-  earliest[other[0]] = [fundingTx("OtherFunding", ANCESTOR, other[0], "1000000000", "2025-09-07T09:00:00.000Z")];
-  const d = await run("find_funding_sources", {
-   addresses: [ATTACKER, other[0]],
-   related_addresses: [DISTRIBUTOR],
-   max_hops: 3,
-   measure_fanout: false,
+  it("counts shared funders past a related subject as a call walking every address does", async () => {
+    paid[DISTRIBUTOR] = [ATTACKER];
+    earliest[other[0]] = [fundingTx("OtherFunding", ANCESTOR, other[0], "1000000000", "2025-09-07T09:00:00.000Z")];
+    const shape = (d: { shared_funders: Array<{ funder: string; funded: string[] }> }) =>
+      d.shared_funders.map((f) => ({ funder: f.funder, funded: [...f.funded].sort() }));
+    const split = await run("find_funding_sources", {
+      addresses: [ATTACKER, other[0]],
+      related_addresses: [DISTRIBUTOR],
+      max_hops: 3,
+      measure_fanout: false,
+    });
+    const whole = await run("find_funding_sources", {
+      addresses: [ATTACKER, other[0], DISTRIBUTOR],
+      max_hops: 3,
+      measure_fanout: false,
+    });
+    expect(split.subject_funded_subject).toMatchObject([{ funder: DISTRIBUTOR, funded: ATTACKER }]);
+    expect(shape(split)).toContainEqual({ funder: ANCESTOR, funded: [DISTRIBUTOR, other[0]].sort() });
+    expect(shape(split)).toEqual(shape(whole));
   });
-  expect(d.subject_funded_subject).toMatchObject([{ funder: DISTRIBUTOR, funded: ATTACKER }]);
-  expect(d.shared_funders).toEqual([]);
- });
 
- it("finds later payments from a related payer by scanning the walked payee", async () => {
-  recent[`affected:${ATTACKER}`] = [{ nodes: [later] }];
-  const d = await run("find_funding_sources", {
-   addresses: [ATTACKER],
-   related_addresses: [PAYER],
-   measure_fanout: false,
-   depth: "first_hop",
+  it("finds later payments from a related payer by scanning the walked payee", async () => {
+    recent[`affected:${ATTACKER}`] = [{ nodes: [later] }];
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [PAYER],
+      measure_fanout: false,
+      depth: "first_hop",
+    });
+    expect(d.subject_paid_subject).toMatchObject([{ payer: PAYER, payee: ATTACKER, digest: "LaterPay" }]);
+    expect(d.subject_payment_scope.incomplete).toBeUndefined();
   });
-  expect(d.subject_paid_subject).toMatchObject([{ payer: PAYER, payee: ATTACKER, digest: "LaterPay" }]);
-  expect(d.subject_payment_scope.incomplete).toBeUndefined();
- });
 
- it("finds a related recipient through the walked payer's sent history", async () => {
-  const outbound = {
-   digest: "OtherPay",
-   sender: { address: ATTACKER },
-   effects: {
-    timestamp: "2025-09-07T15:06:00.000Z",
-    balanceChanges: conn([bc(ATTACKER, "-1000000000"), bc(PAYER, "1000000000")]),
-   },
-  };
-  recent[`sent:${ATTACKER}`] = [{ nodes: [outbound] }];
-  const d = await run("find_funding_sources", {
-   addresses: [ATTACKER],
-   related_addresses: [PAYER],
-   depth: "first_hop",
-   measure_fanout: false,
+  it("finds a related recipient through the walked payer's sent history", async () => {
+    recent[`sent:${ATTACKER}`] = [{ nodes: [payment("OtherPay", ATTACKER, PAYER, "2025-09-07T15:06:00.000Z")] }];
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [PAYER],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(d.subject_paid_subject).toMatchObject([{ payer: ATTACKER, payee: PAYER, digest: "OtherPay" }]);
   });
-  expect(d.subject_paid_subject).toMatchObject([{ payer: ATTACKER, payee: PAYER, digest: "OtherPay" }]);
- });
 
- it("records a missing cursor and unread balance changes instead of a clean scan", async () => {
-  const incompleteTx = { digest: "BalanceUnread", sender: { address: PAYER }, effects: { timestamp: null, balanceChanges: null } };
-  recent[`affected:${ATTACKER}`] = [{ nodes: [incompleteTx], more: true, cursor: null }];
-  const d = await run("find_funding_sources", {
-   addresses: [ATTACKER],
-   related_addresses: [PAYER],
-   depth: "first_hop",
-   measure_fanout: false,
+  it("reads the earliest page of a long history, where first fundings sit, and reports the gap", async () => {
+    recent[`affected:${ATTACKER}`] = [{ nodes: [later], more: true }, { nodes: [], more: true }, { nodes: [], more: true }];
+    oldest[`affected:${ATTACKER}`] = { nodes: [payment("EarlyPay", PAYER, ATTACKER, "2024-01-01T00:00:00.000Z")], more: true };
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [PAYER],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(digests(d)).toEqual(["EarlyPay", "LaterPay"]);
+    expect(d.subject_payment_scope.incomplete).toEqual([{ address: ATTACKER, direction: "affected", reason: "page_limit" }]);
   });
-  expect(d.subject_paid_subject).toBeUndefined();
-  expect(d.subject_payment_scope).toMatchObject({
-   incomplete_transactions: ["BalanceUnread"],
-   incomplete: [{ address: ATTACKER, direction: "affected", reason: "missing_cursor" }],
-  });
- });
 
- it("checks later payments for more than twenty walked subjects and marks exhausted page bounds", async () => {
-  recent[`sent:${PAYER}`] = [
-   { nodes: [later], more: true },
-   { nodes: [], more: true },
-   { nodes: [], more: true },
-  ];
-  recent[`affected:${ATTACKER}`] = [{ nodes: [later] }];
-  const d = await run("find_funding_sources", {
-   addresses: [ATTACKER, PAYER, ...other],
-   depth: "first_hop",
-   measure_fanout: false,
+  it("counts a history as read end to end when the earliest page meets the newest pages", async () => {
+    const mid = payment("MidPay", PAYER, ATTACKER, "2025-01-01T00:00:00.000Z");
+    recent[`affected:${ATTACKER}`] = [{ nodes: [later], more: true }, { nodes: [], more: true }, { nodes: [mid], more: true }];
+    oldest[`affected:${ATTACKER}`] = { nodes: [payment("EarlyPay", PAYER, ATTACKER, "2024-01-01T00:00:00.000Z"), mid], more: true };
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [PAYER],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(digests(d)).toEqual(["EarlyPay", "MidPay", "LaterPay"]);
+    expect(d.subject_payment_scope.incomplete).toBeUndefined();
   });
-  expect(d.subject_paid_subject.filter((p: { digest: string }) => p.digest === "LaterPay")).toHaveLength(1);
-  expect(d.subject_payment_scope).toMatchObject({
-   transactions_per_direction: 150,
-   incomplete: [{ address: PAYER, direction: "sent", reason: "page_limit" }],
+
+  it("records a missing cursor and unread balance changes instead of a clean scan", async () => {
+    const incompleteTx = { digest: "BalanceUnread", sender: { address: PAYER }, effects: { timestamp: null, balanceChanges: null } };
+    recent[`affected:${ATTACKER}`] = [{ nodes: [incompleteTx], more: true, cursor: null }];
+    oldest[`affected:${ATTACKER}`] = { nodes: [], more: true };
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [PAYER],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(d.subject_paid_subject).toBeUndefined();
+    expect(d.subject_payment_scope).toMatchObject({
+      incomplete_transactions: ["BalanceUnread"],
+      incomplete: [{ address: ATTACKER, direction: "affected", reason: "missing_cursor" }],
+    });
   });
- });
+
+  it("names a history whose read failed rather than reporting no payments", async () => {
+    failing.add(`affected:${ATTACKER}`);
+    oldest[`affected:${ATTACKER}`] = { nodes: [], more: true };
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER],
+      related_addresses: [PAYER],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(d.subject_payment_scope.incomplete).toEqual([
+      { address: ATTACKER, direction: "affected", reason: expect.stringContaining("upstream 503") },
+    ]);
+  });
+
+  it("checks later payments for more than twenty walked subjects and marks exhausted page bounds", async () => {
+    recent[`sent:${PAYER}`] = [{ nodes: [later], more: true }, { nodes: [], more: true }, { nodes: [], more: true }];
+    oldest[`sent:${PAYER}`] = { nodes: [], more: true };
+    recent[`affected:${ATTACKER}`] = [{ nodes: [later] }];
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER, PAYER, ...other],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(digests(d).filter((x) => x === "LaterPay")).toHaveLength(1);
+    expect(d.subject_payment_scope).toMatchObject({
+      method: "earliest 50 and newest 150 sent and affected transactions of each walked address",
+      incomplete: [{ address: PAYER, direction: "sent", reason: "page_limit" }],
+    });
+  });
+
+  it("keeps the pairwise check between walked subjects when related addresses are given", async () => {
+    // Older than any history page the scan reads; only the pair query sees it.
+    pairs[`${PAYER}>${ATTACKER}`] = [payment("PairOnly", PAYER, ATTACKER, "2025-02-01T00:00:00.000Z")];
+    const d = await run("find_funding_sources", {
+      addresses: [ATTACKER, PAYER],
+      related_addresses: [DISTRIBUTOR],
+      depth: "first_hop",
+      measure_fanout: false,
+    });
+    expect(digests(d)).toContain("PairOnly");
+    expect(d.subject_payment_scope).toMatchObject({
+      method: expect.stringContaining("every ordered pair of walked subjects"),
+      pairs_checked: 2,
+      related_addresses: 1,
+    });
+  });
+
+  it("does not check payments for one walked address and no related ones", async () => {
+    const d = await run("find_funding_sources", { addresses: [ATTACKER], depth: "first_hop", measure_fanout: false });
+    expect(d.subject_payment_scope).toBeUndefined();
+    expect(gqlQuery.mock.calls.some(([q]) => String(q).includes("last: 50, before: $before"))).toBe(false);
+  });
 });
 
 describe("find_funding_source applies the same price rule as build_wallet_edges during an outage", () => {

@@ -152,35 +152,35 @@ try {
     ck(`${d.slice(0, 8)}: signed by 0x9e55, and the attacker's gain matches`, sender === PAYER && row?.received?.[0] === `${Number(net) / 1e9} SUI`, `${sender?.slice(0, 8)} ${row?.received} vs ${net}`);
   }
 
- const split = await call("find_funding_sources", {
-  addresses: [NEMO],
-  related_addresses: [FUNDER, PAYER],
-  depth: "first_hop",
-  measure_fanout: false,
- });
- const otherSplit = await call("find_funding_sources", {
-  addresses: [FUNDER, PAYER],
-  related_addresses: [NEMO],
-  depth: "first_hop",
-  measure_fanout: false,
- });
- ck("split funding batch still links the attacker's first funder",
-  split.subject_funded_subject?.some((l) => l.funder === FUNDER && l.funded === NEMO && l.funding_tx === FIRST_FUNDING),
-  short(split.subject_funded_subject));
- ck("related addresses are compared but never walked",
-  split.address_count === 1 && split.related_address_count === 2 &&
-  otherSplit.address_count === 2 && otherSplit.related_address_count === 1 &&
-  split.subject_payment_scope?.walked_addresses === 1,
-  short(split.subject_payment_scope));
+  const split = await call("find_funding_sources", {
+    addresses: [NEMO],
+    related_addresses: [FUNDER, PAYER],
+    depth: "first_hop",
+    measure_fanout: false,
+  });
+  const otherSplit = await call("find_funding_sources", {
+    addresses: [FUNDER, PAYER],
+    related_addresses: [NEMO],
+    depth: "first_hop",
+    measure_fanout: false,
+  });
+  ck("split funding batch still links the attacker's first funder",
+    split.subject_funded_subject?.some((l) => l.funder === FUNDER && l.funded === NEMO && l.funding_tx === FIRST_FUNDING),
+    short(split.subject_funded_subject));
+  ck("related addresses are compared but never walked",
+    split.address_count === 1 && split.related_address_count === 2 &&
+    otherSplit.address_count === 2 && otherSplit.related_address_count === 1 &&
+    split.subject_payment_scope?.walked_addresses === 1,
+    short(split.subject_payment_scope));
 
- ck("both split batches find the later payments across the partition",
-  [split, otherSplit].every((result) => sameSet(
-   (result.subject_paid_subject ?? [])
-    .filter((p) => p.payer === PAYER && p.payee === NEMO)
-    .map((p) => p.digest),
-   PAYMENTS,
-  )),
-  short([split.subject_paid_subject, otherSplit.subject_paid_subject]));
+  ck("both split batches find the later payments across the partition",
+    [split, otherSplit].every((result) => sameSet(
+      (result.subject_paid_subject ?? [])
+        .filter((p) => p.payer === PAYER && p.payee === NEMO)
+        .map((p) => p.digest),
+      PAYMENTS,
+    )),
+    short([split.subject_paid_subject, otherSplit.subject_paid_subject]));
 
   // ---- get_address_fanout -------------------------------------------------
   console.log("\nget_address_fanout on the attacker, against a raw scan of its history");

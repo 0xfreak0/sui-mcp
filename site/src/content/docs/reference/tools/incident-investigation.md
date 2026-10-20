@@ -18,7 +18,7 @@ sidebar:
 | [`export_case`](#export_case) | Render a case's findings as a Markdown report, Mermaid diagram, graph JSON or CSV. |
 | [`find_flow_path`](#find_flow_path) | Find value paths from one address to another through priced coins and custody-changing objects. |
 | [`find_funding_source`](#find_funding_source) | Follow a wallet's first funding transaction and sender, then each funder's funding. |
-| [`find_funding_sources`](#find_funding_sources) | Trace up to 100 addresses together. |
+| [`find_funding_sources`](#find_funding_sources) | Trace funding for up to 100 addresses together, cheaper than repeated find_funding_source calls. |
 | [`find_shared_multisig`](#find_shared_multisig) | Given several addresses you already suspect are related, find any multisig wallet they jointly control, even one that never appeared in your trace. |
 | [`get_address_fanout`](#get_address_fanout) | Measure how many distinct addresses an address pays and is paid by over its newest transactions. |
 | [`get_upgrade_history`](#get_upgrade_history) | Read upgrade governance across a package lineage: each version's ID, transaction, time, publisher, signing scheme and UpgradeCap holder then. |
@@ -236,12 +236,12 @@ sidebar:
 - Annotations: `openWorldHint: true`, `readOnlyHint: true`
 - Metadata: `anthropic/maxResultSizeChars: 500000`
 
-(Incident investigation) Trace up to 100 addresses together. related_addresses adds subjects for direct funding and payment links without walking them. Shared-funder counts stop at the first funder in either set. For up to 20 walked subjects without related addresses, direct payments are checked pairwise; larger sets scan bounded recent sent and affected histories of walked subjects. Read subject_payment_scope for incomplete history. Compare shared funders with a control group before inferring common control.
+(Incident investigation) Trace funding for up to 100 addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses. Reports common funders with fan-out and flow shape, counted up to the first funder that is a walked subject; co-funding compared with each transaction's total recipients; direct subject-to-subject funding; later signed payments between subjects (subject_paid_subject); and fundings within one minute as possible scripted setup. related_addresses (up to 500) are subjects that are not walked: split a larger set across calls and pass the rest as related_addresses each time. Payments among up to 20 walked subjects are checked pairwise; links with related subjects, and larger batches, come from each walked address's earliest 50 and newest 150 sent and affected transactions, as subject_payment_scope states. A common exchange or shared batch need not imply common control. Compare a sample_control_addresses control group before interpreting any rate.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `addresses` | array of string (1 to 100 items) | yes | Addresses to attribute (1-100). |
-| `related_addresses` | array of string (at most 500 items) | no | Other subjects (up to 500) for direct funding and payment links; not walked or included in shared-funder counts. |
+| `related_addresses` | array of string (at most 500 items) | no | Other subjects (up to 500), not walked: matched as funders and payment parties. A walked chain reaching one counts the rest of the chain as that subject's funding. |
 | `max_hops` | integer (at most 12, greater than 0) | no | Max hops per address (default 5, max 12). |
 | `depth` | `first_hop` \| `full` | no | 'first_hop' reads one funding hop per address; 'full' (default) walks to max_hops. |
 | `measure_fanout` | boolean | no | Measure fan-out for funders shared by 2+ addresses (default true). |

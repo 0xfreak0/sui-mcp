@@ -24,7 +24,7 @@ const { registerHistoryTools } = await import("../src/tools/history.js");
 const { ALIAS_AUTH_SAMPLE, resetAliasDelegateCache } = await import("../src/utils/identity.js");
 const { resetLiveCoinScale } = await import("../src/utils/valuation.js");
 
-type Args = { address: string; limit?: number; order?: "newest" | "oldest"; cursor?: string };
+type Args = { address: string; from?: string | number; to?: string | number; limit?: number; order?: "newest" | "oldest"; cursor?: string };
 let handler: (a: Args) => Promise<{ content: { text: string }[] }>;
 registerHistoryTools({
   tool: (_n: string, _d: string, _s: unknown, h: typeof handler) => {
@@ -70,6 +70,25 @@ beforeEach(() => {
   mockGetCoinInfo.mockRejectedValue(Object.assign(new Error("NOT_FOUND"), { code: "NOT_FOUND" }));
   resetAliasDelegateCache();
   resetLiveCoinScale();
+});
+
+describe("get_transaction_history window", () => {
+ it("applies checkpoint bounds to both paging directions and carries the window into full-detail continuation", async () => {
+  mockGqlQuery.mockResolvedValue(page([
+   tx("inside", "2026-09-24T00:05:00Z", REAL, [[SUBJECT, "5"], [REAL, "-5"]]),
+  ], { hasPreviousPage: true, hasNextPage: true, startCursor: "back" }));
+  const newest = await run({ address: SUBJECT, from: 100, to: 200, limit: 1 });
+  expect(mockGqlQuery.mock.calls[0][1]).toMatchObject({ afterCp: 100, beforeCp: 200, last: 1 });
+  expect(newest.window).toEqual({ from: 100, to: 200, after_checkpoint: 100, before_checkpoint: 200 });
+  expect(newest.next_cursor).toBe("back");
+  expect(newest.next_call).toMatchObject({ tool: "get_transaction_history", args: { address: SUBJECT, from: 100, to: 200, order: "newest", cursor: "back" } });
+  expect(newest.oldest_shown).toBe("2026-09-24T00:05:00Z");
+  await run({ address: SUBJECT, from: 100, to: 200, order: "newest", cursor: newest.next_cursor });
+  expect(mockGqlQuery.mock.calls.at(-1)![1]).toMatchObject({ afterCp: 100, beforeCp: 200, before: "back" });
+  const oldest = await run({ address: SUBJECT, from: 100, to: 200, limit: 10, order: "oldest", cursor: "forward" });
+  expect(mockGqlQuery.mock.calls.at(-1)![1]).toMatchObject({ afterCp: 100, beforeCp: 200, first: 10, after: "forward" });
+  expect(oldest.next_cursor).toBe("end");
+ });
 });
 
 describe("get_transaction_history order", () => {

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { ALIAS_AUTH_SAMPLE, aliasScanAsOfClause, findAliasSignedTransactions, type AliasSignedLookup } from "../utils/identity.js";
-import { numArg, addressArg } from "./args.js";
+import { numArg, addressArg, timePointArg } from "./args.js";
 import { gqlQuery } from "../clients/graphql.js";
+import { describeWindow, resolveWindow } from "../utils/checkpoint-time.js";
 import { addressFlow, collectPackageIds, decodeTransaction } from "../protocols/decoder.js";
 import { prefetchProtocolNames } from "../protocols/registry.js";
 import { prefetchCoinScale } from "../utils/valuation.js";
@@ -56,8 +57,8 @@ interface GqlTransactionsResponse {
 }
 
 const HISTORY_QUERY = `
-  query($address: SuiAddress!, $first: Int, $after: String, $last: Int, $before: String) {
-    transactions(filter: { affectedAddress: $address }, first: $first, after: $after, last: $last, before: $before) {
+  query($address: SuiAddress!, $first: Int, $after: String, $last: Int, $before: String, $afterCp: UInt53, $beforeCp: UInt53) {
+    transactions(filter: { affectedAddress: $address, afterCheckpoint: $afterCp, beforeCheckpoint: $beforeCp }, first: $first, after: $after, last: $last, before: $before) {
       nodes {
         digest
         sender { address }
@@ -72,9 +73,11 @@ const HISTORY_QUERY = `
 export function registerHistoryTools(server: McpServer) {
   server.tool(
     "get_transaction_history",
-    "(Recommended for wallet activity) Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. Rows use complete balance changes and commands. Newest first by default; oldest starts at the first transaction. Pass next_cursor as cursor with the same order. address_poisoning always checks the shown page only, so empty pairs clear nothing older. subject_flow is the queried wallet's signed change per coin; token_flow is the sender's, omitted when they are the same address. Counterparties include at most 25 value recipients; counterparty_count reports larger sets. Summary keeps ~35k characters, preserving failed and lookalike-involved rows; omitted reports the rest and detail:'full' lists the whole page. signed_as_alias separately lists transactions signed as another wallet's address_alias delegate, which the main page cannot show. The delegate scan is cached for up to five minutes; alias_scan_as_of dates it and signed_as_alias_unavailable marks incomplete scans, even beside returned matches.",
+  "(Recommended for wallet activity) Read a wallet's decoded protocols, actions and coin flows; prefer this to query_transactions for exploring activity. Use from/to for a time or checkpoint window, in either order. Rows use complete balance changes and commands. Newest first by default; oldest starts at the first transaction in the window. Pass next_cursor as cursor with the same from, to and order. address_poisoning always checks the shown page only, so empty pairs clear nothing older. subject_flow is the queried wallet's signed change per coin; token_flow is the sender's, omitted when they are the same address. Counterparties include at most 25 value recipients; counterparty_count reports larger sets. Summary keeps ~35k characters, preserving failed and lookalike-involved rows; omitted reports the rest and detail:'full' lists the whole page. signed_as_alias separately lists transactions signed as another wallet's address_alias delegate, which the main page cannot show. The delegate scan is cached for up to five minutes; alias_scan_as_of dates it and signed_as_alias_unavailable marks incomplete scans, even beside returned matches.",
     {
       address: addressArg().describe("Sui wallet address (0x...)"),
+   from: timePointArg().optional().describe("Inclusive window start as ISO 8601 time or exclusive after-checkpoint number."),
+   to: timePointArg().optional().describe("Inclusive window end as ISO 8601 time, 'now', or exclusive before-checkpoint number."),
       limit: numArg()
         .min(1)
         .max(50)
@@ -94,10 +97,13 @@ export function registerHistoryTools(server: McpServer) {
         .optional()
         .describe("'summary' (default) keeps ~35k chars in page order, always retaining failed and lookalike-involved rows; omitted reports the rest. 'full' lists every row of the page."),
     },
-    async ({ address, limit, order, cursor, detail }) => {
+  async ({ address, from, to, limit, order, cursor, detail }) => {
       const direction = order ?? "newest";
+   const window = await resolveWindow(from, to);
       const variables: Record<string, unknown> = {
         address,
+    afterCp: window.after?.checkpoint ?? undefined,
+    beforeCp: window.before?.checkpoint ?? undefined,
         ...orderedPageArgs(direction, limit, cursor),
       };
 
@@ -250,6 +256,7 @@ export function registerHistoryTools(server: McpServer) {
       const result = {
         address,
         order: direction,
+    window: describeWindow(from, to, window),
         ...shownRange(page.nodes.map((n) => n.effects?.timestamp)),
         transactions,
         ...(incomplete.length
@@ -282,6 +289,7 @@ export function registerHistoryTools(server: McpServer) {
         ...(aliasAsOf && (aliasSignedRows.length > 0 || aliasScanPartial) ? { alias_scan_as_of: aliasAsOf } : {}),
         has_next_page: page.has_next_page,
         next_cursor: page.next_cursor,
+    ...(page.next_cursor ? { next_call: { tool: "get_transaction_history", args: { address, ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}), limit, order: direction, cursor: page.next_cursor, ...(detail ? { detail } : {}) } } } : {}),
       };
 
       // A page's rows fit the budget in page order; a failed row and a row a
@@ -290,7 +298,7 @@ export function registerHistoryTools(server: McpServer) {
       type Row = (typeof transactions)[number];
       const { payload } = capPayload(
         "get_transaction_history",
-        { address, limit, order, cursor },
+    { address, from, to, limit, order, cursor },
         result,
         {
           transactions: {

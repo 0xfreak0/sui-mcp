@@ -196,6 +196,12 @@ each page reversed for display, `next_cursor` going back as `cursor` with the
 same `order`, and every page echoing `order`, `oldest_shown` and
 `newest_shown`. Selecting `BOTH_WAYS_PAGE_INFO` is required, since the newest
 walk continues on `hasPreviousPage` / `startCursor`.
+`get_transaction_history` takes `from`/`to` ISO times or exclusive checkpoint
+bounds. Resolve them through `resolveWindow`, put the resulting checkpoints in
+the GraphQL filter, echo `window`, and preserve both inputs across cursor pages
+in either order. Filtering a fetched page after the fact misses activity in
+busy windows.
+
 
 Forward walks remain where the question is "since X": first funding,
 `trace_funds` forward, `check_activity` with a baseline, `poll_watch`, and

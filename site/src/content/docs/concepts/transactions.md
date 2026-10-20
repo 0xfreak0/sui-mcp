@@ -338,9 +338,12 @@ attribute the change into the oldest listed row.
 such as Cetus and Suilend, decoded actions such as “Swap USDC to SUI”, and coin
 flows. `query_transactions` is for filtering transactions by other criteria.
 Each history row uses the transaction's complete balance changes and commands.
-The page reports `order`, `oldest_shown` and `newest_shown`; continue with
-`next_cursor` as `cursor`, preserving the order. Newest-first is the default;
-oldest-first starts at the address's first transaction.
+The page reports `window`, `order`, `oldest_shown` and `newest_shown`.
+Use `from` and `to` for an inclusive ISO 8601 time window, or checkpoint
+numbers for exclusive `afterCheckpoint` and `beforeCheckpoint` bounds.
+For example, `{"address":"0x2","from":"2026-10-20T12:00:00Z","to":"2026-10-20T12:10:00Z","order":"oldest"}` reads the address's earliest activity in those ten minutes.
+Continue with `next_cursor` as `cursor`, preserving `from`, `to` and `order`.
+Newest-first is the default; oldest-first starts at the window's first transaction.
 
 `subject_flow` is the queried wallet's signed balance change for each coin,
 with formatted amounts and `coin_verified`. `token_flow` describes the sender,

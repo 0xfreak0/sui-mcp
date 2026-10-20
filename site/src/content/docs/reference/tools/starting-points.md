@@ -42,6 +42,8 @@ sidebar:
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `address` | string | yes | Sui wallet address (0x...) |
+| `from` | string | no | Inclusive window start as ISO 8601 time or exclusive after-checkpoint number. |
+| `to` | string | no | Inclusive window end as ISO 8601 time, 'now', or exclusive before-checkpoint number. |
 | `limit` | number (1 to 50), default `10` | no | Number of transactions to return (default 10, max 50) |
 | `order` | `newest` \| `oldest` | no | 'newest' (default) pages backward from recent activity; 'oldest' pages forward from the first transaction. |
 | `cursor` | string | no | `next_cursor` from the previous page. Continues in the same direction; pass the same `order`. |

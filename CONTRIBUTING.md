@@ -102,6 +102,19 @@ hooks for those checks.
   checks the change can reach, and `SUI_REPLAY_DIR=<dir>` lets case-pass and
   detector-pass replay the chain reads that cannot change
   (`scripts/probe/README.md`).
+- Run `node scripts/probe/oracle-pass.mjs` to compare sampled tool answers
+  across eras against the same fact read from the chain by another path: swap
+  labels, object ends and object changes, mint authority, flows, cap owners,
+  first funding, holder rankings for small coins, staking rewards, native
+  bridge beneficiaries, past balances and checkpoint lookups. The report names
+  any truth read that is the tool's own query. A sample that cannot be checked
+  is counted as skipped; a drawn oracle that checks nothing fails. Use
+  `--subjects` to repeat its printed live-state subjects.
+  `node scripts/probe/consistency-pass.mjs --seed 17
+  --tip 334000000` compares overlapping transaction, funding, balance, flow
+  and identity answers on the same subjects, reporting bounded reads as skips.
+  The affected tier runs either pass when a tool it checks changes
+  (`scripts/probe/lib/tiers.mjs`).
 - For a new measurement, use a temporary script and delete it after recording
   the result. Retain scripts that serve a repeatable check or workflow.
 
@@ -388,6 +401,15 @@ with the next normal release after a full `npm run verify:live`. When no
 Unreleased entries are pending, the data PR bumps the patch version and
 merging dispatches the publish workflow. Review the PR's source changes and
 failed syncs before merging either kind.
+
+The scheduled sync runs from `main` and refreshes disclosed and validator
+labels, sanctions, the guardians blocklist, verified coins and protocol roots.
+Inferred exchange deposit labels are included only when the sync is dispatched
+with `deposit_labels`. Changes consisting only of known run stamps or source
+ordering open no PR. A maintainer must approve the bot PR's required CI runs;
+manually dispatched checks do not satisfy the PR checks. Data-only patch
+merges dispatch the provenance-signed publish workflow only when their version
+changed, and an existing version tag for another commit stops the release.
 
 Releases are cut by pushing a version tag. `.github/workflows/publish.yml` runs
 the tests, publishes to npm, publishes to the MCP Registry, installs the

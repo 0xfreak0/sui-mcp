@@ -64,10 +64,16 @@ token (ETH, USDT, wBTC, wLBTC) that DefiLlama has no price for under its own Sui
 type is priced as the Ethereum asset it is minted against, and the price says
 so in `priced_as`. Only Pyth needs a key.
 
+`get_token_prices` with
+
+```json
+{ "coin_types": ["0x2::sui::SUI"], "at": "2025-05-22T10:30:00Z" }
 ```
-get_token_prices(["0x2::sui::SUI"], at: "2025-05-22T10:30:00Z")
-  → price_usd 4.16, source "defillama", confidence 0.99,
-    price_time 2025-05-22T10:30:01Z, price_offset_sec 1
+
+returns this entry in `prices`:
+
+```json
+{"coin_type":"0x2::sui::SUI","symbol":"SUI","verified":true,"price_usd":4.16,"source":"defillama","confidence":0.99,"price_time":"2025-05-22T10:30:01.000Z","price_offset_sec":1}
 ```
 
 Every historical price names its source and sample time, with
@@ -118,18 +124,42 @@ historical market prices still use the keyless providers:
 A missing price and a price of zero mean different things, and no tool reports
 one as the other.
 
-`analyze_token`, `get_pool_info` and the coin balances in
+`analyze_token`, `get_pool_stats` and the coin balances in
 `get_wallet_overview` use Aftermath's current prices. Position and NFT
-valuations use the same historical providers, with Pyth preferred for verified
+valuations use historical providers, with Pyth preferred for verified
 coins when its key is set; each position's method names the source and time.
+
+## Token discovery
+
+`analyze_token` accepts an exact coin type or a symbol. Curated verified
+symbols resolve first. For other mainnet symbols it searches DexScreener for
+both the ticker and ticker plus `SUI`, then GeckoTerminal when Sui results are
+missing, capped or unavailable. Candidate coin types are confirmed against
+on-chain metadata. `search_token` also searches token names, but a name
+substring cannot select a coin in `analyze_token`.
+
+```json
+{ "query": "USDC" }
+```
+
+Pass this to `search_token` to compare exact `coin_type` values. For an
+unverified candidate, pass its full `coin_type` to `analyze_token` or
+`find_pools`; an unverified symbol alone does not identify it.
+`search_coverage.partial`, `search_coverage.unavailable_providers` and
+`search_coverage.unconfirmed` report DEX search bounds and failures;
+`discovery_scan_truncated` and `discovery_scan_failed` report the on-chain
+fallback's limits. Coins without indexed pools depend on their full type
+or the bounded CoinMetadata scan. `impostor_of` identifies a symbol
+lookalike of a curated coin, without asserting intent. Off mainnet the
+package-keyed curated list cannot vouch for local coin types.
 
 ## Optional local store
 
 Set `SUI_STORE_PATH` to keep address labels and fan-out measurements across
 sessions. It uses Node's built-in `node:sqlite`, so it adds no dependency and
 no native build. It is unset by default, and nothing is written to disk unless
-you set it. An investigation store is a record of which addresses you looked
-at, so that default is deliberate.
+you set it. The store records investigated addresses and findings, so review
+who can access its path.
 
 ```json
 "env": { "SUI_STORE_PATH": "/Users/you/.local/share/sui-mcp/store.db" }

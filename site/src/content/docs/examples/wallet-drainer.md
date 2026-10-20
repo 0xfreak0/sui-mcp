@@ -25,12 +25,18 @@ These calls compare the shared state before execution with the resulting transfe
 The calls use the package, shared object and collector addresses; the
 signer's address is omitted.
 
-To follow the SUI recipients of the drain, call `trace_funds` with the drain
-digest and `direction: "forward"`. The first hop follows the larger collector
-and lists the other under `unfollowed_recipients`. The `swapS` calls do not
-count as a swap, because the collectors received far more SUI than the signer
-spent; the CTX minted to the signer is not followed. `trace_flow_graph` with
-the same digest shows both collectors.
+To follow the SUI recipients of the drain, call `trace_funds`:
+
+```json wrap
+{ "digest": "F3TCZ6KiuZWosPhnNF4QrYsWuU4pbKncec6vkoVS9Vyd",
+  "direction": "forward" }
+```
+
+The first hop follows the larger collector and lists the other under
+`unfollowed_recipients`. The `swapS` name alone does not make this a
+swap: its payout to the collectors exceeds the signer's own net coin
+movement, while the CTX credited to the signer is not the drained SUI.
+`trace_flow_graph` from the same digest shows both collector branches.
 
 ## Steps
 

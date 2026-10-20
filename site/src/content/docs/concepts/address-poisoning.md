@@ -6,37 +6,36 @@ sidebar:
 ---
 
 `get_transaction_history`, `trace_funds`, `trace_flow_graph` and
-`summarize_address_flows` compare every address they touch and always report
-`address_poisoning`: `addresses_compared` and the `pairs` close enough to be
-mistaken for one another. An empty `pairs` covers only the addresses in that
-result. `trace_funds` and `trace_flow_graph` also print the pairs in their
-summary, so a Mermaid or CSV export carries the warning:
+`summarize_address_flows` compare the addresses they read and report
+`address_poisoning` with `addresses_compared` and any lookalike `pairs`.
+An empty list covers only the addresses in that result. This is the relevant
+part of a completed check with no matching pair:
 
+```json
+{"address_poisoning":{"addresses_compared":2,"pairs":[]}}
 ```
-⚠ Addresses in this trace close enough to be mistaken for one another:
-  0xa1b2c3d4…e5f60718  vs  0xa1b9f0e2…4c3a0718
-```
+
+`trace_funds` and `trace_flow_graph` also name lookalikes in their prose
+summary, so Mermaid and CSV exports carry the warning.
 
 ## The attack
 
 An attacker generates an address sharing the leading and trailing characters
-of one you already deal with, sends dust from it, and waits for someone to copy
-the wrong row out of their own history. The check covers senders,
-balance-change recipients and the branches a trace declined to follow. A
-poisoning wallet sends dust and receives nothing, so a trace that follows the
-victim's funds outward never reaches it as a recipient. It appears as a sender
-in the victim's own history, which is where `get_transaction_history` compares
-it. In a trace, the lookalike is usually several hops from the address it
-imitates. `trace_flow_graph` and `find_flow_path` never prune a branch to an
-address that renders like one already reached, whatever `min_share` or
-`min_usd` say, so a lookalike stays in the graph however small its amount.
+of a known recipient, sends dust from it, and waits for someone to copy the
+wrong row from their own history. The check covers senders,
+balance-change recipients and branches a trace declined to follow. A
+poisoning wallet can send dust while receiving nothing, so a forward trace
+of the victim's funds may never reach it as a recipient. It appears as a
+sender in the victim's history, where `get_transaction_history` compares it.
+`trace_flow_graph` and `find_flow_path` keep a branch to an address that
+renders like one already reached, regardless of `min_share` or `min_usd`.
 
 ## When a pair is reported
 
 A pair is reported when at least three characters match at each end, roughly
-one collision in seventeen million pairs by chance. The two addresses do not
-render identically at every width; they match at both ends, which is enough to
-fool a glance or a short truncation.
+one collision in seventeen million pairs by chance. A matching pair can
+differ in the middle at a wider rendering; matching ends are enough to fool a
+glance or a short truncation.
 
 ## Which side is the impostor
 

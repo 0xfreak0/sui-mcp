@@ -164,12 +164,10 @@ and the [validator event definitions](https://docs.sui.io/references/framework/s
 ## Top holders
 
 `get_top_holders` returns a ranking only when `complete_ranking` is true. It
-walks two things in object-id order, which is unrelated to balance:
-`Coin<T>` objects, and address balances (funds credited to an owner's address
-rather than held as a coin object). A scan that stops early returns the
-largest holder it happened to see. Raising `max_scan` can change who ranks
-first, because more coin objects and address balances are read; on SUI, the
-top five of two scans of different sizes can have no holder in common.
+walks `Coin<T>` objects and address balances (funds credited to an owner's
+address without coin objects). Both walks use object-id order, which is
+unrelated to balance. A scan that stops early reports the largest holders
+found in that sample; raising `max_scan` can change them.
 
 A truncated scan therefore returns `sampled_holders`, without a rank or a
 percentage of supply, along with a caveat naming which walk stopped. Raise
@@ -197,25 +195,27 @@ For NFT collections, `holder_kind` says how each holder was found; see
 
 `list_objects_by_type` scans current top-level objects of a Move struct or
 module across all owners. An object wrapped inside another object's fields is
-not indexed by type and is not listed. To count bids with a funded `offer` and
-sum their value:
+not indexed by type and is not listed. For an illustrative `Bid<SUI>` whose
+`offer` field is a `Balance<SUI>`, count funded bids and sum their offers:
 
 ```json
-{"type":"0xabc::bidding::Bid","sum_fields":["offer"],"where":{"field":"offer","gt":"0"}}
+{"type":"0xabc::bidding::Bid<0x2::sui::SUI>","sum_fields":["offer"],"where":{"field":"offer","gt":"0"}}
 ```
 
-A completed scan with two funded bids, both `Bid<SUI>`, includes:
+An illustrative completed scan with two funded bids includes:
 
 ```json
 {"scanned":3,"matched":2,"complete":true,"sums":{"offer":{"total":"1000000000","min":"300000000","max":"700000000","count":2,"unreadable":0,"coin_type":"0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI","formatted_total":"1","decimals":9,"decimals_source":"registry"}},"owner_kinds":{"shared":2,"address":0,"object":0,"consensus":0,"immutable":0,"unknown":0}}
 ```
 
 `scanned` counts every object read and `matched` counts bids passing `where`.
-Sums cover all matching rows, including rows the display cap leaves under
-`omitted`. Amounts are raw integers; `formatted_total` applies the coin's
-decimals and `decimals_source` says where they came from. For a nested field
-use a path such as `state.offer`; `balance.value` and `balance` read the same
-`Balance<T>`.
+`owner_kinds` counts owners of matched rows. Sums cover all matching rows,
+including rows the display cap leaves under `omitted`. Amounts are raw
+integers; `formatted_total` applies the coin's decimals and
+`decimals_source` says where they came from. For a nested field use a path
+such as `state.offer`; `balance.value` and `balance` read the same
+`Balance<T>`. `sum_fields` accepts at most eight paths, and `where.gt`
+is a nonnegative raw integer, defaulting to `"0"`.
 
 A total is given only when every amount is in one unit. A field the struct
 layout shows to be a `Balance<T>` or `Supply<T>` is counted in coin `T`, so
@@ -232,11 +232,16 @@ each unit:
 ```
 
 A value that cannot be read as an integer leaves `total` null, with
-`observed_total` (a lower bound) and `unreadable` saying what was read. An
-object whose struct has no field at the path is counted under `absent`; when
-no matched object has it, `field_note` lists the first object's fields.
-`where_unreadable` and `where_absent` count objects the `where` test could
-not be applied to.
+`observed_total` (a lower bound when one unit was identified) and
+`unreadable` saying what was read. An object whose struct has no field at
+the path is counted under `absent`; when no matched object has it,
+`field_note` lists the first object's fields. `where_unreadable` and
+`where_absent` count objects the `where` test could not be applied to;
+`matched_complete: false` identifies an unreadable test, so `matched` is
+only a lower bound. When a struct's coin layout is not read, its amounts are
+counted per object type, and `layout_note` says how many struct definitions
+that affected; an unavailable decimal scale leaves amounts raw under
+`scale_unavailable`.
 
 The type is rewritten to the package version that defined each struct, type
 arguments included, since that is the id an object's type carries. A module,
@@ -247,14 +252,20 @@ closest names:
 {"error":"Package 0x…0002 defines no struct in a module named SUI, so no object can have this type. Modules that define structs, closest first: sui, bag, bcs, coin, …"}
 ```
 
-The scan walks by type and object ID, not by value. `complete: false` means
-the sums and counts cover only the scanned portion. `next_call` resumes at the
-next cursor with separate totals; they are not cumulative. Use
-`detail: "full"` to retrieve omitted rows. A full view too large for one
-response continues with `row_offset`, which scans current state again from
-the same cursor, so rows can move between pages if objects changed. A module
-filter can span types introduced by different package versions;
-`other_defining_packages` lists the versions this scan did not cover.
+The scan walks by type and object ID, not by value. It scans up to 10,000
+objects by default (`max_scan` can raise this to 50,000) and checks a
+45-second time budget between pages. `complete: false` means the sums and
+counts cover only the scanned portion. `stop_reason` says why the walk
+stopped: `max_scan`, `time_budget` or `missing_or_repeated_cursor`. A walk
+that reached the end of a module filter with other defining versions left
+reports `other_defining_packages` there.
+`next_call` resumes at the next cursor with separate, noncumulative totals
+when a cursor is available. Use `detail: "full"` to retrieve omitted rows.
+A full view too large for one response continues with `row_offset`, which
+scans current state again from the same cursor, so rows can move between
+pages if objects changed. A module filter can span types introduced by
+different package versions; `other_defining_packages` lists the versions
+this scan did not cover.
 
 ## DeFi positions
 

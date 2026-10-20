@@ -73,9 +73,8 @@ see [Gas sponsors](/concepts/gas-sponsors/).
 
 ## Building shared-control edges
 
-`build_wallet_edges` asks whether a fresh address reached by a trace is a new
-party or another wallet of the same operator. It builds signals live, without
-an analytics warehouse, from these sources:
+`build_wallet_edges` looks for possible shared control among seed wallets
+and candidates it discovers. It uses these chain observations:
 
 - Multisig co-signature: a committee key can spend the wallet whose address
   the committee hashes to. This is the non-behavioral signal.
@@ -83,18 +82,19 @@ an analytics warehouse, from these sources:
 - One address first-funding another.
 - Value moving both ways between two non-service addresses.
 - Six or more wallets sweeping one coin to a collector within 30 minutes.
-  Include the collector as a seed; the result cites each sweep transaction.
-  A payment counts when the collector received at least 90% of what the payer
-  lost in that coin, so a fee taken from a swap or purchase does not. A payer
-  whose payment took at least 90% of its balance just before it is linked at
-  weight 0.8, and a payer that is only one of six payments within 5% of one
-  amount at 0.6. Both are leads below the 1.0 merge floor and cluster only
-  with another signal: exchange customers, presale buyers and a drainer's
-  victims sweep into a collector the same way. Popular collectors, labelled services
-  and addresses repeatedly paying one recipient are excluded. A failed service
-  scan does not establish a narrow collector, and an incomplete payer history
-  leaves the balance unknown. Read `excluded_intermediaries` and `truncated`
-  before interpreting a missing edge.
+  Include the collector as a seed; each edge cites a sweep transaction.
+  The collector must receive at least 90% of what the payer lost in that coin,
+  and a priced coin must clear the dust floor. A payer whose payment took
+  at least 90% of its balance just before it receives a weight-0.8 edge;
+  a payer in six payments within 5% of the same amount receives a
+  weight-0.6 edge. These are leads below the 1.0 merge floor and require
+  another signal: an exchange's customers, presale buyers and unrelated
+  depositors can also pay one collector. Popular collectors, labelled
+  services and addresses repeatedly paying the same recipient are excluded.
+  A failed service scan cannot establish a narrow collector; an incomplete
+  payer history cannot establish its balance. Check
+  `excluded_intermediaries` and `truncated` before interpreting a missing
+  edge.
 - A shared gas sponsor.
 - Co-appearance in one transaction.
 
@@ -107,6 +107,12 @@ different addresses.
 `edges` are facts with transaction digests to check; `co_signer` instead cites
 the committee's address hash. `clusters` are inferences with their own
 `evidence_tier`, never proof of ownership.
+
+`observed_but_below_threshold` lists each pair once with its signal types
+and total weight; the underlying digests remain in `edges`. It can show a
+consolidation lead that has no corroborating signal. A query-budget stop
+leaves candidates unmeasured, and balance-change continuations consume that
+same `query_budget`; an unread page cannot be treated as a small payout.
 
 `first_funders` maps each seed whose qualifying first inflow was read to its
 funder, and with `expand` each sibling whose first funder was confirmed as the

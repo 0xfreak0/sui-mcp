@@ -49,23 +49,23 @@ rests on.
 
 ## Ambiguous symbols
 
-An ambiguous symbol returns candidates rather than a coin. `USDC` matches
-several legitimate verified coins on Sui (Circle's, Wormhole's, Celer's), so
-picking one would misreport which asset moved.
+An ambiguous symbol returns candidates. `USDC` matches several curated coin
+types on Sui, including Circle's, Wormhole's and Celer's; choose the full
+coin type for the asset you intend to query.
 
-A symbol no curated list covers is searched live on mainnet: DexScreener is
-queried for both the ticker and `ticker SUI`, so other chains do not crowd
-Sui pairs out of its 30-pair response. GeckoTerminal is queried if those
-results are missing, capped or unavailable; its public results also have a
-20-pool cap. Candidate coin types are confirmed against on-chain metadata;
-a DEX listing is a lead, not verification of the asset's identity.
-`analyze_token` returns multiple matches as candidates rather than choosing
-one. The search confirms at most 25 candidate coin types, verified types and
-exact symbols first, then by pool liquidity. Results are cached for 10
-minutes, capped ones included; a provider outage or a failed confirmation is
-not cached and is retried on the next call. If no candidate can be confirmed,
-a bounded CoinMetadata scan is the fallback. That scan can find coins without
-an indexed pool, but it is not a complete inventory.
+An uncurated symbol is searched live on mainnet: DexScreener is queried
+for both the ticker and `ticker SUI`, so other chains do not crowd Sui pairs
+out of its 30-pair response. GeckoTerminal is queried if those results are
+missing, capped or unavailable; its public results also have a 20-pool cap.
+Candidate coin types are checked against on-chain metadata. A DEX listing
+is a lead for identifying the exact type, not a verification of legitimacy.
+`analyze_token` returns multiple exact matches as candidates. The search
+checks at most 25 candidate coin types, ranking curated types and exact
+symbols before pool liquidity. Results are cached for 10 minutes, including
+cap-limited results; an outage or failed metadata check is retried on the
+next call. If no candidate can be confirmed, a bounded CoinMetadata scan
+is the fallback. That scan can find coins without an indexed pool, but it
+does not inventory the chain.
 
 `search_token` accepts a name or symbol, such as `USDC`, `deep`, `cetus` or
 `WAL`, or a full type such as `0x…::mod::TOKEN`. It returns full coin types,
@@ -106,10 +106,24 @@ none of the coin that froze it, so the address check covers every coin type
 with a deny list rather than the ones it holds. A freeze by
 validators is node configuration, not chain state, and does not appear here.
 
-The issuer's freeze is a chain-derived attribution, not a protocol rule:
-whoever holds the `DenyCap` can reverse it. The tool also reports a pause
-affecting the whole coin. Use it when a traced address cannot move a token or
-to check whether an issuer has already frozen a counterparty.
+An issuer freeze is a chain-derived state that the `DenyCap` holder can
+reverse. The address result's `frozen_by_issuer` entries each give the full
+coin type, config object, DenyList object, epoch, `active: true` and
+`evidence_tier: "chain-derived"`. A deny-list change written in the current
+epoch takes effect at the next one; its coin is listed under `pending`.
+`scan_complete: false` and `scan_note` identify unfinished config enumeration
+or denied coins without readable provenance; an empty active list from such
+a scan does not establish that no issuer froze the address. The tool also
+reports a pause affecting the whole coin. Use it when a traced address
+cannot move a token or to check whether an issuer froze a counterparty.
+
+```json
+{"address":"0x…"}
+```
+
+An address response with a confirmed active freeze includes
+`frozen_by_issuer: [{coin_type, config_id, deny_list_id, epoch, active,
+evidence_tier}]`; `coins_checked` and `scan_complete` qualify the scan.
 
 With both `coin_type` and `address`, the tool checks that pair. Address-only
 checks read many deny lists because holding none of a coin does not establish
@@ -118,11 +132,20 @@ defaults to 200, at most 1000.
 
 ## Liquidity pools
 
-`find_pools(token_a, token_b)` searches exact pool types in both token orders.
-It reports the result of each venue separately. A failed or bounded venue read
-leaves pool discovery incomplete; an empty result describes only the searched
-pair and venues. `total` counts every pool found; the list pages at about 30k
+`find_pools(token_a, token_b)` searches exact pool types in both token orders
+across Cetus, DeepBook v2/v3, Turbos, BlueMove v1, Bluefin, Momentum, FlowX
+CLMM/v2, Magma, Aftermath AMM and Kriya v2. `protocol` narrows the search
+to one venue. The `venues` statuses report complete, capped and failed
+searches separately; an empty pool list covers only the searched pair and
+venues. `total` counts every pool found; the list pages at about 30k
 characters, and `omitted.next_call` repeats the call with the next `offset`.
+
+```json
+{"token_a":"SUI","token_b":"USDC","protocol":"cetus"}
+```
+
+The result's `query` gives the resolved coin types, `venues` gives the
+search status, and `pools` gives the pool IDs and coin types found.
 DeepBook is an order book, so its vault balances are not tradable depth. Use
 `deepbook_orderbook` to read resting orders.
 
@@ -163,10 +186,11 @@ observed. Each row's `kind` is `publisher`, `burned` (an unspendable address),
 `wallet`, `kiosk`, `package`, `object` or `unknown`; an owner-kind read that
 fails stays `unknown`. A position kept as a dynamic object field is listed
 under the object holding the field, such as a kiosk, with
-`held_as_dynamic_object_field`. A kiosk is controlled by its
-`KioskOwnerCap` holder, which `get_object` on the kiosk names. No locker package is verified for this check. An object
-holding an LP or position is not proof of a liquidity lock; inspect its code
-and authority before saying it cannot withdraw.
+`held_as_dynamic_object_field`. A kiosk's current `KioskOwnerCap` holder is
+available through `get_object` on that kiosk. No locker package is verified
+for this check. To assess a pool position or LP coin held by another object,
+inspect that object's withdrawal code and authority before treating it as
+locked.
 
 ```
 analyze_token({ query: "0x…::coin::COIN", include_holders: false })

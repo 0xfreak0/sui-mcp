@@ -45,13 +45,14 @@ two people, and whether the set of keys that sign has changed. A key that
 signed only before the examined window shows as dormant, so raise
 `max_transactions` before calling a key unused.
 
-Some committee keys can never sign. A public key written by hand, such as a
-readable word followed by zero bytes, holds a long run of one byte that a
-generated key practically never has. Nobody holds its private key, so the
-member is listed in `unsignable_members` and `effective_committee` gives the
-threshold against the keys that can sign: a 2-of-4 with one such member is
-2-of-3. Such a member is dormant by construction, and the tool does not call
-it a cold or lost key.
+A committee key holding a run of more than seven identical bytes, such as a
+readable word followed by zero bytes, was written by hand. A generated key
+has such a run with probability below 1e-15, and finding the private key for
+a chosen public key is the discrete-logarithm problem, so that member can
+never sign. It is listed in `unsignable_members`, and `effective_committee`
+gives the threshold against the keys that can sign: a 2-of-4 with one such
+member is 2-of-3. The dormancy note leaves such members out of its cold or
+lost key reading.
 
 ## See who authorised one transaction
 
@@ -96,9 +97,9 @@ without the wallet itself. Enabling the feature seeds the set with the
 wallet's own address, so an empty `delegated_to` means nobody else was
 authorized.
 
-The set replaces the signer rather than extending it, so `owner_can_authorize`
-decides who controls the wallet. When it is false the wallet's own key can no
-longer sign for it and only `delegated_to` can move the funds.
+The alias set replaces the signer. When `owner_can_authorize` is false,
+the wallet's own key cannot sign for it; addresses in `delegated_to`
+are the ones authorized by the current set.
 
 An alias can authorize transactions for the wallet according to the alias set
 read from chain state. That authority alone does not establish shared
@@ -114,11 +115,11 @@ rows it did find.
 
 ## Clustering
 
-`build_wallet_edges` emits a `co_signer` edge for any key that can spend a
-wallet on its own, and marks clusters built only from those `chain-derived`
-rather than `heuristic`. Keys sitting on more committees than the limit are
-treated as custody or wallet-provider keys and listed under
-`excluded_co_signers` instead of linking everyone who uses that provider.
+`build_wallet_edges` emits a `co_signer` edge for a key that can spend a
+wallet on its own. Clusters resting entirely on those edges are tagged
+`chain-derived`. A key present on more committees than the limit is
+reported under `excluded_co_signers` instead of connecting all of those
+wallets.
 
 ## Limits
 
@@ -135,4 +136,4 @@ classify its authentication. The result reports it as unknown.
 ## zkLogin and passkey wallets
 
 zkLogin and passkey wallets go through the same path. zkLogin reports its
-OAuth issuer, which is all the chain discloses about the account.
+OAuth issuer; the chain discloses nothing else about the account.

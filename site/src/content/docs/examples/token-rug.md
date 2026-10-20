@@ -75,6 +75,27 @@ on the deployer's swap on the day of the collapse:
 The deployer's transaction exchanged 449,900,000 KONG for about
 431.39 SUI in the Turbos KONG/SUI pool at 08:54 UTC on 14 October.
 
+`token_flow` is the sender's net across the whole transaction, while
+`get_transaction` can read an individual swap's direction from its pool
+event when that event identifies the coins and can be assigned to one
+call. For a route with several swaps, check each action and its event
+before interpreting the net as one swap. History, timeline and fund
+trace action labels have no pool-event evidence and may use the call's
+type arguments instead.
+
+`find_pools` takes the full type for an unverified coin:
+
+```json wrap
+{ "token_a": "0xb0c3e7ae67c9161273aab9a06e589c1c13479337d14c794251a97df46822f2cb::kong::KONG",
+  "token_b": "SUI" }
+```
+
+The result lists `pools`, `total` and each venue's search status under
+`venues`. It searches Cetus, DeepBook v2/v3, Turbos, BlueMove v1,
+Bluefin, Momentum, FlowX CLMM/v2, Magma, Aftermath AMM and Kriya v2.
+Use `omitted.next_call` to page a long pool list. A failed or bounded venue
+search cannot establish that the pair has no other pools.
+
 ### 3. Find where the sellers' SUI converged
 
 [`summarize_address_flows`](/reference/tools/incident-investigation/#summarize_address_flows)
@@ -178,9 +199,10 @@ identifies it as a reserve wallet.
 
 ## Evidence and limits
 
-- A clean capability audit does not make a token safe. KONG could not be
-  minted or upgraded, and holders still lost their money through ordinary
-  sales into the pool.
+- Mint and upgrade authority describe the capabilities the audit located;
+  they do not establish that a token is safe to trade. KONG's audited caps
+  could not mint or upgrade it at the time read, and the deployer sold into
+  the pool.
 - The sale, the 35 inflow sources and the exit are chain facts.
   That the 35 wallets are one operator is an inference from the convergence
   and from the funding links in the case file.

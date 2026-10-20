@@ -14,14 +14,25 @@ effects/event report, and accepts pre-sign bytes too. `analyze_attack_tx`
 adds exploit profit, shared-object state deltas, reconciliation and anomaly
 leads. Use `get_transactions` for a batch rather than one detailed transaction.
 
-Protocol identification uses events as well as Move calls.
-`protocols_from_events_only` identifies protocols found through event types
-but not through the listed Move calls. A package lacking a curated or Move
+Protocol identification uses event types and emitting packages as well as
+Move calls. `protocols_from_events_only` identifies protocols found through
+events but not through the listed Move calls. For a framework-typed event,
+such as `DisplayCreated<T>`, the application that emitted it can be named even
+when the event's defining package is `0x2`. A package lacking a curated or Move
 Registry name can be named through a publishing-key match with a curated
 lineage; `protocols_unchecked` lists packages whose attribution was not
 checked, including bounded or failed publisher reads.
 A balance-change address that signed a curated protocol's packages carries
 `publisher_key_of`, for example to identify a fee paid to the team's key.
+
+`get_transaction` lists protocols by name. To see how one package was named,
+call `identify_address` on it: `protocol.identified_via` is `registry` or
+`lineage` for a curated package ID or upgrade lineage, `mvr` for a Move
+Registry name and `publisher` for a publishing-key match. Only curated entries
+carry a verified category; a registered name is chosen by its registrant, and
+a shared publishing key does not establish what the deployed package does.
+Package-keyed curation applies on mainnet only. On testnet or devnet, the
+same package ID cannot inherit a mainnet protocol attribution.
 
 Event fields in the top half of the u256 range also get their two's-complement
 reading in `signed_readings`, for signed fees or PnL stored unsigned.
@@ -99,19 +110,9 @@ constant's name, its message and the source line under `clever_error`.
 `object_changes`, `object_transfers`, `created_for` and
 `mutated_capabilities` for one transaction. A balance change nets each owner's
 coins and address balance per coin type, so an NFT, a Kiosk or a capability
-changes hands without producing one. A capability that authorises a call by
-mutating itself in place (a nonce, a rate limit) without changing owner
-produces neither a balance change nor a custody change, and
-`mutated_capabilities` is the only place that capability is named:
-
-```
---- Hop 1 (2025-01-10 10:25:31 UTC) ---
-Sender: 0x8c4f…5ee8
-Action: Transfer to recipient
-Objects:
-  package::UpgradeCap ⚠  0x8c4f…5ee8 -> 0xeda2…6c2b
-    Whoever holds this can publish new code for the package.
-```
+can change hands without producing one. A capability used through a mutable
+reference without changing owner or balance is listed under
+`mutated_capabilities`.
 
 Kiosk moves are included. A kiosk-held NFT is owned by the Kiosk object, so an
 ordinary NFT trade reads `object -> object`, and that counts as a custody
@@ -141,8 +142,7 @@ trip occurred.
 `get_transaction` reports `command_count` beside a count of the objects the
 transaction touched, so an empty `actions` list separates a transaction that
 ran no commands from one whose commands could not be decoded. A transaction
-that runs no commands still writes an effect, and bots use that to manage a
-pool of gas coins:
+with no commands can still write an object:
 
 ```
 get_transaction(F7xprc5y7LmkzMQqRjaEWexzupdtFTSPUXoF49GNepjY)
@@ -166,7 +166,7 @@ get_transaction(796Fr642E4W3XfvNcUWknTsDywd4RouMaCbqL5Ziptk)
 Both parties there are Kiosk objects rather than wallets. `changed` counts
 every object effect, including the coin that paid, so it is a weaker signal
 than `object_transfers`. `created_for` lists objects minted to an owner other
-than the sender, which is a delivery even though nothing held them before.
+than the sender as deliveries, although nothing held them before.
 Coins are excluded from `created_for`. When no other object moved,
 `coins_delivered_to` lists non-sender addresses that gained coins.
 
@@ -392,18 +392,21 @@ first, `scan` names the continuation. Checkpoint-number bounds are exclusive;
 ISO 8601 bounds include events at the stated time.
 
 An event type carries the package ID that defined its struct. The `event_type`
-filter accepts a package, module or full struct type; an upgraded package ID is
-resolved to the defining version and reported in `event_type_resolution`. A
-full struct name absent from a readable package lineage returns an error
-listing candidate structs, rather than a zero-match page. A module that
-defines no struct in the lineage returns an error listing the modules that
-do. An unread lineage is marked `unverified`; an empty page cannot establish
-absence in that case.
+filter accepts a package, module or full struct type; an upgraded package ID
+is rewritten to the defining version, including the package IDs of generic
+type arguments. `event_type_resolution` reports the rewritten filter and
+`other_defining_packages` when one filter cannot cover all the types that
+different versions defined. Query those other IDs separately. A full struct
+name absent from a readable package lineage returns an error listing candidate
+structs. A module that defines no struct in the lineage returns an error
+listing the modules that do. An unread lineage is marked `unverified`; an
+empty page cannot establish absence in that case.
+
 The `module` filter names the call that emitted the event. That call can
-belong to a different package and module from the event struct.
-GraphQL rejects a request combining `event_type` and `module`; query the
-struct type alone or the emitting module alone. An event's `emitting_module`
-in a type-filtered result identifies which module to query.
+belong to a different package and module from the event struct. GraphQL
+rejects a request combining `event_type` and `module`; query the struct type
+alone or the emitting module alone. An event's `emitting_module` in a
+type-filtered result identifies which module to query.
 
 An emitting-module filter, such as `0x2::coin` or package-only `0x2`, follows
 the network's `relocate_event_module` cutover:

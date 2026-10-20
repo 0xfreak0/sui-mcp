@@ -75,8 +75,7 @@ wrap with no recorded holder as a custody change.
 ## Following every branch
 
 `trace_funds` follows one branch. `trace_flow_graph` follows every branch and
-says what share of the traced value ended where. From the Nemo exploit
-transaction:
+says what share of the traced value ended where. For one executed transaction:
 
 ```
 trace_flow_graph(digest: "19Zkat1xArMTMvPCB4e4QtM5HstpYiKvgPjbvkLUAw9")
@@ -325,7 +324,12 @@ display exclusions, and `detail: "full"` lists every row.
 
 `identify_address` distinguishes a wallet, package, validator and object
 before further tool selection. Wallet context includes balance and SuiNS;
-packages include modules, and validators include stake information.
+packages include modules, and validators include stake information. A
+mainnet validator label names the on-chain validator name and project URL
+supplied by the validator. Its `chain_state` records the epoch, checkpoint,
+staking pool and an operation-cap holder when the cap was directly owned by
+an address at that checkpoint. The supplied name and URL do not verify an
+organization's identity.
 
 For a package, `protocol` can fall back to a bridge label's entity on an
 object of a type defined by that package, marked
@@ -359,7 +363,11 @@ its off-chain node configuration; this read cannot detect that.
 `screen_address` reads direct and indirect exposure to labelled malicious,
 sanctioned, exchange, bridge and mixer accounts. It defaults to two hops in
 both directions. Each exposure gives its path, per-leg digests and amounts,
-and the label's entity, evidence kind and `source_url`.
+and the label's entity, evidence kind and `source_url`. Read `retrieved_at`
+and any `stale` / `stale_since` fields before treating a disclosure as
+recently checked. A failed source refresh retains the last checked record
+with these stale markers; validator `chain_state` is also a snapshot tied
+to its reported checkpoint.
 
 Bridge beneficiaries decoded by `resolve_bridge_transfer` are screened
 against labels and OFAC's SDN digital currency list: CCTP, Sui Bridge,
@@ -466,10 +474,19 @@ an override of that decision.
 follows the recipient's next transaction moving the tracked coin; backward
 follows the payer's most recent earlier inflow. It follows value through DEX
 swaps, exploits and withdrawals crediting only the actor, and objects that
-received funds. A call named `swap` counts as a swap only while addresses
-other than the sender and pools received less than half of what the sender
-moved; otherwise the trace follows those recipients. Use `trace_flow_graph`
-for all branches.
+received funds. A call named `swap` is treated as a swap only while payments
+to addresses other than the sender and curated protocol or pool addresses
+are less than half of what the sender moved. When every paid or spent coin
+has a price, the comparison uses USD across coins; otherwise each paid coin
+is compared with the sender's absolute net change in that coin, so a fee on
+a swap's input or output stays below the bar, and a coin the sender neither
+spent nor kept on net while spending another (a router's fee in an
+intermediate coin) is left out. Once a coin is tracked only that coin counts;
+on a first hop without `coin_type` every coin does. When payments pass the
+bar and the coin changes do not show a swap on their own, the trace follows
+the largest recipient that is not a pool and
+lists the others under `unfollowed_recipients`. Use `trace_flow_graph` for
+all branches.
 
 The walk stops at sinks labelled through `manage_labels`: exchanges, bridges,
 mixers and burn addresses. A malicious-labelled wallet is followed instead.

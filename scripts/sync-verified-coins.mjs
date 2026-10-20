@@ -27,97 +27,114 @@ const OUT = join(root, "src/data/coins.json");
 const VERIFIED = "https://aftermath.finance/api/coins/verified";
 const METADATA = "https://aftermath.finance/api/coins/metadata";
 const TIMEOUT_MS = 30_000;
+const METADATA_BATCH = 100;
 
 /** Coins the list may omit but an investigation always meets. */
 const ALWAYS = ["0x2::sui::SUI"];
 
 function normalize(coinType) {
-  const [pkg, ...rest] = coinType.trim().split("::");
-  if (rest.length !== 2) return null;
-  const hex = pkg.replace(/^0x/, "").toLowerCase();
-  if (!/^[0-9a-f]{1,64}$/.test(hex)) return null;
-  return `0x${hex.padStart(64, "0")}::${rest.join("::")}`;
+ const [pkg, ...rest] = coinType.trim().split("::");
+ if (rest.length !== 2) return null;
+ const hex = pkg.replace(/^0x/, "").toLowerCase();
+ if (!/^[0-9a-f]{1,64}$/.test(hex)) return null;
+ return `0x${hex.padStart(64, "0")}::${rest.join("::")}`;
 }
 
 async function json(url, init) {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
-  return res.json();
+ const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+ if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
+ return res.json();
 }
 
-const listed = await json(VERIFIED);
-const types = [...new Set([...listed, ...ALWAYS].map(normalize).filter(Boolean))].sort();
-console.log(`verified list: ${listed.length} entries -> ${types.length} unique normalized types`);
-
-// Metadata comes back positionally, so a short or reordered response would
-// silently mislabel every coin after the gap. Checked rather than assumed.
-const meta = await json(METADATA, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ coins: types }),
-});
-if (!Array.isArray(meta) || meta.length !== types.length) {
-  throw new Error(
-    `metadata is positional and came back ${Array.isArray(meta) ? meta.length : "non-array"} for ${types.length} coins; refusing to write a mislabelled registry`,
-  );
+/**
+ * Metadata is positional, with an upstream cap of 100 types per request.
+ * Any failed or short batch rejects before the caller writes coins.json.
+ */
+export async function fetchMetadata(types, request = json) {
+ const meta = [];
+ for (let offset = 0; offset < types.length; offset += METADATA_BATCH) {
+  const batch = types.slice(offset, offset + METADATA_BATCH);
+  const answer = await request(METADATA, {
+   method: "POST",
+   headers: { "content-type": "application/json" },
+   body: JSON.stringify({ coins: batch }),
+  });
+  if (!Array.isArray(answer) || answer.length !== batch.length) {
+   throw new Error(
+    `metadata is positional and batch ${offset + 1}-${offset + batch.length} came back ${Array.isArray(answer) ? answer.length : "non-array"} for ${batch.length} coins; refusing to write a mislabelled registry`,
+   );
+  }
+  meta.push(...answer);
+ }
+ return meta;
 }
 
-const coins = [];
-const skipped = [];
-types.forEach((coin_type, i) => {
+async function main() {
+ const listed = await json(VERIFIED);
+ const types = [...new Set([...listed, ...ALWAYS].map(normalize).filter(Boolean))].sort();
+ console.log(`verified list: ${listed.length} entries -> ${types.length} unique normalized types`);
+
+ const meta = await fetchMetadata(types);
+
+ const coins = [];
+ const skipped = [];
+ types.forEach((coin_type, i) => {
   const m = meta[i] ?? {};
   const symbol = String(m.symbol ?? "").trim();
   // A registry entry with no symbol cannot serve a symbol lookup, and would
   // only add weight to the file.
   if (!symbol) return skipped.push(coin_type);
   coins.push({
-    coin_type,
-    symbol,
-    name: String(m.name ?? "").trim(),
-    decimals: Number.isFinite(m.decimals) ? m.decimals : null,
+   coin_type,
+   symbol,
+   name: String(m.name ?? "").trim(),
+   decimals: Number.isFinite(m.decimals) ? m.decimals : null,
   });
-});
+ });
 
-// A symbol that maps to two verified coins is still ambiguous, and shipping it
-// would recreate the bug this file exists to prevent — just with a nicer
-// source. Report so it can be resolved by hand rather than silently picked.
-const bySymbol = new Map();
-for (const c of coins) {
+ // A symbol that maps to two verified coins is still ambiguous, and shipping it
+ // would recreate the bug this file exists to prevent — just with a nicer
+ // source. Report so it can be resolved by hand rather than silently picked.
+ const bySymbol = new Map();
+ for (const c of coins) {
   const k = c.symbol.toUpperCase();
   bySymbol.set(k, [...(bySymbol.get(k) ?? []), c.coin_type]);
-}
-const ambiguous = [...bySymbol.entries()].filter(([, v]) => v.length > 1);
+ }
+ const ambiguous = [...bySymbol.entries()].filter(([, v]) => v.length > 1);
 
-// `canonical` is hand-maintained and preserved across regeneration: it is the
-// only judgement in this file, and it must not be silently reset by a sync.
-let canonical = {};
-try {
+ // `canonical` is hand-maintained and preserved across regeneration: it is the
+ // only judgement in this file, and it must not be silently reset by a sync.
+ let canonical = {};
+ try {
   canonical = JSON.parse(readFileSync(OUT, "utf8")).canonical ?? {};
-} catch {
+ } catch {
   // First run.
-}
+ }
 
-coins.sort((a, b) => a.coin_type.localeCompare(b.coin_type));
-writeFileSync(
+ coins.sort((a, b) => a.coin_type.localeCompare(b.coin_type));
+ writeFileSync(
   OUT,
   `${JSON.stringify({ source: "aftermath/verified", canonical, coins }, null, 2)}\n`,
-);
+ );
 
-console.log(`wrote ${coins.length} coins to src/data/coins.json`);
-if (skipped.length) console.log(`skipped ${skipped.length} without a symbol`);
+ console.log(`wrote ${coins.length} coins to src/data/coins.json`);
+ if (skipped.length) console.log(`skipped ${skipped.length} without a symbol`);
 
-const unresolved = ambiguous.filter(([sym]) => !canonical[sym]);
-if (ambiguous.length) {
+ const unresolved = ambiguous.filter(([sym]) => !canonical[sym]);
+ if (ambiguous.length) {
   console.log(`\nambiguous symbols in the verified set: ${ambiguous.length}, of which ${unresolved.length} have no canonical entry`);
   for (const [sym, list] of unresolved) {
-    console.log(`  ${sym} (${list.length}):`);
-    for (const t of list) console.log(`     ${t}`);
+   console.log(`  ${sym} (${list.length}):`);
+   for (const t of list) console.log(`     ${t}`);
   }
   if (unresolved.length) {
-    console.log(
-      "\nThese resolve to CANDIDATES, not a coin. Add a `canonical` entry only\n" +
-      "where you can say which one is meant — guessing here is the bug this\n" +
-      "registry exists to prevent.",
-    );
+   console.log(
+    "\nThese resolve to CANDIDATES, not a coin. Add a `canonical` entry only\n" +
+    "where you can say which one is meant — guessing here is the bug this\n" +
+    "registry exists to prevent.",
+   );
   }
+ }
 }
+
+if (import.meta.url === `file://${process.argv[1]}`) await main();

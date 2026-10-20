@@ -232,8 +232,10 @@ Use `find-unknown-packages` below to discover new lineages.
 ## Keeping curated coins current
 
 The curated verified coin registry vouches for exact coin types, not symbols.
-Keep curated entries current with `npm run sync:verified-coins`. Uncurated
-mainnet names and symbols are searched through two DexScreener queries
+Keep curated entries current with `npm run sync:verified-coins`. The sync
+reads Aftermath metadata in batches of at most 100 coin types. A failed or
+incomplete batch leaves `coins.json` unchanged. Uncurated mainnet names and
+symbols are searched through two DexScreener queries
 (ticker and `ticker SUI`), with GeckoTerminal queried when results are absent,
 capped or unavailable. Candidate coin types are checked against their exact
 on-chain metadata. Results are cached for 10 minutes, including cap-only
@@ -378,6 +380,14 @@ in both `registry.ts` and that test's list.
 The npm package is `sui-analytics-mcp`; the MCP Registry entry is
 `io.github.0xfreak0/sui-mcp`. Use the npm name for installation and the
 registry name for MCP discovery.
+
+The weekly data sync opens a pull request for material changes. When
+`CHANGELOG.md` already has entries under Unreleased, that PR adds a Data note
+there without changing the version; merging does not publish. The data ships
+with the next normal release after a full `npm run verify:live`. When no
+Unreleased entries are pending, the data PR bumps the patch version and
+merging dispatches the publish workflow. Review the PR's source changes and
+failed syncs before merging either kind.
 
 Releases are cut by pushing a version tag. `.github/workflows/publish.yml` runs
 the tests, publishes to npm, publishes to the MCP Registry, installs the

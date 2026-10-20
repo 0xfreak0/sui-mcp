@@ -41,6 +41,8 @@
 - **yolo.casa's orders contracts and Blast.fun's presale suite are named.** yolo.casa's limit, stop, DCA and OTC order lineage, published by `yolo.sui`, is curated as yolo.casa, type `dex`. Blast.fun's presale, access-control, partners and Aftermath DAO adapter packages, from both its October deployments, join its existing `launchpad` entries; their deployer shares a first funder with the earlier Blast.fun deployer.
 
 ### Changed
+- **Weekly data refresh defers to pending releases.** When Unreleased has entries, its data changes stay there without a version bump or automatic publish; an empty Unreleased section still permits a data-only patch.
+- **Verified-coin sync bounds metadata requests.** Aftermath coin metadata is fetched in batches of 100 with positional response checks; any failed batch leaves the shipped registry unchanged.
 - **Event type filters reject unknown full struct names with candidate types.**
   `query_events`, `aggregate_events` and `sample_control_addresses` also
   reject a module-level `event_type` whose module defines no struct, listing

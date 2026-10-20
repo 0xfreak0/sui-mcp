@@ -1754,18 +1754,25 @@ Rules for `walkFunding` and the batch tool, in `src/tools/funding.ts`:
   `distributor` with a `classification_basis`, and a `hub` keeps its own
   reading. Overriding the interpretation alone printed `narrow` beside "weak
   on its own" for the walrus claim-farm funder `0xb4313964…`.
-- **A chain counts toward `shared_funders` only up to the first funder that is
-  itself a subject.** Past that point it is the other subject's ancestry,
-  already counted under its own result. Counting it again made one chain read
-  as two addresses sharing a narrow funder. The link is in
-  `subject_funded_subject`.
-- **`subject_paid_subject` asks each ordered pair.** `sentAddress` and
-  `affectedAddress` combine in one filter, so the answer does not depend on how
-  far back either history runs, and ten pairs fit in one aliased document
-  (`src/utils/subject-payments.ts`). Addresses are validated with
-  `normalizeWatchAddress` before batching. Pairs grow with the square of the
-  batch, so above 20 subjects only each subject's earliest transactions are
-  checked, and `subject_payment_scope` says so. It adds no clustering weight.
+- **`related_addresses` extends subject identity without extending walks.**
+  `find_funding_sources` walks at most 100 addresses; up to 500 related
+  addresses are subjects for `subject_funded_subject` and
+  `subject_paid_subject` but get no walks or results. Split a larger set and
+  pass the other addresses as related on each call. A chain counts toward
+  `shared_funders` only up to the first funder in either set. Counting a
+  related funder's ancestry twice across walked chains would attribute
+  the related subject's own history to multiple other subjects.
+- **`subject_paid_subject` is pairwise only for small unextended batches.**
+  `sentAddress` and `affectedAddress` combine in one filter; ten pairs fit
+  an aliased document (`src/utils/subject-payments.ts`). With related
+  addresses or more than 20 walked subjects, scan each walked address's
+  newest sent and affected transactions, intersecting sender and net
+  balance-change recipients with both subject sets. At most three pages
+  of 50 transactions per direction are read. A payment between related
+  addresses is outside this call; when a page bound, cursor or read prevents
+  full coverage, `subject_payment_scope.incomplete` says which address and
+  direction, and incomplete balance changes name their digests. A failure
+  is not a negative payment finding. It adds no clustering weight.
 
 `measureFanout` follows the same asymmetry: `hub` is proven by what was seen,
 while `narrow` or `distributor` off a truncated scan carries

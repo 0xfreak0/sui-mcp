@@ -196,3 +196,117 @@ export async function findSubjectPayments(subjects: string[]): Promise<SubjectPa
 
   return { payments, pairs_checked: pairs.length, incomplete_pairs: incomplete, invalid, requests };
 }
+
+/** Recent pages per direction and walked address; an unfinished walk is reported. */
+export const SET_PAYMENT_PAGES = 3;
+
+const SET_PAYMENT_QUERY = `query ($addr: SuiAddress!, $before: String) {
+  transactions(filter: { PLACEHOLDER: $addr }, last: 50, before: $before) {
+    pageInfo { hasPreviousPage startCursor }
+    nodes { digest sender { address } effects { timestamp
+      balanceChanges(first: 50) { pageInfo { hasNextPage endCursor }
+        nodes { amount owner { address } coinType { repr } } }
+    } }
+  }
+}`;
+
+export interface SetPaymentScan {
+ payments: SubjectPayment[];
+ /** A direction whose history could not be exhausted, including read failures. */
+ incomplete: Array<{ address: string; direction: "sent" | "affected"; reason: string }>;
+ /** Digests whose balance changes were incomplete; other payments may exist. */
+ incomplete_transactions: string[];
+ invalid: string[];
+ requests: number;
+}
+
+/**
+ * Find payments with at least one walked endpoint. Scan each walked address's
+ * newest sent and affected histories, intersecting the signed payer and net
+ * recipients with the union of walked and related subjects. Related addresses
+ * are never scanned independently, so cost follows the number walked.
+ */
+export async function findSetSubjectPayments(walked: string[], subjects: string[]): Promise<SetPaymentScan> {
+ const invalid: string[] = [];
+ const valid = new Set<string>();
+ for (const address of subjects) {
+  const normalized = normalizeWatchAddress(address);
+  if (!normalized) invalid.push(address);
+  else valid.add(normalized);
+ }
+ const payments: SubjectPayment[] = [];
+ const incomplete: SetPaymentScan["incomplete"] = [];
+ const incompleteTransactions = new Set<string>();
+ const seen = new Set<string>();
+ let requests = 0;
+
+ for (const original of new Set(walked)) {
+  const address = normalizeWatchAddress(original);
+  if (!address) continue;
+  for (const direction of ["sent", "affected"] as const) {
+   const query = SET_PAYMENT_QUERY.replace("PLACEHOLDER", direction === "sent" ? "sentAddress" : "affectedAddress");
+   let before: string | null = null;
+   for (let page = 0; page < SET_PAYMENT_PAGES; page++) {
+    requests++;
+    let connection: {
+     nodes: Array<PairNode & { sender?: { address: string } | null }>;
+     pageInfo?: { hasPreviousPage?: boolean; startCursor?: string | null };
+    };
+    try {
+     const data = await gqlQuery<{ transactions: typeof connection | null }>(query, { addr: address, before });
+     if (!data.transactions) throw new Error("Transaction connection unavailable");
+     connection = data.transactions;
+    } catch (err) {
+     incomplete.push({ address, direction, reason: err instanceof Error ? err.message : String(err) });
+     break;
+    }
+    const nodes = connection.nodes;
+    if (!Array.isArray(nodes)) {
+     incomplete.push({ address, direction, reason: "Transaction nodes unavailable" });
+     break;
+    }
+    for (const node of nodes) if (!node.sender?.address) incompleteTransactions.add(node.digest);
+    const candidates = nodes.filter((n) => n.sender?.address && valid.has(n.sender.address));
+    let completed;
+    try {
+     completed = await completeTxConnections(candidates.map((n) => ({
+      digest: n.digest,
+      balanceChanges: n.effects?.balanceChanges,
+     })));
+    } catch (err) {
+     incomplete.push({ address, direction, reason: err instanceof Error ? err.message : String(err) });
+     break;
+    }
+    requests += completed.reduce((total, tx) => total + tx.reads, 0);
+    for (const [index, node] of candidates.entries()) {
+     const payer = node.sender!.address;
+     if (!node.effects?.balanceChanges || completed[index].balanceChangesTruncated) {
+      incompleteTransactions.add(node.digest);
+     }
+     const changes = completed[index].balanceChanges
+      .filter((c) => c.owner?.address && c.amount && c.coinType?.repr)
+      .map((c) => ({ address: c.owner!.address, amount: c.amount!, coinType: c.coinType!.repr }));
+     for (const payee of new Set(changes.map((c) => c.address))) {
+      if (!valid.has(payee) || payee === payer || (payer !== address && payee !== address)) continue;
+      const key = `${node.digest}:${payer}:${payee}`;
+      if (seen.has(key)) continue;
+      const payment = paymentInTx(payer, payee, node.digest, node.effects?.timestamp ?? null, changes);
+      if (!payment) continue;
+      if (!node.effects?.balanceChanges || completed[index].balanceChangesTruncated) payment.balance_changes_incomplete = true;
+      seen.add(key);
+      payments.push(payment);
+     }
+    }
+    const more = connection.pageInfo?.hasPreviousPage === true;
+    if (!more) break;
+    before = connection.pageInfo?.startCursor ?? null;
+    if (!before || page + 1 === SET_PAYMENT_PAGES) {
+     incomplete.push({ address, direction, reason: before ? "page_limit" : "missing_cursor" });
+     break;
+    }
+   }
+  }
+ }
+ payments.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+ return { payments, incomplete, incomplete_transactions: [...incompleteTransactions], invalid, requests };
+}

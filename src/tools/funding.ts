@@ -28,7 +28,7 @@ import {
 } from "../utils/tx-connections.js";
 import type { GqlBalanceChangeNode } from "../utils/gql-adapters.js";
 import { capPayload, type ListCap } from "../utils/output-cap.js";
-import { findSubjectPayments, MAX_PAIRWISE_SUBJECTS, paymentInTx, type SubjectPayment } from "../utils/subject-payments.js";
+import { findSetSubjectPayments, findSubjectPayments, MAX_PAIRWISE_SUBJECTS, SET_PAYMENT_PAGES, type SubjectPayment } from "../utils/subject-payments.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 /**
@@ -559,12 +559,16 @@ export function registerFundingTools(server: McpServer) {
 
   server.tool(
     "find_funding_sources",
-    "(Incident investigation) Trace funding for many addresses together, cheaper than repeated find_funding_source calls. Walks stop at funders that paid over 50 addresses; shared-funder counts stop at the first funder that is itself a subject. Reports common funders with fan-out and flow shape, co-funding compared with each transaction's total recipients, direct subject-to-subject funding, and later signed payments between subjects (subject_paid_subject, checked pairwise for up to 20 subjects). It also groups fundings within one minute as possible scripted setup. A common exchange or shared batch need not imply common control. Compare a sample_control_addresses control group before interpreting any rate.",
+  "(Incident investigation) Trace up to 100 addresses together. related_addresses adds subjects for direct funding and payment links without walking them. Shared-funder counts stop at the first funder in either set. For up to 20 walked subjects without related addresses, direct payments are checked pairwise; larger sets scan bounded recent sent and affected histories of walked subjects. Read subject_payment_scope for incomplete history. Compare shared funders with a control group before inferring common control.",
     {
       addresses: addressListArg()
         .min(1)
         .max(100)
         .describe("Addresses to attribute (1-100)."),
+   related_addresses: addressListArg()
+    .max(500)
+    .optional()
+    .describe("Other subjects (up to 500) for direct funding and payment links; not walked or included in shared-funder counts."),
       max_hops: numArg()
         .int()
         .positive()
@@ -587,7 +591,7 @@ export function registerFundingTools(server: McpServer) {
           "'summary' (default) keeps origin, first funder/hop and dust counts; results and subject_paid_subject fit ~20k chars, prioritizing all shared-funder, subject-link, co-funding, burst and payment results. 'full' lists every chain hop, dust row and list row.",
         ),
     },
-    async ({ addresses, max_hops, depth, measure_fanout, detail }) => {
+  async ({ addresses, related_addresses, max_hops, depth, measure_fanout, detail }) => {
       const full = detail === "full";
       try {
         const maxHops = depth === "first_hop" ? 1 : Math.min(max_hops ?? 5, 12);
@@ -640,7 +644,7 @@ export function registerFundingTools(server: McpServer) {
         // into "shared funding" of two addresses. The link itself is reported
         // in subject_funded_subject. Walks also stop at a service-scale funder,
         // so nothing reached through a hub is counted either.
-        const subjectSet = new Set(addresses);
+    const subjectSet = new Set([...addresses, ...(related_addresses ?? [])]);
         const byFunder = new Map<string, string[]>();
         for (const r of results) {
           for (const step of r.chain) {
@@ -726,14 +730,14 @@ export function registerFundingTools(server: McpServer) {
         // money went straight from one address under investigation to another,
         // so there is no base rate it could be confused with. Easy to miss by
         // eye, since the funder sits rows away in the input list.
-        const subjectLinks = detectSubjectLinks(allSteps, addresses);
+    const subjectLinks = detectSubjectLinks(allSteps, subjectSet);
 
         // Every payment between subjects, not only first fundings. A later
         // payment is as chain-derived as a first one, and the walk never sees
         // it: it reads one inflow per address.
         const subjectPayments: SubjectPayment[] = [];
         let paymentScope: Record<string, unknown> | null = null;
-        if (addresses.length > 1 && addresses.length <= MAX_PAIRWISE_SUBJECTS) {
+    if (addresses.length > 1 && addresses.length <= MAX_PAIRWISE_SUBJECTS && !related_addresses?.length) {
           try {
             const scan = await findSubjectPayments(addresses);
             subjectPayments.push(...scan.payments);
@@ -752,18 +756,19 @@ export function registerFundingTools(server: McpServer) {
               error: `Not checked: ${err instanceof Error ? err.message : String(err)}`,
             };
           }
-        } else if (addresses.length > MAX_PAIRWISE_SUBJECTS) {
-          for (const payee of addresses) {
-            const { txs } = await fundingStep(payee, ctx);
-            for (const tx of txs) {
-              if (!tx.sender || tx.sender === payee || !subjectSet.has(tx.sender)) continue;
-              const payment = paymentInTx(tx.sender, payee, tx.digest, tx.timestamp, tx.changes);
-              if (payment) subjectPayments.push(payment);
-            }
-          }
+    } else {
+     const scan = await findSetSubjectPayments(addresses, [...subjectSet]);
+     subjectPayments.push(...scan.payments);
           paymentScope = {
-            method: `each subject's earliest ${EARLIEST_TXS} transactions`,
-            note: `More than ${MAX_PAIRWISE_SUBJECTS} subjects, so pairs were not queried one by one and later payments are not covered. Split the batch to check every pair.`,
+      method: "newest sent and affected transactions of each walked address",
+      walked_addresses: addresses.length,
+      related_addresses: subjectSet.size - new Set(addresses).size,
+      transactions_per_direction: SET_PAYMENT_PAGES * 50,
+      requests: scan.requests,
+      ...(scan.incomplete.length ? { incomplete: scan.incomplete } : {}),
+      ...(scan.incomplete_transactions.length ? { incomplete_transactions: scan.incomplete_transactions } : {}),
+      ...(scan.invalid.length ? { invalid_addresses: scan.invalid } : {}),
+      note: "Only payments touching a walked address are checked. Each direction reads up to the stated number of newest transactions; incomplete lists cannot establish that no earlier payments exist.",
           };
         }
         await prefetchCoinScale(subjectPayments.flatMap((p) => p.received.map((r) => r.coinType)));
@@ -835,6 +840,7 @@ export function registerFundingTools(server: McpServer) {
 
         const base = {
           address_count: addresses.length,
+     ...(related_addresses?.length ? { related_address_count: subjectSet.size - new Set(addresses).size } : {}),
           depth: depth ?? "full",
           ...(formerNames.length
             ? {
@@ -912,9 +918,9 @@ export function registerFundingTools(server: McpServer) {
                         ...(p.balance_changes_incomplete ? { balance_changes_incomplete: true } : {}),
                       })),
                       subject_payment_note:
-                        "Transactions one address under investigation signed that credited another, with the payee's net " +
-                        "gain per coin. Every payment is listed, not only first fundings, which carry first_funding. Each " +
-                        "digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
+          "Transactions a subject signed that credited another subject, with the payee's net gain per coin. " +
+          "Every observed payment within subject_payment_scope is listed; first fundings carry first_funding. " +
+          "Each digest shows the transfer. A one-way payment carries no clustering weight here or in build_wallet_edges.",
                     }
                   : {}),
                 subject_payment_scope: paymentScope,
@@ -968,7 +974,7 @@ export function registerFundingTools(server: McpServer) {
         ]);
         type Result = (typeof summaryRows)[number] & { sponsored_by?: unknown; incomplete_balance_changes?: unknown; origin_unread_at?: unknown };
         type Payment = { first_funding?: boolean };
-        const args = { addresses, max_hops, depth, measure_fanout };
+    const args = { addresses, related_addresses, max_hops, depth, measure_fanout };
         const { payload } = capPayload(
           "find_funding_sources",
           args,

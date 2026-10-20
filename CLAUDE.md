@@ -542,20 +542,24 @@ leg of a PTB, so the guess read Astros, 7k and FlowX routes backwards.
 - **Only `get_transaction` has the evidence.** `get_transaction_history`,
   `build_timeline`, `trace_funds` and the flow graphs decode without events
   and keep the fallback, so their swap direction is a lead, not a reading.
-- **Memez curve names fix the trade direction without events.** For curated
-  launchpad packages, `memez_pump`, `memez_stable` and `memez_auction` calls
-  named exactly `pump` or `dump` take `<meme, quote>`: pump spends quote,
-  dump spends meme. Do not apply the rule to `quote_pump`, `quote_dump` or
-  another package whose module happens to have the same name. The quote
-  need not be SUI.
-- **Other curated launchpads have unambiguous names.** SuiPump's
-  `bonding_curve::buy`/`sell` and `agent_session::buy_with_session`/
-  `sell_with_session`, and Koi's `curve::buy`/`sell` and `_to_sender`
-  variants, trade one type argument against SUI. GraphQL list commands
-  omit type arguments: infer the coin only when one call and the sender's
-  net changes isolate the two sides. Keep a coinless Buy/Sell label
-  otherwise, rather than naming a token another leg moved.
-
+- **Launchpad curve names fix the trade side without events.**
+  `CURVE_TRADES` (`src/protocols/decoder.ts`) lists, per curated launchpad
+  protocol and module, the functions that buy and sell. Memez `pump`/`dump`
+  (`memez_pump`, `memez_stable`, `memez_auction`, `memez_router`) and Vice
+  `pool::buy`/`sell` take `<token, quote>`, and the quote need not be SUI.
+  SuiPump `bonding_curve::buy`/`sell` and
+  `agent_session::buy_with_session`/`sell_with_session`, and Koi
+  `curve::buy`/`sell` and their `_to_sender` forms, trade their one type
+  argument against SUI. `quote_pump`, `migrate`, `graduate` and a module of
+  the same name in another package are not trades.
+- **A history row names the token only for an isolated trade.** GraphQL
+  commands carry no type arguments, so the token comes from the sender's
+  net, and only when the PTB holds one curve trade, every other call is
+  into 0x1, 0x2, 0x3 or the same protocol, and the sender's SUI (exactly
+  `0x2::sui::SUI`) and one other coin moved the way the side states. Any
+  other row reads `Buy on <protocol>` or `Sell on <protocol>` with no coin:
+  a DEX call beside the trade can leave the sender holding a coin the curve
+  never paid.
 
 ## Completeness beats payload size
 
